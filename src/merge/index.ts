@@ -37,8 +37,8 @@ export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState
 import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf } from "../owners.ts";
 
-export const ORG = "storytold";
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
 
@@ -129,9 +129,9 @@ export async function viewerOf(q: Querier): Promise<Viewer> {
 
 export type PrInfo = { id: string; head: string; state: string; assignees: string[]; authors: number; commits: number };
 
-export const PR_INFO_QUERY = `query($name: String!, $n: Int!) {
+export const PR_INFO_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   rateLimit { cost remaining resetAt }
-  repository(owner: "${ORG}", name: $name) {
+  repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
       id headRefOid state
       assignees(first: 10) { nodes { login } }
@@ -146,7 +146,7 @@ type InfoNode = {
 };
 
 export async function prInfo(q: Querier, repo: string, n: number): Promise<PrInfo | null> {
-  const d = await q.query(PR_INFO_QUERY, { name: repo, n }) as { repository?: { pullRequest?: InfoNode | null } };
+  const d = await q.query(PR_INFO_QUERY, { owner: ownerOf(repo), name: repo, n }) as { repository?: { pullRequest?: InfoNode | null } };
   const p = d.repository?.pullRequest;
   if (!p) return null;
   const who = new Set<string>();
@@ -248,7 +248,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   const d = deps ?? defaultDeps();
   // A PR in changes-requested is read live again each run: the mirror alone can block wrongly (the association is relative to the viewer) and a blocked PR never reaches the merge-time read.
   if (!dryRun) {
-    for (const e of buildQueue(db, { repo, merged: "exclude" })) if (e.state === "changes-requested") await readGate(db, d.querier, ORG, repo, e.number, log);
+    for (const e of buildQueue(db, { repo, merged: "exclude" })) if (e.state === "changes-requested") await readGate(db, d.querier, ownerOf(repo), repo, e.number, log);
     // Set aside before the picks are made: a PR whose merge answer goes away here must not be picked and refused.
     // A Merge? question open for a PR a maintainer has since blocked no longer applies.
     const withdrawn = withdrawBlockedQuestions(db, buildQueue(db, { repo }).filter((e) => e.state !== "merged"), at());

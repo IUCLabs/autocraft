@@ -1,7 +1,7 @@
 // Made-up input for the Prompts page examples of the security prompts.
-import { SECURITY_REPO, type SecurityAreaInput, type SecurityModelInput, type SecurityVerifyInput } from "./rules.ts";
+import { securityRepo, type SecurityAreaInput, type SecurityModelInput, type SecurityVerifyInput } from "./rules.ts";
 
-const base = { repo: SECURITY_REPO, number: 1, project: "photocraft", commit: "0123456789abcdef0123456789abcdef01234567" } as const;
+const base = { repo: securityRepo("photocraft"), number: 1, project: "photocraft", commit: "0123456789abcdef0123456789abcdef01234567" } as const;
 const entry = { name: "Open PSD file", kind: "file-open", where: "src/open.rs:40" };
 
 export const SAMPLE_SECURITY_MODEL: SecurityModelInput[] = [{ ...base }];

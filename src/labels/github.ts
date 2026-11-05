@@ -10,8 +10,8 @@ import { approvalOf } from "./approval.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { ALL_LABELS, type LabelDef } from "./set.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf } from "../owners.ts";
 
-const ORG = "storytold";
 export const BATCH = 10;          // mutations per request
 export const WRITES_PER_MIN = 60; // GitHub asks integrators to stay near this for content-creating writes
 const NODE_LOOKUP = 25;
@@ -37,7 +37,7 @@ export const repoLabelsQuery = (): string => `query($owner: String!, $name: Stri
     ${ALL_LABELS.map((l, i) => `l${i}: label(name: ${JSON.stringify(l.name)}) { id name }`).join("\n")} } }`;
 
 export async function repoLabels(client: Querier, repo: string, wait: Wait = sleepMs as Wait): Promise<Repo> {
-  const d = await retrying(() => client.query(repoLabelsQuery(), { owner: ORG, name: repo }), wait);
+  const d = await retrying(() => client.query(repoLabelsQuery(), { owner: ownerOf(repo), name: repo }), wait);
   if (!d.repository) throw new LabelsError(`repo ${repo} not found`);
   const labels = new Map<string, string>();
   ALL_LABELS.forEach((l, i) => {
@@ -145,7 +145,7 @@ async function nodeIds(client: Querier, repo: string, numbers: number[], wait: W
   const out = new Map<number, Live>();
   for (let i = 0; i < numbers.length; i += NODE_LOOKUP) {
     const part = numbers.slice(i, i + NODE_LOOKUP);
-    const d = await retrying(() => client.query(nodeIdsQuery(part), { owner: ORG, name: repo }), wait);
+    const d = await retrying(() => client.query(nodeIdsQuery(part), { owner: ownerOf(repo), name: repo }), wait);
     for (const n of part) {
       const node = d.repository?.[`n${n}`];
       out.set(n, { id: node?.id ?? null, state: node?.state ?? null });

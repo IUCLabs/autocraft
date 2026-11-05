@@ -790,6 +790,8 @@ export interface RepoLabels {
 
 export interface TrackedRepo {
   name: RepoName;
+  /** GitHub org or user that owns the repo */
+  owner: string;
   tracked: boolean;
   openPrs: number | null;
   openIssues: number | null;
@@ -2062,8 +2064,8 @@ export interface FindingSummary {
 
 export interface FindingRef { path: string; line: number; /** What the line shows; empty when the model gave none. */ claim: string }
 export interface FindingVerification { kind: "test" | "reasoning"; result: string; notes: string; /** Verify score, 1 to 10; null for a finding that was not verified. */ score: number | null; /** A failing test the model proposed; the scan does not run it. */ proposedTest: string | null }
-/** One model call of the finding's scan that concerns it: the threat model, its area's scan, its verification. */
-export interface FindingCall { kind: "model" | "area" | "verify"; at: string; endedAt: string | null; ok: boolean; costUsd: number | null }
+/** One event of the finding's scan that concerns it: the threat model, its area's scan, its verification (model calls, with cost), or a later scan that found it again (`duplicate`, no cost). */
+export interface FindingCall { kind: "model" | "area" | "verify" | "duplicate"; at: string; endedAt: string | null; ok: boolean; costUsd: number | null }
 
 export interface FindingView extends FindingSummary {
   refs: FindingRef[];

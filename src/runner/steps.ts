@@ -490,7 +490,9 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { runScan } = await import("../security/scan.ts");
       const { realDeps } = await import("../security/real.ts");
-      return runScan(ctx.db, Number(ctx.params.scan), realDeps(ctx.db, { cancelled: ctx.cancelled, log: ctx.log, progress: ctx.progress }));
+      const { usageRunId } = await import("../security/real.ts");
+      ctx.usageRun(usageRunId(Number(ctx.params.scan)));
+      return runScan(ctx.db, Number(ctx.params.scan), realDeps(ctx.db, Number(ctx.params.scan), { cancelled: ctx.cancelled, log: ctx.log, progress: ctx.progress }));
     },
   },
   {

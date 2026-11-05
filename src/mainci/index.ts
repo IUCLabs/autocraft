@@ -4,12 +4,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import type { Querier } from "../mirror.ts";
-import { contextState, ORG, type CheckState } from "../review/checks.ts";
+import { contextState, type CheckState } from "../review/checks.ts";
 import { trackedNames } from "../repos.ts";
 import { optionalChecks } from "../optional-checks.ts";
 import { mainRedAfterMerge } from "../push-outcomes.ts";
 import { autocraftText } from "../mainfix/status.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
+import { ownerOf } from "../owners.ts";
 
 /** Branch prefix of the PRs AutoCraft opens to fix a red main; the merge queue does not hold them while main is red. */
 export const MAIN_FIX_BRANCH_PREFIX = "autocraft/main-ci-";
@@ -29,9 +30,12 @@ const KEY_POLLED_AT = "main_ci_polled_at";
 
 export { optionalChecks };
 
+/** The owner variables of mainCiQuery. */
+export const mainCiVars = (repos: string[]): Record<string, string> => Object.fromEntries(repos.map((r, i) => [`o${i}`, ownerOf(r)]));
+
 export function mainCiQuery(repos: string[]): string {
   const parts = repos.map((r, i) => `
-    r${i}: repository(owner: "${ORG}", name: ${JSON.stringify(r)}) {
+    r${i}: repository(owner: $o${i}, name: ${JSON.stringify(r)}) {
       defaultBranchRef { name target { ... on Commit {
         oid committedDate messageHeadline
         statusCheckRollup { state contexts(first: 100) { nodes {
@@ -41,7 +45,7 @@ export function mainCiQuery(repos: string[]): string {
         } } }
       } } }
     }`).join("");
-  return `query {
+  return `query(${repos.map((_, i) => `$o${i}: String!`).join(", ")}) {
   rateLimit { cost remaining resetAt }${parts}
 }`;
 }
@@ -89,7 +93,7 @@ export async function pollMainCi(db: DatabaseSync, client: Querier, only?: strin
   let heads = 0;
   for (let i = 0; i < repos.length; i += REPOS_PER_QUERY) {
     const chunk = repos.slice(i, i + REPOS_PER_QUERY);
-    const data = await client.query(mainCiQuery(chunk), {});
+    const data = await client.query(mainCiQuery(chunk), mainCiVars(chunk));
     const at = new Date().toISOString();
     for (const h of parseHeads(chunk, data as Record<string, RepoNode>)) {
       saveHead(db, h, at);

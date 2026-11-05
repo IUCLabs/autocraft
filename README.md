@@ -61,7 +61,7 @@ See [Trust boundary](docs/pipeline.md#trust-boundary).
 ### Install
 
 ```sh
-git clone https://github.com/aiongg/autocraft.git
+git clone https://github.com/storytold/autocraft.git
 cd autocraft
 pnpm install
 pnpm -C web install && pnpm -C web build    # writes web/dist

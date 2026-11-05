@@ -1,5 +1,6 @@
 // Action cards: what Opus may propose, checked by our code, and the one-line description of each that the operator reads.
 // Descriptions are built here from the parameters; the model never writes them.
+import { ownerOf, splitSlug } from "../owners.ts";
 import { REFERENCE_LEAK } from "../review/opus-parse.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { writeEffect } from "../act/index.ts";
@@ -276,8 +277,12 @@ function duplicateStep(db: DatabaseSync, repo: string, n: number, of: unknown): 
 type ItemFacts = { kind: string; state: string; author: string | null };
 const itemFacts = (db: DatabaseSync, repo: string, n: number): ItemFacts | undefined =>
   db.prepare("SELECT kind, state, author FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemFacts | undefined;
-/** A repository name as the model wrote it, without a leading `storytold/`. */
-const bareRepo = (v: unknown): unknown => (typeof v === "string" ? v.replace(/^storytold\//i, "") : v);
+/** A repository name as the model wrote it, without a leading `owner/`. An owner that is not the repo's own leaves the value as written, which is no tracked repo. */
+const bareRepo = (v: unknown): unknown => {
+  if (typeof v !== "string" || !v.includes("/")) return v;
+  const { owner, name } = splitSlug(v);
+  return owner.toLowerCase() === ownerOf(name).toLowerCase() ? name : v;
+};
 const isTracked = (db: DatabaseSync, repo: unknown): repo is string => typeof repo === "string" && !!db.prepare("SELECT 1 FROM tracked_repos WHERE name = ?").get(repo);
 const sameLogin = (a: string | null, b: string): boolean => a !== null && a.toLowerCase() === b.toLowerCase();
 
@@ -317,6 +322,7 @@ function transferStep(db: DatabaseSync, repo: string, n: number, toRaw: unknown)
   const f = itemFacts(db, repo, n);
   if (pr(f)) return { note: "dropped a resolution: only an issue can be moved to another repository" };
   if (!isTracked(db, to) || to === repo) return { note: `dropped a resolution: "${String(to).slice(0, 40)}" is not another tracked repository` };
+  if (ownerOf(to).toLowerCase() !== ownerOf(repo).toLowerCase()) return { note: "dropped a resolution: an issue moves only between repositories of one owner" };
   const why = closeRefusal(db, repo, n);
   if (why) return { note: `dropped a resolution: ${why}` };
   if (f?.state !== "OPEN") return { note: `dropped a resolution: ${ref(repo, n)} is not open` };

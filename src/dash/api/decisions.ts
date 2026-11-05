@@ -32,6 +32,7 @@ export const isOperator = (req: Req): boolean => req.user.role === "operator";
 export { itemState, shownLookup, withShown } from "./shown.ts";
 import { HEAD_FACT } from "../../merge/queue.ts";
 import { itemState, withShown } from "./shown.ts";
+import { slugOf } from "../../owners.ts";
 
 const json = <T>(s: string | null | undefined, d: T): T => {
   if (!s) return d;
@@ -77,7 +78,7 @@ async function blockedRepos(req: Req, d: DecisionRow): Promise<string[]> {
 async function requireOperator(req: Req, d: DecisionRow): Promise<void> {
   if (!isOperator(req)) throw new HttpError(403, "only the operator answers decisions");
   const blocked = await blockedRepos(req, d);
-  if (blocked.length) throw new HttpError(403, `no write access to ${blocked.map((r) => `storytold/${r}`).join(", ")}`);
+  if (blocked.length) throw new HttpError(403, `no write access to ${blocked.map((r) => slugOf(r)).join(", ")}`);
 }
 
 // ---- reading -----------------------------------------------------------

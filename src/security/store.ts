@@ -4,7 +4,7 @@ import type { FindingCall, FindingRef, FindingSeverity, FindingState, FindingSum
 
 export const ACTIVE_STATES: ScanState[] = ["modeling", "scanning", "verifying"];
 /** Findings in these states are the scan's own bookkeeping, never listed. */
-export const INTERNAL_FINDING_STATES = ["unverified", "disproved"] as const;
+export const INTERNAL_FINDING_STATES = ["unverified", "disproved", "duplicate"] as const;
 const HIDDEN = INTERNAL_FINDING_STATES.map((s) => `'${s}'`).join(", ");
 const now = (): string => new Date().toISOString();
 
@@ -32,6 +32,10 @@ export function activeScan(db: DatabaseSync, repo: string): ScanRow | undefined 
 export function reconcileScans(db: DatabaseSync, repo?: string): void {
   const rows = db.prepare(`SELECT s.id, j.state AS job_state FROM security_scans s JOIN jobs j ON j.id = s.job_id
     WHERE s.state IN (${ACTIVE_STATES.map((s) => `'${s}'`).join(", ")}) AND j.state IN ('done', 'failed', 'cancelled')${repo ? " AND s.repo = ?" : ""}`).all(...(repo ? [repo] : [])) as { id: number; job_state: string }[];
+  // A scan whose job was never recorded (the request died between the insert and the enqueue) would block its repo for good.
+  const orphans = db.prepare(`SELECT id FROM security_scans WHERE job_id IS NULL AND started_at < ? AND state IN (${ACTIVE_STATES.map((s) => `'${s}'`).join(", ")})${repo ? " AND repo = ?" : ""}`)
+    .all(new Date(Date.now() - 60_000).toISOString(), ...(repo ? [repo] : [])) as { id: number }[];
+  for (const o of orphans) finishScan(db, o.id, "failed", "The scan was never queued.");
   for (const r of rows) {
     const cancelled = r.job_state === "cancelled";
     finishScan(db, r.id, cancelled ? "stopped" : "failed", cancelled ? null : "The scan's job ended before the scan finished.");
@@ -78,10 +82,15 @@ export function toFinding(db: DatabaseSync, r: FindingRow): FindingView {
   const calls = db.prepare(`SELECT kind, started_at, ended_at, ok, cost_usd FROM security_calls
     WHERE scan_id = ? AND (kind = 'model' OR (kind = 'area' AND area_idx = ?) OR (kind = 'verify' AND finding_number = ?)) ORDER BY id`).all(r.scan_id, area?.idx ?? -1, r.number) as
     { kind: FindingCall["kind"]; started_at: string; ended_at: string | null; ok: number; cost_usd: number | null }[];
+  const repeats = db.prepare("SELECT created_at FROM security_findings WHERE repo = ? AND duplicate_of = ? ORDER BY created_at").all(r.repo, r.number) as { created_at: string }[];
+  const timeline: FindingCall[] = [
+    ...calls.map((c) => ({ kind: c.kind, at: c.started_at, endedAt: c.ended_at, ok: c.ok === 1, costUsd: c.cost_usd })),
+    ...repeats.map((d): FindingCall => ({ kind: "duplicate", at: d.created_at, endedAt: null, ok: true, costUsd: null })),
+  ].sort((a, b) => a.at.localeCompare(b.at));
   return {
     ...summary(r), refs: parse<FindingRef[]>(r.refs, []), reach: r.reach, impact: r.impact, verification: parse<FindingVerification | null>(r.verification, null),
     fixDiff: null, fixPr: r.fix_pr, ghsaId: r.ghsa_id, reason: r.reason, decidedBy: r.decided_by,
-    timeline: calls.map((c) => ({ kind: c.kind, at: c.started_at, endedAt: c.ended_at, ok: c.ok === 1, costUsd: c.cost_usd })),
+    timeline,
   };
 }
 

@@ -7,12 +7,12 @@ import type { DatabaseSync } from "node:sqlite";
 import type { FindingVerification } from "../../web/src/api/types.ts";
 import { ACTIVE_STATES, finishScan, scanRow } from "./store.ts";
 import {
-  SECURITY_REPO, parseCandidates, parseThreatModel, parseVerdict, survives, titleKey,
+  securityRepo, parseCandidates, parseThreatModel, parseVerdict, survives, titleKey,
   type Candidate, type SecurityAreaInput, type SecurityModelInput, type SecurityVerifyInput, type ThreatArea, type ThreatModel,
 } from "./rules.ts";
 
-/** One model call. `cost` is null when the CLI reported none. */
-export type Reply = { text: string; cost: number | null };
+/** One model call. `text` is null when the call gave no answer; `cost` is what it cost whatever the outcome, null when unknown. */
+export type Reply = { text: string | null; cost: number | null };
 export type Ask = {
   (id: "security.model", input: SecurityModelInput): Promise<Reply | null>;
   (id: "security.area", input: SecurityAreaInput): Promise<Reply | null>;
@@ -72,14 +72,23 @@ function realRefs(dir: string, refs: Candidate["refs"]): Candidate["refs"] {
   });
 }
 
-type Known = { fingerprint: string; refs: { path: string; line: number }[] };
+type Known = { number: number; state: string; fingerprint: string; sink: { path: string; line: number } | null; title: string };
 
-const fingerprintOf = (c: Candidate): string => `${c.refs[0]!.path}|${titleKey(c.title)}`;
+/** The primary location of a finding is its first ref: the line where the unsafe operation is (the prompt asks for it first). Other refs are entry points and checks that findings may share. */
+const fingerprintOf = (c: Candidate): string => `${c.refs[0]!.path}:${c.refs[0]!.line}|${titleKey(c.title)}`;
 
-/** A finding that matches an earlier one of the repository (any scan, any state): the same file and line, or the same title in the same file. */
-const isDuplicate = (known: Known[], c: Candidate): boolean => {
-  const fp = fingerprintOf(c);
-  return known.some((k) => k.fingerprint === fp || k.refs.some((r) => c.refs.some((x) => x.path === r.path && x.line === r.line)));
+const words = (t: string): Set<string> => new Set(titleKey(t).split(" ").filter((w) => w.length > 2));
+const similar = (a: string, b: string): boolean => {
+  const x = words(a), y = words(b);
+  const common = [...x].filter((w) => y.has(w)).length;
+  return common > 0 && common / (x.size + y.size - common) >= 0.5;
+};
+
+/** The earlier finding of the repository that `c` repeats: its exact fingerprint (a disproved finding suppresses only that), or the same sink file within a few lines and a similar title. */
+export const earlierFinding = (known: Known[], c: Candidate): Known | undefined => {
+  const fp = fingerprintOf(c), sink = c.refs[0]!;
+  return known.find((k) => k.fingerprint === fp)
+    ?? known.find((k) => k.state !== "disproved" && k.state !== "duplicate" && k.sink?.path === sink.path && Math.abs(k.sink.line - sink.line) <= 3 && similar(k.title, c.title));
 };
 
 class Capped extends Error {}
@@ -110,8 +119,9 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
       const id = Number(db.prepare("INSERT INTO security_calls (scan_id, kind, area_idx, finding_number, started_at) VALUES (?, ?, ?, ?, ?)").run(scanId, kind, meta.area ?? null, meta.finding ?? null, now()).lastInsertRowid);
       let reply: Reply | null = null;
       try { reply = await run(); } catch (e) { deps.log(`${kind} call failed: ${(e as Error).message}`.slice(0, 300)); }
-      const c = reply ? reply.cost ?? expected : 0;
-      const value = reply ? readReply(reply.text) : null;
+      // A call that answered without a reported cost counts as the expected cost; one that failed counts what it reported.
+      const c = reply ? reply.cost ?? (reply.text !== null ? expected : 0) : 0;
+      const value = reply?.text != null ? readReply(reply.text) : null;
       db.prepare("UPDATE security_calls SET ended_at = ?, ok = ?, cost_usd = ? WHERE id = ?").run(now(), value === null ? 0 : 1, reply ? c : null, id);
       db.prepare("UPDATE security_scans SET cost_usd = cost_usd + ? WHERE id = ?").run(c, scanId);
       if (meta.bill !== undefined) db.prepare("UPDATE security_areas SET cost_usd = cost_usd + ? WHERE scan_id = ? AND idx = ?").run(c, scanId, meta.bill);
@@ -121,16 +131,17 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
     return null;
   }
 
-  const fail = (msg: string): string => {
+  /** Ends the scan as failed and throws, so the job fails too. */
+  const fail = (msg: string): never => {
     finishScan(db, scanId, "failed", msg.slice(0, 500));
-    return `${repo}: scan ${scanId} failed: ${msg}`;
+    throw new Error(`${repo}: scan ${scanId} failed: ${msg}`);
   };
 
   try {
     const co = await deps.checkout(repo);
     if (!co) return fail("The repository could not be checked out for a read-only scan.");
     db.prepare("UPDATE security_scans SET commit_sha = ? WHERE id = ?").run(co.sha, scanId);
-    const base = { repo: SECURITY_REPO, number: scanId, project: repo, commit: co.sha } as const;
+    const base = { repo: securityRepo(repo), number: scanId, project: repo, commit: co.sha } as const;
 
     // ---- threat model ----
     setState("modeling");
@@ -152,10 +163,10 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
     db.prepare("UPDATE security_scans SET areas_total = ?, estimate_usd = ?, threat_model = ? WHERE id = ?")
       .run(areas.length, cost() + guesses.reduce((x, y) => x + y, 0), JSON.stringify({ summary: modeled.value.summary, entryPoints: modeled.value.entryPoints }), scanId);
 
-    const known: Known[] = (db.prepare("SELECT fingerprint, refs FROM security_findings WHERE repo = ?").all(repo) as { fingerprint: string; refs: string }[])
-      .map((r) => ({ fingerprint: r.fingerprint, refs: (JSON.parse(r.refs) as { path: string; line: number }[]) }));
-    const insFinding = db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, category, reach, impact, fingerprint, created_at, updated_at)
-      VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM security_findings WHERE repo = ?), ?, ?, ?, ?, ?, 'unverified', ?, ?, ?, ?, ?, ?, ?) RETURNING number`);
+    const known: Known[] = (db.prepare("SELECT number, state, fingerprint, title, refs FROM security_findings WHERE repo = ?").all(repo) as { number: number; state: string; fingerprint: string; title: string; refs: string }[])
+      .map((r) => ({ number: r.number, state: r.state, fingerprint: r.fingerprint, title: r.title, sink: (JSON.parse(r.refs) as { path: string; line: number }[])[0] ?? null }));
+    const insFinding = db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, category, reach, impact, fingerprint, created_at, updated_at, duplicate_of)
+      VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM security_findings WHERE repo = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING number`);
 
     // ---- areas ----
     for (const [idx, area] of areas.entries()) {
@@ -175,13 +186,15 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
         const fresh: { number: number; c: Candidate }[] = [];
         for (const c of found.value) {
           const refs = realRefs(co.dir, c.refs);
-          if (!refs.length) continue;
+          // The first ref is the sink: a finding whose sink is not a real line is dropped.
+          if (!refs.length || refs[0]!.path !== c.refs[0]!.path || refs[0]!.line !== c.refs[0]!.line) continue;
           const cand: Candidate = { ...c, refs };
-          if (isDuplicate(known, cand)) continue;
+          const earlier = earlierFinding(known, cand);
           const at = now();
-          const row = insFinding.get(repo, repo, scanId, area.name, cand.title, cand.severity, cand.urgent ? 1 : 0, JSON.stringify(cand.refs), cand.category, cand.reach, cand.impact, fingerprintOf(cand), at, at) as { number: number };
-          known.push({ fingerprint: fingerprintOf(cand), refs: cand.refs });
-          fresh.push({ number: row.number, c: cand });
+          // A repeat is kept as a hidden row that points at the earlier finding, which shows it in its timeline.
+          const row = insFinding.get(repo, repo, scanId, area.name, cand.title, cand.severity, cand.urgent ? 1 : 0, earlier ? "duplicate" : "unverified", JSON.stringify(cand.refs), cand.category, cand.reach, cand.impact, fingerprintOf(cand), at, at, earlier?.number ?? null) as { number: number };
+          known.push({ number: row.number, state: earlier ? "duplicate" : "unverified", fingerprint: fingerprintOf(cand), sink: cand.refs[0]!, title: cand.title });
+          if (!earlier) fresh.push({ number: row.number, c: cand });
         }
         // ---- verify ----
         for (const f of fresh) {

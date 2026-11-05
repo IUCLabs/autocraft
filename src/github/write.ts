@@ -5,7 +5,6 @@
 // guard ran right before. Transports (querier, exec, git, merge command) stay
 // injected so tests fake them and assert the rows.
 import type { DatabaseSync } from "node:sqlite";
-import { ORG } from "../act/templates.ts";
 import { connect } from "../db.ts";
 import { recordPush } from "../push-outcomes.ts";
 import type { Grant, Guarded, GuardedItem, GuardedRepo } from "../core/guard.ts";
@@ -17,6 +16,7 @@ export type CommentGrant = Guarded<AskKind> | GuardedItem | GuardedRepo;
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import type { Querier } from "../mirror.ts";
 import { type Note, withNote } from "./note.ts";
+import { slugOf, splitSlug } from "../owners.ts";
 
 export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
@@ -28,8 +28,8 @@ type Retry = <T>(f: () => Promise<T>) => Promise<T>;
 
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300);
 const direct: Retry = (f) => f();
-/** The repo as audit targets name it: bare for the organisation's repos, OWNER/REPO for any other owner. */
-const repoName = (slug: string): string => (slug.startsWith(`${ORG}/`) ? slug.slice(ORG.length + 1) : slug);
+/** The bare repo name of a `owner/repo` slug, as audit targets and items name it. */
+const repoName = (slug: string): string => splitSlug(slug).name;
 const refOf = (repo: string, number: number): string => `${repo}#${number}`;
 
 /** A grant covers writes to its own repo (and, for a PR or item grant, its own number); a write elsewhere is a bug. */
@@ -225,7 +225,7 @@ export function ghComment(w: Writer, g: CommentGrant, exec: Exec, action: string
   covers(g, o.repo, o.number);
   const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body },
-    [o.pr ? "pr" : "issue", "comment", String(o.number), "--repo", `${ORG}/${o.repo}`, "--body-file", "-"], body);
+    [o.pr ? "pr" : "issue", "comment", String(o.number), "--repo", `${slugOf(o.repo)}`, "--body-file", "-"], body);
 }
 
 /** Replaces the body of a comment we posted (`commentId` is the number in its `#issuecomment-` URL). */
@@ -233,7 +233,7 @@ export function ghEditComment(w: Writer, g: CommentGrant, exec: Exec, action: st
   covers(g, o.repo, o.number);
   const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body, comment: o.commentId },
-    ["api", "-X", "PATCH", `repos/${ORG}/${o.repo}/issues/comments/${o.commentId}`, "-F", "body=@-"], body);
+    ["api", "-X", "PATCH", `repos/${slugOf(o.repo)}/issues/comments/${o.commentId}`, "-F", "body=@-"], body);
 }
 
 /**
@@ -242,7 +242,7 @@ export function ghEditComment(w: Writer, g: CommentGrant, exec: Exec, action: st
  */
 export function ghDeleteComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string; login: string }, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
-  const path = `repos/${ORG}/${o.repo}/issues/comments/${o.commentId}`;
+  const path = `repos/${slugOf(o.repo)}/issues/comments/${o.commentId}`;
   const gone = (r: ExecResult): boolean => r.code !== 0 && /404|not found/i.test(`${r.stderr} ${r.stdout}`);
   const goneResult: ExecResult = { code: 0, stdout: "gone", stderr: "" };
   return recorded(w, action, refOf(o.repo, o.number), { ...details, comment: o.commentId },
@@ -262,20 +262,20 @@ export function ghOpenPr(w: Writer, g: Grant, exec: Exec, action: string, o: { r
   covers(g, o.repo);
   const body = withNote(note, o.body);
   return viaGh(w, exec, action, o.target, { ...details, text: body },
-    ["pr", "create", "--repo", `${ORG}/${o.repo}`, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], body);
+    ["pr", "create", "--repo", `${slugOf(o.repo)}`, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], body);
 }
 
 export function ghClosePr(w: Writer, g: Grant, exec: Exec, o: { repo: string; number: number }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
   const comment = withNote(note, text);
   return viaGh(w, exec, "batch-pr-close", refOf(o.repo, o.number), { ...details, text: comment },
-    ["pr", "close", String(o.number), "--repo", `${ORG}/${o.repo}`, "--comment", comment]);
+    ["pr", "close", String(o.number), "--repo", `${slugOf(o.repo)}`, "--comment", comment]);
 }
 
 /** Creates the pipeline account's fork of `repo` when it has none. */
 export function ghFork(w: Writer, g: GuardedRepo, exec: Exec, repo: string, details: Details = {}): Promise<ExecResult> {
   covers(g, repo);
-  return viaGh(w, exec, "fork-create", repo, details, ["repo", "fork", `${ORG}/${repo}`, "--clone=false"]);
+  return viaGh(w, exec, "fork-create", repo, details, ["repo", "fork", `${slugOf(repo)}`, "--clone=false"]);
 }
 
 /** `clear`: GitHub refused the request, so no issue can exist. Otherwise the outcome is unknown (a timeout, a lost response, a success without a URL). */
@@ -297,7 +297,7 @@ export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: st
   let r: ExecResult;
   try {
     r = await viaGh(w, exec, o.action ?? "postmerge-file", o.target, { ...details, title: o.title, text: body },
-      ["issue", "create", "--repo", `${ORG}/${o.repo}`, "--title", o.title, "--body-file", "-"], body);
+      ["issue", "create", "--repo", `${slugOf(o.repo)}`, "--title", o.title, "--body-file", "-"], body);
   } catch (e) {
     // exec rejects only when the command could not be started.
     throw new IssueError(oneLine(String((e as Error).message ?? e)), true);
@@ -311,20 +311,20 @@ export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: st
 /** Approves one Actions run that waits for a maintainer's approval (a run from an outside contributor's PR). */
 export function ghApproveRun(w: Writer, exec: Exec, g: Guarded<"approve-ci">, runId: number, details: Details = {}): Promise<ExecResult> {
   return viaGh(w, exec, "ci-run-approve", refOf(g.repo, g.number), { ...details, run: runId },
-    ["api", "-X", "POST", `repos/${ORG}/${g.repo}/actions/runs/${runId}/approve`]);
+    ["api", "-X", "POST", `repos/${slugOf(g.repo)}/actions/runs/${runId}/approve`]);
 }
 
 /** Reruns the failed jobs of one Actions run of a PR's head commit. */
 export function ghRerunFailed(w: Writer, exec: Exec, g: Guarded<"cifix">, runId: number, details: Details = {}): Promise<ExecResult> {
   return viaGh(w, exec, "ci-rerun", refOf(g.repo, g.number), { ...details, run: runId },
-    ["run", "rerun", String(runId), "--failed", "--repo", `${ORG}/${g.repo}`]);
+    ["run", "rerun", String(runId), "--failed", "--repo", `${slugOf(g.repo)}`]);
 }
 
 /** Reruns the failed jobs of one Actions run on a default-branch head. It belongs to no item: the audit target names the repo and the commit. */
 export function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { repo: string; head: string; runId: number }, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo);
   return viaGh(w, exec, "ci-rerun", `${o.repo}:${o.head.slice(0, 8)}`, { ...details, run: o.runId },
-    ["run", "rerun", String(o.runId), "--failed", "--repo", `${ORG}/${o.repo}`]);
+    ["run", "rerun", String(o.runId), "--failed", "--repo", `${slugOf(o.repo)}`]);
 }
 
 // ---- git pushes ---------------------------------------------------------------
@@ -368,7 +368,7 @@ export const MERGE_RECORDED_ENV = "AUTOCRAFT_MERGE_RECORDED";
  * differs from that head. Every merge command, the built-in safe-merge and any `$AUTOCRAFT_MERGE_CMD`, takes `--head` as part of this contract.
  */
 export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[]) => Promise<CommandResult>, cmd: string, g: Guarded<"merge">, o: { method: "squash" | "merge"; extra?: string[] }, details: Details = {}, landed?: () => Promise<boolean>): Promise<CommandResult> {
-  const args = [`${ORG}/${g.repo}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), "--head", g.head];
+  const args = [`${slugOf(g.repo)}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), "--head", g.head];
   const repo = g.repo;
   const method: string = o.method;
   const base = { ...details, method };

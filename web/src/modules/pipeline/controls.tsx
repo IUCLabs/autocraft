@@ -12,7 +12,7 @@ import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { Select } from "../../ui/atoms/Select";
 import { ItemRef } from "../../ui/molecules/ItemRef";
-import { GITHUB_ORG } from "../../lib/links";
+import { repoSlug } from "../../lib/links";
 import { Block, ConfirmButton, ErrorLine, TextInput, useWrite } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
 
@@ -232,7 +232,7 @@ const pilotCount = (pilot: string[]) => {
   return [repos && plural(repos, "repo"), items && plural(items, "item")].filter(Boolean).join(", ");
 };
 
-const repoUrl = (repo: string) => `https://github.com/${GITHUB_ORG}/${repo}`;
+const repoUrl = (repo: string) => `https://github.com/${repoSlug(repo)}`;
 
 /** The items the pipeline is limited to, with links; operators set or clear the list. Nothing shows when there is no pilot and the viewer is no operator. */
 export function PilotPanel({ className }: { className?: string }) {

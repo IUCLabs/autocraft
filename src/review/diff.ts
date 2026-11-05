@@ -6,8 +6,8 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { envVar } from "../env.ts";
+import { slugOf } from "../owners.ts";
 
-const ORG = "storytold";
 // gh picks its account from the working directory, so it runs in this repo.
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -19,7 +19,7 @@ export type DiffResult = { ok: true; text: string } | { ok: false; tooLarge: boo
 export type DiffFetcher = (repo: string, number: number) => Promise<DiffResult>;
 
 export const ghDiff: DiffFetcher = (repo, number) => new Promise((resolve) => {
-  const p = spawn("gh", ["pr", "diff", String(number), "--repo", `${ORG}/${repo}`], { cwd: REPO_DIR, timeout: 120_000 });
+  const p = spawn("gh", ["pr", "diff", String(number), "--repo", `${slugOf(repo)}`], { cwd: REPO_DIR, timeout: 120_000 });
   const out: Buffer[] = [];
   let err = "";
   p.stdout.on("data", (d: Buffer) => out.push(d));
@@ -112,7 +112,7 @@ function gh(args: string[]): Promise<{ code: number | null; out: string; err: st
 
 /** GitHub's compare of base...head; fails unless head is ahead of base (so base is an ancestor). */
 export const ghDelta: DeltaFetcher = async (repo, base, head) => {
-  const path = `repos/${ORG}/${repo}/compare/${base}...${head}`;
+  const path = `repos/${slugOf(repo)}/compare/${base}...${head}`;
   const status = await gh(["api", path, "--jq", ".status"]);
   if (status.code !== 0) return { ok: false, tooLarge: false, error: status.err.trim().slice(0, 300) };
   if (status.out.trim() !== "ahead") return { ok: false, tooLarge: false, error: `compare status ${status.out.trim()}` };
@@ -135,11 +135,11 @@ export const ghMerged: MergedFetcher = async (repo, number, opts = {}) => {
   const own = await ghDiff(repo, number);
   if (!own.ok) return own;
   if (opts.batch) return { ok: true, sha: null, text: own.text };
-  const view = await gh(["pr", "view", String(number), "--repo", `${ORG}/${repo}`, "--json", "mergeCommit", "--jq", ".mergeCommit.oid // empty"]);
+  const view = await gh(["pr", "view", String(number), "--repo", `${slugOf(repo)}`, "--json", "mergeCommit", "--jq", ".mergeCommit.oid // empty"]);
   const sha = view.code === 0 && /^[0-9a-f]{40}$/.test(view.out.trim()) ? view.out.trim() : null;
   const fallback: MergedDiff = { ok: true, sha, text: own.text };
   if (!sha) return fallback;
-  const c = await gh(["api", "-H", "Accept: application/vnd.github.diff", `repos/${ORG}/${repo}/commits/${sha}`]);
+  const c = await gh(["api", "-H", "Accept: application/vnd.github.diff", `repos/${slugOf(repo)}/commits/${sha}`]);
   if (c.code !== 0) return fallback;
   const keep = new Set(splitDiff(own.text).map((f) => f.path));
   const text = splitDiff(c.out).filter((f) => keep.has(f.path)).map((f) => f.text).join("");
@@ -150,7 +150,7 @@ export const ghMerged: MergedFetcher = async (repo, number, opts = {}) => {
 export type FileChecker = (repo: string, ref: string, path: string) => Promise<boolean | null>;
 
 export const ghFileExists: FileChecker = async (repo, ref, path) => {
-  const r = await gh(["api", `repos/${ORG}/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`, "--jq", ".type"]);
+  const r = await gh(["api", `repos/${slugOf(repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`, "--jq", ".type"]);
   if (r.code === 0) return r.out.trim().length > 0;
   return /\b404\b|Not Found/i.test(r.err) ? false : null;
 };

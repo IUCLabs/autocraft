@@ -15,7 +15,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { blankIfHidden, hiddenRepos, visibleRepos } from "./visible.ts";
 import { canSeeInternals } from "./staff.ts";
-import { SECURITY_REPO, SECURITY_STEP } from "../../security/rules.ts";
+import { SECURITY_STEP } from "../../security/rules.ts";
 
 // Stages of docs/pipeline.md. A stage with registered steps shows them; the
 // mirror also runs on its own timer.
@@ -65,8 +65,8 @@ function wireParams(s: StepDef, repos: string[]): StepParam[] {
   });
 }
 
-const lastJob = (db: DatabaseSync, step: string, view: (j: Job) => Job): Job | null => {
-  const r = db.prepare("SELECT * FROM jobs WHERE step = ? ORDER BY id DESC LIMIT 1").get(step);
+const lastJob = (db: DatabaseSync, step: string, view: (j: Job) => Job, hidden: string[]): Job | null => {
+  const r = db.prepare(`SELECT * FROM jobs WHERE step = ?${hidden.length ? ` AND (repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))` : ""} ORDER BY id DESC LIMIT 1`).get(step, ...hidden);
   return r ? view(toJobs(db, [r as Parameters<typeof toJob>[0]])[0]!) : null;
 };
 
@@ -86,10 +86,11 @@ function stageState(db: DatabaseSync, steps: string[], syncFailed: boolean | nul
 export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOverview> {
   const all = [...(await loadSteps()).values()].filter((s) => s.name !== SECURITY_STEP || canSeeInternals(req));
   const repos = await visibleRepos(db, req);
+  const hidden = await hiddenRepos(db, req);
   const steps: PipelineStep[] = all.map((s) => ({
     name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires, group: s.group,
     params: wireParams(s, repos), unavailable: s.available?.() ?? null,
-    lastJob: lastJob(db, s.name, forViewer(req)),
+    lastJob: lastJob(db, s.name, forViewer(req), hidden),
   }));
   const runs = db.prepare("SELECT started_at AS startedAt, ended_at AS endedAt, mode, items, error FROM sync_runs ORDER BY started_at DESC LIMIT 10").all() as unknown as SyncRun[];
   const lastSync = runs.find((r) => r.endedAt);
@@ -103,7 +104,7 @@ export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOver
     };
   });
   const beat = (db.prepare("SELECT value FROM settings WHERE key = ?").get(HEARTBEAT_KEY) as { value: string } | undefined)?.value ?? null;
-  const count = (state: string) => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = ? AND (repo IS NULL OR repo != ? OR ?)").get(state, SECURITY_REPO, canSeeInternals(req) ? 1 : 0) as { n: number }).n;
+  const count = (state: string) => (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state = ?${hidden.length ? ` AND (repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))` : ""}`).get(state, ...hidden) as { n: number }).n;
   return {
     stages, steps,
     runner: { lastSeen: beat, alive: beat !== null && Date.now() - Date.parse(beat) < RUNNER_ALIVE_MS },

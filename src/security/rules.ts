@@ -3,7 +3,8 @@
 import type { FindingSeverity } from "../../web/src/api/types.ts";
 
 /** The repo name under which the scan's agent runs and job are recorded. It is never a tracked repo, so every listing that leaves out the repos a viewer may not see also leaves out the scan's runs. */
-export const SECURITY_REPO = "(security)";
+export const SECURITY_PREFIX = "(security):";
+export const securityRepo = (repo: string): string => `${SECURITY_PREFIX}${repo}`;
 export const SECURITY_STEP = "security-scan";
 
 export const SEVERITIES: FindingSeverity[] = ["critical", "high", "medium", "low"];
@@ -29,7 +30,7 @@ export type Candidate = { title: string; severity: FindingSeverity; urgent: bool
 export type VerifyVerdict = { verdict: "confirmed" | "disproved"; score: number; result: string; notes: string; proposedTest: string | null };
 
 /** What each security prompt is rendered from. `repo` and `number` carry the scan's pseudo repo and the scan id, so the agent run lists the scan, never a real item. */
-type Base = { repo: typeof SECURITY_REPO; number: number; project: string; commit: string; repo_dir?: string };
+type Base = { repo: string; number: number; project: string; commit: string; repo_dir?: string };
 export type SecurityModelInput = Base;
 export type SecurityAreaInput = Base & { area: { name: string; paths: string[]; why: string }; entry_points: EntryPoint[]; summary: string };
 export type SecurityVerifyInput = Base & { finding: Candidate & { area: string } };
@@ -51,10 +52,9 @@ export function jsonObject(text: string): Record<string, unknown> | null {
 /** A repository-relative path, or null: the sandbox's /repo prefix is dropped; absolute, parent and empty segments are refused. */
 export function relPath(p: unknown): string | null {
   if (typeof p !== "string") return null;
-  let s = p.trim().replace(/^\/repo\//, "").replace(/^\.\//, "").replace(/\/+$/, "");
+  let s = p.trim().replace(/\\/g, "/").replace(/^\/repo\//, "").replace(/^\.\//, "").replace(/\/+$/, "");
   if (!s || s.length > 300 || s.startsWith("/") || s.includes("\0")) return null;
   if (s.split("/").some((c) => c === "" || c === "..")) return null;
-  s = s.replace(/\\/g, "/");
   return s;
 }
 
@@ -114,7 +114,7 @@ export function parseCandidates(text: string): Candidate[] | null {
 export function parseVerdict(text: string): VerifyVerdict | null {
   const o = jsonObject(text);
   if (!o || (o.verdict !== "confirmed" && o.verdict !== "disproved")) return null;
-  const score = typeof o.score === "number" && Number.isFinite(o.score) ? Math.min(10, Math.max(1, Math.round(o.score))) : null;
+  const score = typeof o.score === "number" && Number.isFinite(o.score) ? Math.min(10, Math.max(1, Math.floor(o.score))) : null;
   const result = str(o.result, TEXT_MAX);
   if (score === null || !result) return null;
   return { verdict: o.verdict, score, result, notes: str(o.notes, TEXT_MAX) ?? "", proposedTest: str(o.proposed_test, TEXT_MAX) };

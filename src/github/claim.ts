@@ -3,8 +3,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import type { Grant } from "../core/guard.ts";
-import { ORG } from "../act/templates.ts";
 import { assignTo, unassignFrom, type Writer } from "./write.ts";
+import { ownerOf } from "../owners.ts";
 
 export type Me = { id: string; login: string };
 export type Assignable = { id: string; state: string; assignees: string[] };
@@ -37,7 +37,7 @@ export function weAssigned(db: DatabaseSync, repo: string, number: number, login
 export async function claimForWork(w: Writer, g: Grant, q: Querier, repo: string, number: number, kind: "pr" | "issue", who: Me | (() => Promise<Me>), details: Record<string, unknown> = {}, log: (line: string) => void = () => {}): Promise<boolean> {
   try {
     const me = typeof who === "function" ? await who() : who;
-    const info = await (kind === "pr" ? pullRequestInfo(q, ORG, repo, number) : issueInfo(q, ORG, repo, number));
+    const info = await (kind === "pr" ? pullRequestInfo(q, ownerOf(repo), repo, number) : issueInfo(q, ownerOf(repo), repo, number));
     if (!info || weAssigned(w.db, repo, number, me.login) || !(await claimItem(w, g, q, repo, number, info, me, details))) return false;
     log(`  ${repo}#${number}: assigned to ${me.login}`);
     return true;

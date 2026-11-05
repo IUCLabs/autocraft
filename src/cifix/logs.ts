@@ -1,8 +1,8 @@
 // Reads why a head's CI failed. Read-only: two `gh` calls per failed run, no write wrapper. The text is the
 // PR's own CI output, so it is untrusted data wherever it goes next (a prompt frames it as such).
-import { ORG } from "../act/templates.ts";
 import type { Gh } from "../merge/safe-merge.ts";
 import type { CiFailure, FailedCheck, FailedStep } from "./types.ts";
+import { slugOf } from "../owners.ts";
 
 /** Characters kept from the end of one failed step's log, per check, and in all. */
 export const STEP_TAIL = 4000;
@@ -55,7 +55,7 @@ export type Reading = { kind: "failure"; failure: CiFailure } | { kind: "skip"; 
  * or an action_required run failed it), or whose gate checks all passed, is skipped: there is nothing here to fix.
  */
 export async function readFailure(gh: Gh, repo: string, head: string, optional: string[] = []): Promise<Reading> {
-  const { runs, gatePassed } = failedRuns(JSON.parse(await gh(["api", `repos/${ORG}/${repo}/commits/${head}/check-runs?per_page=100`])) as CheckRuns, optional);
+  const { runs, gatePassed } = failedRuns(JSON.parse(await gh(["api", `repos/${slugOf(repo)}/commits/${head}/check-runs?per_page=100`])) as CheckRuns, optional);
   if (gatePassed) return { kind: "skip", why: "the gate checks passed; only an optional check failed" };
   if (!runs.length) return { kind: "skip", why: "no failed check run at the head (a commit status or a run waiting for approval failed)" };
   const logs = new Map<number, FailedStep[]>();
@@ -65,7 +65,7 @@ export async function readFailure(gh: Gh, repo: string, head: string, optional: 
     let steps: FailedStep[] = [];
     if (r.runId !== null && r.conclusion === "failure") {
       if (!logs.has(r.runId)) {
-        try { logs.set(r.runId, parseFailedLog(await gh(["run", "view", String(r.runId), "--repo", `${ORG}/${repo}`, "--log-failed"]))); }
+        try { logs.set(r.runId, parseFailedLog(await gh(["run", "view", String(r.runId), "--repo", `${slugOf(repo)}`, "--log-failed"]))); }
         catch { logs.set(r.runId, []); }
       }
       // A run holds several checks (jobs); a step belongs to the check whose name ends with its job's name.

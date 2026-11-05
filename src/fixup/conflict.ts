@@ -22,8 +22,9 @@ import type { Git } from "./git.ts";
 import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger } from "../prepush/resume.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
 import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
-import { BASE_ORG, longLivedOf, pushable } from "./pushable.ts";
+import { longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentCount, conflictCommentText, mergeMessage } from "./template.ts";
+import { ownerOf } from "../owners.ts";
 
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
 const CONFLICT = CLAUDE_PROMPTS["fixup.conflict"];
@@ -81,7 +82,7 @@ function record(db: DatabaseSync, at: string, c: ConflictCandidate, state: strin
 }
 
 async function live(db: DatabaseSync, x: ConflictRun, c: ConflictCandidate): Promise<PrNode | null> {
-  const r = await x.d.querier.query(x.prQuery, { name: x.repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+  const r = await x.d.querier.query(x.prQuery, { owner: ownerOf(x.repo), name: x.repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
   const pr = r.repository?.pullRequest;
   noteLive(db, x.repo, c.number, pr, x.at());
   if (!pr || pr.state !== "OPEN" || pr.isDraft) { x.log(`  ${refOf(c)}: skipped: no longer an open, non-draft PR`); return null; }
@@ -102,7 +103,7 @@ const NEWEST_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
  */
 export async function newestOwnComment(querier: { query(q: string, v: object): Promise<unknown> }, login: string, repo: string, number: number): Promise<{ id: string; body: string } | null> {
   try {
-    const r = await querier.query(NEWEST_QUERY, { owner: BASE_ORG, name: repo, n: number }) as { repository?: { pullRequest?: {
+    const r = await querier.query(NEWEST_QUERY, { owner: ownerOf(repo), name: repo, n: number }) as { repository?: { pullRequest?: {
       comments?: { nodes?: { databaseId: number; body: string; createdAt: string; author: { login: string } | null }[] };
       reviews?: { nodes?: { submittedAt: string | null }[] };
     } | null } };
@@ -173,9 +174,9 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, x.repo), !!pr.headRef?.branchProtectionRule)) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
     x.onHandled?.(++x.handled.n);
     const git = x.git();
-    const head = await git.fetchPr(BASE_ORG, x.repo, c.number);
+    const head = await git.fetchPr(ownerOf(x.repo), x.repo, c.number);
     if (head !== c.head) { x.log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); return; }
-    baseSha = c.lint ? c.lint.baseSha : await git.fetchBase(BASE_ORG, x.repo, c.base);
+    baseSha = c.lint ? c.lint.baseSha : await git.fetchBase(ownerOf(x.repo), x.repo, c.base);
     if (c.lint && (await git.git(["cat-file", "-e", `${baseSha}^{commit}`])).code !== 0) { fail("failed", "the base commit of the stored resolution is no longer in the cache"); return; }
     if ((await git.git(["merge-base", "--is-ancestor", baseSha, head])).code === 0) { skip(`${c.base} is already in the branch`); return; }
     const who = await x.who();

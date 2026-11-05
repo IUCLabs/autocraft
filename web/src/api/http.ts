@@ -108,6 +108,7 @@ export function createHttpApi(): Api {
   return {
     me: () => get("/api/me"),
     repos: () => get("/api/repos"),
+    repoOwners: () => get("/api/repos/owners"),
     decisions: {
       list: (filter) => get(`/api/decisions${query(filter)}`),
       get: (id) => get(dec(id)),

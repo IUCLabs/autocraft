@@ -10,7 +10,7 @@ import type {
   CiState, DecisionKind, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemPremerge, ItemReviews, ItemState, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
-import { excludeHidden, hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { excludeHidden, hiddenRepos, needVisible, repoOwners, visibleRepos } from "./visible.ts";
 import { withoutHidden } from "./decisions.ts";
 import { contributors } from "../../whitelist.ts";
 import { CLOSED_ITEMS, TRACKED, doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
@@ -359,6 +359,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
   return [
     get("/api/me", me),
     get("/api/repos", visibleRepos),
+    get("/api/repos/owners", repoOwners),
     get("/api/decisions", (db, req) => dec.listDecisions(db, req, () => writeRepos(db, req))),
     get("/api/decisions/:id", dec.getOne),
     get("/api/decisions/:id/thread", dec.thread),

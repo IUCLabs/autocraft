@@ -14,6 +14,7 @@ import { AppShell } from "./shell/AppShell";
 import { initTheme } from "./shell/theme";
 import { modules } from "./registry";
 import { preloadAll, preloadRoute } from "./registry/lazyView";
+import { setRepoOwners } from "./lib/links";
 
 initTheme();
 // The page's own chunks load beside the sign-in request, not after it.
@@ -36,8 +37,11 @@ function App({ api }: { api: Api }) {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => void api.me().then(setUser, (e: Error) => setError(e.message)), [api]);
+  // Links read the owners when they render, so the app waits for them (a failed read leaves storytold's default).
+  const [ownersLoaded, setOwnersLoaded] = useState(false);
+  useEffect(() => void api.repoOwners().then(setRepoOwners, () => {}).finally(() => setOwnersLoaded(true)), [api]);
   if (error) return <div className="p-8 text-ink/60">The dashboard could not load: {error}</div>;
-  if (!user) return null;
+  if (!user || !ownersLoaded) return null;
   return (
     <ApiContext.Provider value={api}>
       <QueryClientProvider client={queryClient}>

@@ -6,7 +6,7 @@ import { setPushApproval } from "../src/fixup/approval.ts";
 import { gates } from "../src/core/gates.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { guard, guardBatchMerge, guardItem, guardRepo, type Live, type LiveRead } from "../src/core/guard.ts";
-import { ORG } from "../src/act/templates.ts";
+import { slugOf } from "../src/owners.ts";
 import { closeItem, mergeViaCommand } from "../src/github/write.ts";
 import { G } from "./guarded.ts";
 import { mergeDecisionId } from "../src/merge/queue.ts";
@@ -103,7 +103,7 @@ test("the merge command gets the reviewed head, and the built-in command refuses
   const seen: string[][] = [];
   await mergeViaCommand({ db: fresh([{ n: 1 }]), login: "t" }, async (_c, args) => { seen.push(args); return { code: 0, stdout: "", stderr: "" }; }, "safe-merge",
     g as Exclude<typeof g, { refused: string }>, { method: "squash" });
-  assert.deepEqual(seen[0], [`${ORG}/app`, "1", "--squash", "--head", "sha1"]);
+  assert.deepEqual(seen[0], [slugOf("app"), "1", "--squash", "--head", "sha1"]);
   assert.equal(parseSafeMergeArgs(seen[0]!)?.head, "sha1");
   const gh = async () => JSON.stringify({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", headRefOid: "other0000", statusCheckRollup: [] });
   const r = await safeMerge("o/r", "1", "--squash", [], [], gh, async () => {}, false, "sha1");

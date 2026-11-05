@@ -10,6 +10,7 @@ import type { Req } from "../types.ts";
 import { itemState } from "./shown.ts";
 import { canSeeInternals } from "./staff.ts";
 import { needVisible } from "./visible.ts";
+import { ownerOf } from "../../owners.ts";
 
 type AuditRow = { rowid: number; at: string; login: string; action: string; target: string | null; details: string | null };
 
@@ -30,7 +31,7 @@ function ciOf(db: DatabaseSync, repo: string, prNumber: number | null): BatchCi 
   if (!r) return null;
   let list: unknown = [];
   try { list = JSON.parse(r.checks); } catch { /* malformed: no checks */ }
-  const url = `https://github.com/storytold/${encodeURIComponent(repo)}/pull/${prNumber}/checks`;
+  const url = `https://github.com/${ownerOf(repo)}/${encodeURIComponent(repo)}/pull/${prNumber}/checks`;
   const checks = (Array.isArray(list) ? (list as ({ name?: unknown; state?: unknown } | null)[]) : []).flatMap((c) =>
     c && typeof c.name === "string" && typeof c.state === "string" && CHECK_STATES.has(c.state) ? [{ name: c.name, state: c.state as BatchCi["checks"][number]["state"], url }] : []);
   const state = (["success", "failure", "pending", "none"] as const).find((s) => s === r.overall) ?? "none";

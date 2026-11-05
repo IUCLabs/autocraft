@@ -5,9 +5,10 @@
 // Every query that spans repos must go through this.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { trackedNames } from "../../repos.ts";
+import { DEFAULT_OWNER, ownerOf } from "../../owners.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, User } from "../types.ts";
-import { SECURITY_REPO } from "../../security/rules.ts";
+import { securityRepo } from "../../security/rules.ts";
 import { canSeeInternals } from "./staff.ts";
 
 const memo = new WeakMap<Req, Promise<string[]>>();
@@ -30,15 +31,24 @@ export function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   return p;
 }
 
+/** Owner of each visible repo that is not storytold's; the web app builds GitHub links from it. */
+export async function repoOwners(db: DatabaseSync, req: Req): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const r of await visibleRepos(db, req)) if (ownerOf(r) !== DEFAULT_OWNER) out[r] = ownerOf(r);
+  return out;
+}
+
 /**
- * Tracked repos the requester may not see (empty for operators and when every repo is public). Viewers also get the
- * security scan's pseudo repo: the scan's jobs and agent runs are recorded under it, so every listing that leaves out
- * hidden repos leaves them out for viewers.
+ * Tracked repos the requester may not see (empty for operators and when every repo is public). The pseudo repo of a
+ * repo's security scans (`(security):<repo>`, where its jobs and agent runs are recorded) is hidden from viewers and
+ * from maintainers who cannot see the repo, so every listing that leaves out hidden repos leaves the scans out too.
  */
 export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   const visible = new Set(await visibleRepos(db, req));
-  const hidden = trackedNames(db).filter((r) => !visible.has(r));
-  return canSeeInternals(req) ? hidden : [...hidden, SECURITY_REPO];
+  const tracked = trackedNames(db);
+  const staff = canSeeInternals(req);
+  const hidden = tracked.filter((r) => !visible.has(r));
+  return [...hidden, ...tracked.filter((r) => !staff || !visible.has(r)).map(securityRepo)];
 }
 
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */

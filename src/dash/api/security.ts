@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { FindingAction, FindingView, ScanView, SecurityOverview } from "../../../web/src/api/types.ts";
 import { audit } from "../audit.ts";
 import { enqueue, JobError, requestCancel } from "../../runner/jobs.ts";
-import { SECURITY_REPO, SECURITY_STEP, REASON_MAX } from "../../security/rules.ts";
+import { securityRepo, SECURITY_STEP, REASON_MAX } from "../../security/rules.ts";
 import { activeScan, ACTIVE_STATES, finishScan, findingKey, findingRow, moveFinding, overview, reconcileScans, scanRow, toFinding, toScan } from "../../security/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -60,14 +60,14 @@ export async function startScan(db: DatabaseSync, req: Req): Promise<ScanView> {
   try {
     const job = await enqueue(db, SECURITY_STEP, { repo, scan: id }, req.user.login);
     // The job is recorded under the scan's pseudo repo, so every job listing that leaves out hidden repos leaves it out for viewers.
-    db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(SECURITY_REPO, job.id);
+    db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(repo), job.id);
     db.prepare("UPDATE security_scans SET job_id = ? WHERE id = ?").run(job.id, id);
   } catch (e) {
     db.prepare("DELETE FROM security_scans WHERE id = ?").run(id);
     if (e instanceof JobError) throw new HttpError(e.status, e.message);
     throw e;
   }
-  audit(db, req.user.login, "security-scan-start", `scan:${id}`, { repo, capUsd: cap });
+  audit(db, req.user.login, "security-scan-start", `${repo}:scan:${id}`, { repo, capUsd: cap });
   return toScan(db, scanRow(db, id)!);
 }
 
@@ -82,7 +82,7 @@ export function stopScan(db: DatabaseSync, req: Req): ScanView {
     try { requestCancel(db, scan.job_id, req.user.login); } catch (e) { if (!(e instanceof JobError)) throw e; }
   }
   finishScan(db, id, "stopped");
-  audit(db, req.user.login, "security-scan-stop", `scan:${id}`, { repo: scan.repo, was: scan.state });
+  audit(db, req.user.login, "security-scan-stop", `${scan.repo}:scan:${id}`, { repo: scan.repo, was: scan.state });
   return toScan(db, scanRow(db, id)!);
 }
 

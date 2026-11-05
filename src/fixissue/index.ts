@@ -55,10 +55,10 @@ import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, M
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf, slugOf } from "../owners.ts";
 
 export { type IssueCandidate } from "./candidates.ts";
 
-const ORG = "storytold";
 const ACTOR = "fixissue";
 const MAX_UNCLAIM_TRIES = 3;
 const TRIAGE = CLAUDE_PROMPTS["fixissue.triage"];
@@ -98,14 +98,14 @@ async function shaOf(path: string): Promise<string | null> {
 
 export const ghPaths: FixIssueDeps["fetchPaths"] = async (repo, sha) => {
   try {
-    return JSON.parse(await ghApi(`repos/${ORG}/${repo}/git/trees/${sha}?recursive=1`, "[.tree[] | select(.type == \"blob\") | .path]")) as string[];
+    return JSON.parse(await ghApi(`repos/${slugOf(repo)}/git/trees/${sha}?recursive=1`, "[.tree[] | select(.type == \"blob\") | .path]")) as string[];
   } catch { return null; }
 };
 
 export function defaultDeps(): FixIssueDeps {
   return {
     exec, now: () => new Date(), root: fixupDir(), querier: new Client(500), fetchCrates: ghCrates, fetchPaths: ghPaths,
-    mainHead: (repo, branch) => shaOf(`repos/${ORG}/${repo}/commits/${encodeURIComponent(branch)}`),
+    mainHead: (repo, branch) => shaOf(`repos/${slugOf(repo)}/commits/${encodeURIComponent(branch)}`),
     checkout: (repo, branch, sha) => checkoutForCommit(repo, branch, sha, console.log),
     ask: async (db, id, input, runId, checkout, tool) => {
       // One call: the caller reads the reply itself.
@@ -284,7 +284,7 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
   if (!q) return;
   const ref = refOf(c);
   try {
-    const info = await issueInfo(q, ORG, c.repo, c.number);
+    const info = await issueInfo(q, ownerOf(c.repo), c.repo, c.number);
     if (!info || info.state !== "OPEN") return;
     const me = await viewerOf(q);
     const w: Writer = { db, login: ACTOR };
@@ -350,7 +350,7 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
   const testPath = regressionPath(r.crate_dir!);
   const row = attemptOf(db, r.repo, r.number)!;
   try {
-    if (!(await git.fetchBranch(ORG, r.repo, branchOf(db, r.repo), r.main_sha))) { fail(db, d, row, "the base commit is no longer in the repository"); return false; }
+    if (!(await git.fetchBranch(ownerOf(r.repo), r.repo, branchOf(db, r.repo), r.main_sha))) { fail(db, d, row, "the base commit is no longer in the repository"); return false; }
   } catch (e) {
     log(`  ${ref}: fetch failed: ${oneLine(String((e as Error).message ?? e))}`);
     return false;
@@ -565,11 +565,11 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
 /** The pipeline account's fork of the repo as owner/name, created when missing. */
 export async function forkOf(w: Writer, g: GuardedRepo, run: Exec, login: string, repo: string, details: Record<string, unknown> = {}): Promise<string> {
   const find = async (): Promise<string | null> => {
-    const r = await run("gh", ["api", `repos/${ORG}/${repo}/forks?per_page=100`, "--jq", `.[] | select(.owner.login == "${login}") | .full_name`]);
+    const r = await run("gh", ["api", `repos/${slugOf(repo)}/forks?per_page=100`, "--jq", `.[] | select(.owner.login == "${login}") | .full_name`]);
     return r.code === 0 ? r.stdout.trim().split("\n")[0] || null : null;
   };
   const same = await run("gh", ["api", `repos/${login}/${repo}`, "--jq", ".parent.full_name"]);
-  if (same.code === 0 && same.stdout.trim() === `${ORG}/${repo}`) return `${login}/${repo}`;
+  if (same.code === 0 && same.stdout.trim() === `${slugOf(repo)}`) return `${login}/${repo}`;
   const known = await find();
   if (known) return known;
   const f = await ghFork(w, g, run, repo, details);
@@ -579,11 +579,11 @@ export async function forkOf(w: Writer, g: GuardedRepo, run: Exec, login: string
   return made;
 }
 
-const urlOk = (url: string, repo: string): boolean => new RegExp(`^https://github\\.com/${ORG}/${repo}/pull/\\d+$`).test(url);
+const urlOk = (url: string, repo: string): boolean => new RegExp(`^https://github\\.com/${slugOf(repo)}/pull/\\d+$`).test(url);
 
 /** The issue's state on GitHub now; null when the read fails, in which case the mirror's state stands. */
 async function liveIssueState(d: FixIssueDeps, repo: string, number: number): Promise<string | null> {
-  const r = await d.exec("gh", ["api", `repos/${ORG}/${repo}/issues/${number}`, "--jq", ".state"]);
+  const r = await d.exec("gh", ["api", `repos/${slugOf(repo)}/issues/${number}`, "--jq", ".state"]);
   const v = r.code === 0 ? r.stdout.trim().toLowerCase() : "";
   return v === "open" ? "OPEN" : v === "closed" ? "CLOSED" : null;
 }
@@ -632,7 +632,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     const who = await whoAmI(d.exec);
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
-    const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${r.repo}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
+    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(r.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (existing && urlOk(existing, r.repo)) {
       const ag = await guardItem(db, { repo: r.repo, number: r.number }, { kind: "fixissue-collect" }, x.by ?? CLI_BY);
@@ -644,7 +644,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
       return true;
     }
     if (hasOpenPr(db, r.repo, r.number)) { fail(db, d, r, "another pull request already covers the issue"); return false; }
-    if (!(await git.fetchBranch(ORG, r.repo, branchOf(db, r.repo), r.main_sha))) { fail(db, d, r, "the base commit is no longer in the repository"); return false; }
+    if (!(await git.fetchBranch(ownerOf(r.repo), r.repo, branchOf(db, r.repo), r.main_sha))) { fail(db, d, r, "the base commit is no longer in the repository"); return false; }
     const title = issueNow?.title ?? "";
     const scratch = mkdtempSync(join(d.root, ".index-"));
     let applied;

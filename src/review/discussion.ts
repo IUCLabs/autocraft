@@ -9,12 +9,12 @@ import { isBotLogin } from "./bots.ts";
 import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
+import { ownerOf } from "../owners.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
 const LOGIN_KEY = "pipeline_login";
 /** Prefix of the setting that marks a PR's reviews stale on an operator's request; the value is the time. */
 const STALE_KEY = "review_stale:";
-const ORG = "storytold";
 
 /** Discussion-triggered re-reviews of one PR per UTC day; a head change or an operator request is not counted. */
 export const MAX_RERUNS_PER_DAY = 3;
@@ -139,7 +139,7 @@ export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newes
  */
 export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string, number: number): Promise<LiveDiscussion> {
   const seen = new Date().toISOString();
-  const res = await q.query(DISCUSSION_QUERY, { owner: ORG, name: repo, number });
+  const res = await q.query(DISCUSSION_QUERY, { owner: ownerOf(repo), name: repo, number });
   const pr = res?.repository?.pullRequest;
   if (!pr) throw new Error(`${repo}#${number} not found on GitHub`);
   const own = pipelineLogin(db);

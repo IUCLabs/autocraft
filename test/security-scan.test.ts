@@ -14,7 +14,7 @@ import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { insertRun } from "../src/agents/runs.ts";
 import { runScan, type Ask, type ScanDeps } from "../src/security/scan.ts";
-import { SECURITY_REPO } from "../src/security/rules.ts";
+import { securityRepo } from "../src/security/rules.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -33,10 +33,11 @@ let base = "";
 let close: () => Promise<void>;
 
 before(async () => {
-  db.prepare("INSERT INTO repos (name, visibility, default_branch, open_prs, open_issues) VALUES ('photocraft', 'public', 'main', 0, 0)").run();
+  db.prepare("INSERT INTO repos (name, visibility, default_branch, open_prs, open_issues) VALUES ('photocraft', 'public', 'main', 0, 0), ('secret', 'private', 'main', 0, 0)").run();
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);
   addLogin(db, "cli", "maint", "maintainer", null);
+  db.prepare("INSERT OR IGNORE INTO main.tracked_repos (name, added_by, added_at) VALUES ('photocraft', 'cli', 'x'), ('secret', 'cli', 'x')").run();
   scopeToTracked(db);
   const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
   const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes() });
@@ -185,7 +186,7 @@ describe("security deep scan", () => {
     const jobs = (c: Client) => c.get<{ jobs: { step: string }[] }>("/api/pipeline/jobs");
     assert.equal((await jobs(viewer)).jobs.filter((j) => j.step === "security-scan").length, 0);
     assert.equal((await jobs(boss)).jobs.filter((j) => j.step === "security-scan").length, 1);
-    const runId = insertRun(db, { jobId: null, step: "security-scan", stage: 9, promptId: "security.area", promptVersion: "1", provider: "claude", model: "opus", accountId: null, items: [{ repo: SECURITY_REPO, number: 1 }], prompt: "p" });
+    const runId = insertRun(db, { jobId: null, step: "security-scan", stage: 9, promptId: "security.area", promptVersion: "1", provider: "claude", model: "opus", accountId: null, items: [{ repo: securityRepo("photocraft"), number: 1 }], prompt: "p" });
     const runs = (c: Client) => c.get<{ runs: { id: number }[] }>("/api/agents?limit=200");
     assert.ok(!(await runs(viewer)).runs.some((r) => r.id === runId));
     assert.ok((await runs(maint)).runs.some((r) => r.id === runId));
@@ -200,5 +201,56 @@ describe("security deep scan", () => {
     for (const action of ["fix", "land", "advisory", "publish"]) await boss.post(`/api/security/findings/photocraft/${n}`, { action }, 501);
     const audits = (db.prepare("SELECT action FROM audit WHERE action LIKE 'security-%' ORDER BY rowid").all() as { action: string }[]).map((a) => a.action);
     assert.deepEqual(audits, ["security-scan-start", "security-finding-dismiss", "security-finding-reopen", "security-finding-backlog"]);
+  });
+  test("a call that fails after spending still counts against the cap", async () => {
+    db.prepare("DELETE FROM security_findings").run();
+    const model = fakeModel();
+    const ask: Ask = (async (id: string, input: object) => (id === "security.area" ? { text: null, cost: 2 } : (model.ask as (i: string, x: object) => Promise<unknown>)(id, input))) as Ask;
+    const id = newScan(3.5);
+    await runScan(db, id, { ...model, ask });
+    const s = scanOf(id);
+    assert.equal(s.state, "capped", "the failed area call used $2, so the retry would pass the cap");
+    assert.equal(s.cost_usd, 3);
+  });
+
+  test("findings that share an entry point but not a sink are both kept; a repeat is linked to the earlier finding", async () => {
+    db.prepare("DELETE FROM security_findings").run();
+    const model = fakeModel();
+    const entry = ref("crates/psd/src/layer.rs", 10);
+    const ask: Ask = (async (id: string, input: object) => {
+      if (id !== "security.area") return (model.ask as (i: string, x: object) => Promise<unknown>)(id, input);
+      if (!JSON.stringify(input).includes("PSD reader")) return { cost: 1, text: JSON.stringify({ findings: [] }) };
+      return { cost: 1, text: JSON.stringify({ findings: [
+        found("Layer length trusted", [ref("crates/psd/src/layer.rs", 118), entry]),
+        found("Channel count trusted", [ref("crates/psd/src/layer.rs", 140), entry]),
+      ] }) };
+    }) as Ask;
+    const a = newScan(null);
+    await runScan(db, a, { ...model, ask });
+    const titles = () => (db.prepare("SELECT title FROM security_findings WHERE state = 'new' ORDER BY number").all() as { title: string }[]).map((r) => r.title);
+    assert.deepEqual(titles(), ["Layer length trusted", "Channel count trusted"]);
+    const b = newScan(null);
+    await runScan(db, b, { ...model, ask });
+    assert.equal(titles().length, 2, "the second scan adds nothing visible");
+    const dupes = db.prepare("SELECT duplicate_of FROM security_findings WHERE state = 'duplicate' ORDER BY number").all() as { duplicate_of: number }[];
+    assert.equal(dupes.length, 2);
+    const boss = await signedIn("boss");
+    const first = await boss.get<FindingView>("/api/security/findings/photocraft/" + dupes[0]!.duplicate_of);
+    assert.ok(first.timeline.some((c) => c.kind === "duplicate"));
+  });
+
+  test("a maintainer who cannot see the repo sees none of its scan jobs", async () => {
+    const boss = await signedIn("boss"), maint = await signedIn("maint");
+    const started = await boss.post<ScanView>("/api/repos/secret/security/scans", { capUsd: 1 });
+    db.prepare("UPDATE jobs SET state = 'running', progress = 'area 1', started_at = ? WHERE id = (SELECT job_id FROM security_scans WHERE id = ?)").run(new Date().toISOString(), started.id);
+    const steps = (c: Client) => c.get<{ jobs: { step: string; params: { repo?: string } }[] }>("/api/pipeline/jobs").then((r) => r.jobs.filter((j) => j.step === "security-scan" && j.params.repo === "secret").length);
+    assert.equal(await steps(boss), 1);
+    assert.equal(await steps(maint), 0);
+    const nowJobs = (c: Client) => c.get<{ entries: { kind: string; title: string }[] }>("/api/now").then((r) => r.entries.filter((e) => e.kind === "job" && e.title === "Security deep scan").length);
+    assert.equal(await nowJobs(boss), 1);
+    assert.equal(await nowJobs(maint), 0);
+    await maint.get("/api/repos/secret/security", 404);
+    const audit = await maint.get<{ entries: { action: string; target: string }[] }>("/api/audit");
+    assert.ok(!audit.entries.some((e) => e.target?.startsWith("secret:")));
   });
 });

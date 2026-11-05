@@ -1197,7 +1197,7 @@ const SECURITY_AREA: ClaudePrompt = {
   sandbox: SECURITY_SANDBOX,
   template: SECURITY_AREA_TEMPLATE,
   output: `A JSON object: {"findings": [{"title", "severity", "urgent", "confidence", "category", "refs": [{"path", "line", "claim"}], "reach", "impact"}]}.`,
-  validation: `${SECURITY_REPLY} A finding is kept only with a title, a severity (critical, high, medium or low), confidence of ${MIN_CONFIDENCE} or more, a reach, an impact and at least one ref whose path exists in the checkout and whose line is inside the file; refs that fail this are dropped, and a finding left without refs is dropped. A reply that is not the object is asked once more; after that the area counts as failed. Findings that match an earlier finding of the repository (same file and line, or the same title in the same file) are merged into it.`,
+  validation: `${SECURITY_REPLY} A finding is kept only with a title, a severity (critical, high, medium or low), confidence of ${MIN_CONFIDENCE} or more, a reach, an impact and at least one ref whose path exists in the checkout and whose line is inside the file; refs that fail this are dropped, and a finding left without refs is dropped. A reply that is not the object is asked once more; after that the area counts as failed. The first ref is the sink and must be a real line. A finding that repeats an earlier finding of the repository (the same sink line and title, or the same sink file within three lines and a similar title) is stored as a hidden repeat that links to the earlier one, which shows it in its timeline; a finding the verify step disproved suppresses only an exact repeat.`,
   limits: { perCall: 1, attempts: 2, timeoutSeconds: 2400 },
 };
 

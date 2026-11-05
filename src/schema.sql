@@ -1,7 +1,8 @@
 -- Mirror tables: written only by `autocraft sync`, overwritten from GitHub.
 
 CREATE TABLE IF NOT EXISTS repos (
-  name TEXT PRIMARY KEY,              -- "photocraft" (owner is always storytold)
+  name TEXT PRIMARY KEY,              -- "photocraft"; unique across owners
+  owner TEXT NOT NULL DEFAULT 'storytold', -- GitHub org or user
   visibility TEXT,
   default_branch TEXT,
   open_prs INTEGER,
@@ -1495,7 +1496,7 @@ CREATE TABLE IF NOT EXISTS security_areas (
 ) WITHOUT ROWID;
 
 -- state: new | dismissed | backlog | fixing | ready | landing | landed | advisory | awaiting-admin | published, and two internal
--- states the API never lists: unverified (found, not yet checked) and disproved (kept so a later scan does not raise it again).
+-- states the API never lists: unverified (found, not yet checked), disproved (kept so a later scan does not raise it again) and duplicate (a repeat of the finding in duplicate_of).
 CREATE TABLE IF NOT EXISTS security_findings (
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,            -- per-repo sequence; item key <repo>:finding:<n>
@@ -1517,6 +1518,7 @@ CREATE TABLE IF NOT EXISTS security_findings (
   fork TEXT,
   reason TEXT,
   decided_by TEXT,
+  duplicate_of INTEGER,               -- a repeat of this earlier finding of the repo (state duplicate)
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)

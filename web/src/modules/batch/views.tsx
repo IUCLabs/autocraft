@@ -7,7 +7,7 @@ import {
 } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { BatchCi, BatchDetail, BatchEvent, BatchEventKind, BatchMemberDetail, BatchMemberState } from "../../api/types";
-import { batchPath, GITHUB_ORG } from "../../lib/links";
+import { batchPath, repoSlug } from "../../lib/links";
 import type { ViewProps } from "../../registry/types";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -61,8 +61,8 @@ function Header({ b }: { b: BatchDetail }) {
           ["Opened", when(b.createdAt)],
           ["Merged", b.mergedAt ? when(b.mergedAt) : null],
           ["Batch PR", b.prNumber !== null ? <ItemRef key="p" repo={b.repo} number={b.prNumber} kind="pr" state={prState} title={null} /> : null],
-          ["Merge commit", b.mergeSha ? commit(b.mergeSha, `${GITHUB_ORG}/${b.repo}`) : null],
-          ["Base", commit(b.baseSha, `${GITHUB_ORG}/${b.repo}`)],
+          ["Merge commit", b.mergeSha ? commit(b.mergeSha, `${repoSlug(b.repo)}`) : null],
+          ["Base", commit(b.baseSha, `${repoSlug(b.repo)}`)],
           ["Branch head", b.fork ? commit(b.commitSha, b.fork) : <span className="code text-xs">{sha7(b.commitSha)}</span>],
           ["Came from", b.parentId !== null ? <Link to={batchPath(b.parentId)} className="text-accent-ink hover:underline">Batch #{b.parentId}</Link> : null],
           ["Led to", b.childIds.length ? b.childIds.map((c, i) => <span key={c}>{i > 0 && ", "}<Link to={batchPath(c)} className="text-accent-ink hover:underline">Batch #{c}</Link></span>) : null],
@@ -155,7 +155,7 @@ function Members({ b }: { b: BatchDetail }) {
             <ItemRef repo={m.repo} number={m.number} kind="pr" state={m.itemState} title={m.title} stretch className="basis-full md:min-w-[12rem] md:flex-1 md:basis-0" />
             <span className="relative z-10 flex flex-wrap items-center gap-2 max-md:flex-1 max-md:pl-6">
               <Badge tone={MEMBER[m.state][1]}>{MEMBER[m.state][0]}</Badge>
-              <a href={gh(`${GITHUB_ORG}/${m.repo}/commit/${m.headOid}`)} target="_blank" rel="noopener noreferrer" title="Head merged into the batch" className={cn("code text-xs", ext)}>{sha7(m.headOid)}</a>
+              <a href={gh(`${repoSlug(m.repo)}/commit/${m.headOid}`)} target="_blank" rel="noopener noreferrer" title="Head merged into the batch" className={cn("code text-xs", ext)}>{sha7(m.headOid)}</a>
             </span>
             <RowActions b={b} m={m} />
             {m.reason && <p className="basis-full pl-6 text-2xs text-ink/60 [overflow-wrap:anywhere]">{m.reason}</p>}

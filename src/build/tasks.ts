@@ -12,6 +12,7 @@ import { BuildError, slotsOf } from "./envs.ts";
 import { draining } from "./worker-update.ts";
 import { baseScopeRepos } from "../pilot.ts";
 import { fastTask } from "../fasttrack.ts";
+import { slugOf } from "../owners.ts";
 
 export const LOST_AFTER_MS = 2 * 60_000;
 /** A task is claimed at most this often: the first time and one requeue after a lost worker. */
@@ -24,7 +25,6 @@ export const MAX_LOG_BYTES = 20 * 1024 * 1024;
 export const MAX_CHUNK_BYTES = 64 * 1024;
 export const LOG_TAIL_BYTES = 64 * 1024;
 export const TERMINAL: TaskState[] = ["done", "failed", "cancelled", "lost"];
-const SOURCE_ORG = "storytold";
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
@@ -193,7 +193,7 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
           take.run(envId, at, at, t.id);
           out.push({
             id: t.id, repo: t.repo, headSha: t.head_sha, baseSha: t.base_sha, requires: json<Requires>(t.requires, {}), plan: json<TaskStep[]>(t.plan, []),
-            sourceUrl: `https://codeload.github.com/${SOURCE_ORG}/${t.repo}/tar.gz/${t.head_sha}`,
+            sourceUrl: `https://codeload.github.com/${slugOf(t.repo)}/tar.gz/${t.head_sha}`,
             ...(t.patch ? { patch: t.patch } : {}),
             ...(t.warm_key && (t.warm_role === "use" || t.warm_role === "build") ? { warm: { key: t.warm_key, role: t.warm_role } } : {}),
           });

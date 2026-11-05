@@ -58,7 +58,7 @@ function args(raw: unknown, spec: Spec, required: string[]): Record<string, stri
 export const TOOLS = [
   {
     name: "search_items",
-    description: "Full-text search over the titles, bodies and comments of every synced issue and pull request of the storytold org. Returns refs (repo#number) with title and a snippet, best match first.",
+    description: "Full-text search over the titles, bodies and comments of every synced issue and pull request of the tracked repos. Returns refs (repo#number) with title and a snippet, best match first.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["query"],
       properties: {

@@ -9,8 +9,8 @@ import { buildCheckout, checkoutRoot, pruneCheckouts } from "./checkout.ts";
 
 export { REPO_PATH, REPOS_ROOT, AGENTS_PATH, reposPath, sandboxCommand, type SandboxSpec } from "./command.ts";
 import { envVar } from "../env.ts";
+import { ownerOf } from "../owners.ts";
 
-export const ORG = "storytold";
 const MAX_AGE_MS = 24 * 3600_000;
 
 /** The claude binary behind the PATH entry, with symlinks resolved so one file can be bound. AUTOCRAFT_CLAUDE_BIN overrides. */
@@ -55,14 +55,14 @@ export function tokenNearExpiry(file: string, now = Date.now(), marginMs = TOKEN
  */
 export async function checkoutForPr(repo: string, number: number, sha: string, log: (line: string) => void = () => {}): Promise<string | null> {
   return checkoutOf(repo, sha, `${repo}#${number}`, log, async (g) => {
-    const head = await g.fetchPr(ORG, repo, number);
+    const head = await g.fetchPr(ownerOf(repo), repo, number);
     return head === sha ? null : "head moved on";
   });
 }
 
 /** A checkout of commit `sha`, which must be reachable from `branch` of the base repository (the commit a fix is based on), or null as for `checkoutForPr`. */
 export async function checkoutForCommit(repo: string, branch: string, sha: string, log: (line: string) => void = () => {}): Promise<string | null> {
-  return checkoutOf(repo, sha, `${repo}@${sha.slice(0, 7)}`, log, async (g) => ((await g.fetchBranch(ORG, repo, branch, sha)) ? null : "commit not found"));
+  return checkoutOf(repo, sha, `${repo}@${sha.slice(0, 7)}`, log, async (g) => ((await g.fetchBranch(ownerOf(repo), repo, branch, sha)) ? null : "commit not found"));
 }
 
 async function checkoutOf(repo: string, sha: string, label: string, log: (line: string) => void, fetch: (g: Git) => Promise<string | null>): Promise<string | null> {

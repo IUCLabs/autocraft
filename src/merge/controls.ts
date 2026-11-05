@@ -12,8 +12,8 @@ import { FastTrackError, parseItemRef } from "../fasttrack.ts";
 import { type Exec, exec as defaultExec } from "../fixup/git.ts";
 import { ghClosePr } from "../github/write.ts";
 import { isTracked } from "../repos.ts";
-import { ORG } from "../act/templates.ts";
 import { ACTIVE_BATCH, activeBatches, getBatch, membersOf, updateBatch } from "./batch-store.ts";
+import { slugOf } from "../owners.ts";
 
 export class ControlError extends Error {
   status: number;
@@ -57,7 +57,7 @@ async function endBatch(db: DatabaseSync, by: string, id: number, why: string, c
   const r = "refused" in g ? { code: 1, stdout: "", stderr: g.refused }
     : await ghClosePr({ db, login: by }, g, run, { repo: b.repo, number: b.pr_number }, { by: "fixed-operator" }, `Closing: ${comment}.`, { batch: b.branch });
   if (r.code !== 0) {
-    const state = await run("gh", ["pr", "view", String(b.pr_number), "--repo", `${ORG}/${b.repo}`, "--json", "state", "--jq", ".state"]);
+    const state = await run("gh", ["pr", "view", String(b.pr_number), "--repo", `${slugOf(b.repo)}`, "--json", "state", "--jq", ".state"]);
     if (state.code === 0 && state.stdout.trim() === "MERGED") {
       // The merge went through while the batch was being ended: the merge bookkeeping records it.
       audit(db, by, "batch-end-too-late", `${b.repo}:${b.branch}`, { pr: b.pr_number });

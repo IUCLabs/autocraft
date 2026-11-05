@@ -7,7 +7,6 @@
 import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { MAX_FAILURES } from "../core/rules.ts";
-import { ORG } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { connect } from "../db.ts";
@@ -20,6 +19,7 @@ import { ghApproveRun, type Writer } from "../github/write.ts";
 import { mergeHeld } from "./holds.ts";
 import { trackedNames } from "../repos.ts";
 import { ghExec, type Gh } from "./safe-merge.ts";
+import { slugOf } from "../owners.ts";
 
 export type CiApproval = { by: string; at: string };
 const key = (repo: string) => `ci_approved:${repo}`;
@@ -119,7 +119,7 @@ type RunsReply = { workflow_runs?: { id: number; name?: string | null; event?: s
 
 /** Reads the runs waiting for approval at a head (one request); only runs of a fork's PR count. */
 async function readRuns(gh: Gh, repo: string, head: string): Promise<WaitingRun[]> {
-  const r = JSON.parse(await gh(["api", `repos/${ORG}/${repo}/actions/runs?head_sha=${head}&status=action_required&per_page=100`])) as RunsReply;
+  const r = JSON.parse(await gh(["api", `repos/${slugOf(repo)}/actions/runs?head_sha=${head}&status=action_required&per_page=100`])) as RunsReply;
   return (r.workflow_runs ?? []).filter((w) => w.head_sha === head && w.head_repository?.full_name !== w.repository?.full_name)
     .map((w) => ({ id: w.id, name: w.name ?? "", event: w.event ?? "" }));
 }
@@ -157,7 +157,7 @@ export async function approveRuns(db: DatabaseSync, repo: string, d: ApproveDeps
     let pr: { state?: string; draft?: boolean; head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { repo?: { full_name?: string } | null } };
     try {
       if (c.reread) runs = await readRuns(d.gh, repo, c.head);
-      pr = JSON.parse(await d.gh(["api", `repos/${ORG}/${repo}/pulls/${c.number}`]));
+      pr = JSON.parse(await d.gh(["api", `repos/${slugOf(repo)}/pulls/${c.number}`]));
     } catch (e) {
       jobItem(db, repo, c.number, `CI runs not read: ${(e as Error).message}`, log);
       out.failed.push(ref);

@@ -20,12 +20,12 @@ import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
-import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
+import { listAll, RepoError, trackRepoChecked, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
-import { hiddenRepos } from "./visible.ts";
+import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pipelineState } from "../../runner/autopilot.ts";
 import { PilotError, setPilot } from "../../pilot.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -75,6 +75,15 @@ const required = (v: unknown, what: string): string => {
 function refused<T>(f: () => T): T {
   try {
     return f();
+  } catch (e) {
+    if (e instanceof AccessError || e instanceof RepoError) throw new HttpError(400, e.message);
+    throw e;
+  }
+}
+
+async function refusedAsync<T>(f: () => Promise<T>): Promise<T> {
+  try {
+    return await f();
   } catch (e) {
     if (e instanceof AccessError || e instanceof RepoError) throw new HttpError(400, e.message);
     throw e;
@@ -243,7 +252,7 @@ export function override(db: DatabaseSync, req: Req): Contributor {
 export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
   if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the repo settings");
   return listAll(db).map((r) => ({
-    name: r.name, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
+    name: r.name, owner: r.owner, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
     labels: r.tracked ? labelsInfo(db, r.name) : null,
     merging: r.tracked ? mergeInfo(db, r.name) : null,
     pushing: r.tracked ? approvalInfo(pushApprovalOf(db, r.name)) : null,
@@ -401,10 +410,10 @@ export function pipelineSwitch(db: DatabaseSync, req: Req, on: boolean): Tracked
   return allRepos(db, req);
 }
 
-export function track(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
+export async function track(db: DatabaseSync, req: Req, on: boolean): Promise<TrackedRepo[]> {
   requireOperator(req, "manage tracked repos");
   const name = required(body(req).name, "name");
-  const changed = refused(() => (on ? trackRepo : untrackRepo)(db, req.user.login, name));
+  const changed = await refusedAsync(async () => (on ? trackRepoChecked : untrackRepo)(db, req.user.login, name));
   if (!changed) throw new HttpError(409, `${name} is ${on ? "already" : "not"} tracked`);
   clearContributorCache(db);
   return allRepos(db, req);
@@ -468,7 +477,7 @@ export function revokeSession(db: DatabaseSync, req: Req): AccessOverview {
   return accessOverview(db, req);
 }
 
-export function auditLog(db: DatabaseSync, req: Req): AuditPage {
+export async function auditLog(db: DatabaseSync, req: Req): Promise<AuditPage> {
   if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the audit log");
   const q = req.query;
   const login = (q.get("login") ?? "").trim().slice(0, 100);
@@ -492,6 +501,12 @@ export function auditLog(db: DatabaseSync, req: Req): AuditPage {
   if (!operator) {
     where.push(`action IN (${actions.map(() => "?").join(", ")})`);
     args.push(...actions);
+  }
+  if (!operator) {
+    // Security rows name their repo first in the target (`<repo>:scan:<id>`, `<repo>:finding:<n>`); a maintainer sees those of repos they can see.
+    const visible = await visibleRepos(db, req);
+    where.push(`(action NOT LIKE 'security-%' OR substr(target, 1, instr(target, ':') - 1) IN (${["", ...visible].map(() => "?").join(", ")}))`);
+    args.push("", ...visible);
   }
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const total = Number((db.prepare(`SELECT COUNT(*) AS n FROM audit ${w}`).get(...args) as { n: number }).n);
