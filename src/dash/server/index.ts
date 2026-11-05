@@ -14,6 +14,7 @@ import { ImageIndex } from "./image-index.ts";
 import { visibleTo } from "../api/visible.ts";
 import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "./images.ts";
 import { TokenBucket } from "./limits.ts";
+import { dbReady, serveHealth } from "../../health.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
@@ -372,6 +373,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (serveHealth(req, res, () => dbReady(db))) return;
     const nonce = randomToken(16);
     try {
       if (Date.now() - lastPrune > 3_600_000) {

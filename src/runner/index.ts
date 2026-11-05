@@ -11,6 +11,7 @@ import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
+import { dbReady, startHealthServer } from "../health.ts";
 import { envVar } from "../env.ts";
 
 const USAGE = `usage: autocraft runner serve
@@ -40,9 +41,23 @@ async function serve(): Promise<void> {
     (w) => (console.log(`runner: worker API on ${w.url}`), w),
     (e: Error) => (console.error(`runner: worker API not started: ${e.message}`), null),
   );
+  // Optional listener for the probes alone, for a runner whose worker API is not reachable by the prober.
+  const healthListen = envVar("HEALTH_LISTEN");
+  const health = healthListen
+    ? await startHealthServer(healthListen, () => dbReady(db)).then(
+        (h) => (console.log(`runner: health endpoints on ${h.url}`), h),
+        (e: Error) => (console.error(`runner: health listener not started: ${e.message}`), null),
+      )
+    : null;
+  // On a stop signal the runner claims nothing new and stops its jobs (10 s each to end, then killed). If that takes longer than the bound, exit anyway.
+  const stopMs = (Number(envVar("STOP_TIMEOUT")) || 25) * 1000;
+  const onStop = () => void setTimeout(() => (console.error("runner: stop timed out; exiting"), release(), process.exit(1)), stopMs).unref();
+  if (ac.signal.aborted) onStop();
+  else ac.signal.addEventListener("abort", onStop, { once: true });
   try {
     await runner.serve(ac.signal, Number(envVar("RUNNER_POLL_MS")) || 2000);
   } finally {
+    await health?.close();
     await workers?.close();
     release();
     db.close();
