@@ -192,27 +192,27 @@ export interface Api {
     track(name: RepoName): Promise<TrackedRepo[]>;
     untrack(name: RepoName): Promise<TrackedRepo[]>;
     /** Lets the Label stage write labels to this repo on GitHub, or stops it. */
-    approveLabels(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    approveLabels(name: RepoName, approved: boolean): Promise<TrackedRepo>;
     /** Lets the pipeline merge pull requests in this repo, or stops it. */
-    approveMerging(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    approveMerging(name: RepoName, approved: boolean): Promise<TrackedRepo>;
     /** Most ready pull requests of a repo that merge one at a time instead of in a batch; 0 always batches. */
     singleMerge(): Promise<{ max: number }>;
     setSingleMerge(max: number): Promise<{ max: number }>;
     /** Lets the Fix-up step push commits to contributor branches here, or stops it. */
-    approvePushing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    approvePushing(name: RepoName, approved: boolean): Promise<TrackedRepo>;
     /** Lets the Act step comment on and close items here, or stops it. */
-    approveCommenting(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    approveCommenting(name: RepoName, approved: boolean): Promise<TrackedRepo>;
     /** Lets the Fix issues step push fixes, open pull requests and comment on issues here, or stops it. */
-    approveFixing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    approveFixing(name: RepoName, approved: boolean): Promise<TrackedRepo>;
     /** Lets the Fix red main step rerun failed jobs on a red default branch here and open an issue on an operator's answer, or stops it. */
-    approveMainFixing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    approveMainFixing(name: RepoName, approved: boolean): Promise<TrackedRepo>;
     /** Lets the CI-approve step approve the CI runs GitHub holds for reviewed outside pull requests here, or stops it. */
-    approveCiRuns(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
-    setOptionalCheck(name: RepoName, check: string, on: boolean): Promise<TrackedRepo[]>;
+    approveCiRuns(name: RepoName, approved: boolean): Promise<TrackedRepo>;
+    setOptionalCheck(name: RepoName, check: string, on: boolean): Promise<TrackedRepo>;
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
-    setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo[]>;
+    setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo>;
     /** Sets who makes the pipeline's GitHub writes here; `app` needs the GitHub App registered and installed on the repo. */
-    setIdentity(name: RepoName, identity: "legacy" | "app"): Promise<TrackedRepo[]>;
+    setIdentity(name: RepoName, identity: "legacy" | "app"): Promise<TrackedRepo>;
   };
   /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
   mcp: {

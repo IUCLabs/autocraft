@@ -9,7 +9,7 @@ import { Block } from "../../ui/molecules/Block";
 import { Switch } from "../../ui/atoms/Switch";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Page } from "../../ui/organisms/Page";
-import { IdentitySwitch, OptionalChecks, PipelineSwitch, Toggle, WRITES, useRepoWrite, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { IdentitySwitch, OptionalChecks, PipelineSwitch, Toggle, WRITES, approvalPatch, useRepoWrite, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
 import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
@@ -27,7 +27,9 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
 
 function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write }) {
   const api = useApi();
-  const operator = useUser().role === "operator";
+  const user = useUser();
+  const me = user.login;
+  const operator = user.role === "operator";
   const m = r[w.field];
   const key = `${w.field}:${r.name}`;
   return (
@@ -42,7 +44,7 @@ function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write 
         )}
       </div>
       {operator ? (
-        <Switch on={!!m?.approved} label={w.name} busy={write.busy === key} onChange={(on) => void write.run(key, () => w.run(api, r.name, on))} />
+        <Switch on={!!m?.approved} label={w.name} onChange={(on) => void write.run(key, () => w.run(api, r.name, on), { repo: r.name, patch: approvalPatch(w, on, me) })} />
       ) : m?.approved ? (
         <Badge tone="ok">Approved</Badge>
       ) : (
@@ -55,18 +57,26 @@ function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write 
 /** On when every GitHub write of the repo is approved. Switching it on approves the rest in pipeline order; off stops them all. */
 function AllWrites({ r, write }: { r: TrackedRepo; write: Write }) {
   const api = useApi();
-  const operator = useUser().role === "operator";
+  const user = useUser();
+  const operator = user.role === "operator";
   const key = `all:${r.name}`;
   if (!operator) return null;
   const all = WRITES.every((w) => r[w.field]?.approved);
   return (
     <span className="inline-flex items-center gap-3 text-sm text-ink/60">
       All
-      <Switch on={all} label="All GitHub writes" busy={write.busy === key} onChange={(on) => void write.run(key, async () => {
-        let list: unknown;
-        for (const w of WRITES) if (!!r[w.field]?.approved !== on) list = await w.run(api, r.name, on);
-        return list;
-      })} />
+      <Switch on={all} label="All GitHub writes" onChange={(on) => {
+        const todo = WRITES.filter((w) => !!r[w.field]?.approved !== on);
+        const confirmed = new Set<string>();
+        void write.run(key, async () => {
+          const out: Partial<TrackedRepo> = { name: r.name };
+          for (const w of todo) {
+            Object.assign(out, { [w.field]: ((await w.run(api, r.name, on)) as TrackedRepo)[w.field] });
+            confirmed.add(w.field);
+          }
+          return out;
+        }, { repo: r.name, confirmed, patch: (cur) => Object.assign({}, ...todo.map((w) => approvalPatch(w, on, user.login)(cur))) });
+      }} />
     </span>
   );
 }

@@ -9,35 +9,95 @@ import { Switch } from "../../ui/atoms/Switch";
 import { useWrite } from "../../lib/hooks";
 import { appIdentityBlocker } from "../../lib/identity";
 import { setRepoOwners } from "../../lib/links";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Select } from "../../ui/atoms/Select";
 import { Block } from "../../ui/molecules/Block";
 import { Segmented } from "../../ui/molecules/Segmented";
 
-export type Write = ReturnType<typeof useWrite>;
+/** Fields of one repo to show at once on a press, before the server answers. */
+export interface Optimistic {
+  repo: string;
+  patch: (r: TrackedRepo) => Partial<TrackedRepo>;
+  /** Fields the request has already confirmed; a failure later in the same request leaves them as they are. */
+  confirmed?: Set<string>;
+}
+
+export type Write = Omit<ReturnType<typeof useWrite>, "run"> & {
+  /** With `optimistic`, the new state shows at once and is rolled back (with the error text) when the request fails. */
+  run: (key: string, f: () => Promise<unknown>, optimistic?: Optimistic) => Promise<boolean>;
+};
+
+const isRepo = (x: unknown): x is TrackedRepo => !!x && typeof x === "object" && !Array.isArray(x) && "name" in x;
 
 /**
- * useWrite for the repo-admin writes: each returns the full repo list, which replaces the cached list at once,
- * so a switch shows its new state without waiting for the live refetch (which is coalesced for up to 3 s).
+ * useWrite for the repo-admin writes. An endpoint answers with the one repo it changed; that repo replaces its entry in
+ * the cached list (only the optimistic fields when there is a patch, so presses in flight keep their own state).
+ * Presses on one switch are sent in order.
  */
 export function useRepoWrite(): Write {
   const qc = useQueryClient();
   const w = useWrite();
   const api = useApi();
   const { run: base } = w;
+  // Presses are sent in order per repo; `pending` counts the presses in flight per repo field.
+  const queue = useRef(new Map<string, Promise<unknown>>());
+  const pending = useRef(new Map<string, number>());
+  const edit = useCallback(
+    (fn: (list: TrackedRepo[]) => TrackedRepo[]) => qc.setQueryData<TrackedRepo[]>(["repo-admin"], (list) => (list ? fn(list) : list)),
+    [qc],
+  );
   const run = useCallback(
-    (key: string, f: () => Promise<unknown>) =>
-      base(key, async () => {
+    (key: string, f: () => Promise<unknown>, opt?: Optimistic) => {
+      // Fields of `out` that no newer press is waiting on; a newer press's optimistic state stays until its own answer.
+      const settled = (fields: string[]) => fields.filter((k) => (pending.current.get(`${opt?.repo}:${k}`) ?? 0) <= 1);
+      const send = async () => {
         const out = await f();
         if (Array.isArray(out)) {
           // Owners first: the views that re-render with the new list build links from them.
           await api.repoOwners().then(setRepoOwners, () => {});
           qc.setQueryData(["repo-admin"], out);
+        } else if (isRepo(out)) {
+          const fields = opt ? settled(Object.keys(opt.patch(out)).filter((k) => k in out)) : null;
+          edit((l) => l.map((x) => (x.name !== out.name ? x : fields ? { ...x, ...Object.fromEntries(fields.map((k) => [k, out[k as keyof TrackedRepo]])) } : out)));
         }
         return out;
-      }),
-    [base, qc, api],
+      };
+      if (!opt) return base(key, send);
+      // A refetch that started before this press would bring back the old state.
+      void qc.cancelQueries({ queryKey: ["repo-admin"] });
+      let before: Partial<TrackedRepo> = {};
+      edit((l) =>
+        l.map((x) => {
+          if (x.name !== opt.repo) return x;
+          const patch = opt.patch(x);
+          before = Object.fromEntries(Object.keys(patch).map((k) => [k, x[k as keyof TrackedRepo]]));
+          return { ...x, ...patch };
+        }),
+      );
+      const fields = Object.keys(before);
+      const slot = (k: string) => `${opt.repo}:${k}`;
+      for (const k of fields) pending.current.set(slot(k), (pending.current.get(slot(k)) ?? 0) + 1);
+      const qk = `repo:${opt.repo}`;
+      const done = (queue.current.get(qk) ?? Promise.resolve()).then(() =>
+        base(key, async () => {
+          try {
+            return await send();
+          } catch (e) {
+            const undo = settled(fields).filter((k) => !opt.confirmed?.has(k));
+            edit((l) => l.map((x) => (x.name === opt.repo ? { ...x, ...Object.fromEntries(undo.map((k) => [k, (before as Record<string, unknown>)[k]])) } : x)));
+            throw e;
+          } finally {
+            for (const k of fields) pending.current.set(slot(k), (pending.current.get(slot(k)) ?? 1) - 1);
+            // A refetch that landed while presses were in flight may carry old state; once none is, read the truth again.
+            if (![...pending.current.values()].some((n) => n > 0)) void qc.invalidateQueries({ queryKey: ["repo-admin"] });
+          }
+        }),
+      );
+      queue.current.set(qk, done);
+      return done;
+    },
+    [base, qc, api, edit],
   );
   return { ...w, run };
 }
@@ -111,6 +171,11 @@ export const WRITES: WriteKind[] = [
   },
 ];
 
+/** The repo with one write's approval switched, as the press shows it before the server answers. */
+export const approvalPatch = (w: WriteKind, on: boolean, by: string) => (r: TrackedRepo): Partial<TrackedRepo> => ({
+  [w.field]: { ...r[w.field], approved: on, approvedBy: on ? by : null, approvedAt: null },
+});
+
 export const approved = (r: TrackedRepo) =>
   WRITES.filter((w) => r[w.field]?.approved);
 
@@ -166,7 +231,7 @@ export function PipelineSwitch({ r, write }: { r: TrackedRepo; write: Write }) {
   const key = `pipeline:${r.name}`;
   if (!r.tracked) return null;
   if (!operator) return <PipelineBadge r={r} />;
-  return <Switch on={r.pipeline} label={`Pipeline in ${r.name}`} busy={write.busy === key} onChange={(on) => void write.run(key, () => api.repoAdmin.setPipeline(r.name, on))} />;
+  return <Switch on={r.pipeline} label={`Pipeline in ${r.name}`} onChange={(on) => void write.run(key, () => api.repoAdmin.setPipeline(r.name, on), { repo: r.name, patch: () => ({ pipeline: on }) })} />;
 }
 
 const IDENTITY_LABEL = { legacy: "Box account", app: "GitHub App" } as const;
@@ -193,7 +258,7 @@ function IdentityChoice({ r, write }: { r: TrackedRepo; write: Write }) {
           label={`Identity in ${r.name}`}
           value={r.identity}
           options={(["legacy", "app"] as const).map((v) => ({ value: v, label: IDENTITY_LABEL[v] }))}
-          onChange={(v) => { if (v !== r.identity && write.busy !== key) void write.run(key, () => api.repoAdmin.setIdentity(r.name, v)); }}
+          onChange={(v) => { if (v !== r.identity) void write.run(key, () => api.repoAdmin.setIdentity(r.name, v), { repo: r.name, patch: () => ({ identity: v }) }); }}
         />
       ) : (
         <Badge>{IDENTITY_LABEL.legacy}</Badge>

@@ -348,27 +348,27 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         Object.assign(r.merging, approved ? { approved, approvedBy: me.login, approvedAt: nowIso() } : { approved, approvedBy: null, approvedAt: null });
         log(approved ? "merge-approve" : "merge-revoke", name);
         changed();
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async approvePushing(name, approved) {
         setKind("pushing", "push", name, approved);
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async approveCommenting(name, approved) {
         setKind("commenting", "comment", name, approved);
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async approveFixing(name, approved) {
         setKind("fixing", "fixissue", name, approved);
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async approveCiRuns(name, approved) {
         setKind("ciApproving", "ci", name, approved);
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async approveMainFixing(name, approved) {
         setKind("mainFixing", "mainfix", name, approved);
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async setOptionalCheck(name, check, on) {
         requireOperator("set optional checks");
@@ -378,7 +378,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         r.optionalChecks = on ? [...r.optionalChecks, check] : r.optionalChecks.filter((c) => c !== check);
         log(on ? "optional-check-add" : "optional-check-remove", name, { check });
         changed();
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async setIdentity(name, identity) {
         requireOperator("set the repo identity");
@@ -389,7 +389,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         log("repo-identity", name, { identity, was: r.identity });
         r.identity = identity;
         changed();
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async setPipeline(name, on) {
         requireOperator("switch the pipeline");
@@ -400,7 +400,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
           log("repo-pipeline", name, { on });
           changed();
         }
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
       async approveLabels(name, approved) {
         requireOperator("approve labelling");
@@ -410,7 +410,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         Object.assign(r.labels, approved ? { approved, approvedBy: me.login, approvedAt: nowIso() } : { approved, approvedBy: null, approvedAt: null });
         log(approved ? "labels-approve" : "labels-revoke", name);
         changed();
-        return this.list();
+        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
     },
     githubApp: {
