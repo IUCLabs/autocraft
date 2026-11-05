@@ -61,7 +61,7 @@ Not taken: Archivo display headings, uppercase letter-spaced mono labels, regist
 Shared components in `web/src/ui/` are grouped by size:
 
 - `atoms/`: one element, no data fetching, no app domain types, styled only with tokens. Avatar, Badge, Button, Card, Chip, EmptyState, ErrorLine, GithubButton, Heading, Input, ItemIcon, Kbd, Logo, Pending, PriorityBadge, Select, Textarea, TextLink, Th, TimeAgo, Tooltip.
-- `molecules/`: a few atoms doing one job, props only (no queries, no routing except `Link`). Block, ConfirmButton, ItemRef, LabelledSelect, Markdown, OpusWorking, Pager, QueueBadge, RateBar, RepoSelect, Segmented, Stat, StepDraft.
+- `molecules/`: a few atoms doing one job, props only (no queries, no routing except `Link`). Block, ConfirmButton, Dialog, ItemRef, LabelledSelect, Markdown, OpusWorking, Pager, QueueBadge, RateBar, RepoSelect, Segmented, Stat, StepDraft.
 - `organisms/`: a self-contained block with layout and behaviour (sorting, the phone switch). It may take domain-shaped props and never fetches. Page, PreapprovalRow, Swimlane.
 - `ui/` itself holds helpers that are not components (`cn.ts`, `markdownHtml.ts`).
 - `modules/<m>/`: anything bound to one feature's data or wording. Pages compose the folders above and own their queries.

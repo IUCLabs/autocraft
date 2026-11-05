@@ -44,6 +44,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["decision:", withSlot("decisions", "decision-snooze")],
   ["thread:", ["decisions"]],
   ["conversation:", ["conversations", "conversation-includes"]],
+  ["security", ["security"]],
   ["repos", ["repos"]],
   ["repo-admin", ["repos", "sync", "settings"]],
   ["cls:", ["classify", "items"]],
