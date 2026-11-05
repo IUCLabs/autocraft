@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useApi, useQuery } from "../../api/client";
-import type { AccessEntry, Role, SessionInfo } from "../../api/types";
+import type { AccessEntry, AccessToken, Role, SessionInfo } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { Avatar } from "../../ui/atoms/Avatar";
 import { Badge } from "../../ui/atoms/Badge";
@@ -12,6 +12,7 @@ import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block } from "../../ui/molecules/Block";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
+import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
 import { Page } from "../../ui/organisms/Page";
@@ -30,6 +31,7 @@ export function AccessView({ user }: ViewProps) {
         <>
           <AccessList entries={data.entries} me={user.login} />
           <Sessions sessions={data.sessions} />
+          <AgentTokens tokens={data.tokens} />
         </>
       )}
     </Page>
@@ -267,3 +269,54 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
   );
 }
 
+
+function AgentTokens({ tokens }: { tokens: AccessToken[] }) {
+  useNow();
+  const api = useApi();
+  const write = useWrite();
+  const revoke = (t: AccessToken) => (
+    <ConfirmButton label="Revoke" confirmLabel="Revoke token" loading={write.busy === `token:${t.id}`} onConfirm={() => void write.run(`token:${t.id}`, () => api.access.revokeToken(t.id))} />
+  );
+  return (
+    <Block className="mt-4" flush title={<span className="flex items-center gap-2">Agent tokens <Count n={tokens.length} /></span>} aside="Revoking a session also revokes that login's tokens">
+      <ErrorLine error={write.error} className="px-4 pt-3" />
+      {tokens.length === 0 && <EmptyState>No agent tokens.</EmptyState>}
+      {tokens.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] border-collapse text-sm">
+            <thead className="bg-ink/[0.03] text-xs">
+              <tr className="border-b border-line">
+                <Th>Login</Th>
+                <Th>Label</Th>
+                <Th className="w-[130px]">Made</Th>
+                <Th className="w-[130px]">Last used</Th>
+                <Th className="w-[130px]">Expires</Th>
+                <th className="w-[120px]" aria-label="Revoke" />
+              </tr>
+            </thead>
+            <tbody>
+              {tokens.map((t) => (
+                <tr key={t.id} className="h-10 border-b border-line last:border-0 hover:bg-ink/[0.03]">
+                  <td className="px-3">
+                    <span className="flex items-center gap-2">
+                      <Avatar login={t.login} size={18} />
+                      <span className="font-medium">{t.login}</span>
+                    </span>
+                  </td>
+                  <td className="px-3 text-ink/70">
+                    {t.label ?? ""}
+                    {t.canAnswer && <Badge className="ml-2">answers decisions</Badge>}
+                  </td>
+                  <td className="num whitespace-nowrap px-3 text-ink/65">{day(t.createdAt)}</td>
+                  <td className="num whitespace-nowrap px-3 text-ink/65">{t.lastUsedAt ? <TimeAgo iso={t.lastUsedAt} /> : "never"}</td>
+                  <td className="num whitespace-nowrap px-3 text-ink/65">{day(t.expiresAt)}</td>
+                  <td className="px-3 text-right">{revoke(t)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Block>
+  );
+}

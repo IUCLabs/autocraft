@@ -8,6 +8,8 @@ import type {
   ReleaseAction,
   DecisionKind,
   AccessOverview,
+  McpTokenCreated,
+  McpTokens,
   AccountInput,
   AgentRunDetail,
   ActivityPage,
@@ -207,6 +209,13 @@ export interface Api {
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
     setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo[]>;
   };
+  /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
+  mcp: {
+    tokens(): Promise<McpTokens>;
+    /** `answer`: operators only; the token's agent may also answer decisions, and it lasts 7 days. */
+    create(label: string, answer?: boolean): Promise<McpTokenCreated>;
+    revoke(id: number): Promise<McpTokens>;
+  };
   /** Operator only. */
   access: {
     overview(): Promise<AccessOverview>;
@@ -214,6 +223,7 @@ export interface Api {
     remove(login: string): Promise<AccessOverview>;
     setRole(login: string, role: Role): Promise<AccessOverview>;
     revokeSession(id: number): Promise<AccessOverview>;
+    revokeToken(id: number): Promise<AccessOverview>;
     audit(filter: AuditFilter): Promise<AuditPage>;
   };
   classifiers: {

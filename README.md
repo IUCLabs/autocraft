@@ -39,6 +39,7 @@ The image is the dashboard's home page (mock data). Each column is a stage with 
 - Only `src/github/write.ts` writes to GitHub. Every write is recorded in an audit table, and a test fails if another file writes.
 - Every GitHub write needs an operator's approval for that repo. Approvals are given on the dashboard and cannot be set from the CLI.
 - The dashboard needs GitHub sign-in. Roles are `operator` (answers, approvals, switches, accounts), `maintainer` (read and comment) and `viewer` (read only).
+- Contributors' own agents reach the Inbox through an MCP server on the dashboard (`POST /mcp`) with a personal token. They act with their user's role, and what they send back is feedback, the same as the dashboard's Feedback box: an operator still answers. An operator can opt a token in to answering decisions, but answering from an agent stays refused until AutoCraft has GitHub App sign-in, since an answer has to run as the user.
 - A pipeline switch (on/off) turns the whole pipeline off, a per-repo pipeline switch limits it to chosen repos, and each step has a daily limit.
 
 See [Trust boundary](docs/pipeline.md#trust-boundary).
@@ -152,6 +153,10 @@ Sign in at the base URL. Further users are added on the Access page or with `aut
 3. Pipeline page: turn the pipeline on, or `autocraft pipeline on`. Set daily limits with `autocraft pipeline limit <step> --per-day N`.
 
 `AUTOCRAFT_DEV_AUTH=1 autocraft dash serve` starts a local server with a fake GitHub sign-in on `127.0.0.1:8994`, with no secrets file.
+
+### Contributors' agents
+
+Maintainers (and operators) can work the Inbox from their own agent: from the user menu (top right, **Connect agent**) they make an agent token and get the command that adds the Inbox MCP server to Claude Code (`claude mcp add --transport http autocraft-inbox <base URL>/mcp --header "Authorization: Bearer <token>"`). Then they ask things like "is there anything open in photocraft I can help with?" or "give me 5 PRs that need a fix-up". The agent lists open decisions and held fix-ups, works one through with them locally, and sends their pick and note back as feedback. Answering and undoing from an agent is refused until AutoCraft offers GitHub App sign-in. See [Inbox MCP server](docs/operations.md#inbox-mcp-server).
 
 ### Deployment
 
