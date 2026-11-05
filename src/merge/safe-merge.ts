@@ -101,8 +101,9 @@ export function refuseRuns(runs: Run[], allow: string[] = [], failOk: string[] =
 /** Squashing another person's commits would drop their authorship, so it needs --merge. */
 export function refuseAuthors(c: Commits, method: Method): string | null {
   if (method === "--merge") return null;
-  // A bot PR author is the bare app slug; its commits carry `<slug>[bot]`.
-  const self = new Set([c.author.login, `${c.author.login}[bot]`]);
+  // gh names a bot PR author `app/<slug>`; its commits carry `<slug>[bot]`.
+  const login = c.author.login.replace(/^app\//, "");
+  const self = new Set([login, `${login}[bot]`]);
   const others = [...new Set(c.commits.flatMap((k) => k.authors.map((a) => a.login ?? a.email ?? a.name ?? "")))]
     .filter((a) => !self.has(a)).sort();
   return others.length ? `commits by ${others.join(", ")}: use --merge so their commits and authorship stay` : null;
