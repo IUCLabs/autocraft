@@ -398,6 +398,15 @@ function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).filter((e) => !(e.kind === "model-call" && taken.has(e.ref.runId ?? -1))).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
 }
 
+/** The header of a quiet pull request for viewers: the state only, without the planner's reasons and notes or the questions asked about it. */
+function veilHeader(h: ItemTraceHeader): ItemTraceHeader {
+  return {
+    ...h,
+    now: { ...h.now, text: h.now.state ?? "Not planned yet", waitsOn: null, reasons: [], note: null },
+    who: { ...h.who, openDecisions: h.who.openDecisions.map((d) => ({ ...d, question: "" })) },
+  };
+}
+
 function headerOf({ db, repo, n, own, hidden }: Ctx): ItemTraceHeader {
   const plan = db.prepare("SELECT head, state, actions, wait, reasons, note, view, planned_at FROM item_plans WHERE repo = ? AND number = ?").get(repo, n) as
     { head: string | null; state: string; actions: string; wait: string | null; reasons: string; note: string | null; view: string; planned_at: string } | undefined;
@@ -512,7 +521,7 @@ export async function trace(db: DatabaseSync, req: Req): Promise<ItemTrace | { u
   const rest = after ? events.filter((e) => e.at > after.at || (e.at === after.at && e.id > after.id)) : events;
   const page = rest.slice(0, limit).map(strip);
   const last = page[page.length - 1];
-  return { header: headerOf(c), events: page, nextCursor: rest.length > limit && last ? `${last.at}|${last.id}` : null, stamp };
+  return { header: c.veiled ? veilHeader(headerOf(c)) : headerOf(c), events: page, nextCursor: rest.length > limit && last ? `${last.at}|${last.id}` : null, stamp };
 }
 
 /** The fields an event keeps back from the list, for the kinds whose detail has no endpoint of its own (runs, build tasks and decisions have theirs). */
