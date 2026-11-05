@@ -126,13 +126,16 @@ export class CheckTool {
     this.limits = limits;
   }
 
+  /** Calls queued or running; the model call's idle watchdog counts a pending call as activity. */
+  active = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
   private open = new Set<number>();
 
   /** Runs one call at a time, so parallel calls from the model cannot get past the call and time limits. */
   run(raw: unknown, runId: number | null = null): Promise<CheckResult> {
-    const r = this.queue.then(() => this.runOne(raw, runId));
+    this.active++;
+    const r = this.queue.then(() => this.runOne(raw, runId)).finally(() => { this.active--; });
     this.queue = r.catch(() => undefined);
     return r;
   }
