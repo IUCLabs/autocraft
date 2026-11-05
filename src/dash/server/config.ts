@@ -98,7 +98,7 @@ export function readSecrets(path: string | undefined): Secrets {
 }
 
 /** The app's keys from a parsed secrets file; null unless all required ones are present. */
-function appSecretsOf(raw: Record<string, unknown>): AppSecrets | null {
+export function appSecretsOf(raw: Record<string, unknown>): AppSecrets | null {
   const opt = (k: string): string | null => (typeof raw?.[k] === "string" && (raw[k] as string).length > 0 ? (raw[k] as string) : null);
   const id = opt("github_app_id"), slug = opt("github_app_slug"), privateKey = opt("github_app_private_key");
   const clientId = opt("github_app_client_id"), clientSecret = opt("github_app_client_secret");
