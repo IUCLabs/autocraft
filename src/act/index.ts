@@ -20,7 +20,7 @@
 import { OPERATOR_MODELS } from "../prompts/index.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
+import { closeItem, commentOn, duplicateClose, type CloseHow, type Note, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow, type Kind } from "../decisions.ts";
 import { HEAD_FACT } from "../merge/queue.ts";
@@ -284,6 +284,13 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       const g = await guardItem(db, { repo: t.repo, number: t.number }, { kind: "act", bucket: t.kind, decisionId: t.decisionId }, params.by ?? CLI_BY);
       if ("refused" in g) { jobItem(db, t.repo, t.number, `not closed: ${g.refused}`, log); continue; }
       let url = prev?.comment_url ?? null;
+      // A duplicate's close reason needs the kept issue, read before the comment is posted and again here on a retry.
+      let how: CloseHow | undefined = t.kind === "scope" ? "NOT_PLANNED" : undefined;
+      if (t.kind === "duplicate" && url !== null) {
+        const orig = /^([\w.-]+)#(\d+)$/.exec(factValue(dec, DUP_FACT) ?? "");
+        const o = orig && orig[1] === t.repo ? await readLive(q, t.repo, Number(orig[2])) : null;
+        how = o && orig ? duplicateClose({ id: o.id, pr: o.type === "PullRequest" }, `${orig[1]}#${orig[2]}`) : "NOT_PLANNED";
+      }
       if (url === null) {
         let body: string;
         if (t.kind === "duplicate") {
@@ -291,13 +298,14 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
           if (!orig || orig[1] !== t.repo || Number(orig[2]) === t.number) { skip(t, "the decision names no other item of this repo as the original"); continue; }
           const o = await readLive(q, t.repo, Number(orig[2]));
           if (!o) { skip(t, "GitHub returned no such original"); continue; }
+          how = duplicateClose({ id: o.id, pr: o.type === "PullRequest" }, `${orig[1]}#${orig[2]}`);
           body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
         } else body = commentFor(dec, t);
         url = await commentOn(w, g, q, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);
       }
-      await closeItem(w, g, q, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head });
+      await closeItem(w, g, q, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head }, how);
       save(t, "done", null, url);
       db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
       summary.done.push(refOf(t));
@@ -352,7 +360,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       },
       live: (n) => readLive(q(), repo, n),
       comment: (live, body, at) => commentOn(w, asAnswerer(at.decision), q(), "act-comment", { repo, number: at.number, id: live.id }, decisionNote(getDecision(db, at.decision)!), body, { decision: at.decision }),
-      close: (live, at) => closeItem(w, asAnswerer(at.decision), q(), { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }),
+      close: (live, at, kept) => closeItem(w, asAnswerer(at.decision), q(), { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }, kept ? duplicateClose({ id: kept.id, pr: kept.type === "PullRequest" }, `${repo}#${kept.number}`) : "NOT_PLANNED"),
     };
     const g = await actOnGroups(db, {
       repo, io, at, log, dryRun: false,
