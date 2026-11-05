@@ -205,6 +205,7 @@ describe("pre-approved merge", () => {
     assert.equal((await cancelPreapproval(w.db, OPERATOR, "app", 18)).state, "cancelled");
     assert.equal(w.rows("SELECT state FROM merge_batches WHERE id = 5")[0]!.state, "superseded");
     assert.deepEqual(answerOf(w, 18, "sha18b"), [{ answer: null }]);
+    assert.equal(w.rows("SELECT 1 FROM merge_holds WHERE number = 18").length, 0);
   });
 
   test("an operator fix-up may edit any file but the protected ones, and its comment lists the model's changes", () => {

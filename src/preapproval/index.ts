@@ -25,7 +25,7 @@ import { mergeApprovalOf } from "../merge/approval.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
 import { withdrawOtherHeadQuestions } from "../merge/withdraw.ts";
 import { findingsOf, premergeAt } from "../premerge/store.ts";
-import { removeFromBatch } from "../merge/controls.ts";
+import { releaseMerge, removeFromBatch } from "../merge/controls.ts";
 import type { Exec } from "../fixup/git.ts";
 import { markReviewsStale, staleReviews } from "../review/discussion.ts";
 import type { PrFacts } from "../core/plan.ts";
@@ -428,7 +428,7 @@ const inActiveBatch = (db: DatabaseSync, repo: string, n: number): boolean =>
 
 /**
  * An operator cancels the PR's pre-approved merge before the merge queue has merged it. A queued PR in an integration batch is first
- * removed from the batch (the operator control: the batch PR is closed and the PR is held) unless the merge is running.
+ * removed from the batch (the operator control: the batch PR is closed; the hold it sets is released) unless the merge is running.
  * Throws when there is none or the queue is past stopping it.
  */
 export async function cancelPreapproval(db: DatabaseSync, by: string, repo: string, n: number, run?: Exec): Promise<Preapproval> {
@@ -437,7 +437,10 @@ export async function cancelPreapproval(db: DatabaseSync, by: string, repo: stri
   const state = (db.prepare("SELECT state FROM preapprovals WHERE id = ?").get(p.id) as { state: string }).state;
   if (state === "queued" && inActiveBatch(db, repo, n)) {
     if (mergeRunning(db, repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
+    // The removal holds the PR's merge; a hold that was there before stays, the one the removal set is released again.
+    const heldBefore = !!db.prepare("SELECT 1 FROM main.merge_holds WHERE repo = ? AND number = ?").get(repo, n);
     await removeFromBatch(db, by, repo, n, run);
+    if (!heldBefore) releaseMerge(db, by, repo, n);
   }
   // The state change and the take-back of the hand-over answer are one transaction, so the merge queue never sees a cancelled row with a live answer.
   if (!cancelRow(db, p.id, by, `cancelled by ${by}`, `${by} cancelled the pre-approved merge.`, true)) throw new Error("the pre-approved merge changed a moment ago");
