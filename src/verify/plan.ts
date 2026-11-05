@@ -1,5 +1,5 @@
 // The planner's reply, validated hard: anything that does not check out is an error and creates no task.
-import { KINDS, MAX_CRATES, MAX_FILTERS, MAX_TEST_LINES, REGRESSION_FILE, type Crate, type Kind } from "./types.ts";
+import { KINDS, MAX_CRATES, MAX_FILTERS, MAX_TEST_LINES, regressionName, type Crate, type Kind } from "./types.ts";
 
 export const FILTER_RE = /^[A-Za-z0-9_:]{1,100}$/;
 const MAX_REASON_WORDS = 25;
@@ -7,19 +7,19 @@ const MAX_REASON_WORDS = 25;
 export type VerifyPlan =
   | { kind: "ci-enough"; reason: string }
   | { kind: "tests"; reason: string; crates: string[]; tests: string[] }
-  | { kind: "regression"; reason: string; crate: string; dir: string; patch: string };
+  | { kind: "regression"; reason: string; crate: string; dir: string; test: string; patch: string };
 
 export type Parsed = { ok: true; plan: VerifyPlan } | { ok: false; error: string };
 
 const fail = (error: string): Parsed => ({ ok: false, error });
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-/** Path of the regression test file for a crate directory ("." is the repo root). */
-export const regressionPath = (dir: string): string => (dir === "." ? REGRESSION_FILE : `${dir}/${REGRESSION_FILE}`);
+/** Path of the test file `name` (a cargo test target name) for a crate directory ("." is the repo root). */
+export const regressionPath = (dir: string, name: string): string => (dir === "." ? `tests/${name}.rs` : `${dir}/tests/${name}.rs`);
 
-/** The diff that adds `content` as the crate's regression test file. */
-export function patchFor(dir: string, content: string): string {
-  const path = regressionPath(dir);
+/** The diff that adds `content` as the crate's test file `name`. */
+export function patchFor(dir: string, name: string, content: string): string {
+  const path = regressionPath(dir, name);
   const body = content.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
   return `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${body.length} @@\n${body.map((l) => `+${l}`).join("\n")}\n`;
 }
@@ -75,8 +75,9 @@ export function parsePlanReply(text: string, ref: string, crates: Crate[], label
   if (!c || typeof o.crate !== "string") return fail("crate is not in the workspace");
   if (!/^[A-Za-z0-9_./-]+$/.test(c.dir) || c.dir.split("/").includes("..")) return fail("crate directory is not a plain path");
   if (typeof o.test_file !== "string" || !o.test_file.trim()) return fail("test_file is missing");
-  const patch = patchFor(c.dir, o.test_file);
-  const problem = patchProblem(patch, regressionPath(c.dir));
+  const test = regressionName(Number(ref.slice(ref.lastIndexOf("#") + 1)));
+  const patch = patchFor(c.dir, test, o.test_file);
+  const problem = patchProblem(patch, regressionPath(c.dir, test));
   if (problem) return fail(problem);
-  return { ok: true, plan: { kind, reason, crate: c.name, dir: c.dir, patch } };
+  return { ok: true, plan: { kind, reason, crate: c.name, dir: c.dir, test, patch } };
 }

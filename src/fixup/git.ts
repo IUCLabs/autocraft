@@ -119,7 +119,13 @@ export class Git {
     const env = { GIT_INDEX_FILE: indexFile };
     await this.must(["read-tree", head], { env });
     const chk = await this.git(["apply", "--cached", "--check", "--verbose", "--whitespace=nowarn", "-"], { input: patch, env });
-    if (chk.code !== 0) return { ok: false, reason: `git apply --check: ${chk.stderr.trim().split("\n")[0] ?? "failed"}`.slice(0, 200) };
+    if (chk.code !== 0) {
+      // --verbose puts "Checking patch <path>..." lines first; the cause is on the "error:" lines.
+      const lines = chk.stderr.split("\n").map((l) => l.trim()).filter(Boolean);
+      const errors = lines.filter((l) => l.startsWith("error:")).map((l) => l.slice(6).trim());
+      const why = errors.length ? errors.join("; ") : lines.at(-1) ?? "failed";
+      return { ok: false, reason: `git apply --check: ${why}`.slice(0, 500) };
+    }
     // In the files in `exact` (shown in part), a hunk found elsewhere than its header says may sit on a block the model never saw.
     let current = "";
     let offset = false;

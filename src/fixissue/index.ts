@@ -43,6 +43,7 @@ import { cachedCrates, ghApi, ghCrates, type CratesFetcher } from "../verify/cra
 import { cloneTask, queueWarmBuild } from "../verify/tasks.ts";
 import { outcomeOf, summariseFailure } from "../verify/results.ts";
 import { regressionPath } from "../verify/plan.ts";
+import { regressionName } from "../verify/types.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_PATCH_CAP, type FixIssueCheckInput } from "../patchcheck/types.ts";
 import { fixIssueApprovalOf } from "./approval.ts";
@@ -190,19 +191,19 @@ function issueText(db: DatabaseSync, c: { repo: string; number: number; title: s
 
 // ---- sandbox tasks -------------------------------------------------------------
 
-const regressionStep = (crate: string): TaskStep =>
-  ({ name: "regression", cmd: ["cargo", "test", "--offline", "--locked", "-p", crate, "--test", "autocraft_regression"], network: "none", timeoutSec: 3600 });
+const regressionStep = (crate: string, test: string): TaskStep =>
+  ({ name: "regression", cmd: ["cargo", "test", "--offline", "--locked", "-p", crate, "--test", test], network: "none", timeoutSec: 3600 });
 
 /** A warm-build key the task store accepts: ^[a-z0-9][a-z0-9-]{0,63}$. */
 
 /** Head: main plus the full patch, the crate's tests and the regression test. Base: main plus the test file, expected to fail. */
-export function tasksFor(r: { repo: string; number: number | null; main_sha: string; crate: string }, patch: string, testPatch: string, step = "fixissue"): NewTask[] {
+export function tasksFor(r: { repo: string; number: number | null; main_sha: string; crate: string; test: string }, patch: string, testPatch: string, step = "fixissue"): NewTask[] {
   const common = { step, repo: r.repo, number: r.number, headSha: r.main_sha, baseSha: r.main_sha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: warmKeyOf(r.repo), role: "use" as const } };
   const steps = rustPlan({ cargoArgs: ["-p", r.crate] });
   // The head task also formats and lints the files the patch changes; the base task only has to fail the regression test.
   const lint = lintSteps(changedRsFiles(patch));
-  const baseSteps = steps.map((s): TaskStep => (s.name === "test" ? { ...s, cmd: [...s.cmd, "--test", "autocraft_regression"] } : s));
-  return [{ ...common, plan: [...steps, regressionStep(r.crate), ...lint], patch }, { ...common, plan: baseSteps, patch: testPatch }];
+  const baseSteps = steps.map((s): TaskStep => (s.name === "test" ? { ...s, cmd: [...s.cmd, "--test", r.test] } : s));
+  return [{ ...common, plan: [...steps, regressionStep(r.crate, r.test), ...lint], patch }, { ...common, plan: baseSteps, patch: testPatch }];
 }
 
 // ---- running: triage and patch rounds -------------------------------------------
@@ -348,7 +349,7 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
   const ref = refOf(r);
   const round = r.round + 1;
   const files = JSON.parse(r.files ?? "[]") as string[];
-  const testPath = regressionPath(r.crate_dir!);
+  const testPath = regressionPath(r.crate_dir!, regressionName(r.number));
   const row = attemptOf(db, r.repo, r.number)!;
   try {
     if (!(await git.fetchBranch(ownerOf(r.repo), r.repo, branchOf(db, r.repo), r.main_sha))) { fail(db, d, row, "the base commit is no longer in the repository"); return false; }
@@ -374,9 +375,9 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     crate: { name: r.crate!, dir: r.crate_dir! }, test_path: testPath, files: shown,
     ...(round > 1 && r.patch ? { previous: { patch: r.patch.slice(0, 60_000), failure: r.summary ?? "it did not pass" } } : {}),
   };
-  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number, checkout, (p) => refusal(validateFixPatch(p, files, testPath, r.crate_dir!)));
+  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number, checkout, (p) => refusal(validateFixPatch(p, files, testPath, r.crate_dir!, regressionName(r.number))));
   if (reply === null) { roundFailed(db, d, row, round, "the model gave no answer", r.patch, log); return false; }
-  const v = validateFixPatch(reply, files, testPath, r.crate_dir!);
+  const v = validateFixPatch(reply, files, testPath, r.crate_dir!, regressionName(r.number));
   if (!v.ok) { roundFailed(db, d, row, round, v.reason, reply.slice(0, 60_000), log); return false; }
   const scratch = mkdtempSync(join(d.root, ".index-"));
   let applied;
@@ -387,7 +388,7 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
   }
   if (!applied.ok) { roundFailed(db, d, row, round, applied.reason, v.patch, log); return false; }
   try {
-    const ids = tasksFor({ repo: r.repo, number: r.number, main_sha: r.main_sha, crate: r.crate! }, v.patch, v.testPatch).map((t) => createTask(db, t));
+    const ids = tasksFor({ repo: r.repo, number: r.number, main_sha: r.main_sha, crate: r.crate!, test: regressionName(r.number) }, v.patch, v.testPatch).map((t) => createTask(db, t));
     queueWarmBuild(db, r.repo, r.main_sha);
     update(db, d, r, { state: "testing", round, patch: v.patch, test_patch: v.testPatch, head_task_id: ids[0]!, base_task_id: ids[1]!, summary: null });
     log(`  ${ref}: round ${round}: ${v.files.join(", ")} (${v.changed} lines); tasks ${ids.join(", ")} queued`);
@@ -551,7 +552,7 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
   const issue = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { title: string | null; body: string | null } | undefined;
   const input: FixIssueCheckInput = {
     ...issueText(db, { repo: r.repo, number: r.number, title: issue?.title ?? "", body: issue?.body ?? "" }),
-    triage_reason: r.reason ?? "", patch, test_path: regressionPath(r.crate_dir!),
+    triage_reason: r.reason ?? "", patch, test_path: regressionPath(r.crate_dir!, regressionName(r.number)),
   };
   const reply = await ask(x, "fixissue.check", input, { repo: r.repo, sha: r.main_sha });
   if (reply === null) return failRound("the patch check gave no answer");
@@ -615,7 +616,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
   const { db, d, git, log } = x;
   const ref = refOf(r);
   const files = (JSON.parse(r.files ?? "[]") as string[]);
-  const testPath = regressionPath(r.crate_dir!);
+  const testPath = regressionPath(r.crate_dir!, regressionName(r.number));
   const tried = (): void => {
     if (r.push_tries + 1 >= MAX_PUSH_TRIES) fail(db, d, r, "could not open the pull request");
     else update(db, d, r, { push_tries: r.push_tries + 1 });

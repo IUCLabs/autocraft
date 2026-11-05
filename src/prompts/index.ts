@@ -37,7 +37,7 @@ import { AREAS_MAX as SECURITY_AREAS_MAX, FIX_ROUNDS, MIN_CONFIDENCE, MIN_VERIFY
 import { CLAIM_COMMENT_TEMPLATE as FIXISSUE_CLAIM, COMMENT_TEMPLATE as FIXISSUE_COMMENT, PR_BODY_TEMPLATE, PR_TITLE_TEMPLATE } from "../fixissue/template.ts";
 import { MAX_FILES, MAX_PATHS, MAX_ROUNDS, ISSUE_BODY_LIMIT, SAMPLE_PATCH, SAMPLE_TRIAGE, TRIAGE_REASON_WORDS, type PatchInput, type TriageInput } from "../fixissue/types.ts";
 import { REASON_WORDS as MAINFIX_REASON_WORDS, SAMPLE_MAIN_FIX, type MainFixInput } from "../mainfix/types.ts";
-import { MAX_CRATES, MAX_FILTERS, MAX_SUMMARY_WORDS, MAX_TEST_LINES, PLAN_BODY_LIMIT, REGRESSION_FILE, SAMPLE_VERIFY_PLAN, SAMPLE_VERIFY_SUMMARY, SUMMARY_LOG_BYTES, type VerifyPlanInput, type VerifySummaryInput } from "../verify/types.ts";
+import { MAX_CRATES, MAX_FILTERS, MAX_SUMMARY_WORDS, MAX_TEST_LINES, PLAN_BODY_LIMIT, SAMPLE_VERIFY_PLAN, SAMPLE_VERIFY_SUMMARY, SUMMARY_LOG_BYTES, type VerifyPlanInput, type VerifySummaryInput } from "../verify/types.ts";
 
 /** Jev calls at once unless the `jev_parallel` setting says otherwise (Jev has no accounts, so no slots limit it). */
 export const JEV_PARALLEL_DEFAULT = 4;
@@ -461,14 +461,14 @@ const VERIFY_PLAN: ClaudePrompt = {
   purpose: "Chooses what verification a taken pull request needs beyond GitHub CI: nothing, or (for bug fixes that change a test file) a regression test that fails before the change and passes after. In a repo without upstream CI it may also choose a build with named tests.",
   models: ["sonnet"],
   effort: "medium",
-  placeholders: { pr: `The pull request as a JSON object indented by one space: ref, title, body (first ${PLAN_BODY_LIMIT} characters), label (settled type label or null), ci (whether the repo has upstream CI), review (verdict, reason, risks, fixes), crates (the workspace's crate names and directories), files (code files changed), tests_omitted (test paths left out of the diff) and diff (the unified diff of the code files).`, repo_access: REPO_ACCESS_DOC },
+  placeholders: { pr: `The pull request as a JSON object indented by one space: ref, title, body (first ${PLAN_BODY_LIMIT} characters), test_file_name (the file name for a regression test), label (settled type label or null), ci (whether the repo has upstream CI), review (verdict, reason, risks, fixes), crates (the workspace's crate names and directories), files (code files changed), tests_omitted (test paths left out of the diff) and diff (the unified diff of the code files).`, repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
   template: `You plan the automated verification of one open pull request on a Rust project, after it has been reviewed and taken. When the ci field is true, the project's GitHub CI runs the full formatting, lint and test gate on the pull request, so you only add evidence CI cannot give. When ci is false, the project has no CI and the machine is the only check. The machine builds the head commit, runs the tests you name and reports exit codes. You never judge the result.
 
 Choose one kind:
 - "ci-enough": the change needs nothing beyond CI (always the answer for a ci true pull request unless a regression test is clearly worth it): documentation, comments, formatting, CI or tooling files, translations, data files, or changes whose behaviour the existing tests clearly cover.
 - "tests": only when ci is false. Build and run tests. Name the crates the change touches in "crates" (at most ${MAX_CRATES}, exact names from the crates field) and optionally "tests": up to ${MAX_FILTERS} test-name filters (letters, digits, "_" and ":" only) for the tests that exercise the change. With no filters, all tests of those crates run.
-- "regression": only when label is "bugfix" and the bug can be shown by one small test. Write that test: a new Rust integration test file that fails on the code before the change and passes with it. Give "crate" (one exact name from the crates field) and "test_file": the full contents of the file, which the system saves as <crate directory>/${REGRESSION_FILE} (at most ${MAX_TEST_LINES} lines). Use only the crate's public API as the diff shows it; no network, no files outside a temporary directory, no new dependencies. If you cannot write such a test with confidence, choose "ci-enough" when ci is true and "tests" when ci is false.
+- "regression": only when label is "bugfix" and the bug can be shown by one small test. Write that test: a new Rust integration test file that fails on the code before the change and passes with it. Give "crate" (one exact name from the crates field) and "test_file": the full contents of the file, which the system saves as <crate directory>/tests/<test_file_name> (test_file_name is given in the pull request JSON; at most ${MAX_TEST_LINES} lines). Use only the crate's public API as the diff shows it; no network, no files outside a temporary directory, no new dependencies. If you cannot write such a test with confidence, choose "ci-enough" when ci is true and "tests" when ci is false.
 
 Rules:
 - reason: at most 25 words, plain.
@@ -484,7 +484,7 @@ Leave out the fields the kind does not use.
 {{pr}}
 </pr>`,
   output: `A JSON array with one object: {"ref", "kind", "reason", and by kind "crates" and "tests", or "crate" and "test_file"}.`,
-  validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON and must hold one object whose ref is the one asked. kind must be ci-enough, tests or regression, and tests is refused when ci is true; reason is cut to 25 words. crates must be 1 to ${MAX_CRATES} names from the workspace's crate list; each test filter must match [A-Za-z0-9_:]{1,100}. A regression is accepted only for a bugfix PR, with a test file of at most ${MAX_TEST_LINES} lines for a listed crate; it is turned into a patch that adds <crate directory>/${REGRESSION_FILE} and nothing else. Anything else is stored as an error and no task is created. A call without a valid answer is made once more.`,
+  validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON and must hold one object whose ref is the one asked. kind must be ci-enough, tests or regression, and tests is refused when ci is true; reason is cut to 25 words. crates must be 1 to ${MAX_CRATES} names from the workspace's crate list; each test filter must match [A-Za-z0-9_:]{1,100}. A regression is accepted only for a bugfix PR, with a test file of at most ${MAX_TEST_LINES} lines for a listed crate; it is turned into a patch that adds <crate directory>/tests/<test_file_name> and nothing else. Anything else is stored as an error and no task is created. A call without a valid answer is made once more.`,
   limits: { perCall: 1, attempts: 2, timeoutSeconds: 600 },
 };
 

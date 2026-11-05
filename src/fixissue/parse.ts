@@ -53,7 +53,7 @@ export type FixPatchCheck = ({ ok: true } & FixPatch) | { ok: false; reason: str
  * Splits the reply into edits of the `allowed` files and one new `testPath`. The test file is rebuilt from
  * its added lines so the stored patch has the canonical header; everything else goes through validatePatch.
  */
-export function validateFixPatch(text: string, allowed: string[], testPath: string, crateDir: string): FixPatchCheck {
+export function validateFixPatch(text: string, allowed: string[], testPath: string, crateDir: string, test: string): FixPatchCheck {
   const diff = extractDiff(text);
   if (!diff.startsWith("diff --git ")) return { ok: false, reason: "the reply is not a unified diff" };
   const chunks = diff.split(/^(?=diff --git )/m).filter((c) => c.trim());
@@ -75,7 +75,7 @@ export function validateFixPatch(text: string, allowed: string[], testPath: stri
   const bad = patchProblem(canon, testPath);
   if (bad) return { ok: false, reason: `test file: ${bad}` };
   const content = lines.slice(5).map((l) => l.slice(1)).join("\n");
-  const testPatch = patchFor(crateDir, content);
+  const testPatch = patchFor(crateDir, test, content);
   if (testPatch !== canon) return { ok: false, reason: "test file: not a plain new file" };
   const testLines = lines.length - 5;
   const changed = fix.changed + testLines;

@@ -57,6 +57,6 @@ export const SAMPLE_FIXISSUE_CHECK: FixIssueCheckInput[] = [{
   ref: "photocraft#1279", title: "Crash when opening a 16-bit PNG with alpha",
   body: "Opening a 16-bit RGBA PNG panics in the decoder: index out of bounds in decode_rows.", comments: [],
   triage_reason: "Stride ignores the sample size of 16-bit images.",
-  test_path: "crates/codecs/tests/autocraft_regression.rs",
+  test_path: "crates/codecs/tests/autocraft_regression_1279.rs",
   patch: "diff --git a/crates/codecs/src/png.rs b/crates/codecs/src/png.rs\n--- a/crates/codecs/src/png.rs\n+++ b/crates/codecs/src/png.rs\n@@ -1,3 +1,3 @@\n fn stride(width: usize, channels: usize) -> usize {\n-    width * channels\n+    width * channels * 2\n }\n",
 }];

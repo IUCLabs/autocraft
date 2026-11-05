@@ -417,7 +417,7 @@ describe("issue journey", () => {
   });
 
   test("a classified issue gets a scope decision; once an operator says take, a fix is built, checked and opened as a PR", async () => {
-    const lib = "crates/app/src/lib.rs", test = "crates/app/tests/autocraft_regression.rs";
+    const lib = "crates/app/src/lib.rs", test = "crates/app/tests/autocraft_regression_5.rs";
     const fix = `diff --git a/${lib} b/${lib}\n--- a/${lib}\n+++ b/${lib}\n@@ -1,3 +1,3 @@\n pub fn first(v: &[u8]) -> u8 {\n-    v[0]\n+    v.first().copied().unwrap_or(0)\n }\n`;
     const newTest = `diff --git a/${test} b/${test}\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/${test}\n@@ -0,0 +1,4 @@\n+#[test]\n+fn empty_slice_does_not_panic() {\n+    assert_eq!(app::first(&[]), 0);\n+}\n`;
     const w = fresh().issue(5, { flags: ["needs decision"] }).models((input) => {

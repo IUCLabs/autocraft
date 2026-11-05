@@ -49,10 +49,10 @@ running 412 tests
 test result: ok. 412 passed; 0 failed; 0 ignored; finished in 18.40s
 `;
 
-const PATCH = `diff --git a/crates/codecs/tests/autocraft_regression.rs b/crates/codecs/tests/autocraft_regression.rs
+const PATCH = `diff --git a/crates/codecs/tests/autocraft_regression_1287.rs b/crates/codecs/tests/autocraft_regression_1287.rs
 new file mode 100644
 --- /dev/null
-+++ b/crates/codecs/tests/autocraft_regression.rs
++++ b/crates/codecs/tests/autocraft_regression_1287.rs
 @@ -0,0 +1,12 @@
 +use codecs::png::decode;
 +
