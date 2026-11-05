@@ -32,6 +32,8 @@ export interface Provider {
   identity(access: string): Promise<GithubUser | null>;
   /** Revokes a token at the provider; callers ignore failures. */
   revoke(access: string): Promise<void>;
+  /** Revokes the whole authorization behind a token: every token of that user for this app dies with it. Callers ignore failures. */
+  revokeGrant(access: string): Promise<void>;
   // "unauthorized": the access token is expired or revoked. Throws on a
   // transport failure, so a GitHub outage isn't cached as "none".
   permission(access: string, repo: string): Promise<Permission | "unauthorized">;
@@ -84,8 +86,14 @@ export class GitHubProvider implements Provider {
     // A rejected code or refresh token answers 200 with an `error` field.
     return tokensFrom((await r.json()) as Record<string, unknown>);
   }
-  async revoke(access: string): Promise<void> {
-    await fetch(`https://api.github.com/applications/${encodeURIComponent(this.#id)}/token`, {
+  revoke(access: string): Promise<void> {
+    return this.#deleteApplication("token", access);
+  }
+  revokeGrant(access: string): Promise<void> {
+    return this.#deleteApplication("grant", access);
+  }
+  async #deleteApplication(what: "token" | "grant", access: string): Promise<void> {
+    await fetch(`https://api.github.com/applications/${encodeURIComponent(this.#id)}/${what}`, {
       method: "DELETE",
       headers: {
         authorization: `Basic ${Buffer.from(`${this.#id}:${this.#secret}`).toString("base64")}`, accept: "application/vnd.github+json",
@@ -173,6 +181,14 @@ export class FakeProvider implements Provider {
   async revoke(access: string): Promise<void> {
     this.#access.delete(access);
     this.revoked.push(access);
+  }
+  revokedGrants: string[] = [];
+  async revokeGrant(access: string): Promise<void> {
+    this.revokedGrants.push(access);
+    const t = this.#access.get(access);
+    if (!t) return;
+    for (const [a, v] of this.#access) if (v.login === t.login) this.#access.delete(a);
+    for (const [r, l] of this.#refresh) if (l === t.login) this.#refresh.delete(r);
   }
   async refresh(refreshToken: string): Promise<Tokens | null> {
     const login = this.#refresh.get(refreshToken);

@@ -333,7 +333,7 @@ describe("github app registration", () => {
     assert.equal((await second.post("/auth/setup/manager", {})).status, 303);
     assert.deepEqual(rolePuts, ["/orgs/glasswing/organization-roles/users/boss/8140"]);
     const row = db.prepare("SELECT details FROM audit WHERE action = 'github-app-manager'").get() as { details: string };
-    assert.deepEqual(JSON.parse(row.details), { user: "boss", role: "GitHub App Manager", roleId: 8140, state: "done" });
+    assert.deepEqual(JSON.parse(row.details), { user: "boss", role: "GitHub App Manager", roleId: 8140, identity: "user:alice", state: "done" });
     const id = (db.prepare("SELECT id FROM github_setup_links WHERE hash = ?").get(sha256hex(path2.split("/").pop()!)) as { id: string }).id;
     assert.equal((await boss.json("/api/admin/github-app/links/revoke", { id })).status, 200);
     assert.equal((await get(new Client(s.url), path2)).r.status, 410);

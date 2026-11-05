@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Role, User } from "../types.ts";
 import { randomToken, sha256hex, type TokenBox } from "./crypto.ts";
-import { updateUserTokens } from "./user-tokens.ts";
+import { shareRefresh } from "./user-tokens.ts";
 import { REPO_NAME, WRITE_PERMISSIONS, type Provider, type Tokens } from "./provider.ts";
 
 const DAY = 86_400_000;
@@ -114,10 +114,20 @@ async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, 
         console.error(`token refresh: ${(e as Error).message}`);
         return undefined;
       }
-      if (!next) return end();
+      if (!next) {
+        // The vault (another process) may have used this single-use refresh token first and stored the new pair here.
+        for (let i = 0; i < 4; i++) {
+          const again = db.prepare("SELECT token_enc FROM sessions WHERE id_hash = ?").get(idHash) as { token_enc: string | null } | undefined;
+          const shared = again ? openTokens(box, again.token_enc, idHash) : null;
+          if (shared && shared.refresh !== t.refresh) return shared.access;
+          if (!mirror) break;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return end();
+      }
       db.prepare("UPDATE sessions SET token_enc = ? WHERE id_hash = ?").run(sealTokens(box, next, idHash), idHash);
-      // The old refresh token is dead now, so user_tokens must hold the new pair too.
-      if (mirror) updateUserTokens(db, box, row.login, next);
+      // The old refresh token is dead now, so every other copy of it (user_tokens, sessions of the same sign-in) takes the new pair.
+      if (mirror) shareRefresh(db, box, row.login, t.refresh, next);
       return next.access;
     })().finally(() => refreshing.delete(idHash));
     refreshing.set(idHash, p);

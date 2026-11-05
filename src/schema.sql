@@ -235,7 +235,14 @@ CREATE TABLE IF NOT EXISTS user_tokens (
   token_enc TEXT NOT NULL,            -- sealed JSON of the whole token set (access, refresh, expiry times), like sessions.token_enc
   version INTEGER NOT NULL DEFAULT 1, -- compare-and-swap counter for refreshes
   updated_at TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'ok'   -- ok; later steps add refresh-failed and revoked
+  status TEXT NOT NULL DEFAULT 'ok'   -- ok; refresh-failed: the refresh token is dead or expired, the login must sign in again
+);
+-- Sealed token sets of removed user_tokens rows, waiting for the dashboard to revoke their grant at GitHub (best effort, then deleted).
+CREATE TABLE IF NOT EXISTS user_token_revocations (
+  id INTEGER PRIMARY KEY,
+  login TEXT NOT NULL,
+  token_enc TEXT NOT NULL,            -- sealed like user_tokens.token_enc
+  queued_at TEXT NOT NULL
 );
 
 -- One row per started GitHub App registration: the manifest flow's single-use state nonce.
