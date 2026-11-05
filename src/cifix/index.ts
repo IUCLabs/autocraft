@@ -7,6 +7,7 @@
 //
 //   autocraft cifix --repo R [--limit N] [--apply]
 //   autocraft cifix-rerun --repo R [--limit N] [--apply]
+import { duplicateHeld } from "../dupes/held.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -537,6 +538,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   /** Sonnet patches the code from the log, Opus checks the patch. */
   /** The CI fix starts work on the PR (a model patch or a formatter run): the pipeline's account is assigned when nobody is. */
   const claim = async (c: CifixCandidate): Promise<void> => {
+    if (duplicateHeld(db, repo, c.number)) { log(`  ${repo}#${c.number}: not assigned: held`); return; }
     const by = params.by ?? CLI_BY;
     const g = [guardRepo(db, repo, "push", by), guardRepo(db, repo, "comment", by)].find((x) => !("refused" in x));
     if (g && !("refused" in g)) await claimForWork({ db, login: ACTOR }, g, d.querier, repo, c.number, "pr", () => viewerOf(d.querier), { run: runId }, log);

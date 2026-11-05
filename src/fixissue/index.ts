@@ -271,6 +271,7 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
 async function assignIssue(x: Ctx, c: IssueCandidate): Promise<void> {
   const { db, d, log } = x;
   if (!d.querier) return;
+  if (duplicateHeld(db, c.repo, c.number)) { log(`  ${refOf(c)}: not assigned: held`); return; }
   const g = guardRepo(db, c.repo, "fix-issue", x.by ?? CLI_BY);
   if ("refused" in g) { log(`  ${refOf(c)}: not assigned: ${g.refused}`); return; }
   await claimForWork({ db, login: ACTOR }, g, d.querier, c.repo, c.number, "issue", () => viewerOf(d.querier!), { run: x.runId }, log);

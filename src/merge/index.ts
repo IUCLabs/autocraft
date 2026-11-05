@@ -365,12 +365,12 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       log(`  ${refOf(e)}: new comments or reviews since the final review; not merged, it is reviewed again first`);
       continue;
     }
+    // A hold may have been set during the calls above.
+    if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }
     const ag = guardRepo(db, repo, "merge", params.by ?? CLI_BY);
     if ("refused" in ag) log(`  ${refOf(e)}: not assigned: ${ag.refused}`);
     else await claimForWork(w, ag, d.querier, repo, e.number, "pr", () => viewerOf(d.querier), { run: runId }, log);
     const method = methodOf(info);
-    // A hold may have been set during the calls above.
-    if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }
     const g = await guard(db, { repo, number: e.number }, { kind: "merge", head: e.head, ...(e.path === "operator" ? { decisionId: e.decisionId ?? undefined } : {}) }, params.by ?? CLI_BY, liveOf(db, d.querier));
     if ("refused" in g) {
       // Not recorded as a merge attempt: the PR is tried again once the reason is gone.

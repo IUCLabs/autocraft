@@ -415,8 +415,8 @@ function settleCancelled(db: DatabaseSync): void {
  * review and CI runs again before the hand-over answers the Merge? question at H2. One row per (PR, H2); the row's existence is the memory.
  */
 function carryAnswers(db: DatabaseSync): void {
-  const pushes = db.prepare(`SELECT c.repo, c.number, c.head AS from_head, c.to_head, 'CI fix' AS what FROM ci_fixes c WHERE c.state IN ('pushing', 'pushed') AND c.to_head IS NOT NULL
-    UNION SELECT m.repo, m.number, m.from_head, m.to_head, 'conflict merge' FROM conflict_merges m WHERE m.state IN ('pushing', 'merged') AND m.to_head IS NOT NULL`).all() as { repo: string; number: number; from_head: string; to_head: string; what: string }[];
+  const pushes = db.prepare(`SELECT c.repo, c.number, c.head AS from_head, c.to_head, 'CI fix' AS what FROM ci_fixes c WHERE c.state IN ('pushing', 'pushed') AND c.to_head IS NOT NULL AND c.repo IN (SELECT name FROM main.tracked_repos)
+    UNION SELECT m.repo, m.number, m.from_head, m.to_head, 'conflict merge' FROM conflict_merges m WHERE m.state IN ('pushing', 'merged') AND m.to_head IS NOT NULL AND m.repo IN (SELECT name FROM main.tracked_repos)`).all() as { repo: string; number: number; from_head: string; to_head: string; what: string }[];
   for (const x of pushes) {
     const it = prRow(db, x.repo, x.number);
     if (!it || it.kind !== "pr" || it.state !== "OPEN" || it.head_oid !== x.to_head) continue;
@@ -453,7 +453,7 @@ export function advancePreapprovals(db: DatabaseSync, log: (line: string) => voi
   } catch (e) {
     log(`preapproval requests: ${(e as Error).message}`);
   }
-  const rows = db.prepare(`SELECT * FROM preapprovals WHERE state IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id`).all(...ACTIVE) as Row[];
+  const rows = db.prepare(`SELECT * FROM preapprovals WHERE state IN (${ACTIVE.map(() => "?").join(",")}) AND repo IN (SELECT name FROM main.tracked_repos) ORDER BY id`).all(...ACTIVE) as Row[];
   for (const p of rows) {
     try {
       advance(db, p);
