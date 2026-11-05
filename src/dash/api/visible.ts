@@ -5,6 +5,7 @@
 // Every query that spans repos must go through this.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { trackedNames } from "../../repos.ts";
+import { DEFAULT_OWNER, ownerOf } from "../../owners.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, User } from "../types.ts";
 
@@ -26,6 +27,13 @@ export function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   let p = memo.get(req);
   if (!p) memo.set(req, (p = visibleTo(db, req.user)));
   return p;
+}
+
+/** Owner of each visible repo that is not storytold's; the web app builds GitHub links from it. */
+export async function repoOwners(db: DatabaseSync, req: Req): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const r of await visibleRepos(db, req)) if (ownerOf(r) !== DEFAULT_OWNER) out[r] = ownerOf(r);
+  return out;
 }
 
 /** Tracked repos the requester may not see (empty for operators and when every repo is public). */

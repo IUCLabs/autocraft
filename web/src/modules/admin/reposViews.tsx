@@ -97,9 +97,9 @@ export function ReposView(_: ViewProps) {
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Repo name"
+            placeholder="Repo name or owner/name"
             aria-label="Repo to track"
-            className="flex-1 sm:w-48"
+            className="flex-1 sm:w-64"
           />
           <Button
             type="submit"
@@ -116,7 +116,7 @@ export function ReposView(_: ViewProps) {
       <Block
         className="mt-3"
         flush
-        title="Org repos"
+        title="Repos"
         aside={phone ? undefined : "Open counts come from the last sync"}
       >
         {!data && !error && <p className="p-4 text-sm text-ink/50">Loading…</p>}

@@ -1,4 +1,4 @@
-// Mirror of every issue and PR of the storytold org into SQLite, via `gh api graphql`.
+// Mirror of every issue and PR of the tracked owners (storytold and any other owner of a tracked repo) into SQLite, via `gh api graphql`.
 import { refreshSnapshot } from "./itemtools/snapshot.ts";
 import { isCounted } from "./review/discussion.ts";
 import { spawnSync } from "node:child_process";
@@ -13,8 +13,8 @@ import { audit } from "./dash/audit.ts";
 import { hashColumns } from "./itemhash.ts";
 import { syncActivity } from "./activity.ts";
 import { envVar } from "./env.ts";
+import { DEFAULT_OWNER, loadOwners, ownerOf, trackedOwners } from "./owners.ts";
 
-const ORG = "storytold";
 const OVERLAP_MS = 10 * 60 * 1000;
 const FULL_PAGE = 30;
 const LIGHT_PAGE = 100;
@@ -35,9 +35,9 @@ type Detail = "full" | "light";
 type Node = any;
 
 export const REPOS_QUERY = `
-query($after: String) {
+query($login: String!, $after: String) {
   rateLimit { cost remaining resetAt }
-  organization(login: "${ORG}") {
+  repositoryOwner(login: $login) {
     repositories(first: 100, after: $after, isArchived: false) {
       pageInfo { hasNextPage endCursor }
       nodes {
@@ -65,9 +65,9 @@ export function itemsQuery(kind: Kind, detail: Detail): string {
   let fields = `${COMMON} ${kind === "issue" ? "stateReason" : PR_EXTRA}`;
   if (detail === "full") fields += ` ${COMMENTS}${kind === "pr" ? ` ${PR_FULL}` : ""}`;
   return `
-query($name: String!, $first: Int!, $after: String, $states: [${stateType}!]) {
+query($owner: String!, $name: String!, $first: Int!, $after: String, $states: [${stateType}!]) {
   rateLimit { cost remaining resetAt }
-  repository(owner: "${ORG}", name: $name) {
+  repository(owner: $owner, name: $name) {
     ${conn}(first: $first, after: $after, states: $states,
             orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
@@ -125,7 +125,7 @@ export class Client {
       await this.sleepUntilReset("rate limit exhausted");
       throw new Transient("rate limited");
     }
-    if (r.errors.length && !r.data?.repository && !r.data?.organization && !r.data?.search) {
+    if (r.errors.length && !r.data?.repository && !r.data?.repositoryOwner && !r.data?.search) {
       if (/node_limit|resource_limits|timeout|something went wrong/.test(r.text)) throw new Transient("query too heavy");
       throw new Error(`graphql error: ${JSON.stringify(r.errors).slice(0, 500)}`);
     }
@@ -155,7 +155,7 @@ async function* fetchPages(client: Querier, kind: Kind, detail: Detail, name: st
   for (;;) {
     let data: Node;
     try {
-      data = await client.query(query, { name, first: size, after: cursor, states });
+      data = await client.query(query, { owner: ownerOf(name), name, first: size, after: cursor, states });
     } catch (e) {
       if (!(e instanceof Transient)) throw e;
       if (size > MIN_PAGE) {
@@ -269,11 +269,12 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   }
 }
 
-async function listRepos(client: Querier): Promise<Node[]> {
+// `repositoryOwner` serves organizations and users alike.
+async function listRepos(client: Querier, login: string): Promise<Node[]> {
   const repos: Node[] = [];
   let after: string | null = null;
   for (;;) {
-    const conn: Node = (await client.query(REPOS_QUERY, { after })).organization.repositories;
+    const conn: Node = (await client.query(REPOS_QUERY, { login, after })).repositoryOwner.repositories;
     repos.push(...conn.nodes);
     if (!conn.pageInfo.hasNextPage) return repos;
     after = conn.pageInfo.endCursor;
@@ -377,6 +378,8 @@ export type SearchResult = { count: number; newest: string | null; slices: numbe
 // returned (tracked repos or not), the next sync's starting point; null when nothing matched.
 export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: string[], since: string, until: string): Promise<SearchResult> {
   const trackedSet = new Set(tracked);
+  // One query for every owner: `org:` for the default owner, `user:` (also matches organizations) for the others.
+  const scope = trackedOwners(db).map((o) => (o === DEFAULT_OWNER ? `org:${o}` : `user:${o}`)).join(" ");
   const bump = db.prepare("UPDATE repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
   // Applied once every window has been read, so a failed run leaves the repos' high water alone.
   const repoNewest = new Map<string, string>();
@@ -417,7 +420,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
   }
 
   async function window(from: Date, to: Date): Promise<void> {
-    const q = `org:${ORG} updated:${iso(from)}..${iso(to)}`;
+    const q = `${scope} updated:${iso(from)}..${iso(to)}`;
     let conn = await page(q, null);
     const seconds = Math.floor((to.getTime() - from.getTime()) / 1000);
     if (conn.issueCount > SEARCH_CAP && seconds >= 1) {
@@ -536,13 +539,16 @@ export function lowPriority(inner: Client, o: LowPriorityOpts): Querier {
 type SyncOpts = { only: string[]; all: boolean; full: boolean; perRepo: boolean };
 
 async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<string[]> {
-  const repos = await listRepos(client);
-  const upsert = db.prepare(`INSERT INTO repos (name, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?)
+  const repos: (Node & { owner: string })[] = [];
+  for (const owner of trackedOwners(db)) for (const r of await listRepos(client, owner)) repos.push({ ...r, owner });
+  // Names are unique across owners: a repo already known under another owner is left alone.
+  const upsert = db.prepare(`INSERT INTO repos (name, owner, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?,?)
     ON CONFLICT(name) DO UPDATE SET visibility=excluded.visibility, default_branch=excluded.default_branch,
-    open_prs=excluded.open_prs, open_issues=excluded.open_issues`);
+    open_prs=excluded.open_prs, open_issues=excluded.open_issues WHERE repos.owner = excluded.owner`);
   for (const r of repos) {
-    upsert.run(r.name, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
+    upsert.run(r.name, r.owner, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
   }
+  loadOwners(db);
   setSetting(db, "repos_refreshed_at", iso(new Date()));
   return repos.map((r: Node) => r.name as string);
 }
@@ -575,9 +581,9 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
 
 // One item by number, any state, for the daily reconcile. A deleted or transferred item comes back null.
 export const ONE_QUERY = `
-query($name: String!, $number: Int!) {
+query($owner: String!, $name: String!, $number: Int!) {
   rateLimit { cost remaining resetAt }
-  repository(owner: "${ORG}", name: $name) {
+  repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
       __typename
       ... on Issue { repository { name } ${COMMON} stateReason ${COMMENTS} }
@@ -603,7 +609,7 @@ export async function reconcileRepo(db: DatabaseSync, client: Querier, name: str
   let updated = 0;
   let gone = 0;
   for (const r of stale) {
-    const n: Node = (await client.query(ONE_QUERY, { name, number: r.number })).repository?.issueOrPullRequest;
+    const n: Node = (await client.query(ONE_QUERY, { owner: ownerOf(name), name, number: r.number })).repository?.issueOrPullRequest;
     if (n && n.repository?.name === name) {
       writePage(db, name, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n]);
       updated++;
@@ -750,7 +756,7 @@ function syncStatus(): void {
 }
 
 export const commands = {
-  sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N] [--keep N] [--restart] (default: org-wide search for changes; --full runs beside it and resumes after the last finished repo)", run: sync },
+  sync: { summary: "mirror issues and PRs of the tracked owners: [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N] [--keep N] [--restart] (default: org-wide search for changes; --full runs beside it and resumes after the last finished repo)", run: sync },
   "sync-status": { summary: "per repo: open PRs, open issues, mirrored rows, synced_at", run: syncStatus },
 };
 

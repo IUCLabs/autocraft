@@ -17,6 +17,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { closeRefusal, decisionStamp, isSettling, openDecision, otherTypeLabel, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
 import { ConversationError, insertTurn, staleOf, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, NOTE_MAX, type CloseReason } from "./types.ts";
+import { ownerOf, slugOf } from "../owners.ts";
 
 export type CardRow = {
   seen: string | null;
@@ -100,7 +101,7 @@ async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string |
   if (!decisionId) throw new Error("the card names no decision: the decision changed");
   const d0 = getDecision(db, decisionId);
   if (!d0 || d0.answer !== null || d0.repo !== c.repo || d0.number !== c.number || (stamp !== undefined && decisionStamp(db, d0) !== stamp)) throw new Error("the decision changed");
-  if (canWrite) for (const r of reposOf(d0)) if (!(await canWrite(r).catch(() => false))) throw new Error(`no write access to storytold/${r}`);
+  if (canWrite) for (const r of reposOf(d0)) if (!(await canWrite(r).catch(() => false))) throw new Error(`no write access to ${slugOf(r)}`);
   db.exec("BEGIN IMMEDIATE");
   try {
     const d = getDecision(db, decisionId);
@@ -240,7 +241,6 @@ function actGrant(db: DatabaseSync, repo: string, by: string, need: "comment" | 
   return g;
 }
 
-const ORG = "storytold";
 const USER_ID = `query($login: String!) { user(login: $login) { id login } }`;
 const COLLABORATORS = `query($owner: String!, $name: String!, $login: String!) { repository(owner: $owner, name: $name) { collaborators(query: $login, first: 10) { edges { permission node { login } } } } }`;
 const REPO_ID = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id } }`;
@@ -253,7 +253,7 @@ async function userOf(q: Querier, login: string): Promise<{ id: string; login: s
 
 /** Reads the live permission: `login` must hold write, maintain or admin on the repo. Throws when GitHub cannot tell. */
 async function needLiveWrite(q: Querier, repo: string, login: string): Promise<void> {
-  const d = await q.query(COLLABORATORS, { owner: ORG, name: repo, login }) as { repository?: { collaborators?: { edges?: { permission: string; node: { login: string } }[] } | null } | null };
+  const d = await q.query(COLLABORATORS, { owner: ownerOf(repo), name: repo, login }) as { repository?: { collaborators?: { edges?: { permission: string; node: { login: string } }[] } | null } | null };
   const e = d.repository?.collaborators?.edges?.find((x) => x.node.login.toLowerCase() === login.toLowerCase());
   if (!e || !["WRITE", "MAINTAIN", "ADMIN"].includes(e.permission)) throw new Error(`${login} does not have write access to ${repo}`);
 }
@@ -307,7 +307,7 @@ async function transfer(ctx: Ctx, st: Extract<Step, { kind: "transfer" }>): Prom
   if (refusal) throw new Error(refusal);
   const live = await liveOpen(q, c.repo, c.number);
   if (live.type !== "Issue") throw new Error("only an issue can be moved to another repository");
-  const t = await q.query(REPO_ID, { owner: ORG, name: st.to }) as { repository?: { id: string } | null };
+  const t = await q.query(REPO_ID, { owner: ownerOf(st.to), name: st.to }) as { repository?: { id: string } | null };
   if (!t.repository) throw new Error(`GitHub has no repository ${st.to}`);
   const url = await transferIssue(w, g, gTo, q, { repo: c.repo, number: c.number, id: live.id }, { repo: st.to, id: t.repository.id }, source);
   return { result: `Moved to ${st.to}`, url: url || null };
@@ -344,7 +344,7 @@ async function checkSettle(db: DatabaseSync, c: CardRow, s: Settle, canWrite?: A
   const d = getDecision(db, s.decision);
   if (!d || d.answer !== null || d.repo !== c.repo || d.number !== c.number || decisionStamp(db, d) !== s.stamp) throw new Error("the decision changed");
   if (s.kind === "answer" && !optionsOf(d).some((x) => x.key === s.option)) throw new Error(`"${s.option}" is not an option of the decision`);
-  if (s.kind !== "handled" && canWrite) for (const r of reposOf(d)) if (!(await canWrite(r).catch(() => false))) throw new Error(`no write access to storytold/${r}`);
+  if (s.kind !== "handled" && canWrite) for (const r of reposOf(d)) if (!(await canWrite(r).catch(() => false))) throw new Error(`no write access to ${slugOf(r)}`);
 }
 
 /** Runs the steps in order, then the settlement. A failure stops the run, leaves the decision open and names the steps already done. */

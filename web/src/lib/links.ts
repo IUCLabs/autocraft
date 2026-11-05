@@ -2,11 +2,19 @@
 // No framework imports: the server shares `pickDecision` and the tests load this file directly.
 import type { Decision, ItemKind } from "../api/types.ts";
 
+/** The owner of repos the API does not list as owned by someone else. */
 export const GITHUB_ORG = "storytold";
+
+// Owners of the repos that are not storytold's, from `/api/repos/owners`. Repo names are unique across owners.
+let owners: Record<string, string> = {};
+export const setRepoOwners = (next: Record<string, string>): void => { owners = next; };
+export const ownerOfRepo = (repo: string): string => (repo.includes("/") ? repo.slice(0, repo.indexOf("/")) : owners[repo] ?? GITHUB_ORG);
+/** `owner/name` of a repo given bare or as `owner/name`. */
+export const repoSlug = (repo: string): string => `${ownerOfRepo(repo)}/${shortRepo(repo)}`;
 
 /** The issue or PR on GitHub. Without a known `kind` the issue URL is used; GitHub redirects /issues/N to the PR when N is one. */
 export const githubItemUrl = (repo: string, number: number, kind?: ItemKind | null): string =>
-  `https://github.com/${GITHUB_ORG}/${encodeURIComponent(shortRepo(repo))}/${kind === "pr" ? "pull" : "issues"}/${number}`;
+  `https://github.com/${ownerOfRepo(repo)}/${encodeURIComponent(shortRepo(repo))}/${kind === "pr" ? "pull" : "issues"}/${number}`;
 
 const KIND_ORDER = ["scope", "duplicate", "close", "merge", "split", "other"];
 
@@ -16,7 +24,7 @@ export const itemPath = (repo: string, number: number): string => `/items/${enco
 /** `/batches/<id>`: the detail page of an integration batch. */
 export const batchPath = (id: number): string => `/batches/${id}`;
 
-/** `storytold/designcraft` and `designcraft` name the same repo. */
+/** `owner/designcraft` and `designcraft` name the same repo. */
 export const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf("/") + 1);
 
 type DecisionRef = Pick<Decision, "id" | "repo" | "number">;

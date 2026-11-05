@@ -276,8 +276,8 @@ function duplicateStep(db: DatabaseSync, repo: string, n: number, of: unknown): 
 type ItemFacts = { kind: string; state: string; author: string | null };
 const itemFacts = (db: DatabaseSync, repo: string, n: number): ItemFacts | undefined =>
   db.prepare("SELECT kind, state, author FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemFacts | undefined;
-/** A repository name as the model wrote it, without a leading `storytold/`. */
-const bareRepo = (v: unknown): unknown => (typeof v === "string" ? v.replace(/^storytold\//i, "") : v);
+/** A repository name as the model wrote it, without a leading `owner/`. */
+const bareRepo = (v: unknown): unknown => (typeof v === "string" ? v.replace(/^[A-Za-z0-9-]+\//, "") : v);
 const isTracked = (db: DatabaseSync, repo: unknown): repo is string => typeof repo === "string" && !!db.prepare("SELECT 1 FROM tracked_repos WHERE name = ?").get(repo);
 const sameLogin = (a: string | null, b: string): boolean => a !== null && a.toLowerCase() === b.toLowerCase();
 

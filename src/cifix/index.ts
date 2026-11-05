@@ -23,7 +23,7 @@ import { DIFF_CAP, FILE_CAP, PR_QUERY, TOTAL_CAP, noteLive, scrubReason, whoAmI,
 import { outsideShown, shownSize, viewFile } from "../fixup/excerpt.ts";
 import { editable, validatePatch } from "../fixup/patch.ts";
 import { readGate } from "../merge/changes-requested.ts";
-import { longLivedOf, pushable, BASE_ORG } from "../fixup/pushable.ts";
+import { longLivedOf, pushable } from "../fixup/pushable.ts";
 import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
@@ -51,11 +51,11 @@ import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, 
 import type { LintPrevious } from "../fixup/patch.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf, slugOf } from "../owners.ts";
 
 export { MAX_TRIES, type CifixCandidate } from "./candidates.ts";
 export { selectCifix } from "./select.ts";
 
-const ORG = BASE_ORG;
 const ACTOR = "cifix";
 const RERUN_ACTOR = "cifix-rerun";
 const PROMPT = CLAUDE_PROMPTS["cifix.patch"];
@@ -366,7 +366,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   /** Why the last `readPr` returned null. */
   let gone = "";
   const readPr = async (c: CifixCandidate): Promise<PrNode | null> => {
-    const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+    const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
     const pr = r.repository?.pullRequest;
     noteLive(db, repo, c.number, pr, at());
     if (!pr || pr.state !== "OPEN" || pr.isDraft) { gone = "no longer an open, non-draft PR"; log(`  ${refOf(c)}: skipped: ${gone}`); return null; }
@@ -402,7 +402,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       log(`  ${ref}: held: ${reason}`);
       return;
     }
-    const head = await git.fetchPr(ORG, repo, c.number);
+    const head = await git.fetchPr(ownerOf(repo), repo, c.number);
     if (head !== c.head) {
       noteLive(db, repo, c.number, { ...pr, headRefOid: head }, at());
       fail("failed", `fetched head ${short(head)} is not the checked ${short(c.head)}`);
@@ -438,7 +438,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     const now = await readPr(c);
     if (!now) { fail("failed", gone); return; }
     // A maintainer's changes request may have come in during the model calls; an unreadable answer counts as blocked.
-    const blocked = await readGate(db, d.querier, ORG, repo, c.number, log);
+    const blocked = await readGate(db, d.querier, ownerOf(repo), repo, c.number, log);
     if (blocked !== null) {
       const reason = blocked ?? "the PR's reviews could not be read";
       rec.set(c, kind, "skipped", reason, { files: v.files });
@@ -548,7 +548,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       summary.failed.push({ ref, reason });
       log(`  ${ref}: ${state}: ${reason}`);
     };
-    const head = await git.fetchPr(ORG, repo, c.number);
+    const head = await git.fetchPr(ownerOf(repo), repo, c.number);
     if (head !== c.head) { noteLive(db, repo, c.number, { ...pr, headRefOid: head }, at()); fail("failed", `fetched head ${short(head)} is not the checked ${short(c.head)}`); return; }
     const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
     if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); return; }
@@ -656,7 +656,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
           return;
         }
         // The build environment (packages, env) is read from the PR's base commit, never from the PR's own workflow.
-        const base = (await d.gh(["api", `repos/${ORG}/${repo}/pulls/${c.number}`, "--jq", ".base.sha"])).trim();
+        const base = (await d.gh(["api", `repos/${slugOf(repo)}/pulls/${c.number}`, "--jq", ".base.sha"])).trim();
         if (!/^[0-9a-f]{40}$/.test(base)) { rec.set(c, "format", "failed", "no base commit for the build environment"); summary.failed.push({ ref, reason: "no base commit" }); return; }
         await claim(c);
         const id = createTask(db, {
@@ -690,7 +690,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
       if (reading.kind === "skip") { rec.set(c, "code", "skipped", reading.why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${reading.why}`); continue; }
       // A maintainer's changes request is the person's to resolve first; an unreadable answer counts as blocked.
-      const blocked = await readGate(db, d.querier, ORG, repo, c.number, log);
+      const blocked = await readGate(db, d.querier, ownerOf(repo), repo, c.number, log);
       if (blocked !== null) { const why = blocked ?? "the PR's reviews could not be read"; rec.set(c, "code", "skipped", why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${why}`); continue; }
       const g = await guard(db, { repo, number: c.number }, { kind: "cifix", bucket: "ask", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
       if ("refused" in g) { summary.skipped.push(ref); log(`  ${ref}: skipped: ${g.refused}`); continue; }
@@ -750,7 +750,7 @@ export async function runRerun(db: DatabaseSync, params: CifixParams, log: (line
   for (const { c, runs } of picks) {
     const ref = refOf(c);
     try {
-      const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+      const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       noteLive(db, repo, c.number, pr, d.now().toISOString());
       if (!pr || pr.state !== "OPEN" || pr.isDraft || pr.headRefOid !== c.head) { log(`  ${ref}: skipped: closed, a draft or at another head`); out.skipped.push(ref); continue; }

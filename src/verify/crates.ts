@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { diffCacheDir } from "../review/diff.ts";
 import type { Crate } from "./types.ts";
+import { slugOf } from "../owners.ts";
 
-const ORG = "storytold";
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
 const MAX_MANIFESTS = 80;
 const CRATE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -55,9 +55,9 @@ export async function cratesFromTree(tree: { path: string; type: string; sha: st
 
 export const ghCrates: CratesFetcher = async (repo, sha) => {
   try {
-    const raw = await ghApi(`repos/${ORG}/${repo}/git/trees/${sha}?recursive=1`, "[.tree[] | {path, type, sha}]");
+    const raw = await ghApi(`repos/${slugOf(repo)}/git/trees/${sha}?recursive=1`, "[.tree[] | {path, type, sha}]");
     const tree = JSON.parse(raw) as { path: string; type: string; sha: string }[];
-    const info = await cratesFromTree(tree, async (blob) => Buffer.from((await ghApi(`repos/${ORG}/${repo}/git/blobs/${blob}`, ".content")).trim().replace(/\\n/g, ""), "base64").toString("utf8"));
+    const info = await cratesFromTree(tree, async (blob) => Buffer.from((await ghApi(`repos/${slugOf(repo)}/git/blobs/${blob}`, ".content")).trim().replace(/\\n/g, ""), "base64").toString("utf8"));
     return { ok: true, ...info };
   } catch (e) {
     return { ok: false, error: String((e as Error).message ?? e) };

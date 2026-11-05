@@ -1,3 +1,4 @@
+import { DEFAULT_OWNER, slugOf } from "../owners.ts";
 // The CI gate of a repo, read from its default branch so a task's environment matches upstream CI
 // on Linux: apt packages, the craft-fonts and craft-i18n checkouts, and the gate's extra env.
 // The inputs come from the workflow at the task's BASE commit, never from the PR being tested:
@@ -144,7 +145,6 @@ export function gateEnv(call: GateCall, defaults: Record<string, string>): GateE
 }
 
 const RAW = "https://raw.githubusercontent.com";
-const ORG = "storytold";
 
 async function getText(url: string, fetchImpl: typeof fetch): Promise<string | null> {
   const res = await fetchImpl(url, { signal: AbortSignal.timeout(30_000), redirect: "error" });
@@ -162,10 +162,10 @@ async function getText(url: string, fetchImpl: typeof fetch): Promise<string | n
  */
 export async function resolveGate(repo: string, sha: string, fetchImpl: typeof fetch = fetch): Promise<GateEnv | null> {
   if (!/^[A-Za-z0-9._-]{1,100}$/.test(repo) || !SHA.test(sha)) return null;
-  const ci = await getText(`${RAW}/${ORG}/${repo}/${sha}/.github/workflows/ci.yml`, fetchImpl);
+  const ci = await getText(`${RAW}/${slugOf(repo)}/${sha}/.github/workflows/ci.yml`, fetchImpl);
   const call = ci === null ? null : parseGateCall(ci);
   if (!call) return null;
-  const gate = await getText(`${RAW}/${ORG}/craft-common-actions/${call.ref}/.github/workflows/gate.yml`, fetchImpl);
+  const gate = await getText(`${RAW}/${DEFAULT_OWNER}/craft-common-actions/${call.ref}/.github/workflows/gate.yml`, fetchImpl);
   if (gate === null) throw new Error(`craft-common-actions gate.yml not found at ${call.ref}`);
   return gateEnv(call, parseGateDefaults(gate));
 }

@@ -1,7 +1,6 @@
 // The unassign step: carries out the `unassign` actions of the Plans (src/core/assignment.ts holds the rule). Each item's assignees
 // are read from GitHub just before the write, so an assignment made by a person meanwhile is never touched.
 import type { DatabaseSync } from "node:sqlite";
-import { ORG } from "../act/templates.ts";
 import { guardRepo } from "../core/guard.ts";
 import { PIPELINE_LOGIN_KEY } from "../core/rules.ts";
 import { planned } from "../core/select.ts";
@@ -13,6 +12,7 @@ import type { Writer } from "../github/write.ts";
 import { viewerOf } from "../merge/index.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf } from "../owners.ts";
 
 export const ACTOR = "unassign";
 const oneLine = (s: string, max = 200) => s.replace(/\s+/g, " ").trim().slice(0, max);
@@ -41,7 +41,7 @@ export async function runUnassign(db: DatabaseSync, p: UnassignParams): Promise<
   for (const d of due) {
     const ref = `${p.repo}#${d.number}`;
     try {
-      const info = await (d.pr ? pullRequestInfo(q, ORG, p.repo, d.number) : issueInfo(q, ORG, p.repo, d.number));
+      const info = await (d.pr ? pullRequestInfo(q, ownerOf(p.repo), p.repo, d.number) : issueInfo(q, ownerOf(p.repo), p.repo, d.number));
       if (info && await releaseItem(w, g, q, p.repo, d.number, info, me, { run: p.runId })) { out.unassigned.push(ref); jobItem(db, p.repo, d.number, `unassigned from ${me.login}`, log); }
     } catch (e) {
       out.failed.push(ref);

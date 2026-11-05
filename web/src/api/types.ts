@@ -790,6 +790,8 @@ export interface RepoLabels {
 
 export interface TrackedRepo {
   name: RepoName;
+  /** GitHub org or user that owns the repo */
+  owner: string;
   tracked: boolean;
   openPrs: number | null;
   openIssues: number | null;

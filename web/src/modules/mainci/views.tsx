@@ -10,12 +10,12 @@ import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { Block, ErrorLine, Page, useUrlState } from "../admin/parts";
 import { FailingChecks } from "./parts";
-import { GITHUB_ORG } from "../../lib/links";
+import { ownerOfRepo } from "../../lib/links";
 
 const STATES: MainCiState[] = ["red", "optional", "running", "none", "green"];
 const rank = (s: MainCiState) => STATES.indexOf(s);
 const sha7 = (s: string) => s.slice(0, 7);
-const gh = (repo: string, tail: string) => `https://github.com/${GITHUB_ORG}/${encodeURIComponent(repo)}/${tail}`;
+const gh = (repo: string, tail: string) => `https://github.com/${ownerOfRepo(repo)}/${encodeURIComponent(repo)}/${tail}`;
 
 const Out = ({ url, label }: { url: string; label: string }) => (
   <a href={url} target="_blank" rel="noopener noreferrer" title={label} aria-label={label} className="relative z-10 inline-flex size-5 shrink-0 items-center justify-center text-ink/55 hover:text-accent-ink">

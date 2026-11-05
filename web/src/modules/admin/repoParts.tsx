@@ -7,6 +7,7 @@ import { useUser } from "../../shell/UserContext";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Switch } from "../../ui/atoms/Switch";
 import { useWrite } from "../../lib/hooks";
+import { setRepoOwners } from "../../lib/links";
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Select } from "../../ui/atoms/Select";
@@ -21,15 +22,19 @@ export type Write = ReturnType<typeof useWrite>;
 export function useRepoWrite(): Write {
   const qc = useQueryClient();
   const w = useWrite();
+  const api = useApi();
   const { run: base } = w;
   const run = useCallback(
     (key: string, f: () => Promise<unknown>) =>
       base(key, async () => {
         const out = await f();
-        if (Array.isArray(out)) qc.setQueryData(["repo-admin"], out);
+        if (Array.isArray(out)) {
+          qc.setQueryData(["repo-admin"], out);
+          void api.repoOwners().then(setRepoOwners, () => {});
+        }
         return out;
       }),
-    [base, qc],
+    [base, qc, api],
   );
   return { ...w, run };
 }

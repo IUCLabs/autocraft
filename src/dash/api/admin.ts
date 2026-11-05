@@ -243,7 +243,7 @@ export function override(db: DatabaseSync, req: Req): Contributor {
 export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
   if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the repo settings");
   return listAll(db).map((r) => ({
-    name: r.name, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
+    name: r.name, owner: r.owner, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
     labels: r.tracked ? labelsInfo(db, r.name) : null,
     merging: r.tracked ? mergeInfo(db, r.name) : null,
     pushing: r.tracked ? approvalInfo(pushApprovalOf(db, r.name)) : null,

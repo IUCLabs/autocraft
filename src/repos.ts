@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
+import { loadOwners, OWNER, splitSlug } from "./owners.ts";
 import { PilotError, setRepoPipeline } from "./pilot.ts";
 
 export class RepoError extends Error {}
@@ -15,8 +16,18 @@ export const isTracked = (db: DatabaseSync, name: string): boolean =>
 
 const NAME = /^[A-Za-z0-9._-]{1,100}$/;
 
-export function trackRepo(db: DatabaseSync, by: string, name: string): boolean {
+/** Tracks `name` (a storytold repo) or `owner/name`. Repo names are unique across owners. */
+export function trackRepo(db: DatabaseSync, by: string, input: string): boolean {
+  const { owner, name } = splitSlug(input);
   if (!NAME.test(name)) throw new RepoError("Not a repo name.");
+  if (!OWNER.test(owner)) throw new RepoError("Not an owner name.");
+  const known = db.prepare("SELECT owner FROM main.repos WHERE name = ?").get(name) as { owner: string } | undefined;
+  // A bare name means the repo as already known, whoever owns it.
+  if (known && input.includes("/") && known.owner.toLowerCase() !== owner.toLowerCase()) {
+    throw new RepoError(`${name} is already known under ${known.owner}; repo names are unique across owners.`);
+  }
+  if (!known) db.prepare("INSERT INTO main.repos (name, owner) VALUES (?, ?)").run(name, owner);
+  loadOwners(db);
   const r = db.prepare("INSERT OR IGNORE INTO main.tracked_repos (name, added_by, added_at) VALUES (?, ?, ?)")
     .run(name, by, new Date().toISOString());
   if (r.changes) {
@@ -50,21 +61,21 @@ export function purgeRepo(db: DatabaseSync, name: string): { items: number; comm
 }
 
 export type RepoRow = {
-  name: string; tracked: number; pipeline: number; open_prs: number | null; open_issues: number | null; rows: number; synced_at: string | null;
+  name: string; owner: string; tracked: number; pipeline: number; open_prs: number | null; open_issues: number | null; rows: number; synced_at: string | null;
 };
 
 // Every known repo, tracked first.
 export function listAll(db: DatabaseSync): RepoRow[] {
   return db.prepare(`
-    SELECT r.name, EXISTS (SELECT 1 FROM main.tracked_repos t WHERE t.name = r.name) AS tracked,
+    SELECT r.name, r.owner, EXISTS (SELECT 1 FROM main.tracked_repos t WHERE t.name = r.name) AS tracked,
            COALESCE((SELECT t.pipeline FROM main.tracked_repos t WHERE t.name = r.name), 0) AS pipeline,
            r.open_prs, r.open_issues, r.synced_at,
            (SELECT COUNT(*) FROM main.items i WHERE i.repo = r.name) AS rows
     FROM main.repos r
     UNION ALL
-    SELECT t.name, 1, t.pipeline, NULL, NULL, NULL, (SELECT COUNT(*) FROM main.items i WHERE i.repo = t.name)
+    SELECT t.name, 'storytold', 1, t.pipeline, NULL, NULL, NULL, (SELECT COUNT(*) FROM main.items i WHERE i.repo = t.name)
     FROM main.tracked_repos t WHERE t.name NOT IN (SELECT name FROM main.repos)
-    ORDER BY 2 DESC, 1`).all() as RepoRow[];
+    ORDER BY 3 DESC, 1`).all() as RepoRow[];
 }
 
 // Temp views that shadow the mirror and work tables on this connection, so every
@@ -108,7 +119,7 @@ function need(args: string[], usage: string): string {
 const sub: Record<string, (args: string[]) => void> = {
   list,
   track: (a) => {
-    const name = need(a, "track <name>");
+    const name = need(a, "track <name | owner/name>");
     console.log(trackRepo(connect(), "cli", name) ? `tracking ${name}; it syncs at the next sync` : `${name} was already tracked`);
   },
   untrack: (a) => {

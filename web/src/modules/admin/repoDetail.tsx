@@ -13,6 +13,7 @@ import { OptionalChecks, PipelineSwitch, Toggle, WRITES, useRepoWrite, maybe, sy
 import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
 import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
+import { ownerOfRepo } from "../../lib/links";
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
@@ -98,7 +99,7 @@ export function RepoDetailView({ params }: ViewProps) {
         <Link to="/repos" className="text-ink/60 hover:text-accent-ink hover:underline">
           Repos
         </Link>
-        <a href={`https://github.com/storytold/${encodeURIComponent(name)}`} target="_blank" rel="noopener noreferrer" className="text-ink/60 hover:text-accent-ink hover:underline">
+        <a href={`https://github.com/${ownerOfRepo(name)}/${encodeURIComponent(name)}`} target="_blank" rel="noopener noreferrer" className="text-ink/60 hover:text-accent-ink hover:underline">
           GitHub
         </a>
         {r && (r.tracked ? <Badge tone="ok">Tracked</Badge> : <Badge>Not tracked</Badge>)}

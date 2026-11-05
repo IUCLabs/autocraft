@@ -13,6 +13,7 @@ import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { ItemRef } from "../../ui/molecules/ItemRef";
+import { repoSlug } from "../../lib/links";
 import { cn } from "../../ui/cn";
 import { Block, ConfirmButton, ErrorLine, Page, selectCls, TextInput, useUrlState, useWrite } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
@@ -436,7 +437,7 @@ function DetailBody({ id }: { id: number }) {
             {/* The commit exists only on the fork the branch was pushed to; without it there is no link. */}
             <dd className="min-w-0 break-all"><CommitLink href={t.batch.fork ? gh(`${t.batch.fork}/commit/${t.batch.commitSha}`) : null} sha={t.batch.commitSha} className="text-xs" /></dd>
             <dt className="text-ink/55">Base</dt>
-            <dd className="min-w-0 break-all"><CommitLink href={gh(`storytold/${t.repo}/commit/${t.batch.baseSha}`)} sha={t.batch.baseSha} className="text-xs" /></dd>
+            <dd className="min-w-0 break-all"><CommitLink href={gh(`${repoSlug(t.repo)}/commit/${t.batch.baseSha}`)} sha={t.batch.baseSha} className="text-xs" /></dd>
           </>
         ) : t.baseline ? (
           <>

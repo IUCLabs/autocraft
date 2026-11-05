@@ -10,7 +10,6 @@ import { guardRepo } from "../core/guard.ts";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { ORG } from "../act/templates.ts";
 import { errorFiles, patchFromFailure, type CifixDeps } from "../cifix/index.ts";
 import { readFailure } from "../cifix/logs.ts";
 import type { CifixPr } from "../cifix/types.ts";
@@ -29,6 +28,7 @@ import type { Gh } from "../merge/safe-merge.ts";
 import { cleanLine } from "../review/post-template.ts";
 import type { FixRow } from "./index.ts";
 import { optionalChecks } from "../optional-checks.ts";
+import { ownerOf, slugOf } from "../owners.ts";
 
 export const PR_ACTOR = "main-fix";
 /** Open PRs read for overlap with the failure. */
@@ -65,7 +65,7 @@ const commitMessage = (subject: string, files: string[]): string => `${subject}\
 const oneLine = (s: string, max = 200): string => s.replace(/\s+/g, " ").trim().slice(0, max);
 const slug = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "") || "check";
 export const branchFor = (check: string, sha: string): string => `${MAIN_FIX_BRANCH_PREFIX}${slug(check)}-${sha.slice(0, 7)}`;
-const urlOk = (url: string, repo: string): boolean => new RegExp(`^https://github\\.com/${ORG}/${repo}/pull/\\d+$`).test(url);
+const urlOk = (url: string, repo: string): boolean => new RegExp(`^https://github\\.com/${slugOf(repo)}/pull/\\d+$`).test(url);
 
 /** Title of the fix PR: the first check, and how many more the same patch covers. */
 export const prTitle = (checks: string[]): string => `Fix main CI: ${cleanLine(checks[0], 100)}${checks.length > 1 ? ` (+${checks.length - 1} more)` : ""}`;
@@ -101,7 +101,7 @@ async function coveringPr(c: Ctx, checks: string[], files: string[], since: stri
   if (!files.length) return null;
   for (const p of prs) {
     try {
-      const out = await c.gh(["api", `repos/${ORG}/${c.repo}/pulls/${p.number}/files?per_page=100`, "--jq", ".[].filename"]);
+      const out = await c.gh(["api", `repos/${slugOf(c.repo)}/pulls/${p.number}/files?per_page=100`, "--jq", ".[].filename"]);
       if (out.split("\n").some((f) => files.includes(f.trim()))) return p.number;
     } catch { /* unreadable: not counted as covering */ }
   }
@@ -149,7 +149,7 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
     if (!stored) count();
     const git = new Git(c.exec, c.fix.root, c.repo);
     mkdirSync(c.fix.root, { recursive: true });
-    if (!(await git.fetchBranch(ORG, c.repo, now.branch, head))) return set(live, "fix-failed", "the head commit is no longer in the repository");
+    if (!(await git.fetchBranch(ownerOf(c.repo), c.repo, now.branch, head))) return set(live, "fix-failed", "the head commit is no longer in the repository");
     const ref = `${c.repo}@${head.slice(0, 8)}`;
     const names = live.map((r) => r.check);
     const title = prTitle(names);
@@ -255,7 +255,7 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
     if ("refused" in g) return set(live, "fix-failed", g.refused);
     const fork = await forkOf({ db: c.db, login: PR_ACTOR }, g, c.exec, who.login, c.repo);
     const owner = fork.split("/")[0]!;
-    const found = await c.exec("gh", ["pr", "list", "--repo", `${ORG}/${c.repo}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
+    const found = await c.exec("gh", ["pr", "list", "--repo", `${slugOf(c.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (!(url && urlOk(url, c.repo))) {
       const push = await pushOwnBranch({ db: c.db, login: PR_ACTOR }, g, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });
