@@ -47,7 +47,7 @@ The frontend is the React app in `web/`. Build it before serving: `pnpm -C web i
 | `AUTOCRAFT_TRUST_PROXY` | `1` to take the client address for rate limits from the last `X-Forwarded-For` entry. Set it only behind a proxy that sets that header. |
 | `AUTOCRAFT_IMG_CACHE` | Disk cache of the image proxy. Default `$XDG_CACHE_HOME/autocraft/img` (`~/.cache/...`); empty for no disk cache. |
 
-The GitHub OAuth App needs no scopes, and expiring user tokens are supported: the server refreshes them as needed and ends the session when a refresh fails. Tokens are stored encrypted with a key derived from `session_key`; changing `session_key` ends every session.
+The GitHub OAuth App needs no scopes, and expiring user tokens are supported: the server refreshes them as needed and ends the session when a refresh fails. Tokens are stored encrypted with a key derived from `session_key`; changing `session_key` makes the stored GitHub tokens unreadable until each user signs in again.
 
 ### Images
 
@@ -315,7 +315,7 @@ One image runs the dashboard, the runner and the one-shot sync and backup comman
 
 ```
 docker build -f deploy/container/Dockerfile -t autocraft .
-docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://dashboard.example autocraft dashboard
+docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://autocraft.example.com autocraft dashboard
 ```
 
 The image is `node:24-bookworm-slim` (pinned by digest) with `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It contains `gh` (pinned by checksum; authenticate with the `GH_TOKEN` environment variable) but not `jev`; steps that need `jev` fail until a derived image adds it. `--build-arg SOURCE_COMMIT=<sha>` records the commit the dashboard shows (the image has no `.git`). `tini` is PID 1 and reaps the jobs' child processes.
@@ -417,8 +417,8 @@ The runner container therefore needs an unconfined seccomp profile and unmasked 
 
 The manifest holds no secret values. Before the first start:
 
-1. Create the claims (`kubectl apply`), then place `secrets.json` on the config volume as uid 10001 with mode 0600, for example with a short-lived pod that mounts the `config-autocraft-0` claim, `kubectl cp`, then `chown 10001:10001` and `chmod 600`. Delete the pod before the first start, because a ReadWriteOnce claim attaches to one node.
-2. Optionally create the Secret `autocraft-github` with key `token` (a GitHub token for `gh`) with `kubectl create secret generic autocraft-github --from-literal=token=...` typed by the operator.
+1. Set `replicas: 0` and apply the manifest, so the claims exist and no pod holds them. Place `secrets.json` on the config volume as uid 10001 with mode 0600 with a short-lived helper pod that mounts the `config-autocraft-0` claim (`kubectl cp`, then `chown 10001:10001` and `chmod 600`). Delete the helper, then scale the StatefulSet to 1. A ReadWriteOnce claim attaches to one node, so the helper and the pod cannot run together. The migration runbook ([migration.md](migration.md)) uses the same sequence.
+2. Create the Secret `autocraft-github` with key `token` (a GitHub token for `gh`: `repo`, `read:org`, `workflow`) with `kubectl create secret generic autocraft-github --from-literal=token=...` typed by the operator.
 
 ## Similar items and semantic search
 

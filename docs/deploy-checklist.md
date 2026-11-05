@@ -35,7 +35,7 @@ The image sets every path (`/data/...`, `/config/...`). A deployment sets only t
 | `AUTOCRAFT_BASE_URL` | dashboard: yes | none | Public origin, `https://autocraft.example.com`, no path. Used for sign-in callbacks and links. |
 | `AUTOCRAFT_TRUST_PROXY` | behind a proxy | off | `1` reads the client address from the last `X-Forwarded-For` entry, for rate limits. Set it only when the proxy sets that header. |
 | `AUTOCRAFT_LOGIN_APP` | no | `oauth` | `github-app` signs users in through the GitHub App; refused at start unless the app's keys are in `secrets.json`. See "Moving to a new domain". |
-| `GH_TOKEN` | runner, periodic | none | GitHub token for `gh` (sync, pipeline calls). Keep it in a Secret. |
+| `GH_TOKEN` | yes, on dashboard, runner and periodic | none | GitHub token for `gh` (the dashboard's image proxy and repository adds, sync, pipeline calls): a classic token with `repo`, `read:org` and `workflow` scopes. Keep it in a Secret. |
 | `AUTOCRAFT_STOP_TIMEOUT` | no | `25` | Seconds the runner may take to stop. Keep the pod's `terminationGracePeriodSeconds` above it (30). |
 | `AUTOCRAFT_HEALTH_LISTEN` | no | off | `host:port` of a runner listener that serves only `/healthz` and `/readyz`. |
 | `AUTOCRAFT_NO_SANDBOX` | no | off | `1` runs without bubblewrap, so without tool mode. Use it only if the cluster cannot allow the runner settings below. |
@@ -54,7 +54,7 @@ Never set `AUTOCRAFT_DEV_AUTH`: it signs in as any login and is allowed only on 
 | data (20 Gi in the manifest) | `/data` | `mirror.db` (SQLite), the git cache and checkouts, job logs, task artifacts, `HOME`, backups in `/data/backups` | The database holds encrypted GitHub user tokens, agent token hashes and sessions. Treat it, and its backups, as secret. |
 | config (1 Gi) | `/config` | `secrets.json` (mode 0600, owner uid 10001), `accounts.json`, the Claude account directories in `/config/claude`, the `gh` config if `gh auth login` is used instead of `GH_TOKEN` | All of it. `secrets.json` holds the OAuth client secret, the session key and the GitHub App private key; the account directories hold Claude logins. |
 
-Both are read-write: the dashboard rewrites `secrets.json` (a temporary file in `/config`, then a rename) when the GitHub App is registered, and writes account files, logins and usage readings. Changing `session_key` ends every session and invalidates the stored user tokens.
+Both are read-write: the dashboard rewrites `secrets.json` (a temporary file in `/config`, then a rename) when the GitHub App is registered, and writes account files, logins and usage readings. `session_key` seals the stored GitHub tokens (`user_tokens` and each session's token set). With a different key those read as unavailable until each user signs in again. Sessions and agent tokens do not depend on it.
 
 ## Ports and health checks
 
@@ -90,7 +90,7 @@ The proxy must pass `Host`, set `X-Forwarded-For` when `AUTOCRAFT_TRUST_PROXY=1`
 
 The periodic container writes `daily-<timestamp>.db.zst` to `/data/backups` once a day and keeps 7. The snapshot is consistent while the services run and passes an integrity check. It sits on the same volume as the database, so it does not protect against losing the volume: copy the files off it on a schedule (a sidecar, a volume snapshot of `data`, or a job that mounts it on the same node). Also keep a copy of `secrets.json` and `accounts.json` and the Claude account directories somewhere safe; the database alone cannot sign anyone in or run a job.
 
-To restore, stop the pod, decompress the snapshot over `/data/mirror.db` (`zstd -d`), and start it.
+To restore, stop the pod (or scale to 0) and stream the snapshot into the volume from a helper container: `zstd -dc daily-<time>.db.zst | <run in the image> sh -c 'rm -f /data/mirror.db-wal /data/mirror.db-shm; cat > /data/mirror.db'`. Then start it. The migration runbook ([migration.md](migration.md)) has the full commands.
 
 ## Moving to a new domain
 
@@ -109,8 +109,8 @@ Sign-in and the GitHub App are tied to the public origin. Do these in order. `AU
    2. Install the app on the organization, grant the repositories, and test it: the GitHub App page shows the installation and its repositories.
    3. Only then set `AUTOCRAFT_LOGIN_APP=github-app` and restart. The server refuses to start if the `github_app_*` keys are missing, which is the guard against doing this too early. To go back, set `oauth` again (the app cannot be removed while it is the login app).
    4. Keep the OAuth app until everyone has signed in once through the GitHub App.
-5. Session cookies (`__Host-craft_session`) belong to the exact host, so a new domain gives every user a new sign-in. Sessions last 14 days and live in the database; old ones expire on their own.
-6. Agent (MCP) tokens are bearer tokens stored as hashes in the database and are not tied to a host. They keep working on the new origin as long as the database and `session_key` carry over. Each user changes the URL in their agent's configuration (`claude mcp add --transport http ... https://new.example.com/mcp --header "Authorization: Bearer <token>"`); the token itself stays. Tokens last 90 days (7 days for an answering token).
+5. Session cookies (`__Host-craft_session`) belong to the exact host, so a new domain gives every user a new sign-in. Sessions live in the database and expire on their own: 14 days of inactivity, at most 30 days after sign-in, and 7 days at most for operators.
+6. Agent (MCP) tokens are bearer tokens stored as hashes in the database and are not tied to a host. They keep working on the new origin as long as the database carries over (they do not depend on `session_key`). Each user changes the URL in their agent's configuration (`claude mcp add --transport http ... https://new.example.com/mcp --header "Authorization: Bearer <token>"`); the token itself stays. Tokens last 90 days (7 days for an answering token).
 7. Build boxes: change `coordinatorUrl` in each worker's config to the new worker API address.
 
 Check after the move: sign in, open the GitHub App page, and confirm the item pages load images and the inbox shows data.
