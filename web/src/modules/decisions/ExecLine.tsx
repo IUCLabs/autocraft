@@ -24,7 +24,8 @@ export function ExecLine({ d, canRetry, compact }: { d: Decision; canRetry: bool
   const exec = d.exec;
   if (!exec || exec.state === "done") return null;
   const Icon = exec.state === "pending" ? HourglassIcon : WarningCircleIcon;
-  const text = exec.reason ?? "Waiting to run";
+  // The stored waiting-token reason speaks to the answerer; anyone else reads who it waits for.
+  const text = exec.state === "waiting-token" && !answerer && d.answeredBy ? `Waiting for ${d.answeredBy} to authorize AutoCraft` : exec.reason ?? "Waiting to run";
   return (
     <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1", compact ? "mt-1 text-xs" : "w-full text-sm", TONE[exec.state])} onClick={(e) => e.stopPropagation()}>
       <span className="inline-flex items-center gap-1.5">
