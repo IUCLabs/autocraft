@@ -972,7 +972,7 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
     if (seen.has(ref)) return;
     seen.add(ref);
     const refused = gates(f, wantOf(a), "pipeline");
-    const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "the pipeline is off" ? null : refused;
+    const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "The pipeline is off" ? null : refused;
     const fast = (fastScoreOf(db, f.repo, f.number) ?? 0) >= FAST_FLOOR;
     all.push({
       repo: f.repo, number: f.number, kind: "kind" in f ? f.kind : "pr", action: a.kind, bucket: typeof a.params?.bucket === "string" ? a.params.bucket : null,
@@ -1018,6 +1018,23 @@ export function storedLaneItems(db: DatabaseSync): StoredLaneItems {
   const out: StoredLaneItems = {};
   for (const r of db.prepare("SELECT lane, total, items FROM lane_next").all() as { lane: string; total: number; items: string }[]) out[r.lane] = { total: r.total, items: JSON.parse(r.items) as LaneItem[] };
   return out;
+}
+
+let actCache: { at: string; items: LaneItem[] } | null = null;
+/**
+ * Why an answered decision's action is not starting, as the planner's last pass saw it (the stored act lane plus the lane's own
+ * gate: pipeline switch, stage breaker, daily limit), or null. `approval` marks a missing repo approval. Reads only the plans topic.
+ */
+export function heldReason(db: DatabaseSync, repo: string, number: number): { reason: string; approval: boolean } | null {
+  const row = db.prepare("SELECT items, at FROM lane_next WHERE lane = 'act'").get() as { items: string; at: string } | undefined;
+  if (!row) return null;
+  if (actCache?.at !== row.at) actCache = { at: row.at, items: JSON.parse(row.items) as LaneItem[] };
+  const item = actCache.items.find((i) => i.repo === repo && i.number === number);
+  if (!item) return null;
+  if (item.blocked) return { reason: plain(item.blocked), approval: /not approved$/.test(item.blocked) };
+  const act = LANES.find((l) => l.name === "act");
+  const g = act ? laneGate(db, act) : null;
+  return g && !g.canRun && g.kind !== "running" && g.why ? { reason: plain(g.why), approval: false } : null;
 }
 
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };

@@ -15,6 +15,7 @@ import { BACKLOG, HANDLED, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, 
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
+import { heldReason } from "../../runner/autopilot.ts";
 import { initExecState, retryDecision } from "../../github/user-lane.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
@@ -152,6 +153,15 @@ export function execReasonFor(state: ExecState, stored: string | null, repo: str
   if (state === "failed") return "AutoCraft couldn't finish this.";
   return null;
 }
+/** Where an answer's write stands. A write the planner holds back (repo approval, pipeline switch, stage breaker, daily limit) is shown with its reason; operators also get the repo whose approvals to open. */
+export function execOf(db: DatabaseSync, d: DecisionRow, repo: string | null, viewer: Viewer): Decision["exec"] {
+  if (!d.answer || d.applied_at || d.exec_state === "done") return null;
+  const state = (d.exec_state ?? "pending") as ExecState;
+  if (state !== "pending") return { state, reason: execReasonFor(state, d.exec_reason ?? null, repo, viewer.staff) };
+  const held = d.repo && d.number !== null && !isBatch(d) ? heldReason(db, d.repo, d.number) : null;
+  if (!held) return d.exec_state ? { state, reason: null } : null;
+  return { state, reason: held.reason, ...(held.approval && viewer.operator ? { approvalsRepo: d.repo! } : {}) };
+}
 export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator: isOperator(req), staff: canSeeInternals(req) });
 /** The viewer with the queue places of the items they may see, computed once for the response. */
 const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)) });
@@ -233,7 +243,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     answer: d.answer,
     answerNote: viewer.staff ? d.answer_note : null,
     answeredBy: d.answered_by, answeredAt: d.answered_at, appliedAt: d.applied_at,
-    exec: d.answer && !d.applied_at && d.exec_state && d.exec_state !== "done" ? { state: d.exec_state as ExecState, reason: execReasonFor(d.exec_state as ExecState, d.exec_reason ?? null, d.repo ?? refs[0]?.repo ?? null, viewer.staff) } : null,
+    exec: execOf(db, d, d.repo ?? refs[0]?.repo ?? null, viewer),
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,
     exceptions: exceptionsOf(d),
