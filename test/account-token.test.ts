@@ -8,7 +8,7 @@ import { describe, test } from "node:test";
 import { listAccounts } from "../src/agents/accounts.ts";
 import { addAccount, beginToken, removeToken, sendTokenCode } from "../src/agents/manage.ts";
 import { childEnv } from "../src/agents/status.ts";
-import { credentialsNearExpiry, isAuthFailure, markTokenRejected, tokenEnv, tokenFile, usesToken } from "../src/agents/token.ts";
+import { cliErrorText, credentialsNearExpiry, isAuthFailure, markTokenRejected, tokenEnv, tokenFile, usesToken } from "../src/agents/token.ts";
 import { connect } from "../src/db.ts";
 import { sandboxCommand } from "../src/sandbox/command.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -83,5 +83,20 @@ describe("long-lived token", () => {
     removeToken(db, a.id, "op");
     assert.equal(listAccounts(db)[0]!.token.state, "none");
     assert.ok(!existsSync(tokenFile(dirA)));
+  });
+
+  test("only the CLI's own error text counts as an authentication failure", () => {
+    // A timed-out stream whose tool output mentions 401 leaves the token usable.
+    const timedOut = [
+      { type: "assistant", message: { content: [{ type: "text", text: "HTTP 401 handling is in api.ts" }] } },
+      { type: "user", message: { content: [{ type: "tool_result", content: "return 401; // authentication_error" }] } },
+    ];
+    assert.equal(isAuthFailure(`${cliErrorText(timedOut)}`), false);
+    assert.equal(isAuthFailure(cliErrorText([{ type: "result", is_error: true, result: "API Error: 401 authentication_error" }])), true);
+    // An empty token file is not a token in use.
+    const empty = join(dir, "root", "empty");
+    mkdirSync(empty, { recursive: true });
+    writeFileSync(tokenFile(empty), "\n");
+    assert.equal(usesToken(db, "none", empty), false);
   });
 });

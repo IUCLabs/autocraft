@@ -23,7 +23,7 @@ import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS } from "../sandbox/index.ts";
-import { credentialsNearExpiry, isAuthFailure, markTokenRejected, readToken, tokenEnv, usesToken } from "../agents/token.ts";
+import { cliErrorText, credentialsNearExpiry, isAuthFailure, markTokenRejected, readToken, tokenEnv, usesToken } from "../agents/token.ts";
 import { REFERENCE_PATH, REPO_DOCS_PATH, type SandboxSpec } from "../sandbox/command.ts";
 import { repoDocsFor, repoOfCheckout } from "../sandbox/repo-docs.ts";
 import { holdCheckouts } from "../sandbox/checkout.ts";
@@ -394,6 +394,11 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       bridge?.setRun(runId);
       let r: Proc;
       const clock: ToolClock = { start: new Map(), end: new Map() };
+      // The sandbox has no credentials mount for a call without a token; with neither, the turn is not run unauthenticated.
+      if (spec && !usedToken && !spec.credentials) {
+        finish({ state: "failed", error: "no token or credentials for the account", summary: "no credentials" });
+        return null;
+      }
       if (spec) {
         const tok = usedToken ? readToken(run.configDir) : null;
         const c = sandboxCommand({ ...spec, ...(tok && { oauthToken: tok }), claudeArgs: [...args, ...extra] });
@@ -410,16 +415,16 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       } else r = await runner("claude", [...args, ...extra], stdin, cwd, timeoutMs, { CLAUDE_CONFIG_DIR: run.configDir, ...(usedToken && tokenEnv(db, run.accountId, run.configDir)) });
       // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
       if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
+      // A call that used the long-lived token and failed with an authentication error: the token is marked rejected; this call fails as before and later calls take the regular sign-in path. Only stderr and the CLI's own error fields are tested, never assistant or tool text.
+      const authFailed = (text: string) => { if (usedToken && isAuthFailure(text)) markTokenRejected(db, run.accountId); };
       try {
         // `--output-format json` prints the event list (older CLI versions only the final result object); stream-json prints one event per line.
         const parsed = parseOutput(r.stdout);
         // Before the result is looked at: a call that timed out or ended without a result still shows the tools it used.
         try { saveTools(db, runId, parsed, clock); } catch (e) { console.log(`tool uses not stored: ${(e as Error).message}`); }
         const j = lastResult(parsed) as { result?: string; is_error?: boolean; session_id?: string; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
-        // A call that used the long-lived token and failed with an authentication error: the token is marked rejected; this call fails as before and later calls take the regular sign-in path.
-        const authFailed = (text: string) => { if (usedToken && isAuthFailure(text)) markTokenRejected(db, run.accountId); };
         if (!j) {
-          authFailed(`${r.stderr} ${r.stdout}`);
+          authFailed(`${r.stderr} ${cliErrorText(parsed)}`);
           finish({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
           return null;
         }
@@ -437,6 +442,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         finish({ state: "done", tokens, costUsd, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: text });
         return { text, usage, ...(turns !== undefined && { turns }), ...(sessionId && { sessionId }) };
       } catch {
+        authFailed(r.stderr);
         finish({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: sandboxed ? scrub(r.stdout) : r.stdout });
         return null;
       }

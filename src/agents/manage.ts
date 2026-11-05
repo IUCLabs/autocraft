@@ -43,6 +43,7 @@ export function addAccount(db: DatabaseSync, input: unknown, by: string): Claude
 /** Starts a sign-in and returns once its URL is ready (or it failed). */
 export async function beginLogin(db: DatabaseSync, id: unknown, by: string): Promise<ClaudeAccount> {
   const a = dirOf(db, id);
+  if (loginInfo(a.id)?.kind === "token" && loginRunning(a.id)) throw new AccountError(409, "a token request is running for this account");
   if (!loginRunning(a.id)) audit(db, by, "account-login-start", `account:${a.id}`);
   await startLogin(a.id, a.configDir, () => void refreshStatus(db, a.id, a.configDir).catch(() => {}));
   return view(db, a.id);
@@ -50,6 +51,7 @@ export async function beginLogin(db: DatabaseSync, id: unknown, by: string): Pro
 
 export function sendCode(db: DatabaseSync, id: unknown, input: unknown, by: string): ClaudeAccount {
   const a = dirOf(db, id);
+  if (loginRunning(a.id) && loginInfo(a.id)?.kind === "token") throw new AccountError(409, "no sign-in is waiting for a code");
   const code = (input as { code?: unknown } | null)?.code;
   if (typeof code !== "string" || !LOGIN_CODE.test(code.trim())) throw new AccountError(400, "the code has letters, digits and # _ . ~ + / = - only");
   if (!submitCode(a.id, code.trim())) throw new AccountError(409, "no sign-in is waiting for a code");
@@ -66,10 +68,16 @@ export function stopLogin(db: DatabaseSync, id: unknown, by: string): ClaudeAcco
 /** Starts a request for a long-lived token (`claude setup-token`) and returns once its URL is ready (or it failed). */
 export async function beginToken(db: DatabaseSync, id: unknown, by: string): Promise<ClaudeAccount> {
   const a = dirOf(db, id);
+  if (loginRunning(a.id) && loginInfo(a.id)?.kind !== "token") throw new AccountError(409, "a sign-in is running for this account");
   if (!loginRunning(a.id)) audit(db, by, "account-token-start", `account:${a.id}`);
   await startLogin(a.id, a.configDir, undefined, "token", (token) => {
     writeToken(a.configDir, token);
-    recordTokenSet(db, a.id);
+    try {
+      recordTokenSet(db, a.id);
+    } catch (e) {
+      deleteToken(a.configDir);
+      throw e;
+    }
     audit(db, by, "account-token-set", `account:${a.id}`);
   });
   return view(db, a.id);
@@ -77,7 +85,7 @@ export async function beginToken(db: DatabaseSync, id: unknown, by: string): Pro
 
 export function sendTokenCode(db: DatabaseSync, id: unknown, input: unknown, by: string): ClaudeAccount {
   const a = dirOf(db, id);
-  if (loginInfo(a.id)?.kind !== "token") throw new AccountError(409, "no token request is waiting for a code");
+  if (!loginRunning(a.id) || loginInfo(a.id)?.kind !== "token") throw new AccountError(409, "no token request is waiting for a code");
   const code = (input as { code?: unknown } | null)?.code;
   if (typeof code !== "string" || !LOGIN_CODE.test(code.trim())) throw new AccountError(400, "the code has letters, digits and # _ . ~ + / = - only");
   if (!submitCode(a.id, code.trim())) throw new AccountError(409, "no token request is waiting for a code");
@@ -106,6 +114,8 @@ export async function signOut(db: DatabaseSync, id: unknown, by: string): Promis
   await new Promise<void>((resolve) => {
     execFile(claudeBin(), ["auth", "logout"], { timeout: 30_000, env: childEnv(a.configDir) }, () => resolve());
   });
+  deleteToken(a.configDir);
+  recordTokenRemoved(db, a.id);
   audit(db, by, "account-sign-out", `account:${a.id}`);
   await refreshStatus(db, a.id, a.configDir);
   return view(db, a.id);

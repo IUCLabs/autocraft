@@ -24,6 +24,19 @@ export function extractToken(out: string, final = false): string | null {
   return out.match(TOKEN)?.[0] ?? (final ? out.match(TOKEN_AT_END)?.[0] ?? null : null);
 }
 
+/** The CLI's own error text in its output events: error results and error system events, never assistant or tool content. */
+export function cliErrorText(parsed: unknown): string {
+  const events = Array.isArray(parsed) ? parsed : [parsed];
+  const out: string[] = [];
+  for (const e of events as { type?: unknown; subtype?: unknown; is_error?: unknown; result?: unknown; error?: unknown; error_status?: unknown }[]) {
+    if (!e || typeof e !== "object") continue;
+    if (e.type === "result" && e.is_error === true && typeof e.result === "string") out.push(e.result);
+    else if (e.type === "system" && /error/i.test(String(e.subtype ?? ""))) out.push(String(e.error ?? ""), String(e.error_status ?? ""));
+    else if (e.type === "assistant" && typeof e.error === "string") out.push(e.error);
+  }
+  return out.join(" ");
+}
+
 export function isAuthFailure(text: string): boolean {
   return AUTH_FAILURE.test(text);
 }
@@ -31,9 +44,14 @@ export function isAuthFailure(text: string): boolean {
 /** Writes the token through a temporary file in the same directory, then renames it into place. */
 export function writeToken(configDir: string, token: string): void {
   const file = tokenFile(configDir), tmp = `${file}.tmp`;
-  writeFileSync(tmp, `${token}\n`, { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
+  try {
+    writeFileSync(tmp, `${token}\n`, { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, file);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* not written */ }
+    throw e;
+  }
 }
 
 export function readToken(configDir: string): string | null {
@@ -68,7 +86,7 @@ export function markTokenRejected(db: DatabaseSync, id: string, now = new Date()
 
 /** Whether model calls on this account carry its token: the file exists and the token is not marked rejected. */
 export function usesToken(db: DatabaseSync, id: string, configDir: string): boolean {
-  return existsSync(tokenFile(configDir)) && !rowOf(db, id)?.rejected_at;
+  return !rowOf(db, id)?.rejected_at && readToken(configDir) !== null;
 }
 
 /** The extra environment of a model call on this account: its token, when it uses one. */
