@@ -6,6 +6,7 @@ import { mergeDecisionId } from "../src/core/rules.ts";
 import { advancePreapprovals, cancelPreapproval, preapprovalOf, runPipelineStep } from "../src/preapproval/index.ts";
 import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
 import { operatorCommentText } from "../src/fixup/template.ts";
+import { scopeToTracked } from "../src/repos.ts";
 import { OPERATOR, T0, world, type World } from "./world-db.ts";
 
 let current: World | null = null;
@@ -177,6 +178,21 @@ describe("pre-approved merge", () => {
     w.db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome) VALUES ('app', 15, 'sha15b', 'r', ?, 'operator', 'squash', 'merged')").run(new Date().toISOString());
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 15)?.state, "merged");
+  });
+
+  test("untracking the repo leaves an active row untouched on the scoped connection, and tracking again resumes it", async () => {
+    const w = fresh().pr(40).review(40, { verdict: "take-fix" });
+    await start(w, 40);
+    pushed(w, 40, "sha40b");
+    w.synced(40, "sha40b");
+    scopeToTracked(w.db);
+    w.db.prepare("DELETE FROM main.tracked_repos WHERE name = 'app'").run();
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 40)?.state, "fixup");
+    assert.equal(w.rows("SELECT state FROM operator_fixups WHERE number = 40")[0]!.state, "queued");
+    w.db.prepare("INSERT INTO main.tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', ?, ?, 1)").run(OPERATOR, T0);
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 40)?.state, "review");
   });
 
   test("a Merge answer at H carries across the pipeline's own conflict merge to H2 as a row in review, once", () => {

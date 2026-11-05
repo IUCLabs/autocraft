@@ -50,7 +50,7 @@ export type OpenRequest = { id: number; repo: string; number: number; head: stri
 
 /** Every operator fix-up request still queued (no final fixups row of its own); `started` when a fixups row of it exists (a stored patch or a push under way). */
 export function openOperatorFixups(db: DatabaseSync): OpenRequest[] {
-  const rows = db.prepare(`SELECT id, repo, number, from_head, preapproval_id, EXISTS (SELECT 1 FROM fixups f WHERE f.operator_fix = o.id) AS started FROM operator_fixups o WHERE state = 'queued' AND NOT ${ENDED_SQL}`)
+  const rows = db.prepare(`SELECT id, repo, number, from_head, preapproval_id, EXISTS (SELECT 1 FROM fixups f WHERE f.operator_fix = o.id) AS started FROM operator_fixups o WHERE state = 'queued' AND NOT ${ENDED_SQL} AND repo IN (SELECT name FROM main.tracked_repos)`)
     .all(...ENDED_STATES) as { id: number; repo: string; number: number; from_head: string; preapproval_id: number | null; started: number }[];
   return rows.map((r) => ({ id: r.id, repo: r.repo, number: r.number, head: r.from_head, preapprovalId: r.preapproval_id, started: !!r.started }));
 }
