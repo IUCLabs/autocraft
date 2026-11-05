@@ -9,10 +9,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { type Note, editReview, postReview, type Writer } from "../github/write.ts";
 import { guard } from "../core/guard.ts";
+import { auditIdentity, repoIdentity } from "../github/identity.ts";
 import { planned } from "../core/select.ts";
 import { isQueueState } from "../core/plan.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
-import { Client, type Querier } from "../mirror.ts";
+import { Client, GithubError, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
 import { postSource } from "./post-source.ts";
 import { reviewBody, recommendation } from "./post-template.ts";
@@ -42,7 +43,10 @@ export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now
  * held duplicates and items outside the pilot.
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
-  const posted = db.prepare("SELECT review_id FROM review_posts WHERE repo = ? AND number = ?");
+  const posted = db.prepare("SELECT review_id, posted_as FROM review_posts WHERE repo = ? AND number = ?");
+  // A review is edited only by the lane that posted it: a NULL `posted_as` is a row from before it was recorded, written by the box account.
+  const lane = (as: string | null | undefined): "legacy" | "app" => (as && as !== "legacy" ? "app" : "legacy");
+  const nowLane = repoIdentity(db, repo);
   const out: PostCandidate[] = [];
   for (const { facts: f, plan, action } of planned(db, "post-review", { repo })) {
     const head = action.head!;
@@ -51,7 +55,8 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     // A newer review with no public text still edits an earlier post, so the verdict line stays current.
     const pub = o.public;
     if (!pub) continue;
-    const editId = (posted.get(repo, f.number) as { review_id: string | null } | undefined)?.review_id ?? null;
+    const prev = posted.get(repo, f.number) as { review_id: string | null; posted_as: string | null } | undefined;
+    const editId = prev && lane(prev.posted_as) === nowLane ? prev.review_id ?? null : null;
     out.push({
       repo, number: f.number, head_oid: head, editId, opusAt: o.at, model: o.model,
       body: reviewBody({
@@ -61,6 +66,12 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     });
   }
   return out;
+}
+
+/** Whether an edit failed because the review no longer exists or the token may not edit it. */
+function reviewUneditable(e: unknown): boolean {
+  if (e instanceof GithubError && (e.type === "NOT_FOUND" || e.type === "FORBIDDEN")) return true;
+  return /Could not resolve to a node|NOT_FOUND|FORBIDDEN/.test(String((e as Error)?.message ?? e));
 }
 
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
@@ -96,17 +107,26 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
       const g = await guard(db, { repo, number: c.number }, { kind: "post-review", head: c.head_oid }, params.by ?? CLI_BY);
       if ("refused" in g) { skip(g.refused); continue; }
       const at = d.now().toISOString();
+      const as = auditIdentity(db, g);
+      let edited = false;
       if (c.editId) {
-        await editReview(w, d.querier, g, c.editId, REVIEW_NOTE(c), c.body);
-        db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ?, opus_at = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, c.opusAt, repo, c.number);
-        s.edited.push(refOf(c));
-      } else {
+        try {
+          await editReview(w, d.querier, g, c.editId, REVIEW_NOTE(c), c.body);
+          db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ?, opus_at = ?, posted_as = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, c.opusAt, as, repo, c.number);
+          s.edited.push(refOf(c));
+          edited = true;
+        } catch (e) {
+          // The review is gone, or this token may not edit it: post a fresh one and replace the row.
+          if (!reviewUneditable(e)) throw e;
+        }
+      }
+      if (!edited) {
         const id = await postReview(w, d.querier, g, live.id, REVIEW_NOTE(c), c.body);
         if (!id) throw new Error("GitHub returned no review");
-        db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at, opus_at) VALUES (?, ?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at, c.opusAt);
+        db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at, opus_at, posted_as) VALUES (?, ?, ?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at, c.opusAt, as);
         s.posted.push(refOf(c));
       }
-      jobItem(db, c.repo, c.number, `${c.editId ? "edited" : "posted"} review at ${c.head_oid.slice(0, 7)}`, log);
+      jobItem(db, c.repo, c.number, `${edited ? "edited" : "posted"} review at ${c.head_oid.slice(0, 7)}`, log);
       params.onHandled?.(++handled);
     } catch (e) {
       const reason = String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 300);

@@ -12,6 +12,7 @@ import { JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./classify/parse.ts";
 import { envVar } from "./env.ts";
 import { repoHasNoCi } from "./merge/no-ci.ts";
 import { fixupEditable } from "./fixup/patch.ts";
+import { mentionNames } from "./github/slugs.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/autocraft/mirror.db");
 
@@ -48,6 +49,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["comments", "counted", "INTEGER"],
   // The Opus review (its `at`) the posted review describes.
   ["review_posts", "opus_at", "TEXT"],
+  ["review_posts", "posted_as", "TEXT"],
   ["access", "github_id", "INTEGER"],
   ["decisions", "summary", "TEXT"],
   ["decisions", "summary_by", "TEXT"],
@@ -237,13 +239,13 @@ function dropColumns(db: DatabaseSync): void {
 
 // Values renamed after their first release, rewritten on every connect.
 function migrateValues(db: DatabaseSync): void {
-  // The mention flag for the pipeline login the comments were last flagged for.
-  const own = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
+  // The mention flag for the pipeline login and app slugs the comments were last flagged for.
+  const names = JSON.stringify(mentionNames(db));
   const built = (db.prepare("SELECT value FROM main.settings WHERE key = 'mentions_built'").get() as { value: string } | undefined)?.value ?? "";
-  if (own !== built) {
+  if (names !== built) {
     db.exec("BEGIN IMMEDIATE");
-    db.prepare("UPDATE main.comments SET mentions_pipeline = ? <> '' AND body IS NOT NULL AND instr(lower(body), lower('@' || ?)) > 0").run(own, own);
-    db.prepare("INSERT INTO main.settings (key, value) VALUES ('mentions_built', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(own);
+    db.prepare("UPDATE main.comments SET mentions_pipeline = body IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(?) j WHERE j.value <> '' AND instr(lower(body), lower('@' || j.value)) > 0)").run(names);
+    db.prepare("INSERT INTO main.settings (key, value) VALUES ('mentions_built', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(names);
     db.exec("COMMIT");
   }
   // Looked up first: an UPDATE that changes nothing still takes the write lock.

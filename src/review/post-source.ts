@@ -6,7 +6,7 @@ import { parsePublic, storedClaims, type PublicReview } from "./opus-parse.ts";
 
 type Row = { head_oid: string; at: string; model: string | null; mode: string | null; base_head: string | null; verdict: string; sure: number | null; public_review: string | null; claims: string | null };
 const COLS = "head_oid, at, model, mode, base_head, verdict, sure, public_review, claims";
-const MAX_STEPS = 5;
+const MAX_STEPS = 20;
 
 export type PostSource = {
   /** The verdict at the head (a carried review's is take). */
@@ -44,11 +44,12 @@ export function postSource(db: DatabaseSync, repo: string, number: number, head:
     src = next;
   }
   const carried = src !== o && !isCarried(src);
+  // A walk that ends on a carried row (chain over the cap, or a missing base row) has no model to name.
   const hasPublic = src.public_review !== null;
   return {
     verdict: o.verdict, sure: o.sure !== 0, sourceVerdict: src.verdict,
     public: hasPublic ? parsePublic(safeJson(src.public_review!)) : { summary: "", points: [] },
     hasPublic, claims: storedClaims(safeJson(src.claims ?? "[]")),
-    model: src.model, reviewedAt: carried ? src.head_oid : o.head_oid, fixedIn: carried ? o.head_oid : null, at: o.at,
+    model: isCarried(src) ? null : src.model, reviewedAt: carried ? src.head_oid : o.head_oid, fixedIn: carried ? o.head_oid : null, at: o.at,
   };
 }
