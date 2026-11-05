@@ -3,7 +3,7 @@
 // sandbox sees only what claude needs to start, the checkout (read-only), an
 // empty home and the account's credentials: its credentials file, or with a
 // long-lived token only that token (no credentials file, so no refresh token). Network is
-// shared because the API needs it; everything else is a new namespace.
+// shared because the API needs it; everything else is a new namespace. The environment is the exact one in the returned `env`.
 
 /** Where the checkout appears inside the sandbox: outside the working directory, so claude never loads its instruction files as project memory. */
 export const REPO_PATH = "/repo";
@@ -49,14 +49,20 @@ const MOUNT_PATH = /^\/[A-Za-z0-9._\/-]{1,200}$/;
 
 export const BWRAP = "/usr/bin/bwrap";
 
-export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } {
+/**
+ * The command and the complete environment of the bwrap process. The caller
+ * passes `env` as the process's whole environment (nothing of the host's):
+ * bwrap's child inherits it. Nothing secret goes into `args`, which any user
+ * can read in /proc/<pid>/cmdline; the long-lived token is only in `env`.
+ */
+export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[]; env: Record<string, string> } {
   for (const x of s.shared ?? []) if (!SHARED_NAME.test(x.name)) throw new Error(`unsafe repository name: ${x.name}`);
   for (const m of s.extraMounts ?? []) if (!MOUNT_PATH.test(m.path) || m.path.includes("..")) throw new Error(`unsafe mount path: ${m.path}`);
   const env: [string, string][] = [
     ["HOME", HOME], ["CLAUDE_CONFIG_DIR", CONFIG], ["PATH", "/usr/bin"], ["LANG", "C.UTF-8"], ["DISABLE_AUTOUPDATER", "1"],
   ];
   const args = [
-    "--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--clearenv",
+    "--unshare-all", "--share-net", "--die-with-parent", "--new-session",
     "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin",
     "--ro-bind", "/etc/ssl", "/etc/ssl", "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
     "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
@@ -72,9 +78,7 @@ export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } 
     ...(s.agentsFile ? ["--ro-bind", s.agentsFile, AGENTS_PATH] : []),
     ...(s.extraMounts ?? []).flatMap((m) => ["--ro-bind", m.host, m.path]),
     "--chdir", WORK_PATH,
-    ...env.flatMap(([k, v]) => ["--setenv", k, v]),
-    ...(s.oauthToken ? ["--setenv", "CLAUDE_CODE_OAUTH_TOKEN", s.oauthToken] : []),
     CLAUDE_PATH, ...s.claudeArgs,
   ];
-  return { cmd: BWRAP, args };
+  return { cmd: BWRAP, args, env: { ...Object.fromEntries(env), ...(s.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: s.oauthToken } : {}) } };
 }

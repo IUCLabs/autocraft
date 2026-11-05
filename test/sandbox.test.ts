@@ -53,9 +53,9 @@ describe("sandbox command", () => {
 
 
   test("new namespaces except the network, dies with the parent, clean environment", () => {
-    for (const f of ["--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--clearenv"]) assert.ok(args.includes(f), f);
-    assert.equal(args.indexOf("--clearenv") < args.indexOf("--setenv"), true);
-    assert.deepEqual(pairs(args, "--setenv").sort(), ["CLAUDE_CONFIG_DIR /home/sandbox/.claude", "DISABLE_AUTOUPDATER 1", "HOME /home/sandbox", "LANG C.UTF-8", "PATH /usr/bin"]);
+    for (const f of ["--unshare-all", "--share-net", "--die-with-parent", "--new-session"]) assert.ok(args.includes(f), f);
+    assert.ok(!args.includes("--setenv") && !args.includes("--clearenv"));
+    assert.deepEqual(sandboxCommand(spec).env, { CLAUDE_CONFIG_DIR: "/home/sandbox/.claude", DISABLE_AUTOUPDATER: "1", HOME: "/home/sandbox", LANG: "C.UTF-8", PATH: "/usr/bin" });
     assert.deepEqual(args.slice(args.indexOf("--chdir"), args.indexOf("--chdir") + 2), ["--chdir", "/work"]);
     assert.ok(!args.some((a) => a.startsWith("/work/")), "the checkout is not under the working directory");
   });
@@ -142,7 +142,7 @@ describe("bubblewrap (no model)", { skip: !bwrapOk && "bwrap unavailable" }, () 
   writeFileSync(creds, "{}");
   const sh = (script: string) => {
     const c = sandboxCommand({ claudeBin: "/usr/bin/sh", checkout, credentials: creds, claudeArgs: ["-c", script] });
-    return spawnSync(c.cmd, c.args, { encoding: "utf8", env: { PATH: process.env.PATH! } });
+    return spawnSync(c.cmd, c.args, { encoding: "utf8", env: c.env });
   };
 
   test("sees the checkout read-only and nothing else of the host", () => {

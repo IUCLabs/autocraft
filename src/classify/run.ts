@@ -58,12 +58,12 @@ export function loadItems(db: DatabaseSync, refs: { repo: string; number: number
 }
 
 type Proc = { code: number | null; stdout: string; stderr: string };
-/** `env` is added to the process environment of the child. `onLine` gets each complete line of stdout as it arrives (the whole stdout is still returned). */
-export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number, env?: Record<string, string>, onLine?: (line: string) => void) => Promise<Proc>;
+/** `env` is added to the process environment of the child, or with `exactEnv` is the child's whole environment. `onLine` gets each complete line of stdout as it arrives (the whole stdout is still returned). */
+export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number, env?: Record<string, string>, onLine?: (line: string) => void, exactEnv?: boolean) => Promise<Proc>;
 
-export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000, env?: Record<string, string>, onLine?: (line: string) => void): Promise<Proc> {
+export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000, env?: Record<string, string>, onLine?: (line: string) => void, exactEnv = false): Promise<Proc> {
   return new Promise((resolve) => {
-    const p = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], timeout: timeoutMs, ...(env && { env: { ...process.env, ...env } }) });
+    const p = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], timeout: timeoutMs, ...(env && { env: exactEnv ? env : { ...process.env, ...env } }) });
     let stdout = "", stderr = "";
     let partial = "";
     p.stdout.on("data", (d) => {
@@ -402,7 +402,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         const feed = (raw: string) => { clockLine(clock, raw); progress(raw); };
         const release = holdCheckouts([opts.checkout!, ...(shared ?? []).map((x) => x.dir)]);
         try {
-          r = await runner(c.cmd, c.args, stdin, cwd, timeoutMs, undefined, feed);
+          r = await runner(c.cmd, c.args, stdin, cwd, timeoutMs, c.env, feed, true);
         } finally {
           release();
         }

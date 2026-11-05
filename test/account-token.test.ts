@@ -66,9 +66,11 @@ describe("long-lived token", () => {
     // The sandbox gets the token as environment and no credentials mount.
     const spec = { claudeBin: "/h/claude", checkout: "/h/co", credentials: "/h/acct/.credentials.json", claudeArgs: ["-p"] };
     assert.ok(sandboxCommand(spec).args.includes("/h/acct/.credentials.json"));
-    const withTok = sandboxCommand({ ...spec, oauthToken: SECRET }).args;
-    assert.ok(!withTok.includes("/h/acct/.credentials.json"));
-    assert.equal(withTok[withTok.indexOf("CLAUDE_CODE_OAUTH_TOKEN") + 1], SECRET);
+    const withTok = sandboxCommand({ ...spec, oauthToken: SECRET });
+    assert.ok(!withTok.args.includes("/h/acct/.credentials.json"));
+    assert.equal(withTok.env.CLAUDE_CODE_OAUTH_TOKEN, SECRET);
+    assert.ok(!JSON.stringify(withTok.args).includes("sk-ant-oat01"), "the token is never in argv");
+    assert.equal(sandboxCommand(spec).env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
 
     // A rejection stops its use and shows on the page; a new token clears it.
     assert.ok(isAuthFailure('API Error: 401 {"type":"error","error":{"type":"authentication_error"}}'));
