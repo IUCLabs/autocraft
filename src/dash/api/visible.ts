@@ -8,6 +8,8 @@ import { trackedNames } from "../../repos.ts";
 import { DEFAULT_OWNER, ownerOf } from "../../owners.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, User } from "../types.ts";
+import { securityRepo } from "../../security/rules.ts";
+import { canSeeInternals } from "./staff.ts";
 
 const memo = new WeakMap<Req, Promise<string[]>>();
 
@@ -36,10 +38,17 @@ export async function repoOwners(db: DatabaseSync, req: Req): Promise<Record<str
   return out;
 }
 
-/** Tracked repos the requester may not see (empty for operators and when every repo is public). */
+/**
+ * Tracked repos the requester may not see (empty for operators and when every repo is public). The pseudo repo of a
+ * repo's security scans (`(security):<repo>`, where its jobs and agent runs are recorded) is hidden from viewers and
+ * from maintainers who cannot see the repo, so every listing that leaves out hidden repos leaves the scans out too.
+ */
 export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   const visible = new Set(await visibleRepos(db, req));
-  return trackedNames(db).filter((r) => !visible.has(r));
+  const tracked = trackedNames(db);
+  const staff = canSeeInternals(req);
+  const hidden = tracked.filter((r) => !visible.has(r));
+  return [...hidden, ...tracked.filter((r) => !staff || !visible.has(r)).map(securityRepo)];
 }
 
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */

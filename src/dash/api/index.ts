@@ -23,6 +23,7 @@ import * as build from "./build.ts";
 import * as dec from "./decisions.ts";
 import * as conv from "./conversations.ts";
 import * as areas from "./areas.ts";
+import * as security from "./security.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
@@ -497,6 +498,11 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/merge/release", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, false)) },
     { method: "POST", pattern: "/api/merge/batch-remove", operator: true, handler: ok((db, req) => batchRemovePr(db, req, opts.exec)) },
     { method: "POST", pattern: "/api/queue/batches/:id/stop", operator: true, handler: ok((db, req) => batchStop(db, req, opts.exec)) },
+    get("/api/repos/:repo/security", security.security),
+    post("/api/repos/:repo/security/scans", security.startScan),
+    post("/api/security/scans/:id/stop", security.stopScan),
+    get("/api/security/findings/:repo/:n", security.finding),
+    post("/api/security/findings/:repo/:n", security.actOnFinding),
     get("/api/needs", needs),
     get("/api/flow", flow),
     get("/api/now", now),
