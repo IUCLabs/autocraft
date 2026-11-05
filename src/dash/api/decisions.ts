@@ -8,7 +8,7 @@ import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
-import { BACKLOG, HANDLED, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
+import { BACKLOG, HANDLED, SNOOZED_SQL, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
@@ -145,7 +145,11 @@ const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...
 
 /** Whether Undo would succeed: answered, not acted on, and nothing written to GitHub for a group answer. */
 export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
-  !!d.answer && !d.applied_at && !db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id);
+  !!d.answer && (!d.applied_at || directHandled(db, d)) && !db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id);
+
+/** An operator's own "handled" answer: nothing was written anywhere, so Undo stays possible although it is marked applied (a conversation card's handled answer follows GitHub writes and stays final). */
+const directHandled = (db: DatabaseSync, d: DecisionRow): boolean =>
+  d.answer === HANDLED.key && !db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'answer' AND details LIKE '%\"source\":\"conversation\"%' LIMIT 1").get(d.id);
 
 const ROLE_ORDER: Record<DuplicateMember["role"], number> = { keep: 0, close: 1, stay: 2 };
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
@@ -169,6 +173,12 @@ function risksOf(db: DatabaseSync, d: DecisionRow): string[] {
   if (!head) return [];
   const o = db.prepare("SELECT risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(d.repo, d.number, head) as { risks: string | null } | undefined;
   try { return strings(JSON.parse(o?.risks ?? "[]")); } catch { return []; }
+}
+
+function snoozedOf(db: DatabaseSync, d: DecisionRow): { by: string; at: string } | null {
+  if (d.answer || !d.snoozed_at) return null;
+  const row = db.prepare(`SELECT ${SNOOZED_SQL} AS s FROM decisions WHERE id = ?`).get(d.id) as { s: number } | undefined;
+  return row?.s ? { by: d.snoozed_by ?? "", at: d.snoozed_at } : null;
 }
 
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
@@ -211,6 +221,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,
     exceptions: exceptionsOf(d),
+    snoozed: snoozedOf(db, d),
     claim: d.answer ? null : (claimRow ? { login: claimRow.login, since: claimRow.since } : null),
     commentCount,
     related: batch ? [] : relatedOf(db, d.repo!, d.number!),
@@ -243,13 +254,15 @@ export function withoutHidden(hidden: string[], params: Record<string, string>):
 export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () => Promise<string[]>): Promise<DecisionList> {
   const q = req.query;
   const status = q.get("status") ?? "open";
-  if (!["open", "opinions", "answered", "backlog"].includes(status)) throw new HttpError(400, "status must be open, opinions, answered or backlog");
+  if (!["open", "opinions", "answered", "backlog", "snoozed"].includes(status)) throw new HttpError(400, "status must be open, opinions, answered, backlog or snoozed");
   const where: string[] = [];
   const params: Record<string, string> = {};
   if (status === "answered") {
     where.push(`answer IS NOT NULL AND answer <> '${BACKLOG.key}' AND (applied_at IS NULL OR applied_at >= :since)`);
     params.since = new Date(Date.now() - 7 * 86400_000).toISOString();
   } else if (status === "backlog") where.push(`answer = '${BACKLOG.key}'`);
+  else if (status === "snoozed") where.push(SNOOZED_SQL);
+  else if (status === "open") where.push(`answer IS NULL AND NOT ${SNOOZED_SQL}`);
   else where.push("answer IS NULL");
   if (status === "opinions") where.push("(EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL) OR EXISTS (SELECT 1 FROM decision_comments c WHERE c.decision_id = decisions.id))");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
@@ -369,9 +382,11 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
   const b = body(req);
   const keys = new Set(optionsOf(d).map((o) => o.key));
-  if (typeof b.answer !== "string" || !keys.has(b.answer)) throw new HttpError(400, "answer must be one of the option keys");
+  const handled = b.answer === HANDLED.key;
+  if (typeof b.answer !== "string" || !(keys.has(b.answer) || (handled && !isBatch(d) && !d.id.includes(":dupegroup:")))) throw new HttpError(400, "answer must be one of the option keys");
   const ans = b.answer;
   const note = optionalText(b.note, NOTE_MAX, "note");
+  if (handled && !note) throw new HttpError(400, "a handled answer needs a note");
   let exceptions: Exception[] | null = null;
   if (b.exceptions !== undefined && b.exceptions !== null) {
     if (!Array.isArray(b.exceptions)) throw new HttpError(400, "exceptions must be an array");
@@ -392,23 +407,38 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
   inTransaction(db, () => {
     const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, ans) : [];
     if (stored.length && b.textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL
-      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, new Date().toISOString(), d.id);
+    const at = new Date().toISOString();
+    // Handled writes nothing and no step acts on it, so it counts as applied at once (Undo still works, see directHandled).
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL
+      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, at, handled ? at : null, d.id);
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
   });
   audit(db, req.user.login, "answer", d.id, { answer: ans, exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
   return await settled(db, req, d.id);
 }
 
+/** Operator: snooze (`on`) or wake an open decision. It stays open for the pipeline; only the inbox hides it until the item has new activity. */
+export async function snooze(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireOperator(req, d);
+  if (d.answer) throw new HttpError(409, "only an open decision can be snoozed");
+  const b = body(req);
+  if (typeof b.on !== "boolean") throw new HttpError(400, "on must be true or false");
+  const at = new Date().toISOString();
+  db.prepare("UPDATE main.decisions SET snoozed_by = ?, snoozed_at = ? WHERE id = ? AND answer IS NULL").run(b.on ? req.user.login : null, b.on ? at : null, d.id);
+  audit(db, req.user.login, b.on ? "snooze" : "unsnooze", d.id);
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+}
+
 export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
-  if (d.applied_at) throw new HttpError(409, "the pipeline already acted on this answer");
+  if (d.applied_at && !directHandled(db, d)) throw new HttpError(409, "the pipeline already acted on this answer");
   inTransaction(db, () => {
     if (!canUndo(db, d)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
-    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
-      WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(d.id);
+    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL
+      WHERE id = ? AND answer IS NOT NULL AND (applied_at IS NULL OR answer = '${HANDLED.key}')`).run(d.id);
     if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
     resetGroupAnswer(db, d.id);
   });

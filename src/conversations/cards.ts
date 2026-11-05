@@ -340,7 +340,8 @@ const isAsk = (c: NewCard): boolean => c.params.kind === "resolution" && !c.para
 
 export type Parsed = { text: string; cards: NewCard[]; notes: string[] };
 
-const MAX_RESOLUTIONS = 3;
+/** Resolutions per reply beyond one per option of the decision: outcomes no option covers (handled, a close, a step-only action). */
+const MAX_EXTRA = 2;
 const FENCE = /```actions[ \t]*\r?\n([\s\S]*?)```[ \t]*$/;
 
 /** The cleaned text of each comment of a reply, with its field (`cards[i].text`, i the position in the actions block), for the reference checks. */
@@ -369,15 +370,23 @@ export function parseReply(db: DatabaseSync, repo: string, n: number, reply: str
     if (!Array.isArray(list)) notes.push("dropped the actions block: it is not a JSON list");
     else {
       const hasDecision = !!openDecision(db, repo, n);
-      let asks = 0, resolutions = 0;
+      let asks = 0, extras = 0;
+      const options = new Set<string>();
       for (const raw of list.slice(0, 20)) {
         const v = validateCard(db, repo, n, raw, drop);
         if (!("card" in v)) { notes.push(v.note); continue; }
         if (hasDecision && isAsk(v.card)) {
           if (asks++ >= 1) notes.push("dropped a second card that only asks and keeps the question open");
           else cards.push(v.card);
-        } else if (resolutions++ >= MAX_RESOLUTIONS) notes.push(`dropped a resolution beyond the ${MAX_RESOLUTIONS} allowed per reply`);
-        else cards.push(v.card);
+        } else {
+          const s = v.card.params.kind === "resolution" ? v.card.params.settle : null;
+          const option = s?.kind === "answer" ? s.option : s?.kind === "backlog" ? "backlog" : null;
+          if (option !== null) {
+            if (options.has(option)) notes.push("dropped a second resolution for the same option");
+            else { options.add(option); cards.push(v.card); }
+          } else if (extras++ >= MAX_EXTRA) notes.push(`dropped a resolution beyond the ${MAX_EXTRA} extra outcomes allowed per reply`);
+          else cards.push(v.card);
+        }
       }
       if (list.length > 20) notes.push("dropped the cards beyond the twentieth");
     }

@@ -12,6 +12,7 @@ import { setApproval as setLabelApproval } from "../src/labels/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
 import { cleanComment, parseReply } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
+import { ensureConversation, insertTurn } from "../src/conversations/store.ts";
 import { answerPending } from "../src/conversations/run.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
@@ -88,7 +89,8 @@ describe("cards", () => {
       R([{ kind: "close", reason: "completed" }, { kind: "comment" }], null, { text: "Done." }),
       R([{ kind: "comment" }, { kind: "comment" }], { kind: "backlog" }, { text: "Twice." }),
       R([{ kind: "comment" }], { kind: "answer", option: "close" }, { text: "Closing." }),
-      R([{ kind: "comment" }], { kind: "answer", option: "take" }, { text: "Thanks @bob, see the pack." }),
+      R([{ kind: "comment" }], { kind: "backlog" }, { text: "Thanks @bob, see the pack." }),
+      R([{ kind: "comment" }], { kind: "answer", option: "take" }, { text: "Same option again." }),
       R([{ kind: "comment" }], { kind: "backlog" }, { text: "" }),
       R([{ kind: "label", label: "bugfix" }], null),
       R([{ kind: "comment" }], null, { text: "Which version?" }),
@@ -97,9 +99,9 @@ describe("cards", () => {
     const p = parseReply(db, "app", 1, reply)!;
     const kinds = p.cards.map((c) => JSON.stringify(c.params.kind === "resolution" ? [c.params.steps.map((x) => x.kind), c.params.settle?.kind ?? null] : null));
     assert.deepEqual(kinds, [
-      '[["label"],"answer"]', '[["duplicate"],"handled"]', '[["comment"],"answer"]', '[["comment"],null]',
+      '[["label"],"answer"]', '[["duplicate"],"handled"]', '[["comment"],"backlog"]', '[["comment"],null]',
     ]);
-    assert.equal(p.notes.length, 12);
+    assert.equal(p.notes.length, 13);
     assert.equal(p.cards[0]!.description, 'On app#1: Add the label "plugin candidate"; Answers the scope question with "Wanted"');
     assert.equal(p.cards[2]!.text, "Thanks bob, see the pack.");
     assert.equal(parseReply(db, "app", 1, "```actions\n[]\n```"), null, "no text, no reply");
@@ -166,6 +168,40 @@ describe("Do it", () => {
     assert.equal(failed.state, "failed");
     assert.match(failed.error ?? "", /Already done: Post the comment below/);
     assert.equal(bad.prepare("SELECT answer FROM decisions WHERE id = 'app#1:scope'").get()!.answer, null);
+  });
+
+  /** Stores an Opus turn with one proposed card (as a reply would) and returns the card's id. */
+  const propose = async (db: DatabaseSync, n: number, steps: unknown[], settle: unknown, text: string | null) => {
+    await ensureConversation(db, "app", n, "op");
+    const p = parseReply(db, "app", n, `Text.\n\`\`\`actions\n${JSON.stringify([{ kind: "resolution", steps, settle, ...(text && { text }) }])}\n\`\`\``)!;
+    assert.equal(p.cards.length, 1, p.notes.join("; "));
+    const turn = insertTurn(db, "app", n, { kind: "opus", login: "opus", body: "Text.", block: "x", cards: p.cards });
+    return Number(db.prepare("SELECT id FROM conversation_cards WHERE turn_id = ?").get(turn)!.id);
+  };
+
+  test("skipped steps do not run, a card with nothing left is refused, a later reply replaces drafts and a PR change blocks them", async () => {
+    const db = fresh();
+    setLabelApproval(db, "op", "app", true);
+    const g = github(false);
+    const a = await propose(db, 1, [{ kind: "comment" }, { kind: "label", label: "bugfix" }], { kind: "answer", option: "take" }, "Thanks.");
+    const done = (await doCard(db, a, "op", { querier: g.querier as never, skip: [0] })).card;
+    assert.equal(done.state, "done", done.error ?? "");
+    assert.deepEqual(g.sent.filter((x) => x === "comment" || x === "label"), ["label"]);
+    assert.match(done.result ?? "", /skipped: Post the comment below/);
+    assert.equal(db.prepare("SELECT answer FROM decisions WHERE id = 'app#1:scope'").get()!.answer, "take");
+
+    const ask = await propose(db, 3, [{ kind: "comment" }], null, "Which version?");
+    await assert.rejects(() => doCard(db, ask, "op", { skip: [0] }), /no steps left/);
+    await assert.rejects(() => doCard(db, ask, "op", { skip: [5] }), /step positions/);
+    // A later Opus turn replaces the proposed draft.
+    await propose(db, 3, [{ kind: "comment" }], null, "Which OS?");
+    await assert.rejects(() => doCard(db, ask, "op"), /replaced by a later reply/);
+    assert.equal(db.prepare("SELECT state FROM conversation_cards WHERE id = ?").get(ask)!.state, "replaced");
+
+    const pr = await propose(db, 2, [{ kind: "label", label: "bugfix" }], null, null);
+    db.prepare("UPDATE items SET head_oid = 'sha3' WHERE number = 2").run();
+    await assert.rejects(() => doCard(db, pr, "op", { querier: g.querier as never }), /PR changed since/);
+    assert.equal(conv.cardView(db, db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(pr) as never).stale, "pr-changed");
   });
 
   test("a message with ask false is stored without a pending state and queues no Opus reply", async () => {

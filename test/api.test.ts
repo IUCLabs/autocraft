@@ -248,6 +248,25 @@ describe("api", () => {
     assert.equal(auditCount("undo", "boss"), 1);
   });
 
+  test("an operator can close a question as handled with a note (and undo it), and snooze hides it until new activity", async () => {
+    const boss = await signedIn("boss");
+    await boss.post(dpath(P2, "/answer"), { answer: "handled" }, 400);
+    const h = await boss.post<Decision>(dpath(P2, "/answer"), { answer: "handled", note: "Done on GitHub" });
+    assert.deepEqual({ a: h.answer, n: h.answerNote, u: h.undoable }, { a: "handled", n: "Done on GitHub", u: true });
+    assert.equal((await boss.post<Decision>(dpath(P2, "/undo"))).answer, null);
+
+    const ids = async (status: string) => (await boss.get<{ decisions: Decision[] }>(`/api/decisions?status=${status}&repo=photocraft`)).decisions.map((x) => x.id);
+    const s = await boss.post<Decision>(dpath(P2, "/snooze"), { on: true });
+    assert.equal(s.snoozed?.by, "boss");
+    assert.ok(!(await ids("open")).includes(P2));
+    assert.deepEqual(await ids("snoozed"), [P2]);
+    // Feedback after the snooze wakes it.
+    db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('wake1', ?, 'maint', ?, 'More news')").run(P2, new Date(Date.now() + 60_000).toISOString());
+    assert.equal((await boss.get<Decision>(dpath(P2))).snoozed, null);
+    assert.ok((await ids("open")).includes(P2));
+    assert.deepEqual(await ids("snoozed"), []);
+  });
+
   test("a group decision's answer must carry the hash of the shown comments, and an answer Act wrote for can't be undone", async () => {
     const boss = await signedIn("boss");
     const id = "photocraft:dupegroup:4";

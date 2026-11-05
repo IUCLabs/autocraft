@@ -736,6 +736,7 @@ function toDecision(s: Seed): Decision {
   const text = s.number === null ? { summary: BATCH_SUMMARY[s.repo] ?? s.question, body: null } : (TEXT[`${s.repo}#${s.number}`] ?? fillerText(s.title, s.repo));
   return {
     id,
+    snoozed: null,
     kind: s.kind,
     repo: s.repo,
     number: s.number,

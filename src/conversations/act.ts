@@ -11,16 +11,17 @@ import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { closeRefusal, decisionStamp, openDecision, otherTypeLabel, stepLine, type CardParams, type Settle } from "./cards.ts";
-import { ConversationError, insertTurn, systemBlock, type StoreDeps } from "./store.ts";
+import { ConversationError, insertTurn, staleOf, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX, type CloseReason } from "./types.ts";
 
 export type CardRow = {
+  seen: string | null;
   id: number; turn_id: number; repo: string; number: number; kind: string; params: string; text: string | null; description: string;
   state: string; result: string | null; result_url: string | null; error: string | null; acted_by: string | null; acted_at: string | null; edited_by: string | null; edited_at: string | null;
 };
 
 /** `canWrite` is the signed-in operator's write access to a repo; the shell has none to check. */
-export type ActDeps = StoreDeps & { querier?: Querier; canWrite?: (repo: string) => Promise<boolean> };
+export type ActDeps = StoreDeps & { querier?: Querier; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[] };
 
 export const cardOf = (db: DatabaseSync, id: number): CardRow | undefined =>
   db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(id) as CardRow | undefined;
@@ -274,10 +275,22 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
  */
 export async function doCard(db: DatabaseSync, id: number, by: string, deps: ActDeps = {}): Promise<{ card: CardRow; ran: boolean }> {
   const c = need(db, id);
+  if (c.state === "replaced") throw new ConversationError(409, "replaced by a later reply");
+  if (c.state === "proposed" && staleOf(db, c.repo, c.number, c.seen) === "pr-changed") throw new ConversationError(409, "the PR changed since this was proposed");
+  let params = JSON.parse(c.params) as CardParams;
+  const skipped: string[] = [];
+  if (deps.skip?.length) {
+    if (params.kind !== "resolution") throw new ConversationError(400, "only a resolution has steps to skip");
+    const all = params.steps;
+    if (new Set(deps.skip).size !== deps.skip.length || deps.skip.some((k) => !Number.isInteger(k) || k < 0 || k >= all.length)) throw new ConversationError(400, "skip must list distinct step positions of the card");
+    const steps = all.filter((_, k) => !deps.skip!.includes(k));
+    if (steps.length === 0 && !params.settle) throw new ConversationError(400, "a card with no steps left and no settlement does nothing");
+    skipped.push(...all.filter((_, k) => deps.skip!.includes(k)).map(stepLine));
+    params = { ...params, steps };
+  }
   const at = (deps.now?.() ?? new Date()).toISOString();
   const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
   if (claim.changes !== 1) return { card: c, ran: false };
-  const params = JSON.parse(c.params) as CardParams;
   let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
     out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite);
@@ -285,14 +298,15 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     error = oneLine(String((e as Error).message ?? e));
     posted = e instanceof StepError && e.posted;
   }
+  if (out && skipped.length) out = { ...out, result: `${out.result} (skipped: ${skipped.join("; ")})` };
   const end = (deps.now?.() ?? new Date()).toISOString();
   db.prepare("UPDATE conversation_cards SET state = ?, result = ?, result_url = ?, error = ?, acted_at = ? WHERE id = ?")
     .run(out ? "done" : "failed", out?.result ?? null, out?.url ?? null, error, end, id);
-  audit(db, by, "conversation-card", ref(c.repo, c.number), { card: id, kind: c.kind, state: out ? "done" : "failed", error: error ?? undefined });
-  const sentence = out ? `The operator ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The operator ${by} tried the proposed action: ${c.description}. It failed: ${error}.`;
+  audit(db, by, "conversation-card", ref(c.repo, c.number), { card: id, kind: c.kind, state: out ? "done" : "failed", error: error ?? undefined, ...(skipped.length && { skipped }) });
+  const sentence = out ? `The operator ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The operator ${by} tried the proposed action: ${c.description}${skipped.length ? ` (without: ${skipped.join("; ")})` : ""}. It failed: ${error}.`;
   insertTurn(db, c.repo, c.number, {
     kind: "system", login: "system", body: out ? `${by} ran the card: ${c.description}. ${out.result}.` : `${by} tried the card: ${c.description}. It failed: ${error}.`,
-    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : (params.kind === "close" || (params.kind === "resolution" && (out || posted))) && c.text ? { posted_text: c.text } : undefined),
+    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : (params.kind === "close" || (params.kind === "resolution" && params.steps.some((x) => x.kind === "comment") && (out || posted))) && c.text ? { posted_text: c.text } : undefined),
   }, deps);
   return { card: need(db, id), ran: true };
 }

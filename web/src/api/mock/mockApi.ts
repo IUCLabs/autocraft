@@ -78,6 +78,8 @@ export function createMockApi(): Api {
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
     if (status !== "answered" && d.answer) return false;
+    if (status === "open" && d.snoozed) return false;
+    if (status === "snoozed" && !d.snoozed) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
     if (status === "backlog" && d.answer !== "backlog") return false;
     if (status === "opinions" && !d.opinions.length && !d.commentCount) return false;
@@ -123,6 +125,13 @@ export function createMockApi(): Api {
         requireOperator(d);
         if (!d.undoable) throw new Error("already applied");
         Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [], undoable: false });
+        changed();
+        return wait(d, 30);
+      },
+      async snooze(id, on) {
+        const d = find(id);
+        requireOperator(d);
+        d.snoozed = on ? { by: "you", at: new Date().toISOString() } : null;
         changed();
         return wait(d, 30);
       },

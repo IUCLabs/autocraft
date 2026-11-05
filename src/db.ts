@@ -39,6 +39,11 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["decisions", "summary_by", "TEXT"],
   ["decisions", "summary_at", "TEXT"],
   ["decisions", "adopted_opinion", "TEXT"],
+  // Snoozed by an operator: out of the inbox until new activity on the item (SNOOZED_SQL).
+  ["decisions", "snoozed_by", "TEXT"],
+  // What Opus had seen of the item when it proposed the card: JSON {head, last_comment}; null for cards stored before this.
+  ["conversation_cards", "seen", "TEXT"],
+  ["decisions", "snoozed_at", "TEXT"],
   ["classifications", "probs", "TEXT"],
   ["token_usage", "cost_usd", "REAL"],
   ["classifications", "input_hash", "TEXT"],
