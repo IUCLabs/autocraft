@@ -42,6 +42,7 @@ function seed(): ConversationTurn[] {
       actions: [
         card({ id: 3, kind: "backlog", title: `Move ${REF} to the Backlog`, state: "done", done: { at: at(20), link: "", label: "Backlog" }, by: "mosswood", at: at(20) }),
         card({ id: 4, kind: "comment", title: `Post comment on ${REF}`, text: "Loading the pack works with the same patterns, so no data needs to be added here.", state: "failed", error: "Comment approval is off for designcraft.", by: "mosswood", at: at(19) }),
+        card({ id: 10, kind: "resolution", title: "Close the PR with a note", steps: ["Post the comment below", "Close the PR as not planned"], settles: "Closes the merge question as handled", text: "Closing: the pack already covers this.", state: "replaced" }),
         card({ id: 5, kind: "duplicate", title: `Close ${REF} as a duplicate of designcraft#1102`, state: "dismissed", by: "mosswood", at: at(18) }),
       ],
       notes: [],
@@ -57,25 +58,39 @@ function seed(): ConversationTurn[] {
         card({
           id: 6,
           kind: "resolution",
-          label: "Close PR",
-          title: "Close the PR with a note",
-          steps: ["Post the comment below", "Close the PR as not planned"],
+          label: "Ask for the pack",
+          title: "Ask the author to use the language pack",
+          steps: ["Post the comment below", "Add the label needs changes"],
+          settles: 'Answers the merge question with "Ask to use the language pack"',
+          option: "changes",
+          text: "Thanks for adding Hungarian. craft-i18n already ships a `hu` pack that craft-proof reads, so the data files don't need to be committed. Could you load the pack instead?",
+          writes: "posts a comment on GitHub",
+          state: "proposed",
+        }),
+        card({
+          id: 7,
+          kind: "resolution",
+          label: "Close as completed",
+          title: "Close the PR as completed",
+          steps: ["Post the comment below", "Close the PR as completed"],
           settles: "Closes the merge question as handled",
           text: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work.",
           writes: "closes the PR on GitHub",
           state: "proposed",
         }),
         card({
-          id: 7,
+          id: 8,
           kind: "resolution",
-          label: "Ask for the pack",
-          title: "Ask the author to use the language pack",
-          steps: ["Add the label needs changes"],
-          settles: 'Answers the merge question with "Ask to use the language pack"',
+          label: "Hold with a label",
+          title: "Hold for a second review",
+          steps: ["Add the label needs second review"],
+          settles: 'Answers the merge question with "Hold for a second review"',
+          option: "hold",
+          stale: "new-comments",
           state: "proposed",
         }),
         card({
-          id: 8,
+          id: 9,
           kind: "comment",
           label: "Post comment",
           title: "Ask whether the hyphenation rules differ",
@@ -152,7 +167,7 @@ export function createConversationMock(me: User, changed: () => void): Pick<Api,
         changed();
         return snap(k);
       },
-      async doCard(id) {
+      async doCard(id, _opts) {
         need();
         const k = find(id);
         k.state = "running";

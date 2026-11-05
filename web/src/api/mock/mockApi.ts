@@ -80,6 +80,8 @@ export function createMockApi(): Api {
     if (status !== "answered" && d.answer) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
     if (status === "backlog" && d.answer !== "backlog") return false;
+    if (status === "snoozed" && !d.snoozed) return false;
+    if (status === "open" && d.snoozed) return false;
     if (status === "opinions" && !d.opinions.length && !d.commentCount) return false;
     if (f.repo?.length && !f.repo.includes(d.repo)) return false;
     if (f.number !== undefined && !(d.number === f.number || d.items.some((i) => i.repo === d.repo && i.number === f.number))) return false;
@@ -161,6 +163,13 @@ export function createMockApi(): Api {
         const o = d.opinions.find((x) => x.id === oid);
         if (!o?.option) throw new Error("no option to adopt");
         settle(d, o.option, null, o);
+        changed();
+        return wait(d, 30);
+      },
+      async snooze(id, on) {
+        const d = find(id);
+        requireOperator(d);
+        d.snoozed = on ? { by: me.login, at: nowIso() } : null;
         changed();
         return wait(d, 30);
       },

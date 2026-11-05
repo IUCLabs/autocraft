@@ -19,8 +19,8 @@ import { decisionPath } from "../../lib/links";
 export function useItemDecisions(repo: string, number: number) {
   return useQuery(`item-decisions:${repo}#${number}`, async (api) => {
     const filter = { repo: [repo], number };
-    const [open, answered] = await Promise.all([api.decisions.list({ ...filter, status: "open" }), api.decisions.list({ ...filter, status: "answered" })]);
-    return [...open.decisions, ...answered.decisions];
+    const [open, snoozed, answered] = await Promise.all([api.decisions.list({ ...filter, status: "open" }), api.decisions.list({ ...filter, status: "snoozed" }), api.decisions.list({ ...filter, status: "answered" })]);
+    return [...open.decisions, ...snoozed.decisions, ...answered.decisions];
   });
 }
 

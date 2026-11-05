@@ -736,6 +736,7 @@ function toDecision(s: Seed): Decision {
   const text = s.number === null ? { summary: BATCH_SUMMARY[s.repo] ?? s.question, body: null } : (TEXT[`${s.repo}#${s.number}`] ?? fillerText(s.title, s.repo));
   return {
     id,
+    snoozed: null,
     kind: s.kind,
     repo: s.repo,
     number: s.number,
@@ -778,6 +779,10 @@ function toDecision(s: Seed): Decision {
 
 const ALL_SEEDS = [...SEEDS, ...FILLER.map((_, i) => fillerSeed(i))];
 export const DECISIONS: Decision[] = ALL_SEEDS.map(toDecision);
+
+// One decision starts snoozed, for the Snoozed tab and the item page.
+const SNOOZED = DECISIONS.find((d) => d.id === "photocraft#4133:duplicate");
+if (SNOOZED) SNOOZED.snoozed = { by: "mosswood", at: iso(3 * H) };
 
 export const THREADS: Record<string, DecisionComment[]> = Object.fromEntries(
   ALL_SEEDS.filter((s) => s.comments).map((s) => {

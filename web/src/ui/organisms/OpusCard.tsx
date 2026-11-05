@@ -52,7 +52,7 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
       className={cn(
         "rounded-md border",
         resolution ? "border-line-strong bg-raised px-3 py-3" : "border-line px-2.5 py-2",
-        a.state === "dismissed" && "border-line bg-transparent",
+        (a.state === "dismissed" || a.state === "replaced") && "border-line bg-transparent",
         className,
       )}
     >
@@ -60,11 +60,12 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
         {a.state === "done" && <CheckIcon className="mt-0.5 shrink-0 text-ok" />}
         {a.state === "failed" && <WarningCircleIcon className="mt-0.5 shrink-0 text-bad" />}
         {a.state === "running" && <SpinnerIcon className="mt-0.5 shrink-0 animate-spin text-ink/50" />}
-        <span className={cn("min-w-0 flex-1 break-words", a.state === "dismissed" && "font-normal text-ink/45 line-through")}>{a.title}</span>
+        <span className={cn("min-w-0 flex-1 break-words", (a.state === "dismissed" || a.state === "replaced") && "font-normal text-ink/45", a.state === "dismissed" && "line-through")}>{a.title}</span>
         {a.state === "done" && <span className="shrink-0 text-xs font-normal text-ok">Done</span>}
         {a.state === "failed" && <span className="shrink-0 text-xs font-normal text-bad">Failed</span>}
         {a.state === "running" && <span className="shrink-0 text-xs font-normal text-ink/55">Running…</span>}
         {a.state === "dismissed" && <span className="shrink-0 text-xs font-normal text-ink/45">Dismissed</span>}
+        {a.state === "replaced" && <span className="shrink-0 text-xs font-normal text-ink/45">Replaced</span>}
       </div>
       {resolution && proposed && a.steps.length > 0 && (
         <ol className="mt-2 list-decimal space-y-0.5 pl-5 text-sm leading-5 text-ink/80 marker:text-ink/40">
@@ -74,7 +75,7 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
         </ol>
       )}
       {resolution && proposed && <p className="mt-2 text-xs text-ink/60">{a.settles}</p>}
-      {a.text !== undefined && a.state !== "dismissed" &&
+      {a.text !== undefined && a.state !== "dismissed" && a.state !== "replaced" &&
         (editing ? (
           <textarea
             value={text}

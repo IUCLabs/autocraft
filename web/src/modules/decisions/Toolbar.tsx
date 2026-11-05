@@ -20,12 +20,14 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
   const { data: open } = useQuery("count:open", (api) => api.decisions.list({ status: "open", limit: 0 }));
   const { data: answered } = useQuery("count:answered", (api) => api.decisions.list({ status: "answered", limit: 0 }));
   const { data: backlog } = useQuery("count:backlog", (api) => api.decisions.list({ status: "backlog", limit: 0 }));
+  const { data: snoozed } = useQuery("count:snoozed", (api) => api.decisions.list({ status: "snoozed", limit: 0 }));
   const { data: withOpinions } = useQuery("count:opinions", (api) => api.decisions.list({ status: "opinions", limit: 0 }));
   const tabs = [
     { t: "open" as const, label: "Waiting", n: open?.total },
     { t: "opinions" as const, label: "Feedback", n: withOpinions?.total },
     { t: "answered" as const, label: "Answered", n: answered?.total },
     { t: "backlog" as const, label: "Backlog", n: backlog?.total },
+    { t: "snoozed" as const, label: "Snoozed", n: snoozed?.total },
   ];
   const kinds = filter.kind ?? [];
   const toggleKind = (k: DecisionKind) => {
