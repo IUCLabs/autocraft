@@ -25,7 +25,9 @@ export function carriedReview(db: DatabaseSync, c: { repo: string; number: numbe
   if (approved?.verdict !== "approve") return null;
   const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
   const review: OpusReview = {
-    ref: `${c.repo}#${c.number}`, verdict: "take", sure: true, fixes: [], risks: list<string>(e.risks), summary: e.summary, why: e.why, public: null,
+    ref: `${c.repo}#${c.number}`, verdict: "take", sure: true, fixes: [], risks: list<string>(e.risks), summary: e.summary,
+    // A take-fix review's reason names the fixes the fix-up has since made; the carried verdict's reason is the carry itself.
+    why: e.verdict === "take-fix" ? null : e.why, public: null,
     reason: `carried from ${e.head_oid.slice(0, 7)}: the only change is our checked fix-up`, conflicts: list(e.conflicts), claims: [],
   };
   return { review, from: e.head_oid, seen: e.seen_at ?? e.at, hash: e.disc_hash };

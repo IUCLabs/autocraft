@@ -23,7 +23,7 @@ test("selection order: our broken push, then work in flight, then score", () => 
 test("a verdict carries over only a single checked fix-up of ours", () => {
   const db = connect(join(tmpdir("carry"), "t.db"));
   const at = "2026-11-04T10:00:00.000Z";
-  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, at, model, mode, verdict, sure, reason, seen_at) VALUES ('app', 1, 'E', ?, 'opus', 'full', 'take-fix', 1, 'r', ?)`).run(at, at);
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, at, model, mode, verdict, sure, reason, why, seen_at) VALUES ('app', 1, 'E', ?, 'opus', 'full', 'take-fix', 1, 'r', 'needs a one-line fix', ?)`).run(at, at);
   db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('app', 1, 'E', 'H', 'pushed', 1, ?)").run(at);
   const c = { repo: "app", number: 1, head_oid: "H" };
   assert.equal(carriedReview(db, c), null, "no approved patch check yet");
@@ -31,6 +31,7 @@ test("a verdict carries over only a single checked fix-up of ours", () => {
   const k = carriedReview(db, c);
   assert.equal(k?.review.verdict, "take");
   assert.deepEqual(k?.review.fixes, []);
+  assert.equal(k?.review.why, null, "the take-fix reason described the fixes, now made");
   assert.equal(k?.review.reason, "carried from E: the only change is our checked fix-up");
   assert.equal(carriedReview(db, { ...c, head_oid: "H2" }), null, "a contributor commit after ours");
 });
@@ -38,7 +39,7 @@ test("a verdict carries over only a single checked fix-up of ours", () => {
 test("a carried verdict is not carried again after new discussion or at a head that has a review", () => {
   const db = connect(join(tmpdir("carry2"), "t.db"));
   const at = "2026-11-04T10:00:00.000Z";
-  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, at, model, mode, verdict, sure, reason, seen_at) VALUES ('app', 1, 'E', ?, 'opus', 'full', 'take-fix', 1, 'r', ?)`).run(at, at);
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, at, model, mode, verdict, sure, reason, why, seen_at) VALUES ('app', 1, 'E', ?, 'opus', 'full', 'take-fix', 1, 'r', 'needs a one-line fix', ?)`).run(at, at);
   db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('app', 1, 'E', 'H', 'pushed', 1, ?)").run(at);
   db.prepare("INSERT INTO patch_checks (kind, repo, number, subject, patch_hash, round, verdict, reasons, problems, model, created_at) VALUES ('fixup', 'app', 1, 'E', 'x', 1, 'approve', '', '[]', 'm', ?)").run(at);
   const c = { repo: "app", number: 1, head_oid: "H" };
