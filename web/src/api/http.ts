@@ -127,7 +127,8 @@ export function createHttpApi(): Api {
     },
     conversations: {
       get: (repo, number) => get(conv(repo, number)),
-      say: (repo, number, text, ask) => post(conv(repo, number, "/messages"), ask === false ? { text, ask } : { text }),
+      say: (repo, number, text, ask) => post(conv(repo, number, "/messages"), ask === false ? { text, ask: false } : { text }),
+      include: (repo, number, source, on) => post(conv(repo, number, "/includes"), { source, on }),
       editCard: (id, text) => post(`/api/conversation-cards/${id}/edit`, { text }),
       doCard: (id) => post(`/api/conversation-cards/${id}/do`),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),

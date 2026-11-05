@@ -110,8 +110,10 @@ export interface Api {
   /** Opus conversations, one per item. Writes are for operators; a message is refused while Opus has not answered the last one. */
   conversations: {
     get(repo: RepoName, number: number): Promise<Conversation>;
-    /** `ask: false` stores the message without asking Opus (default true); Opus reads it at the next ask. */
+    /** `ask: false` posts the message without asking Opus (no reply is expected). */
     say(repo: RepoName, number: number, text: string, ask?: boolean): Promise<Conversation>;
+    /** Includes (`on`) or excludes a maintainer post for Opus. Removing an include that was already sent is refused. */
+    include(repo: RepoName, number: number, source: string, on: boolean): Promise<Conversation>;
     /** A proposed comment card's text. */
     editCard(id: number, text: string): Promise<ConversationCard>;
     doCard(id: number): Promise<ConversationCard>;

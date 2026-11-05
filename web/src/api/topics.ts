@@ -43,7 +43,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["decisions?", withSlot("decisions")],
   ["decision:", withSlot("decisions")],
   ["thread:", ["decisions"]],
-  ["conversation:", ["conversations"]],
+  ["conversation:", ["conversations", "trace"]],
   ["repos", ["repos"]],
   ["repo-admin", ["repos", "sync", "settings"]],
   ["cls:", ["classify", "items"]],

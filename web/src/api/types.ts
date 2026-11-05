@@ -1743,6 +1743,8 @@ export interface Conversation {
   /** While a reply is being written: what Opus did last, up to five plain lines, newest last. */
   progress?: string[];
   startedBy: string | null;
+  /** Maintainer posts an operator included for Opus. `source` is "decision-comment:<id>" or "decision-opinion:<id>"; `sent` once Opus has been given it (it can no longer be removed). */
+  includes: { source: string; by: string; at: string; sent: boolean }[];
   turns: ConversationTurn[];
 }
 

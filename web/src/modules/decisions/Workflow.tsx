@@ -24,11 +24,14 @@ export function WorkflowBox({
   user,
   phone,
   onAnswered,
+  compact,
 }: {
   ds: Decision[];
   user: User;
   phone?: boolean;
   onAnswered?: () => void;
+  /** The item thread's "Answer directly" row: options as a wrapping row of buttons, same pick, note and confirmation. */
+  compact?: boolean;
 }) {
   const answer = useAnswer();
   const loc = useLocal();
@@ -82,18 +85,37 @@ export function WorkflowBox({
 
   if (!operator) return null;
   if (d.answer && !many) return <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3"><h2 className="mb-2 text-sm font-semibold">Workflow</h2><AnsweredState d={d} canUndo /></section>;
+  const title = compact ? "Answer directly" : "Workflow";
 
   const isArmed = !!option && armed === option.key;
   const writes = option ? effect(option.key) : null;
   const suffix = many ? ` for ${ds.length} decisions` : "";
   return (
-    <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3 rounded-md border border-line-strong bg-raised">
-      <h2 className="border-b border-line px-3 py-2 text-sm font-semibold">Workflow</h2>
-      <div className="px-3 py-2.5">
-        {!many && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
-        <div role="radiogroup" aria-label="Workflow" className="grid gap-0.5">
+    <section id={compact ? undefined : WORKFLOW_ID} className={cn("scroll-mt-3", compact ? "mt-3" : "mt-8 rounded-md border border-line-strong bg-raised")}>
+      <h2 className={cn("text-sm font-semibold", compact ? "mb-1.5 text-xs text-ink/60" : "border-b border-line px-3 py-2")}>{title}</h2>
+      <div className={compact ? undefined : "px-3 py-2.5"}>
+        {!many && !compact && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
+        <div role="radiogroup" aria-label={title} className={compact ? "flex flex-wrap gap-1.5" : "grid gap-0.5"}>
           {d.options.map((o, i) => {
             const on = o.key === picked;
+            if (compact)
+              return (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  title={o.hint ?? (o.writes ? cap(o.writes) : undefined)}
+                  onClick={() => choose(o.key)}
+                  className={cn(
+                    "inline-flex min-h-8 items-center gap-1.5 rounded border px-2.5 py-1 text-left text-sm transition-colors duration-fast max-md:min-h-11",
+                    on ? "border-accent bg-accent/[0.1] text-ink" : "border-line-strong bg-raised text-ink/85 hover:bg-ink/[0.06]",
+                  )}
+                >
+                  {o.label}
+                  {o.key === rec && <span className="text-2xs font-normal text-accent-ink">Recommended</span>}
+                </button>
+              );
             return (
               <label
                 key={o.key}
@@ -125,7 +147,7 @@ export function WorkflowBox({
             );
           })}
         </div>
-        <label className="mt-2 flex h-8 min-w-0 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11">
+        <label className={cn("mt-2 flex h-8 min-w-0 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11", compact && !option && "hidden")}>
           <input
             ref={noteRef}
             value={loc.notes[d.id] ?? ""}
@@ -141,7 +163,7 @@ export function WorkflowBox({
         </label>
         <Button
           variant="primary"
-          className={cn("mt-3 w-full max-md:h-11", isArmed && "border-bad bg-bad text-white hover:bg-bad/90")}
+          className={cn("mt-3 w-full max-md:h-11", compact && !option && "hidden", isArmed && "border-bad bg-bad text-white hover:bg-bad/90")}
           disabled={!option}
           onClick={() => void submit()}
         >
