@@ -1,5 +1,7 @@
-// When an open decision counts as prepared. No Node imports: the planner facts and the dashboard read it too.
+// When an open decision counts as prepared. Only items in scope (pipeline on for the repo, not our own integration PR) are prepared.
 import type { DatabaseSync } from "node:sqlite";
+import { pilotSql } from "../pilot.ts";
+import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { RECOMMEND_MAX_FAILURES, RECOMMEND_RETRY_MS } from "../core/item-rules.ts";
 
 /** The columns of a decision that say what its prepare step did. */
@@ -24,7 +26,7 @@ export const prepareDue = (d: PrepareColumns, head: string | null, nowMs: number
 /** Whether the decision is open and waits for its prepare (the dashboard's `preparing`). */
 export function preparing(db: DatabaseSync, d: Partial<PrepareColumns> & { answer: string | null; repo: string | null; number: number | null }): boolean {
   if (d.answer !== null || d.number === null) return false;
-  const it = db.prepare("SELECT kind, head_oid, state FROM items WHERE repo = ? AND number = ?").get(d.repo, d.number) as { kind: string; head_oid: string | null; state: string } | undefined;
+  const it = db.prepare(`SELECT i.kind, i.head_oid, i.state FROM items i WHERE i.repo = ? AND i.number = ? AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`).get(d.repo, d.number) as { kind: string; head_oid: string | null; state: string } | undefined;
   if (it?.state !== "OPEN") return false;
   return isPreparing({ prepared_at: d.prepared_at ?? null, prepared_head: d.prepared_head ?? null, prepare_failed_head: d.prepare_failed_head ?? null, recommend_failures: d.recommend_failures ?? null, recommend_failed_at: d.recommend_failed_at ?? null }, it.kind === "pr" ? it.head_oid : null);
 }

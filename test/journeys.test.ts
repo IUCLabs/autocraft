@@ -15,6 +15,8 @@ import { storeArtifact, tempPath } from "../src/build/artifacts.ts";
 import { getTask } from "../src/build/tasks.ts";
 import { runDecide } from "../src/decide/index.ts";
 import { prepareIds } from "../src/decide/prepare.ts";
+import { preparing } from "../src/decide/prepared.ts";
+import { getDecision } from "../src/decisions.ts";
 import { attemptOf, runFixIssue, runFixIssueCollect, type CollectDeps } from "../src/fixissue/index.ts";
 import { runAct } from "../src/act/index.ts";
 import { runBatches } from "../src/merge/batch.ts";
@@ -366,6 +368,15 @@ describe("issue journey", () => {
     assert.equal(d!.recommend_failures, 1);
     // Within the hour nothing is due; after it the prepare runs again.
     assert.equal(prepareIds(w.db).length, 0);
+    // A repo with its pipeline off is neither due nor shown as preparing.
+    w.db.prepare("UPDATE decisions SET recommend_failures = NULL, recommend_failed_at = NULL").run();
+    assert.equal(prepareIds(w.db).length, 1);
+    assert.equal(preparing(w.db, getDecision(w.db, String(d!.id))!), true);
+    w.db.prepare("UPDATE tracked_repos SET pipeline = 0").run();
+    assert.equal(prepareIds(w.db).length, 0);
+    assert.equal(preparing(w.db, getDecision(w.db, String(d!.id))!), false);
+    w.db.prepare("UPDATE tracked_repos SET pipeline = 1").run();
+    w.db.prepare("UPDATE decisions SET recommend_failures = 1").run();
     w.db.prepare("UPDATE decisions SET recommend_failed_at = ?").run(new Date(Date.now() - 2 * 3_600_000).toISOString());
     w.models(() => "Pick: take | The reference app has this case.\nIt reports a panic on an empty slice. The reference app has no such case, so a fix is wanted.");
     assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);

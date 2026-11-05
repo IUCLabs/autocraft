@@ -18,6 +18,8 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { codeDiff } from "../review/diff.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { applicableSteps } from "./steps.ts";
+import { pilotSql } from "../pilot.ts";
+import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { judgementModel } from "./judgement.ts";
 import { loadSummaryItems } from "./index.ts";
 import { prepareDue, type PrepareColumns } from "./prepared.ts";
@@ -83,7 +85,7 @@ const headOf = (r: { kind: string | null; head_oid: string | null }): string | n
 export function prepareIds(db: DatabaseSync, nowMs: number = Date.now()): string[] {
   const rows = db.prepare(`SELECT d.id, d.asked_at, d.number, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind, i.head_oid
     FROM decisions d LEFT JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND i.state = 'OPEN' ORDER BY d.asked_at, d.id`).all() as DueRow[];
+    WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND i.state = 'OPEN' AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} ORDER BY d.asked_at, d.id`).all() as DueRow[];
   return rows.filter((r) => prepareDue(r, headOf(r), nowMs)).map((r) => r.id);
 }
 
