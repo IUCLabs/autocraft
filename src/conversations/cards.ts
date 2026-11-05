@@ -7,7 +7,8 @@ import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decision
 import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
 import { pilotSql } from "../pilot.ts";
-import { CLOSE_REASONS, COMMENT_MAX, RESOLVE_MAX, type CardKind, type CloseReason } from "./types.ts";
+import { LOGIN } from "../access.ts";
+import { CLOSE_REASONS, COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, RESOLVE_MAX, type CardKind, type CloseReason } from "./types.ts";
 
 /**
  * One step of a resolution. The comment step's text is the card's `text`. Every kind but `review` and `fixup` is one GitHub write
@@ -80,6 +81,8 @@ export function cardEffect(db: DatabaseSync, p: CardParams): string | null {
     for (const st of p.steps) {
       if (st.kind === "close") parts.push(closeEffect(st));
       else if (st.kind === "duplicate") parts.push("closes it as a duplicate on GitHub");
+      else if (st.kind === "transfer") parts.push(`moves the issue to ${st.to} on GitHub`);
+      else if (st.kind === "fixup" && st.merge) parts.push("merges the PR on GitHub once the fix-up, the review and CI pass");
     }
     if (p.settle?.kind === "answer") {
       const w = decisionWrite(db, p.settle.decision, p.settle.option);
@@ -144,10 +147,17 @@ export function buttonLabel(db: DatabaseSync, p: CardParams): string {
       const close = p.steps.find((x) => x.kind === "close");
       if (close) return close.pr ? "Close PR" : "Close issue";
       if (p.steps.some((x) => x.kind === "duplicate")) return "Close as duplicate";
+      if (p.steps.some((x) => x.kind === "transfer")) return "Move issue";
+      const fix = p.steps.find((x) => x.kind === "fixup");
+      if (fix) return fix.merge ? "Fix up and merge" : "Fix up";
+      if (p.steps.some((x) => x.kind === "review")) return "Review again";
       if (p.settle?.kind === "answer") return `Answer "${optionLabel(getDecision(db, p.settle.decision), p.settle.option)}"`;
       if (p.settle?.kind === "backlog") return "Move to Backlog";
+      if (p.steps.some((x) => x.kind === "open_issue")) return "Open issue";
       if (p.settle) return "Close question";
-      return p.steps.some((x) => x.kind === "comment") ? "Post comment" : "Add label";
+      if (p.steps.some((x) => x.kind === "comment")) return "Post comment";
+      for (const [kind, label] of [["reopen", "Reopen"], ["request_reviewers", "Ask for review"], ["assign", "Assign"], ["unlabel", "Remove label"]] as const) if (p.steps.some((x) => x.kind === kind)) return label;
+      return "Add label";
     }
     case "comment": return "Post comment";
     case "answer": {
@@ -219,12 +229,12 @@ export function closeRefusal(db: DatabaseSync, repo: string, n: number): string 
 }
 
 /** The type label the item has besides `label` (type labels are exclusive), or null. */
-export function otherTypeLabel(db: DatabaseSync, repo: string, n: number, label: string): string | null {
+export function otherTypeLabel(db: DatabaseSync, repo: string, n: number, label: string, removing: readonly string[] = []): string | null {
   if (!isTypeLabel(label)) return null;
   const row = db.prepare("SELECT labels FROM items WHERE repo = ? AND number = ?").get(repo, n) as { labels: string | null } | undefined;
   let have: unknown[] = [];
   try { have = JSON.parse(row?.labels ?? "[]") as unknown[]; } catch { /* unreadable labels count as none */ }
-  return have.map(String).find((l) => isTypeLabel(l) && !sameLabel(l, label)) ?? null;
+  return have.map(String).find((l) => isTypeLabel(l) && !sameLabel(l, label) && !removing.some((r) => sameLabel(r, l))) ?? null;
 }
 
 type Checked<T> = { value: T } | { note: string };
@@ -238,10 +248,10 @@ function commentText(raw: unknown, drop: ReadonlySet<string>): Checked<string> {
   return { value: text };
 }
 
-function labelStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
+function labelStep(db: DatabaseSync, repo: string, n: number, raw: unknown, removing: readonly string[]): Checked<Step> {
   const l = typeof raw === "string" ? ALL_LABELS.find((x) => sameLabel(x.name, raw)) : undefined;
   if (!l) return { note: `dropped a resolution: "${String(raw).slice(0, 40)}" is not a label the pipeline manages` };
-  const other = otherTypeLabel(db, repo, n, l.name);
+  const other = otherTypeLabel(db, repo, n, l.name, removing);
   if (other) return { note: `dropped a resolution: the item already has the type label "${other}" and an item has one type label` };
   return { value: { kind: "label", label: l.name } };
 }
@@ -263,7 +273,120 @@ function duplicateStep(db: DatabaseSync, repo: string, n: number, of: unknown): 
   return { value: { kind: "duplicate", of: of as number } };
 }
 
-const MAX_STEPS = 6;
+type ItemFacts = { kind: string; state: string; author: string | null };
+const itemFacts = (db: DatabaseSync, repo: string, n: number): ItemFacts | undefined =>
+  db.prepare("SELECT kind, state, author FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemFacts | undefined;
+/** A repository name as the model wrote it, without a leading `storytold/`. */
+const bareRepo = (v: unknown): unknown => (typeof v === "string" ? v.replace(/^storytold\//i, "") : v);
+const isTracked = (db: DatabaseSync, repo: unknown): repo is string => typeof repo === "string" && !!db.prepare("SELECT 1 FROM tracked_repos WHERE name = ?").get(repo);
+const sameLogin = (a: string | null, b: string): boolean => a !== null && a.toLowerCase() === b.toLowerCase();
+
+/**
+ * Whether the mirror says `login` can write to `repo`: a cached permission of write or higher, or an association of owner,
+ * member or collaborator on an item or comment in the repo. The association is a hint only; Act reads the live permission before it writes.
+ */
+export function mayWrite(db: DatabaseSync, repo: string, login: string): boolean {
+  if (db.prepare("SELECT 1 FROM repo_permissions WHERE repo = ? AND login = ? AND permission IN ('write', 'maintain', 'admin')").get(repo, login)) return true;
+  return !!db.prepare(`SELECT 1 FROM items WHERE repo = ? AND author = ? COLLATE NOCASE AND author_association IN ('OWNER', 'MEMBER', 'COLLABORATOR')
+    UNION ALL SELECT 1 FROM comments WHERE repo = ? AND author = ? COLLATE NOCASE AND author_association IN ('OWNER', 'MEMBER', 'COLLABORATOR') LIMIT 1`).get(repo, login, repo, login);
+}
+
+const pr = (f: ItemFacts | undefined): boolean => f?.kind === "pr";
+
+/** Model text for an issue title: cleaned like a comment, on one line. */
+function issueText(raw: unknown, max: number, what: string, drop: ReadonlySet<string>, oneLineOnly: boolean): Checked<string> {
+  const t = typeof raw === "string" ? (oneLineOnly ? cleanComment(raw).replace(/\s+/g, " ") : cleanComment(raw)) : "";
+  if (!t) return { note: `dropped a resolution whose open_issue step has no ${what}` };
+  if (REFERENCE_LEAK.test(t) || drop.has(t)) return { note: `dropped a resolution whose issue ${what} mentions the reference folder or its documentation` };
+  if (t.length > max) return { note: `dropped a resolution whose issue ${what} is longer than ${max} characters` };
+  return { value: t };
+}
+
+function openIssueStep(db: DatabaseSync, st: Record<string, unknown>, drop: ReadonlySet<string>): Checked<Step> {
+  const repo = bareRepo(st.repo);
+  if (!isTracked(db, repo)) return { note: `dropped a resolution: "${String(st.repo).slice(0, 40)}" is not a tracked repository` };
+  const title = issueText(st.title, ISSUE_TITLE_MAX, "title", drop, true);
+  if ("note" in title) return title;
+  const body = issueText(st.body, COMMENT_MAX, "body", drop, false);
+  if ("note" in body) return body;
+  return { value: { kind: "open_issue", repo, title: title.value, body: body.value } };
+}
+
+function transferStep(db: DatabaseSync, repo: string, n: number, toRaw: unknown): Checked<Step> {
+  const to = bareRepo(toRaw);
+  const f = itemFacts(db, repo, n);
+  if (pr(f)) return { note: "dropped a resolution: only an issue can be moved to another repository" };
+  if (!isTracked(db, to) || to === repo) return { note: `dropped a resolution: "${String(to).slice(0, 40)}" is not another tracked repository` };
+  const why = closeRefusal(db, repo, n);
+  if (why) return { note: `dropped a resolution: ${why}` };
+  if (f?.state !== "OPEN") return { note: `dropped a resolution: ${ref(repo, n)} is not open` };
+  return { value: { kind: "transfer", to } };
+}
+
+function assignStep(db: DatabaseSync, repo: string, n: number, login: unknown): Checked<Step> {
+  if (typeof login !== "string" || !LOGIN.test(login)) return { note: "dropped a resolution whose assign step has no GitHub login" };
+  if (!sameLogin(itemFacts(db, repo, n)?.author ?? null, login) && !mayWrite(db, repo, login)) return { note: `dropped a resolution: ${login} is neither the author nor known to have write access to ${repo}` };
+  return { value: { kind: "assign", login } };
+}
+
+function reviewersStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
+  const f = itemFacts(db, repo, n);
+  if (!pr(f)) return { note: "dropped a resolution: reviewers can be requested on a PR only" };
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 3 || raw.some((x) => typeof x !== "string" || !LOGIN.test(x))) return { note: "dropped a resolution whose request_reviewers step does not list one to three GitHub logins" };
+  const logins = raw as string[];
+  if (new Set(logins.map((x) => x.toLowerCase())).size !== logins.length) return { note: "dropped a resolution that requests the same reviewer twice" };
+  const bad = logins.find((x) => sameLogin(f!.author, x) || !mayWrite(db, repo, x));
+  if (bad) return { note: `dropped a resolution: ${bad} is the PR's author or not known to have write access to ${repo}` };
+  return { value: { kind: "request_reviewers", logins } };
+}
+
+function unlabelStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
+  const l = typeof raw === "string" ? ALL_LABELS.find((x) => sameLabel(x.name, raw)) : undefined;
+  if (!l) return { note: `dropped a resolution: "${String(raw).slice(0, 40)}" is not a label the pipeline manages` };
+  const row = db.prepare("SELECT labels FROM items WHERE repo = ? AND number = ?").get(repo, n) as { labels: string | null } | undefined;
+  let have: unknown[] = [];
+  try { have = JSON.parse(row?.labels ?? "[]") as unknown[]; } catch { /* unreadable labels count as none */ }
+  if (!have.some((x) => sameLabel(String(x), l.name))) return { note: `dropped a resolution: the item does not have the label "${l.name}"` };
+  return { value: { kind: "unlabel", label: l.name } };
+}
+
+function reopenStep(db: DatabaseSync, repo: string, n: number): Checked<Step> {
+  const f = itemFacts(db, repo, n);
+  if (f?.state !== "CLOSED") return { note: `dropped a resolution: ${ref(repo, n)} is not closed` };
+  const why = closeRefusal(db, repo, n);
+  return why ? { note: `dropped a resolution: ${why}` } : { value: { kind: "reopen" } };
+}
+
+function pipelineStep(db: DatabaseSync, repo: string, n: number, st: Record<string, unknown>): Checked<Step> {
+  const f = itemFacts(db, repo, n);
+  if (!pr(f) || f?.state !== "OPEN") return { note: `dropped a resolution: a ${String(st.kind)} step needs an open PR` };
+  if (st.kind === "review") return { value: { kind: "review" } };
+  const instructions = typeof st.instructions === "string" ? st.instructions.trim() : "";
+  if (!instructions) return { note: "dropped a resolution whose fixup step has no instructions" };
+  if (instructions.length > INSTRUCTIONS_MAX) return { note: `dropped a resolution whose fixup instructions are longer than ${INSTRUCTIONS_MAX} characters` };
+  if (st.merge !== undefined && typeof st.merge !== "boolean") return { note: "dropped a resolution whose fixup merge is not true or false" };
+  return { value: { kind: "fixup", instructions, merge: st.merge === true } };
+}
+
+const MAX_STEPS = 8;
+
+/** The step kinds that can validate for the item as it is now, from the same facts and refusals as validateResolution; "fixup with merge" is listed apart. */
+export function applicableSteps(db: DatabaseSync, repo: string, n: number): string[] {
+  const f = itemFacts(db, repo, n);
+  if (!f) return [];
+  const open = f.state === "OPEN", isPr = pr(f), out: string[] = ["open_issue"];
+  if (open) {
+    out.push("comment", "label", "assign");
+    if (ALL_LABELS.some((l) => !("note" in unlabelStep(db, repo, n, l.name)))) out.push("unlabel");
+    if (!closeRefusal(db, repo, n)) out.push("close", "duplicate");
+    if (isPr) {
+      out.push("request_reviewers", "review", "fixup");
+      const d = openDecision(db, repo, n);
+      if (d && (d.kind === "merge" || d.kind === "scope")) out.push("fixup with merge");
+    } else if (!closeRefusal(db, repo, n)) out.push("transfer");
+  } else if (f.state === "CLOSED" && !("note" in reopenStep(db, repo, n))) out.push("reopen");
+  return out;
+}
 
 /** The settlement the model asked for, checked against the item's open decision `d`. */
 function settleOf(db: DatabaseSync, d: DecisionRow, raw: unknown): Checked<Settle> {
@@ -288,30 +411,46 @@ function settleOf(db: DatabaseSync, d: DecisionRow, raw: unknown): Checked<Settl
   }
 }
 
-/** What a close or duplicate step settles the open decision as when the model named no settlement. */
-function closeSettle(db: DatabaseSync, repo: string, d: DecisionRow, closing: Extract<Step, { kind: "close" | "duplicate" }>): Settle {
-  const summary = closing.kind === "duplicate" ? `Closed as a duplicate of ${ref(repo, closing.of)} in the conversation`
-    : closing.pr ? "Closed in the conversation" : `Closed as ${closing.reason === "completed" ? "completed" : "not planned"} in the conversation`;
+/** The steps that settle an open decision as handled when the model named no settlement: they end the item here or hand the PR to a pipeline step. */
+type Settling = Extract<Step, { kind: "close" | "duplicate" | "transfer" | "review" | "fixup" }>;
+export const isSettling = (x: Step): x is Settling => x.kind === "close" || x.kind === "duplicate" || x.kind === "transfer" || x.kind === "review" || x.kind === "fixup";
+
+function closeSettle(db: DatabaseSync, repo: string, d: DecisionRow, st: Settling): Settle {
+  const summary = st.kind === "duplicate" ? `Closed as a duplicate of ${ref(repo, st.of)} in the conversation`
+    : st.kind === "transfer" ? `Moved to ${st.to} in the conversation`
+    : st.kind === "review" ? "Reviewed again"
+    : st.kind === "fixup" ? (st.merge ? "Fixed up and queued to merge" : "Fixed up")
+    : st.pr ? "Closed in the conversation" : `Closed as ${st.reason === "completed" ? "completed" : "not planned"} in the conversation`;
   return { kind: "handled", decision: d.id, summary, stamp: decisionStamp(db, d), fromClose: true };
 }
 
 /**
  * One resolution as the model wrote it, checked against the item, or why it is dropped. Rules: at most one comment step and one
  * close or duplicate step, which comes last; with an open decision the card settles it (a lone comment step may leave it open: the
- * "ask" card); a close or duplicate step settles it as handled; an answer whose option already writes to GitHub takes no comment,
- * close or duplicate step; without an open decision there is no settlement.
+ * "ask" card); a close, duplicate, transfer, review or fixup step settles it as handled; an answer whose option already writes to GitHub
+ * takes no comment, close, duplicate, transfer, reopen, reviewer, review or fixup step (an issue, label or assignee step is fine);
+ * without an open decision there is no settlement. At most one step of each kind except label and unlabel; close, duplicate and
+ * transfer end the item (at most one, last); reopen comes first and only on a closed item; a fixup that merges needs an open merge or scope decision on a PR.
  */
 function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record<string, unknown>, drop: ReadonlySet<string>): { card: NewCard } | { note: string } {
   if (!Array.isArray(c.steps) || c.steps.length > MAX_STEPS) return { note: "dropped a resolution without a list of steps" };
   const steps: Step[] = [];
+  const removing = c.steps.flatMap((x) => (x && (x as { kind?: unknown }).kind === "unlabel" && typeof (x as { label?: unknown }).label === "string" ? [(x as { label: string }).label] : []));
   for (const raw of c.steps) {
     const st = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
     let r: Checked<Step>;
     switch (st.kind) {
       case "comment": r = { value: { kind: "comment" } }; break;
-      case "label": r = labelStep(db, repo, n, st.label); break;
+      case "label": r = labelStep(db, repo, n, st.label, removing); break;
       case "close": r = closeStep(db, repo, n, st.reason); break;
       case "duplicate": r = duplicateStep(db, repo, n, st.of); break;
+      case "unlabel": r = unlabelStep(db, repo, n, st.label); break;
+      case "reopen": r = reopenStep(db, repo, n); break;
+      case "open_issue": r = openIssueStep(db, st, drop); break;
+      case "transfer": r = transferStep(db, repo, n, st.to); break;
+      case "assign": r = assignStep(db, repo, n, st.login); break;
+      case "request_reviewers": r = reviewersStep(db, repo, n, st.logins); break;
+      case "review": case "fixup": r = pipelineStep(db, repo, n, st); break;
       default: r = { note: `dropped a resolution with unknown step "${String(st.kind).slice(0, 40)}"` };
     }
     if ("note" in r) return r;
@@ -320,11 +459,18 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
   const labels = steps.flatMap((x) => (x.kind === "label" ? [x.label] : []));
   if (new Set(labels).size !== labels.length) return { note: "dropped a resolution that adds the same label twice" };
   if (labels.filter(isTypeLabel).length > 1) return { note: "dropped a resolution that adds more than one type label" };
+  const unlabels = steps.flatMap((x) => (x.kind === "unlabel" ? [x.label] : []));
+  if (new Set(unlabels).size !== unlabels.length) return { note: "dropped a resolution that removes the same label twice" };
+  if (unlabels.some((l) => labels.includes(l))) return { note: "dropped a resolution that adds and removes the same label" };
   const count = (k: Step["kind"]) => steps.filter((x) => x.kind === k).length;
-  const closing = steps.filter((x): x is Extract<Step, { kind: "close" | "duplicate" }> => x.kind === "close" || x.kind === "duplicate");
-  if (count("comment") > 1) return { note: "dropped a resolution with more than one comment step" };
-  if (closing.length > 1) return { note: "dropped a resolution that closes the item twice" };
-  if (closing.length === 1 && steps[steps.length - 1] !== closing[0]) return { note: "dropped a resolution whose close step is not last" };
+  for (const k of ["comment", "reopen", "open_issue", "assign", "request_reviewers", "review", "fixup"] as const) if (count(k) > 1) return { note: `dropped a resolution with more than one ${k} step` };
+  if (count("review") + count("fixup") > 1) return { note: "dropped a resolution with both a review and a fixup step" };
+  if ((count("review") || count("fixup")) && (count("close") || count("duplicate"))) return { note: "dropped a resolution that closes the PR and also reviews or fixes it up" };
+  const closing = steps.filter((x): x is Extract<Step, { kind: "close" | "duplicate" | "transfer" }> => x.kind === "close" || x.kind === "duplicate" || x.kind === "transfer");
+  if (closing.length > 1) return { note: "dropped a resolution that ends the item twice (close, duplicate or transfer)" };
+  if (closing.length === 1 && steps[steps.length - 1] !== closing[0]) return { note: "dropped a resolution whose close, duplicate or transfer step is not last" };
+  if (count("reopen") === 1 && steps[0]!.kind !== "reopen") return { note: "dropped a resolution whose reopen step is not first" };
+  if (count("reopen") === 1 && closing.length === 1) return { note: "dropped a resolution that reopens and ends the item" };
   let text: string | null = null;
   if (count("comment") === 1) {
     const t = commentText(c.text, drop);
@@ -340,12 +486,15 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
     if ("note" in s) return s;
     settle = s.value;
   }
-  if (closing[0]) {
-    if (settle && settle.kind !== "handled") return { note: "dropped a resolution that closes the item and settles the question another way than handled" };
-    if (d && !settle) settle = closeSettle(db, repo, d, closing[0]);
+  const fix = steps.find((x) => x.kind === "fixup");
+  if (fix?.kind === "fixup" && fix.merge && (!d || (d.kind !== "merge" && d.kind !== "scope"))) return { note: "dropped a resolution: a fixup that merges needs an open merge or scope decision on the PR" };
+  const settling = steps.find(isSettling);
+  if (settling) {
+    if (settle && settle.kind !== "handled") return { note: `dropped a resolution that has a ${settling.kind} step and settles the question another way than handled` };
+    if (d && !settle) settle = closeSettle(db, repo, d, settling);
   }
-  if (settle?.kind === "answer" && steps.some((x) => x.kind === "comment" || x.kind === "close" || x.kind === "duplicate") && decisionWrite(db, settle.decision, settle.option)) {
-    return { note: "dropped a resolution: the answer already writes to GitHub, so it takes no comment or close step" };
+  if (settle?.kind === "answer" && steps.some((x) => ["comment", "close", "duplicate", "transfer", "reopen", "request_reviewers", "review", "fixup"].includes(x.kind)) && decisionWrite(db, settle.decision, settle.option)) {
+    return { note: "dropped a resolution: the answer already writes to GitHub, so it takes only label, assign and open_issue steps" };
   }
   if (d && !settle && !(steps.length === 1 && steps[0]!.kind === "comment")) return { note: "dropped a resolution that leaves the open decision unsettled" };
   if (!settle && steps.length === 0) return { note: "dropped a resolution without steps or settlement" };
@@ -370,16 +519,25 @@ export type Parsed = { text: string; cards: NewCard[]; notes: string[] };
 const MAX_EXTRA = 2;
 const FENCE = /```actions[ \t]*\r?\n([\s\S]*?)```[ \t]*$/;
 
-/** The cleaned text of each comment of a reply, with its field (`cards[i].text`, i the position in the actions block), for the reference checks. */
+/** The cleaned text of each public text of a reply (a comment, an issue's body), with its field (`cards[i].text`, `cards[i].steps[j].body`, i the position in the actions block), for the reference checks. */
 export function commentTexts(reply: string): { field: string; text: string }[] {
   const m = FENCE.exec(reply.trimEnd());
   if (!m) return [];
   let list: unknown;
   try { list = JSON.parse(m[1]!); } catch { return []; }
   if (!Array.isArray(list)) return [];
-  return list.slice(0, 20).flatMap((c: { kind?: unknown; text?: unknown }, i) => {
-    const text = c && c.kind === "resolution" && typeof c.text === "string" ? cleanComment(c.text) : "";
-    return text ? [{ field: `cards[${i}].text`, text }] : [];
+  return list.slice(0, 20).flatMap((c: { kind?: unknown; text?: unknown; steps?: unknown }, i) => {
+    if (!c || c.kind !== "resolution") return [];
+    const out: { field: string; text: string }[] = [];
+    const text = typeof c.text === "string" ? cleanComment(c.text) : "";
+    if (text) out.push({ field: `cards[${i}].text`, text });
+    if (Array.isArray(c.steps)) c.steps.forEach((st: { kind?: unknown; body?: unknown; title?: unknown }, j) => {
+      if (!st || st.kind !== "open_issue") return;
+      const body = typeof st.body === "string" ? cleanComment(st.body) : "", title = typeof st.title === "string" ? cleanComment(st.title).replace(/\s+/g, " ") : "";
+      if (body) out.push({ field: `cards[${i}].steps[${j}].body`, text: body });
+      if (title) out.push({ field: `cards[${i}].steps[${j}].title`, text: title });
+    });
+    return out;
   });
 }
 

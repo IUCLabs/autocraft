@@ -10,9 +10,9 @@ import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { setApproval as setLabelApproval } from "../src/labels/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
-import { cleanComment, parseReply } from "../src/conversations/cards.ts";
+import { applicableSteps, cleanComment, parseReply } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
-import { ensureConversation, insertTurn } from "../src/conversations/store.ts";
+import { addOperatorMessage, ensureConversation, insertTurn, turnsOf } from "../src/conversations/store.ts";
 import { answerPending } from "../src/conversations/run.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
@@ -113,6 +113,49 @@ describe("cards", () => {
   });
 });
 
+describe("new step kinds", () => {
+  const R = (steps: unknown[], settle: unknown = null, extra: Record<string, unknown> = {}) => ({ kind: "resolution", steps, settle, ...extra });
+  const issue = { kind: "open_issue", repo: "lib", title: "Follow up", body: "Check the edge case." };
+  const run = (db: DatabaseSync, n: number, cards: unknown[]) => parseReply(db, "app", n, `Text.\n\`\`\`actions\n${JSON.stringify(cards)}\n\`\`\``)!;
+
+  test("transfer is for issues and last, an answer that writes takes open_issue but not a comment, fixup that merges needs a merge or scope decision", async () => {
+    const db = fresh();
+    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('lib', 'op', ?, 1)").run(T0);
+    ask(db, [{ id: "app#2:merge", kind: "merge", repo: "app", number: 2, question: "Merge?", options: [{ key: "merge", label: "Merge" }, { key: "hold", label: "Hold" }] }]);
+    const p1 = run(db, 3, [
+      R([{ kind: "transfer", to: "lib" }]),
+      R([{ kind: "transfer", to: "lib" }, { kind: "comment" }], null, { text: "Moved." }),
+      R([{ kind: "transfer", to: "app" }]),
+      R([{ kind: "comment" }, { kind: "transfer", to: "lib" }], null, { text: "Moving it." }),
+      R([{ kind: "open_issue", repo: "nowhere", title: "x", body: "y" }]),
+      R([{ kind: "review" }]),
+    ]);
+    assert.deepEqual(p1.cards.map((c) => c.params.kind === "resolution" ? c.params.steps.map((x) => x.kind).join("+") : ""), ["transfer", "comment+transfer"]);
+    assert.equal(p1.notes.length, 4);
+    // Issue 1 has the scope decision "close", which writes to GitHub.
+    const p2 = run(db, 1, [
+      R([issue], { kind: "answer", option: "close" }),
+      R([{ kind: "comment" }, issue], { kind: "answer", option: "close" }, { text: "Closing." }),
+    ]);
+    assert.equal(p2.cards.length, 1);
+    assert.equal(p2.cards[0]!.description.includes('Open an issue in lib: "Follow up"'), true);
+    const fix = (merge: boolean) => ({ kind: "fixup", instructions: "Rename the helper.", merge });
+    const p3 = run(db, 2, [R([fix(true)]), R([fix(false)], { kind: "answer", option: "hold" })]);
+    assert.equal(p3.cards.length, 1, "the answer settle is refused with a fixup");
+    assert.equal(p3.cards[0]!.params.kind === "resolution" && p3.cards[0]!.params.settle?.kind, "handled");
+    assert.equal(run(db, 3, [R([fix(true)])]).cards.length, 0, "an issue has no fix-up");
+    const st3 = applicableSteps(db, "app", 3), st2 = applicableSteps(db, "app", 2);
+    assert.ok(st3.includes("transfer") && !st3.includes("fixup") && !st3.includes("request_reviewers"));
+    assert.ok(st2.includes("fixup with merge") && !st2.includes("transfer") && !st3.includes("fixup with merge"));
+    await ensureConversation(db, "app", 3, "op");
+    db.prepare("UPDATE items SET state = 'CLOSED' WHERE repo = 'app' AND number = 3").run();
+    await addOperatorMessage(db, "app", 3, "op", "Reopen it?", undefined, false);
+    assert.ok(turnsOf(db, "app", 3).at(-1)!.block.includes("<steps>[") && applicableSteps(db, "app", 3).includes("reopen"));
+    const none = run(db, 2, [R([{ kind: "fixup", instructions: "x", merge: true }, { kind: "request_reviewers", logins: ["someone"] }])]);
+    assert.equal(none.cards.length, 0);
+  });
+});
+
 describe("Do it", () => {
   test("a close card comments, closes with the state reason and answers the item's open decision as handled", async () => {
     const db = fresh();
@@ -149,6 +192,25 @@ describe("Do it", () => {
     } };
     return { sent, querier };
   };
+
+  test("a transfer needs the comment approval of the target repository too", async () => {
+    const db = fresh();
+    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('lib', 'op', ?, 1)").run(T0);
+    const sent: string[] = [];
+    const querier = { query: async (q: string) => {
+      if (q.includes("issueOrPullRequest")) return { repository: { issueOrPullRequest: { __typename: "Issue", id: "I_1", state: "OPEN" } } };
+      sent.push(q.includes("transferIssue") ? "transfer" : "other");
+      return q.includes("transferIssue") ? { transferIssue: { issue: { url: "https://x.test/lib/1" } } } : { repository: { id: "R_lib" } };
+    } };
+    const first = await doCard(db, resolution(db, [{ kind: "transfer", to: "storytold/lib" }], null, null), "op", { querier: querier as never });
+    assert.equal(first.card.state, "failed");
+    assert.match(first.card.error ?? "", /lib/);
+    assert.equal(sent.includes("transfer"), false);
+    setCommentApproval(db, "op", "lib", true);
+    const second = await doCard(db, resolution(db, [{ kind: "transfer", to: "lib" }], null, null), "op", { querier: querier as never });
+    assert.equal(second.card.state, "done", second.card.error ?? "");
+    assert.ok(sent.includes("transfer"));
+  });
 
   test("a resolution runs its steps in order, then answers the decision with the operator's login; a failing step leaves it open", async () => {
     const ok = fresh();

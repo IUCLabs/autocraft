@@ -8,6 +8,10 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "fixup-comment-edit": "Edited comment",
   "fixissue-comment": "Commented",
   "act-close": "Closed",
+  "act-reopen": "Reopened",
+  "act-unlabel": "Removed label",
+  "act-transfer": "Moved issue",
+  "act-request-reviewers": "Requested review",
   "batch-pr-close": "Closed PR",
   "merge": "Merged",
   "assign": "Assigned",
@@ -29,4 +33,5 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "cifix-push": "Pushed",
   "cifix-comment": "Commented",
   "postmerge-file": "Opened issue",
+  "act-open-issue": "Opened issue",
 };
