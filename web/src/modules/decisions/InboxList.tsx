@@ -56,7 +56,10 @@ export function useInboxKeys(list: Decision[]) {
   });
 }
 
-export function InboxList({ user }: ViewProps) {
+/** Scroll offset of the phone list, kept while a decision is open on top of it. */
+let phoneListScroll = 0;
+
+export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
   useNow();
   const { data, loading, hasMore, loadMore, loadingMore } = useDecisionList();
   const { id, go, byLink } = useSelection();
@@ -67,10 +70,14 @@ export function InboxList({ user }: ViewProps) {
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [id]);
-  useReselectOnFilter(list, loading, id, loc.justAnswered.some((a) => a.id === id), go);
+  const scroller = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (phone && scroller.current) scroller.current.scrollTop = phoneListScroll;
+  }, [phone]);
+  useReselectOnFilter(list, loading, id, loc.justAnswered.some((a) => a.id === id), go, phone ? "off" : "desktop");
   // Open the oldest decision when nothing is selected, so the detail pane is never empty on arrival.
   useEffect(() => {
-    if (!id && !byLink && list.length && !loc.justAnswered.length) go(list[0], true);
+    if (!phone && !id && !byLink && list.length && !loc.justAnswered.length) go(list[0], true);
   }, [id, byLink, list.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: { kind: Decision["kind"]; items: Decision[] }[] = [];
@@ -82,15 +89,15 @@ export function InboxList({ user }: ViewProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
+      {!phone && <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
         <span className="num shrink-0 whitespace-nowrap font-semibold text-ink">{data?.total ?? "–"} decisions</span>
         <span className="truncate text-ink/50">{summaryLine(data) || (loading ? "loading…" : "nothing matches")}</span>
         {oldest && <span className="ml-auto shrink-0 text-ink/50">oldest {ago(oldest)}</span>}
-      </div>
-      {loc.justAnswered.map((a) => (
+      </div>}
+      {!phone && loc.justAnswered.map((a) => (
         <AnswerNotice key={a.id} entry={a} className="shrink-0 border-b border-line" />
       ))}
-      <div className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Decisions">
+      <div ref={scroller} onScroll={phone ? (e) => (phoneListScroll = e.currentTarget.scrollTop) : undefined} className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Decisions">
         {groups.map((g) => {
           const Icon = KIND_ICON[g.kind];
           return (
@@ -101,11 +108,12 @@ export function InboxList({ user }: ViewProps) {
                 <Count n={g.items.length} />
               </div>
               {g.items.map((d) => (
-                <Row key={d.id} d={d} canUndo={canActOn(user, [d])} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
+                <Row key={d.id} phone={phone} d={d} canUndo={canActOn(user, [d])} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
               ))}
             </div>
           );
         })}
+        {phone && data && !loading && !list.length && <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
         {hasMore && data && (
           <div className="flex items-center justify-between gap-3 px-4 py-3 text-xs text-ink/55">
             <span className="num">
@@ -121,7 +129,7 @@ export function InboxList({ user }: ViewProps) {
   );
 }
 
-function Row({ d, canUndo, active, checked, mine, onOpen, activeRef }: { d: Decision; canUndo: boolean; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLDivElement> }) {
+function Row({ phone, d, canUndo, active, checked, mine, onOpen, activeRef }: { phone?: boolean; d: Decision; canUndo: boolean; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLDivElement> }) {
   useNow();
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;
@@ -129,12 +137,12 @@ function Row({ d, canUndo, active, checked, mine, onOpen, activeRef }: { d: Deci
   return (
     <div className={cn("group relative flex border-b border-line", active ? "bg-accent/[0.08]" : "hover:bg-ink/[0.03]")}>
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
-      <label className="flex w-9 shrink-0 cursor-pointer items-start justify-center pt-[11px]" title="Select for a batch answer (x)">
+      {phone ? <span className="w-4 shrink-0" /> : <label className="flex w-9 shrink-0 cursor-pointer items-start justify-center pt-[11px]" title="Select for a batch answer (x)">
         <input type="checkbox" checked={checked} onChange={() => localActions.toggle(d.id)} className="peer sr-only" aria-label={`Select ${d.title}`} />
         <span className={cn("flex size-3.5 items-center justify-center rounded-sm border peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-accent-ink", checked ? "border-accent bg-accent text-white" : "border-line-strong opacity-50 group-hover:opacity-100")}>
           {checked && <CheckIcon className="text-[10px]" weight="bold" />}
         </span>
-      </label>
+      </label>}
       <div ref={activeRef} role="option" tabIndex={0} aria-selected={active} onClick={onOpen} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(); } }} className="min-w-0 flex-1 cursor-pointer rounded-none py-2 pr-3 text-left">
         <div className="flex items-baseline gap-2">
           <span className={cn("min-w-0 flex-1 break-words text-sm", active ? "font-medium text-ink" : "text-ink/90")}>{d.title}</span>

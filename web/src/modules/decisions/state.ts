@@ -90,11 +90,13 @@ export function usePinned(id: string | undefined, inList: boolean) {
 
 /**
  * After a filter change, leaves a selection that the new list does not hold: opens the new
- * list's first decision, or the empty page when there is none. Runs once the new list has
+ * list's first decision, or the empty page when there is none. On the phone any selection
+ * gives way to the list. Runs once the new list has
  * loaded. A just-answered decision stays, and so does everything while the filter is unchanged
  * (direct links, answered decisions pinned on screen).
  */
-export function useReselectOnFilter(list: Decision[], loading: boolean, id: string | undefined, keep: boolean, go: ReturnType<typeof useSelection>["go"]) {
+export function useReselectOnFilter(list: Decision[], loading: boolean, id: string | undefined, keep: boolean, go: ReturnType<typeof useSelection>["go"], mode: "desktop" | "phone" | "off" = "desktop") {
+  const phone = mode === "phone";
   const { search } = useDecisionFilter();
   const seen = useRef(search);
   const pending = useRef(false);
@@ -103,10 +105,11 @@ export function useReselectOnFilter(list: Decision[], loading: boolean, id: stri
     pending.current = true;
   }
   useEffect(() => {
-    if (!pending.current || loading) return;
+    if (!pending.current || loading || mode === "off") return;
     pending.current = false;
-    if (id && (keep || list.some((d) => d.id === id))) return;
-    go(list[0], true);
+    if (id && (keep || (!phone && list.some((d) => d.id === id)))) return;
+    // The phone returns to the list; the desktop opens the first decision beside it.
+    go(phone ? undefined : list[0], true);
   }); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
