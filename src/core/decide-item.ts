@@ -101,7 +101,7 @@ export function decideItem(f: ItemFacts): ItemPlan {
   // act: answers that close the item (in scope, or asked by a security scan; not held by Backlog; no final action row yet)
   // and Close? questions for PRs the final review says close (asked once per head). Selecting applies nothing; the repo's comment approval is applied by gates().
   for (const t of f.answeredClose) {
-    if ((f.inScope || t.security) && !backlog && !t.waiting && (t.action === null || t.action === "failed")) actions.push(act("act", null, { bucket: t.kind, decisionId: t.decisionId, security: t.security }));
+    if ((f.inScope || t.security || t.group) && !backlog && !t.waiting && (t.action === null || t.action === "failed")) actions.push(act("act", null, { bucket: t.kind, decisionId: t.decisionId, security: t.security, ...(t.group ? { group: true } : {}) }));
   }
   if (live && !backlog && f.kind === "pr" && f.closeReview && f.closeReview.atHead && !f.closeReview.asked) actions.push(act("act", f.closeReview.head, { bucket: "close", ask: true }));
   // fixissue: a retry round, or a new candidate; a Backlog hold stops both.

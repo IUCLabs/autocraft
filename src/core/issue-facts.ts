@@ -1,5 +1,6 @@
 // Facts of open items (issues and PRs) for the triage steps: classification, priority, embedding, duplicates, scope decision, labels.
 // Loaded in one pass for a whole database or a slice. Reads only: the old selectors fill missing text hashes in the database on the way; here a missing hash is computed.
+import { groupClosersPending } from "../act/dupe-groups.ts";
 import { pipelineWrites } from "./rules.ts";
 import { assignmentsOf, ownFixPrs } from "./facts.ts";
 import { activeTrips } from "../push-outcomes.ts";
@@ -146,6 +147,12 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       const k = `${it.repo}#${it.number}`;
       (answeredClose.get(k) ?? answeredClose.set(k, []).get(k)!).push({ decisionId: a.id, kind: a.kind, security: securityIds.has(a.id), action: actionState.get(`${a.id}|${k}`) ?? null, ...(waitingExec.has(a.id) ? { waiting: true } : {}) });
     }
+  }
+  // Duplicate group answers: the Act step closes the members the group decision names; each member without a close record is a target.
+  for (const g of groupClosersPending(db)) {
+    if (opts.repo && g.repo !== opts.repo) continue;
+    const k = `${g.repo}#${g.number}`;
+    (answeredClose.get(k) ?? answeredClose.set(k, []).get(k)!).push({ decisionId: g.decisionId, kind: "duplicate", security: false, action: null, group: true, ...(waitingExec.has(g.decisionId) ? { waiting: true } : {}) });
   }
   // A closed item stays in the facts while an answered close of it is not applied: the Act step records it as already closed.
   const closing = [...answeredClose].filter(([, t]) => t.some((x) => x.action === null || x.action === "failed")).map(([ref]) => ref);

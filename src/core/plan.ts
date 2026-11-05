@@ -333,7 +333,7 @@ export type ItemFacts = {
   };
 
   /** Operator answers "close" that the Act step applies to this item: one per decision, with the state of its action row (null: none yet; done and skipped are final). */
-  answeredClose: { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; security: boolean; action: string | null; /** The decision waits for its operator's token or access: no act action until it is retried or answered again. */ waiting?: boolean }[];
+  answeredClose: { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; security: boolean; action: string | null; /** A member of a duplicate group decision: the Act step closes it, and its close record (not an actions row) ends the target. */ group?: boolean; /** The decision waits for its operator's token or access: no act action until it is retried or answered again. */ waiting?: boolean }[];
   /** The final Opus review at the PR's latest review head says close. `atHead`: that is the PR's current head. `asked`: the Close? decision at that head exists. */
   closeReview: { head: string; atHead: boolean; asked: boolean } | null;
 
