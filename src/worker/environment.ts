@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { WorkerConfig } from "./config.ts";
 import { isCommitId, resolveGate } from "./gate.ts";
 import { downloadAndExtract } from "./tarball.ts";
+import { slugOf } from "../owners.ts";
 
 export type SandboxInfo = {
   /** The image the steps ran in: the derived tag, or the configured image when the gate needs no packages. */
@@ -82,7 +83,7 @@ export async function ensureImage(cfg: WorkerConfig, toolchain: string, baseImag
   return tag;
 }
 
-/** Directory with the files of `storytold/<repo>` at `ref`, fetched once per commit and kept in the worker's work dir. */
+/** Directory with the files of `<owner>/<repo>` at `ref`, fetched once per commit and kept in the worker's work dir. */
 export async function ensureCheckout(cfg: WorkerConfig, repo: "craft-fonts" | "craft-i18n", ref: string, fetchImpl?: typeof fetch): Promise<string> {
   if (!isCommitId(ref)) throw new Error(`${repo} ref is not a full commit id`);
   const dir = join(cfg.workDir, "ext", repo, ref);
@@ -91,7 +92,7 @@ export async function ensureCheckout(cfg: WorkerConfig, repo: "craft-fonts" | "c
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
   try {
-    await downloadAndExtract(`https://codeload.github.com/storytold/${repo}/tar.gz/${ref}`, tmp, 1024 * 1024 * 1024, undefined, fetchImpl);
+    await downloadAndExtract(`https://codeload.github.com/${slugOf(repo)}/tar.gz/${ref}`, tmp, 1024 * 1024 * 1024, undefined, fetchImpl);
     writeFileSync(join(tmp, ".complete"), "");
     rmSync(dir, { recursive: true, force: true });
     try {

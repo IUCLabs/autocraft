@@ -7,9 +7,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { getTask, logTail, TERMINAL } from "../build/tasks.ts";
 import { connect } from "../db.ts";
 import { ghExec } from "../merge/safe-merge.ts";
-import { BASE_ORG } from "../fixup/pushable.ts";
 import { ghDiff } from "../review/diff.ts";
 import { changedRsFiles, queueLint, readLint, type Finding } from "./index.ts";
+import { slugOf } from "../owners.ts";
 
 const POLL_MS = 5000;
 const GIVE_UP_MS = 90 * 60_000;
@@ -50,7 +50,7 @@ export async function runLint(db: DatabaseSync, a: { repo: string; number: numbe
   }
   let base: string | null = null;
   try {
-    const sha = (await ghExec(["api", `repos/${BASE_ORG}/${a.repo}/pulls/${a.number}`, "--jq", ".base.sha"])).trim();
+    const sha = (await ghExec(["api", `repos/${slugOf(a.repo)}/pulls/${a.number}`, "--jq", ".base.sha"])).trim();
     if (/^[0-9a-f]{40}$/.test(sha)) base = sha;
   } catch { /* the head stands in for the base */ }
   const id = queueLint(db, { step: "lint", repo: a.repo, number: a.number, head, base, ...(patch !== undefined ? { patch } : { files: files! }) });

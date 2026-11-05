@@ -1,4 +1,5 @@
 import { isBotLogin } from "./review/bots.ts";
+import { loadOwners } from "./owners.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -21,6 +22,7 @@ export function dbPath(): string {
 // Columns added to existing tables after their first release. CREATE TABLE IF
 // NOT EXISTS leaves an older table as it was, so these are added here.
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
+  ["repos", "owner", "TEXT NOT NULL DEFAULT 'storytold'"],
   ["jobs", "acted", "INTEGER"],
   ["job_items", "ref", "TEXT"],
   ["pr_commits", "first_seen_at", "TEXT"],
@@ -441,6 +443,7 @@ export function connect(path: string = dbPath()): DatabaseSync {
   // A current database takes no write lock here: opening a connection must not wait for a sync.
   if (stampOf(db) === stamp) {
     migrateValues(db);
+    loadOwners(db);
     return db;
   }
   db.exec(schema);
@@ -458,5 +461,6 @@ export function connect(path: string = dbPath()): DatabaseSync {
   db.exec(`INSERT OR IGNORE INTO main.settings (key, value) SELECT 'tracking_started_at',
     COALESCE((SELECT MIN(synced_at) FROM main.repos), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`);
   db.prepare("INSERT INTO main.settings (key, value) VALUES ('schema_stamp', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(stamp);
+  loadOwners(db);
   return db;
 }

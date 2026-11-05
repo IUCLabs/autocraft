@@ -8,7 +8,7 @@ import { basename, dirname, join } from "node:path";
 import { exec, fixupDir, Git } from "../fixup/git.ts";
 import { checkoutRoot, pruneCheckouts, touchCheckout } from "./checkout.ts";
 import { SHARED_NAME } from "./command.ts";
-import { ORG } from "./index.ts";
+import { ownerOf } from "../owners.ts";
 
 /** Repository file name -> name in the docs directory. */
 export const DOC_FILES: Record<string, string> = { "AGENTS.md": "AGENTS.txt", "ROADMAP.md": "ROADMAP.md" };
@@ -43,7 +43,7 @@ export function defaultDocsDeps(): DocsDeps {
     },
     async read(repo, branch, sha) {
       const g = new Git(exec, fixupDir(), repo);
-      return (await g.fetchBranch(ORG, repo, branch, sha)) ? docsAt(g, sha) : {};
+      return (await g.fetchBranch(ownerOf(repo), repo, branch, sha)) ? docsAt(g, sha) : {};
     },
   };
 }

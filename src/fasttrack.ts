@@ -6,7 +6,7 @@
 //
 //   autocraft fasttrack add <url|repo#n> | remove <url|repo#n> | list
 import type { DatabaseSync } from "node:sqlite";
-import { ORG } from "./act/templates.ts";
+import { ownerOf } from "./owners.ts";
 import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
 import { isTracked } from "./repos.ts";
@@ -30,7 +30,7 @@ export function parseItemRef(input: unknown): FastRef {
   const m = /^https?:\/\/github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/(?:pull|issues)\/([1-9][0-9]*)(?:[/?#].*)?$/.exec(t)
     ?? /^(?:([A-Za-z0-9._-]+)\/)?([A-Za-z0-9._-]+)#([1-9][0-9]*)$/.exec(t);
   if (!m) throw new FastTrackError("not an item: use a GitHub URL, repo#number or owner/repo#number");
-  if (m[1] && m[1].toLowerCase() !== ORG) throw new FastTrackError(`${m[1]}/${m[2]} is not in the ${ORG} organisation`);
+  if (m[1] && m[1].toLowerCase() !== ownerOf(m[2]!).toLowerCase()) throw new FastTrackError(`${m[1]}/${m[2]} is not a tracked repo of ${m[1]}`);
   return { repo: m[2]!, number: Number(m[3]) };
 }
 

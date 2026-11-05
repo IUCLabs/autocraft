@@ -7,6 +7,7 @@ import { ConversationError, addOperatorMessage, conversationOf, includesOf, pend
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { needVisible } from "./visible.ts";
+import { slugOf } from "../../owners.ts";
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
 
@@ -150,7 +151,7 @@ async function needCard(db: DatabaseSync, req: Req): Promise<CardRow> {
   const c = Number.isInteger(id) ? cardOf(db, id) : undefined;
   if (!c) throw new HttpError(404, `no card ${req.params.id}`);
   await needVisible(db, req, c.repo);
-  if (!(await req.user.canWrite(c.repo).catch(() => false))) throw new HttpError(403, `no write access to storytold/${c.repo}`);
+  if (!(await req.user.canWrite(c.repo).catch(() => false))) throw new HttpError(403, `no write access to ${slugOf(c.repo)}`);
   return c;
 }
 

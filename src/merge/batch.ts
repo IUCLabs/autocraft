@@ -28,7 +28,7 @@ import { refreshChecks } from "../review/checks.ts";
 import { BatchGit } from "./batch-git.ts";
 import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES, PUBLISH_FAILED, RUNS_WAIT_NOTE, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, publishDelayMs, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
-import { ORG, allowFailedArgs, prInfo, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
+import { allowFailedArgs, prInfo, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
 import { redMainRepos } from "../mainci/index.ts";
 import { effectiveCi } from "../optional-checks.ts";
@@ -36,9 +36,10 @@ import { PIPELINE_LOGIN_KEY, buildQueue, type QueueEntry } from "./queue.ts";
 import { planned } from "../core/select.ts";
 import { envVar } from "../env.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf, slugOf } from "../owners.ts";
 
 const ACTOR = "batch";
-const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);
+const PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+\/pull\/(\d+)$/;
 
 export type BatchDeps = {
   /** Every git and gh command. */
@@ -120,14 +121,14 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
 
   /** Builds a batch of the candidates, in order, from the current head of the default branch; null when no PR could be merged. */
   async function startBatch(cands: Cand[], max: number, parentId: number | null): Promise<number | null> {
-    const base = await git.fetchMain(ORG, repo, branch);
+    const base = await git.fetchMain(ownerOf(repo), repo, branch);
     const who = await whoAmI(d.exec);
     db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(PIPELINE_LOGIN_KEY, who.login);
     const chain: { cand: Cand; commit: string }[] = [];
     let cur = base;
     for (const c of cands) {
       if (chain.length && !admits(chain.map((x) => x.cand), c, max)) continue;
-      const sha = await git.fetchPr(ORG, repo, c.number);
+      const sha = await git.fetchPr(ownerOf(repo), repo, c.number);
       if (sha !== c.head) { log(`  ${refOf(c.number)}: head moved to ${short(sha)}; left out`); continue; }
       const g = await guard(db, { repo, number: c.number }, { kind: "merge", head: c.head, batch: true }, by, liveRead);
       if ("refused" in g) { log(`  ${refOf(c.number)}: left out: ${g.refused}`); continue; }
@@ -169,7 +170,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const head = await d.mainHead(repo, branch);
     if (!head || head === b.base_sha) return null;
     try {
-      const now = await git.fetchMain(ORG, repo, branch);
+      const now = await git.fetchMain(ownerOf(repo), repo, branch);
       if (await git.mergeTree(now, b.commit_sha)) return null;
     } catch { /* the batch commit is gone from the cache: rebuild */ }
     return `${branch} moved to ${short(head)} and conflicts with the batch`;
@@ -230,11 +231,11 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const push = await pushOwnBranch(w, g, git, "batch-push", { repo, remote: fork, branch: b.branch, sha: b.commit_sha }, { run: runId, fork });
     if (push.code !== 0) return publishFailed(b, `push failed: ${oneLine(push.stderr)}`);
     updateBatch(db, b.id, at(), { fork });
-    const links = members.map((m) => `- [${repo}#${m.number}](https://github.com/${ORG}/${repo}/pull/${m.number})`).join("\n");
+    const links = members.map((m) => `- [${repo}#${m.number}](https://github.com/${slugOf(repo)}/pull/${m.number})`).join("\n");
     const body = `Lands ${members.length} reviewed and verified pull request${members.length === 1 ? "" : "s"} together. Each one is merged with its own commits.\n\n${links}\n`;
     // A crash after `gh pr create` leaves a PR for this branch: adopt it instead of failing on "already exists".
     const owner = fork.split("/")[0]!;
-    const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${repo}`, "--state", "open", "--head", b.branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
+    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(repo)}`, "--state", "open", "--head", b.branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     const pr = PR_URL.test(existing) ? { code: 0, stdout: existing, stderr: "" }
       : await ghOpenPr(w, g, d.exec, "batch-pr", { repo, target: `${repo}:${b.branch}`, base: branch, head: `${owner}:${b.branch}`, title: `Integration batch ${b.branch}`, body }, { by: "fixed" }, { run: runId });

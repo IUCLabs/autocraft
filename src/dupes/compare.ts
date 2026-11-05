@@ -31,7 +31,6 @@ import { dueSets, rememberDrop, saveComparison, storedComparison, type Compariso
 
 const PR_PROMPT = CLAUDE_PROMPTS["dupes.compare-prs.opus"];
 const ISSUE_PROMPT = CLAUDE_PROMPTS["dupes.compare-issues.sonnet"];
-const ORG = "storytold";
 
 /** Most sets compared per job unless the step's limit says otherwise. */
 export const DEFAULT_LIMIT = 50;
@@ -71,8 +70,8 @@ export function defaultCompareDeps(db: DatabaseSync): CompareDeps {
   };
 }
 
-export const liveQuery = (numbers: number[]) => `query($name: String!) {
-  repository(owner: "${ORG}", name: $name) {${numbers.map((n) => `
+export const liveQuery = (numbers: number[]) => `query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {${numbers.map((n) => `
     i${n}: issueOrPullRequest(number: ${n}) { __typename ... on Issue { state } ... on PullRequest { state headRefOid } }`).join("")}
   }
 }`;

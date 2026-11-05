@@ -92,6 +92,8 @@ import type {
 export interface Api {
   me(): Promise<User>;
   repos(): Promise<RepoName[]>;
+  /** Owners of the visible repos that are not storytold's, by repo name. */
+  repoOwners(): Promise<Record<string, string>>;
   decisions: {
     list(filter: DecisionFilter): Promise<DecisionList>;
     get(id: string): Promise<Decision>;

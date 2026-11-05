@@ -79,6 +79,8 @@ export const REPO_OPEN: [string, number][] = [
   ["font-preview-service", 39],
 ];
 export const REPOS = REPO_OPEN.map(([r]) => r);
+/** Repos owned by someone other than storytold. */
+export const MOCK_REPO_OWNERS: Record<string, string> = { "font-preview-service": "example-org" };
 
 /** Signed-in user per mock role; pick one with `?as=` or the user menu. */
 export const MOCK_USERS: Record<"operator" | "maintainer" | "viewer", User> = {

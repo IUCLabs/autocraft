@@ -10,7 +10,7 @@ import { cn } from "../../ui/cn";
 import { when } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useNow } from "../../lib/useNow";
-import { batchPath, decisionPath } from "../../lib/links";
+import { batchPath, decisionPath, repoSlug } from "../../lib/links";
 import { FastMark } from "./fastTrack";
 import { RowMenu } from "./RowMenu";
 
@@ -73,7 +73,7 @@ export function BatchFacts({ b }: { b: QueueBatch }) {
         {b.size} PR{b.size === 1 ? "" : "s"}
       </span>
       {b.prNumber !== null && <ItemRef repo={b.repo} number={b.prNumber} kind="pr" state={b.state === "merged" ? "merged" : b.state === "open" || b.state === "checking" ? "open" : "closed"} title={null} size="sm" className="flex-none" />}
-      <a href={gh(`storytold/${b.repo}/commit/${b.baseSha}`)} target="_blank" rel="noopener noreferrer" title="Base commit on GitHub" className={cn("code text-xs", extLink)}>
+      <a href={gh(`${repoSlug(b.repo)}/commit/${b.baseSha}`)} target="_blank" rel="noopener noreferrer" title="Base commit on GitHub" className={cn("code text-xs", extLink)}>
         {b.baseSha.slice(0, 7)}
       </a>
       <span className="num text-2xs text-ink/50" title={`created ${when(b.createdAt)}, updated ${when(b.updatedAt)}`}>

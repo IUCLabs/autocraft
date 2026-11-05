@@ -37,7 +37,7 @@ import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
 import { selectFixups } from "./select.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
-import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
+import { longLivedOf, pushable } from "./pushable.ts";
 import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, newestOwnComment, type ConflictRun } from "./conflict.ts";
 import { referenceDir } from "../reference.ts";
@@ -49,11 +49,11 @@ import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage, fixupCommentEdited, fixupCommentLines, operatorCommentText } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf } from "../owners.ts";
 
 export { MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 export { selectFixups } from "./select.ts";
 
-const ORG = BASE_ORG;
 const ACTOR = "fixup";
 const PROMPT = CLAUDE_PROMPTS["fixup.patch"];
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
@@ -113,8 +113,8 @@ export function scrubReason(text: string, root: string): string {
 }
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 
-export const PR_QUERY = `query($name: String!, $n: Int!) {
-  repository(owner: "${ORG}", name: $name) {
+export const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
+  repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
       id state isDraft headRefOid baseRefOid headRefName maintainerCanModify mergeable
       headRepository { nameWithOwner }
@@ -289,7 +289,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   const askOne = async (c: FixCandidate, count = true) => {
     const ref = refOf(c);
     try {
-      const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+      const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       noteLive(db, repo, c.number, pr, at());
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); return; }
@@ -353,7 +353,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     };
     try {
       if (!c.carry && files.some((f) => !fixupEditable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
-      const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+      const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       noteLive(db, repo, c.number, pr, at());
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
@@ -375,7 +375,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         carried = w.carried;
         files = [...new Set(c.fixes.map((f) => f.file))];
       }
-      const head = await git.fetchPr(ORG, repo, c.number);
+      const head = await git.fetchPr(ownerOf(repo), repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
 
       const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
@@ -473,7 +473,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       }
 
       // The model calls took minutes: read the PR again before pushing.
-      const again = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+      const again = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const now = again.repository?.pullRequest;
       noteLive(db, repo, c.number, now, at());
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }

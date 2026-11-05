@@ -5,7 +5,6 @@ import { pilotSql } from "../pilot.ts";
 import { resolvePushes } from "../push-outcomes.ts";
 import { overallAt, recordRuns, type Suite } from "../merge/ci-approval.ts";
 
-export const ORG = "storytold";
 /** PRs per query: 100 check contexts each keeps a query well under GitHub's node limit. */
 export const CHECKS_PER_QUERY = 40;
 
@@ -32,9 +31,9 @@ export function checksQuery(numbers: number[]): string {
         ... on StatusContext { context state }
       } } } } } }
     }`).join("");
-  return `query($name: String!) {
+  return `query($owner: String!, $name: String!) {
   rateLimit { cost remaining resetAt }
-  repository(owner: "${ORG}", name: $name) {${prs}
+  repository(owner: $owner, name: $name) {${prs}
   }
 }`;
 }

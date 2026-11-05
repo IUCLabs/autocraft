@@ -31,7 +31,7 @@ import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
 import { diffCacheDir } from "../review/diff.ts";
-import { ORG } from "../review/checks.ts";
+import { ownerOf } from "../owners.ts";
 import { sensitiveReasons } from "./sensitive.ts";
 import { carriedReview } from "../review/carry.ts";
 import { staleReviews } from "../review/discussion.ts";
@@ -90,7 +90,7 @@ function sensitiveAt(repo: string, number: number, head: string): string[] | nul
   if (hit) return hit;
   const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
   if (!existsSync(file)) return null;
-  const out = sensitiveReasons(readFileSync(file, "utf8"), ORG);
+  const out = sensitiveReasons(readFileSync(file, "utf8"), ownerOf(repo));
   sensitiveMemo.set(key, out);
   return out;
 }

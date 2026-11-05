@@ -26,11 +26,11 @@ import { repoChecksKnown, repoHasNoCi } from "../merge/no-ci.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
 import type { Crate, VerifyPlanInput } from "./types.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { slugOf } from "../owners.ts";
 
 export { collectDue, listVerifications, runCollect, verificationOf, type VerificationView } from "./results.ts";
 
 const PROMPT = CLAUDE_PROMPTS["verify.plan"];
-const ORG = "storytold";
 /** Characters of code diff the planner is shown; a larger change is not planned automatically. */
 export const MAX_DIFF_CHARS = 80_000;
 const SHA = /^[0-9a-f]{40}$/;
@@ -58,8 +58,8 @@ async function sha(path: string, jq: string): Promise<string | null> {
 export function defaultDeps(): VerifyDeps {
   return {
     fetchDiff: ghDiff, fetchCrates: ghCrates, model: PROMPT.models[0]!, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
-    baseOf: (repo, n) => sha(`repos/${ORG}/${repo}/pulls/${n}`, ".base.sha"),
-    mainHead: (repo, branch) => sha(`repos/${ORG}/${repo}/commits/${encodeURIComponent(branch)}`, ".sha"),
+    baseOf: (repo, n) => sha(`repos/${slugOf(repo)}/pulls/${n}`, ".base.sha"),
+    mainHead: (repo, branch) => sha(`repos/${slugOf(repo)}/commits/${encodeURIComponent(branch)}`, ".sha"),
   };
 }
 

@@ -33,9 +33,10 @@ import { commentApprovalOf } from "./approval.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardItem, guardRepo } from "../core/guard.ts";
 import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
-import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
+import { cleanReason, duplicateComment, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { ownerOf } from "../owners.ts";
 
 const ACTOR = "act";
 const NO_IO: GroupIo = { live: async () => null, comment: async () => "", close: async () => {} };
@@ -151,8 +152,8 @@ function pending(db: DatabaseSync, repo: string, refs?: string[]): Target[] {
 
 export type Live = { id: string; type: "Issue" | "PullRequest"; state: string; head: string | null };
 
-export const READ = `query($name: String!, $n: Int!) {
-  repository(owner: "${ORG}", name: $name) {
+export const READ = `query($owner: String!, $name: String!, $n: Int!) {
+  repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $n) {
       __typename
       ... on Issue { id state }
@@ -162,7 +163,7 @@ export const READ = `query($name: String!, $n: Int!) {
 }`;
 
 export async function readLive(q: Querier, repo: string, n: number): Promise<Live | null> {
-  const d = await q.query(READ, { name: repo, n }) as { repository?: { issueOrPullRequest?: { __typename: string; id: string; state: string; headRefOid?: string } | null } };
+  const d = await q.query(READ, { owner: ownerOf(repo), name: repo, n }) as { repository?: { issueOrPullRequest?: { __typename: string; id: string; state: string; headRefOid?: string } | null } };
   const x = d.repository?.issueOrPullRequest;
   if (!x) return null;
   return { id: x.id, type: x.__typename === "PullRequest" ? "PullRequest" : "Issue", state: x.state, head: x.headRefOid ?? null };

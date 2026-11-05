@@ -3,8 +3,8 @@
 // the last read; the item list sync and the checks poll do not carry it.
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "./mirror.ts";
+import { ownerOf } from "./owners.ts";
 // Local, as in mirror.ts: importing it from review/checks.ts closes an import cycle through mirror.ts.
-const ORG = "storytold";
 
 /** Items read per sync pass; a backlog drains over several passes. */
 export const ACTIVITY_PER_PASS = 20;
@@ -20,9 +20,9 @@ const ACTIVITY_MIN_REMAINING = 2000;
 const CAP = 100;
 
 export const ACTIVITY_QUERY = `
-query($name: String!, $number: Int!) {
+query($owner: String!, $name: String!, $number: Int!) {
   rateLimit { cost remaining resetAt }
-  repository(owner: "${ORG}", name: $name) {
+  repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
       __typename
       ... on Issue {
@@ -91,7 +91,7 @@ export async function syncActivity(db: DatabaseSync, client: Querier, now: Date 
     if (client.remaining !== null && client.remaining < ACTIVITY_MIN_REMAINING) break;
     if (read > 0 && Date.now() - started > ACTIVITY_PASS_MS) break;
     try {
-      const node = ((await client.query(ACTIVITY_QUERY, { name: it.repo, number: it.number })) as Node).repository?.issueOrPullRequest;
+      const node = ((await client.query(ACTIVITY_QUERY, { owner: ownerOf(it.repo), name: it.repo, number: it.number })) as Node).repository?.issueOrPullRequest;
       // A deleted or transferred item has no node; the attempt is still recorded.
       if (node) saveActivity(db, it.repo, it.number, node, it, now.toISOString());
       else saveSyncState(db, it, now.toISOString(), null, null);

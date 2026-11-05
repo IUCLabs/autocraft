@@ -12,7 +12,6 @@
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { ORG } from "../act/templates.ts";
 import { actionable, ask, getDecision } from "../decisions.ts";
 import { connect } from "../db.ts";
 import { exec, fixupDir, type Exec } from "../fixup/git.ts";
@@ -30,6 +29,7 @@ import { scrub } from "../runner/scrub.ts";
 import { mainFixApprovalOf } from "./approval.ts";
 import { lintReady, openFixPrs, type FixPrDeps } from "./pr.ts";
 import { REASON_WORDS, VERDICTS, type MainFixInput, type MainFixVerdict } from "./types.ts";
+import { slugOf } from "../owners.ts";
 
 export { mainFixApprovalOf, setMainFixApproval } from "./approval.ts";
 export { autocraftText } from "./status.ts";
@@ -168,7 +168,7 @@ const issueTitle = (check: string): string => `Main CI fails: ${cleanLine(check,
 
 /** The issue's text. Fixed layout; the check name, reason and log excerpt are scrubbed, without URLs or mentions. */
 export function issueBody(r: Pick<FixRow, "repo" | "head_sha" | "check" | "reason" | "run_id" | "excerpt">): string {
-  const run = r.run_id ? `\nRun: https://github.com/${ORG}/${r.repo}/actions/runs/${r.run_id}` : "";
+  const run = r.run_id ? `\nRun: https://github.com/${slugOf(r.repo)}/actions/runs/${r.run_id}` : "";
   const log = (r.excerpt ?? "").replace(/```/g, "'''").trim();
   return `The CI of the default branch fails at ${r.head_sha.slice(0, 8)}.\n\nFailing check: \`${cleanLine(r.check, 100).replace(/`/g, "'")}\`${run}\n\nThe log reads as a failure outside the code (a refused request, a missing secret, a quota or an outage)${r.reason ? `: ${r.reason}` : "."}${log ? `\n\nLog excerpt:\n\n\`\`\`\n${log}\n\`\`\`` : ""}`;
 }
@@ -210,7 +210,7 @@ async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: 
     const v = verdicts.find((x) => x.check === c.name) ?? { check: c.name, verdict: "code" as const, reason: "no verdict" };
     const row: FixRow = {
       ...base, check: c.name, verdict: v.verdict, state: "nothing-to-do", reason: v.reason || null, run_id: c.runId,
-      run_url: c.runId ? `https://github.com/${ORG}/${repo}/actions/runs/${c.runId}` : null, excerpt: excerptOf(c) || null, updated_at: at,
+      run_url: c.runId ? `https://github.com/${slugOf(repo)}/actions/runs/${c.runId}` : null, excerpt: excerptOf(c) || null, updated_at: at,
     };
     if (v.verdict === "code") { onCodeVerdict(db, row, v.reason || "a build, lint or test step failed", at); s.needsFix++; continue; }
     if (v.verdict === "infra") { await askInfra(db, row, cur, at, s); continue; }

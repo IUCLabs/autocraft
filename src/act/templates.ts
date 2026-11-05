@@ -4,8 +4,8 @@
 import type { CommentTemplate } from "../../web/src/api/types.ts";
 import { withNote } from "../github/note.ts";
 import { recommendation, reviewBody } from "../review/post-template.ts";
+import { slugOf } from "../owners.ts";
 
-export const ORG = "storytold";
 export const REASON_MAX = 200;
 
 /** One plain line: no mentions, no URLs or Markdown links, cut to `max` (REASON_MAX by default). */
@@ -27,7 +27,7 @@ export function cleanReason(s: string | null | undefined, max = REASON_MAX): str
 export function refText(from: string, ref: string): string {
   const m = /^([\w.-]+)#(\d+)$/.exec(ref.trim());
   if (!m) return "";
-  return m[1] === from ? `#${m[2]}` : `${ORG}/${m[1]}#${m[2]}`;
+  return m[1] === from ? `#${m[2]}` : `${slugOf(m[1])}#${m[2]}`;
 }
 
 export function scopeCloseComment(reason: string | null): string {

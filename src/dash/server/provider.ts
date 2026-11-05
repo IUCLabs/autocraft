@@ -2,11 +2,10 @@
 import { readFileSync } from "node:fs";
 import type { Config } from "./config.ts";
 import { pkceChallenge, randomToken, safeEqual } from "./crypto.ts";
-
+import { ownerOf } from "../../owners.ts";
 export type Permission = "admin" | "maintain" | "write" | "triage" | "read" | "none";
 export const WRITE_PERMISSIONS: ReadonlySet<string> = new Set(["admin", "maintain", "write"]);
 
-export const ORG = "storytold";
 export const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 
 // The OAuth App issues expiring user tokens: an access token (8 h at GitHub)
@@ -90,12 +89,12 @@ export class GitHubProvider implements Provider {
     return typeof body.login === "string" && typeof body.id === "number" && Number.isSafeInteger(body.id) ? { login: body.login, id: body.id } : null;
   }
   async permission(access: string, repo: string): Promise<Permission | "unauthorized"> {
-    const r = await this.#api(access, `/repos/${ORG}/${encodeURIComponent(repo)}`);
+    const r = await this.#api(access, `/repos/${ownerOf(repo)}/${encodeURIComponent(repo)}`);
     if (r.status === 401) return "unauthorized";
     // A private repo the token can't see answers 404. A 403 is usually a rate
     // limit, so it throws rather than caching "none".
     if (r.status === 404) return "none";
-    if (!r.ok) throw new Error(`GET /repos/${ORG}/${repo}: HTTP ${r.status}`);
+    if (!r.ok) throw new Error(`GET /repos/${ownerOf(repo)}/${repo}: HTTP ${r.status}`);
     const p = ((await r.json()) as { permissions?: Record<string, boolean> }).permissions ?? {};
     if (p.admin) return "admin";
     if (p.maintain) return "maintain";

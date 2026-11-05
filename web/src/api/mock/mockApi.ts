@@ -25,7 +25,7 @@ import { needsPage } from "./needsFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { mainCi } from "./mainCiMock";
-import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
+import { DECISIONS, MOCK_USERS, MOCK_REPO_OWNERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const nowIso = () => new Date(NOW).toISOString();
@@ -99,6 +99,7 @@ export function createMockApi(): Api {
   return {
     me: () => wait(me, 10),
     repos: () => wait(REPOS, 10),
+    repoOwners: () => wait(MOCK_REPO_OWNERS, 10),
     decisions: {
       list(filter) {
         const all = decisions.filter((d) => matches(d, filter));

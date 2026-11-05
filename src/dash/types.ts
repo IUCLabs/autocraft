@@ -8,11 +8,11 @@ export type Role = "operator" | "maintainer" | "viewer";
 export type User = {
   login: string;
   role: Role;
-  // write, maintain or admin on storytold/<repo>, checked against GitHub
+  // write, maintain or admin on <owner>/<repo>, checked against GitHub
   // (cached; re-checked when older than a minute). Handlers call this
   // before every decision write.
   canWrite(repo: string): Promise<boolean>;
-  // Any permission but none on storytold/<repo>, from the same cached check.
+  // Any permission but none on <owner>/<repo>, from the same cached check.
   canRead(repo: string): Promise<boolean>;
 };
 

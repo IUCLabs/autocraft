@@ -17,7 +17,7 @@ import { DIFF_CAP, FILE_CAP, TOTAL_CAP, defaultDeps, type FixupDeps } from "./in
 import { shownSize, viewFile } from "./excerpt.ts";
 import { Git } from "./git.ts";
 import { fixupEditable, validatePatch, type FixupPr } from "./patch.ts";
-import { BASE_ORG } from "./pushable.ts";
+import { ownerOf } from "../owners.ts";
 
 const LINT_GIVE_UP_MS = 90 * 60_000;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -41,7 +41,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
 
   mkdirSync(d.root, { recursive: true });
   const git = new Git(d.exec, d.root, repo);
-  const head = await git.fetchPr(BASE_ORG, repo, number);
+  const head = await git.fetchPr(ownerOf(repo), repo, number);
   if (head !== item.head_oid) throw new Error(`the PR head is now ${head.slice(0, 7)}, not the reviewed ${item.head_oid.slice(0, 7)}`);
   const diff = await cachedDiff(repo, number, head, d.fetchDiff);
   if (!diff.ok) throw new Error(`no diff: ${diff.error}`);
@@ -64,7 +64,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
 
   const before0 = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM agent_runs").get() as { n: number }).n;
   const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM model_checks").get() as { n: number }).n;
-  const base = (await d.querier.query(BASE_QUERY, { owner: BASE_ORG, name: repo, n: number }) as { repository?: { pullRequest?: { baseRefOid?: string } | null } }).repository?.pullRequest?.baseRefOid ?? null;
+  const base = (await d.querier.query(BASE_QUERY, { owner: ownerOf(repo), name: repo, n: number }) as { repository?: { pullRequest?: { baseRefOid?: string } | null } }).repository?.pullRequest?.baseRefOid ?? null;
   const tool = new CheckTool({ db, step: "fixup", repo, number, head, base, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) });
   const t0 = Date.now();
   const reply = await d.ask(db, [{ ref, title: (item.title ?? "").slice(0, 300), fixes, files: shown, diff: diff.text, ...repoDir }], checkout, tool);

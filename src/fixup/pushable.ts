@@ -3,16 +3,14 @@
 // pipeline's account can push there, so that case counts as pushable, unless the
 // branch is a long-lived one (the default branch, another PR's base, a release branch).
 import type { DatabaseSync } from "node:sqlite";
-
-/** The organization whose repositories the pipeline tracks. */
-export const BASE_ORG = "storytold";
+import { slugOf } from "../owners.ts";
 
 /** Branch names that are long-lived whatever the repository says. */
 const LONG_LIVED = /^(release|main|master|develop|stable|hotfix|integration|next|staging|production|beta|trunk|gh-pages)([/._-].*)?$|^v?\d+(\.\d+)*(\.x)?$/i;
 
 /** True when the head branch lives in the base repository (`headRepo` is `owner/name`). */
 export function sameRepo(headRepo: string | null | undefined, repo: string): boolean {
-  return !!headRepo && headRepo.toLowerCase() === `${BASE_ORG}/${repo}`.toLowerCase();
+  return !!headRepo && headRepo.toLowerCase() === `${slugOf(repo)}`.toLowerCase();
 }
 
 export type LongLived = (branch: string) => boolean;
@@ -24,7 +22,7 @@ export function longLivedOf(db: DatabaseSync, repo: string): LongLived {
   if (d) names.add(d);
   for (const r of db.prepare("SELECT DISTINCT base_ref FROM items WHERE repo = ? AND kind = 'pr' AND base_ref IS NOT NULL").all(repo) as { base_ref: string }[]) names.add(r.base_ref);
   // A same-repo branch that several open PRs use as their head is shared, not one contributor's.
-  for (const r of db.prepare("SELECT head_ref FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND lower(head_repo) = ? AND head_ref IS NOT NULL GROUP BY head_ref HAVING COUNT(*) > 1").all(repo, `${BASE_ORG}/${repo}`.toLowerCase()) as { head_ref: string }[]) names.add(r.head_ref);
+  for (const r of db.prepare("SELECT head_ref FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND lower(head_repo) = ? AND head_ref IS NOT NULL GROUP BY head_ref HAVING COUNT(*) > 1").all(repo, `${slugOf(repo)}`.toLowerCase()) as { head_ref: string }[]) names.add(r.head_ref);
   return (branch) => names.has(branch) || LONG_LIVED.test(branch);
 }
 
