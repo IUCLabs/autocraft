@@ -102,7 +102,15 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
   l.timers.push(setTimeout(() => finish(id, l, "failed", "the sign-in timed out"), timing.maxMs));
   child.stdin!.on("error", () => {});
   child.stdout!.on("data", (b: Buffer) => {
-    l.out = (l.out + clean(b.toString("utf8"))).slice(-20_000);
+    // Patterns look at the whole buffer with this chunk; the cap applies after, so a large chunk can't cut off the URL or the token first.
+    l.out += clean(b.toString("utf8"));
+    try {
+      onData();
+    } finally {
+      if (live.get(id) === l) l.out = l.out.slice(-20_000);
+    }
+  });
+  const onData = () => {
     if (l.info.state === "starting") {
       const m = l.out.match(LOGIN_URL);
       if (m) l.info = { state: "waiting", url: m[0].replace(/[.,;:!?)\]]+$/, ""), message: null, kind };
@@ -114,7 +122,7 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
       } else if (LOGIN_OK.test(f)) finish(id, l, "done", "signed in");
       else if (LOGIN_FAILED.test(f)) finish(id, l, "failed", "the code was not accepted");
     }
-  });
+  };
   child.on("error", () => finish(id, l, "failed", "the claude command could not be started"));
   child.on("close", (code) => {
     if (live.get(id) !== l) return;
