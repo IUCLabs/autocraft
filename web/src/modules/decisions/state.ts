@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
 import { decisionPath, parseDecisionRoute } from "../../lib/links";
+import { useUser } from "../../shell/UserContext";
 import type { Decision, DecisionFilter, DecisionKind } from "../../api/types";
 
 export const KIND_LABEL: Record<DecisionKind, string> = {
@@ -43,7 +44,9 @@ export function useDecisionList() {
   const { filter, search } = useDecisionFilter();
   const q = usePagedQuery(`decisions?${search}`, (a, after) => a.decisions.list({ ...filter, after }), (p) => p.next);
   const last = q.pages?.[q.pages.length - 1];
-  const data = last && { ...last, decisions: q.pages!.flatMap((p) => p.decisions) };
+  const all = useMemo(() => q.pages?.flatMap((p) => p.decisions), [q.pages]);
+  const decisions = useFolded(all);
+  const data = last && { ...last, decisions: decisions ?? [] };
   return { data, error: q.error, loading: q.loading, refetch: q.refetch, hasMore: q.hasMore, loadMore: q.loadMore, loadingMore: q.loadingMore };
 }
 
@@ -85,7 +88,8 @@ export function useSelection() {
 /** The decision with this id when the open list does not hold it (a link to an answered one, or to another tab's). */
 export function usePinned(id: string | undefined, inList: boolean) {
   const d = useQuery(`decision:${id ?? ""}`, (a) => (id ? a.decisions.get(id) : Promise.reject(new Error("no decision"))), { enabled: !!id && !inList }).data;
-  return d && d.id === id ? d : undefined;
+  const folded = useFoldedOne(d);
+  return folded && folded.id === id ? folded : undefined;
 }
 
 /**
@@ -138,8 +142,11 @@ interface Local {
   /** The option picked in the Workflow box, by decision id (checked batches: ids joined with +). */
   picks: Record<string, string>;
   overrides: Record<string, Record<string, string>>;
+  /** The answer the server accepted, shown at once until the refetched decision carries it (dropped on Undo). */
+  folded: Record<string, FoldedAnswer>;
 }
-let local: Local = { checked: new Set(), justAnswered: [], undoError: null, notes: {}, picks: {}, overrides: {} };
+type FoldedAnswer = Pick<Decision, "answer" | "answerNote" | "answeredBy" | "answeredAt" | "undoable">;
+let local: Local = { checked: new Set(), justAnswered: [], undoError: null, notes: {}, picks: {}, overrides: {}, folded: {} };
 const subs = new Set<() => void>();
 const set = (fn: (l: Local) => Local) => {
   local = fn(local);
@@ -177,7 +184,11 @@ export const localActions = {
     noticeTimer = setTimeout(() => set((l) => ({ ...l, justAnswered: [] })), NOTICE_MS);
     set((l) => ({ ...l, justAnswered: entries, undoError: null, checked: new Set() }));
   },
-  forget: (id: string) => set((l) => ({ ...l, justAnswered: l.justAnswered.filter((x) => x.id !== id) })),
+  fold: (id: string, a: FoldedAnswer) => set((l) => ({ ...l, folded: { ...l.folded, [id]: a } })),
+  unfold: (ids: string[]) =>
+    set((l) => (ids.some((id) => id in l.folded) ? { ...l, folded: Object.fromEntries(Object.entries(l.folded).filter(([id]) => !ids.includes(id))) } : l)),
+  forget: (id: string) =>
+    set((l) => ({ ...l, justAnswered: l.justAnswered.filter((x) => x.id !== id), folded: Object.fromEntries(Object.entries(l.folded).filter(([k]) => k !== id)) })),
   /** Shows the refusal, then drops it and the notice of that decision. */
   undoFailed(id: string, message: string) {
     clearTimeout(errorTimer);
@@ -186,11 +197,26 @@ export const localActions = {
   },
 };
 
+/** The decisions as answered where an answer was just accepted, so every view folds the form into the answer before the refetch lands. */
+export function useFolded<T extends Decision>(ds: T[] | undefined): T[] | undefined {
+  const { folded } = useLocal();
+  useEffect(() => {
+    const done = ds?.filter((d) => d.answer && d.id in folded).map((d) => d.id) ?? [];
+    if (done.length) localActions.unfold(done);
+  }, [ds, folded]);
+  return useMemo(() => ds?.map((d) => (!d.answer && folded[d.id] ? { ...d, ...folded[d.id] } : d)), [ds, folded]);
+}
+export function useFoldedOne<T extends Decision>(d: T | undefined): T | undefined {
+  const one = useMemo(() => (d ? [d] : undefined), [d]);
+  return useFolded(one)?.[0];
+}
+
 export const refOf = (d: Pick<Decision, "repo" | "number" | "items">) => (d.number === null ? `${d.repo} · ${d.items.length} items` : `${d.repo}#${d.number}`);
 
 /** Answer one or more decisions and remember them for undo. */
 export function useAnswer() {
   const api = useApi();
+  const login = useUser().login;
   return useCallback(
     async (ds: Decision[], key: string) => {
       const entries = [];
@@ -205,11 +231,13 @@ export function useAnswer() {
             return { repo, number: Number(n), answer };
           }),
         });
-        entries.push({ id: d.id, ref: refOf(d), label: d.options.find((o) => o.key === key)?.label ?? key, undoable: res?.undoable ?? true });
+        const undoable = res?.undoable ?? true;
+        entries.push({ id: d.id, ref: refOf(d), label: d.options.find((o) => o.key === key)?.label ?? key, undoable });
+        localActions.fold(d.id, { answer: key, answerNote: local.notes[d.id] || null, answeredBy: login, answeredAt: new Date().toISOString(), undoable });
       }
       localActions.answered(entries);
     },
-    [api],
+    [api, login],
   );
 }
 
