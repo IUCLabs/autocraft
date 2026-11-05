@@ -85,7 +85,7 @@ test("the reference mount's read permission and the public-text backstop", () =>
   assert.deepEqual(parseOpusReply(r, "app#1")!.public!.points, ["Good change in a.rs:3"]);
   const leakSummary = r.replace('"Fine."', '"Matches /reference"');
   assert.equal(parseOpusReply(leakSummary, "app#1")!.public, null);
-  const cards = parseReply(db, "app", 1, 'Text\n```actions\n[{"kind":"comment","text":"Per p0004.txt this differs"},{"kind":"backlog"}]\n```');
+  const cards = parseReply(db, "app", 1, 'Text\n```actions\n[{"kind":"resolution","steps":[{"kind":"comment"}],"settle":{"kind":"backlog"},"text":"Per p0004.txt this differs"},{"kind":"resolution","steps":[],"settle":null}]\n```');
   assert.deepEqual(cards!.cards, []);
   assert.ok(cards!.notes.some((n) => /reference folder/.test(n)));
 });

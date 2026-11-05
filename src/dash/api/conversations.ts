@@ -1,7 +1,7 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
 import type { Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
-import { buttonLabel, cardEffect, type CardParams } from "../../conversations/cards.ts";
+import { buttonLabel, cardEffect, cardLines, type CardParams } from "../../conversations/cards.ts";
 import { cardOf, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, pendingTurn, turnsOf, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
@@ -30,8 +30,11 @@ async function guardAsync<T>(f: () => Promise<T>): Promise<T> {
 
 export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
   const params = JSON.parse(c.params) as CardParams;
-  const effect = c.kind === "answer" || c.kind === "close" ? cardEffect(db, params) : null;
+  const effect = c.kind === "answer" || c.kind === "close" || c.kind === "resolution" ? cardEffect(db, params) : null;
+  const lines = cardLines(db, params, c.description);
   return {
+    steps: lines.steps,
+    ...(lines.settles && { settles: lines.settles }),
     label: buttonLabel(db, params),
     id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"],
     ...(c.text !== null && { text: c.text }),
@@ -74,6 +77,13 @@ function text(req: Req): string {
   return (b as { text: string }).text;
 }
 
+/** `ask: false` stores the message without asking Opus. */
+function ask(req: Req): boolean {
+  const a = (req.json as { ask?: unknown } | null)?.ask;
+  if (a !== undefined && typeof a !== "boolean") throw new HttpError(400, "ask must be true or false");
+  return a !== false;
+}
+
 function needOperator(req: Req): void {
   if (!isOperator(req)) throw new HttpError(403, "only operators write in conversations");
 }
@@ -88,7 +98,7 @@ export async function postMessage(db: DatabaseSync, req: Req, deps?: StoreDeps):
   needOperator(req);
   const { repo, n } = itemOf(req);
   await needVisible(db, req, repo);
-  await guardAsync(() => addOperatorMessage(db, repo, n, req.user.login, text(req), deps));
+  await guardAsync(() => addOperatorMessage(db, repo, n, req.user.login, text(req), deps, ask(req)));
   return conversationView(db, repo, n);
 }
 

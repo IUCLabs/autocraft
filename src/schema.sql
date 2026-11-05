@@ -1009,7 +1009,7 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
   turn_id INTEGER NOT NULL,
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,
-  kind TEXT NOT NULL,                 -- comment | answer | label | backlog | duplicate | resolve | close
+  kind TEXT NOT NULL,                 -- resolution | comment | answer | label | backlog | duplicate | resolve | close (the last seven are legacy single actions)
   params TEXT NOT NULL,               -- JSON
   text TEXT,
   description TEXT NOT NULL,          -- one plain line written by our code from the parameters

@@ -47,7 +47,7 @@ export function operatorBlock(login: string, text: string): string {
 }
 
 export function opusBlock(text: string, cards: NewCard[]): string {
-  const list = cards.map((c) => ({ ...c.params }));
+  const list = cards.map((c) => ({ ...c.params, ...(c.params.kind === "resolution" && c.text !== null && { text: c.text }) }));
   return `<turn from="opus">\n${frameSafe(text)}\n${cards.length ? `<actions>\n${JSON.stringify(list)}\n</actions>\n` : ""}</turn>\n`;
 }
 
@@ -219,17 +219,20 @@ export async function refreshItem(db: DatabaseSync, repo: string, n: number, dep
   });
 }
 
-/** An operator's message: creates the conversation when the item has none and queues the message for the Conversation step. */
-export async function addOperatorMessage(db: DatabaseSync, repo: string, n: number, login: string, text: string, deps?: StoreDeps): Promise<number> {
+/**
+ * An operator's message: creates the conversation when the item has none and queues the message for the Conversation step.
+ * With `ask` false the message is only stored (no pending state, no model call); Opus sees it among the turns at the next ask.
+ */
+export async function addOperatorMessage(db: DatabaseSync, repo: string, n: number, login: string, text: string, deps?: StoreDeps, ask = true): Promise<number> {
   const body = text.trim();
   if (!body) throw new ConversationError(400, "the message is empty");
   if (body.length > MESSAGE_MAX) throw new ConversationError(400, `the message is longer than ${MESSAGE_MAX} characters`);
   if (!itemRow(db, repo, n)) throw new ConversationError(404, `no item ${repo}#${n} in the mirror`);
-  if (pendingTurn(db, repo, n)) throw new ConversationError(409, "Opus has not answered the last message yet");
+  if (ask && pendingTurn(db, repo, n)) throw new ConversationError(409, "Opus has not answered the last message yet");
   await ensureConversation(db, repo, n, login, deps);
   await refreshItem(db, repo, n, deps);
   try {
-    return insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body), status: "pending" }, deps);
+    return insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body), ...(ask && { status: "pending" }) }, deps);
   } catch (e) {
     if (/UNIQUE/i.test(String((e as Error).message))) throw new ConversationError(409, "Opus has not answered the last message yet");
     throw e;

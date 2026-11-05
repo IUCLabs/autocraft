@@ -8,6 +8,7 @@ import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
+import { setApproval as setLabelApproval } from "../src/labels/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
 import { cleanComment, parseReply } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
@@ -72,33 +73,43 @@ describe("cards", () => {
 
 
 
-  test("invalid cards are dropped with a note and valid ones get a description from the parameters", () => {
+  test("invalid resolutions are dropped with a note and valid ones get lines from the parameters", () => {
     const db = fresh();
+    const R = (steps: unknown[], settle: unknown, extra: Record<string, unknown> = {}) => ({ kind: "resolution", steps, settle, ...extra });
     const reply = `Text.\n\`\`\`actions\n${JSON.stringify([
       { kind: "delete-everything" },
-      { kind: "answer", option: "nope" },
-      { kind: "answer", option: "close" },
-      { kind: "label", label: "my own label" },
-      { kind: "label", label: "Plugin Candidate" },
-      { kind: "duplicate", of: 1 },
-      { kind: "duplicate", of: 3 },
-      { kind: "duplicate", of: 99 },
-      { kind: "comment", text: "Thanks @bob, see the pack." },
-      { kind: "comment", text: "" },
-      { kind: "backlog" },
+      { kind: "comment", text: "an old kind" },
+      R([], { kind: "answer", option: "nope" }),
+      R([{ kind: "label", label: "my own label" }], { kind: "backlog" }),
+      R([{ kind: "label", label: "Plugin Candidate" }], { kind: "answer", option: "take" }),
+      R([{ kind: "duplicate", of: 1 }], null),
+      R([{ kind: "duplicate", of: 3 }], null),
+      R([{ kind: "duplicate", of: 99 }], null),
+      R([{ kind: "close", reason: "completed" }, { kind: "comment" }], null, { text: "Done." }),
+      R([{ kind: "comment" }, { kind: "comment" }], { kind: "backlog" }, { text: "Twice." }),
+      R([{ kind: "comment" }], { kind: "answer", option: "close" }, { text: "Closing." }),
+      R([{ kind: "comment" }], { kind: "answer", option: "take" }, { text: "Thanks @bob, see the pack." }),
+      R([{ kind: "comment" }], { kind: "backlog" }, { text: "" }),
+      R([{ kind: "label", label: "bugfix" }], null),
+      R([{ kind: "comment" }], null, { text: "Which version?" }),
+      R([{ kind: "comment" }], null, { text: "Second question?" }),
     ])}\n\`\`\``;
     const p = parseReply(db, "app", 1, reply)!;
-    assert.deepEqual(p.cards.map((c) => c.params.kind), ["answer", "label", "duplicate", "comment", "backlog"]);
-    assert.equal(p.notes.length, 6);
-    assert.equal(p.cards[0]!.description, 'Answer the open decision on app#1 with "Out of scope" (closes it on GitHub)');
-    assert.equal(p.cards[1]!.description, 'Add the label "plugin candidate" to app#1');
-    assert.equal(p.cards[3]!.text, "Thanks bob, see the pack.");
+    const kinds = p.cards.map((c) => JSON.stringify(c.params.kind === "resolution" ? [c.params.steps.map((x) => x.kind), c.params.settle?.kind ?? null] : null));
+    assert.deepEqual(kinds, [
+      '[["label"],"answer"]', '[["duplicate"],"handled"]', '[["comment"],"answer"]', '[["comment"],null]',
+    ]);
+    assert.equal(p.notes.length, 12);
+    assert.equal(p.cards[0]!.description, 'On app#1: Add the label "plugin candidate"; Answers the scope question with "Wanted"');
+    assert.equal(p.cards[2]!.text, "Thanks bob, see the pack.");
     assert.equal(parseReply(db, "app", 1, "```actions\n[]\n```"), null, "no text, no reply");
     assert.equal(parseReply(db, "app", 1, "Hi\n```actions\nnot json\n```")!.notes.length, 1);
+    // No open decision: a settle is refused and steps alone are fine.
+    const none = parseReply(db, "app", 3, `Hi\n\`\`\`actions\n${JSON.stringify([R([{ kind: "label", label: "bugfix" }], null), R([], { kind: "backlog" })])}\n\`\`\``)!;
+    assert.equal(none.cards.length, 1);
+    assert.equal(none.notes.length, 1);
   });
 });
-
-
 
 describe("Do it", () => {
   test("a close card comments, closes with the state reason and answers the item's open decision as handled", async () => {
@@ -118,6 +129,56 @@ describe("Do it", () => {
     assert.ok(d.applied_at);
   });
 
+  const resolution = (db: DatabaseSync, steps: unknown[], settle: unknown, text: string | null) => {
+    const p = parseReply(db, "app", 1, `Text.\n\`\`\`actions\n${JSON.stringify([{ kind: "resolution", steps, settle, ...(text && { text }) }])}\n\`\`\``)!;
+    assert.equal(p.cards.length, 1, p.notes.join("; "));
+    return Number(db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (0, 'app', 1, 'resolution', ?, ?, ?)")
+      .run(JSON.stringify(p.cards[0]!.params), p.cards[0]!.text, p.cards[0]!.description).lastInsertRowid);
+  };
+  const github = (failLabel: boolean) => {
+    const sent: string[] = [];
+    const querier = { query: async (q: string) => {
+      sent.push(q.includes("addComment") ? "comment" : q.includes("addLabelsToLabelable") ? "label" : q.includes("issueOrPullRequest") ? "read" : "other");
+      if (q.includes("issueOrPullRequest")) return { repository: { issueOrPullRequest: { __typename: "Issue", id: "I_1", state: "OPEN" } } };
+      if (q.includes("addComment")) return { addComment: { commentEdge: { node: { url: "https://x.test/c" } } } };
+      if (q.includes("repository(")) return { repository: { id: "R_1", l0: { id: "L_1", name: "bugfix" }, l1: null } };
+      if (failLabel) throw new Error("label add failed");
+      return { m0: { clientMutationId: null } };
+    } };
+    return { sent, querier };
+  };
+
+  test("a resolution runs its steps in order, then answers the decision with the operator's login; a failing step leaves it open", async () => {
+    const ok = fresh();
+    setLabelApproval(ok, "op", "app", true);
+    const g = github(false);
+    const id = resolution(ok, [{ kind: "comment" }, { kind: "label", label: "bugfix" }], { kind: "answer", option: "take" }, "Thanks.");
+    const { card } = await doCard(ok, id, "op", { querier: g.querier as never });
+    assert.equal(card.state, "done", card.error ?? "");
+    assert.deepEqual(g.sent.filter((x) => x === "comment" || x === "label"), ["comment", "label"]);
+    const d = ok.prepare("SELECT answer, answered_by FROM decisions WHERE id = 'app#1:scope'").get() as { answer: string; answered_by: string };
+    assert.deepEqual({ ...d }, { answer: "take", answered_by: "op" });
+
+    const bad = fresh();
+    setLabelApproval(bad, "op", "app", true);
+    const b = github(true);
+    const failed = (await doCard(bad, resolution(bad, [{ kind: "comment" }, { kind: "label", label: "bugfix" }], { kind: "answer", option: "take" }, "Thanks."), "op", { querier: b.querier as never })).card;
+    assert.equal(failed.state, "failed");
+    assert.match(failed.error ?? "", /Already done: Post the comment below/);
+    assert.equal(bad.prepare("SELECT answer FROM decisions WHERE id = 'app#1:scope'").get()!.answer, null);
+  });
+
+  test("a message with ask false is stored without a pending state and queues no Opus reply", async () => {
+    const db = fresh();
+    await conv.postMessage(db, req("operator", { repo: "app", n: "3" }, { text: "Note for later", ask: false }));
+    const row = db.prepare("SELECT status, seq FROM conversation_turns WHERE repo = 'app' AND number = 3").get() as { status: string | null; seq: number | null };
+    assert.equal(row.status, null);
+    assert.ok(row.seq);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_turns WHERE status = 'pending'").get()!.n, 0);
+    // A question can follow at once.
+    await conv.postMessage(db, req("operator", { repo: "app", n: "3" }, { text: "What do you think?" }));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_turns WHERE status = 'pending'").get()!.n, 1);
+  });
 });
 
 function req(role: "operator" | "viewer", params: Record<string, string>, json?: unknown): Req {
@@ -128,7 +189,7 @@ function req(role: "operator" | "viewer", params: Record<string, string>, json?:
 describe("access", () => {
   test("a viewer reads the conversation and cannot write; the write routes are operator-only", async () => {
     const db = fresh();
-    const { restore } = fakeModel(["Reply.\n```actions\n[{\"kind\":\"backlog\"}]\n```"]);
+    const { restore } = fakeModel(["Reply.\n```actions\n[{\"kind\":\"resolution\",\"steps\":[],\"settle\":{\"kind\":\"backlog\"}}]\n```"]);
     try {
       await conv.postMessage(db, req("operator", { repo: "app", n: "1" }, { text: "Hi" }));
       await answerAll(db);

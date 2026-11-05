@@ -10,9 +10,9 @@ import { addLabels, closeItem, commentOn, type Note, type Writer } from "../gith
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { closeRefusal, decisionStamp, otherTypeLabel, type CardParams } from "./cards.ts";
+import { closeRefusal, decisionStamp, otherTypeLabel, stepLine, type CardParams, type Settle } from "./cards.ts";
 import { ConversationError, insertTurn, systemBlock, type StoreDeps } from "./store.ts";
-import { COMMENT_MAX } from "./types.ts";
+import { COMMENT_MAX, type CloseReason } from "./types.ts";
 
 export type CardRow = {
   id: number; turn_id: number; repo: string; number: number; kind: string; params: string; text: string | null; description: string;
@@ -40,7 +40,7 @@ const ref = (repo: string, n: number) => `${repo}#${n}`;
 /** Replaces the text of a comment card that has not run. */
 export function editCard(db: DatabaseSync, id: number, by: string, text: string, deps?: StoreDeps): CardRow {
   const c = need(db, id);
-  if (c.kind !== "comment" && !(c.kind === "close" && c.text !== null)) throw new ConversationError(400, "only a comment card, or a close card with a comment, has text to edit");
+  if (c.kind !== "comment" && !((c.kind === "close" || c.kind === "resolution") && c.text !== null)) throw new ConversationError(400, "only a comment card, or a card with a comment, has text to edit");
   const t = text.trim();
   if (!t) throw new ConversationError(400, "the comment is empty");
   if (t.length > COMMENT_MAX) throw new ConversationError(400, `the comment is longer than ${COMMENT_MAX} characters`);
@@ -115,69 +115,148 @@ async function liveOpen(q: Querier, repo: string, n: number) {
   return live;
 }
 
+type Ctx = { db: DatabaseSync; c: CardRow; by: string; q: Querier; at: string; w: Writer; source: { source: string; card: number } };
+
+async function postComment({ db, c, by, q, w, source }: Ctx, text: string): Promise<Outcome> {
+  const g = guardRepo(db, c.repo, "comment", { operator: by });
+  if ("refused" in g) throw new Error(g.refused);
+  const live = await liveOpen(q, c.repo, c.number);
+  const url = await commentOn(w, g, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, text, source);
+  return { result: "Comment posted", url: url || null };
+}
+
+async function addLabel({ db, c, by, q, at, w, source }: Ctx, label: string): Promise<Outcome> {
+  const g = guardRepo(db, c.repo, "labels", { operator: by });
+  if ("refused" in g) throw new Error(g.refused);
+  const other = otherTypeLabel(db, c.repo, c.number, label);
+  if (other) throw new Error(`the item already has the type label "${other}" and an item has one type label`);
+  const live = await liveOpen(q, c.repo, c.number);
+  const have = await repoLabels(q, c.repo);
+  const id = have.labels.get(label.toLowerCase());
+  if (!id) throw new Error(`the label "${label}" does not exist on ${c.repo}`);
+  const done = await addLabels(w, q, c.repo, [{ number: c.number, id: live.id, labelIds: [id], names: [label], g }], undefined, source);
+  if (!done.includes(c.number)) throw new Error("GitHub did not add the label");
+  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, ?, ?)").run(c.repo, c.number, at, by, `added: ${label}`);
+  return { result: `Label "${label}" added`, url: null };
+}
+
+/** Closes the item (after the optional comment) and returns how it was closed, for notes. Settling the decisions is the caller's. */
+async function closeThe({ db, c, by, q, at, w, source }: Ctx, p: { reason: CloseReason }, text: string | null): Promise<{ how: string; url: string }> {
+  const g = guardRepo(db, c.repo, "comment", { operator: by });
+  if ("refused" in g) throw new Error(g.refused);
+  const refusal = closeRefusal(db, c.repo, c.number);
+  if (refusal) throw new Error(refusal);
+  const live = await liveOpen(q, c.repo, c.number);
+  const item = { repo: c.repo, number: c.number, id: live.id };
+  const url = text ? await commentOn(w, g, q, "act-comment", item, CARD_NOTE, text, source) : "";
+  await closeItem(w, g, q, { ...item, pr: live.type === "PullRequest" }, { ...source, head: live.head }, p.reason === "completed" ? "COMPLETED" : "NOT_PLANNED");
+  const how = live.type === "PullRequest" ? "" : p.reason === "completed" ? " as completed" : " as not planned";
+  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed${how} from a conversation`);
+  return { how, url };
+}
+
+/** The item is closed: its open decisions (but `except`) are settled now, not at the next sync's withdrawal. */
+function settleOthers(db: DatabaseSync, c: CardRow, how: string, by: string, at: string, except?: string): void {
+  const open = db.prepare("SELECT id FROM decisions WHERE repo = ? AND number = ? AND answer IS NULL AND id NOT LIKE '%:dupegroup:%'").all(c.repo, c.number) as { id: string }[];
+  for (const d of open) {
+    if (d.id === except) continue;
+    try { resolveDecision(db, c, d.id, undefined, `Closed${how} in the conversation`, by, at); } catch { /* answered meanwhile; the next sync withdraws what is left */ }
+  }
+}
+
+/** Closes the item as a duplicate: Act's comment and close, recorded in `actions`. */
+async function closeDuplicate({ db, c, by, q, at, w, source }: Ctx, of: number): Promise<{ url: string }> {
+  const g = guardRepo(db, c.repo, "comment", { operator: by });
+  if ("refused" in g) throw new Error(g.refused);
+  const refusal = closeRefusal(db, c.repo, c.number);
+  if (refusal) throw new Error(refusal);
+  const live = await liveOpen(q, c.repo, c.number);
+  const orig = await readLive(q, c.repo, of);
+  if (!orig) throw new Error(`GitHub returned no ${ref(c.repo, of)}`);
+  const url = await commentOn(w, g, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, duplicateComment({ repo: c.repo, original: ref(c.repo, of), closed: orig.state !== "OPEN" }), source);
+  // Recorded like Act's close: saved after the comment so the failed close shows what was posted.
+  const action = (state: string, reason: string | null) => db.prepare(`INSERT INTO main.actions (decision_id, repo, number, kind, state, comment_url, reason, created_at) VALUES (?, ?, ?, 'comment-close', ?, ?, ?, ?)
+    ON CONFLICT (decision_id, repo, number, kind) DO UPDATE SET state = excluded.state, reason = excluded.reason, created_at = excluded.created_at`).run(`conversation-card:${c.id}`, c.repo, c.number, state, url || null, reason, at);
+  action("failed", "comment posted; close not done yet");
+  await closeItem(w, g, q, { repo: c.repo, number: c.number, id: live.id, pr: live.type === "PullRequest" }, { ...source, head: live.head });
+  action("done", null);
+  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed as a duplicate of ${ref(c.repo, of)} from a conversation`);
+  return { url };
+}
+
+/** Fails before any step runs when the decision a resolution settles has changed. */
+async function checkSettle(db: DatabaseSync, c: CardRow, s: Settle, canWrite?: ActDeps["canWrite"]): Promise<void> {
+  const d = getDecision(db, s.decision);
+  if (!d || d.answer !== null || d.repo !== c.repo || d.number !== c.number || decisionStamp(db, d) !== s.stamp) throw new Error("the decision changed");
+  if (s.kind === "answer" && !optionsOf(d).some((x) => x.key === s.option)) throw new Error(`"${s.option}" is not an option of the decision`);
+  if (s.kind !== "handled" && canWrite) for (const r of reposOf(d)) if (!(await canWrite(r).catch(() => false))) throw new Error(`no write access to storytold/${r}`);
+}
+
+/** Runs the steps in order, then the settlement. A failure stops the run, leaves the decision open and names the steps already done. */
+async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, canWrite?: ActDeps["canWrite"]): Promise<Outcome> {
+  const { db, c, by, at } = ctx;
+  if (p.settle) await checkSettle(db, c, p.settle, canWrite);
+  const done: string[] = [];
+  const results: string[] = [];
+  let url: string | null = null;
+  let closedHow: string | null = null;
+  try {
+    for (const st of p.steps) {
+      switch (st.kind) {
+        case "comment": {
+          const o = await postComment(ctx, c.text ?? "");
+          url ??= o.url;
+          results.push(o.result);
+          break;
+        }
+        case "label": results.push((await addLabel(ctx, st.label)).result); break;
+        case "close": {
+          const r = await closeThe(ctx, st, null);
+          closedHow = r.how;
+          results.push(`Closed${r.how}`);
+          break;
+        }
+        case "duplicate": {
+          const r = await closeDuplicate(ctx, st.of);
+          url ??= r.url || null;
+          closedHow = " as a duplicate";
+          results.push(`Closed as a duplicate of ${ref(c.repo, st.of)}`);
+          break;
+        }
+      }
+      done.push(stepLine(st));
+    }
+    const s = p.settle;
+    if (s) {
+      results.push((s.kind === "answer" ? await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite)
+        : s.kind === "backlog" ? await answerDecision(db, c, s.decision, s.stamp, BACKLOG.key, by, at, canWrite)
+        : resolveDecision(db, c, s.decision, s.stamp, s.summary, by, at)).result);
+    }
+  } catch (e) {
+    const msg = String((e as Error).message ?? e);
+    throw new Error(done.length ? `${msg}. Already done: ${done.join("; ")}. The question stays open` : msg);
+  }
+  if (closedHow !== null) settleOthers(db, c, closedHow, by, at, p.settle?.decision);
+  return { result: results.join("; "), url };
+}
+
 async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Querier, at: string, canWrite?: ActDeps["canWrite"]): Promise<Outcome> {
-  const w: Writer = { db, login: by };
-  const source = { source: "conversation", card: c.id };
+  const ctx: Ctx = { db, c, by, q, at, w: { db, login: by }, source: { source: "conversation", card: c.id } };
   switch (p.kind) {
+    case "resolution": return runResolution(ctx, p, canWrite);
     case "answer": return answerDecision(db, c, p.decision, p.stamp, p.option, by, at, canWrite);
     case "resolve": return resolveDecision(db, c, p.decision, p.stamp, p.summary, by, at);
     case "backlog": return answerDecision(db, c, p.decision, p.stamp, BACKLOG.key, by, at, canWrite);
-    case "comment": {
-      const g = guardRepo(db, c.repo, "comment", { operator: by });
-      if ("refused" in g) throw new Error(g.refused);
-      const live = await liveOpen(q, c.repo, c.number);
-      const url = await commentOn(w, g, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, c.text ?? p.text, source);
-      return { result: "Comment posted", url: url || null };
-    }
-    case "label": {
-      const g = guardRepo(db, c.repo, "labels", { operator: by });
-      if ("refused" in g) throw new Error(g.refused);
-      const other = otherTypeLabel(db, c.repo, c.number, p.label);
-      if (other) throw new Error(`the item already has the type label "${other}" and an item has one type label`);
-      const live = await liveOpen(q, c.repo, c.number);
-      const have = await repoLabels(q, c.repo);
-      const id = have.labels.get(p.label.toLowerCase());
-      if (!id) throw new Error(`the label "${p.label}" does not exist on ${c.repo}`);
-      const done = await addLabels(w, q, c.repo, [{ number: c.number, id: live.id, labelIds: [id], names: [p.label], g }], undefined, source);
-      if (!done.includes(c.number)) throw new Error("GitHub did not add the label");
-      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, ?, ?)").run(c.repo, c.number, at, by, `added: ${p.label}`);
-      return { result: `Label "${p.label}" added`, url: null };
-    }
+    case "comment": return postComment(ctx, c.text ?? p.text);
+    case "label": return addLabel(ctx, p.label);
     case "close": {
-      const g = guardRepo(db, c.repo, "comment", { operator: by });
-      if ("refused" in g) throw new Error(g.refused);
-      const refusal = closeRefusal(db, c.repo, c.number);
-      if (refusal) throw new Error(refusal);
-      const live = await liveOpen(q, c.repo, c.number);
-      const item = { repo: c.repo, number: c.number, id: live.id };
-      const url = c.text ? await commentOn(w, g, q, "act-comment", item, CARD_NOTE, c.text, source) : "";
-      await closeItem(w, g, q, { ...item, pr: live.type === "PullRequest" }, { ...source, head: live.head }, p.reason === "completed" ? "COMPLETED" : "NOT_PLANNED");
-      const how = live.type === "PullRequest" ? "" : p.reason === "completed" ? " as completed" : " as not planned";
-      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed${how} from a conversation`);
-      // The item is closed: its open decisions are settled now, not at the next sync's withdrawal.
-      const open = db.prepare("SELECT id FROM decisions WHERE repo = ? AND number = ? AND answer IS NULL AND id NOT LIKE '%:dupegroup:%'").all(c.repo, c.number) as { id: string }[];
-      for (const d of open) {
-        try { resolveDecision(db, c, d.id, undefined, `Closed${how} in the conversation`, by, at); } catch { /* answered meanwhile; the next sync withdraws what is left */ }
-      }
-      return { result: `Closed${how}`, url: url || null };
+      const r = await closeThe(ctx, p, c.text);
+      settleOthers(db, c, r.how, by, at);
+      return { result: `Closed${r.how}`, url: r.url || null };
     }
     case "duplicate": {
-      const g = guardRepo(db, c.repo, "comment", { operator: by });
-      if ("refused" in g) throw new Error(g.refused);
-      const refusal = closeRefusal(db, c.repo, c.number);
-      if (refusal) throw new Error(refusal);
-      const live = await liveOpen(q, c.repo, c.number);
-      const orig = await readLive(q, c.repo, p.of);
-      if (!orig) throw new Error(`GitHub returned no ${ref(c.repo, p.of)}`);
-      const url = await commentOn(w, g, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, duplicateComment({ repo: c.repo, original: ref(c.repo, p.of), closed: orig.state !== "OPEN" }), source);
-      // Recorded like Act's close: saved after the comment so the failed close shows what was posted.
-      const action = (state: string, reason: string | null) => db.prepare(`INSERT INTO main.actions (decision_id, repo, number, kind, state, comment_url, reason, created_at) VALUES (?, ?, ?, 'comment-close', ?, ?, ?, ?)
-        ON CONFLICT (decision_id, repo, number, kind) DO UPDATE SET state = excluded.state, reason = excluded.reason, created_at = excluded.created_at`).run(`conversation-card:${c.id}`, c.repo, c.number, state, url || null, reason, at);
-      action("failed", "comment posted; close not done yet");
-      await closeItem(w, g, q, { repo: c.repo, number: c.number, id: live.id, pr: live.type === "PullRequest" }, { ...source, head: live.head });
-      action("done", null);
-      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed as a duplicate of ${ref(c.repo, p.of)} from a conversation`);
-      return { result: `Closed as a duplicate of ${ref(c.repo, p.of)}`, url: url || null };
+      const r = await closeDuplicate(ctx, p.of);
+      return { result: `Closed as a duplicate of ${ref(c.repo, p.of)}`, url: r.url || null };
     }
   }
 }
@@ -205,7 +284,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const sentence = out ? `The operator ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The operator ${by} tried the proposed action: ${c.description}. It failed: ${error}.`;
   insertTurn(db, c.repo, c.number, {
     kind: "system", login: "system", body: out ? `${by} ran the card: ${c.description}. ${out.result}.` : `${by} tried the card: ${c.description}. It failed: ${error}.`,
-    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : params.kind === "close" && c.text ? { posted_text: c.text } : undefined),
+    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : (params.kind === "close" || params.kind === "resolution") && c.text ? { posted_text: c.text } : undefined),
   }, deps);
   return { card: need(db, id), ran: true };
 }
