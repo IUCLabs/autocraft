@@ -1,6 +1,6 @@
 # Deployment checklist
 
-For the admin who sets up AutoCraft on a cluster or a VM. Reference detail is in [operations.md](operations.md), "Running in a container". The steps to move an existing installation (database, secrets, accounts) are in the migration runbook in [operations.md](operations.md).
+For the admin who sets up AutoCraft on a cluster or a VM. Reference detail is in [operations.md](operations.md), "Running in a container". The steps to move an existing installation (database, secrets, accounts) are in the migration runbook, [migration.md](migration.md).
 
 ## Image
 
