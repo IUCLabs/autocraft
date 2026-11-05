@@ -1686,11 +1686,20 @@ export interface QueuePage {
 
 export type ConversationCardState = "proposed" | "running" | "done" | "failed" | "dismissed";
 
-/** An action Opus proposed. `title` is written by the server from the card's parameters; `text` is a comment card's editable text. */
+/**
+ * An action Opus proposed. `title` is written by the server from the card's parameters; `text` is the card's editable comment.
+ * A card with `settles` is a resolution: it runs its steps, then settles the item's open question, all from one button.
+ * A card without it is a single action that leaves the question open (for example asking the author something).
+ */
 export interface ConversationCard {
   id: number;
-  kind: "comment" | "answer" | "label" | "backlog" | "duplicate" | "resolve" | "close";
+  /** "resolution" for cards Opus proposes from now on; the other kinds are single actions on older turns. */
+  kind: "resolution" | "comment" | "answer" | "label" | "backlog" | "duplicate" | "resolve" | "close";
   title: string;
+  /** What runs, in order, one plain line each (e.g. "Post the comment below", "Close the issue as completed"); empty for a card that only settles the question. */
+  steps: string[];
+  /** How the open question ends when the card runs, e.g. 'Answers the scope question with "Small extra"', "Closes the scope question as handled". Absent: the question stays open. */
+  settles?: string;
   /** The primary button: the action in a few words, written by the server from the card's parameters. */
   label: string;
   text?: string;
