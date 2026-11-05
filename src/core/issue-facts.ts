@@ -134,6 +134,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   // Act: answers an operator gave that close an item (decisions.ts actionable, as act/index.ts targetsOf reads them).
   const actionState = new Map((db.prepare("SELECT decision_id, repo, number, state FROM actions WHERE kind = ?").all(ACT_KIND) as { decision_id: string; repo: string; number: number; state: string }[])
     .map((a) => [`${a.decision_id}|${a.repo}#${a.number}`, a.state]));
+  const waitingExec = new Set((db.prepare("SELECT id FROM main.decisions WHERE exec_state IN ('waiting-token', 'waiting-permission') AND applied_at IS NULL").all() as { id: string }[]).map((r) => r.id));
   const answeredClose = new Map<string, ItemFacts["answeredClose"]>();
   for (const a of actionable(db)) {
     if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate" && a.kind !== "merge") continue;
@@ -142,7 +143,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       const ex = a.exceptions.find((e) => e.repo === it.repo && e.number === it.number);
       if ((ex ? ex.answer : a.answer) !== "close") continue;
       const k = `${it.repo}#${it.number}`;
-      (answeredClose.get(k) ?? answeredClose.set(k, []).get(k)!).push({ decisionId: a.id, kind: a.kind, security: securityIds.has(a.id), action: actionState.get(`${a.id}|${k}`) ?? null });
+      (answeredClose.get(k) ?? answeredClose.set(k, []).get(k)!).push({ decisionId: a.id, kind: a.kind, security: securityIds.has(a.id), action: actionState.get(`${a.id}|${k}`) ?? null, ...(waitingExec.has(a.id) ? { waiting: true } : {}) });
     }
   }
   // A closed item stays in the facts while an answered close of it is not applied: the Act step records it as already closed.

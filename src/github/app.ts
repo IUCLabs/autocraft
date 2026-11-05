@@ -16,6 +16,8 @@ const UA = "autocraft-dashboard";
 /** `status` is the HTTP status of a failed GitHub call, 0 for other failures. */
 export class AppError extends Error {
   status = 0;
+  /** The failure is a rate limit (a 403 or 429 with no requests left, a Retry-After, or a rate-limit message). */
+  rateLimited = false;
 }
 
 export type AppDeps = { apiBase?: string };
@@ -78,7 +80,14 @@ export async function call(base: string, path: string, token: string | null, met
     },
     signal: AbortSignal.timeout(15_000),
   });
-  if (!r.ok) throw Object.assign(new AppError(`${method} ${path.replace(/\/[^/]*\/conversions$/, "/…/conversions")}: HTTP ${r.status}`), { status: r.status });
+  if (!r.ok) {
+    let rateLimited = false;
+    if (r.status === 429 || r.status === 403) {
+      const body = await r.text().catch(() => "");
+      rateLimited = r.status === 429 || r.headers.get("x-ratelimit-remaining") === "0" || r.headers.has("retry-after") || /rate limit/i.test(body);
+    }
+    throw Object.assign(new AppError(`${method} ${path.replace(/\/[^/]*\/conversions$/, "/…/conversions")}: HTTP ${r.status}`), { status: r.status, rateLimited });
+  }
   return r.status === 204 ? null : r.json();
 }
 

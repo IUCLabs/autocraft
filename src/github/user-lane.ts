@@ -5,13 +5,15 @@
 // A decision whose operator has no usable token, or no write access on the repo, does not fail: it waits
 // (`decisions.exec_state` waiting-token / waiting-permission, with a plain reason) and runs again after that operator
 // signs in or authorizes again, or when someone presses Retry.
+import { statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { AppError, call, GITHUB_API } from "./app.ts";
 import { identityOfDecision, repoIdentity } from "./identity.ts";
 import { openVault, type Vault } from "./vault.ts";
-import { withIdentityEnv } from "./install-token.ts";
+import { envVar } from "../env.ts";
+import { appChildEnv } from "./install-token.ts";
 import { exec as defaultExec, type Exec } from "../fixup/git.ts";
-import { Client, type Querier } from "../mirror.ts";
+import { Client, GithubError, Transient, type Querier } from "../mirror.ts";
 import { slugOf } from "../owners.ts";
 
 export type ExecState = "pending" | "waiting-token" | "waiting-permission" | "done" | "failed";
@@ -89,27 +91,37 @@ export async function githubPermission(token: string, repo: string, apiBase = GI
   } catch (e) {
     if (e instanceof AppError) {
       if (e.status === 401) return "rejected";
-      if (e.status === 403 || e.status === 404) return "none";
+      // A rate limit answers 403 or 429 too: GitHub could not answer now, which is not "no access".
+      if (!e.rateLimited && (e.status === 403 || e.status === 404)) return "none";
     }
     throw e;
   }
 }
 
-const memo = new WeakMap<DatabaseSync, LaneDeps>();
-/** The vault of the secrets file (null without a registered app) and GitHub's own permission read. */
+const memo = new WeakMap<DatabaseSync, { key: string; deps: LaneDeps }>();
+/**
+ * The vault of the secrets file (null without a registered app) and GitHub's own permission read. A vault is kept per
+ * database connection while the secrets file is the same one (path, mtime, size); when none could be opened nothing is kept.
+ */
 export function defaultLaneDeps(db: DatabaseSync): LaneDeps {
-  let d = memo.get(db);
-  if (!d) {
-    let vault: Vault | null = null;
-    try { vault = openVault(db); } catch { /* no readable secrets: no token can be had */ }
-    d = { vault };
-    memo.set(db, d);
-  }
-  return d;
+  const key = secretsKey();
+  const m = memo.get(db);
+  if (m && m.key === key) return m.deps;
+  let vault: Vault | null = null;
+  try { vault = openVault(db); } catch { /* no readable secrets: no token can be had */ }
+  const deps: LaneDeps = { vault };
+  if (vault) memo.set(db, { key, deps }); else memo.delete(db);
+  return deps;
+}
+
+function secretsKey(): string {
+  const f = envVar("SECRETS_FILE");
+  if (!f) return "";
+  try { const s = statSync(f); return `${f}:${s.mtimeMs}:${s.size}`; } catch { return f; }
 }
 
 export function laneOf(deps: LaneDeps, login: string, token: string): Lane {
-  const env = withIdentityEnv({ kind: "app", token });
+  const env = appChildEnv(token);
   const t = deps.transports?.(env);
   return {
     login, env,
@@ -164,9 +176,29 @@ export async function laneForOperator(db: DatabaseSync, deps: LaneDeps | undefin
   return app.length ? resolveLane(deps ?? defaultLaneDeps(db), login, app) : null;
 }
 
-/** What GitHub says when the user's token may not do the write: 401, 403 or 404, or an integration without access. */
-export function authFailure(message: string): "waiting-token" | "waiting-permission" | null {
-  if (/\b401\b|bad credentials/i.test(message)) return "waiting-token";
-  if (/\b(403|404)\b|not accessible by integration|must have (admin|write)|resource not accessible|could not resolve to a repository/i.test(message)) return "waiting-permission";
+/** A decision that waits for its operator's token or access: the stages leave it out of their work until it is retried. */
+export function isWaiting(db: DatabaseSync, decisionId: string | null | undefined): boolean {
+  if (!decisionId) return false;
+  const r = db.prepare("SELECT exec_state FROM main.decisions WHERE id = ?").get(decisionId) as { exec_state: string | null } | undefined;
+  return r?.exec_state === "waiting-token" || r?.exec_state === "waiting-permission";
+}
+
+/**
+ * How a failed write as a user is classified, from the HTTP status (a GitHub error's, or gh's own "(HTTP 403)" line in
+ * a command's output) and the GraphQL error type, never from other numbers or words in the text. 401 means the token is
+ * no good; 403 and 404 (FORBIDDEN, NOT_FOUND) mean no access. A rate limit and a transient failure are "transient":
+ * nothing is recorded and the next run tries again. Anything else, a refusal included, is null.
+ */
+export function authFailure(e: unknown): "waiting-token" | "waiting-permission" | "transient" | null {
+  if (e instanceof Transient) return "transient";
+  const message = String((e as Error)?.message ?? e);
+  if (e instanceof AppError && e.rateLimited) return "transient";
+  const status = e instanceof GithubError || e instanceof AppError ? e.status : httpStatusOfLine(message);
+  const type = e instanceof GithubError ? e.type : null;
+  if (status === 429 || (status === 403 && /rate limit/i.test(message))) return "transient";
+  if (status === 401 || type === "UNAUTHENTICATED") return "waiting-token";
+  if (status === 403 || status === 404 || type === "FORBIDDEN" || type === "NOT_FOUND") return "waiting-permission";
   return null;
 }
+
+const httpStatusOfLine = (text: string): number => Number(/(?:^|[\s(])HTTP (\d{3})\b/.exec(text)?.[1] ?? 0);

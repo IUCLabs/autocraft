@@ -12,7 +12,7 @@ import { ALL_LABELS, type LabelDef } from "./set.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
 import { repoIdentity } from "../github/identity.ts";
-import { authFailure, laneForDecision, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps } from "../github/user-lane.ts";
+import { authFailure, isWaiting, laneForDecision, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps } from "../github/user-lane.ts";
 
 export const BATCH = 10;          // mutations per request
 export const WRITES_PER_MIN = 60; // GitHub asks integrators to stay near this for content-creating writes
@@ -88,7 +88,9 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
   if (o.apply && !approval) {
     throw new LabelsError(`${repo} is not approved for labelling. An operator approves it on the dashboard Repos page.`);
   }
-  let todo: Todo[] = plannedItems(db, "label", { repo, run: o.runId }).map((p) => ({ number: p.facts.number, add: p.action.params!.add as string[] }));
+  // An item whose plugin label waits for its operator's token or access is left out until it is retried.
+  const waits = (n: number) => repoIdentity(db, repo) === "app" && isWaiting(db, pluginDecisionOf(db, repo, n));
+  let todo: Todo[] = plannedItems(db, "label", { repo, run: o.runId }).filter((p) => !waits(p.facts.number)).map((p) => ({ number: p.facts.number, add: p.action.params!.add as string[] }));
   if (o.limit !== undefined) todo = todo.slice(0, o.limit);
   const res: ApplyResult = { planned: todo.length, labeled: 0, failed: [], skipped: 0, batches: 0, dryRun: !o.apply };
   if (!o.apply) {
@@ -141,7 +143,8 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
           [{ number: r.number, id: idMap.get(r.number)!, labelIds: r.add.map((a) => have.labels.get(a.toLowerCase())!), names: r.add, g: grants.get(r.number)! }], (f) => retrying(f, wait), { run: o.runId }));
       } catch (e) {
         const why = String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 300);
-        const denied = lr ? authFailure(why) : null;
+        const denied = lr ? authFailure(e) : null;
+        if (denied === "transient") { res.skipped++; continue; }
         if (denied) { setExecState(db, dec, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(repo)); res.skipped++; continue; }
         if (lr) setExecState(db, dec, "failed", why);
         throw e;
