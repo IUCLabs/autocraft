@@ -55,7 +55,7 @@ import { changedRsFiles, foldFormat, lintSteps, readLint } from "../prepush/inde
 import { ghComment, ghDeleteComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
-import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
+import { backlogHeldSql, duplicateHeld } from "../dupes/held.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 
@@ -291,6 +291,8 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
     const me = await viewerOf(q);
     const w: Writer = { db, login: ACTOR };
     if (attemptOf(db, c.repo, c.number)?.state === "failed") return;
+    // A duplicate or Backlog hold that arrived while the attempt ran: the claim would announce a fix for an issue about to be closed or held.
+    if (duplicateHeld(db, c.repo, c.number)) { log(`  ${ref}: not claimed: held as a duplicate or by Backlog`); return; }
     // The attempt row exists by now, so decideItem no longer lists a new fix for the issue: the claim needs the repo's approval and the switch.
     const g = guardRepo(db, c.repo, "fix-issue", x.by ?? CLI_BY);
     if ("refused" in g) { log(`  ${ref}: not claimed: ${g.refused}`); return; }
@@ -623,7 +625,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
   };
   // Rechecked right before each GitHub write: the operator may revoke approval or the day's limit may be reached.
   const permitted = (): boolean => {
-    if (!inPilot(db, r.repo, r.number) || backlogHeld(db, r.repo, r.number)) { log(`  ${ref}: waiting: the issue is outside the pilot or held`); return false; }
+    if (!inPilot(db, r.repo, r.number) || duplicateHeld(db, r.repo, r.number)) { log(`  ${ref}: waiting: the issue is outside the pilot or held`); return false; }
     if (!fixIssueApprovalOf(db, r.repo)) { log(`  ${ref}: waiting: fixing issues is not approved for ${r.repo}`); return false; }
     if (openedToday(db, new Date()) >= perDay(db)) { log(`  ${ref}: waiting: the daily limit of opened PRs is reached`); return false; }
     return true;
