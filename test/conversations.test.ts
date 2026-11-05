@@ -182,6 +182,15 @@ describe("Do it", () => {
     const blocks = db.prepare("SELECT block FROM conversation_turns WHERE repo = 'app' AND number = 1 AND kind = 'operator'").all() as { block: string }[];
     assert.equal(blocks.filter((b) => b.block.includes('<included from="maintainer" login="maint"') && b.block.includes("I think it is fine ")).length, 1);
     assert.ok(!blocks[0]!.block.includes("@x"));
+    // A source from another item's decision is refused.
+    db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at) VALUES ('app#3:scope', 'scope', 'app', 3, 'Scope?', '[]', ?)").run(T0);
+    db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('c3', 'app#3:scope', 'maint', ?, 'Other item')").run(T0);
+    await assert.rejects(() => conv.postInclude(db, req("operator", { repo: "app", n: "1" }, { source: "decision-comment:c3", on: true })), (e) => e instanceof HttpError && e.status === 400);
+    // The next asked message carries nothing again.
+    db.prepare("UPDATE conversation_turns SET status = 'answered' WHERE repo = 'app' AND number = 1").run();
+    await conv.postMessage(db, req("operator", { repo: "app", n: "1" }, { text: "And now?" }));
+    const last = db.prepare("SELECT block FROM conversation_turns WHERE repo = 'app' AND number = 1 AND kind = 'operator' ORDER BY id DESC LIMIT 1").get() as { block: string };
+    assert.ok(last.block.includes("And now?") && !last.block.includes("<included"));
     await assert.rejects(() => conv.postInclude(db, req("operator", { repo: "app", n: "1" }, { source: "decision-comment:c1", on: false })), (e) => e instanceof HttpError && e.status === 409);
     // A question can follow at once.
     await conv.postMessage(db, req("operator", { repo: "app", n: "3" }, { text: "What do you think?" }));

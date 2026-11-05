@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "steps" | "mainci" | "limits";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "steps" | "mainci" | "limits";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
@@ -43,7 +43,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["decisions?", withSlot("decisions")],
   ["decision:", withSlot("decisions")],
   ["thread:", ["decisions"]],
-  ["conversation:", ["conversations", "trace"]],
+  ["conversation:", ["conversations", "conversation-includes"]],
   ["repos", ["repos"]],
   ["repo-admin", ["repos", "sync", "settings"]],
   ["cls:", ["classify", "items"]],

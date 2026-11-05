@@ -48,13 +48,13 @@ export const closedEvent = (it: ItemRow): Ev => ({ id: "gh:closed", kind: "githu
 /** Longest comment text a trace event carries. */
 export const TRACE_BODY_MAX = 20_000;
 /** `body`, when given, is the stored text (the item trace selects it; the activity feed does not, to keep its pages light). */
-export const commentEvent = (c: { id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number; body?: string | null }, own: string): Ev => {
+export const commentEvent = (c: { id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number; body?: string | null; cut?: number }, own: string): Ev => {
   const ours = own !== "" && c.author === own;
   const what = c.kind === "review" ? `review (${(c.review_state ?? "commented").toLowerCase().replace("_", " ")})` : "comment";
   return {
     id: `comment:${c.id}`, kind: "github", at: c.created_at, head: c.commit_oid, actor: ours ? step("AutoCraft") : person(c.author),
     summary: `${ours ? "AutoCraft posted a" : "Posted a"} ${what}, ${c.len} characters`, ref: { commentId: c.id },
-    ...(c.body && { body: c.body.slice(0, TRACE_BODY_MAX), ...(c.len > TRACE_BODY_MAX && { bodyCut: true }) }),
+    ...(c.body && { body: c.body, ...(c.cut && { bodyCut: true }) }),
   };
 };
 export const activityEvent = (a: { id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }, own: string): Ev => {
@@ -74,7 +74,7 @@ const github: Source = {
     if (it?.merged_at && !ours) out.push(mergedEvent(it));
     else if (it?.closed_at) out.push(closedEvent(it));
     for (const c of rows<Parameters<typeof commentEvent>[0]>(db,
-      `SELECT id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len, SUBSTR(body, 1, ${TRACE_BODY_MAX}) AS body FROM comments WHERE repo = ? AND number = ? AND created_at IS NOT NULL`, repo, n)) {
+      `SELECT id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len, SUBSTR(body, 1, ${TRACE_BODY_MAX}) AS body, LENGTH(body) > ${TRACE_BODY_MAX} AS cut FROM comments WHERE repo = ? AND number = ? AND created_at IS NOT NULL`, repo, n)) {
       out.push(commentEvent(c, own));
     }
     for (const c of rows<{ oid: string; committed_at: string; author: string | null }>(db, "SELECT oid, MIN(committed_at, COALESCE(first_seen_at, committed_at)) AS committed_at, author FROM pr_commits WHERE repo = ? AND number = ?", repo, n)) {

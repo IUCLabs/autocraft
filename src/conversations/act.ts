@@ -10,7 +10,7 @@ import { addLabels, closeItem, commentOn, type Note, type Writer } from "../gith
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { closeRefusal, decisionStamp, otherTypeLabel, stepLine, type CardParams, type Settle } from "./cards.ts";
+import { closeRefusal, decisionStamp, openDecision, otherTypeLabel, stepLine, type CardParams, type Settle } from "./cards.ts";
 import { ConversationError, insertTurn, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX, type CloseReason } from "./types.ts";
 
@@ -115,6 +115,12 @@ async function liveOpen(q: Querier, repo: string, n: number) {
   return live;
 }
 
+/** A resolution step failed; `posted` says the comment step had completed. */
+class StepError extends Error {
+  posted: boolean;
+  constructor(message: string, posted: boolean) { super(message); this.posted = posted; }
+}
+
 type Ctx = { db: DatabaseSync; c: CardRow; by: string; q: Querier; at: string; w: Writer; source: { source: string; card: number } };
 
 async function postComment({ db, c, by, q, w, source }: Ctx, text: string): Promise<Outcome> {
@@ -196,6 +202,7 @@ async function checkSettle(db: DatabaseSync, c: CardRow, s: Settle, canWrite?: A
 async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, canWrite?: ActDeps["canWrite"]): Promise<Outcome> {
   const { db, c, by, at } = ctx;
   if (p.settle) await checkSettle(db, c, p.settle, canWrite);
+  else if (!(p.steps.length === 1 && p.steps[0]!.kind === "comment") && openDecision(db, c.repo, c.number)) throw new Error("the decision changed");
   const done: string[] = [];
   const results: string[] = [];
   let url: string | null = null;
@@ -234,7 +241,7 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
     }
   } catch (e) {
     const msg = String((e as Error).message ?? e);
-    throw new Error(done.length ? `${msg}. Already done: ${done.join("; ")}. The question stays open` : msg);
+    throw new StepError(done.length ? `Already done: ${done.join("; ")}. ${msg}. The question stays open` : msg, done.includes(stepLine({ kind: "comment" })));
   }
   if (closedHow !== null) settleOthers(db, c, closedHow, by, at, p.settle?.decision);
   return { result: results.join("; "), url };
@@ -271,11 +278,12 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
   if (claim.changes !== 1) return { card: c, ran: false };
   const params = JSON.parse(c.params) as CardParams;
-  let out: Outcome | null = null, error: string | null = null;
+  let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
     out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite);
   } catch (e) {
     error = oneLine(String((e as Error).message ?? e));
+    posted = e instanceof StepError && e.posted;
   }
   const end = (deps.now?.() ?? new Date()).toISOString();
   db.prepare("UPDATE conversation_cards SET state = ?, result = ?, result_url = ?, error = ?, acted_at = ? WHERE id = ?")
@@ -284,7 +292,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const sentence = out ? `The operator ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The operator ${by} tried the proposed action: ${c.description}. It failed: ${error}.`;
   insertTurn(db, c.repo, c.number, {
     kind: "system", login: "system", body: out ? `${by} ran the card: ${c.description}. ${out.result}.` : `${by} tried the card: ${c.description}. It failed: ${error}.`,
-    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : (params.kind === "close" || params.kind === "resolution") && c.text ? { posted_text: c.text } : undefined),
+    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : (params.kind === "close" || (params.kind === "resolution" && (out || posted))) && c.text ? { posted_text: c.text } : undefined),
   }, deps);
   return { card: need(db, id), ran: true };
 }
