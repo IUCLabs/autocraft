@@ -227,7 +227,9 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         const c = [...store.values()].find((x) => x.turns.some((t) => t.actions.includes(k)))!;
         k.state = "running";
         changed();
-        setTimeout(() => {
+        // Like the server, the request returns once the card has run.
+        await new Promise((r) => setTimeout(r, 600));
+        {
           const skipped = opts?.skip ?? [];
           const done = { at: new Date().toISOString(), link: k.kind === "comment" ? "#comment" : "", label: k.kind === "comment" ? `Comment on ${REF}` : k.title };
           Object.assign(k, { state: "done", by: me.login, at: done.at, done });
@@ -235,7 +237,7 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
           c.turns.push({ id: nextId++, kind: "system", login: "system", at: done.at, body: `${me.login} ran the card: ${k.title}${steps ? ` (${steps})` : ""}.${opts?.note ? ` Note: ${opts.note}` : ""}`, actions: [], notes: [] });
           if (k.settles !== undefined) settle?.(c.repo, c.number, k.option ?? "handled", opts?.note ?? null);
           changed();
-        }, 600);
+        }
         return snap(k);
       },
       async dismissCard(id) {

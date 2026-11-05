@@ -117,7 +117,11 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
         if (ins !== undefined && card.fixup && !skipped(card).includes(card.fixup.step) && ins !== card.fixup.instructions) edit.instructions = ins;
         if (Object.keys(edit).length) await api.conversations.editCard(card.id, edit);
         const skip = skipped(card);
-        await api.conversations.doCard(card.id, { ...(skip.length ? { skip } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
+        const ran = await api.conversations.doCard(card.id, { ...(skip.length ? { skip } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
+        // The server ran the card and settled the question: fold into the answer now, not after the refetch.
+        if (ran.state === "done" && card.settles !== undefined) {
+          localActions.fold(d.id, { answer: card.option ?? "handled", answerNote: note.trim() || null, answeredBy: user.login, answeredAt: ran.at ?? new Date().toISOString(), undoable: false });
+        }
         onAnswered?.();
       } else if (isOther) {
         await answer([d], "handled");
