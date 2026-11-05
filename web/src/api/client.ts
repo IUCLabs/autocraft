@@ -118,8 +118,8 @@ export interface Api {
     include(repo: RepoName, number: number, source: string, on: boolean): Promise<Conversation>;
     /** A proposed comment card's text. */
     editCard(id: number, text: string): Promise<ConversationCard>;
-    /** `skip`: indexes into `steps` the operator removed; the rest run in order. */
-    doCard(id: number, opts?: { skip?: number[] }): Promise<ConversationCard>;
+    /** `skip`: indexes into `steps` the operator removed; the rest run in order. `note`: kept with the choice (on the decision it settles, in the thread), never posted to GitHub; at most 500 characters. */
+    doCard(id: number, opts?: { skip?: number[]; note?: string }): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
   };
   /** A repo's area list. Reading is for everyone who sees the repo; every write is operator only. */

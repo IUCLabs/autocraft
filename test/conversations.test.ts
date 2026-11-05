@@ -184,11 +184,13 @@ describe("Do it", () => {
     setLabelApproval(db, "op", "app", true);
     const g = github(false);
     const a = await propose(db, 1, [{ kind: "comment" }, { kind: "label", label: "bugfix" }], { kind: "answer", option: "take" }, "Thanks.");
-    const done = (await doCard(db, a, "op", { querier: g.querier as never, skip: [0] })).card;
+    const done = (await doCard(db, a, "op", { querier: g.querier as never, skip: [0], note: "Because of the pack" })).card;
     assert.equal(done.state, "done", done.error ?? "");
     assert.deepEqual(g.sent.filter((x) => x === "comment" || x === "label"), ["label"]);
     assert.match(done.result ?? "", /skipped: Post the comment below/);
-    assert.equal(db.prepare("SELECT answer FROM decisions WHERE id = 'app#1:scope'").get()!.answer, "take");
+    const dec = db.prepare("SELECT answer, answer_note FROM decisions WHERE id = 'app#1:scope'").get() as { answer: string; answer_note: string };
+    assert.deepEqual({ ...dec }, { answer: "take", answer_note: "Because of the pack" });
+    assert.ok((db.prepare("SELECT body FROM conversation_turns WHERE kind = 'system' AND number = 1 ORDER BY id DESC LIMIT 1").get() as { body: string }).body.endsWith("Note: Because of the pack"));
 
     const ask = await propose(db, 3, [{ kind: "comment" }], null, "Which version?");
     await assert.rejects(() => doCard(db, ask, "op", { skip: [0] }), /no steps left/);

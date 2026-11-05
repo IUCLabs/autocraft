@@ -8,6 +8,8 @@ import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
+import { NOTE_MAX } from "../../conversations/types.ts";
+import { conversationOf, insertTurn, systemBlock } from "../../conversations/store.ts";
 import { BACKLOG, HANDLED, SNOOZED_SQL, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
@@ -22,7 +24,6 @@ import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
-const NOTE_MAX = 500;
 const COMMENT_MAX = 4000;
 
 export const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -414,6 +415,12 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
   });
   audit(db, req.user.login, "answer", d.id, { answer: ans, exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
+  // The thread keeps the choice (and the note) when the item has a conversation.
+  if (d.repo && d.number !== null && conversationOf(db, d.repo, d.number)) {
+    const label = optionsOf(d).find((o) => o.key === ans)?.label ?? (handled ? HANDLED.label : ans);
+    const said = `${req.user.login} answered "${d.question}" with "${label}"`;
+    insertTurn(db, d.repo, d.number, { kind: "system", login: "system", body: note ? `${said}: ${note}` : said, block: systemBlock(`The operator ${req.user.login} answered the open question "${d.question.replace(/[\r\n<]+/g, " ")}" with "${label}".`, note ? { operator_note: note } : undefined) });
+  }
   return await settled(db, req, d.id);
 }
 
