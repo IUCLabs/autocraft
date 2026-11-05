@@ -68,7 +68,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   limits: [{ table: "stage_limits" }, { table: "stage_trips" }],
   usage: [{ table: "token_usage" }, { table: "account_usage_samples" }],
   accounts: [{ table: "claude_accounts" }, { table: "claude_account_status" }],
-  agents: [{ table: "agent_runs" }, { table: "agent_run_items" }, { table: "agent_run_texts" }],
+  agents: [{ table: "agent_runs" }, { table: "agent_run_items" }, { table: "agent_run_texts" }, { table: "claude_account_tokens" }],
   // Every worker poll writes last_seen_at; only changes to what an environment is or reports matter.
   envs: [{ table: "build_envs", ops: ["INSERT", "DELETE"] }, { table: "build_envs", ops: ["UPDATE"], when: "old.label IS NOT new.label OR old.kind IS NOT new.kind OR old.enabled IS NOT new.enabled OR old.slots IS NOT new.slots OR old.key_hash IS NOT new.key_hash OR old.capabilities IS NOT new.capabilities OR old.reported_slots IS NOT new.reported_slots OR old.version IS NOT new.version OR old.paused_reason IS NOT new.paused_reason" }],
   tasks: [{ table: "build_tasks" }, { table: "build_task_logs" }, { table: "build_artifacts" }],

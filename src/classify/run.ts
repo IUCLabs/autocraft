@@ -22,7 +22,8 @@ import type { CheckTool } from "../checktool/index.ts";
 import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
-import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS, tokenNearExpiry } from "../sandbox/index.ts";
+import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS } from "../sandbox/index.ts";
+import { credentialsNearExpiry, isAuthFailure, markTokenRejected, readToken, tokenEnv, usesToken } from "../agents/token.ts";
 import { REFERENCE_PATH, REPO_DOCS_PATH, type SandboxSpec } from "../sandbox/command.ts";
 import { repoDocsFor, repoOfCheckout } from "../sandbox/repo-docs.ts";
 import { holdCheckouts } from "../sandbox/checkout.ts";
@@ -341,7 +342,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     // The session lives in one account's config directory and in a store bound to the same checkout path; without either, or with no room on that account, the caller asks anew.
     const dir = accountConfigDir(db, resume.session.account);
     const margin = TOKEN_MARGIN_MS + (opts.check !== undefined && CLAUDE_PROMPTS[id].sandbox?.check === true ? CHECK_MAX_WALL_MS : 0);
-    if (!sandboxed || !dir || resume.session.checkout !== opts.checkout || !existsSync(resume.session.dir) || tokenNearExpiry(join(dir, ".credentials.json"), Date.now(), margin)) return undefined;
+    if (!sandboxed || !dir || resume.session.checkout !== opts.checkout || !existsSync(resume.session.dir) || credentialsNearExpiry(db, resume.session.account, dir, Date.now(), margin)) return undefined;
     const runId = tryStartFollowUp(db, resume.session.account, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: resume.message });
     if (runId === null) return undefined;
     run = { runId, configDir: dir, accountId: resume.session.account };
@@ -353,7 +354,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
   while (!run) {
     const started = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs, needMs);
     // The token can expire between the choice and the claim.
-    if (needMs !== undefined && tokenNearExpiry(join(started.configDir, ".credentials.json"), Date.now(), needMs)) {
+    if (needMs !== undefined && credentialsNearExpiry(db, started.accountId, started.configDir, Date.now(), needMs)) {
       console.log("sandbox call not started: token near expiry; waiting");
       finishRun(db, started.runId, { state: "failed", summary: "skipped: token near expiry" });
     } else run = started;
@@ -374,23 +375,28 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     if (persist) sessions = resume?.session.dir ?? sessionStore();
     const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined, persist, docs !== undefined);
     const cwd = claudeCwd();
+    // Whether this call's account uses its long-lived token (asked again per turn: a rejection ends its use).
+    const withToken = () => usesToken(db, run.accountId, run.configDir);
     const timeoutMs = CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000 + (bridge ? CHECK_MAX_WALL_MS : 0);
     let spec: SandboxSpec | undefined;
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
-      if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
-      spec = { claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(Object.keys(it?.mcpServers ?? {}).sort()) }), ...(sessions && { sessionDir: sessions }), extraMounts: tools || reference || docs ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : []), ...(docs ? [{ host: docs, path: REPO_DOCS_PATH }] : [])] : undefined };
+      // With a long-lived token the sandbox gets the token instead of the credentials file (read when the command is built).
+      if (!claudeBin || (!existsSync(credentials) && !withToken())) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
+      spec = { claudeBin, checkout: opts.checkout!, ...(existsSync(credentials) && { credentials }), claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(Object.keys(it?.mcpServers ?? {}).sort()) }), ...(sessions && { sessionDir: sessions }), extraMounts: tools || reference || docs ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : []), ...(docs ? [{ host: docs, path: REPO_DOCS_PATH }] : [])] : undefined };
     }
 
     /** One `claude -p` process on the run `runId`: the first message, or with `resume` a follow-up on the same session. Never throws for a failed call. */
     const turn = async (runId: number, stdin: string, resume?: string): Promise<(Reply & { sessionId?: string }) | null> => {
       const finish = (e: Parameters<typeof finishRun>[2]) => finishRun(db, runId, e);
       const extra = resume ? ["--resume", resume] : [];
+      const usedToken = withToken();
       bridge?.setRun(runId);
       let r: Proc;
       const clock: ToolClock = { start: new Map(), end: new Map() };
       if (spec) {
-        const c = sandboxCommand({ ...spec, claudeArgs: [...args, ...extra] });
+        const tok = usedToken ? readToken(run.configDir) : null;
+        const c = sandboxCommand({ ...spec, ...(tok && { oauthToken: tok }), claudeArgs: [...args, ...extra] });
         const runProgress = coalesce((line: string) => setRunProgress(db, runId, line));
         const progress = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
         const feed = (raw: string) => { clockLine(clock, raw); progress(raw); };
@@ -401,7 +407,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
           release();
         }
         runProgress.flush();
-      } else r = await runner("claude", [...args, ...extra], stdin, cwd, timeoutMs, { CLAUDE_CONFIG_DIR: run.configDir });
+      } else r = await runner("claude", [...args, ...extra], stdin, cwd, timeoutMs, { CLAUDE_CONFIG_DIR: run.configDir, ...(usedToken && tokenEnv(db, run.accountId, run.configDir)) });
       // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
       if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
       try {
@@ -410,13 +416,17 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         // Before the result is looked at: a call that timed out or ended without a result still shows the tools it used.
         try { saveTools(db, runId, parsed, clock); } catch (e) { console.log(`tool uses not stored: ${(e as Error).message}`); }
         const j = lastResult(parsed) as { result?: string; is_error?: boolean; session_id?: string; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
+        // A call that used the long-lived token and failed with an authentication error: the token is marked rejected; this call fails as before and later calls take the regular sign-in path.
+        const authFailed = (text: string) => { if (usedToken && isAuthFailure(text)) markTokenRejected(db, run.accountId); };
         if (!j) {
+          authFailed(`${r.stderr} ${r.stdout}`);
           finish({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
           return null;
         }
         const { usage, all: tokens } = resultUsage(j, model);
         const costUsd = typeof j.total_cost_usd === "number" ? j.total_cost_usd : usage.cost;
         if (j.is_error || typeof j.result !== "string") {
+          if (j.is_error) authFailed(typeof j.result === "string" ? j.result : "");
           finish({ state: "failed", tokens, costUsd, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
           return null;
         }
@@ -436,7 +446,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     if (!first) return null;
     let { sessionId, ...reply } = first;
     // The prompt tells the model to run clippy on its final diff, and a model may skip it: one follow-up message on the same session asks for it.
-    if (bridge && sessions && sessionId && checkTool && needsClippy(checkTool, reply.text) && !(spec && tokenNearExpiry(spec.credentials, Date.now(), timeoutMs + TOKEN_MARGIN_MS))) {
+    if (bridge && sessions && sessionId && checkTool && needsClippy(checkTool, reply.text) && !(spec && credentialsNearExpiry(db, run.accountId, run.configDir, Date.now(), timeoutMs + TOKEN_MARGIN_MS))) {
       const message = CHECK_REMINDER;
       let started: number | null = null;
       try { started = tryStartFollowUp(db, run.accountId, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: message }); } catch (e) { console.log(`check reminder not started: ${(e as Error).message}`); }
@@ -460,7 +470,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     if (!problems.length) return { ...reply, problems };
     if (!sessions || !sessionId) return { ...reply, problems };
     // The fix turn can run as long as the call's own limit; with less token life than that (plus the sandbox's margin) it is skipped, because the sandbox never refreshes the token.
-    if (spec && tokenNearExpiry(spec.credentials, Date.now(), timeoutMs + TOKEN_MARGIN_MS)) {
+    if (spec && credentialsNearExpiry(db, run.accountId, run.configDir, Date.now(), timeoutMs + TOKEN_MARGIN_MS)) {
       console.log("fix turn skipped: token near expiry");
       return { ...reply, problems };
     }

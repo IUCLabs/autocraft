@@ -1,7 +1,7 @@
 // Claude accounts: sign-in state, login end date and plan use for everyone;
 // operators add accounts, sign them in with a code, sign out, enable and refresh.
 import { useState } from "react";
-import { KeyIcon, PencilSimpleIcon } from "@phosphor-icons/react";
+import { KeyIcon, LockKeyIcon, PencilSimpleIcon } from "@phosphor-icons/react";
 import { Dialog } from "radix-ui";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount } from "../../api/types";
@@ -16,7 +16,7 @@ import { useNow } from "../../lib/useNow";
 
 const useList = () => useQuery<ClaudeAccount[]>("accounts-page", (a) => a.accounts.list());
 
-function LoginDialog({ a, onClose }: { a: ClaudeAccount; onClose: () => void }) {
+function LoginDialog({ a, kind, onClose }: { a: ClaudeAccount; kind: "login" | "token"; onClose: () => void }) {
   const api = useApi();
   const write = useWrite();
   const [code, setCode] = useState("");
@@ -29,10 +29,11 @@ function LoginDialog({ a, onClose }: { a: ClaudeAccount; onClose: () => void }) 
   });
   const login = q.data?.find((x) => x.id === a.id)?.login ?? a.login;
   const state = login?.state ?? "starting";
-  const status = { starting: "Starting…", waiting: "Waiting for the code", checking: "Checking the code…", done: "Signed in", failed: login?.message ?? "Sign-in failed", cancelled: "Cancelled" }[state];
+  const token = kind === "token";
+  const status = { starting: "Starting…", waiting: "Waiting for the code", checking: "Checking the code…", done: token ? "Token saved" : "Signed in", failed: login?.message ?? "Sign-in failed", cancelled: "Cancelled" }[state];
   const ended = state === "done" || state === "failed" || state === "cancelled";
   const close = () => {
-    if (!ended) void api.accounts.loginCancel(a.id).catch(() => {});
+    if (!ended) void (token ? api.accounts.tokenCancel(a.id) : api.accounts.loginCancel(a.id)).catch(() => {});
     onClose();
   };
   return (
@@ -40,18 +41,18 @@ function LoginDialog({ a, onClose }: { a: ClaudeAccount; onClose: () => void }) 
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
         <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[min(28rem,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-line bg-panel p-4" aria-describedby={undefined}>
-          <Dialog.Title className="text-sm font-semibold">Sign in {a.label}</Dialog.Title>
+          <Dialog.Title className="text-sm font-semibold">{token ? `Long-lived token for ${a.label}` : `Sign in ${a.label}`}</Dialog.Title>
           <div className="mt-3 space-y-3">
             {login?.url && !ended && (
               <a href={login.url} target="_blank" rel="noreferrer noopener" className="block text-sm text-accent underline">
-                Open sign-in page
+                {token ? "Open token page" : "Open sign-in page"}
               </a>
             )}
             <form
               className="flex items-end gap-2"
               onSubmit={(e) => {
                 e.preventDefault();
-                void write.run("code", () => api.accounts.loginCode(a.id, code.trim())).then((ok) => ok && (setCode(""), q.refetch()));
+                void write.run("code", () => (token ? api.accounts.tokenCode(a.id, code.trim()) : api.accounts.loginCode(a.id, code.trim()))).then((ok) => ok && (setCode(""), q.refetch()));
               }}
             >
               <label className="flex grow flex-col gap-1 text-xs text-ink/60">
@@ -82,7 +83,7 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
   useNow();
   const api = useApi();
   const write = useWrite();
-  const [signing, setSigning] = useState(false);
+  const [signing, setSigning] = useState<"login" | "token" | null>(null);
   const [editing, setEditing] = useState(false);
   const act = (key: string, f: () => Promise<unknown>) => void write.run(key, f).then((ok) => ok && onChanged());
   const exp = a.auth.expiresAt ? Date.parse(a.auth.expiresAt) : null;
@@ -119,6 +120,12 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
         <dd>{a.auth.method ?? "–"}</dd>
         <dt className="text-ink/55">Login expires</dt>
         <dd className={cn(exp !== null && exp < Date.now() + 7 * 86_400_000 && "text-warn")}>{when(a.auth.expiresAt)}</dd>
+        <dt className="text-ink/55">Long-lived token</dt>
+        <dd className={cn(a.token.state === "rejected" && "text-bad")}>
+          {a.token.state === "none" && "none"}
+          {a.token.state === "set" && `set ${when(a.token.setAt)}${a.token.expiresAt ? `, expires about ${a.token.expiresAt.slice(0, 10)}` : ""}`}
+          {a.token.state === "rejected" && `rejected ${when(a.token.rejectedAt)}`}
+        </dd>
         <dt className="text-ink/55">Status read</dt>
         <dd>{a.auth.checkedAt ? eventTime(a.auth.checkedAt) : "never"}</dd>
         <dt className="text-ink/55">Usage read</dt>
@@ -127,9 +134,14 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
       {operator && (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
           <Button size="sm" variant="primary" icon={KeyIcon} loading={write.busy === "login"} className="max-md:h-11"
-            onClick={() => act("login", async () => { await api.accounts.loginStart(a.id); setSigning(true); })}>
+            onClick={() => act("login", async () => { await api.accounts.loginStart(a.id); setSigning("login"); })}>
             Sign in
           </Button>
+          <Button size="sm" variant="ghost" icon={LockKeyIcon} loading={write.busy === "token"} className="max-md:h-11"
+            onClick={() => act("token", async () => { await api.accounts.tokenStart(a.id); setSigning("token"); })}>
+            Long-lived token
+          </Button>
+          {a.token.state !== "none" && <ConfirmButton label="Remove token" confirmLabel="Confirm remove" loading={write.busy === "rmtoken"} onConfirm={() => act("rmtoken", () => api.accounts.tokenRemove(a.id))} />}
           {a.auth.loggedIn && <ConfirmButton label="Sign out" confirmLabel="Confirm sign out" loading={write.busy === "out"} onConfirm={() => act("out", () => api.accounts.signOut(a.id))} />}
           <Button size="sm" variant="ghost" loading={write.busy === "enabled"} className="max-md:h-11" onClick={() => act("enabled", () => api.accounts.update(a.id, { enabled: !a.enabled }))}>
             {a.enabled ? "Disable" : "Enable"}
@@ -141,7 +153,7 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
         </div>
       )}
       {editing && <EditForm a={a} onDone={() => { setEditing(false); onChanged(); }} />}
-      {signing && <LoginDialog a={a} onClose={() => { setSigning(false); onChanged(); }} />}
+      {signing && <LoginDialog a={a} kind={signing} onClose={() => { setSigning(null); onChanged(); }} />}
     </li>
   );
 }

@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { AgentRunFilter, AgentRunState, ClaudeAccount, JevStatus } from "../../../web/src/api/types.ts";
 import { AccountError, listAccounts, setUsagePause, updateAccount, usagePause } from "../../agents/accounts.ts";
 import { jevEnabled, jevOutage, setJevEnabled } from "../../agents/jev.ts";
-import { addAccount, beginLogin, refreshNow, sendCode, signOut, stopLogin } from "../../agents/manage.ts";
+import { addAccount, beginLogin, beginToken, refreshNow, removeToken, sendCode, sendTokenCode, signOut, stopLogin, stopToken } from "../../agents/manage.ts";
 import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/runs.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -48,6 +48,10 @@ export const postAccount = (db: DatabaseSync, req: Req) => wrap(() => addAccount
 export const loginStart = (db: DatabaseSync, req: Req) => wrap(() => beginLogin(db, req.params.id, req.user.login));
 export const loginCode = (db: DatabaseSync, req: Req) => wrap(() => sendCode(db, req.params.id, req.json, req.user.login));
 export const loginCancel = (db: DatabaseSync, req: Req) => wrap(() => stopLogin(db, req.params.id, req.user.login));
+export const tokenStart = (db: DatabaseSync, req: Req) => wrap(() => beginToken(db, req.params.id, req.user.login));
+export const tokenCode = (db: DatabaseSync, req: Req) => wrap(() => sendTokenCode(db, req.params.id, req.json, req.user.login));
+export const tokenCancel = (db: DatabaseSync, req: Req) => wrap(() => stopToken(db, req.params.id, req.user.login));
+export const tokenRemove = (db: DatabaseSync, req: Req) => wrap(() => removeToken(db, req.params.id, req.user.login));
 export const accountSignOut = (db: DatabaseSync, req: Req) => wrap(() => signOut(db, req.params.id, req.user.login));
 export const accountRefresh = (db: DatabaseSync, req: Req) => wrap(() => refreshNow(db, req.params.id, req.user.login));
 

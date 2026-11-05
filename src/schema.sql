@@ -857,6 +857,14 @@ CREATE TABLE IF NOT EXISTS claude_account_status (
   checked_at TEXT NOT NULL
 );
 
+-- When an account's long-lived token (`claude setup-token`, kept in the account's
+-- config directory, never here) was set and when a call last found it rejected.
+CREATE TABLE IF NOT EXISTS claude_account_tokens (
+  account_id TEXT PRIMARY KEY,
+  set_at TEXT NOT NULL,
+  rejected_at TEXT
+);
+
 -- The one pull request review we posted per PR (review-post): its GraphQL node
 -- id and the head commit its body describes. A later Opus review at a new head
 -- edits this review in place.

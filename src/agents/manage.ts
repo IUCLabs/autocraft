@@ -8,7 +8,8 @@ import type { ClaudeAccount } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { AccountError, listAccounts, syncAccounts, validLabel } from "./accounts.ts";
 import { ACCOUNT_ID, boxAccounts, claudeBin, configRoot, managedDir } from "./box.ts";
-import { cancelLogin, loginRunning, startLogin, submitCode, LOGIN_CODE } from "./login.ts";
+import { cancelLogin, loginInfo, loginRunning, startLogin, submitCode, LOGIN_CODE } from "./login.ts";
+import { deleteToken, recordTokenRemoved, recordTokenSet, writeToken } from "./token.ts";
 import { childEnv, refreshStatus, refreshUsage } from "./status.ts";
 
 function dirOf(db: DatabaseSync, id: unknown): { id: string; configDir: string } {
@@ -59,6 +60,43 @@ export function sendCode(db: DatabaseSync, id: unknown, input: unknown, by: stri
 export function stopLogin(db: DatabaseSync, id: unknown, by: string): ClaudeAccount {
   const a = dirOf(db, id);
   if (cancelLogin(a.id)) audit(db, by, "account-login-cancel", `account:${a.id}`);
+  return view(db, a.id);
+}
+
+/** Starts a request for a long-lived token (`claude setup-token`) and returns once its URL is ready (or it failed). */
+export async function beginToken(db: DatabaseSync, id: unknown, by: string): Promise<ClaudeAccount> {
+  const a = dirOf(db, id);
+  if (!loginRunning(a.id)) audit(db, by, "account-token-start", `account:${a.id}`);
+  await startLogin(a.id, a.configDir, undefined, "token", (token) => {
+    writeToken(a.configDir, token);
+    recordTokenSet(db, a.id);
+    audit(db, by, "account-token-set", `account:${a.id}`);
+  });
+  return view(db, a.id);
+}
+
+export function sendTokenCode(db: DatabaseSync, id: unknown, input: unknown, by: string): ClaudeAccount {
+  const a = dirOf(db, id);
+  if (loginInfo(a.id)?.kind !== "token") throw new AccountError(409, "no token request is waiting for a code");
+  const code = (input as { code?: unknown } | null)?.code;
+  if (typeof code !== "string" || !LOGIN_CODE.test(code.trim())) throw new AccountError(400, "the code has letters, digits and # _ . ~ + / = - only");
+  if (!submitCode(a.id, code.trim())) throw new AccountError(409, "no token request is waiting for a code");
+  audit(db, by, "account-token-code", `account:${a.id}`);
+  return view(db, a.id);
+}
+
+export function stopToken(db: DatabaseSync, id: unknown, by: string): ClaudeAccount {
+  const a = dirOf(db, id);
+  if (loginInfo(a.id)?.kind === "token" && cancelLogin(a.id)) audit(db, by, "account-token-cancel", `account:${a.id}`);
+  return view(db, a.id);
+}
+
+/** Deletes the account's long-lived token; calls use the regular sign-in again. */
+export function removeToken(db: DatabaseSync, id: unknown, by: string): ClaudeAccount {
+  const a = dirOf(db, id);
+  deleteToken(a.configDir);
+  recordTokenRemoved(db, a.id);
+  audit(db, by, "account-token-remove", `account:${a.id}`);
   return view(db, a.id);
 }
 

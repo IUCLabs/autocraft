@@ -3,13 +3,12 @@
 //
 // Only accounts present in the box config (box.ts) are listed. Their config
 // directories stay in this process: nothing here returns one.
-import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { AccountAuth, AccountInput, ClaudeAccount } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { JEV_PARALLEL_DEFAULT } from "../prompts/index.ts";
 import { loginInfo } from "./login.ts";
-import { tokenNearExpiry } from "../sandbox/index.ts";
+import { credentialsNearExpiry, tokenView } from "./token.ts";
 import { boxAccounts, iso, readUsage, type BoxAccount, type Reading } from "./box.ts";
 
 export const USAGE_PAUSE_KEY = "usage_pause";
@@ -103,9 +102,9 @@ function authOf(db: DatabaseSync, id: string): AccountAuth {
     : { loggedIn: null, method: null, plan: null, expiresAt: null, checkedAt: null };
 }
 
-function toAccount(r: Row, running: number, reading: Reading | null, nowMs: number, auth: AccountAuth, limits: UsagePause): ClaudeAccount {
+function toAccount(r: Row, token: ClaudeAccount["token"], running: number, reading: Reading | null, nowMs: number, auth: AccountAuth, limits: UsagePause): ClaudeAccount {
   return {
-    auth, login: loginInfo(r.id),
+    auth, login: loginInfo(r.id), token,
     id: r.id, label: r.label, enabled: r.enabled === 1, maxConcurrent: r.max_concurrent, running,
     usage: {
       fiveHourPct: reading?.fiveHour?.pct ?? null,
@@ -123,7 +122,7 @@ export function listAccounts(db: DatabaseSync, nowMs: number = Date.now()): Clau
   const box = boxAccounts(db);
   syncAccounts(db, box);
   const counts = runningCounts(db, nowMs), limits = usagePause(db);
-  return rows(db, box).map((r) => toAccount(r, counts.get(r.id) ?? 0, readUsage(r.id), nowMs, authOf(db, r.id), limits));
+  return rows(db, box).map((r) => toAccount(r, tokenView(db, r.id, box.find((b) => b.id === r.id)!.configDir), counts.get(r.id) ?? 0, readUsage(r.id), nowMs, authOf(db, r.id), limits));
 }
 
 export function updateAccount(db: DatabaseSync, id: unknown, input: unknown, by: string): ClaudeAccount {
@@ -180,7 +179,7 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now(), minT
     const why = headroomReason(reading, limits, nowMs);
     if (why) reasons.push(`${r.label}: ${why}`);
     else if (running >= r.max_concurrent) reasons.push(`${r.label}: ${running} of ${r.max_concurrent} slots in use`);
-    else if (minTokenMs !== undefined && tokenNearExpiry(join(box.find((b) => b.id === r.id)!.configDir, ".credentials.json"), nowMs, minTokenMs)) reasons.push(`${r.label}: login token expires within ${Math.ceil(minTokenMs / 60_000)} min; waiting for its refresh`);
+    else if (minTokenMs !== undefined && credentialsNearExpiry(db, r.id, box.find((b) => b.id === r.id)!.configDir, nowMs, minTokenMs)) reasons.push(`${r.label}: login token expires within ${Math.ceil(minTokenMs / 60_000)} min; waiting for its refresh`);
     else ok.push({ r, weekly: fresh(reading, nowMs)?.weekly?.pct ?? 0, running });
   }
   if (!ok.length) return { wait: reasons.join("; ") };

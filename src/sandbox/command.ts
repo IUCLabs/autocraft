@@ -1,7 +1,8 @@
 // The bubblewrap command that runs `claude` with read-only file tools on a
 // checkout. Pure: it builds the argument list and touches nothing. The
 // sandbox sees only what claude needs to start, the checkout (read-only), an
-// empty home and the one credentials file of the account used. Network is
+// empty home and the account's credentials: its credentials file, or with a
+// long-lived token only that token (no credentials file, so no refresh token). Network is
 // shared because the API needs it; everything else is a new namespace.
 
 /** Where the checkout appears inside the sandbox: outside the working directory, so claude never loads its instruction files as project memory. */
@@ -28,8 +29,10 @@ export type SandboxSpec = {
   claudeBin: string;
   /** Host directory holding the checkout's files. */
   checkout: string;
-  /** The account's credentials file on the host; the rest of its config directory is not visible. */
-  credentials: string;
+  /** The account's credentials file on the host; the rest of its config directory is not visible. Absent when `oauthToken` is given. */
+  credentials?: string;
+  /** The account's long-lived token; passed as an environment variable instead of mounting credentials. */
+  oauthToken?: string;
   /** Arguments for claude (src/prompts `claudeArgs`). */
   claudeArgs: string[];
   /** The workspace: further read-only checkouts, each mounted at `/repos/<name>`. Present (even empty) means `/repos` exists and `claudeArgs` names it with --add-dir. */
@@ -58,8 +61,8 @@ export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } 
     "--ro-bind", "/etc/ssl", "/etc/ssl", "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
     "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
     "--tmpfs", HOME, "--tmpfs", CONFIG,
-    // Read-only: the sandbox never refreshes the token (src/sandbox/index.ts `tokenNearExpiry` keeps a call from starting on an account whose token is about to expire; it waits for a refresh).
-    "--ro-bind", s.credentials, `${CONFIG}/.credentials.json`,
+    // Read-only: the sandbox never refreshes the token (src/sandbox/index.ts `tokenNearExpiry` keeps a call from starting on an account whose token is about to expire; it waits for a refresh). A long-lived token needs no refresh.
+    ...(s.oauthToken || !s.credentials ? [] : ["--ro-bind", s.credentials, `${CONFIG}/.credentials.json`]),
     ...(s.sessionDir ? ["--bind", s.sessionDir, `${CONFIG}/projects`] : []),
     "--ro-bind", s.claudeBin, CLAUDE_PATH,
     // The working directory is empty and the checkout sits beside it (claude gets it with --add-dir), so no project instructions or settings from the checkout are found.
@@ -70,6 +73,7 @@ export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } 
     ...(s.extraMounts ?? []).flatMap((m) => ["--ro-bind", m.host, m.path]),
     "--chdir", WORK_PATH,
     ...env.flatMap(([k, v]) => ["--setenv", k, v]),
+    ...(s.oauthToken ? ["--setenv", "CLAUDE_CODE_OAUTH_TOKEN", s.oauthToken] : []),
     CLAUDE_PATH, ...s.claudeArgs,
   ];
   return { cmd: BWRAP, args };

@@ -258,6 +258,13 @@ export interface Api {
     /** Sends the code the sign-in page showed. */
     loginCode(id: string, code: string): Promise<ClaudeAccount>;
     loginCancel(id: string): Promise<ClaudeAccount>;
+    /** Starts a request for a long-lived token; the answer's `login.url` is the page to open. */
+    tokenStart(id: string): Promise<ClaudeAccount>;
+    /** Sends the code the token page showed; the token is stored on the server and never returned. */
+    tokenCode(id: string, code: string): Promise<ClaudeAccount>;
+    tokenCancel(id: string): Promise<ClaudeAccount>;
+    /** Deletes the account's long-lived token. */
+    tokenRemove(id: string): Promise<ClaudeAccount>;
     signOut(id: string): Promise<ClaudeAccount>;
     /** Reads sign-in state and plan usage now. */
     refresh(id: string): Promise<ClaudeAccount>;

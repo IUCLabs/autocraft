@@ -1488,12 +1488,15 @@ export type ClaudeAccount = {
   usage: AccountUsage;
   pausedReason: string | null; // e.g. "5-hour use 92 % (pauses at 90 %)"
   auth: AccountAuth;
-  login: AccountLogin | null;  // operators only: the sign-in in progress, or the last one's outcome
+  login: AccountLogin | null;  // operators only: the sign-in or token request in progress, or the last one's outcome
+  token: AccountToken;
 };
+/** The long-lived token of an account (never its value). Dates are ISO; `expiresAt` is about one year after `setAt`. */
+export type AccountToken = { state: "none" | "set" | "rejected"; setAt: string | null; expiresAt: string | null; rejectedAt: string | null };
 /** From `claude auth status` and the credentials file's expiry date; no email. Null fields: not read yet. */
 export type AccountAuth = { loggedIn: boolean | null; method: string | null; plan: string | null; expiresAt: string | null; checkedAt: string | null };
 export type AccountLoginState = "starting" | "waiting" | "checking" | "done" | "failed" | "cancelled";
-export type AccountLogin = { state: AccountLoginState; url: string | null; message: string | null };
+export type AccountLogin = { state: AccountLoginState; url: string | null; message: string | null; kind: "login" | "token" };
 /** Usage levels (%, 1 to 100) at which an account stops taking calls. */
 export type UsagePause = { fiveHour: number; weekly: number };
 /** Whether Jev is in use; `unavailable` says why not (Haiku then does its work) and since when. */

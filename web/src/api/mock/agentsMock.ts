@@ -21,21 +21,22 @@ const STEPS = [
 ];
 
 const AUTH = { loggedIn: true, method: "claude.ai", plan: "max", expiresAt: new Date(NOW + 40 * 24 * HOUR).toISOString(), checkedAt: new Date(NOW - 3 * MIN).toISOString() };
+const NO_TOKEN = { state: "none" as const, setAt: null, expiresAt: null, rejectedAt: null };
 const accounts: ClaudeAccount[] = [
   {
     id: "b", label: "Team account B", enabled: true, maxConcurrent: 4, running: 0,
     usage: { fiveHourPct: 62, fiveHourResetsAt: iso(-(2 * HOUR + 40 * MIN)), weeklyPct: 41, weeklyResetsAt: iso(-(3 * 24 * HOUR + 5 * HOUR)), readAt: iso(2 * MIN) },
-    pausedReason: null, auth: AUTH, login: null,
+    pausedReason: null, auth: AUTH, login: null, token: { state: "set", setAt: iso(3 * 24 * HOUR + 4 * HOUR), expiresAt: iso(-(362 * 24 * HOUR)), rejectedAt: null },
   },
   {
     id: "c", label: "Team account C", enabled: true, maxConcurrent: 3, running: 0,
     usage: { fiveHourPct: 93, fiveHourResetsAt: iso(-(55 * MIN)), weeklyPct: 78, weeklyResetsAt: iso(-(1 * 24 * HOUR + 2 * HOUR)), readAt: iso(1 * MIN) },
-    pausedReason: "5-hour use 93 % (pauses at 80 %)", auth: { ...AUTH, expiresAt: new Date(NOW + 6 * 24 * HOUR).toISOString() }, login: null,
+    pausedReason: "5-hour use 93 % (pauses at 80 %)", auth: { ...AUTH, expiresAt: new Date(NOW + 6 * 24 * HOUR).toISOString() }, login: null, token: { state: "rejected", setAt: iso(40 * 24 * HOUR), expiresAt: iso(-(325 * 24 * HOUR)), rejectedAt: iso(50 * MIN) },
   },
   {
     id: "d", label: "Spare account D", enabled: false, maxConcurrent: 2, running: 0,
     usage: { fiveHourPct: 8, fiveHourResetsAt: iso(-(4 * HOUR)), weeklyPct: 12, weeklyResetsAt: iso(-(5 * 24 * HOUR)), readAt: iso(95 * MIN) },
-    pausedReason: "disabled by an operator", auth: { loggedIn: false, method: null, plan: null, expiresAt: null, checkedAt: iso(3 * MIN) }, login: null,
+    pausedReason: "disabled by an operator", auth: { loggedIn: false, method: null, plan: null, expiresAt: null, checkedAt: iso(3 * MIN) }, login: null, token: NO_TOKEN,
   },
 ];
 
@@ -160,7 +161,7 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
         const a: ClaudeAccount = {
           id: `a${accounts.length + 1}`, label: label.trim(), enabled: false, maxConcurrent: 2, running: 0,
           usage: { fiveHourPct: null, fiveHourResetsAt: null, weeklyPct: null, weeklyResetsAt: null, readAt: null },
-          pausedReason: "disabled by an operator", auth: { loggedIn: null, method: null, plan: null, expiresAt: null, checkedAt: null }, login: null,
+          pausedReason: "disabled by an operator", auth: { loggedIn: null, method: null, plan: null, expiresAt: null, checkedAt: null }, login: null, token: NO_TOKEN,
         };
         accounts.push(a);
         changed();
@@ -168,23 +169,49 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
       },
       async loginStart(id) {
         const a = find(id);
-        a.login = { state: "waiting", url: "https://claude.example/oauth/authorize?state=demo", message: null };
+        a.login = { state: "waiting", url: "https://claude.example/oauth/authorize?state=demo", message: null, kind: "login" };
         changed();
         return wait(a, 200);
       },
       async loginCode(id, code) {
         const a = find(id);
         if (!/^[A-Za-z0-9#_.~+/=-]{1,512}$/.test(code)) throw new Error("the code has letters, digits and # _ . ~ + / = - only");
-        a.login = { state: "done", url: null, message: "signed in" };
+        a.login = { state: "done", url: null, message: "signed in", kind: "login" };
         a.auth = { ...AUTH, checkedAt: iso(0) };
         changed();
         return wait(a, 300);
       },
       async loginCancel(id) {
         const a = find(id);
-        a.login = { state: "cancelled", url: null, message: null };
+        a.login = { state: "cancelled", url: null, message: null, kind: a.login?.kind ?? "login" };
         changed();
         return wait(a, 30);
+      },
+      async tokenStart(id) {
+        const a = find(id);
+        a.login = { state: "waiting", url: "https://claude.example/oauth/authorize?state=token-demo", message: null, kind: "token" };
+        changed();
+        return wait(a, 200);
+      },
+      async tokenCode(id, code) {
+        const a = find(id);
+        if (!/^[A-Za-z0-9#_.~+/=-]{1,512}$/.test(code)) throw new Error("the code has letters, digits and # _ . ~ + / = - only");
+        a.login = { state: "done", url: null, message: "token saved", kind: "token" };
+        a.token = { state: "set", setAt: iso(0), expiresAt: iso(-(365 * 24 * HOUR)), rejectedAt: null };
+        changed();
+        return wait(a, 300);
+      },
+      async tokenCancel(id) {
+        const a = find(id);
+        a.login = { state: "cancelled", url: null, message: null, kind: "token" };
+        changed();
+        return wait(a, 30);
+      },
+      async tokenRemove(id) {
+        const a = find(id);
+        a.token = NO_TOKEN;
+        changed();
+        return wait(a, 60);
       },
       async signOut(id) {
         const a = find(id);
