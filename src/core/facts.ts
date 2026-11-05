@@ -41,7 +41,7 @@ import { postSource } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
 import { scopeAnswers } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
-import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, sizeOf } from "./rules.ts";
+import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf } from "./rules.ts";
 import type { AssignFacts, PrFacts, PrTier } from "./plan.ts";
 import { activeTrips, brokeHeads } from "../push-outcomes.ts";
 
@@ -256,7 +256,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     }
 
     const s = settled(r.repo, r.number);
-    base.label = s.label ?? null;
+    base.label = labelWithScopeAnswer(s.label ?? null, base.scopeAnswer);
     base.needsDecisionFlag = s.flags.includes("needs decision");
     base.labelUnsure = s.status === "settled" && !!s.referee && !s.referee.sure && refereeClosed(s.referee);
     const pm = mergedByPipeline.get(ref);
