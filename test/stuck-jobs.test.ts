@@ -13,7 +13,7 @@ process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", i
 
 const { connect } = await import("../src/db.ts");
 const { enqueue, getJob, jobDetail } = await import("../src/runner/jobs.ts");
-const { Runner, deadlineError } = await import("../src/runner/runner.ts");
+const { Runner, deadlineError, noProgressError } = await import("../src/runner/runner.ts");
 const { ackDeadline, deadlineStops, isDraining, isEnabled, setEnabled } = await import("../src/runner/autopilot.ts");
 const { failureBackoff, DEADLINE_BACKOFF_MS } = await import("../src/runner/autopilot.ts");
 const { STEP_PLANS, stepBoundMin, stepDeadlineMin } = await import("../src/runner/deadlines.ts");
@@ -24,7 +24,7 @@ mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "stuck-jobs-"));
 const dbFile = join(dir, "runner.db");
 const db = connect(dbFile);
-const runner = new Runner({ db, dbFile, logs: join(dir, "logs"), killAfterMs: 2000, log: () => {}, maxMin: () => 0.02, graceMs: 500 });
+const runner = new Runner({ db, dbFile, logs: join(dir, "logs"), killAfterMs: 2000, log: () => {}, maxMin: (s) => (s === "test-other" ? 999 : 0.02), noProgressMin: (s) => (s === "test-other" ? 0.02 : 999), graceMs: 500 });
 after(async () => {
   await runner.stop();
   db.close();
@@ -51,6 +51,12 @@ test("a job past its step's deadline is stopped and failed, and warns until ackn
   }
   ackDeadline(db, "test-sleep", "op");
   assert.deepEqual(deadlineStops(db), []);
+
+  // A job that writes no log line for longer than its limit is stopped the same way, well inside its deadline.
+  const quiet = await enqueue(db, "test-other", { ms: 60_000 }, "boss");
+  for (const end = Date.now() + 20_000; getJob(db, quiet.id).state !== "failed" && Date.now() < end; await new Promise((r) => setTimeout(r, 50))) await runner.tick();
+  assert.equal(getJob(db, quiet.id).error, noProgressError(0.02));
+  assert.deepEqual(deadlineStops(db).map((d) => d.step), ["test-other"]);
 });
 
 test("draining keeps a running job's writes and starts nothing; off blocks the writes", async () => {

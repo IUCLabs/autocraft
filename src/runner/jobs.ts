@@ -12,7 +12,7 @@ export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "c
 /** Error text of jobs ended by a runner stop or restart; the autopilot does not count them as failures. */
 export const RUNNER_STOPPED = "The runner stopped while this job ran; start it again if needed.";
 /** Error of a job the runner stopped for running past its step's deadline; set when the stop is asked, so the job can finish its current item. */
-export const DEADLINE_ERROR = /^stopped: ran past /;
+export const DEADLINE_ERROR = /^stopped: (ran past|no progress for) /;
 export const now = (): string => new Date().toISOString();
 
 export class JobError extends Error {

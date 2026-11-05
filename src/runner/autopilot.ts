@@ -676,7 +676,7 @@ const STOP_WINDOW = 5000;
 /** Jobs the runner stopped for running past their step's limit that nobody has acknowledged and no later job of the step has beaten. */
 export function deadlineStops(db: DatabaseSync): { step: string; jobId: number; error: string; endedAt: string; count: number }[] {
   const floor = Number((db.prepare("SELECT MAX(id) AS m FROM jobs").get() as { m: number | null }).m ?? 0) - STOP_WINDOW;
-  const rows = db.prepare("SELECT step, id, error, ended_at AS endedAt FROM jobs WHERE id > ? AND state = 'failed' AND error LIKE 'stopped: ran past %' ORDER BY id DESC").all(floor) as { step: string; id: number; error: string; endedAt: string }[];
+  const rows = db.prepare("SELECT step, id, error, ended_at AS endedAt FROM jobs WHERE id > ? AND state = 'failed' AND (error LIKE 'stopped: ran past %' OR error LIKE 'stopped: no progress for %') ORDER BY id DESC").all(floor) as { step: string; id: number; error: string; endedAt: string }[];
   const lastDone = db.prepare("SELECT MAX(id) AS m FROM jobs WHERE step = ? AND state = 'done'");
   // The acknowledgement is an audit row, which the header's query refetches on and the planner does not.
   const acked = db.prepare("SELECT MAX(at) AS at FROM audit WHERE action = 'deadline-ack' AND target = ?");

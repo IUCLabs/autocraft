@@ -67,3 +67,15 @@ export function stepDeadlineMin(step: string, items?: number): number {
   const bound = stepBoundMin(step, items);
   return Math.max(stepMaxMin(step), bound === null ? 0 : margin(bound));
 }
+
+/** The longest one model call of `step` can legitimately take, in minutes, or null for a step with no model call in STEP_PLANS. */
+export function longestCallMin(step: string): number | null {
+  const plan = STEP_PLANS[step];
+  return plan ? Math.max(...plan.calls.map(callMin)) : null;
+}
+
+/** Minutes a job of `step` may show no progress (no new job log line): its longest single call plus 10; the registry floor for a step with no model call. */
+export function stepNoProgressMin(step: string): number {
+  const call = longestCallMin(step);
+  return call === null ? stepMaxMin(step) : Math.ceil(call) + 10;
+}

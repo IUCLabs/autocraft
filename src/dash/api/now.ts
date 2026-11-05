@@ -73,7 +73,7 @@ async function healthOf(db: DatabaseSync, hidden: string[], nowMs: number): Prom
 
   if (!state.enabled) add({ id: "pipeline", area: "pipeline", tone: "warn", text: `Pipeline is ${state.draining ? "draining" : "off"}${state.changedBy ? `, switched ${state.draining ? "to drain" : "off"} by ${state.changedBy}` : ""}`, to: "/pipeline", since: state.changedAt });
   for (const d of deadlineStops(db)) {
-    add({ id: `deadline:${d.step}`, area: "jobs", tone: "warn", text: `${stepTitle(d.step)} was stopped for running too long (job ${d.jobId}: ${d.error})${d.count > 1 ? `, ${d.count} times in a row` : ""}`, to: `/pipeline/${d.jobId}`, since: d.endedAt, ackStep: d.step });
+    add({ id: `deadline:${d.step}`, area: "jobs", tone: "warn", text: `${stepTitle(d.step)} was stopped (job ${d.jobId}: ${d.error})${d.count > 1 ? `, ${d.count} times in a row` : ""}`, to: `/pipeline/${d.jobId}`, since: d.endedAt, ackStep: d.step });
   }
   const beat = state.heartbeat ? Date.parse(state.heartbeat) : NaN;
   if (Number.isNaN(beat) || nowMs - beat > RUNNER_STALE_MS) {
