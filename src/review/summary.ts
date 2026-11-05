@@ -46,10 +46,10 @@ export const reviewFact = (r: ReviewText): string => `review: ${r.verdict}: ${r.
 /**
  * Brings the text of open Merge? and Close? decisions in line with the review stored at their head: summary,
  * the Merge? review fact, and the reason of the recommendation (a recommendation without a reason is removed).
- * Writes only what differs, so a second run changes nothing. Returns how many decisions it changed.
+ * Skips decisions the prepare step has written (their summary and pick are the judgement model's). Writes only what differs, so a second run changes nothing. Returns how many decisions it changed.
  */
 export function fillReviewSummaries(db: DatabaseSync, at: string, repo?: string): number {
-  const rows = db.prepare(`SELECT * FROM decisions WHERE kind IN ('merge', 'close') AND answer IS NULL AND number IS NOT NULL
+  const rows = db.prepare(`SELECT * FROM decisions WHERE kind IN ('merge', 'close') AND answer IS NULL AND number IS NOT NULL AND prepared_at IS NULL
     ${repo ? "AND repo = ?" : ""}`).all(...(repo ? [repo] : [])) as DecisionRow[];
   const upd = db.prepare(`UPDATE decisions SET summary = ?, summary_by = ?, summary_at = ?, facts = ?, recommended = ?, recommended_reason = ?, recommended_by = NULL
     WHERE id = ? AND answer IS NULL`);

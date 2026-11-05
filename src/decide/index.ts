@@ -1,6 +1,5 @@
 // Decide stage: open items that need a maintainer's scope call become
-// dashboard decisions, each with a short AI summary and a recommendation
-// from one Opus call.
+// dashboard decisions; the prepare step (prepare.ts) then gives every open decision a summary, a pick and drafted answers.
 //
 // runDecide() is the step the runner registers; `autocraft decide` runs it
 // from a shell. Idempotent: items with a decision or a later stage are
@@ -12,7 +11,8 @@ import { loadItems } from "../classify/run.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
 import { buildDecision } from "./decision.ts";
-import { recommend, recommendIds } from "./recommend.ts";
+import { ask } from "../decisions.ts";
+import { prepare, prepareIds } from "./prepare.ts";
 import { type Candidate, type Reason } from "./select.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { scopeReason } from "../core/decide-item.ts";
@@ -28,17 +28,17 @@ export type DecideParams = {
   run?: string;
   /** Called with the running count of items sent to the model. */
   onSent?: (n: number) => void;
-  /** Read-only checkout of a repo's default branch for the recommendation call, or null to ask without tools. Default: fetched from GitHub. */
-  checkout?: (repo: string) => Promise<string | null>;
-  /** PR diffs for the item block of a conversation the recommendation starts. Default: the diff cache or GitHub. */
+  /** Read-only checkout for the prepare call (a PR's head, else the default branch), or null to ask without tools. Default: fetched from GitHub. */
+  checkout?: (repo: string, number: number, head: string | null) => Promise<string | null>;
+  /** PR diffs for the prepare call and the conversation's item block. Default: the diff cache or GitHub. */
   diff?: (repo: string, number: number, head: string) => Promise<string | null>;
 };
 
-/** Most Opus calls (new decisions plus recommendations for open ones) per run when no limit is given. */
+/** Most new decisions, and most prepare calls, per run when no limit is given. */
 const DEFAULT_LIMIT = 50;
 
-export type RepoCount = { candidates: number; needsDecision: number; scopeDisagreement: number; asked: number; noSummary: number };
-export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record<string, RepoCount>; asked: number; noSummary: number; recommended: number; usageRun: string | null };
+export type RepoCount = { candidates: number; needsDecision: number; scopeDisagreement: number; asked: number };
+export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record<string, RepoCount>; asked: number; prepared: number; usageRun: string | null };
 
 export type Log = (line: string) => void;
 
@@ -60,18 +60,17 @@ export function loadSummaryItems(db: DatabaseSync, refs: { repo: string; number:
 }
 
 function count(byRepo: Record<string, RepoCount>, repo: string): RepoCount {
-  return (byRepo[repo] ??= { candidates: 0, needsDecision: 0, scopeDisagreement: 0, asked: 0, noSummary: 0 });
+  return (byRepo[repo] ??= { candidates: 0, needsDecision: 0, scopeDisagreement: 0, asked: 0 });
 }
 
 export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log: Log = console.log): Promise<DecideResult> {
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
-  // New decisions and recommendations for open ones share one budget.
   const total = params.limit ?? DEFAULT_LIMIT;
   const tracked = new Set(trackedNames(db));
   const untracked = (params.repos ?? []).filter((r) => !tracked.has(r));
   if (untracked.length) throw new Error(`not tracked: ${untracked.join(", ")}`);
   const run = params.run ?? latestRun(db);
-  const result: DecideResult = { run, dryRun: !!params.dryRun, byRepo: {}, asked: 0, noSummary: 0, recommended: 0, usageRun: null };
+  const result: DecideResult = { run, dryRun: !!params.dryRun, byRepo: {}, asked: 0, prepared: 0, usageRun: null };
   const picked: Candidate[] = [];
   if (!run) log("decide: no classification run with Jev verdicts");
   else {
@@ -92,28 +91,31 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
 
   const usageRun = `decide-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
   let sent = 0;
-  const fresh = picked.map((c) => ({ ...buildDecision(db, c) }));
-  // New decisions first, then open ones that never had a model recommendation, within the step's limit.
-  const room = Math.max(0, total - picked.length);
-  const ids = recommendIds(db).slice(0, room);
-  if (fresh.length || ids.length) {
+  // New decisions are asked first, without a model call; the prepare step below gives them (and every other open decision) its summary, pick and drafts.
+  const at = now();
+  const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'needs-decision', ?, 'decide', ?)");
+  for (const c of picked) {
+    const q = buildDecision(db, c);
+    ask(db, [{ ...q, asked_at: at }]);
+    stage.run(c.repo, c.number, at, `scope decision ${q.id}`);
+    count(result.byRepo, c.repo).asked++;
+    jobItem(db, c.repo, c.number, "asked a scope decision", log, q.id);
+  }
+  const ids = prepareIds(db, params.repos).slice(0, total);
+  if (ids.length) {
     result.usageRun = usageRun;
-    const r = await recommend(db, [...fresh, ...ids], {
-      checkout: params.checkout ?? ((repo) => import("../dupes/compare.ts").then((m) => m.baseCheckout(db, repo))),
+    const r = await prepare(db, ids, {
+      checkout: params.checkout ?? (async (repo, number, head) => {
+        if (head) return import("../sandbox/index.ts").then((m) => m.checkoutForPr(repo, number, head, log));
+        return import("../dupes/compare.ts").then((m) => m.baseCheckout(db, repo));
+      }),
       diff: params.diff ?? ((r, n, h) => import("../conversations/run.ts").then((m) => m.githubDiff(r, n, h))),
       usageRun, log, onSent: () => params.onSent?.(++sent),
     });
-    result.recommended = r.stored;
-    const repoOf = new Map(fresh.map((q) => [q.id, q.repo]));
-    const numberOf = new Map(fresh.map((q) => [q.id, q.number]));
-    for (const id of r.asked) {
-      count(result.byRepo, repoOf.get(id)!).asked++;
-      jobItem(db, repoOf.get(id)!, numberOf.get(id)!, "asked a scope decision", log, id);
-    }
-    for (const ref of r.noSummary) count(result.byRepo, ref.slice(0, ref.lastIndexOf("#"))).noSummary++;
+    result.prepared = r.stored;
   }
-  for (const n of Object.values(result.byRepo)) { result.asked += n.asked; result.noSummary += n.noSummary; }
-  log(`decide: asked ${result.asked} decisions; ${result.noSummary} items without a summary; ${result.recommended} recommendations`);
+  for (const n of Object.values(result.byRepo)) result.asked += n.asked;
+  log(`decide: asked ${result.asked} decisions; ${result.prepared} prepared`);
   return result;
 }
 
@@ -133,13 +135,13 @@ function parseArgs(args: string[]): DecideParams {
 
 function table(r: DecideResult): string {
   const rows = Object.entries(r.byRepo).sort(([a], [b]) => a.localeCompare(b));
-  const head = r.dryRun ? "repo\tdecisions\tneeds decision\tscope disagreement" : "repo\tcandidates\tasked\tno summary";
-  return [head, ...rows.map(([repo, n]) => r.dryRun ? `${repo}\t${n.candidates}\t${n.needsDecision}\t${n.scopeDisagreement}` : `${repo}\t${n.candidates}\t${n.asked}\t${n.noSummary}`)].join("\n");
+  const head = r.dryRun ? "repo\tdecisions\tneeds decision\tscope disagreement" : "repo\tcandidates\tasked";
+  return [head, ...rows.map(([repo, n]) => r.dryRun ? `${repo}\t${n.candidates}\t${n.needsDecision}\t${n.scopeDisagreement}` : `${repo}\t${n.candidates}\t${n.asked}`)].join("\n");
 }
 
 export const commands = {
   decide: {
-    summary: `decide [--repo R ...] [--limit N] [--run ID] [--dry-run]: ask scope decisions with AI summaries and recommendations`,
+    summary: `decide [--repo R ...] [--limit N] [--run ID] [--dry-run]: ask scope decisions and prepare every open decision`,
     async run(args: string[]): Promise<void> {
       const r = await runDecide(connect(), parseArgs(args), (l) => console.error(l));
       console.log(table(r));

@@ -14,6 +14,10 @@ import type { Querier } from "../src/mirror.ts";
 import { storeArtifact, tempPath } from "../src/build/artifacts.ts";
 import { getTask } from "../src/build/tasks.ts";
 import { runDecide } from "../src/decide/index.ts";
+import { fillReviewSummaries } from "../src/review/summary.ts";
+import { prepareIds } from "../src/decide/prepare.ts";
+import { preparing } from "../src/decide/prepared.ts";
+import { getDecision } from "../src/decisions.ts";
 import { attemptOf, runFixIssue, runFixIssueCollect, type CollectDeps } from "../src/fixissue/index.ts";
 import { runAct } from "../src/act/index.ts";
 import { runBatches } from "../src/merge/batch.ts";
@@ -354,15 +358,47 @@ describe("close journey", () => {
 });
 
 describe("issue journey", () => {
-  test("a reply without a valid summary asks nothing, and the next run retries", async () => {
+  test("a reply without a valid summary leaves the decision preparing; the retry after the backoff stores summary, pick and an Opus turn", async () => {
     const w = fresh().issue(5, { flags: ["needs decision"] });
-    w.models(() => JSON.stringify({ summary: "too short", recommended: null, reason: "" }));
+    w.models(() => "Pick: take | wanted\ntoo short");
     const r = await runDecide(w.db, {}, quiet);
-    assert.equal(r.asked, 0);
-    assert.equal(r.noSummary, 1);
-    assert.equal(w.rows("SELECT id FROM decisions WHERE kind = 'scope'").length, 0);
-    w.models(() => JSON.stringify({ summary: "It reports a panic on an empty slice. The reference app has no such case.", recommended: null, reason: "" }));
-    assert.equal((await runDecide(w.db, {}, quiet)).asked, 1);
+    assert.equal(r.asked, 1);
+    assert.equal(r.prepared, 0);
+    const [d] = w.rows("SELECT id, prepared_at, recommend_failures FROM decisions WHERE kind = 'scope'");
+    assert.equal(d!.prepared_at, null);
+    assert.equal(d!.recommend_failures, 1);
+    // Within the hour nothing is due; after it the prepare runs again.
+    assert.equal(prepareIds(w.db).length, 0);
+    // A repo with its pipeline off is neither due nor shown as preparing.
+    w.db.prepare("UPDATE decisions SET recommend_failures = NULL, recommend_failed_at = NULL").run();
+    assert.equal(prepareIds(w.db).length, 1);
+    assert.equal(preparing(w.db, getDecision(w.db, String(d!.id))!), true);
+    w.db.prepare("UPDATE tracked_repos SET pipeline = 0").run();
+    assert.equal(prepareIds(w.db).length, 0);
+    assert.equal(preparing(w.db, getDecision(w.db, String(d!.id))!), false);
+    w.db.prepare("UPDATE tracked_repos SET pipeline = 1").run();
+    w.db.prepare("UPDATE decisions SET recommend_failures = 1").run();
+    w.db.prepare("UPDATE decisions SET recommend_failed_at = ?").run(new Date(Date.now() - 2 * 3_600_000).toISOString());
+    w.models(() => "Pick: take | The reference app has this case.\nIt reports a panic on an empty slice. The reference app has no such case, so a fix is wanted.");
+    assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
+    const [p] = w.rows("SELECT recommended, recommended_reason, recommended_by, summary, prepared_at FROM decisions WHERE kind = 'scope'");
+    assert.equal(p!.recommended, "take");
+    assert.match(String(p!.summary), /panic on an empty slice/);
+    assert.ok(p!.prepared_at);
+    assert.equal(w.rows("SELECT 1 FROM conversation_turns WHERE number = 5 AND kind = 'opus'").length, 1);
+    // The review-text refresh leaves a prepared decision alone.
+    w.db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, mode, verdict, sure, reason, summary, model, at) VALUES ('app', 5, 'h', 'final', 'take', 1, 'r', 'review text', 'opus', ?)").run(new Date().toISOString());
+    w.db.prepare("UPDATE decisions SET kind = 'merge', facts = ? WHERE kind = 'scope'").run(JSON.stringify(["head: h"]));
+    fillReviewSummaries(w.db, new Date().toISOString());
+    const [q] = w.rows("SELECT summary, recommended FROM decisions WHERE number = 5");
+    assert.match(String(q!.summary), /panic on an empty slice/);
+    assert.equal(q!.recommended, "take");
+    // An older open decision of the same item is prepared with summary and pick only: no second turn replaces the first one's cards.
+    w.db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, asked_by) SELECT 'older', 'other', repo, number, 'Older?', options, '2000-01-01T00:00:00Z', asked_by FROM decisions WHERE number = 5").run();
+    w.models(() => "Pick: take | still wanted.\nThe older question concerns the same panic on an empty slice and the answer is the same.\n```actions\n[]\n```");
+    assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
+    assert.equal(w.rows("SELECT 1 FROM conversation_turns WHERE number = 5 AND kind = 'opus'").length, 1);
+    assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = 'older' AND prepared_at IS NOT NULL AND recommended = 'take'").length, 1);
   });
 
   test("a classified issue gets a scope decision; once an operator says take, a fix is built, checked and opened as a PR", async () => {
@@ -370,7 +406,7 @@ describe("issue journey", () => {
     const fix = `diff --git a/${lib} b/${lib}\n--- a/${lib}\n+++ b/${lib}\n@@ -1,3 +1,3 @@\n pub fn first(v: &[u8]) -> u8 {\n-    v[0]\n+    v.first().copied().unwrap_or(0)\n }\n`;
     const newTest = `diff --git a/${test} b/${test}\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/${test}\n@@ -0,0 +1,4 @@\n+#[test]\n+fn empty_slice_does_not_panic() {\n+    assert_eq!(app::first(&[]), 0);\n+}\n`;
     const w = fresh().issue(5, { flags: ["needs decision"] }).models((input) => {
-      if (input.includes("<decision>")) return JSON.stringify({ summary: "It reports a panic on an empty slice. The reference app has no such case.", recommended: null, reason: "" });
+      if (input.includes("<decision>")) return "Pick: none\nIt reports a panic on an empty slice. The reference app has no such case.";
     });
     // Classified and flagged: the planner wants a scope decision and holds the fix back until it is answered.
     const item = () => w.plan().items.find((i) => i.facts.number === 5)!.plan;

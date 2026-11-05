@@ -216,14 +216,14 @@ export const STEPS: StepDef[] = [
   {
     name: "decide",
     title: "Ask decisions",
-    description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, each with a summary and a recommended answer (or none) from one Opus call. Open decisions that have no recommendation yet get one too; each Opus call counts as an item.",
+    description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, then prepares every open decision: one call of the judgement model writes the summary, the pick and drafted answers from what stopped the pipeline. Each prepare call counts as an item.",
     stage: runStage("decide"),
     requires: "operator",
     group: "decide",
     models: () => ["opus"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", help: "every tracked repo when empty" },
-      { name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 50, help: "decisions to ask in this job; also the most recommendation calls" },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 50, help: "decisions to ask in this job; also the most prepare calls" },
     ],
     run: async (ctx) => {
       const { runDecide } = await import("../decide/index.ts");
@@ -233,7 +233,7 @@ export const STEPS: StepDef[] = [
         onSent: ctx.handled,
       }, ctx.log);
       if (r.usageRun) ctx.usageRun(r.usageRun);
-      return `asked ${r.asked} decisions; ${r.noSummary} items without a summary; ${r.recommended} recommendations`;
+      return `asked ${r.asked} decisions; ${r.prepared} prepared`;
     },
   },
   {

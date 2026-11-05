@@ -8,6 +8,7 @@ import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCanc
 import { LimitError, pipelineState as rawPipelineState, resetLimitCount, setEnabled, setLimit } from "../../runner/autopilot.ts";
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
+import { JUDGEMENT_MODELS, judgementModel, setJudgementModel } from "../../decide/judgement.ts";
 import { audit } from "../audit.ts";
 import { resumeStage, TripError } from "../../push-outcomes.ts";
 import { HttpError } from "../server/util.ts";
@@ -173,6 +174,19 @@ export async function putState(db: DatabaseSync, req: Req) {
   const was = (await rawPipelineState(db)).enabled;
   setEnabled(db, b.enabled, req.user.login);
   audit(db, req.user.login, "pipeline-switch", "pipeline", { enabled: b.enabled, was });
+  return pipelineState(db, req);
+}
+
+/** The model of the prepare step and the models an operator may pick. */
+export const getJudgementModel = (db: DatabaseSync) => ({ judgementModel: judgementModel(db), judgementModels: [...JUDGEMENT_MODELS] });
+
+export async function putJudgementModel(db: DatabaseSync, req: Req) {
+  requireOperator(req);
+  const m = body(req).model;
+  if (typeof m !== "string" || !(JUDGEMENT_MODELS as readonly string[]).includes(m)) throw new HttpError(400, `model must be one of ${JUDGEMENT_MODELS.join(", ")}`);
+  const was = judgementModel(db);
+  setJudgementModel(db, m);
+  audit(db, req.user.login, "judgement-model", "pipeline", { model: m, was });
   return pipelineState(db, req);
 }
 

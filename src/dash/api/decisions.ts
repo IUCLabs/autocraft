@@ -2,6 +2,7 @@
 // and the thread. Feedback (picks and comments) is display-only: nothing the pipeline
 // reads (src/decisions.ts `actionable`) touches their tables. Feedback reaches a prompt only when an operator includes
 // it in a conversation (`<included>` blocks, src/conversations/store.ts).
+import { preparing } from "../../decide/prepared.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
@@ -223,7 +224,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     opinions,
     exceptions: exceptionsOf(d),
     snoozed: snoozedOf(db, d),
-    preparing: false,
+    preparing: preparing(db, d),
     claim: d.answer ? null : (claimRow ? { login: claimRow.login, since: claimRow.since } : null),
     commentCount,
     related: batch ? [] : relatedOf(db, d.repo!, d.number!),
