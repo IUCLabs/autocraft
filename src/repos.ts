@@ -170,11 +170,14 @@ const sub: Record<string, (args: string[]) => void | Promise<void>> = {
     }
   },
   identity: async (a) => {
-    const usage = "identity <name> [legacy|app]";
-    const name = need(a, usage);
-    if (a[1] === undefined) { console.log(`${name}: ${repoIdentity(connect(), name)}`); return; }
+    const usage = "identity <name | owner/name> [legacy|app]";
+    // Tracked repos are keyed by the bare name; the owner part of a slug is only accepted.
+    const name = splitSlug(need(a, usage)).name;
+    const db = connect();
+    if (!isTracked(db, name)) { console.error(`${name} is not tracked`); process.exit(1); }
+    if (a[1] === undefined) { console.log(`${name}: ${repoIdentity(db, name)}`); return; }
     try {
-      console.log(await setRepoIdentityChecked(connect(), "cli", name, a[1]) ? `${name}: identity ${a[1]}` : `${name}: identity was already ${a[1]}`);
+      console.log(await setRepoIdentityChecked(db, "cli", name, a[1]) ? `${name}: identity ${a[1]}` : `${name}: identity was already ${a[1]}`);
     } catch (e) {
       console.error((e as Error).message);
       process.exit(1);
