@@ -440,7 +440,9 @@ export function pushOwnBranch(w: Writer, g: Grant, git: Pick<Git, "git">, action
 
 async function pushed(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">, action: string, target: string, o: { remote: string; branch: string; sha: string }, lease: string, details: Details, pr: { repo: string; number: number | null }, asBox = false): Promise<ExecResult> {
   if (!asBox) git = laneGit(w, g, git);
-  const r = await recorded(w, idOf(w, g), action, target, { ...details, branch: o.branch, remote: o.remote, commit: o.sha },
+  // A box-account push (an advisory's private fork) is audited as legacy whatever the repo's identity.
+  const identity = asBox ? "legacy" : idOf(w, g);
+  const r = await recorded(w, identity, action, target, { ...details, branch: o.branch, remote: o.remote, commit: o.sha },
     () => git.git(["push", "--quiet", lease, `https://github.com/${o.remote}.git`, `${o.sha}:refs/heads/${o.branch}`]),
     undefined,
     (r) => (r.code === 0 ? null : oneLine(r.stderr) || `exit code ${r.code}`));
@@ -492,7 +494,7 @@ export async function ghAdvisoryCreate(w: Writer, g: Grant, exec: Exec, o: { rep
   covers(g, o.repo);
   const body = json({ summary: o.summary, description: o.description, severity: o.severity, vulnerabilities: [{ package: { ecosystem: "other", name: o.repo }, vulnerable_version_range: null, patched_versions: null }] });
   let ghsa: string | null = null;
-  const result = await recorded(w, idOf(w, g), "security-advisory", o.key, { repo: o.repo },
+  const result = await recorded(w, "legacy", "security-advisory", o.key, { repo: o.repo },
     () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories`, "--input", "-", "--jq", ".ghsa_id"], { input: body }),
     (r) => { ghsa = r.stdout.trim() || null; return { ghsa: ghsa ?? undefined }; },
     (r) => (r.code === 0 && r.stdout.trim() ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
@@ -503,7 +505,7 @@ export async function ghAdvisoryCreate(w: Writer, g: Grant, exec: Exec, o: { rep
 export async function ghAdvisoryFork(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string }): Promise<{ fork: string | null; result: ExecResult }> {
   covers(g, o.repo);
   let fork: string | null = null;
-  const result = await recorded(w, idOf(w, g), "security-advisory-fork", o.key, { repo: o.repo, ghsa: o.ghsa },
+  const result = await recorded(w, "legacy", "security-advisory-fork", o.key, { repo: o.repo, ghsa: o.ghsa },
     () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}/forks`, "--jq", ".full_name"]),
     (r) => { fork = r.stdout.trim() || null; return { fork: fork ?? undefined }; },
     (r) => (r.code === 0 && r.stdout.trim() ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
@@ -518,21 +520,21 @@ export function ghAdvisoryPush(w: Writer, g: Grant, git: Pick<Git, "git">, o: { 
 /** Opens the fix pull request inside the private fork. */
 export function ghAdvisoryPr(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; fork: string; base: string; head: string; title: string; body: string }): Promise<ExecResult> {
   covers(g, o.repo);
-  return viaGh(w, idOf(w, g), exec, "security-advisory-pr", o.key, { repo: o.repo, fork: o.fork },
+  return viaGh(w, "legacy", exec, "security-advisory-pr", o.key, { repo: o.repo, fork: o.fork },
     ["pr", "create", "--repo", o.fork, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], o.body);
 }
 
 /** Publishes the draft advisory; a published advisory deletes its private fork. */
 export function ghAdvisoryPublish(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string }): Promise<ExecResult> {
   covers(g, o.repo);
-  return viaGh(w, idOf(w, g), exec, "security-publish", o.key, { repo: o.repo, ghsa: o.ghsa },
+  return viaGh(w, "legacy", exec, "security-publish", o.key, { repo: o.repo, ghsa: o.ghsa },
     ["api", "-X", "PATCH", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}`, "--input", "-"], json({ state: "published" }));
 }
 
 /** Requests a CVE for the advisory (public repositories only). */
 export function ghAdvisoryCve(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string }): Promise<ExecResult> {
   covers(g, o.repo);
-  return viaGh(w, idOf(w, g), exec, "security-cve", o.key, { repo: o.repo, ghsa: o.ghsa }, ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}/cve`]);
+  return viaGh(w, "legacy", exec, "security-cve", o.key, { repo: o.repo, ghsa: o.ghsa }, ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}/cve`]);
 }
 
 // ---- merges ---------------------------------------------------------------------

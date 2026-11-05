@@ -56,13 +56,25 @@ export function failUserTokens(db: DatabaseSync, login: string, version: number)
 }
 
 /**
- * Deletes the login's row (a removed login, a revoked session or a demotion) and queues its grant for revocation at
- * GitHub; the dashboard's vault does that later and ignores failures. Returns whether a row existed.
+ * Deletes the login's row because its access was removed (a removed login, a role change) and queues its whole GitHub
+ * authorization for revocation; the dashboard's vault does that later. Returns whether a row existed.
+ * Not for ending one session: that is dropSessionTokens.
  */
 export function dropUserTokens(db: DatabaseSync, login: string): boolean {
   const row = db.prepare("DELETE FROM user_tokens WHERE login = ? RETURNING token_enc").get(login) as { token_enc: string } | undefined;
   if (!row) return false;
-  db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at) VALUES (?, ?, ?)").run(login, row.token_enc, new Date().toISOString());
+  db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at, kind) VALUES (?, ?, ?, 'grant')").run(login, row.token_enc, new Date().toISOString());
+  return true;
+}
+
+/**
+ * Ends one session's GitHub App token: queues that token alone for revocation, so the login's other sign-ins keep their
+ * tokens and the authorization stays. The vault's sweep also deletes the login's user_tokens row once the revoke
+ * succeeds, but only when the row holds that same token set (it was written by the same sign-in).
+ */
+export function dropSessionTokens(db: DatabaseSync, login: string, idHash: string, tokenEnc: string | null): boolean {
+  if (!tokenEnc) return false;
+  db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at, kind, aad) VALUES (?, ?, ?, 'token', ?)").run(login, tokenEnc, new Date().toISOString(), idHash);
   return true;
 }
 

@@ -144,6 +144,14 @@ function contextOf(c: string | null): string[] {
 }
 
 export type Viewer = { login: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot> };
+/** The reason a write waits or failed: the stored text (it may carry GitHub's error text) only for operators and maintainers, one fixed sentence per state for everyone else. */
+export function execReasonFor(state: ExecState, stored: string | null, repo: string | null, staff: boolean): string | null {
+  if (staff) return stored;
+  if (state === "waiting-token") return "Waiting for the operator who answered to authorize AutoCraft";
+  if (state === "waiting-permission") return repo ? `Waiting for write access to ${slugOf(repo)}` : "Waiting for write access";
+  if (state === "failed") return "AutoCraft couldn't finish this.";
+  return null;
+}
 export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator: isOperator(req), staff: canSeeInternals(req) });
 /** The viewer with the queue places of the items they may see, computed once for the response. */
 const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)) });
@@ -225,7 +233,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     answer: d.answer,
     answerNote: viewer.staff ? d.answer_note : null,
     answeredBy: d.answered_by, answeredAt: d.answered_at, appliedAt: d.applied_at,
-    exec: d.answer && !d.applied_at && d.exec_state && d.exec_state !== "done" ? { state: d.exec_state as ExecState, reason: d.exec_reason ?? null } : null,
+    exec: d.answer && !d.applied_at && d.exec_state && d.exec_state !== "done" ? { state: d.exec_state as ExecState, reason: execReasonFor(d.exec_state as ExecState, d.exec_reason ?? null, d.repo ?? refs[0]?.repo ?? null, viewer.staff) } : null,
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,
     exceptions: exceptionsOf(d),

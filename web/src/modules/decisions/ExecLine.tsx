@@ -18,7 +18,9 @@ const TONE = { pending: "text-ink/55", "waiting-token": "text-warn", "waiting-pe
 export function ExecLine({ d, canRetry, compact }: { d: Decision; canRetry: boolean; compact?: boolean }) {
   const api = useApi();
   const write = useWrite();
-  const operator = useUser().role === "operator";
+  const me = useUser();
+  // The write runs as the operator who answered, so only they can authorize it.
+  const answerer = me.role === "operator" && d.answeredBy?.toLowerCase() === me.login.toLowerCase();
   const exec = d.exec;
   if (!exec || exec.state === "done") return null;
   const Icon = exec.state === "pending" ? HourglassIcon : WarningCircleIcon;
@@ -29,7 +31,7 @@ export function ExecLine({ d, canRetry, compact }: { d: Decision; canRetry: bool
         <Icon className="shrink-0" />
         <span>{text}</span>
       </span>
-      {operator && exec.state === "waiting-token" && (
+      {answerer && exec.state === "waiting-token" && (
         <a href={authorizeHref()} className="inline-flex items-center gap-1 text-accent-ink hover:underline">
           <KeyIcon />
           Authorize AutoCraft to act as you

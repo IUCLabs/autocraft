@@ -24,7 +24,7 @@ import { repoIdentity, setRepoIdentityChecked } from "../../github/identity.ts";
 import { listAll, RepoError, trackRepoChecked, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
-import { dropUserTokens } from "../server/user-tokens.ts";
+import { dropSessionTokens } from "../server/user-tokens.ts";
 import { endTokens, listAllTokens, revokeAnyToken } from "../mcp/tokens.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -491,13 +491,13 @@ export function revokeSession(db: DatabaseSync, req: Req): AccessOverview {
   requireOperator(req, "manage access");
   const id = body(req).id;
   if (!Number.isInteger(id)) throw new HttpError(400, "id must be a session id");
-  const s = db.prepare("DELETE FROM sessions WHERE rowid = ? RETURNING login, created_at").get(id as number) as
-    { login: string; created_at: string } | undefined;
+  const s = db.prepare("DELETE FROM sessions WHERE rowid = ? RETURNING id_hash, login, created_at, token_enc").get(id as number) as
+    { id_hash: string; login: string; created_at: string; token_enc: string | null } | undefined;
   if (!s) throw new HttpError(404, "that session has already ended");
   // Revoking a session cuts off the login's agent tokens too: they act with that login's permissions.
   const mcpTokens = endTokens(db, s.login);
-  // ...and the GitHub App user token the session signed in with.
-  const userTokens = dropUserTokens(db, s.login);
+  // ...and the GitHub App token this session signed in with, but not the login's authorization: its other sign-ins keep working.
+  const userTokens = dropSessionTokens(db, s.login, s.id_hash, s.token_enc);
   audit(db, req.user.login, "session-revoke", s.login, { created_at: s.created_at, ...(mcpTokens ? { mcpTokens } : {}), ...(userTokens ? { userTokens } : {}) });
   return accessOverview(db, req);
 }
