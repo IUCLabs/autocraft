@@ -144,9 +144,10 @@ const rowOf = (db: DatabaseSync, t: Target): ActionRow | undefined =>
 export const SECURITY_ASKER = "security-scan";
 
 /** Answered-close targets in the repo that the Plans send here: no final (done or skipped) action row yet. */
+/** Item-level targets only: a duplicate group's members are carried out by actOnGroups, which the same act actions schedule. */
 function pending(db: DatabaseSync, repo: string, refs?: string[]): Target[] {
   // A decision that waits for its operator's token or access is not work until it is retried or answered again.
-  return plannedItems(db, "act", { repo, refs }).filter((p) => !p.action.params?.ask && !isWaiting(db, p.action.params?.decisionId as string))
+  return plannedItems(db, "act", { repo, refs }).filter((p) => !p.action.params?.ask && !p.action.params?.group && !isWaiting(db, p.action.params?.decisionId as string))
     .map((p): Target => ({ decisionId: p.action.params!.decisionId as string, kind: p.action.params!.bucket as Target["kind"], repo, number: p.facts.number }));
 }
 

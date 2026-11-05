@@ -20,6 +20,7 @@ import { preparing } from "../src/decide/prepared.ts";
 import { ask, getDecision } from "../src/decisions.ts";
 import { attemptOf, runFixIssue, runFixIssueCollect, type CollectDeps } from "../src/fixissue/index.ts";
 import { runAct } from "../src/act/index.ts";
+import { applyDuplicateAnswers } from "../src/dupes/decide.ts";
 import { runBatches } from "../src/merge/batch.ts";
 import { runMerge } from "../src/merge/index.ts";
 import { prepareOpusInput, type OpusDeps } from "../src/review/opus.ts";
@@ -371,6 +372,22 @@ describe("issue journey", () => {
     w.db.prepare("UPDATE decisions SET prepared_at = NULL").run();
     w.db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 8").run();
     assert.deepEqual(prepareIds(w.db), []);
+  });
+
+  test("an accepted duplicate group lists an act action for the member it closes until the Act step has closed it", async () => {
+    const w = fresh().issue(7).issue(8);
+    ask(w.db, [{ id: "app:dupegroup:7", kind: "duplicate", repo: "app", number: 7, question: "Keep #7 and close #8?", options: [{ key: "accept", label: "Use this answer" }, { key: "distinct", label: "Not duplicates" }] }]);
+    w.db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES ('app:dupegroup:7', 'app', 'model')").run();
+    for (const [n, role, target] of [[7, "keep", null], [8, "close", 7]] as const)
+      w.db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, base_role, base_target) VALUES ('app:dupegroup:7', 'app', ?, 'issue', ?, ?, ?, ?)").run(n, role, target, role, target);
+    w.db.prepare("INSERT INTO dupe_group_texts (decision_id, option, number, step, text) VALUES ('app:dupegroup:7', 'accept', 8, 'close', 'Duplicate of #7.')").run();
+    w.answerDecision("app:dupegroup:7", "accept");
+    const acts = () => w.plan().items.filter((i) => i.plan.actions.some((a) => a.kind === "act")).map((i) => i.facts.number);
+    assert.deepEqual(acts(), []);
+    applyDuplicateAnswers(w.db, T1);
+    assert.deepEqual(acts(), [8]);
+    assert.deepEqual((await runAct(w.db, { repo: "app", dryRun: false }, quiet, w.gh.actDeps())).done, ["app#8"]);
+    assert.deepEqual(acts(), []);
   });
 
   test("a reply without a valid summary leaves the decision preparing; the retry after the backoff stores summary, pick and an Opus turn", async () => {
