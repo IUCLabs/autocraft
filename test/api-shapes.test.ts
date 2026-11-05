@@ -17,10 +17,12 @@ const w = world().repo().pr(1).review(1).verified(1).premerge(1, "clean").pr(2, 
 let base = "";
 let stop: () => Promise<void>;
 const jar = new Map<string, string>();
+let csrf = "";
 
 async function get(path: string): Promise<{ status: number; json: unknown }> {
   const r = await fetch(new URL(path, base), { headers: { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json" }, redirect: "manual" });
   for (const c of r.headers.getSetCookie()) { const [kv] = c.split(";"); jar.set(kv!.slice(0, kv!.indexOf("=")), kv!.slice(kv!.indexOf("=") + 1)); }
+  csrf = r.headers.get("x-csrf-token") ?? csrf;
   const text = await r.text();
   return { status: r.status, json: text ? JSON.parse(text) : undefined };
 }
@@ -84,6 +86,17 @@ describe("dashboard API shapes", () => {
       for (const f of fields) assert.ok(f in obj, `${path} lacks ${f}`);
     });
   }
+
+  test("an approval answers with the one repo it changed", async () => {
+    await get("/api/me");
+    const r = await fetch(new URL("/api/repos/labels-approve", base), {
+      method: "POST", headers: { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), "x-csrf-token": csrf, "content-type": "application/json" }, body: JSON.stringify({ name: "app" }),
+    });
+    const json = (await r.json()) as { name?: string; labels?: { approved: boolean }; error?: string };
+    assert.equal(r.status, 200, String(json.error));
+    assert.equal(json.name, "app");
+    assert.equal(json.labels?.approved, true);
+  });
 
   test("an unknown item answers 404 JSON, not a page", async () => {
     const { status, json } = await get("/api/items/app/999");

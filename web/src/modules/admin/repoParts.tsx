@@ -19,6 +19,8 @@ import { Segmented } from "../../ui/molecules/Segmented";
 export interface Optimistic {
   repo: string;
   patch: (r: TrackedRepo) => Partial<TrackedRepo>;
+  /** Fields the request has already confirmed; a failure later in the same request leaves them as they are. */
+  confirmed?: Set<string>;
 }
 
 export type Write = Omit<ReturnType<typeof useWrite>, "run"> & {
@@ -38,13 +40,17 @@ export function useRepoWrite(): Write {
   const w = useWrite();
   const api = useApi();
   const { run: base } = w;
+  // Presses are sent in order per repo; `pending` counts the presses in flight per repo field.
   const queue = useRef(new Map<string, Promise<unknown>>());
+  const pending = useRef(new Map<string, number>());
   const edit = useCallback(
     (fn: (list: TrackedRepo[]) => TrackedRepo[]) => qc.setQueryData<TrackedRepo[]>(["repo-admin"], (list) => (list ? fn(list) : list)),
     [qc],
   );
   const run = useCallback(
     (key: string, f: () => Promise<unknown>, opt?: Optimistic) => {
+      // Fields of `out` that no newer press is waiting on; a newer press's optimistic state stays until its own answer.
+      const settled = (fields: string[]) => fields.filter((k) => (pending.current.get(`${opt?.repo}:${k}`) ?? 0) <= 1);
       const send = async () => {
         const out = await f();
         if (Array.isArray(out)) {
@@ -52,7 +58,7 @@ export function useRepoWrite(): Write {
           await api.repoOwners().then(setRepoOwners, () => {});
           qc.setQueryData(["repo-admin"], out);
         } else if (isRepo(out)) {
-          const fields = opt ? Object.keys(opt.patch(out)).filter((k) => k in out) : null;
+          const fields = opt ? settled(Object.keys(opt.patch(out)).filter((k) => k in out)) : null;
           edit((l) => l.map((x) => (x.name !== out.name ? x : fields ? { ...x, ...Object.fromEntries(fields.map((k) => [k, out[k as keyof TrackedRepo]])) } : out)));
         }
         return out;
@@ -69,18 +75,26 @@ export function useRepoWrite(): Write {
           return { ...x, ...patch };
         }),
       );
-      const done = (queue.current.get(key) ?? Promise.resolve()).then(() =>
+      const fields = Object.keys(before);
+      const slot = (k: string) => `${opt.repo}:${k}`;
+      for (const k of fields) pending.current.set(slot(k), (pending.current.get(slot(k)) ?? 0) + 1);
+      const qk = `repo:${opt.repo}`;
+      const done = (queue.current.get(qk) ?? Promise.resolve()).then(() =>
         base(key, async () => {
           try {
             return await send();
           } catch (e) {
-            edit((l) => l.map((x) => (x.name === opt.repo ? { ...x, ...before } : x)));
-            void qc.invalidateQueries({ queryKey: ["repo-admin"] });
+            const undo = settled(fields).filter((k) => !opt.confirmed?.has(k));
+            edit((l) => l.map((x) => (x.name === opt.repo ? { ...x, ...Object.fromEntries(undo.map((k) => [k, (before as Record<string, unknown>)[k]])) } : x)));
             throw e;
+          } finally {
+            for (const k of fields) pending.current.set(slot(k), (pending.current.get(slot(k)) ?? 1) - 1);
+            // A refetch that landed while presses were in flight may carry old state; once none is, read the truth again.
+            if (![...pending.current.values()].some((n) => n > 0)) void qc.invalidateQueries({ queryKey: ["repo-admin"] });
           }
         }),
       );
-      queue.current.set(key, done);
+      queue.current.set(qk, done);
       return done;
     },
     [base, qc, api, edit],

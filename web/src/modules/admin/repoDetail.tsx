@@ -65,11 +65,18 @@ function AllWrites({ r, write }: { r: TrackedRepo; write: Write }) {
   return (
     <span className="inline-flex items-center gap-3 text-sm text-ink/60">
       All
-      <Switch on={all} label="All GitHub writes" onChange={(on) => void write.run(key, async () => {
-        const out: Partial<TrackedRepo> = { name: r.name };
-        for (const w of WRITES) if (!!r[w.field]?.approved !== on) Object.assign(out, { [w.field]: ((await w.run(api, r.name, on)) as TrackedRepo)[w.field] });
-        return out;
-      }, { repo: r.name, patch: (cur) => Object.assign({}, ...WRITES.map((w) => approvalPatch(w, on, user.login)(cur))) })} />
+      <Switch on={all} label="All GitHub writes" onChange={(on) => {
+        const todo = WRITES.filter((w) => !!r[w.field]?.approved !== on);
+        const confirmed = new Set<string>();
+        void write.run(key, async () => {
+          const out: Partial<TrackedRepo> = { name: r.name };
+          for (const w of todo) {
+            Object.assign(out, { [w.field]: ((await w.run(api, r.name, on)) as TrackedRepo)[w.field] });
+            confirmed.add(w.field);
+          }
+          return out;
+        }, { repo: r.name, confirmed, patch: (cur) => Object.assign({}, ...todo.map((w) => approvalPatch(w, on, user.login)(cur))) });
+      }} />
     </span>
   );
 }
