@@ -1,6 +1,7 @@
 // Mock Contributors, Repos and Access: deterministic fixtures and the same
 // rules the server applies (operator-only writes, private override notes, the
 // last operator stays).
+import { appIdentityBlocker } from "../../lib/identity";
 import type { Api } from "../client";
 import type {
   AccessEntry,
@@ -101,9 +102,9 @@ function buildRepos(): TrackedRepo[] {
     const prs = Math.round(open * (0.3 + r() * 0.2));
     const toAdd = Math.round(prs * (0.4 + r() * 0.3));
     const labels = { approved: false, approvedBy: null, approvedAt: null, toAdd, skipped: Math.round(prs * 0.2), conflicts: r() < 0.3 ? Math.floor(r() * 4) : 0 };
-    return { name, owner: MOCK_REPO_OWNERS[name] ?? "storytold", tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null }, pushing: { approved: false, approvedBy: null, approvedAt: null }, commenting: { approved: false, approvedBy: null, approvedAt: null }, fixing: { approved: false, approvedBy: null, approvedAt: null }, mainFixing: { approved: false, approvedBy: null, approvedAt: null }, ciApproving: { approved: false, approvedBy: null, approvedAt: null }, optionalChecks: name === "designcraft" ? ["sonarcloud / SonarCloud Scan"] : [], seenChecks: ["gate / test", "gate / lint", "sonarcloud / SonarCloud Scan", "docs / link-check"], pipeline: name === "designcraft" };
+    return { name, owner: MOCK_REPO_OWNERS[name] ?? "storytold", tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null }, pushing: { approved: false, approvedBy: null, approvedAt: null }, commenting: { approved: false, approvedBy: null, approvedAt: null }, fixing: { approved: false, approvedBy: null, approvedAt: null }, mainFixing: { approved: false, approvedBy: null, approvedAt: null }, ciApproving: { approved: false, approvedBy: null, approvedAt: null }, optionalChecks: name === "designcraft" ? ["sonarcloud / SonarCloud Scan"] : [], seenChecks: ["gate / test", "gate / lint", "sonarcloud / SonarCloud Scan", "docs / link-check"], pipeline: name === "designcraft", identity: (name === "filmcraft" ? "app" : "legacy") as "app" | "legacy" };
   });
-  const rest = UNTRACKED.map((name) => ({ name, owner: "storytold", tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false }));
+  const rest = UNTRACKED.map((name) => ({ name, owner: "storytold", tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false, identity: "legacy" as const }));
   return [...tracked, ...rest];
 }
 
@@ -135,6 +136,7 @@ function buildSessions(): Omit<SessionInfo, "current">[] {
 }
 
 let appRemoved = false;
+
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "mcp-token-create", "mcp-token-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
@@ -174,6 +176,21 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
     { id: "l1", org: "storytold", createdBy: me.login, createdAt: new Date(NOW - 2 * H).toISOString(), expiresAt: new Date(NOW + 7 * D - 2 * H).toISOString() },
     { id: "l2", org: "glasswing", createdBy: me.login, createdAt: new Date(NOW - 3 * D).toISOString(), expiresAt: new Date(NOW + 4 * D).toISOString() },
   ];
+  /** The mock app: registered unless removed (?unregistered shows the registration form), installed on storytold for two repos. */
+  const appStatus = (): GithubAppStatus => {
+    const registered = !appRemoved && (typeof location === "undefined" || !location.search.includes("unregistered"));
+    return {
+      configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock",
+      app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
+      links: [...setupLinks],
+      installations: registered ? [
+        { owner: "glasswing", selection: "selected", repos: ["glasswing/photocraft", "glasswing/designcraft", "glasswing/filmcraft"] },
+        { owner: "storytold", selection: "selected", repos: ["storytold/filmcraft", "storytold/designcraft"] },
+      ] : [],
+      error: null,
+    };
+  };
+
   let sessions = buildSessions();
   let agentTokens: AccessToken[] = [
     { id: 11, login: ACCESS[0]!.login, label: "laptop", canAnswer: true, createdAt: new Date(NOW - 2 * 86_400_000).toISOString(), lastUsedAt: new Date(NOW - 3_600_000).toISOString(), expiresAt: new Date(NOW + 5 * 86_400_000).toISOString() },
@@ -283,7 +300,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         if (!/^[A-Za-z0-9._-]{1,100}$/.test(bare)) throw new Error("Not a repo name.");
         let r = repos.find((x) => x.name === bare);
         if (r?.tracked) throw new Error(`${name} is already tracked`);
-        if (!r) repos.push((r = { name: bare, owner, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false }));
+        if (!r) repos.push((r = { name: bare, owner, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false, identity: "legacy" }));
         r.tracked = true;
         r.labels ??= { approved: false, approvedBy: null, approvedAt: null, toAdd: 0, skipped: 0, conflicts: 0 };
         r.merging ??= { approved: false, approvedBy: null, approvedAt: null };
@@ -363,6 +380,17 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         changed();
         return this.list();
       },
+      async setIdentity(name, identity) {
+        requireOperator("set the repo identity");
+        const r = repos.find((x) => x.name === name);
+        if (!r?.tracked) throw new Error(`${name} is not tracked`);
+        if (identity === "app" && appIdentityBlocker(appStatus(), r)) throw new Error(appIdentityBlocker(appStatus(), r)!);
+        if (r.identity === identity) throw new Error(`${name} already uses the ${identity} identity`);
+        log("repo-identity", name, { identity, was: r.identity });
+        r.identity = identity;
+        changed();
+        return this.list();
+      },
       async setPipeline(name, on) {
         requireOperator("switch the pipeline");
         const r = repos.find((x) => x.name === name);
@@ -388,16 +416,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
     githubApp: {
       status() {
         requireOperator("see the GitHub App");
-        // The mock shows the registered app; ?unregistered shows the registration form.
-        const registered = !appRemoved && (typeof location === "undefined" || !location.search.includes("unregistered"));
-        const status: GithubAppStatus = {
-          configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock",
-          app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
-          links: [...setupLinks],
-          installations: registered ? [{ owner: "glasswing", selection: "selected", repos: ["glasswing/photocraft", "glasswing/designcraft", "glasswing/filmcraft"] }] : [],
-          error: null,
-        };
-        return wait(status);
+        return wait(appStatus());
       },
       async createLink(org) {
         requireOperator("create setup links");

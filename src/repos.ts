@@ -5,6 +5,7 @@ import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
 import { execFile } from "node:child_process";
 import { DEFAULT_OWNER, loadOwners, OWNER, splitSlug } from "./owners.ts";
+import { repoIdentity, setRepoIdentityChecked } from "./github/identity.ts";
 import { PilotError, setRepoPipeline } from "./pilot.ts";
 
 export class RepoError extends Error {}
@@ -168,6 +169,17 @@ const sub: Record<string, (args: string[]) => void | Promise<void>> = {
       process.exit(1);
     }
   },
+  identity: async (a) => {
+    const usage = "identity <name> [legacy|app]";
+    const name = need(a, usage);
+    if (a[1] === undefined) { console.log(`${name}: ${repoIdentity(connect(), name)}`); return; }
+    try {
+      console.log(await setRepoIdentityChecked(connect(), "cli", name, a[1]) ? `${name}: identity ${a[1]}` : `${name}: identity was already ${a[1]}`);
+    } catch (e) {
+      console.error((e as Error).message);
+      process.exit(1);
+    }
+  },
   purge: (a) => {
     const name = need(a, "purge <name>");
     try {
@@ -183,7 +195,7 @@ const sub: Record<string, (args: string[]) => void | Promise<void>> = {
 
 export const commands = {
   repos: {
-    summary: "tracked repos: list | track <name> | untrack <name> | pipeline <name> on|off | purge <name>",
+    summary: "tracked repos: list | track <name> | untrack <name> | pipeline <name> on|off | identity <name> [legacy|app] | purge <name>",
     run: (args: string[]) => {
       const f = args[0] ? sub[args[0]] : undefined;
       if (!f) {

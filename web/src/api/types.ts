@@ -822,6 +822,8 @@ export interface TrackedRepo {
   seenChecks: string[];
   /** Whether the pipeline stages run on this repo; off means sync only. False for repos that are not tracked. */
   pipeline: boolean;
+  /** Who makes the pipeline's GitHub writes here: the box account (legacy) or the GitHub App (app). */
+  identity: "legacy" | "app";
 }
 
 export interface AccessEntry {

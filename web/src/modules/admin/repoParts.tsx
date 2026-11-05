@@ -1,4 +1,4 @@
-import { useApi } from "../../api/client";
+import { useApi, useQuery } from "../../api/client";
 import type { TrackedRepo } from "../../api/types";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
@@ -7,11 +7,13 @@ import { useUser } from "../../shell/UserContext";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Switch } from "../../ui/atoms/Switch";
 import { useWrite } from "../../lib/hooks";
+import { appIdentityBlocker } from "../../lib/identity";
 import { setRepoOwners } from "../../lib/links";
 import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Select } from "../../ui/atoms/Select";
 import { Block } from "../../ui/molecules/Block";
+import { Segmented } from "../../ui/molecules/Segmented";
 
 export type Write = ReturnType<typeof useWrite>;
 
@@ -165,6 +167,40 @@ export function PipelineSwitch({ r, write }: { r: TrackedRepo; write: Write }) {
   if (!r.tracked) return null;
   if (!operator) return <PipelineBadge r={r} />;
   return <Switch on={r.pipeline} label={`Pipeline in ${r.name}`} busy={write.busy === key} onChange={(on) => void write.run(key, () => api.repoAdmin.setPipeline(r.name, on))} />;
+}
+
+const IDENTITY_LABEL = { legacy: "Box account", app: "GitHub App" } as const;
+
+/** Who makes the repo's GitHub writes: operators choose, others see it. The app option is offered only where the app can act. */
+export function IdentitySwitch({ r, write }: { r: TrackedRepo; write: Write }) {
+  const operator = useUser().role === "operator";
+  if (!r.tracked) return null;
+  if (!operator) return <Badge tone={r.identity === "app" ? "ok" : undefined}>{IDENTITY_LABEL[r.identity]}</Badge>;
+  return <IdentityChoice r={r} write={write} />;
+}
+
+function IdentityChoice({ r, write }: { r: TrackedRepo; write: Write }) {
+  const api = useApi();
+  const { data } = useQuery("github-app", (a) => a.githubApp.status());
+  const key = `identity:${r.name}`;
+  if (!data) return <Badge>{IDENTITY_LABEL[r.identity]}</Badge>;
+  const why = appIdentityBlocker(data, r);
+  const offered = why === null || r.identity === "app";
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+      {offered ? (
+        <Segmented
+          label={`Identity in ${r.name}`}
+          value={r.identity}
+          options={(["legacy", "app"] as const).map((v) => ({ value: v, label: IDENTITY_LABEL[v] }))}
+          onChange={(v) => { if (v !== r.identity && write.busy !== key) void write.run(key, () => api.repoAdmin.setIdentity(r.name, v)); }}
+        />
+      ) : (
+        <Badge>{IDENTITY_LABEL.legacy}</Badge>
+      )}
+      {why && <span className="text-sm text-ink/60">{why}</span>}
+    </span>
+  );
 }
 
 export const synced = (r: TrackedRepo) =>

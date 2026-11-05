@@ -451,6 +451,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/optional-check-remove", (db, req) => adm.optionalCheck(db, req, false)),
     post("/api/repos/pipeline-on", (db, req) => adm.pipelineSwitch(db, req, true)),
     post("/api/repos/pipeline-off", (db, req) => adm.pipelineSwitch(db, req, false)),
+    post("/api/repos/identity", adm.identitySwitch),
     get("/api/access", adm.accessOverview),
     post("/api/access/add", adm.accessAdd),
     post("/api/access/remove", adm.accessRemove),

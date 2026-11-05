@@ -85,8 +85,12 @@ export class Client {
   resetAt: Date | null = null;
   spent = 0;
 
-  constructor(reserve: number) {
+  /** The child's whole environment when set (the app lane's token); otherwise gh inherits this process's. */
+  private env: Record<string, string> | undefined;
+
+  constructor(reserve: number, env?: Record<string, string>) {
     this.reserve = reserve;
+    this.env = env;
   }
 
   async sleepUntilReset(why: string): Promise<void> {
@@ -98,7 +102,7 @@ export class Client {
 
   private run(query: string, variables: object): { data?: Node; errors: Node[]; text: string; failed: boolean; stderr: string } {
     const p = spawnSync("gh", ["api", "graphql", "--input", "-"], {
-      input: JSON.stringify({ query, variables }), encoding: "utf8", timeout: 120_000, maxBuffer: 256 << 20,
+      input: JSON.stringify({ query, variables }), encoding: "utf8", timeout: 120_000, maxBuffer: 256 << 20, ...(this.env ? { env: this.env } : {}),
     });
     if (p.error) throw new Transient("timeout");
     let json: Node = {};
