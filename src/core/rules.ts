@@ -35,6 +35,16 @@ export const REVIEW_LABELS = ["bugfix", "performance", "missing feature", "small
 /** Scope answers that keep a PR in core (the keys of SCOPE_OPTIONS.take and ["small-extra"]). */
 export const KEEP_IN_CORE: string[] = ["take", "small-extra"];
 
+/**
+ * A PR's type label once a person answered its scope question: the answer settles a label the classifiers left open
+ * (a disagreement between two scope labels has no referee) or chose against it. Other answers leave the label as it is.
+ */
+export function labelWithScopeAnswer(label: string | null, answer: string | null): string | null {
+  if (answer === "small-extra") return "small extra";
+  if (answer === "take") return label && REVIEW_LABELS.includes(label) ? label : "missing feature";
+  return label;
+}
+
 /** Approval attempts per CI run before the PR is left to a person. */
 export const MAX_FAILURES = 2;
 /** A failed head counts as failed after this many pre-merge tries. */
