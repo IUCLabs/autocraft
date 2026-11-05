@@ -30,6 +30,8 @@ test("refuseAuthors", () => {
   assert.equal(refuseAuthors(own, "--squash"), null);
   assert.match(refuseAuthors(other, "--squash")!, /^commits by x@y\.z: use --merge/);
   assert.equal(refuseAuthors(other, "--merge"), null);
+  const bot = { author: { login: "my-app" }, commits: [{ authors: [{ login: null, name: "my-app[bot]" }] }] };
+  assert.equal(refuseAuthors(bot, "--squash"), null);
 });
 
 
