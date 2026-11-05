@@ -5,6 +5,7 @@ import { connect } from "./db.ts";
 import { audit } from "./dash/audit.ts";
 import type { Role } from "./dash/types.ts";
 import { endAnswerTokens, endTokens } from "./dash/mcp/tokens.ts";
+import { dropUserTokens } from "./dash/server/user-tokens.ts";
 
 export type AccessRow = { login: string; role: Role; added_by: string | null; added_at: string | null; note: string | null };
 
@@ -83,7 +84,9 @@ export function removeLogin(db: DatabaseSync, by: string, login: string, opts: A
     const sessions = endSessions(db, login);
     // Re-adding the login later must not bring its old agent tokens back.
     const mcpTokens = endTokens(db, login);
-    audit(db, by, "access-remove", row.login, { role: row.role, sessions, ...(mcpTokens ? { mcpTokens } : {}) });
+    // The GitHub App user token goes with the login; its grant is revoked at GitHub later (the vault's sweep).
+    const userTokens = dropUserTokens(db, row.login);
+    audit(db, by, "access-remove", row.login, { role: row.role, sessions, ...(mcpTokens ? { mcpTokens } : {}), ...(userTokens ? { userTokens } : {}) });
   });
 }
 
@@ -98,7 +101,9 @@ export function setRole(db: DatabaseSync, by: string, login: string, role: Role,
     const sessions = endSessions(db, login);
     // An answering token must not outlive the operator role: it would work again if the login is promoted again.
     const answerTokens = row.role === "operator" ? endAnswerTokens(db, login) : 0;
-    audit(db, by, "access-role", row.login, { from: row.role, to: role, sessions, ...(answerTokens ? { answerTokens } : {}) });
+    // A role change ends the sessions, so the login's GitHub App user token goes too and the next sign-in makes a new one.
+    const userTokens = dropUserTokens(db, row.login);
+    audit(db, by, "access-role", row.login, { from: row.role, to: role, sessions, ...(answerTokens ? { answerTokens } : {}), ...(userTokens ? { userTokens } : {}) });
     return true;
   });
 }

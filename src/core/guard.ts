@@ -18,22 +18,23 @@ import { decideItem } from "./decide-item.ts";
 import { gateRepo, gates, type Approval, type By, type Want } from "./gates.ts";
 import { loadItemFact } from "./issue-facts.ts";
 import type { ActionKind, PrFacts } from "./plan.ts";
+import { identityOfDecision, type Identity } from "../github/identity.ts";
 
 declare const guarded: unique symbol;
 
 /** What the guard let through: the action (its kind is part of the type, so a write takes only the grants made for it), the reviewed head it holds at, and the PR. Only `guard` makes one. */
-export type Guarded<K extends ActionKind = ActionKind> = { readonly [guarded]: true; readonly scope: "pr"; readonly action: Want<K>; readonly head: string; readonly repo: string; readonly number: number };
+export type Guarded<K extends ActionKind = ActionKind> = { readonly [guarded]: true; readonly scope: "pr"; readonly action: Want<K>; readonly head: string; readonly repo: string; readonly number: number; /** Who the write is made as, once its repo leaves the box account (src/github/identity.ts). */ readonly as: Identity };
 /** What the guard let through for an issue or PR in its item steps (labels, act, fix issue). Only `guardItem` makes one. */
-export type GuardedItem = { readonly [guarded]: true; readonly scope: "item"; readonly action: ItemWant; readonly repo: string; readonly number: number };
+export type GuardedItem = { readonly [guarded]: true; readonly scope: "item"; readonly action: ItemWant; readonly repo: string; readonly number: number; readonly as: Identity };
 /** What the guard let through for a repo-level write (a label set, a fork, an issue, a batch branch): the approval and the global switch held. Only `guardRepo` makes one. */
-export type GuardedRepo = { readonly [guarded]: true; readonly scope: "repo"; readonly need: Approval | null; readonly repo: string };
+export type GuardedRepo = { readonly [guarded]: true; readonly scope: "repo"; readonly need: Approval | null; readonly repo: string; readonly as: Identity };
 /** What an item or repo write accepts. A PR grant is left out: no caller writes with one, and a merge or CI grant must not type-check there. */
 export type Grant = GuardedItem | GuardedRepo;
 export type Refused = { refused: string };
 /** An item action to guard: the Plan must hold the kind with the bucket, decision and source given. */
 export type ItemWant = Want & { decisionId?: string; source?: string };
 /** The action to guard: `head` is the head the caller reviewed or worked on. `batch`: a member of a merge batch, which is in its batch state, not ready. */
-export type Ask<K extends ActionKind = ActionKind> = Want<K> & { head: string; batch?: boolean; /** Fix-up: the Plan action's source (review, premerge or carry). */ source?: string };
+export type Ask<K extends ActionKind = ActionKind> = Want<K> & { head: string; batch?: boolean; /** Fix-up: the Plan action's source (review, premerge or carry). */ source?: string; /** The answered decision this merge or push carries out: the answering operator is the identity. */ decisionId?: string };
 export type Ref = { repo: string; number: number };
 
 export type LiveRead = { state: "OPEN" | "MERGED" | "CLOSED"; head: string; draft: boolean; mergeable: string };
@@ -55,7 +56,7 @@ const needsLive = (a: Want): boolean =>
   a.kind === "merge" || (a.kind === "fixup" && a.bucket === "fix") || (a.kind === "conflict" && a.bucket === "merge")
   || (a.kind === "cifix" && (a.bucket === "work" || a.bucket === "collect" || a.bucket === "ask")) || a.kind === "lint";
 
-const make = <K extends ActionKind>(ref: Ref, a: Want<K>, head: string): Guarded<K> => ({ scope: "pr", action: a, head, repo: ref.repo, number: ref.number }) as unknown as Guarded<K>;
+const make = <K extends ActionKind>(ref: Ref, a: Want<K>, head: string, as: Identity = "app"): Guarded<K> => ({ scope: "pr", action: a, head, repo: ref.repo, number: ref.number, as }) as unknown as Guarded<K>;
 
 async function check(db: DatabaseSync, ref: Ref, a: Ask, by: By, live?: Live): Promise<{ f: PrFacts } | Refused> {
   const name = `${ref.repo}#${ref.number}`;
@@ -92,7 +93,7 @@ async function check(db: DatabaseSync, ref: Ref, a: Ask, by: By, live?: Live): P
 export async function guard<K extends ActionKind>(db: DatabaseSync, ref: Ref, action: Ask<K>, by: By, live?: Live): Promise<Guarded<K> | Refused> {
   const r = await check(db, ref, action, by, live);
   if ("refused" in r) return r;
-  return make(ref, action, action.head);
+  return make(ref, action, action.head, identityOfDecision(db, action.decisionId));
 }
 
 /**
@@ -133,7 +134,7 @@ export async function guardItem(db: DatabaseSync, ref: Ref, action: ItemWant, by
     const now = plan.actions.map((x) => x.kind + (typeof x.params?.bucket === "string" ? `:${x.params.bucket}` : "")).join(", ") || "none";
     return { refused: `${name}: the plan no longer has ${action.kind}${action.bucket ? `:${action.bucket}` : ""} (state ${plan.state}, actions: ${now})` };
   }
-  return { scope: "item", action, repo: ref.repo, number: ref.number } as unknown as GuardedItem;
+  return { scope: "item", action, repo: ref.repo, number: ref.number, as: identityOfDecision(db, action.decisionId) } as unknown as GuardedItem;
 }
 
 /** The approvals of a repo and the global switch, read now. */
@@ -146,7 +147,7 @@ export function repoApprovals(db: DatabaseSync, repo: string): Parameters<typeof
 }
 
 /** Lets a repo-level write through (no item behind it): the repo approval it needs (null: none) and, for the pipeline's own writes, the global switch. */
-export function guardRepo(db: DatabaseSync, repo: string, need: Approval | null, by: By): GuardedRepo | Refused {
+export function guardRepo(db: DatabaseSync, repo: string, need: Approval | null, by: By, decisionId?: string): GuardedRepo | Refused {
   const why = gateRepo(repoApprovals(db, repo), need, by, repo);
-  return why ? { refused: `${repo}: ${why}` } : ({ scope: "repo", need, repo } as unknown as GuardedRepo);
+  return why ? { refused: `${repo}: ${why}` } : ({ scope: "repo", need, repo, as: identityOfDecision(db, decisionId) } as unknown as GuardedRepo);
 }

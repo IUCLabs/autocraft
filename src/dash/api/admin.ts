@@ -23,6 +23,7 @@ import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepoChecked, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
+import { dropUserTokens } from "../server/user-tokens.ts";
 import { endTokens, listAllTokens, revokeAnyToken } from "../mcp/tokens.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -477,7 +478,9 @@ export function revokeSession(db: DatabaseSync, req: Req): AccessOverview {
   if (!s) throw new HttpError(404, "that session has already ended");
   // Revoking a session cuts off the login's agent tokens too: they act with that login's permissions.
   const mcpTokens = endTokens(db, s.login);
-  audit(db, req.user.login, "session-revoke", s.login, { created_at: s.created_at, ...(mcpTokens ? { mcpTokens } : {}) });
+  // ...and the GitHub App user token the session signed in with.
+  const userTokens = dropUserTokens(db, s.login);
+  audit(db, req.user.login, "session-revoke", s.login, { created_at: s.created_at, ...(mcpTokens ? { mcpTokens } : {}), ...(userTokens ? { userTokens } : {}) });
   return accessOverview(db, req);
 }
 

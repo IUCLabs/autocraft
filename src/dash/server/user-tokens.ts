@@ -1,8 +1,8 @@
 // user_tokens: the GitHub App user token of each login, written at every
 // sign-in while AUTOCRAFT_LOGIN_APP=github-app. It holds the sealed JSON of
-// the whole token set, like sessions.token_enc, but is keyed by login so a later
-// step can act for a login without a live session. Refresh, revocation and the
-// vault around it come later.
+// the whole token set, like sessions.token_enc, but is keyed by login so the
+// act stage can act for a login without a live session. The vault
+// (src/github/vault.ts) refreshes it.
 import type { DatabaseSync } from "node:sqlite";
 import type { TokenBox } from "./crypto.ts";
 import type { Tokens } from "./provider.ts";
@@ -26,8 +26,63 @@ export function loadUserTokens(db: DatabaseSync, box: TokenBox, login: string): 
   }
 }
 
-/** Stores the pair a refresh returned (GitHub invalidates the old refresh token), if the login has a row. */
-export function updateUserTokens(db: DatabaseSync, box: TokenBox, login: string, tokens: Tokens): void {
-  db.prepare("UPDATE user_tokens SET token_enc = ?, version = version + 1, updated_at = ?, status = 'ok' WHERE login = ?")
-    .run(box.seal(JSON.stringify(tokens), aad(login)), new Date().toISOString(), login);
+type Row = { token_enc: string; version: number; status: string };
+
+/** The login's row with its opened tokens, whatever its status (null tokens: unreadable). */
+export function readUserTokens(db: DatabaseSync, box: TokenBox, login: string): { tokens: Tokens | null; version: number; status: string } | null {
+  const row = db.prepare("SELECT token_enc, version, status FROM user_tokens WHERE login = ?").get(login) as Row | undefined;
+  if (!row) return null;
+  const plain = box.open(row.token_enc, aad(login));
+  let tokens: Tokens | null = null;
+  try {
+    tokens = plain ? (JSON.parse(plain) as Tokens) : null;
+  } catch { /* unreadable: the caller treats it as no token */ }
+  return { tokens, version: Number(row.version), status: row.status };
+}
+
+/**
+ * Stores a refreshed pair if the row still has `version` (compare-and-swap: a refresh in another process or a new
+ * sign-in may have written first). Returns false when it lost.
+ */
+export function swapUserTokens(db: DatabaseSync, box: TokenBox, login: string, version: number, tokens: Tokens): boolean {
+  return Number(db.prepare("UPDATE user_tokens SET token_enc = ?, version = version + 1, updated_at = ?, status = 'ok' WHERE login = ? AND version = ? AND status = 'ok'")
+    .run(box.seal(JSON.stringify(tokens), aad(login)), new Date().toISOString(), login, version).changes) > 0;
+}
+
+/** Marks the row as needing a new sign-in, if it still has `version`. Returns false when it lost. */
+export function failUserTokens(db: DatabaseSync, login: string, version: number): boolean {
+  return Number(db.prepare("UPDATE user_tokens SET status = 'refresh-failed', version = version + 1, updated_at = ? WHERE login = ? AND version = ? AND status = 'ok'")
+    .run(new Date().toISOString(), login, version).changes) > 0;
+}
+
+/**
+ * Deletes the login's row (a removed login, a revoked session or a demotion) and queues its grant for revocation at
+ * GitHub; the dashboard's vault does that later and ignores failures. Returns whether a row existed.
+ */
+export function dropUserTokens(db: DatabaseSync, login: string): boolean {
+  const row = db.prepare("DELETE FROM user_tokens WHERE login = ? RETURNING token_enc").get(login) as { token_enc: string } | undefined;
+  if (!row) return false;
+  db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at) VALUES (?, ?, ?)").run(login, row.token_enc, new Date().toISOString());
+  return true;
+}
+
+export const revocationAad = aad;
+
+/**
+ * A refresh consumed `oldRefresh` (GitHub refresh tokens are single use), so every stored copy of that token set must
+ * take the new pair: the login's user_tokens row and each of its sessions that holds the same refresh token. Copies
+ * with another refresh token come from another sign-in and are left alone. The sessions keep running.
+ */
+export function shareRefresh(db: DatabaseSync, box: TokenBox, login: string, oldRefresh: string, next: Tokens): void {
+  const u = readUserTokens(db, box, login);
+  if (u?.status === "ok" && u.tokens?.refresh === oldRefresh) swapUserTokens(db, box, login, u.version, next);
+  const sessions = db.prepare("SELECT id_hash, token_enc FROM sessions WHERE login = ? AND token_enc IS NOT NULL").all(login) as { id_hash: string; token_enc: string }[];
+  for (const s of sessions) {
+    const plain = box.open(s.token_enc, s.id_hash);
+    let t: Tokens | null = null;
+    try {
+      t = plain ? (JSON.parse(plain) as Tokens) : null;
+    } catch { /* unreadable: leave it */ }
+    if (t?.refresh === oldRefresh) db.prepare("UPDATE sessions SET token_enc = ? WHERE id_hash = ? AND token_enc = ?").run(box.seal(JSON.stringify(next), s.id_hash), s.id_hash, s.token_enc);
+  }
 }

@@ -18,6 +18,7 @@ import { dbReady, serveHealth } from "../../health.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
 import { OrgSetup } from "./github-setup.ts";
+import { Vault } from "../../github/vault.ts";
 import { saveUserTokens } from "./user-tokens.ts";
 import { FakeProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
@@ -144,6 +145,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The org setup link signs in with the OAuth App even when dashboard sign-in uses the GitHub App.
   const setupProvider = opts.provider ?? (config.devAuth ? provider : oauthProviderFor(config));
   const box = new TokenBox(config.secrets.sessionKey);
+  const vault = new Vault(db, box, provider);
   const appDeps = { apiBase: opts.githubApi };
   const routes = compile([...opts.routes, ...githubAppRoutes(config, appDeps)]);
   auditLoginMode(db, config);
@@ -423,6 +425,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         lastPrune = Date.now();
         pruneExpired(db);
         pruneTokens(db);
+        void vault.sweepRevocations().catch(() => {});
       }
       // Dev auth lets anyone who reaches the port sign in as any login, so
       // a request that came through a proxy or under a public name is refused.
