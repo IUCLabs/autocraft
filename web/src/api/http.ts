@@ -130,7 +130,7 @@ export function createHttpApi(): Api {
       get: (repo, number) => get(conv(repo, number)),
       say: (repo, number, text, ask) => post(conv(repo, number, "/messages"), ask === false ? { text, ask: false } : { text }),
       include: (repo, number, source, on) => post(conv(repo, number, "/includes"), { source, on }),
-      editCard: (id, text) => post(`/api/conversation-cards/${id}/edit`, { text }),
+      editCard: (id, edit) => post(`/api/conversation-cards/${id}/edit`, edit),
       doCard: (id, opts) => post(`/api/conversation-cards/${id}/do`, opts?.skip?.length || opts?.note ? { ...(opts.skip?.length && { skip: opts.skip }), ...(opts.note && { note: opts.note }) } : undefined),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
     },
@@ -201,6 +201,7 @@ export function createHttpApi(): Api {
       resetLimit: (step) => post(`/api/pipeline/limits/${encodeURIComponent(step)}/reset`),
       resumeTrip: (stage) => post(`/api/pipeline/trips/${encodeURIComponent(stage)}/resume`),
       setPilot: (items) => put("/api/pipeline/pilot", { items }),
+      setJudgementModel: (model) => put("/api/pipeline/judgement-model", { model }),
     },
     accounts: {
       list: () => get("/api/accounts"),

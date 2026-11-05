@@ -91,6 +91,7 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
   const jobs = seed();
   const steps = structuredClone(STEPS);
   let next = 49;
+  const judgement = { judgementModel: "opus", judgementModels: ["opus", "sonnet"] };
   const flag = { enabled: true, changedBy: "ochre-fox" as string | null, changedAt: iso(300) as string | null };
   const limits: StageLimit[] = [
     ["classify-new", "Classify new and changed items", 2000, 412], ["embed", "Embed items", null, 0], ["decide", "Ask decisions", 100, 100],
@@ -102,7 +103,7 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
   }));
   Object.assign(limits.find((l) => l.step === "fixup")!, { tripped: "fixup", pausedReason: "tripped: 2 of the last 10 fixup pushes broke a required check; an operator resumes it" });
   const pilot: string[] = [];
-  const state = (): PipelineState => ({ ...flag, heartbeat: iso(0), limits, pilot: [...pilot] });
+  const state = (): PipelineState => ({ ...judgement, ...flag, heartbeat: iso(0), limits, pilot: [...pilot] });
   const requireOperator = () => {
     if (me.role !== "operator") throw new Error("only operators run or cancel pipeline steps and change the pipeline switch and limits");
   };
@@ -168,6 +169,13 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
       async setEnabled(enabled) {
         requireOperator();
         Object.assign(flag, { enabled, changedBy: me.login, changedAt: new Date(NOW).toISOString() });
+        changed();
+        return wait(state(), 30);
+      },
+      async setJudgementModel(model) {
+        requireOperator();
+        if (!judgement.judgementModels.includes(model)) throw new Error(`not a judgement model: ${model}`);
+        judgement.judgementModel = model;
         changed();
         return wait(state(), 30);
       },

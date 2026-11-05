@@ -2,6 +2,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from
 import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
+  CardEdit,
   NextPage,
   ReleaseAction,
   DecisionKind,
@@ -116,8 +117,8 @@ export interface Api {
     say(repo: RepoName, number: number, text: string, ask?: boolean): Promise<Conversation>;
     /** Includes (`on`) or excludes a maintainer post for Opus. Removing an include that was already sent is refused. */
     include(repo: RepoName, number: number, source: string, on: boolean): Promise<Conversation>;
-    /** A proposed comment card's text. */
-    editCard(id: number, text: string): Promise<ConversationCard>;
+    /** A proposed card's editable drafts: the comment `text`, the open-issue step's title and body, the fix-up step's instructions. Fields left out stay as they are. */
+    editCard(id: number, edit: CardEdit): Promise<ConversationCard>;
     /** `skip`: indexes into `steps` the operator removed; the rest run in order. `note`: kept with the choice (on the decision it settles, in the thread), never posted to GitHub; at most 500 characters. */
     doCard(id: number, opts?: { skip?: number[]; note?: string }): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
@@ -229,6 +230,8 @@ export interface Api {
     resetLimit(step: string): Promise<PipelineState>;
     /** Clears a stage the circuit breaker paused. */
     resumeTrip(stage: string): Promise<PipelineState>;
+    /** Operator only: the model of the prepare step, one of `judgementModels`. */
+    setJudgementModel(model: string): Promise<PipelineState>;
     /** Limits the whole pipeline to these items ("repo#number"); an empty list clears the pilot. */
     setPilot(items: string[]): Promise<PipelineState>;
   };

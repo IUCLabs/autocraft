@@ -223,6 +223,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     opinions,
     exceptions: exceptionsOf(d),
     snoozed: snoozedOf(db, d),
+    preparing: false,
     claim: d.answer ? null : (claimRow ? { login: claimRow.login, since: claimRow.since } : null),
     commentCount,
     related: batch ? [] : relatedOf(db, d.repo!, d.number!),

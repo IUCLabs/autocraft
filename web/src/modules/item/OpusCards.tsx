@@ -10,7 +10,7 @@ export function ActionCard({ a, operator, className = "ml-7 mt-2" }: { a: Conver
       operator={operator}
       className={className}
       onRun={async (text) => {
-        if (text !== undefined) await api.conversations.editCard(a.id, text);
+        if (text !== undefined) await api.conversations.editCard(a.id, { text });
         await api.conversations.doCard(a.id);
       }}
       onDismiss={() => api.conversations.dismissCard(a.id)}

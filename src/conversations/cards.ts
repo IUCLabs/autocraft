@@ -9,12 +9,29 @@ import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
 import { pilotSql } from "../pilot.ts";
 import { CLOSE_REASONS, COMMENT_MAX, RESOLVE_MAX, type CardKind, type CloseReason } from "./types.ts";
 
-/** One GitHub write of a resolution. The comment step's text is the card's `text`. */
+/**
+ * One step of a resolution. The comment step's text is the card's `text`. Every kind but `review` and `fixup` is one GitHub write
+ * through src/github/write.ts; `review` and `fixup` queue pipeline work. At most one step of each kind per card, except `label`
+ * and `unlabel`. `close`, `duplicate` and `transfer` end the item here and come last.
+ */
 export type Step =
   | { kind: "comment" }
   | { kind: "label"; label: string }
+  | { kind: "unlabel"; label: string }
   | { kind: "close"; reason: CloseReason; pr: boolean }
-  | { kind: "duplicate"; of: number };
+  | { kind: "duplicate"; of: number }
+  | { kind: "reopen" }
+  /** Opens a new issue in `repo` (this repo or another tracked one); title and body are the card's editable `issue` draft. */
+  | { kind: "open_issue"; repo: string; title: string; body: string }
+  /** Issues only: moves the issue to another tracked repo of the same owner. */
+  | { kind: "transfer"; to: string }
+  | { kind: "assign"; login: string }
+  /** PRs only. */
+  | { kind: "request_reviewers"; logins: string[] }
+  /** PRs only: a fresh Opus review of the current head. */
+  | { kind: "review" }
+  /** PRs only: a fix-up run with the operator-editable instructions; `merge` makes it a pre-approved merge (see Preapproval in web/src/api/types.ts). */
+  | { kind: "fixup"; instructions: string; merge: boolean };
 
 /** How a resolution ends the item's open decision. `stamp` identifies the decision state it was written for. */
 export type Settle =
@@ -86,6 +103,14 @@ export function stepLine(st: Step): string {
     case "label": return `Add the label "${st.label}"`;
     case "close": return st.pr ? "Close the PR" : `Close the issue as ${st.reason === "completed" ? "completed" : "not planned"}`;
     case "duplicate": return `Close as a duplicate of #${st.of}`;
+    case "unlabel": return `Remove the label "${st.label}"`;
+    case "reopen": return "Reopen it";
+    case "open_issue": return `Open an issue in ${st.repo}: "${st.title}"`;
+    case "transfer": return `Move the issue to ${st.to}`;
+    case "assign": return `Assign ${st.login}`;
+    case "request_reviewers": return `Ask ${st.logins.join(", ")} for a review`;
+    case "review": return "Review the PR again";
+    case "fixup": return st.merge ? "Fix up the PR as described below, then merge it if the review and CI pass" : "Fix up the PR as described below";
   }
 }
 

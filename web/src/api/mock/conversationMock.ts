@@ -155,10 +155,13 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         changed();
         return snap(c);
       },
-      async editCard(id, text) {
+      async editCard(id, edit) {
         need();
         const k = find(id);
-        Object.assign(k, { text, edited: true });
+        if (edit.text !== undefined) k.text = edit.text;
+        if (edit.issue && k.issue) Object.assign(k.issue, edit.issue);
+        if (edit.instructions !== undefined && k.fixup) k.fixup.instructions = edit.instructions;
+        k.edited = true;
         changed();
         return snap(k);
       },

@@ -737,6 +737,7 @@ function toDecision(s: Seed): Decision {
   return {
     id,
     snoozed: null,
+    preparing: false,
     kind: s.kind,
     repo: s.repo,
     number: s.number,

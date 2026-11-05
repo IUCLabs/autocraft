@@ -91,7 +91,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
     setBusy(true);
     try {
       if (card) {
-        if (text !== undefined && text !== card.text) await api.conversations.editCard(card.id, text);
+        if (text !== undefined && text !== card.text) await api.conversations.editCard(card.id, { text });
         const skip = skipped(card);
         await api.conversations.doCard(card.id, { ...(skip.length ? { skip } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
         onAnswered?.();

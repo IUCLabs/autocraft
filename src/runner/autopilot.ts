@@ -46,6 +46,7 @@ import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
+import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
 import { FAST_FLOOR, fastFirst, fastScoreOf } from "../fasttrack.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
@@ -712,6 +713,7 @@ export async function stageLimits(db: DatabaseSync): Promise<StageLimit[]> {
 
 export async function pipelineState(db: DatabaseSync): Promise<PipelineState> {
   return {
+    judgementModel: judgementModel(db), judgementModels: [...JUDGEMENT_MODELS],
     enabled: isEnabled(db), changedBy: getSetting(db, KEY_BY), changedAt: getSetting(db, KEY_AT),
     heartbeat: getSetting(db, "runner_heartbeat"), limits: await stageLimits(db), pilot: pilotItems(db),
   };
