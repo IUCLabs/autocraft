@@ -98,6 +98,8 @@ export function createMockApi(): Api {
   const settle = (d: Decision, answer: string, note: string | null, adoptedOpinion: Decision["adoptedOpinion"], exceptions: Decision["exceptions"] = []) =>
     Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null, undoable: true, exec: null });
 
+  // A screenshot aid: localStorage.mockSlow (ms) delays decision refetches so the moment after an answer can be captured.
+  const lag = () => Number(globalThis.localStorage?.getItem("mockSlow")) || 10;
   return {
     me: () => wait(me, 10),
     repos: () => wait(REPOS, 10),
@@ -114,9 +116,9 @@ export function createMockApi(): Api {
         const from = filter.after ? sorted.findIndex((d) => d.id === filter.after) + 1 : (filter.offset ?? 0);
         const page = sorted.slice(from, from + (filter.limit ?? 100));
         const more = page.length > 0 && from + page.length < sorted.length;
-        return wait({ decisions: page, total: sorted.length, byKind, oldestAskedAt: sorted[0]?.askedAt ?? null, next: more ? page[page.length - 1]!.id : null });
+        return wait({ decisions: page, total: sorted.length, byKind, oldestAskedAt: sorted[0]?.askedAt ?? null, next: more ? page[page.length - 1]!.id : null }, lag());
       },
-      get: (id) => wait(find(id)),
+      get: (id) => wait(find(id), lag()),
       forItem: (repo, number, kind) => wait(pickDecision(decisions.filter((d) => d.repo === shortRepo(repo) && d.number === number && (!kind || d.kind === kind))) ?? null),
       async answer(id, input) {
         const d = find(id);

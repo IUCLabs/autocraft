@@ -9,7 +9,7 @@ import { AnswerNotice } from "../decisions/AnswerNotice";
 import { AnswerGroup } from "./AnswerGroup";
 import { canComment } from "../../registry/permissions";
 import { FeedbackBox } from "../decisions/FeedbackBox";
-import { useLocal } from "../decisions/state";
+import { useFolded, useLocal } from "../decisions/state";
 import { AnsweredState, canActOn } from "../decisions/DecisionDetail";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { OpusWorking } from "../../ui/molecules/OpusWorking";
@@ -18,11 +18,13 @@ import { decisionPath } from "../../lib/links";
 
 /** Every decision about one item (its own, or a group that lists it), open first. The key is a live topic prefix. */
 export function useItemDecisions(repo: string, number: number) {
-  return useQuery(`item-decisions:${repo}#${number}`, async (api) => {
+  const q = useQuery(`item-decisions:${repo}#${number}`, async (api) => {
     const filter = { repo: [repo], number };
     const [open, snoozed, answered] = await Promise.all([api.decisions.list({ ...filter, status: "open" }), api.decisions.list({ ...filter, status: "snoozed" }), api.decisions.list({ ...filter, status: "answered" })]);
     return [...open.decisions, ...snoozed.decisions, ...answered.decisions];
   });
+  const data = useFolded(q.data);
+  return { ...q, data };
 }
 
 export const THREAD_END_ID = "thread-end";

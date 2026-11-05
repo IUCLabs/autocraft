@@ -1,4 +1,5 @@
 // The expanded body of a trace row. Each kind loads what it shows when the row opens.
+import { useFoldedOne } from "../decisions/state";
 import { Link } from "react-router-dom";
 import { useQuery } from "../../api/client";
 import type { Item, TraceEvent } from "../../api/types";
@@ -59,7 +60,8 @@ export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: Ev
   const detail = useQuery(`item-trace-detail:${repo}#${number}:${e.id}`, (a) => a.itemTraceDetail(repo, number, e.id), { enabled: needsDetail });
   const run = useQuery(`item-trace-run:${e.ref.runId}`, (a) => a.agents.get(e.ref.runId!), { enabled: e.kind === "model-call" && e.ref.runId !== undefined, pollMs: (d) => (d && !d.endedAt ? 3000 : false) });
   const task = useQuery(`item-trace-task:${e.ref.taskId}`, (a) => a.tasks.get(e.ref.taskId!), { enabled: e.ref.taskId !== undefined && e.kind !== "model-call" });
-  const decision = useQuery(`item-trace-decision:${e.ref.decisionId}`, (a) => a.decisions.get(e.ref.decisionId!), { enabled: e.kind === "decision" && !!e.ref.decisionId });
+  const decisionQ = useQuery(`item-trace-decision:${e.ref.decisionId}`, (a) => a.decisions.get(e.ref.decisionId!), { enabled: e.kind === "decision" && !!e.ref.decisionId });
+  const decision = { ...decisionQ, data: useFoldedOne(decisionQ.data) };
 
   if (e.kind === "model-call" && e.call && e.ref.runId !== undefined)
     return <ModelCallDetail call={e.call} runId={e.ref.runId} run={run.data} error={run.error?.message} />;
