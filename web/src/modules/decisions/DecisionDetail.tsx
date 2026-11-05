@@ -17,9 +17,8 @@ import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, RelatedList } from "./parts";
 import { Refs } from "./Refs";
 import { ExecLine } from "./ExecLine";
-import { AnswerNotice } from "./AnswerNotice";
 import { DuplicateGroup, RiskList } from "./Group";
-import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo, type AnswerEntry } from "./state";
+import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo } from "./state";
 import { WorkflowBox } from "./Workflow";
 import { ItemThread } from "../item/ItemThread";
 import { scrollToThreadEnd } from "../item/ItemDecisions";
@@ -37,29 +36,26 @@ export function DetailPanel({ user }: ViewProps) {
   const checked = list.filter((d) => loc.checked.has(d.id));
 
   if (checked.length > 1) return <MultiAnswer ds={checked} user={user} />;
-  const just = loc.justAnswered.find((x) => x.id === id);
   const inList = list.find((x) => x.id === id);
-  const pinned = usePinned(id, !!inList || !!just);
+  const pinned = usePinned(id, !!inList);
   const d = inList ?? pinned ?? null;
   const idx = d ? list.indexOf(d) : -1;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10 text-xs text-ink/55">
-        {data && d && (
+        {data && idx >= 0 && (
           <span className="num">
             {idx + 1} of {list.length}
           </span>
         )}
         <div className="ml-auto flex items-center">
           <IconButton size="sm" icon={CaretLeftIcon} label="Previous (k)" disabled={idx <= 0} onClick={() => go(list[idx - 1])} />
-          <IconButton size="sm" icon={CaretRightIcon} label="Next (j)" disabled={idx < 0 || idx >= list.length - 1} onClick={() => go(list[idx + 1])} />
+          <IconButton size="sm" icon={CaretRightIcon} label="Next (j)" disabled={idx >= list.length - 1} onClick={() => go(list[idx + 1])} />
         </div>
       </div>
-      {just && !d ? (
-        <AnsweredNotice entry={just} />
-      ) : d ? (
-        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1] ?? list[idx - 1], true)} />
+      {d ? (
+        <DecisionBody key={d.id} d={d} user={user} />
       ) : missing && item ? (
         <NoDecision repo={item.repo} number={item.number} />
       ) : (
@@ -99,14 +95,6 @@ function EmptyDetail({ count }: { count: number }) {
           Select a decision. <Kbd keys="j" /> and <Kbd keys="k" /> move through the list.
         </p>
       )}
-    </div>
-  );
-}
-
-function AnsweredNotice({ entry }: { entry: AnswerEntry }) {
-  return (
-    <div className="flex h-full items-center justify-center p-8">
-      <AnswerNotice entry={entry} className="max-w-md rounded-md border border-line px-4" />
     </div>
   );
 }
