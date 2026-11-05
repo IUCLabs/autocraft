@@ -307,6 +307,8 @@ Layout: `<root>/{repo.git,releases,app,data,cache,config}` (`app` is a symlink t
 
 ## Running in a container
 
+To move a running systemd install to a container, follow [migration.md](migration.md).
+
 One image runs the dashboard, the runner and the one-shot sync and backup commands, beside the systemd install (which is unchanged). Sandbox workers are not part of the image; they keep running on their own machines and reach the runner's worker API.
 
 ### Build and run
