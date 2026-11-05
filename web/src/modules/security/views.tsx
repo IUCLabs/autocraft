@@ -29,6 +29,8 @@ const ACTION: Record<FindingAction, { label: string; icon: PhosphorIcon; primary
   publish: { label: "Publish", icon: ShieldCheckIcon, primary: true },
 };
 
+const CALL = { model: "Threat model", area: "Area scan", verify: "Verification" } as const;
+
 function Actions({ f }: { f: Finding }) {
   const api = useApi();
   const write = useWrite();
@@ -82,7 +84,9 @@ export function FindingView({ params }: ViewProps) {
   const n = Number(params.number);
   const role = useUser().role;
   const { data: f, error } = useQuery(`security-finding:${repo}#${n}`, (a) => a.security.finding(repo, n), { enabled: role !== "viewer" });
+  const { data: ov } = useQuery(`security:${repo}`, (a) => a.security.overview(repo), { enabled: role !== "viewer" });
   if (!f) return <Pending error={error} />;
+  const commit = ov?.scans.find((x) => x.id === f.scanId)?.commit ?? null;
   const sev = SEVERITY[f.severity];
   const st = FINDING_STATE[f.state];
   return (
@@ -110,35 +114,41 @@ export function FindingView({ params }: ViewProps) {
         <ul className="flex flex-col">
           {f.refs.map((r) => (
             <li key={`${r.path}:${r.line}`}>
-              <a href={githubBlobUrl(f.repo, f.commitSha, r.path, r.line)} target="_blank" rel="noopener noreferrer" className="code block break-all py-1 text-sm text-accent-ink hover:underline max-md:py-2.5">
-                {r.path}:{r.line}
-              </a>
+              {commit ? (
+                <a href={githubBlobUrl(f.repo, commit, r.path, r.line)} target="_blank" rel="noopener noreferrer" className="code block break-all py-1 text-sm text-accent-ink hover:underline max-md:py-2.5">
+                  {r.path}:{r.line}
+                </a>
+              ) : (
+                <span className="code block break-all py-1 text-sm max-md:py-2.5">{r.path}:{r.line}</span>
+              )}
+              {r.claim && <span className="block text-xs text-ink/60">{r.claim}</span>}
             </li>
           ))}
         </ul>
         <Section title="How untrusted input reaches the code">{f.reach}</Section>
         <Section title="Impact">{f.impact}</Section>
-        <section className="mt-5">
-          <h2 className="mb-1 text-sm font-semibold">Verification</h2>
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <Badge tone={f.verification.kind === "test" ? "ok" : "neutral"}>{f.verification.kind === "test" ? "Test" : "Reasoning"}</Badge>
-            <span>{f.verification.result}</span>
-          </div>
-          {f.verification.notes && <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink/70 [overflow-wrap:anywhere]">{f.verification.notes}</p>}
-        </section>
+        {f.verification && (
+          <section className="mt-5">
+            <h2 className="mb-1 text-sm font-semibold">Verification</h2>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <Badge tone={f.verification.kind === "test" ? "ok" : "neutral"}>{f.verification.kind === "test" ? "Test" : "Reasoning"}</Badge>
+              {f.verification.score !== null && <Badge tone={f.verification.score >= 8 ? "ok" : "warn"}><span className="num">{f.verification.score}/10</span></Badge>}
+              <span>{f.verification.result}</span>
+            </div>
+            {f.verification.notes && <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink/70 [overflow-wrap:anywhere]">{f.verification.notes}</p>}
+            {f.verification.proposedTest && <CodeBlock className="mt-2" title="Proposed test" text={f.verification.proposedTest} lines={12} />}
+          </section>
+        )}
         {f.fixDiff && <CodeBlock className="mt-5" title="Fix" text={f.fixDiff} lines={20} />}
         {f.timeline.length > 0 && (
           <Block className="mt-6" flush title="Model calls">
             <ul>
-              {f.timeline.map((c) => (
-                <li key={c.id} className="border-b border-line px-4 py-2.5 last:border-0">
-                  <div className="break-words text-sm leading-5 [overflow-wrap:anywhere]">{c.summary}</div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink/55">
-                    <span className="text-accent-ink">{c.step}</span>
-                    <span>{c.model}</span>
-                    <TimeAgo iso={c.at} className="num" />
-                    {formatCost(c.costUsd) && <span className="num" title="Model cost">{formatCost(c.costUsd)}</span>}
-                  </div>
+              {f.timeline.map((c, i) => (
+                <li key={i} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-line px-4 py-2.5 text-sm last:border-0">
+                  <span>{CALL[c.kind]}</span>
+                  {!c.ok && <Badge tone="bad">Failed</Badge>}
+                  <TimeAgo iso={c.at} className="num text-xs text-ink/55" />
+                  {formatCost(c.costUsd) && <span className="num ml-auto text-xs text-ink/60" title="Model cost">{formatCost(c.costUsd)}</span>}
                 </li>
               ))}
             </ul>

@@ -175,9 +175,9 @@ export interface Api {
   security: {
     overview(repo: RepoName): Promise<SecurityOverview>;
     startScan(repo: RepoName, capUsd: number | null): Promise<ScanView>;
-    stopScan(id: number): Promise<void>;
+    stopScan(id: number): Promise<ScanView>;
     finding(repo: RepoName, number: number): Promise<FindingView>;
-    act(repo: RepoName, number: number, action: FindingAction, reason?: string): Promise<void>;
+    act(repo: RepoName, number: number, action: FindingAction, reason?: string): Promise<FindingView>;
   };
   /** Operator only: every org repo and whether it is tracked. */
   repoAdmin: {

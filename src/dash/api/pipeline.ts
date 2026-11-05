@@ -15,6 +15,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { blankIfHidden, hiddenRepos, visibleRepos } from "./visible.ts";
 import { canSeeInternals } from "./staff.ts";
+import { SECURITY_REPO, SECURITY_STEP } from "../../security/rules.ts";
 
 // Stages of docs/pipeline.md. A stage with registered steps shows them; the
 // mirror also runs on its own timer.
@@ -83,7 +84,7 @@ function stageState(db: DatabaseSync, steps: string[], syncFailed: boolean | nul
 }
 
 export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOverview> {
-  const all = [...(await loadSteps()).values()];
+  const all = [...(await loadSteps()).values()].filter((s) => s.name !== SECURITY_STEP || canSeeInternals(req));
   const repos = await visibleRepos(db, req);
   const steps: PipelineStep[] = all.map((s) => ({
     name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires, group: s.group,
@@ -102,7 +103,7 @@ export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOver
     };
   });
   const beat = (db.prepare("SELECT value FROM settings WHERE key = ?").get(HEARTBEAT_KEY) as { value: string } | undefined)?.value ?? null;
-  const count = (state: string) => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = ?").get(state) as { n: number }).n;
+  const count = (state: string) => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = ? AND (repo IS NULL OR repo != ? OR ?)").get(state, SECURITY_REPO, canSeeInternals(req) ? 1 : 0) as { n: number }).n;
   return {
     stages, steps,
     runner: { lastSeen: beat, alive: beat !== null && Date.now() - Date.parse(beat) < RUNNER_ALIVE_MS },
@@ -149,6 +150,7 @@ export async function request(db: DatabaseSync, req: Req): Promise<Job> {
   const step = typeof b.step === "string" ? (await loadSteps()).get(b.step) : undefined;
   if (!step) throw new HttpError(400, "no such step");
   requireOperator(req, step);
+  if (step.name === SECURITY_STEP) throw new HttpError(400, "scans are started from the repo page");
   const j = await wrap(() => enqueue(db, step.name, b.params, req.user.login));
   audit(db, req.user.login, "job-request", `job:${j.id}`, { step: j.step, params: j.params });
   return j;

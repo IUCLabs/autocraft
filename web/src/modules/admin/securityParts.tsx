@@ -77,6 +77,7 @@ function ScanRow({ s }: { s: ScanView }) {
       </div>
       <div className="num mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-ink/60">
         <span>{usd(s.costUsd)} spent</span>
+        {s.findingCount > 0 && <span>{s.findingCount} {s.findingCount === 1 ? "finding" : "findings"}</span>}
         {s.estimateUsd !== null && <span>Estimate {usd(s.estimateUsd)}</span>}
         <span>{s.capUsd === null ? "No cap" : `Cap ${usd(s.capUsd)}`}</span>
         <span>
@@ -112,7 +113,7 @@ function FindingRow({ f }: { f: FindingSummary }) {
 export function SecuritySection({ repo }: { repo: string }) {
   const operator = useUser().role === "operator";
   const [open, setOpen] = useState(false);
-  const { data, error } = useQuery(`security:${repo}`, (a) => a.security.overview(repo), { pollMs: (d) => (d?.scans.some((s) => scanActive(s.state)) ? 5000 : false) });
+  const { data, error } = useQuery(`security:${repo}`, (a) => a.security.overview(repo));
   const scan = data?.scans[0];
   const running = !!scan && scanActive(scan.state);
   return (
