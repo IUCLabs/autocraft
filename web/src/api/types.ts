@@ -1806,6 +1806,9 @@ export type TraceEvent = {
   head: string | null;
   actor: TraceActor;
   summary: string;
+  /** GitHub comments and reviews: the text as Markdown, cut at 20,000 characters (`bodyCut` then true). */
+  body?: string;
+  bodyCut?: boolean;
   ref: TraceRef;
   /** A review's summed model-call cost; null when none of its calls has a recorded cost. */
   costUsd?: number | null;
