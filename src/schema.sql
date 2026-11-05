@@ -1516,6 +1516,13 @@ CREATE TABLE IF NOT EXISTS security_findings (
   fix_pr INTEGER,
   ghsa_id TEXT,
   fork TEXT,
+  fix_patch TEXT,                     -- the private diff (fix and regression test); never pushed before Land
+  fix_title TEXT,                     -- plain title and summary of the change, written to go on a pull request
+  fix_summary TEXT,
+  fix_branch TEXT,                    -- the neutral branch name, fix-<slug>
+  fix_files TEXT,                     -- JSON: the files the diff edits and its test file
+  fix_ref TEXT,                       -- local ref of the commit in the bare cache: refs/autocraft/security/<repo>-<n>
+  note TEXT,                          -- one line: why a fix failed, or what an admin must do
   reason TEXT,
   decided_by TEXT,
   duplicate_of INTEGER,               -- a repeat of this earlier finding of the repo (state duplicate)

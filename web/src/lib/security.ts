@@ -40,6 +40,7 @@ export function findingActions(f: Pick<FindingSummary, "state" | "urgent">): Fin
     case "backlog": return ["fix", "dismiss"];
     case "dismissed": return ["reopen"];
     case "ready": return [f.urgent ? "advisory" : "land", "dismiss"];
+    case "awaiting-admin": return ["advisory"];
     case "landed":
     case "advisory": return ["publish"];
     default: return [];

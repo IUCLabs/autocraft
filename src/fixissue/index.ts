@@ -195,8 +195,8 @@ const regressionStep = (crate: string): TaskStep =>
 /** A warm-build key the task store accepts: ^[a-z0-9][a-z0-9-]{0,63}$. */
 
 /** Head: main plus the full patch, the crate's tests and the regression test. Base: main plus the test file, expected to fail. */
-export function tasksFor(r: { repo: string; number: number; main_sha: string; crate: string }, patch: string, testPatch: string): NewTask[] {
-  const common = { step: "fixissue", repo: r.repo, number: r.number, headSha: r.main_sha, baseSha: r.main_sha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: warmKeyOf(r.repo), role: "use" as const } };
+export function tasksFor(r: { repo: string; number: number | null; main_sha: string; crate: string }, patch: string, testPatch: string, step = "fixissue"): NewTask[] {
+  const common = { step, repo: r.repo, number: r.number, headSha: r.main_sha, baseSha: r.main_sha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: warmKeyOf(r.repo), role: "use" as const } };
   const steps = rustPlan({ cargoArgs: ["-p", r.crate] });
   // The head task also formats and lints the files the patch changes; the base task only has to fail the regression test.
   const lint = lintSteps(changedRsFiles(patch));

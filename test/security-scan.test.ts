@@ -198,7 +198,7 @@ describe("security deep scan", () => {
     await boss.post(`/api/security/findings/photocraft/${n}`, { action: "dismiss", reason: "again" }, 409);
     assert.equal((await boss.post<FindingView>(`/api/security/findings/photocraft/${n}`, { action: "reopen" })).state, "new");
     assert.equal((await boss.post<FindingView>(`/api/security/findings/photocraft/${n}`, { action: "backlog" })).state, "backlog");
-    for (const action of ["fix", "land", "advisory", "publish"]) await boss.post(`/api/security/findings/photocraft/${n}`, { action }, 501);
+    for (const action of ["land", "advisory", "publish"]) await boss.post(`/api/security/findings/photocraft/${n}`, { action }, 409);
     const audits = (db.prepare("SELECT action FROM audit WHERE action LIKE 'security-%' ORDER BY rowid").all() as { action: string }[]).map((a) => a.action);
     assert.deepEqual(audits, ["security-scan-start", "security-finding-dismiss", "security-finding-reopen", "security-finding-backlog"]);
   });

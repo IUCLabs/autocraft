@@ -125,3 +125,82 @@ export const survives = (v: VerifyVerdict): boolean => v.verdict === "confirmed"
 
 /** Normalised title for matching the same finding reported twice: lower case words only. */
 export const titleKey = (t: string): string => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+// ---- private fixes and landing -------------------------------------------------
+
+/** Rounds of the fix step: a patch that fails its build, tests, wording check or review is written again with the reasons. */
+export const FIX_ROUNDS = 3;
+/** Added to a finding's number for the agent runs of its fix, so they never share a key with a scan's runs under the same pseudo repo. */
+export const FIX_RUN_BASE = 1_000_000;
+export const FIX_TITLE_MAX = 72;
+export const FIX_SUMMARY_MAX = 600;
+export const PATCH_MARK = "---PATCH---";
+
+/** What the security.fix prompt is rendered from. `previous` is set from the second round on. */
+export type SecurityFixInput = Base & {
+  finding: { title: string; severity: string; refs: { path: string; line: number; claim: string }[]; reach: string; impact: string; area: string };
+  crate: { name: string; dir: string };
+  test_path: string;
+  /** The test Verify proposed; the regression test follows it where it can. */
+  proposed_test: string | null;
+  previous?: { patch: string; failure: string };
+};
+/** What the security.fixcheck prompt is rendered from: the private diff and the finding it fixes. */
+export type SecurityFixCheckInput = Base & {
+  finding: { title: string; refs: { path: string; line: number; claim: string }[]; reach: string; impact: string };
+  patch: string;
+  test_path: string;
+};
+
+/**
+ * Words that give away what a change is for. The text of a quiet pull request (branch, title, body, commit message) and the
+ * lines the patch adds must contain none of them: the problem stays private until the fix is merged.
+ */
+const GIVEAWAY = /\b(?:security|secure|insecure|vulnerab\w*|exploit\w*|attack\w*|attacker\w*|malicious|malware|cve(?:-\d+)*|ghsa\S*|advisory|injection|traversal|overflow\w*|out[- ]of[- ]bounds|rce|untrusted|crafted|sanitiz\w*|zero[- ]day|payload|escalat\w*|bypass\w*)\b/i;
+
+/** The words that cannot appear anywhere in the added lines of the patch: identifiers such as an overflow error are ordinary code, these are not. */
+const GIVEAWAY_CODE = /\b(?:security|vulnerab\w*|exploit\w*|attack\w*|attacker\w*|malicious|cve(?:-\d+)*|ghsa\S*|advisory)\b/i;
+
+/** The first giveaway word in `text`, or null. */
+export const giveaway = (text: string): string | null => GIVEAWAY.exec(text)?.[0] ?? null;
+
+/** The giveaway words in the lines a unified diff adds (file names included), or null when there are none. */
+export function patchGiveaway(patch: string): string | null {
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("+++ ") || line.startsWith("diff --git ") || (line.startsWith("+") && !line.startsWith("+++"))) {
+      const w = GIVEAWAY_CODE.exec(line)?.[0];
+      if (w) return w;
+    }
+  }
+  return null;
+}
+
+/** A reply of the fix call: `TITLE:` line, `SUMMARY:` lines, then the marker line and the diff. Null when a part is missing. */
+export function parseFixReply(text: string): { title: string; summary: string; patch: string } | null {
+  const at = text.indexOf(`\n${PATCH_MARK}`);
+  if (at < 0) return null;
+  const head = text.slice(0, at);
+  const patch = text.slice(at + 1 + PATCH_MARK.length).replace(/^[^\n]*\n/, "").replace(/^```(?:diff)?\n/, "").replace(/\n```\s*$/, "\n");
+  const t = /^TITLE:[ \t]*(.+)$/m.exec(head);
+  const s = /^SUMMARY:[ \t]*([\s\S]*)$/m.exec(head);
+  const title = t?.[1]?.replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "").slice(0, FIX_TITLE_MAX) ?? "";
+  const summary = s?.[1]?.replace(/[ \t]+\n/g, "\n").trim().slice(0, FIX_SUMMARY_MAX) ?? "";
+  if (!title || !summary || !patch.startsWith("diff --git ")) return null;
+  return { title, summary, patch };
+}
+
+/** Why a title and summary cannot go on a quiet pull request, or null. */
+export function quietProblem(title: string, summary: string): string | null {
+  const w = giveaway(title) ?? giveaway(summary);
+  return w ? `the title or summary says "${w}"; describe only what the code does now` : null;
+}
+
+/** `fix-<slug>` from the plain title; the number keeps two fixes with one title apart. */
+export function fixBranch(title: string, n: number): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
+  return `fix-${slug || "change"}-${n}`;
+}
+
+/** The body of the quiet pull request: only the code change. */
+export const landBody = (summary: string, files: string[], testPath: string): string =>
+  `${summary}\n\nThe change is in ${files.map((f) => `\`${f}\``).join(", ")}. The test \`${testPath}\` fails without the change and passes with it.\n`;

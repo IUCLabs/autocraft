@@ -1,5 +1,6 @@
 // Rows of the security deep scan and their views for the API (web/src/api/types.ts).
 import type { DatabaseSync } from "node:sqlite";
+import { slugOf } from "../owners.ts";
 import type { FindingCall, FindingRef, FindingSeverity, FindingState, FindingSummary, FindingVerification, FindingView, ScanState, ScanView, SecurityOverview } from "../../web/src/api/types.ts";
 
 export const ACTIVE_STATES: ScanState[] = ["modeling", "scanning", "verifying"];
@@ -53,9 +54,9 @@ const parse = <T>(s: string | null, fallback: T): T => {
   try { return s ? JSON.parse(s) as T : fallback; } catch { return fallback; }
 };
 
-type FindingRow = {
+export type FindingRow = {
   repo: string; number: number; scan_id: number; area: string; title: string; severity: FindingSeverity; urgent: number; state: FindingState; refs: string;
-  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string;
+  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; fork: string | null; fix_patch: string | null; fix_title: string | null; fix_summary: string | null; fix_branch: string | null; fix_files: string | null; fix_ref: string | null; note: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string;
 };
 
 export const findingKey = (repo: string, n: number): string => `${repo}:finding:${n}`;
@@ -67,8 +68,23 @@ const summary = (r: FindingRow): FindingSummary => ({
 
 const SEVERITY_ORDER = "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END";
 
+/**
+ * A finding that is `fixing`, or `landing` without a pull request, while no step job of it is queued or running (the job was
+ * killed or cancelled) goes back to where an operator can act again.
+ */
+export function reconcileFindings(db: DatabaseSync, repo: string): void {
+  const grace = new Date(Date.now() - 60_000).toISOString();
+  const rows = db.prepare(`SELECT number, state FROM security_findings WHERE repo = ? AND updated_at < ? AND (state = 'fixing' OR (state = 'landing' AND fix_pr IS NULL))
+    AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.step IN ('security-fix', 'security-land', 'security-advisory') AND j.state IN ('queued', 'running')
+      AND json_extract(j.params, '$.repo') = security_findings.repo AND json_extract(j.params, '$.number') = security_findings.number)`).all(repo, grace) as { number: number; state: FindingState }[];
+  for (const r of rows) {
+    advance(db, repo, r.number, [r.state], r.state === "fixing" ? "new" : "ready", { note: "The job ended before it finished. Try again." });
+  }
+}
+
 export function overview(db: DatabaseSync, repo: string): SecurityOverview {
   reconcileScans(db, repo);
+  reconcileFindings(db, repo);
   const scans = (db.prepare("SELECT * FROM security_scans WHERE repo = ? ORDER BY id DESC LIMIT 20").all(repo) as ScanRow[]).map((r) => toScan(db, r));
   const findings = (db.prepare(`SELECT * FROM security_findings WHERE repo = ? AND state NOT IN (${HIDDEN}) ORDER BY ${SEVERITY_ORDER}, number LIMIT 500`).all(repo) as FindingRow[]).map(summary);
   return { scans, findings };
@@ -80,7 +96,7 @@ export const findingRow = (db: DatabaseSync, repo: string, n: number): FindingRo
 export function toFinding(db: DatabaseSync, r: FindingRow): FindingView {
   const area = db.prepare("SELECT idx FROM security_areas WHERE scan_id = ? AND name = ?").get(r.scan_id, r.area) as { idx: number } | undefined;
   const calls = db.prepare(`SELECT kind, started_at, ended_at, ok, cost_usd FROM security_calls
-    WHERE scan_id = ? AND (kind = 'model' OR (kind = 'area' AND area_idx = ?) OR (kind = 'verify' AND finding_number = ?)) ORDER BY id`).all(r.scan_id, area?.idx ?? -1, r.number) as
+    WHERE scan_id = ? AND (kind = 'model' OR (kind = 'area' AND area_idx = ?) OR (kind IN ('verify', 'fix', 'review') AND finding_number = ?)) ORDER BY id`).all(r.scan_id, area?.idx ?? -1, r.number) as
     { kind: FindingCall["kind"]; started_at: string; ended_at: string | null; ok: number; cost_usd: number | null }[];
   const repeats = db.prepare("SELECT created_at FROM security_findings WHERE repo = ? AND duplicate_of = ? ORDER BY created_at").all(r.repo, r.number) as { created_at: string }[];
   const timeline: FindingCall[] = [
@@ -89,14 +105,16 @@ export function toFinding(db: DatabaseSync, r: FindingRow): FindingView {
   ].sort((a, b) => a.at.localeCompare(b.at));
   return {
     ...summary(r), refs: parse<FindingRef[]>(r.refs, []), reach: r.reach, impact: r.impact, verification: parse<FindingVerification | null>(r.verification, null),
-    fixDiff: null, fixPr: r.fix_pr, ghsaId: r.ghsa_id, reason: r.reason, decidedBy: r.decided_by,
+    fixDiff: r.fix_patch, fixPr: r.fix_pr, fixPrUrl: r.fix_pr === null ? null : `https://github.com/${r.fork ?? slugOf(r.repo)}/pull/${r.fix_pr}`,
+    ghsaId: r.ghsa_id, advisoryUrl: r.ghsa_id ? `https://github.com/${slugOf(r.repo)}/security/advisories/${r.ghsa_id}` : null, note: r.note,
+    reason: r.reason, decidedBy: r.decided_by,
     timeline,
   };
 }
 
 /** The states a finding moves to by each operator action, and from which states. */
 export const TRANSITIONS: Record<"dismiss" | "backlog" | "reopen", { from: FindingState[]; to: FindingState }> = {
-  dismiss: { from: ["new", "backlog"], to: "dismissed" },
+  dismiss: { from: ["new", "backlog", "ready"], to: "dismissed" },
   backlog: { from: ["new", "dismissed"], to: "backlog" },
   reopen: { from: ["dismissed", "backlog"], to: "new" },
 };
@@ -107,4 +125,25 @@ export function moveFinding(db: DatabaseSync, repo: string, n: number, action: k
   const r = db.prepare(`UPDATE security_findings SET state = ?, reason = ?, decided_by = ?, updated_at = ? WHERE repo = ? AND number = ? AND state IN (${marks})`)
     .run(t.to, action === "dismiss" ? reason : null, by, now(), repo, n, ...t.from);
   return r.changes ? t.to : null;
+}
+
+/**
+ * Moves a finding from one of the states `from` to `to` and sets more columns in the same statement. Returns false when the
+ * finding is in none of them, so two requests cannot both start the same step.
+ */
+export function advance(db: DatabaseSync, repo: string, n: number, from: FindingState[], to: FindingState, set: Record<string, string | number | null> = {}, by?: string): boolean {
+  const cols = Object.keys(set);
+  const marks = from.map(() => "?").join(", ");
+  const r = db.prepare(`UPDATE security_findings SET state = ?, updated_at = ?${by ? ", decided_by = ?" : ""}${cols.map((c) => `, ${c} = ?`).join("")} WHERE repo = ? AND number = ? AND state IN (${marks})`)
+    .run(to, now(), ...(by ? [by] : []), ...cols.map((c) => set[c]!), repo, n, ...from);
+  return r.changes > 0;
+}
+
+/** The finding's row whatever its state, for the steps that work on it. */
+export const rawFinding = (db: DatabaseSync, repo: string, n: number): FindingRow | undefined =>
+  db.prepare("SELECT * FROM security_findings WHERE repo = ? AND number = ?").get(repo, n) as FindingRow | undefined;
+
+/** Records one model call of a finding's fix in its timeline and returns nothing; the cost may be unknown. */
+export function recordFixCall(db: DatabaseSync, scanId: number, n: number, kind: "fix" | "review", startedAt: string, ok: boolean, costUsd: number | null): void {
+  db.prepare("INSERT INTO security_calls (scan_id, kind, finding_number, started_at, ended_at, ok, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)").run(scanId, kind, n, startedAt, now(), ok ? 1 : 0, costUsd);
 }

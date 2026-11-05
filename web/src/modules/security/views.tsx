@@ -29,7 +29,7 @@ const ACTION: Record<FindingAction, { label: string; icon: PhosphorIcon; primary
   publish: { label: "Publish", icon: ShieldCheckIcon, primary: true },
 };
 
-const CALL = { model: "Threat model", area: "Area scan", verify: "Verification", duplicate: "Found again" } as const;
+const CALL = { model: "Threat model", area: "Area scan", verify: "Verification", fix: "Fix", review: "Fix review", duplicate: "Found again" } as const;
 
 function Actions({ f }: { f: Finding }) {
   const api = useApi();
@@ -43,7 +43,8 @@ function Actions({ f }: { f: Finding }) {
     <div className="mt-4">
       <div className="flex flex-wrap gap-2">
         {actions.map((a) => {
-          const { label, icon, primary } = ACTION[a];
+          const { icon, primary } = ACTION[a];
+          const label = a === "advisory" && f.state === "awaiting-admin" ? "Try again" : ACTION[a].label;
           return (
             <Button key={a} icon={icon} variant={primary ? "primary" : "secondary"} loading={write.busy === a} disabled={!!write.busy} className="max-md:h-11 max-md:flex-1" onClick={() => (a === "dismiss" ? setDismissing(!dismissing) : void run(a))}>
               {label}
@@ -105,9 +106,10 @@ export function FindingView({ params }: ViewProps) {
           <span>
             Found <TimeAgo iso={f.createdAt} />
           </span>
-          {f.fixPr && <span className="code">PR {f.fixPr}</span>}
-          {f.ghsaId && <span className="code">{f.ghsaId}</span>}
+          {f.fixPr && (f.fixPrUrl ? <a href={f.fixPrUrl} target="_blank" rel="noopener noreferrer" className="code text-accent-ink hover:underline max-md:py-2">PR {f.fixPr}</a> : <span className="code">PR {f.fixPr}</span>)}
+          {f.ghsaId && (f.advisoryUrl ? <a href={f.advisoryUrl} target="_blank" rel="noopener noreferrer" className="code text-accent-ink hover:underline max-md:py-2">{f.ghsaId}</a> : <span className="code">{f.ghsaId}</span>)}
         </div>
+        {f.note && <p className="mt-3 text-sm text-ink/70">{f.note}</p>}
         {f.reason && <p className="mt-3 text-sm text-ink/70">{f.decidedBy}: {f.reason}</p>}
         <Actions f={f} />
         <h2 className="mb-1 mt-5 text-sm font-semibold">Code</h2>

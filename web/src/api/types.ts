@@ -2065,7 +2065,7 @@ export interface FindingSummary {
 export interface FindingRef { path: string; line: number; /** What the line shows; empty when the model gave none. */ claim: string }
 export interface FindingVerification { kind: "test" | "reasoning"; result: string; notes: string; /** Verify score, 1 to 10; null for a finding that was not verified. */ score: number | null; /** A failing test the model proposed; the scan does not run it. */ proposedTest: string | null }
 /** One event of the finding's scan that concerns it: the threat model, its area's scan, its verification (model calls, with cost), or a later scan that found it again (`duplicate`, no cost). */
-export interface FindingCall { kind: "model" | "area" | "verify" | "duplicate"; at: string; endedAt: string | null; ok: boolean; costUsd: number | null }
+export interface FindingCall { kind: "model" | "area" | "verify" | "fix" | "review" | "duplicate"; at: string; endedAt: string | null; ok: boolean; costUsd: number | null }
 
 export interface FindingView extends FindingSummary {
   refs: FindingRef[];
@@ -2075,7 +2075,13 @@ export interface FindingView extends FindingSummary {
   /** The unified diff of the private fix, once there is one. */
   fixDiff: string | null;
   fixPr: number | null;
+  /** Link to the fix pull request: the public one for a quiet landing, the one inside the advisory's private fork for the advisory route. */
+  fixPrUrl: string | null;
   ghsaId: string | null;
+  /** Link to the draft or published advisory. */
+  advisoryUrl: string | null;
+  /** One line: why the last fix attempt failed, or what a repository admin must do. */
+  note: string | null;
   /** The reason given when dismissing. */
   reason: string | null;
   decidedBy: string | null;
