@@ -14,10 +14,11 @@ import { AUDIT_ACTIONS, operatorOnly } from "./admin.ts";
 import { detailOf } from "./github-detail.ts";
 import { canSeeInternals } from "./staff.ts";
 import { hiddenRepos, needVisible } from "./visible.ts";
+import { ownLogins } from "../../github/identity.ts";
 
 export type Ev = TraceEvent & { detail?: Record<string, unknown> };
 /** `staff`: operators and maintainers; `hidden`: repos the viewer may not see, whose runs are left out like getRun does. */
-type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: string; staff: boolean; /** A quiet pull request seen by a viewer: model output stays out of the trace. */ veiled: boolean; operator: boolean; hidden: string[] };
+type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: Set<string>; box: string; staff: boolean; /** A quiet pull request seen by a viewer: model output stays out of the trace. */ veiled: boolean; operator: boolean; hidden: string[] };
 type Source = { kinds: TraceKind[]; run: (c: Ctx) => Ev[] };
 
 export const TRACE_PAGE_DEFAULT = 100, TRACE_PAGE_MAX = 500;
@@ -49,8 +50,8 @@ export const closedEvent = (it: ItemRow): Ev => ({ id: "gh:closed", kind: "githu
 /** Longest comment text a trace event carries. */
 export const TRACE_BODY_MAX = 20_000;
 /** `body`, when given, is the stored text (the item trace selects it; the activity feed does not, to keep its pages light). */
-export const commentEvent = (c: { id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number; body?: string | null; cut?: number }, own: string): Ev => {
-  const ours = own !== "" && c.author === own;
+export const commentEvent = (c: { id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number; body?: string | null; cut?: number }, own: Set<string>): Ev => {
+  const ours = !!c.author && own.has(c.author);
   const what = c.kind === "review" ? `review (${(c.review_state ?? "commented").toLowerCase().replace("_", " ")})` : "comment";
   return {
     id: `comment:${c.id}`, kind: "github", at: c.created_at, head: c.commit_oid, actor: ours ? step("AutoCraft") : person(c.author),
@@ -58,8 +59,8 @@ export const commentEvent = (c: { id: string; kind: string | null; author: strin
     ...(c.body && { body: c.body, ...(c.cut && { bodyCut: true }) }),
   };
 };
-export const activityEvent = (a: { id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }, own: string): Ev => {
-  const ours = own !== "" && a.actor === own;
+export const activityEvent = (a: { id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }, own: Set<string>): Ev => {
+  const ours = !!a.actor && own.has(a.actor);
   const summary = a.kind === "force-push" ? `Force-pushed ${(a.before_oid ?? "").slice(0, 7)} → ${(a.after_oid ?? "").slice(0, 7)}` : `${a.kind === "labeled" ? "Added" : "Removed"} label ${a.label ?? ""}`;
   return { id: `activity:${a.id}`, kind: "github", at: a.at, head: a.kind === "force-push" ? a.after_oid : null, actor: ours ? step("AutoCraft") : person(a.actor), summary, ref: a.after_oid ? { head: a.after_oid } : {} };
 };
@@ -80,7 +81,7 @@ const github: Source = {
     }
     for (const c of rows<{ oid: string; committed_at: string; author: string | null }>(db, "SELECT oid, MIN(committed_at, COALESCE(first_seen_at, committed_at)) AS committed_at, author FROM pr_commits WHERE repo = ? AND number = ?", repo, n)) {
       // Our own commits are shown by their audit rows.
-      if (own !== "" && c.author === own) continue;
+      if (c.author && own.has(c.author)) continue;
       out.push({ id: `commit:${c.oid}`, kind: "github", at: c.committed_at, head: c.oid, actor: person(c.author), summary: `Pushed commit ${c.oid.slice(0, 7)}`, ref: { head: c.oid } });
     }
     for (const a of rows<{ id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }>(db,
@@ -407,7 +408,7 @@ function veilHeader(h: ItemTraceHeader): ItemTraceHeader {
   };
 }
 
-function headerOf({ db, repo, n, own, hidden }: Ctx): ItemTraceHeader {
+function headerOf({ db, repo, n, box, hidden }: Ctx): ItemTraceHeader {
   const plan = db.prepare("SELECT head, state, actions, wait, reasons, note, view, planned_at FROM item_plans WHERE repo = ? AND number = ?").get(repo, n) as
     { head: string | null; state: string; actions: string; wait: string | null; reasons: string; note: string | null; view: string; planned_at: string } | undefined;
   const view = obj(plan?.view);
@@ -422,7 +423,7 @@ function headerOf({ db, repo, n, own, hidden }: Ctx): ItemTraceHeader {
     },
     next: acts.map((a) => ({ kind: a.kind as string, head: typeof a.head === "string" ? a.head : null })),
     who: {
-      assignees, autocraftAssigned: own !== "" && assignees.includes(own),
+      assignees, autocraftAssigned: box !== "" && assignees.includes(box),
       openDecisions: decisionIds({ db, repo, n, hidden } as Ctx).flatMap((id) => {
         const d = db.prepare("SELECT id, kind, question FROM decisions WHERE id = ? AND answer IS NULL").get(id) as { id: string; kind: string; question: string } | undefined;
         return d ? [{ id: d.id, kind: d.kind, question: clip(d.question, 140) }] : [];
@@ -479,8 +480,8 @@ async function context(db: DatabaseSync, req: Req): Promise<Ctx> {
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
   await needVisible(db, req, repo);
   if (!db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ?").get(repo, n)) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
-  const own = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
-  return { db, repo, n, ref: `${repo}#${n}`, own, staff: canSeeInternals(req), veiled: !canSeeInternals(req) && isQuiet(db, repo, n), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req) };
+  const box = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
+  return { db, repo, n, ref: `${repo}#${n}`, own: ownLogins(db, repo), box, staff: canSeeInternals(req), veiled: !canSeeInternals(req) && isQuiet(db, repo, n), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req) };
 }
 
 /** Job errors and patch-check reasons carry log and patch text: viewers get the other fields. */
