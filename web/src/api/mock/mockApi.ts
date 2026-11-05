@@ -199,7 +199,10 @@ export function createMockApi(): Api {
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
     mainCi: () => wait(mainCi()),
-    ...createConversationMock(me, changed),
+    ...createConversationMock(me, changed, (repo, number, option, note) => {
+      const d = decisions.find((x) => !x.answer && x.repo === shortRepo(repo) && x.number === number);
+      if (d) settle(d, option, note, null);
+    }),
     ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),
     classifiers: {

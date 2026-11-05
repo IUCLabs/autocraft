@@ -116,9 +116,8 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   const operator = canAct(user, [it.repo]);
   const openDecisions = ds?.filter((d) => !d.answer) ?? [];
   const turns = conv?.turns ?? [];
-  // The newest Opus turn's cards move to the open question while one is open, so they appear once.
+  // Only the newest Opus turn's cards are live: resolutions in the end block, other proposals above the composer.
   const lastOpus = [...turns].reverse().find((t) => t.kind === "opus");
-  const hoisted = openDecisions.length > 0 && lastOpus && lastOpus.actions.length > 0 ? lastOpus : undefined;
 
   // The author's role comes from the write access recorded with their pick; plain comments take it from a pick of the same person.
   const writers = new Set((ds ?? []).flatMap((d) => d.opinions.filter((o) => o.permission === "write").map((o) => o.login)));
@@ -185,13 +184,13 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
           {en.e.bodyCut && <p className="mt-2 text-xs text-ink/55">Cut after 20,000 characters. The rest is on GitHub.</p>}
         </ChatEntry>,
       );
-    else list.push(<Turn key={`turn:${en.turn.id}`} t={en.turn} operator={operator} withCards={en.turn !== hoisted} />);
+    else list.push(<Turn key={`turn:${en.turn.id}`} t={en.turn} />);
   }
   flush();
 
-  const resolutions = hoisted?.actions.filter((a) => a.settles !== undefined);
+  const resolutions = openDecisions.length > 0 ? lastOpus?.actions.filter((a) => a.settles !== undefined) : undefined;
   // A card that leaves the question open is a suggested reply, shown above the composer.
-  const suggestions = hoisted?.actions.filter((a) => a.settles === undefined && a.state !== "dismissed") ?? [];
+  const suggestions = lastOpus?.actions.filter((a) => a.settles === undefined && ["proposed", "running", "failed"].includes(a.state)) ?? [];
   return (
     <>
       {!decision && first && <TraceHeader header={first!.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />}
@@ -241,7 +240,7 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   );
 }
 
-function Turn({ t, operator, withCards }: { t: ConversationTurn; operator: boolean; withCards: boolean }) {
+function Turn({ t }: { t: ConversationTurn }) {
   if (t.kind === "system")
     return (
       <li className="flex list-none items-start gap-2 px-1 text-xs text-ink/50">
@@ -263,13 +262,6 @@ function Turn({ t, operator, withCards }: { t: ConversationTurn; operator: boole
       {t.notes.map((n, i) => (
         <p key={i} className="mt-1 text-xs text-ink/50">{n}</p>
       ))}
-      {withCards && t.actions.length > 0 && (
-        <div className="mt-3 space-y-2">
-          {t.actions.map((a) => (
-            <ActionCard key={a.id} a={a} operator={operator} className="" />
-          ))}
-        </div>
-      )}
     </ChatEntry>
   );
 }

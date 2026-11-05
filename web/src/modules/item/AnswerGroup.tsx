@@ -13,8 +13,7 @@ const cap = (s: string) => s[0]!.toUpperCase() + s.slice(1);
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const OTHER = "other";
 
-/** The step that posts the card's comment: the first one that mentions a comment. */
-const commentStep = (c: ConversationCard) => (c.text === undefined ? -1 : c.steps.findIndex((s) => /comment/i.test(s)));
+const NOTE_MAX = 500;
 
 /**
  * The outcomes of an open question as one pick-one list: the decision's options in order, outcomes only Opus offers
@@ -94,7 +93,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
       if (card) {
         if (text !== undefined && text !== card.text) await api.conversations.editCard(card.id, text);
         const skip = skipped(card);
-        await api.conversations.doCard(card.id, skip.length ? { skip } : undefined);
+        await api.conversations.doCard(card.id, { ...(skip.length ? { skip } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
         onAnswered?.();
       } else if (isOther) {
         await answer([d], "handled");
@@ -154,18 +153,18 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
   };
   const tag = (text: string) => <span className="ml-2 text-2xs font-normal text-accent-ink">{text}</span>;
 
-  /** The drafted steps of a card: each can be removed, and the comment can be edited. */
+  /** The drafted steps of a card: each can be removed, and the comment text sits under the comment step. */
   const steps = (c: ConversationCard) => {
-    const ci = commentStep(c);
-    const showText = text !== undefined && !skipped(c).includes(ci);
+    const ci = c.commentStep ?? -1;
+    const showText = ci >= 0 && ci < c.steps.length && text !== undefined && !skipped(c).includes(ci);
     return (
-      <>
-        {c.steps.length > 0 && (
-          <ol className="space-y-0.5 leading-5">
-            {c.steps.map((s, i) => {
-              const off = skipped(c).includes(i);
-              return (
-                <li key={i} className="flex items-start gap-1.5">
+      c.steps.length > 0 && (
+        <ol className="space-y-0.5 leading-5">
+          {c.steps.map((s, i) => {
+            const off = skipped(c).includes(i);
+            return (
+              <li key={i}>
+                <div className="flex items-start gap-1.5">
                   <span className={cn("min-w-0 flex-1 pt-1", off && "text-ink/40 line-through")}>{s}</span>
                   <button
                     type="button"
@@ -177,51 +176,56 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                   >
                     {off ? <span className="text-xs">Undo</span> : <XIcon />}
                   </button>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-        {showText &&
-          (editing ? (
-            <textarea
-              value={text}
-              onChange={(e) => setTexts((t) => ({ ...t, [c.id]: e.target.value }))}
-              rows={5}
-              aria-label="Comment text"
-              className="block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60"
-            />
-          ) : (
-            <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{text}</blockquote>
-          ))}
-        {showText && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="max-md:h-11"
-            disabled={busy}
-            onClick={() => {
-              if (editing) setTexts((t) => ({ ...t, [c.id]: c.text ?? "" }));
-              setEditing(!editing);
-            }}
-          >
-            {editing ? "Cancel edit" : "Edit"}
-          </Button>
-        )}
-      </>
+                </div>
+                {i === ci && showText && (
+                  <div className="mb-1 mt-1 space-y-1">
+                    {editing ? (
+                      <textarea
+                        value={text}
+                        onChange={(e) => setTexts((t) => ({ ...t, [c.id]: e.target.value }))}
+                        rows={5}
+                        aria-label="Comment text"
+                        className="block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60"
+                      />
+                    ) : (
+                      <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{text}</blockquote>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="max-md:h-11"
+                      disabled={busy}
+                      onClick={() => {
+                        if (editing) setTexts((t) => ({ ...t, [c.id]: c.text ?? "" }));
+                        setEditing(!editing);
+                      }}
+                    >
+                      {editing ? "Cancel edit" : "Edit"}
+                    </Button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )
     );
   };
 
   const noteField = (required: boolean) => (
-    <label className="flex h-8 min-w-0 items-center rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11">
-      <input
-        value={note}
-        onChange={(e) => localActions.setNote(d.id, e.target.value)}
-        placeholder={required ? "Note, kept with the answer" : "Note, kept with the answer (optional)"}
-        aria-label="Note"
-        className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
-      />
-    </label>
+    <div>
+      <label className="flex h-8 min-w-0 items-center rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11">
+        <input
+          value={note}
+          maxLength={NOTE_MAX}
+          onChange={(e) => localActions.setNote(d.id, e.target.value)}
+          placeholder={required ? "Note" : "Add a note (optional)"}
+          aria-label={required ? "Note" : "Add a note (optional)"}
+          className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
+        />
+      </label>
+      {note.length >= NOTE_MAX - 100 && <p className={cn("mt-0.5 text-right text-2xs", note.length >= NOTE_MAX ? "text-bad" : "text-ink/50")}>{note.length}/{NOTE_MAX}</p>}
+    </div>
   );
 
   return (
@@ -247,7 +251,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                   {dr && blocked(dr) && <p className="text-xs text-warn">The PR changed since Opus wrote this</p>}
                   {dr && !blocked(dr) && dr.stale === "new-comments" && <p className="text-xs text-ink/50">New comments since</p>}
                   {dr && !blocked(dr) && steps(dr)}
-                  {(plain || !dr) && noteField(false)}
+                  {noteField(false)}
                 </div>
               )}
             </div>
@@ -280,6 +284,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                   {c.settles && <p className="text-xs text-ink/55">{c.settles}</p>}
                   {c.stale === "new-comments" && <p className="text-xs text-ink/50">New comments since</p>}
                   {steps(c)}
+                  {noteField(false)}
                 </div>
               )}
             </div>

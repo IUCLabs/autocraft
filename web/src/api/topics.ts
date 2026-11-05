@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "steps" | "mainci" | "limits";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "decision-snooze" | "steps" | "mainci" | "limits";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
@@ -31,7 +31,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["item-trace-decision:", withSlot("decisions")],
   ["activity:", withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "agents", "jobs", "github")],
   ["item:", ITEM],
-  ["item-decisions:", withSlot("decisions", "items")],
+  ["item-decisions:", withSlot("decisions", "items", "decision-snooze")],
   ["items:", withSlot("items", "stages", "classify", "decisions")],
   ["similar:", ["items"]],
   ["work:", ["items", "ranks", "classify", "checks", "decisions", "reviews", "verify", "fixes"]],
@@ -40,8 +40,8 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["count:", ["decisions"]],
   // Feedback reads comments (in `items`), decisions and conversations; stopped rows read breakers and limits, not job runs.
   ["needs:", ["decisions", "conversations", "items", "limits", "accounts", "settings"]],
-  ["decisions?", withSlot("decisions")],
-  ["decision:", withSlot("decisions")],
+  ["decisions?", withSlot("decisions", "decision-snooze")],
+  ["decision:", withSlot("decisions", "decision-snooze")],
   ["thread:", ["decisions"]],
   ["conversation:", ["conversations", "conversation-includes"]],
   ["repos", ["repos"]],

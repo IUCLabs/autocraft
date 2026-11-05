@@ -6,9 +6,6 @@ const MIN = 60_000;
 const at = (min: number) => new Date(NOW - min * MIN).toISOString();
 const REF = "designcraft#1484";
 
-const COMMENT =
-  "Thanks for adding Hungarian. craft-i18n already ships a `hu` language pack that craft-proof reads, so the dictionary and pattern files don't need to be committed here. Could you load the pack instead?";
-
 const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], steps: [], ...c });
 const LABELS: Record<ConversationCard["kind"], string> = { resolution: "Do it", comment: "Post comment", answer: "Answer", label: "Add label", backlog: "Move to Backlog", resolve: "Close decision", duplicate: "Close as duplicate", close: "Close issue" };
 
@@ -20,7 +17,7 @@ function seed(): ConversationTurn[] {
       login: "opus",
       at: at(42),
       body: "This adds Hungarian by committing the LibreOffice dictionary and TeX patterns (~270k lines). craft-i18n already ships a `hu` language pack that craft-proof in craft-libs reads; DesignCraft doesn't use craft-proof yet. I'd ask the author to use the pack instead.",
-      actions: [card({ id: 1, kind: "comment", title: `Post comment on ${REF}`, text: COMMENT, state: "dismissed", by: "mosswood", at: at(40) })],
+      actions: [],
       notes: [],
     },
     {
@@ -29,7 +26,7 @@ function seed(): ConversationTurn[] {
       login: "opus",
       at: at(41),
       body: "I would not merge it as it stands.",
-      actions: [card({ id: 2, kind: "label", title: "Add label: needs changes", state: "done", done: { at: at(38), link: "", label: "Label added" }, by: "mosswood", at: at(38) })],
+      actions: [],
       notes: ["Dropped a card to close the PR: closing needs a comment first."],
     },
     { id: 3, kind: "operator", login: "mosswood", at: at(30), body: "ok but check the pack actually loads first", actions: [], notes: [], status: "answered" },
@@ -39,15 +36,11 @@ function seed(): ConversationTurn[] {
       login: "opus",
       at: at(29),
       body: "Checked: `craft-i18n/packs/hu` loads through craft-proof's `load_pack` with the same hyphenation patterns. The pack is the same data, so nothing is lost.\n\nI can also put it in the Backlog or mark it a duplicate of the earlier Hungarian request.",
-      actions: [
-        card({ id: 3, kind: "backlog", title: `Move ${REF} to the Backlog`, state: "done", done: { at: at(20), link: "", label: "Backlog" }, by: "mosswood", at: at(20) }),
-        card({ id: 4, kind: "comment", title: `Post comment on ${REF}`, text: "Loading the pack works with the same patterns, so no data needs to be added here.", state: "failed", error: "Comment approval is off for designcraft.", by: "mosswood", at: at(19) }),
-        card({ id: 10, kind: "resolution", title: "Close the PR with a note", steps: ["Post the comment below", "Close the PR as not planned"], settles: "Closes the merge question as handled", text: "Closing: the pack already covers this.", state: "replaced" }),
-        card({ id: 5, kind: "duplicate", title: `Close ${REF} as a duplicate of designcraft#1102`, state: "dismissed", by: "mosswood", at: at(18) }),
-      ],
+      actions: [],
       notes: [],
     },
-    { id: 5, kind: "system", login: "system", at: at(18), body: "mosswood ran: Move designcraft#1484 to the Backlog. mosswood dismissed: Close designcraft#1484 as a duplicate of designcraft#1102.", actions: [], notes: [] },
+    { id: 5, kind: "system", login: "system", at: at(18), body: 'mosswood ran the card: Add the label needs changes. Label added. Note: hold until the pack check is done', actions: [], notes: [] },
+    { id: 7, kind: "system", login: "system", at: at(12), body: 'kiri-n answered "Is ruler snapping for gradient stops in scope?" with "Take": fits the editor roadmap', actions: [], notes: [] },
     {
       id: 6,
       kind: "opus",
@@ -63,6 +56,7 @@ function seed(): ConversationTurn[] {
           steps: ["Post the comment below", "Add the label needs changes"],
           settles: 'Answers the merge question with "Ask to use the language pack"',
           option: "changes",
+          commentStep: 0,
           text: "Thanks for adding Hungarian. craft-i18n already ships a `hu` pack that craft-proof reads, so the data files don't need to be committed. Could you load the pack instead?",
           writes: "posts a comment on GitHub",
           state: "proposed",
@@ -73,6 +67,7 @@ function seed(): ConversationTurn[] {
           label: "Close as completed",
           title: "Close the PR as completed",
           steps: ["Post the comment below", "Close the PR as completed"],
+          commentStep: 0,
           settles: "Closes the merge question as handled",
           text: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work.",
           writes: "closes the PR on GitHub",
@@ -104,7 +99,7 @@ function seed(): ConversationTurn[] {
 }
 
 /** In-memory conversations. Only designcraft#1484 starts with one; an operator's message is answered after a few seconds. */
-export function createConversationMock(me: User, changed: () => void): Pick<Api, "conversations"> {
+export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void): Pick<Api, "conversations"> {
   const store = new Map<string, Conversation>([[REF, { repo: "designcraft", number: 1484, exists: true, pending: false, startedBy: "opus", turns: seed(), includes: [{ source: "decision-opinion:designcraft#1484:merge/o0", by: "mosswood", at: at(100), sent: false }] }]]);
   let nextId = 100;
   const open = (repo: string, n: number): Conversation => {
@@ -167,13 +162,20 @@ export function createConversationMock(me: User, changed: () => void): Pick<Api,
         changed();
         return snap(k);
       },
-      async doCard(id, _opts) {
+      async doCard(id, opts) {
         need();
         const k = find(id);
+        if (opts?.note && opts.note.length > 500) throw new Error("the note is longer than 500 characters");
+        const c = [...store.values()].find((x) => x.turns.some((t) => t.actions.includes(k)))!;
         k.state = "running";
         changed();
         setTimeout(() => {
-          Object.assign(k, { state: "done", by: me.login, at: new Date().toISOString(), done: { at: new Date().toISOString(), link: k.kind === "comment" ? "#comment" : "", label: k.kind === "comment" ? `Comment on ${REF}` : k.title } });
+          const skipped = opts?.skip ?? [];
+          const done = { at: new Date().toISOString(), link: k.kind === "comment" ? "#comment" : "", label: k.kind === "comment" ? `Comment on ${REF}` : k.title };
+          Object.assign(k, { state: "done", by: me.login, at: done.at, done });
+          const steps = k.steps.filter((_, i) => !skipped.includes(i)).join("; ");
+          c.turns.push({ id: nextId++, kind: "system", login: "system", at: done.at, body: `${me.login} ran the card: ${k.title}${steps ? ` (${steps})` : ""}.${opts?.note ? ` Note: ${opts.note}` : ""}`, actions: [], notes: [] });
+          if (k.settles !== undefined) settle?.(c.repo, c.number, k.option ?? "handled", opts?.note ?? null);
           changed();
         }, 600);
         return snap(k);
