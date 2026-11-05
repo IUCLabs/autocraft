@@ -36,13 +36,16 @@ export const backlogHeldSql = (alias: string): string =>
       WHERE json_extract(bj.value, '$.repo') = ${alias}.repo AND json_extract(bj.value, '$.number') = ${alias}.number)
     OR EXISTS (SELECT 1 FROM dupe_group_items bg WHERE bg.decision_id = db.id AND bg.repo = ${alias}.repo AND bg.number = ${alias}.number)))`;
 
-const botLogins = (): string[] => { const s = appSlug(); return s ? [s, `${s}[bot]`] : []; };
+/** Live app slug as a JSON list; the persisted `app_slugs` setting covers slugs that are unreadable now or were replaced. */
+const liveSlugJson = (): string => JSON.stringify([appSlug()].filter(Boolean)).replaceAll("'", "''");
 
 /** SQL condition, true when the item `alias` (a row of items) is not an integration batch PR the pipeline opened itself (see src/merge/batch.ts). Such PRs only carry reviewed PRs and never enter the pipeline as contributor PRs. */
 export const notOwnIntegrationSql = (alias: string): string =>
   `NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = ${alias}.repo AND mb.pr_number = ${alias}.number
     AND (${alias}.author = (SELECT value FROM main.settings WHERE key = 'pipeline_login')
-      OR ${alias}.author IN (SELECT value FROM json_each('${JSON.stringify(botLogins()).replaceAll("'", "''")}'))))`;
+      OR EXISTS (SELECT 1 FROM (SELECT value AS slug FROM json_each('${liveSlugJson()}')
+          UNION SELECT value FROM json_each(CASE WHEN json_valid((SELECT value FROM main.settings WHERE key = 'app_slugs')) THEN (SELECT value FROM main.settings WHERE key = 'app_slugs') ELSE '[]' END))
+        WHERE ${alias}.author IN (slug, slug || '[bot]')))) `;
 
 /** SQL condition, true when the item `alias` (a row of items) is not held by a duplicate decision, is not one of our integration PRs and is in the pilot (when one is set). For WHERE clauses of candidate queries. */
 export const notHeldSql = (alias: string): string =>
