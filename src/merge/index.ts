@@ -37,7 +37,7 @@ export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState
 import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { jobItem } from "../runner/job-items.ts";
-import { authFailure, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type Lane, type LaneDeps } from "../github/user-lane.ts";
+import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import { ownerOf } from "../owners.ts";
 
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
@@ -270,6 +270,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   const mergeDue = new Map(planned(db, "merge", { repo }).map((p) => [p.facts.number, p.action.params?.singleOnly === true]));
   let picks = open.filter((e) => mergeDue.has(e.number) && (!params.only || params.only(e)) && (!params.singleOnly || mergeDue.get(e.number))).sort((a, b) =>
     fast(a) || fast(b) ? Number(fast(b)) - Number(fast(a)) || byRank(a, b) : a.path === b.path ? byRank(a, b) : a.path === "rule" ? -1 : 1);
+  // An answered merge that waits for its operator's token or access takes no slot of the limit; it comes back when retried.
+  picks = picks.filter((e) => !(e.path === "operator" && isWaiting(db, e.decisionId)));
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
   const askDueNow = new Set(planned(db, "ask-merge", { repo }).map((p) => p.facts.number));
   const ask1 = open.filter((e) => askDueNow.has(e.number));
@@ -379,7 +381,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method, extra: allowFailedArgs(db, repo, d.mergeCommand) }, { run: runId, head: e.head, path: e.path }, undefined, lane?.env);
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
-      const denied = lane && e.decisionId ? authFailure(why) : null;
+      const denied = lane && e.decisionId ? authFailure(new Error(why)) : null;
+      if (denied === "transient") { log(`  ${refOf(e)}: not merged yet: ${why}`); summary.attempted.pop(); continue; }
       if (denied) {
         // The user's token may not merge: wait for their access. No refusal is recorded, so the PR stays queued.
         setExecState(db, e.decisionId!, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(repo));

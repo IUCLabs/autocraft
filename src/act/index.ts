@@ -37,7 +37,7 @@ import { cleanReason, duplicateComment, prCloseComment, scopeCloseComment } from
 import { plannedItems } from "../core/select-items.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
-import { authFailure, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps, type Lane } from "../github/user-lane.ts";
+import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps, type Lane } from "../github/user-lane.ts";
 
 const ACTOR = "act";
 const NO_IO: GroupIo = { live: async () => null, comment: async () => "", close: async () => {} };
@@ -145,7 +145,8 @@ export const SECURITY_ASKER = "security-scan";
 
 /** Answered-close targets in the repo that the Plans send here: no final (done or skipped) action row yet. */
 function pending(db: DatabaseSync, repo: string, refs?: string[]): Target[] {
-  return plannedItems(db, "act", { repo, refs }).filter((p) => !p.action.params?.ask)
+  // A decision that waits for its operator's token or access is not work until it is retried or answered again.
+  return plannedItems(db, "act", { repo, refs }).filter((p) => !p.action.params?.ask && !isWaiting(db, p.action.params?.decisionId as string))
     .map((p): Target => ({ decisionId: p.action.params!.decisionId as string, kind: p.action.params!.bucket as Target["kind"], repo, number: p.facts.number }));
 }
 
@@ -258,8 +259,6 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   let handled = 0;
   for (const t of todo) {
     const dec = getDecision(db, t.decisionId)!;
-    handled++;
-    params.onHandled?.(handled);
     const prev = rowOf(db, t);
     // An answer in a repo on the app's identity is carried out as the operator who gave it, with their token; it waits when there is none.
     const lr = await laneForDecision(db, d.lane, t.decisionId, [t.repo]);
@@ -268,6 +267,9 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       else { setExecState(db, t.decisionId, lr.state, lr.reason); jobItem(db, t.repo, t.number, `waiting: ${lr.reason}`, log); }
       continue;
     }
+    // Counted once the target has a lane: a waiting or transient one is not work done, so the planner can settle.
+    handled++;
+    params.onHandled?.(handled);
     if (lr) setExecState(db, t.decisionId, "pending");
     const q = lr ? lr.lane.querier : d.querier;
     try {
@@ -302,7 +304,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       settle(t);
     } catch (e) {
       const why = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
-      const denied = lr ? authFailure(why) : null;
+      const denied = lr ? authFailure(e) : null;
+      if (denied === "transient") { jobItem(db, t.repo, t.number, `not closed yet: ${why}`, log); continue; }
       if (denied) {
         // The user's token may not do this write: wait for access instead of failing, and write nothing as anyone else.
         setExecState(db, t.decisionId, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(t.repo));
@@ -339,8 +342,9 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         setExecState(db, decision, lr.state, lr.reason);
         return lr.reason;
       },
-      failed(decision, why) {
-        const denied = lane ? authFailure(why) : null;
+      failed(decision, why, err) {
+        const denied = lane ? authFailure(err) : null;
+        if (denied === "transient") return true;
         if (denied) { setExecState(db, decision, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(repo)); return true; }
         if (lane) setExecState(db, decision, "failed", why);
         return false;

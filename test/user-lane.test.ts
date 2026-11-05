@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { runAct } from "../src/act/index.ts";
 import { setRepoIdentity } from "../src/github/identity.ts";
-import { retryWaiting, type LaneDeps } from "../src/github/user-lane.ts";
+import { plannedItems } from "../src/core/select-items.ts";
+import { authFailure, retryWaiting, type LaneDeps } from "../src/github/user-lane.ts";
 import { OPERATOR, world, type World } from "./world-db.ts";
 
 const quiet = () => {};
@@ -56,4 +57,24 @@ test("legacy repos close as before; an app repo without the operator's token wai
   assert.ok(queries.includes("comment") && queries.includes("close"), `the user's transports made the writes: ${queries.join(",")}`);
   const row = w.rows("SELECT details FROM audit WHERE action = 'act-close'")[0] as { details: string };
   assert.equal((JSON.parse(row.details) as { identity: string }).identity, `user:${OPERATOR}`);
+});
+
+test("a waiting decision is no act work: the run counts nothing and the planner plans no act for it", async () => {
+  const w = fresh().pr(1).review(1, { verdict: "close", reason: "Does not match the reference app" });
+  setRepoIdentity(w.db, "op", "app", "app");
+  const id = await askedAndAnswered(w);
+  const lane: LaneDeps = { vault: { userToken: async () => ({ ok: false, needsSignIn: true, why: "no-token" }) } };
+  const deps = { ...w.gh.actDeps(), lane };
+  let handled = 0;
+  await runAct(w.db, { repo: "app", dryRun: false, onHandled: (n) => { handled = n; } }, quiet, deps);
+  assert.equal(handled, 0);
+  assert.equal(execOf(w, id).s, "waiting-token");
+  assert.equal(plannedItems(w.db, "act", { repo: "app" }).length, 0);
+});
+
+test("a rate limit is transient and a 403 or 404 status is no access; words and numbers in the text decide nothing", () => {
+  assert.equal(authFailure(new Error("gh failed: You have exceeded a secondary rate limit (HTTP 403)")), "transient");
+  assert.equal(authFailure(new Error("gh failed: Resource not accessible by integration (HTTP 403)")), "waiting-permission");
+  assert.equal(authFailure(new Error("gh failed: Bad credentials (HTTP 401)")), "waiting-token");
+  assert.equal(authFailure(new Error("refused: app#403 not found, bad credentials in the title")), null);
 });

@@ -79,6 +79,16 @@ query($owner: String!, $name: String!, $first: Int!, $after: String, $states: [$
 
 export class Transient extends Error {}
 
+/** A GitHub call that failed with a structured answer: the HTTP status gh reports (0 when none) and the GraphQL error `type` (FORBIDDEN, NOT_FOUND, …). */
+export class GithubError extends Error {
+  readonly status: number;
+  readonly type: string | null;
+  constructor(message: string, status: number, type: string | null) { super(message); this.status = status; this.type = type; }
+}
+/** The status of gh's own "(HTTP 403)" line. */
+export const httpStatusOf = (stderr: string): number => Number(/\(HTTP (\d{3})\)/.exec(stderr)?.[1] ?? 0);
+
+
 export class Client {
   reserve: number;
   remaining: number | null = null;
@@ -131,14 +141,15 @@ export class Client {
     }
     if (r.errors.length && !r.data?.repository && !r.data?.repositoryOwner && !r.data?.search) {
       if (/node_limit|resource_limits|timeout|something went wrong/.test(r.text)) throw new Transient("query too heavy");
-      throw new Error(`graphql error: ${JSON.stringify(r.errors).slice(0, 500)}`);
+      const typed = r.errors.find((e: Node) => e.type === "FORBIDDEN" || e.type === "NOT_FOUND") ?? r.errors[0];
+      throw new GithubError(`graphql error: ${JSON.stringify(r.errors).slice(0, 500)}`, httpStatusOf(r.stderr), typeof typed?.type === "string" ? typed.type : null);
     }
     // A deleted or transferred item is a NOT_FOUND error beside a null field, and gh exits non-zero; with the repository
     // present the answer is that null field, which callers handle.
     const missingOnly = r.errors.length > 0 && r.errors.every((e: Node) => e.type === "NOT_FOUND") && !!r.data?.repository;
     if (r.failed && !missingOnly) {
       if (/502|503|504|timeout|eof|connection|unexpected end of json/.test(r.text)) throw new Transient(r.stderr.trim().slice(0, 200));
-      throw new Error(`gh failed: ${r.stderr.trim().slice(0, 500)}`);
+      throw new GithubError(`gh failed: ${r.stderr.trim().slice(0, 500)}`, httpStatusOf(r.stderr), null);
     }
     const rl = r.data.rateLimit; // absent in mutation responses
     if (rl) {

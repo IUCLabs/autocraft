@@ -22,8 +22,8 @@ export type GroupIo = {
   close(live: GroupLive, at: { number: number; decision: string }): Promise<void>;
   /** Called before a decision's writes: a string says why the decision waits (its operator has no token or no access), and it is left for a later run. */
   begin?(decision: string): Promise<string | null>;
-  /** A write of the decision failed with `why`; true when that is a wait for the operator's access, not a failure to count. */
-  failed?(decision: string, why: string): boolean;
+  /** A write of the decision failed with `why` (the error `err`); true when that is a wait for the operator's access or a transient failure, not a failure to count. */
+  failed?(decision: string, why: string, err: unknown): boolean;
 };
 export type GroupRun = {
   repo: string; io: GroupIo; at: () => string; log: (line: string) => void;
@@ -158,7 +158,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       }
     } catch (e) {
       const why = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
-      if (run.io.failed?.(dec.id, why)) { run.log(`  ${dec.id}: waiting: ${why}`); continue; }
+      if (run.io.failed?.(dec.id, why, e)) { run.log(`  ${dec.id}: waiting: ${why}`); continue; }
       res.failed.push({ ref: cur ? ref(cur.item.number) : dec.id, reason: why });
       run.log(`  ${dec.id}: failed: ${why}`);
       if (!cur) return res;

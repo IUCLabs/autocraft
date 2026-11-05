@@ -1,7 +1,8 @@
 // Runs one action card once through the existing write paths (src/github/write.ts, the decision answer,
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
 import { guardRepo } from "../core/guard.ts";
-import { initExecState, laneForOperator, type LaneDeps } from "../github/user-lane.ts";
+import { repoIdentity } from "../github/identity.ts";
+import { initExecState, laneForOperator, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { readLive, writeEffect } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
@@ -160,6 +161,8 @@ class StepError extends Error {
 
 type Ctx = {
   exec: Exec;
+  /** The transport for a write in `repo`: the operator's lane on a repo with the app's identity, the box's own on a legacy repo. */
+  execFor: (repo: string) => Exec;
   /** Labels the same card removes: a type label among them does not block adding another. */
   unlabeling?: string[];
   /** The operator's note: kept on the decision it settles, never posted to GitHub. */
@@ -291,7 +294,8 @@ async function reopen(ctx: Ctx): Promise<Outcome> {
 }
 
 async function openIssue(ctx: Ctx, st: Extract<Step, { kind: "open_issue" }>): Promise<Outcome> {
-  const { db, c, by, w, source, exec } = ctx;
+  const { db, c, by, w, source } = ctx;
+  const exec = ctx.execFor(st.repo);
   const g = actGrant(db, st.repo, by);
   try {
     const made = await createIssue(w, g, exec, { repo: st.repo, target: ref(c.repo, c.number), title: st.title, body: st.body, action: "act-open-issue" }, CARD_NOTE, source);
@@ -419,8 +423,11 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
   return { result: results.join("; "), url };
 }
 
-async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Querier, at: string, canWrite?: ActDeps["canWrite"], note?: string, exec: Exec = defaultExec): Promise<Outcome> {
-  const ctx: Ctx = { exec, note, db, c, by, q, at, w: { db, login: by }, source: { source: "conversation", card: c.id } };
+async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, boxQ: Querier, at: string, canWrite?: ActDeps["canWrite"], note?: string, boxExec: Exec = defaultExec, lane: Lane | null = null): Promise<Outcome> {
+  // Each action resolves its lane from its own target repo: legacy repos run as the box, app repos as the operator.
+  const laneFor = (repo: string): Lane | null => (lane && repoIdentity(db, repo) === "app" ? lane : null);
+  const q = laneFor(c.repo)?.querier ?? boxQ;
+  const ctx: Ctx = { exec: laneFor(c.repo)?.exec ?? boxExec, execFor: (repo) => laneFor(repo)?.exec ?? boxExec, note, db, c, by, q, at, w: { db, login: by }, source: { source: "conversation", card: c.id } };
   switch (p.kind) {
     case "resolution": return runResolution(ctx, p, canWrite);
     case "answer": return answerDecision(db, c, p.decision, p.stamp, p.option, by, at, canWrite, note);
@@ -479,7 +486,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   if (claim.changes !== 1) return { card: c, ran: false };
   let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
-    out = await run(db, c, params, by, lr ? lr.lane.querier : deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note, lr ? lr.lane.exec : deps.exec);
+    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note, deps.exec, lr ? lr.lane : null);
   } catch (e) {
     error = oneLine(String((e as Error).message ?? e));
     posted = e instanceof StepError && e.posted;
