@@ -32,7 +32,7 @@ import { Client, type Querier } from "../mirror.ts";
 import { viewerOf } from "../merge/index.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { claimForWork, issueInfo } from "../github/claim.ts";
-import { commitIdentity, repoIdentity } from "../github/identity.ts";
+import { commitIdentity, ownLogins, repoIdentity } from "../github/identity.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -333,7 +333,7 @@ export async function unclaimHeld(x: Ctx, repo: string): Promise<number> {
       const g = guardRepo(db, repo, "fix-issue", x.by ?? CLI_BY);
       if ("refused" in g) { log(`  ${ref}: claim not removed: ${g.refused}`); continue; }
       const me = await viewerOf(q);
-      const r = await ghDeleteComment({ db, login: ACTOR }, g, d.exec, "fixissue-unclaim", { repo, number, commentId: id, login: me.login }, { run: x.runId, url: claim.url });
+      const r = await ghDeleteComment({ db, login: ACTOR }, g, d.exec, "fixissue-unclaim", { repo, number, commentId: id, logins: new Set([me.login, ...ownLogins(db, repo)]) }, { run: x.runId, url: claim.url });
       if (r.code === 0) { deleted++; log(`  ${ref}: claim comment removed`); } else log(`  ${ref}: claim comment not removed: ${oneLine(r.stderr)}`);
     } catch (e) {
       log(`  ${ref}: claim comment not removed: ${oneLine(String((e as Error).message ?? e))}`);

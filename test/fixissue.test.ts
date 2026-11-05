@@ -290,7 +290,7 @@ describe("fix step assignment", () => {
 
 describe("claim comment of an attempt that ends without a PR", () => {
   const URL = "https://github.com/storytold/app/issues/5#issuecomment-777";
-  function claimed(state: string, prUrl: string | null) {
+  function claimed(state: string, prUrl: string | null, author = LOGIN) {
     const w = world();
     w.db.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, round, pr_url, created_at, updated_at) VALUES ('app', 5, ?, 'h', ?, 1, ?, ?, ?)").run(w.sha, state, prUrl, T0, T0);
     w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'fixissue', 'fixissue-claim', 'app#5', ?)").run(T0, JSON.stringify({ url: URL, state: "done" }));
@@ -300,7 +300,7 @@ describe("claim comment of an attempt that ends without a PR", () => {
     w.deps.exec = async (cmd, args, opt) => {
       if (cmd === "gh" && args.join(" ").includes("/issues/comments/777")) {
         api.push(args.includes("DELETE") ? "delete" : "get");
-        return { code: 0, stdout: args.includes("DELETE") ? "" : `${LOGIN}\n`, stderr: "" };
+        return { code: 0, stdout: args.includes("DELETE") ? "" : `${author}\n`, stderr: "" };
       }
       return inner(cmd, args, opt);
     };
@@ -314,6 +314,11 @@ describe("claim comment of an attempt that ends without a PR", () => {
     await run(held.w);
     assert.deepEqual(held.api, ["get", "delete"]);
     assert.equal(held.w.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'fixissue-unclaim' AND details LIKE '%\"state\":\"done\"%'").get()!.n, 1);
+
+    const bot = claimed("failed", null, "app-bot[bot]");
+    bot.w.db.prepare("INSERT INTO settings (key, value) VALUES ('app_slugs', '[\"app-bot\"]')").run();
+    await run(bot.w);
+    assert.deepEqual(bot.api, ["get", "delete"]);
 
     const taken = claimed("opened", "https://github.com/storytold/app/pull/12");
     await run(taken.w);

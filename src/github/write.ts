@@ -323,10 +323,10 @@ export function ghEditComment(w: Writer, g: CommentGrant, exec: Exec, action: st
 }
 
 /**
- * Deletes a comment of ours (`commentId` is the number in its `#issuecomment-` URL). The comment's author must be `login`;
- * a comment that is already gone counts as done (the audit row carries `gone: true`).
+ * Deletes a comment of ours (`commentId` is the number in its `#issuecomment-` URL). The comment's author must be one of
+ * `logins` (the box account and the app's bot names); a comment that is already gone counts as done (the audit row carries `gone: true`).
  */
-export function ghDeleteComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string; login: string }, details: Details = {}): Promise<ExecResult> {
+export function ghDeleteComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string; logins: ReadonlySet<string> }, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
   exec = laneExec(w, g, exec);
   const path = `repos/${slugOf(o.repo)}/issues/comments/${o.commentId}`;
@@ -337,7 +337,7 @@ export function ghDeleteComment(w: Writer, g: CommentGrant, exec: Exec, action: 
       const author = await exec("gh", ["api", path, "--jq", ".user.login"]);
       if (gone(author)) return goneResult;
       if (author.code !== 0) return author;
-      if (author.stdout.trim() !== o.login) return { code: 1, stdout: "", stderr: "the comment is not ours" };
+      if (!o.logins.has(author.stdout.trim())) return { code: 1, stdout: "", stderr: "the comment is not ours" };
       const del = await exec("gh", ["api", "-X", "DELETE", path]);
       return gone(del) ? goneResult : del;
     },
