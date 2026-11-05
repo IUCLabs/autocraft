@@ -9,7 +9,7 @@ import { InboxList, summaryLine } from "./InboxList";
 import { DecisionsToolbar } from "./Toolbar";
 import { ordered, useDecisionFilter, useDecisionList, useLocal, usePinned, useReselectOnFilter, useSelection } from "./state";
 
-/** Phone flow: one decision per screen with previous/next, filters in a sheet. */
+/** Phone flow: one decision per screen with previous/next, filters in a sheet. An answered decision stays on screen. */
 export function PhoneInbox(props: ViewProps) {
   const { data, loading } = useDecisionList();
   const { filter } = useDecisionFilter();
@@ -56,7 +56,7 @@ export function PhoneInbox(props: ViewProps) {
         </div>
       )}
       {detail && <div className="flex min-h-0 flex-1 flex-col">
-        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1] ?? list[idx - 1], true)} pager={{ pos: `${idx + 1} of ${list.length}`, prev: idx > 0 ? () => go(list[idx - 1]) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1]) : undefined }} /> : missing && item ? <NoDecision repo={item.repo} number={item.number} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
+        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone pager={{ pos: idx >= 0 ? `${idx + 1} of ${list.length}` : "", prev: idx > 0 ? () => go(list[idx - 1]) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1]) : undefined }} /> : missing && item ? <NoDecision repo={item.repo} number={item.number} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
       </div>}
       <Dialog.Root open={sheet} onOpenChange={setSheet}>
         <Dialog.Portal>
