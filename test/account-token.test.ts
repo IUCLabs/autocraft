@@ -16,15 +16,26 @@ import { SCRATCH } from "./scratch.ts";
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "account-token-"));
 const SECRET = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOpQrStUv";
+const BAD = "sk-ant-oat01-ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210_-ZyXwVuTsRqPoNmLkJiHgFe";
 const FAKE = join(dir, "claude");
+// The token check (-p): works only with the right token in the environment and a config directory other than the account's.
 writeFileSync(FAKE, `#!/bin/sh
+if [ "$1" = "-p" ]; then
+  case "$CLAUDE_CONFIG_DIR" in */token-check-*) ;; *) echo '{"type":"result","is_error":true,"result":"wrong config dir"}'; exit 1;; esac
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SECRET}" ] && [ -z "$ANTHROPIC_API_KEY" ]; then echo '{"type":"result","is_error":false,"result":"OK"}'; exit 0; fi
+  echo '{"type":"result","is_error":true,"result":"API Error: 401 authentication_error"}'; exit 1
+fi
 # One write: the URL and then more output than the capped buffer keeps (the real CLI redraws its screen while it waits).
 printf 'Open https://claude.example/oauth/authorize?code=true&state=abc to sign in\\n%s\\n' "$(head -c 25000 /dev/zero | tr '\\0' 'x')"
 read -r line
 if [ "$line" = "goodcode#state" ]; then
   echo "Your OAuth token (valid for 1 year):"
-  echo "${SECRET}"
-  echo "Store this token securely."
+  # The cursor jumps below the token and more text follows: stripping the codes would glue "Store" onto the token.
+  printf '%s\\033[5;1HStore this token securely.\\n' "${SECRET}"
+  exit 0
+fi
+if [ "$line" = "badtoken#state" ]; then
+  printf '%s\\033[5;1HStore this token securely.\\n' "${BAD}"
   exit 0
 fi
 echo "Error: invalid code"; exit 1
@@ -84,6 +95,19 @@ describe("long-lived token", () => {
     removeToken(db, a.id, "op");
     assert.equal(listAccounts(db)[0]!.token.state, "none");
     assert.ok(!existsSync(tokenFile(dirA)));
+  });
+
+  test("a token the check rejects is not saved", async () => {
+    const a = addAccount(db, { label: "Team B" }, "op");
+    await beginToken(db, a.id, "op");
+    sendTokenCode(db, a.id, { code: "badtoken#state" }, "op");
+    await waitFor(() => listAccounts(db).find((x) => x.id === a.id)!.login?.state === "failed");
+    const view = listAccounts(db).find((x) => x.id === a.id)!;
+    assert.equal(view.login?.message, "the token could not be checked");
+    assert.ok(!existsSync(tokenFile(join(dir, "root", a.id))));
+    const actions = db.prepare("SELECT action FROM audit WHERE target = ? ORDER BY rowid").all(`account:${a.id}`).map((r) => (r as { action: string }).action);
+    assert.ok(actions.includes("account-token-check-failed") && !actions.includes("account-token-set"));
+    assert.ok(!JSON.stringify(db.prepare("SELECT * FROM audit").all()).includes("sk-ant-oat01"));
   });
 
   test("only the CLI's own error text counts as an authentication failure", () => {

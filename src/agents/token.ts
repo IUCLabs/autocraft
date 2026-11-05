@@ -1,9 +1,18 @@
 // The long-lived token of an account (`claude setup-token`): a secret kept only
 // in `<configDir>/oauth-token` (mode 0600). The database holds when it was set
 // and when it was rejected, never the value. The value is read only to build
-// the environment of a claude child; nothing here logs or returns it.
-import { chmodSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+// the environment of a claude child; nothing here logs or returns it. A new
+// token is stored only after `checkToken` shows it works: one small model call
+// that carries the token in its environment alone, in an empty config directory
+// of its own so the account's regular sign-in cannot make the call succeed.
+// The token itself is read from the rendered screen of `setup-token` (login.ts);
+// `extractToken` tells whether the stripped output shows a complete token.
+import { execFile } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claudeBin } from "./box.ts";
+import { childEnv } from "./status.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { tokenNearExpiry } from "../sandbox/index.ts";
 
@@ -22,6 +31,27 @@ export const tokenFile = (configDir: string): string => join(configDir, "oauth-t
 /** The token in setup-token output (control codes already removed), or null. With `final`, the output has ended and a token at its end is complete. */
 export function extractToken(out: string, final = false): string | null {
   return out.match(TOKEN)?.[0] ?? (final ? out.match(TOKEN_AT_END)?.[0] ?? null : null);
+}
+
+/** Whether a model call with only this token as credential works. Never throws; the token goes in the environment only. */
+export async function checkToken(configDir: string, token: string): Promise<boolean> {
+  let confDir: string | null = null, cwd: string | null = null;
+  try {
+    confDir = mkdtempSync(join(configDir, "token-check-"));
+    cwd = mkdtempSync(join(tmpdir(), "token-check-"));
+    const env = childEnv(confDir, { [TOKEN_ENV]: token });
+    delete env.ANTHROPIC_API_KEY;
+    const stdout = await new Promise<string | null>((resolve) => {
+      execFile(claudeBin(), ["-p", "Reply OK", "--model", "haiku", "--max-turns", "1", "--output-format", "json"], { timeout: 60_000, env, cwd: cwd!, maxBuffer: 8 << 20 }, (e, out) => resolve(e ? null : String(out)));
+    });
+    if (stdout === null) return false;
+    const parsed = JSON.parse(stdout) as unknown;
+    return cliErrorText(parsed) === "" && !(Array.isArray(parsed) ? parsed : [parsed]).some((e) => (e as { is_error?: unknown } | null)?.is_error === true);
+  } catch {
+    return false;
+  } finally {
+    for (const d of [confDir, cwd]) if (d) try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
+  }
 }
 
 /** The CLI's own error text in its output events: error results and error system events, never assistant or tool content. */

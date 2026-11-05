@@ -9,7 +9,7 @@ import { audit } from "../dash/audit.ts";
 import { AccountError, listAccounts, syncAccounts, validLabel } from "./accounts.ts";
 import { ACCOUNT_ID, boxAccounts, claudeBin, configRoot, managedDir } from "./box.ts";
 import { cancelLogin, loginInfo, loginRunning, startLogin, submitCode, LOGIN_CODE } from "./login.ts";
-import { deleteToken, recordTokenRemoved, recordTokenSet, writeToken } from "./token.ts";
+import { checkToken, deleteToken, recordTokenRemoved, recordTokenSet, writeToken } from "./token.ts";
 import { childEnv, refreshStatus, refreshUsage } from "./status.ts";
 
 function dirOf(db: DatabaseSync, id: unknown): { id: string; configDir: string } {
@@ -70,7 +70,11 @@ export async function beginToken(db: DatabaseSync, id: unknown, by: string): Pro
   const a = dirOf(db, id);
   if (loginRunning(a.id) && loginInfo(a.id)?.kind !== "token") throw new AccountError(409, "a sign-in is running for this account");
   if (!loginRunning(a.id)) audit(db, by, "account-token-start", `account:${a.id}`);
-  await startLogin(a.id, a.configDir, undefined, "token", (token) => {
+  await startLogin(a.id, a.configDir, undefined, "token", async (token) => {
+    if (!(await checkToken(a.configDir, token))) {
+      audit(db, by, "account-token-check-failed", `account:${a.id}`);
+      return false;
+    }
     writeToken(a.configDir, token);
     try {
       recordTokenSet(db, a.id);
@@ -79,6 +83,7 @@ export async function beginToken(db: DatabaseSync, id: unknown, by: string): Pro
       throw e;
     }
     audit(db, by, "account-token-set", `account:${a.id}`);
+    return true;
   });
   return view(db, a.id);
 }
