@@ -17,7 +17,7 @@ import { runDecide } from "../src/decide/index.ts";
 import { fillReviewSummaries } from "../src/review/summary.ts";
 import { prepareIds } from "../src/decide/prepare.ts";
 import { preparing } from "../src/decide/prepared.ts";
-import { getDecision } from "../src/decisions.ts";
+import { ask, getDecision } from "../src/decisions.ts";
 import { attemptOf, runFixIssue, runFixIssueCollect, type CollectDeps } from "../src/fixissue/index.ts";
 import { runAct } from "../src/act/index.ts";
 import { runBatches } from "../src/merge/batch.ts";
@@ -358,6 +358,17 @@ describe("close journey", () => {
 });
 
 describe("issue journey", () => {
+  test("a duplicate group whose kept item is closed is prepared while a member it would close is open", () => {
+    const w = fresh().issue(7).issue(8);
+    ask(w.db, [{ id: "app:dupegroup:7", kind: "duplicate", repo: "app", number: 7, question: "Keep #7 and close #8?", options: [{ key: "accept", label: "Use this answer" }, { key: "distinct", label: "Not duplicates" }] }]);
+    w.db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, base_role, base_target) VALUES ('app:dupegroup:7', 'app', 8, 'issue', 'close', 7, 'close', 7)").run();
+    w.db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 7").run();
+    assert.deepEqual(prepareIds(w.db), ["app:dupegroup:7"]);
+    assert.equal(preparing(w.db, getDecision(w.db, "app:dupegroup:7")!), true);
+    w.db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 8").run();
+    assert.deepEqual(prepareIds(w.db), []);
+  });
+
   test("a reply without a valid summary leaves the decision preparing; the retry after the backoff stores summary, pick and an Opus turn", async () => {
     const w = fresh().issue(5, { flags: ["needs decision"] });
     w.models(() => "Pick: take | wanted\ntoo short");

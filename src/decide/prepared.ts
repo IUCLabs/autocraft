@@ -24,9 +24,17 @@ export const prepareDue = (d: PrepareColumns, head: string | null, nowMs: number
   isPreparing(d, head) && (triesAt(d, head) === 0 || d.recommend_failed_at === null || Date.parse(d.recommend_failed_at) < nowMs - RECOMMEND_RETRY_MS);
 
 /** Whether the decision is open and waits for its prepare (the dashboard's `preparing`). */
-export function preparing(db: DatabaseSync, d: Partial<PrepareColumns> & { answer: string | null; repo: string | null; number: number | null }): boolean {
+/**
+ * The decision is still about something open: its item, or for a duplicate group (whose item is the kept one, often
+ * already closed or merged) any member it would close.
+ */
+export const openSubjectSql = (d: string, i: string): string => `(${i}.state = 'OPEN' OR (${d}.id LIKE '%:dupegroup:%' AND EXISTS (SELECT 1 FROM dupe_group_items gi
+  JOIN items m ON m.repo = ${d}.repo AND m.number = gi.number WHERE gi.decision_id = ${d}.id AND gi.role = 'close' AND m.state = 'OPEN')))`;
+
+export function preparing(db: DatabaseSync, d: Partial<PrepareColumns> & { id: string; answer: string | null; repo: string | null; number: number | null }): boolean {
   if (d.answer !== null || d.number === null) return false;
-  const it = db.prepare(`SELECT i.kind, i.head_oid, i.state FROM items i WHERE i.repo = ? AND i.number = ? AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`).get(d.repo, d.number) as { kind: string; head_oid: string | null; state: string } | undefined;
-  if (it?.state !== "OPEN") return false;
+  const it = db.prepare(`SELECT i.kind, i.head_oid FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
+    WHERE d.id = ? AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`).get(d.id) as { kind: string; head_oid: string | null } | undefined;
+  if (!it) return false;
   return isPreparing({ prepared_at: d.prepared_at ?? null, prepared_head: d.prepared_head ?? null, prepare_failed_head: d.prepare_failed_head ?? null, recommend_failures: d.recommend_failures ?? null, recommend_failed_at: d.recommend_failed_at ?? null }, it.kind === "pr" ? it.head_oid : null);
 }
