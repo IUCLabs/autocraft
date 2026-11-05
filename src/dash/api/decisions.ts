@@ -414,8 +414,16 @@ function inTransaction<T>(db: DatabaseSync, fn: () => T): T {
 export async function answer(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
+  applyAnswer(db, d, req.user.login, body(req), "dashboard", via);
+  return await settled(db, req, d.id);
+}
+
+/**
+ * Validates and records an answer for `login`; the caller has already checked that the login may answer. `b` holds the
+ * request fields (answer, note, exceptions, textsHash). `source` and `via` go to the audit row.
+ */
+export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: Record<string, unknown>, source: string, via?: string): void {
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
-  const b = body(req);
   const keys = new Set(optionsOf(d).map((o) => o.key));
   const handled = b.answer === HANDLED.key;
   if (typeof b.answer !== "string" || !(keys.has(b.answer) || (handled && !isBatch(d) && !d.id.includes(":dupegroup:")))) throw new HttpError(400, "answer must be one of the option keys");
@@ -445,19 +453,18 @@ export async function answer(db: DatabaseSync, req: Req, via?: "mcp"): Promise<D
     const at = new Date().toISOString();
     // Handled writes nothing and no step acts on it, so it counts as applied at once (Undo still works, see directHandled).
     const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
-      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, at, handled ? at : null, d.id);
+      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, login, at, handled ? at : null, d.id);
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
     replaceProposedCards(db, d.repo, d.number);
   });
   if (writeEffect(d.kind, ans)) initExecState(db, d.id);
-  audit(db, req.user.login, "answer", d.id, { answer: ans, source: "dashboard", ...(via ? { via } : {}), exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
+  audit(db, login, "answer", d.id, { answer: ans, source, ...(via ? { via } : {}), exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
   // The thread keeps the choice (and the note) when the item has a conversation.
   if (d.repo && d.number !== null && conversationOf(db, d.repo, d.number)) {
     const label = optionsOf(d).find((o) => o.key === ans)?.label ?? (handled ? HANDLED.label : ans);
-    const said = `${req.user.login} answered "${d.question}" with "${label}"`;
-    insertTurn(db, d.repo, d.number, { kind: "system", login: "system", body: note ? `${said}: ${note}` : said, block: systemBlock(`The operator ${req.user.login} answered the open question "${d.question.replace(/[\r\n<]+/g, " ")}" with "${label.replace(/[\r\n<]+/g, " ")}".`, note ? { operator_note: note } : undefined) });
+    const said = `${login} answered "${d.question}" with "${label}"`;
+    insertTurn(db, d.repo, d.number, { kind: "system", login: "system", body: note ? `${said}: ${note}` : said, block: systemBlock(`The operator ${login} answered the open question "${d.question.replace(/[\r\n<]+/g, " ")}" with "${label.replace(/[\r\n<]+/g, " ")}".`, note ? { operator_note: note } : undefined) });
   }
-  return await settled(db, req, d.id);
 }
 
 /** Operator: snooze (`on`) or wake an open decision. It stays open for the pipeline; only the inbox hides it until the item has new activity. */
