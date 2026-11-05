@@ -77,13 +77,13 @@ export type CommitIdentity = { name: string; email: string; login: string };
 
 const botIds = new Map<string, Promise<number>>();
 
-/** The numeric id of the bot user `<slug>[bot]`, from GitHub's public users endpoint; cached per process (a failure is not cached). */
-export function botUserId(slug: string, base: string = GITHUB_API): Promise<number> {
+/** The numeric id of the bot user `<slug>[bot]`, read with `token` (the anonymous rate limit is too small to share); cached per process (a failure is not cached). */
+export function botUserId(slug: string, token: () => Promise<string>, base: string = GITHUB_API): Promise<number> {
   const k = `${base}|${slug}`;
   let p = botIds.get(k);
   if (!p) {
     p = (async () => {
-      const j = (await call(base, `/users/${encodeURIComponent(`${slug}[bot]`)}`, null)) as { id?: unknown };
+      const j = (await call(base, `/users/${encodeURIComponent(`${slug}[bot]`)}`, await token())) as { id?: unknown };
       if (typeof j.id !== "number") throw new AppError(`GitHub gave no user id for ${slug}[bot]`);
       return j.id;
     })();
@@ -104,7 +104,7 @@ export async function commitIdentity(
   if (repoIdentity(db, repo) === "app") {
     const slug = (deps.slug ?? (() => readAppSecrets()?.slug ?? null))();
     if (slug) {
-      const id = await (deps.botId ?? botUserId)(slug);
+      const id = await (deps.botId ?? ((s: string) => botUserId(s, () => installationToken(ownerOf(repo), repo))))(slug);
       const login = `${slug}[bot]`;
       return { name: login, login, email: `${id}+${login}@users.noreply.github.com` };
     }
