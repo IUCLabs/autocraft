@@ -1,5 +1,5 @@
 // The Markdown review the review-post step posts on a pull request. Fixed layout:
-// the variable parts are the verdict wording, the review's own text
+// the variable parts are the verdict wording (with the fix-up's head after a carried take-fix review), the review's own text
 // (cleaned: it is untrusted model output) and the short head commit. No Node imports:
 // the Prompts page lists the template through src/act/templates.ts.
 
@@ -27,8 +27,8 @@ const VERDICT_LINE: Record<string, string> = {
 };
 
 /** The unsure note goes inside the line, so it can't read as the first of the needed changes. */
-function verdictLine(verdict: string, sure: boolean): string {
-  const line = VERDICT_LINE[verdict] ?? "Review:";
+function verdictLine(verdict: string, sure: boolean, override?: string): string {
+  const line = override ?? VERDICT_LINE[verdict] ?? "Review:";
   return sure ? line : `${line.slice(0, -1)} (not certain)${line.slice(-1)}`;
 }
 
@@ -78,7 +78,10 @@ export type ReviewPostInput = {
   /** The Opus `public` field: the only review text that is posted. */
   summary: string;
   points: string[];
+  /** The head the review was written at. */
   head: string;
+  /** The short head of the commit our fix-up pushed after the review; set only for a carried review. */
+  fixedIn?: string | null;
   /** The claims of the title and body that the review checked, listed after the points. */
   claims?: { claim: string; status: string; evidence: string }[];
   /** The closing `Recommendation: …` line (see `recommendation`). */
@@ -86,8 +89,10 @@ export type ReviewPostInput = {
 };
 
 export function reviewBody(r: ReviewPostInput): string {
-  const head = verdictLine(r.verdict, r.sure);
-  const foot = `Reviewed at ${/^[0-9a-f]+$/i.test(r.head) ? r.head.slice(0, 7) : r.head}.`;
+  const short = (h: string) => (/^[0-9a-f]+$/i.test(h) ? h.slice(0, 7) : h);
+  const fixedIn = r.fixedIn ? short(r.fixedIn) : null;
+  const head = verdictLine(r.verdict, r.sure, fixedIn && r.verdict === "take-fix" ? `Small fixes needed, made in ${fixedIn}:` : undefined);
+  const foot = `Reviewed at ${short(r.head)}.${fixedIn ? ` Fixes pushed in ${fixedIn}.` : ""}`;
   const summary = cleanLine(r.summary);
   const items: string[] = [];
   for (const p of r.points.slice(0, MAX_POINTS)) {

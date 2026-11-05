@@ -14,7 +14,7 @@ import { isQueueState } from "../core/plan.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
-import { parsePublic, storedClaims } from "./opus-parse.ts";
+import { postSource } from "./post-source.ts";
 import { reviewBody, recommendation } from "./post-template.ts";
 import { jobItem } from "../runner/job-items.ts";
 
@@ -36,31 +36,26 @@ export type PostDeps = { querier: Querier; now: () => Date };
 
 export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now: () => new Date() });
 
-const safeJson = (s: string): unknown => {
-  try { return JSON.parse(s); } catch { return null; }
-};
-
 /**
  * Open PRs of `repo` whose Plan holds a `post-review` action: an Opus review (with public text unless it edits an earlier post) at
  * their current head that no review of ours describes yet. The Plan leaves out PRs by the pipeline's own account, batch PRs,
  * held duplicates and items outside the pilot.
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
-  const opus = db.prepare("SELECT at, model, verdict, sure, public_review, claims FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1");
   const posted = db.prepare("SELECT review_id FROM review_posts WHERE repo = ? AND number = ?");
   const out: PostCandidate[] = [];
   for (const { facts: f, plan, action } of planned(db, "post-review", { repo })) {
     const head = action.head!;
-    const o = opus.get(repo, f.number, head) as { at: string; model: string | null; verdict: string; sure: number | null; public_review: string | null; claims: string | null } | undefined;
+    const o = postSource(db, repo, f.number, head);
     if (!o) continue;
     // A newer review with no public text still edits an earlier post, so the verdict line stays current.
-    const pub = o.public_review === null ? { summary: "", points: [] as string[] } : parsePublic(safeJson(o.public_review));
+    const pub = o.public;
     if (!pub) continue;
     const editId = (posted.get(repo, f.number) as { review_id: string | null } | undefined)?.review_id ?? null;
     out.push({
       repo, number: f.number, head_oid: head, editId, opusAt: o.at, model: o.model,
       body: reviewBody({
-        verdict: o.verdict, sure: o.sure !== 0, summary: pub.summary, points: pub.points, claims: storedClaims(safeJson(o.claims ?? "[]")), head,
+        verdict: o.sourceVerdict, sure: o.sure, summary: pub.summary, points: pub.points, claims: o.claims, head: o.reviewedAt, fixedIn: o.fixedIn,
         recommendation: recommendation({ verdict: o.verdict, queue: o.verdict === "take" && isQueueState(plan.state) ? { path: plan.path, state: plan.state } : null, mergeApproved: f.repoFacts.mergeApproved, canPush: f.repoFacts.pushApproved && f.pushable }),
       }),
     });
