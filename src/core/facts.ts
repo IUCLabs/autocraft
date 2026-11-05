@@ -22,6 +22,7 @@ import { repoHasNoCi } from "../merge/no-ci.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { inPilot, pilotSql, pipelineRepos } from "../pilot.ts";
 import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
+import { operatorTries, operatorWork, queuedOperatorFix } from "../preapproval/state.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
 import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, OPEN_QUESTION_SQL, UNSURE_AT_SQL, mergeDecisionId } from "./rules.ts";
@@ -147,6 +148,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     FROM merges m WHERE m.outcome = 'merged' GROUP BY m.repo, m.number`).all() as { ref: string; merged_at: string; head: string | null }[]).map((x) => [x.ref, x]));
   const pmReviews = new Map((db.prepare("SELECT repo || '#' || number AS ref, at, error FROM postmerge_reviews").all() as { ref: string; at: string; error: string | null }[]).map((x) => [x.ref, x]));
   const since = (db.prepare("SELECT value FROM settings WHERE key = ?").get(SINCE_KEY) as { value: string } | undefined)?.value ?? "9999";
+  const operator = operatorWork(db, opts.repo);
   const carries = db.prepare(`SELECT k.decision_id, k.attempts FROM dupe_carries k WHERE k.repo = ? AND k.number = ? AND k.state = 'queued' ORDER BY k.number`);
   const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
   const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'comment-failed', 'push-denied', 'linting')");
@@ -256,6 +258,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const checksAtHead = r.c_head === (r.r_head ?? head);
     base.mergeable = (checksAtHead ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
     base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived);
+    const ow = operator.get(ref);
+    if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold };
     if (r.state === "OPEN" && !base.heldBacklog) {
       for (const k of carries.all(r.repo, r.number) as { decision_id: string; attempts: number }[]) {
         const hasPoints = (carryPoints.all(k.decision_id) as { detail: string | null }[]).some((x) => {
@@ -333,7 +337,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     {
       const ended = (id: number | null): boolean => { const t = id != null ? getTask(db, id) : null; return !t || TERMINAL.includes(t.state); };
       for (const x of lintFixup.all(r.repo, r.number, r.r_head) as { source: string | null; lint_task: number | null }[]) {
-        base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" ? x.source : "review", ended: ended(x.lint_task) });
+        base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" || x.source === "operator" ? x.source : "review", ended: ended(x.lint_task) });
       }
       for (const x of lintCifix.all(r.repo, r.number, base.brokeByUs ? head : r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
       for (const x of lintConflict.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "conflict", source: "review", ended: ended(x.lint_task) });

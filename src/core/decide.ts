@@ -285,6 +285,11 @@ export function decidePr(f: PrFacts): Plan {
     }
   }
 
+  // An operator's fix-up of this head (a resolution card's step, or the first part of a pre-approved merge); it needs no review verdict.
+  const opFix = f.operator?.fix;
+  if (opFix && f.ghState === "OPEN" && !f.heldBacklog && f.head && !f.draft && f.mergeable !== "CONFLICTING" && !f.lint.some((l) => l.source === "operator")
+    && f.pushable && f.repoFacts.pushApproved && opFix.attempts + 1 <= FIXUP_MAX_ATTEMPTS) extra.push(act("fixup", f.head, { bucket: "fix", source: "operator" }));
+
   const mergedByUs = f.lastMerge?.outcome === "merged";
   const takeReview = !!r && (r.verdict === "take" || r.verdict === "take-fix");
   const merged = f.ghState === "MERGED" || mergedByUs;
@@ -334,7 +339,9 @@ export function decidePr(f: PrFacts): Plan {
 
   // Fix-up of a take-fix review's fixes, or of the pre-merge review's defect fixes.
   const fx = fixupOf(f);
-  if (fx) {
+  // The review's own fix-up waits while an operator's fix-up of the head is queued: two pushes would move the head under each other.
+  if (f.operator?.fix) { /* the operator's fix-up above */ }
+  else if (fx) {
     if (fx.bucket === "ask" || (!fx.done && (fx.bucket === "cannot-push" || fx.bucket === "fix"))) actions.push(act("fixup", f.head, { bucket: fx.bucket, source: "review" }));
   } else if (e && e.state === "needs-fix-up" && e.premerge === "fix" && f.premerge?.fixesSafe && f.mergeable !== "CONFLICTING" && !f.mergeHeld && !f.draft && !f.lint.some((l) => l.source === "premerge")) {
     actions.push(act("fixup", f.head, { bucket: "fix", source: "premerge" }));
@@ -359,7 +366,7 @@ export function decidePr(f: PrFacts): Plan {
     const basic = l.ended && open && !f.draft && !declinedBy(f) && (conflicted ? f.mergeable === "CONFLICTING" && !!f.conflict?.baseOk && !f.inActiveBatch : f.mergeable !== "CONFLICTING") && !f.mergeHeld && !f.heldBacklog && !!f.head;
     // A carry-over needs no review at the head; every other patch needs a take review there that is not stale.
     // A CI fix of our own breakage is reviewed against the head before the push.
-    const reviewed = l.source === "carry" || (l.step === "cifix" && !!f.brokeByUs && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
+    const reviewed = l.source === "carry" || l.source === "operator" || (l.step === "cifix" && !!f.brokeByUs && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
     const approved = f.pushable ? f.repoFacts.pushApproved : l.step === "cifix" && f.repoFacts.commentApproved;
     if (basic && reviewed && approved) actions.push(act("lint", f.head, { bucket: l.step, source: l.source }));
   }
@@ -373,9 +380,12 @@ export function decidePr(f: PrFacts): Plan {
     }
   }
 
+  // A pre-approved merge before its merge answer: the PR is not merged, batched or asked about meanwhile (src/preapproval).
+  if (f.operator?.hold) for (let i = actions.length - 1; i >= 0; i--) if (["merge", "ask-merge", "premerge"].includes(actions[i]!.kind)) actions.splice(i, 1);
+
   actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? "merge held by an operator" : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : WAITS[e.state] ?? null)) : null;
-  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait });
+  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: wait ?? (f.operator?.hold && !main ? "its pre-approved merge" : null) });
 }

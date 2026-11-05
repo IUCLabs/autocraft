@@ -42,7 +42,7 @@ import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
 import { fixupEditable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
-import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
+import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage, operatorCommentText } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 
@@ -374,6 +374,11 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
       if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
       if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
+      // An operator's fix-up may edit the files the PR itself changes: the instructions name no file.
+      if (c.operator) {
+        files = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(fixupEditable);
+        if (!files.length) { hold("too-large", "the PR changes no file a fix-up may edit"); continue; }
+      }
       // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
       const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
@@ -418,7 +423,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // The model's patch: the stored one when it is clean, else a new answer (with the findings on the earlier patch).
       const ses: SessionAsk = c.lint && findings.length ? sessionAsk(c.lint.session, "", findings, new Date(at())) : {};
       if (folded !== null) dropSessions(c.lint!.session);
-      const reply = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}),
+      const reply = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(c.operator ? { operator: c.operator.instructions } : {}), ...(carried ? { carried_from: carried } : {}),
         ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout,
         new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) }), ses);
       ledger.hold(ses.kept);
@@ -435,7 +440,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         rmSync(scratch, { recursive: true, force: true });
       }
       if (!applied.ok) { fail("refused", applied.reason); continue; }
-      const commit = await git.commit(applied.tree, head, commitMessage(v.files), { name: who.login, email: who.email });
+      const commit = await git.commit(applied.tree, head, commitMessage(v.files, !!c.operator), { name: who.login, email: who.email });
       const changes = await git.rawChanges(head, commit);
       const touched = changes.map((x) => x[3]!).sort().join("\n");
       if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...v.files].sort().join("\n")) {
@@ -449,7 +454,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // Opus checks the validated patch; only an approve goes on. A stored patch that came back clean was checked already (the format changes are whitespace only).
       if (folded === null) {
         if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
-        const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
+        const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, ...(c.operator ? { operator: c.operator.instructions } : {}), diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
         if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
         const verdict = parseCheck(checkReply);
         if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }
@@ -491,8 +496,8 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       summary.pushed.push(ref);
       jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 
-      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files, c.attempt);
-      const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
+      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files) : commentText(v.files, c.attempt);
+      const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : c.operator ? { by: "fixed-operator" } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));

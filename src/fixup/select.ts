@@ -6,6 +6,7 @@ import type { PrFacts } from "../core/plan.ts";
 import { findingsOf, premergeAt } from "../premerge/store.ts";
 import { type Carry, type FixCandidate, type FixSelection, parseFixes } from "./candidates.ts";
 import { conflictTries, type ConflictCandidate } from "./conflict-state.ts";
+import { queuedOperatorFix } from "../preapproval/state.ts";
 
 /** The queued carry-over jobs of a kept PR that have points to carry, in the order the facts list them. */
 function carriesOf(db: DatabaseSync, f: PrFacts, head: string): FixCandidate[] {
@@ -50,6 +51,9 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
       carryIndex.set(ref, i + 1);
       const c = carriesOf(db, f, head)[i];
       if (c) (bucket === "fix" ? carryFix : carryAsk).push(c);
+    } else if (action.params?.source === "operator") {
+      const o = queuedOperatorFix(db, repo, f.number, head);
+      if (o) fix.push({ repo, number: f.number, head, reason: "an operator's instructions", fixes: [], attempt: (f.operator?.fix?.attempts ?? 0) + 1, model: null, source: "operator", operator: { id: o.id, instructions: o.instructions } });
     } else if (action.params?.source === "premerge") {
       // Only a branch we may push to gets a pre-merge round; otherwise the step leaves it alone.
       if (!f.pushable || !f.repoFacts.pushApproved) continue;
@@ -80,6 +84,9 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
       if (source === "carry") {
         const c = carriesOf(db, f, head).find((x) => x.carry!.decisionId === w.carry_decision);
         if (c) out.lint.push({ ...c, attempt: w.attempt, lint });
+      } else if (source === "operator") {
+        const o = queuedOperatorFix(db, repo, f.number, head);
+        if (o) out.lint.push({ repo, number: f.number, head, reason: "an operator's instructions", fixes: [], attempt: w.attempt, model: null, source: "operator", operator: { id: o.id, instructions: o.instructions }, lint });
       } else if (source === "premerge") {
         const pm = premergeAt(db, repo, f.number, head);
         const defects = findingsOf(pm).filter((x) => x.severity === "defect");

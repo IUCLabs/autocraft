@@ -11,9 +11,15 @@ export function commentText(files: string[], attempt = 1): string {
   return (attempt > 1 ? LATER_COMMENT_TEMPLATE : COMMENT_TEMPLATE).replace("{{files}}", files.map((f) => `\`${f}\``).join(", "));
 }
 
+/** The one comment posted on the PR after a push made from a maintainer's instructions; the instructions themselves are never posted. */
+export const OPERATOR_COMMENT_TEMPLATE = "Pushed a fix-up requested by a maintainer: {{files}}.";
+export function operatorCommentText(files: string[]): string {
+  return OPERATOR_COMMENT_TEMPLATE.replace("{{files}}", files.map((f) => `\`${f}\``).join(", "));
+}
+
 /** The commit message: a subject and one line per changed file. */
-export function commitMessage(files: string[]): string {
-  return `Apply review fixes\n\n${files.map((f) => `- ${f}`).join("\n")}\n`;
+export function commitMessage(files: string[], operator = false): string {
+  return `${operator ? "Apply requested fixes" : "Apply review fixes"}\n\n${files.map((f) => `- ${f}`).join("\n")}\n`;
 }
 
 export const HOLD_CANNOT_PUSH = "can't push to the contributor's branch";

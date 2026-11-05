@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
+import { advancePreapprovals } from "../preapproval/index.ts";
 import { applyProposals, AUTOPILOT_USER, isEnabled, planDue, type Detected } from "./autopilot.ts";
 import { recordUsageSamples } from "../agents/accounts.ts";
 import { AccountWatcher } from "../agents/manage.ts";
@@ -162,6 +163,8 @@ export class Runner {
         this.o.log(`autopilot: ${(e as Error).message}`);
       }
     }
+    // Pre-approved merges move on rows other steps wrote; they are read here, not on a timer of their own.
+    try { advancePreapprovals(this.db, this.o.log); } catch (e) { this.o.log(`preapprovals: ${(e as Error).message}`); }
     if (this.planning || !planDue(this.db)) return;
     this.planning = this.detect(Date.now())
       .then((d) => { this.detected = d; }, (e) => this.o.log(`autopilot: detection failed: ${(e as Error).message}`))

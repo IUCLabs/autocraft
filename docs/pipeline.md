@@ -373,6 +373,16 @@ Operators control what merges next from the Queue page, the CLI or the API. Ever
 
 The Queue page API (`GET /api/queue/page?tab=all|review|fix|verify|merge&repos=pipeline|all|<repo>`) serves the tabs. The default repo filter is the repos whose pipeline is on plus fast-tracked items of any repo. Rows carry their fast-track place ("2 of 5") and hold. `GET /api/merge/held` lists the held PRs as `repo#n`. The Merge tab adds "Next merges": what merges next and what each PR waits for (CI, Verify, re-review, batch check, hold), read from the merge queue states.
 
+## Pre-approved merge
+
+A resolution card's `fixup` step with `merge` set is an operator's Merge answer given ahead of a fix-up. A `fixup` step without it only queues the fix-up, and a `review` step marks the head's review stale so Opus reviews it again.
+
+- **Fix-up.** The operator's instructions (1 to 1500 characters, never posted) are queued per head (`operator_fixups`). The Fix-up step works them with source `operator` in its `fixups` rows: the model gets the instructions as a trusted `operator` block in place of the fix list, may edit only files the PR already changes, and the patch goes through the same checks, lint and push approval as any fix-up. The PR's tries (2) apply to operator fix-ups as to the review's. The review's own fix-up and the merge queue leave the PR alone while the pre-approval is before its Merge answer.
+- **States** (`preapprovals`, shown as `Item.preapproval`): `fixup` (queued or running), `review` (the push's head waits for its Opus review), `ci` (the review says take and is sure; waiting for CI), `queued`, `merged`, `asked`, `cancelled`, `failed`. Each change is evaluated on the runner's tick from rows other steps write (fixups, reviews, checks, the mirrored head, merges), so it has no timer and no wait of its own. Each one writes an audit row (`preapproval`) and a system line in the item's conversation.
+- **Hand-over.** When the head's review says take and CI is green, the PR's Merge? decision at the pushed head is answered Merge in the operator's name, in the same way a dashboard answer is written, and the merge queue takes it from there with every check it always makes (premerge review, CI, safe-merge). The pre-approval never merges anything itself. It ends `merged` when the queue merged that head.
+- **Not take or CI not green.** A fix-up that did not push (`failed`), a review that is not a sure take, or red CI (`asked`) ends the pre-approval and asks a Merge? question at the head the normal way, so Prepare writes its options. Red CI is not waited out for the CI fix step: its push would be a new head.
+- **Cancelled.** When the head becomes any commit other than the fix-up's push (someone else pushed, or the CI fix did), when the PR closes or merges elsewhere, or when an operator cancels it (`POST /api/items/:repo/:n/preapproval/cancel`, audited). A cancel after the hand-over also removes the Merge answer it wrote.
+
 ## Act
 
 Makes the GitHub comments and closes that follow an operator's answer. No model. Needs the repo's **comment approval**; daily limit 20 items.
