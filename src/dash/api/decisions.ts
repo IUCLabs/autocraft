@@ -15,7 +15,7 @@ import { BACKLOG, HANDLED, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, 
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
-import { heldReason } from "../../runner/autopilot.ts";
+import { heldLookup, type Held } from "../../runner/autopilot.ts";
 import { initExecState, retryDecision } from "../../github/user-lane.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
@@ -144,7 +144,7 @@ function contextOf(c: string | null): string[] {
   return c.split(/\n+/).map((s) => s.trim()).filter(Boolean);
 }
 
-export type Viewer = { login: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot> };
+export type Viewer = { login: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null };
 /** The reason a write waits or failed: the stored text (it may carry GitHub's error text) only for operators and maintainers, one fixed sentence per state for everyone else. */
 export function execReasonFor(state: ExecState, stored: string | null, repo: string | null, staff: boolean): string | null {
   if (staff) return stored;
@@ -158,13 +158,15 @@ export function execOf(db: DatabaseSync, d: DecisionRow, repo: string | null, vi
   if (!d.answer || d.applied_at || d.exec_state === "done") return null;
   const state = (d.exec_state ?? "pending") as ExecState;
   if (state !== "pending") return { state, reason: execReasonFor(state, d.exec_reason ?? null, repo, viewer.staff) };
-  const held = d.repo && d.number !== null && !isBatch(d) ? heldReason(db, d.repo, d.number) : null;
+  let held = d.repo && d.number !== null && !isBatch(d) ? (viewer.held ??= heldLookup(db))(d.repo, d.number, d.id) : null;
+  // Viewers read only the repo-approval and pipeline-off sentences; backoff and limit texts stay with staff.
+  if (held && !viewer.staff && !held.approval && held.reason !== "The pipeline is off") held = null;
   if (!held) return d.exec_state ? { state, reason: null } : null;
   return { state, reason: held.reason, ...(held.approval && viewer.operator ? { approvalsRepo: d.repo! } : {}) };
 }
 export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator: isOperator(req), staff: canSeeInternals(req) });
 /** The viewer with the queue places of the items they may see, computed once for the response. */
-const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)) });
+const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db) });
 
 /** Whether Undo would succeed: answered, not acted on, and nothing written to GitHub for a group answer. */
 export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>

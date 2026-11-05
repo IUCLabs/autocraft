@@ -66,12 +66,12 @@ test("a push needs the repo's push approval at the write", async () => {
   const push = { kind: "fixup", bucket: "fix", head: "sha1" } as const;
   assert.ok(ok(await guard(db, ref, push, OP, live())), "holds while approved");
   setPushApproval(db, "op", "app", false);
-  assert.match(why(await guard(db, ref, push, OP, live())), /pushing in app is not approved/);
+  assert.match(why(await guard(db, ref, push, OP, live())), /Pushes in app are not approved/);
 });
 
 test("the global pipeline switch gates the pipeline's writes, not an operator's", async () => {
   const db = fresh([{ n: 1 }]);
-  assert.match(why(await guard(db, ref, MERGE, "pipeline", live())), /pipeline is off/);
+  assert.match(why(await guard(db, ref, MERGE, "pipeline", live())), /pipeline is off/i);
   assert.ok(ok(await guard(db, ref, MERGE, OP, live())));
   db.prepare("UPDATE main.settings SET value = '1' WHERE key = 'pipeline_enabled'").run();
   assert.ok(ok(await guard(db, ref, MERGE, "pipeline", live())));
@@ -79,22 +79,22 @@ test("the global pipeline switch gates the pipeline's writes, not an operator's"
 
 test("gates: each action kind needs its approval", () => {
   const off = (k: "mergeApproved" | "pushApproved" | "commentApproved" | "ciApproved") => prFacts({ repoFacts: { [k]: false } });
-  assert.match(gates(off("mergeApproved"), { kind: "merge" }, OP) ?? "", /merging/);
-  assert.match(gates(off("pushApproved"), { kind: "conflict", bucket: "merge" }, OP) ?? "", /pushing/);
-  assert.match(gates(off("commentApproved"), { kind: "fixup", bucket: "ask" }, OP) ?? "", /commenting/);
-  assert.match(gates(off("commentApproved"), { kind: "post-review" }, OP) ?? "", /commenting/);
-  assert.match(gates(off("ciApproved"), { kind: "approve-ci" }, OP) ?? "", /CI runs/);
-  assert.match(gates(off("ciApproved"), { kind: "cifix", bucket: "rerun" }, OP) ?? "", /CI runs/);
+  assert.match(gates(off("mergeApproved"), { kind: "merge" }, OP) ?? "", /Merges/);
+  assert.match(gates(off("pushApproved"), { kind: "conflict", bucket: "merge" }, OP) ?? "", /Pushes/);
+  assert.match(gates(off("commentApproved"), { kind: "fixup", bucket: "ask" }, OP) ?? "", /Comments/);
+  assert.match(gates(off("commentApproved"), { kind: "post-review" }, OP) ?? "", /Comments/);
+  assert.match(gates(off("ciApproved"), { kind: "approve-ci" }, OP) ?? "", /CI run approvals/);
+  assert.match(gates(off("ciApproved"), { kind: "cifix", bucket: "rerun" }, OP) ?? "", /CI run approvals/);
   assert.equal(gates(off("pushApproved"), { kind: "merge" }, OP), null);
 });
 
 test("gates: a tripped stage writes nothing, asks and other stages stay open", () => {
   const f = prFacts({ tripped: { fixup: "2 of the last 10 fixup pushes broke a required check" } });
-  for (const w of [{ kind: "fixup", bucket: "fix" }, { kind: "conflict", bucket: "merge" }, { kind: "lint", bucket: "fixup" }] as const) assert.match(gates(f, w, OP) ?? "", /fixup is paused: 2 of the last 10/);
+  for (const w of [{ kind: "fixup", bucket: "fix" }, { kind: "conflict", bucket: "merge" }, { kind: "lint", bucket: "fixup" }] as const) assert.match(gates(f, w, OP) ?? "", /Fixup is paused: 2 of the last 10/);
   assert.match(gates(f, { kind: "fixup", bucket: "fix" }, "pipeline") ?? "", /paused/);
   assert.equal(gates(f, { kind: "fixup", bucket: "ask" }, OP), null);
   assert.equal(gates(f, { kind: "cifix", bucket: "work" }, OP), null);
-  assert.match(gates(prFacts({ tripped: { merge: "main is red" } }), { kind: "merge" }, OP) ?? "", /merge is paused/);
+  assert.match(gates(prFacts({ tripped: { merge: "main is red" } }), { kind: "merge" }, OP) ?? "", /Merge is paused/);
 });
 
 test("the merge command gets the reviewed head, and the built-in command refuses another head", async () => {
@@ -121,7 +121,7 @@ const CLOSE = { kind: "act", bucket: "scope", decisionId: "d1" } as const;
 
 test("an item write needs the comment approval and an answer that still closes the item", async () => {
   const db = closeAnswered();
-  assert.match(why(await guardItem(db, ref, CLOSE, OP)), /commenting in app is not approved/);
+  assert.match(why(await guardItem(db, ref, CLOSE, OP)), /Comments in app are not approved/);
   setCommentApproval(db, "op", "app", true);
   assert.ok(ok(await guardItem(db, ref, CLOSE, OP)));
   db.prepare("UPDATE decisions SET answer = 'hold' WHERE id = 'd1'").run();
@@ -130,10 +130,10 @@ test("an item write needs the comment approval and an answer that still closes t
 
 test("a repo write needs the repo's approval and, for the pipeline, the global switch", () => {
   const db = fresh([{ n: 1 }]);
-  assert.match(why(guardRepo(db, "app", "comment", OP)), /commenting in app is not approved/);
+  assert.match(why(guardRepo(db, "app", "comment", OP)), /Comments in app are not approved/);
   setCommentApproval(db, "op", "app", true);
   assert.ok(ok(guardRepo(db, "app", "comment", OP)));
-  assert.match(why(guardRepo(db, "app", "comment", "pipeline")), /pipeline is off/);
+  assert.match(why(guardRepo(db, "app", "comment", "pipeline")), /pipeline is off/i);
 });
 
 test("a write function refuses a guard that was made for another repo", async () => {

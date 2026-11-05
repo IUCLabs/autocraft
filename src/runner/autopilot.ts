@@ -955,6 +955,8 @@ export type LaneItem = {
   next: boolean;
   /** Why the guard would refuse the item's write, or null. */
   blocked: string | null;
+  /** The decision the item's action carries out, when its params name one. */
+  decisionId?: string;
 };
 
 /**
@@ -977,6 +979,7 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
     all.push({
       repo: f.repo, number: f.number, kind: "kind" in f ? f.kind : "pr", action: a.kind, bucket: typeof a.params?.bucket === "string" ? a.params.bucket : null,
       fast, rank: f.score, inFlight: inFlightNow(f, state), next: false, blocked,
+      ...(typeof a.params?.decisionId === "string" ? { decisionId: a.params.decisionId } : {}),
     });
   };
   for (const k of kinds) {
@@ -1020,21 +1023,37 @@ export function storedLaneItems(db: DatabaseSync): StoredLaneItems {
   return out;
 }
 
-let actCache: { at: string; items: LaneItem[] } | null = null;
-/**
- * Why an answered decision's action is not starting, as the planner's last pass saw it (the stored act lane plus the lane's own
- * gate: pipeline switch, stage breaker, daily limit), or null. `approval` marks a missing repo approval. Reads only the plans topic.
- */
-export function heldReason(db: DatabaseSync, repo: string, number: number): { reason: string; approval: boolean } | null {
-  const row = db.prepare("SELECT items, at FROM lane_next WHERE lane = 'act'").get() as { items: string; at: string } | undefined;
-  if (!row) return null;
-  if (actCache?.at !== row.at) actCache = { at: row.at, items: JSON.parse(row.items) as LaneItem[] };
-  const item = actCache.items.find((i) => i.repo === repo && i.number === number);
-  if (!item) return null;
-  if (item.blocked) return { reason: plain(item.blocked), approval: /not approved$/.test(item.blocked) };
-  const act = LANES.find((l) => l.name === "act");
-  const g = act ? laneGate(db, act) : null;
-  return g && !g.canRun && g.kind !== "running" && g.why ? { reason: plain(g.why), approval: false } : null;
+/** The lanes that carry out the write of an answered decision: close and comment, merge, label, fix-up and issue fix. */
+const HELD_LANES = ["act", "merge", "labels", "fixup", "fixissue"];
+
+export type Held = { reason: string; approval: boolean };
+/** Reads the stored lane lists once; call it once per request and ask per decision. */
+export function heldLookup(db: DatabaseSync): (repo: string, number: number, decisionId?: string) => Held | null {
+  const rows = new Map((db.prepare(`SELECT lane, total, items FROM lane_next WHERE lane IN (${HELD_LANES.map(() => "?").join(",")})`).all(...HELD_LANES) as { lane: string; total: number; items: string }[]).map((r) => [r.lane, r]));
+  const parsed = new Map<string, LaneItem[]>();
+  const gateOf = new Map<string, Held | null>();
+  const laneHold = (name: string): Held | null => {
+    if (!gateOf.has(name)) {
+      const lane = LANES.find((l) => l.name === name);
+      const g = lane ? laneGate(db, lane) : null;
+      gateOf.set(name, g && !g.canRun && g.kind !== "running" && g.why ? { reason: plain(g.why), approval: false } : null);
+    }
+    return gateOf.get(name)!;
+  };
+  return (repo, number, decisionId) => {
+    for (const [name, row] of rows) {
+      if (!parsed.has(name)) parsed.set(name, JSON.parse(row.items) as LaneItem[]);
+      const items = parsed.get(name)!;
+      const item = items.find((i) => i.repo === repo && i.number === number && (!i.decisionId || !decisionId || i.decisionId === decisionId));
+      if (item) {
+        if (item.blocked) return { reason: plain(item.blocked), approval: /not approved$/.test(item.blocked) };
+        return laneHold(name);
+      }
+      // The stored list is capped: an item beyond it is judged by the lane's own gate alone.
+      if (row.total > items.length && name === "act") { const h = laneHold(name); if (h) return h; }
+    }
+    return null;
+  };
 }
 
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };

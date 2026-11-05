@@ -35,11 +35,11 @@ const STEPS: NextStep[] = ([
   },
   {
     lane: "merge", title: "Merge", stage: "Merge", steps: ["merge"], canRun: true, kind: "ok", why: null, note: "waiting for CI on 2 PRs in " + a,
-    items: [item(a!, 425, "merge", "Ready to merge", { rank: 90 }), item(b!, 90, "merge", "Merging is not approved in " + b, { blocked: `merging in ${b} is not approved`, next: false })],
+    items: [item(a!, 425, "merge", "Ready to merge", { rank: 90 }), item(b!, 90, "merge", "Merging is not approved in " + b, { blocked: `Merges in ${b} are not approved`, next: false })],
   },
   {
-    lane: "labels", title: "Apply pipeline labels", stage: "Label", steps: ["labels-apply"], canRun: false, kind: "approval", why: `labelling in ${c} is not approved`, note: null,
-    items: [item(c!, 12, "label", "Label disagrees with the classification", { kind: "issue", blocked: `labelling in ${c} is not approved`, next: false })],
+    lane: "labels", title: "Apply pipeline labels", stage: "Label", steps: ["labels-apply"], canRun: false, kind: "approval", why: `Labels in ${c} are not approved`, note: null,
+    items: [item(c!, 12, "label", "Label disagrees with the classification", { kind: "issue", blocked: `Labels in ${c} are not approved`, next: false })],
   },
 ] as Omit<NextStep, "total">[]).map((s) => ({ ...s, total: s.items.length }));
 
