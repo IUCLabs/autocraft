@@ -33,4 +33,5 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "cifix-push": "Pushed",
   "cifix-comment": "Commented",
   "postmerge-file": "Opened issue",
+  "act-open-issue": "Opened issue",
 };

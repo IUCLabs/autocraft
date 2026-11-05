@@ -6,7 +6,7 @@ import { readLive } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { optionsOf, BACKLOG, HANDLED, getDecision, reposOf, replaceProposedCards } from "../decisions.ts";
-import { GITHUB_ACTIONS } from "../github/actions.ts";
+import { actUsedToday } from "./usage.ts";
 import { addLabels, closeItem, commentOn, createIssue, IssueError, assignTo, removeLabel, reopenItem, requestReviewers, transferIssue, type Note, type Writer } from "../github/write.ts";
 import { exec as defaultExec, type Exec } from "../fixup/git.ts";
 import { runPipelineStep } from "../preapproval/index.ts";
@@ -157,21 +157,21 @@ class StepError extends Error {
 
 type Ctx = {
   exec: Exec;
+  /** Labels the same card removes: a type label among them does not block adding another. */
+  unlabeling?: string[];
   /** The operator's note: kept on the decision it settles, never posted to GitHub. */
   note?: string; db: DatabaseSync; c: CardRow; by: string; q: Querier; at: string; w: Writer; source: { source: string; card: number } };
 
 async function postComment({ db, c, by, q, w, source }: Ctx, text: string): Promise<Outcome> {
-  const g = guardRepo(db, c.repo, "comment", { operator: by });
-  if ("refused" in g) throw new Error(g.refused);
+  const g = actGrant(db, c.repo, by);
   const live = await liveOpen(q, c.repo, c.number);
   const url = await commentOn(w, g, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, text, source);
   return { result: "Comment posted", url: url || null };
 }
 
-async function addLabel({ db, c, by, q, at, w, source }: Ctx, label: string): Promise<Outcome> {
-  const g = guardRepo(db, c.repo, "labels", { operator: by });
-  if ("refused" in g) throw new Error(g.refused);
-  const other = otherTypeLabel(db, c.repo, c.number, label);
+async function addLabel({ db, c, by, q, at, w, source, unlabeling }: Ctx, label: string): Promise<Outcome> {
+  const g = actGrant(db, c.repo, by, "labels");
+  const other = otherTypeLabel(db, c.repo, c.number, label, unlabeling);
   if (other) throw new Error(`the item already has the type label "${other}" and an item has one type label`);
   const live = await liveOpen(q, c.repo, c.number);
   const have = await repoLabels(q, c.repo);
@@ -185,8 +185,7 @@ async function addLabel({ db, c, by, q, at, w, source }: Ctx, label: string): Pr
 
 /** Closes the item (after the optional comment) and returns how it was closed, for notes. Settling the decisions is the caller's. */
 async function closeThe({ db, c, by, q, at, w, source }: Ctx, p: { reason: CloseReason }, text: string | null): Promise<{ how: string; url: string }> {
-  const g = guardRepo(db, c.repo, "comment", { operator: by });
-  if ("refused" in g) throw new Error(g.refused);
+  const g = actGrant(db, c.repo, by);
   const refusal = closeRefusal(db, c.repo, c.number);
   if (refusal) throw new Error(refusal);
   const live = await liveOpen(q, c.repo, c.number);
@@ -209,8 +208,7 @@ function settleOthers(db: DatabaseSync, c: CardRow, how: string, by: string, at:
 
 /** Closes the item as a duplicate: Act's comment and close, recorded in `actions`. */
 async function closeDuplicate({ db, c, by, q, at, w, source }: Ctx, of: number): Promise<{ url: string }> {
-  const g = guardRepo(db, c.repo, "comment", { operator: by });
-  if ("refused" in g) throw new Error(g.refused);
+  const g = actGrant(db, c.repo, by);
   const refusal = closeRefusal(db, c.repo, c.number);
   if (refusal) throw new Error(refusal);
   const live = await liveOpen(q, c.repo, c.number);
@@ -227,15 +225,11 @@ async function closeDuplicate({ db, c, by, q, at, w, source }: Ctx, of: number):
   return { url };
 }
 
-/** The Act step's daily limit also covers the GitHub writes of conversation cards: they and the Act jobs' items today, against the limit row. */
+/** The Act step's daily limit also covers the GitHub writes of conversation cards. */
 function actRoom(db: DatabaseSync): void {
   const row = db.prepare("SELECT per_day FROM stage_limits WHERE step = 'act'").get() as { per_day: number | null } | undefined;
   if (!row || row.per_day === null) return;
-  const day = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
-  const actions = Object.keys(GITHUB_ACTIONS);
-  const cards = (db.prepare(`SELECT COUNT(*) AS n FROM audit WHERE at >= ? AND details LIKE '%"source":"conversation"%' AND action IN (${actions.map(() => "?").join(",")})`).get(day, ...actions) as { n: number }).n;
-  const jobs = (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = 'act' AND started_at >= ?").get(day) as { n: number }).n;
-  if (cards + jobs >= row.per_day) throw new Error(`the daily limit of ${row.per_day} Act writes is reached`);
+  if (actUsedToday(db) >= row.per_day) throw new Error(`the daily limit of ${row.per_day} Act writes is reached`);
 }
 
 /** The Act approval of `repo` for the operator's write, and room under the daily limit. */
@@ -271,6 +265,12 @@ async function unlabel(ctx: Ctx, label: string): Promise<Outcome> {
   const id = (await repoLabels(q, c.repo)).labels.get(label.toLowerCase());
   if (!id) throw new Error(`the label "${label}" does not exist on ${c.repo}`);
   await removeLabel(w, g, q, { repo: c.repo, number: c.number, id: live.id }, { id, name: label }, source);
+  // The mirror catches up at the next sync; later steps of this card read it now.
+  const row = db.prepare("SELECT labels FROM main.items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { labels: string | null } | undefined;
+  try {
+    const have = JSON.parse(row?.labels ?? "[]") as unknown[];
+    db.prepare("UPDATE main.items SET labels = ? WHERE repo = ? AND number = ?").run(JSON.stringify(have.filter((x) => String(x).toLowerCase() !== label.toLowerCase())), c.repo, c.number);
+  } catch { /* unreadable labels stay for the sync to rewrite */ }
   return { result: `Label "${label}" removed`, url: null };
 }
 
@@ -291,7 +291,7 @@ async function openIssue(ctx: Ctx, st: Extract<Step, { kind: "open_issue" }>): P
   const { db, c, by, w, source, exec } = ctx;
   const g = actGrant(db, st.repo, by);
   try {
-    const made = await createIssue(w, g, exec, { repo: st.repo, target: ref(c.repo, c.number), title: st.title, body: st.body }, CARD_NOTE, source);
+    const made = await createIssue(w, g, exec, { repo: st.repo, target: ref(c.repo, c.number), title: st.title, body: st.body, action: "act-open-issue" }, CARD_NOTE, source);
     return { result: `Opened ${ref(st.repo, made.number)}`, url: made.url };
   } catch (e) {
     if (e instanceof IssueError && !e.clear) throw new Error(`${e.message}; the issue may exist in ${st.repo}, check before running again`);
@@ -352,6 +352,7 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
   const { db, c, by, at } = ctx;
   if (p.settle) await checkSettle(db, c, p.settle, canWrite);
   else if (!(p.steps.length === 1 && p.steps[0]!.kind === "comment") && openDecision(db, c.repo, c.number)) throw new Error("the decision changed");
+  ctx.unlabeling = p.steps.flatMap((x) => (x.kind === "unlabel" ? [x.label] : []));
   const done: string[] = [];
   const results: string[] = [];
   let url: string | null = null;

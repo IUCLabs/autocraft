@@ -40,7 +40,7 @@ const STALE_CLAIM_MS = (CLAUDE_PROMPTS["conversation.turn"].limits.timeoutSecond
 // ---- blocks ------------------------------------------------------------------
 
 /** Text of operators and Opus must not close or open the frame the prompt puts around turns. */
-const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included)\b/gi, "&lt;$1$2");
+const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included|steps)\b/gi, "&lt;$1$2");
 
 export type Included = { login: string; at: string; text: string };
 
@@ -56,7 +56,8 @@ export function operatorBlock(login: string, text: string, included: Included[] 
 function seenSteps(db: DatabaseSync, repo: string, n: number): string[] | null {
   const parse = (j: string): string[] | null => { try { const v = JSON.parse(j) as unknown; return Array.isArray(v) ? v.map(String) : null; } catch { return null; } };
   for (const t of [...turnsOf(db, repo, n)].reverse()) {
-    const m = /<steps>(.*)<\/steps>/.exec(t.block);
+    if (t.kind !== "operator") continue;
+    const m = /\n<steps>(\[[^\n]*\])<\/steps>\n<\/turn>\n$/.exec(t.block);
     if (m) return parse(m[1]!);
   }
   const m = /"steps": (\[[^\]]*\])/.exec(conversationOf(db, repo, n)?.item_block ?? "");

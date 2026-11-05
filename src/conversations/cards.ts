@@ -229,12 +229,12 @@ export function closeRefusal(db: DatabaseSync, repo: string, n: number): string 
 }
 
 /** The type label the item has besides `label` (type labels are exclusive), or null. */
-export function otherTypeLabel(db: DatabaseSync, repo: string, n: number, label: string): string | null {
+export function otherTypeLabel(db: DatabaseSync, repo: string, n: number, label: string, removing: readonly string[] = []): string | null {
   if (!isTypeLabel(label)) return null;
   const row = db.prepare("SELECT labels FROM items WHERE repo = ? AND number = ?").get(repo, n) as { labels: string | null } | undefined;
   let have: unknown[] = [];
   try { have = JSON.parse(row?.labels ?? "[]") as unknown[]; } catch { /* unreadable labels count as none */ }
-  return have.map(String).find((l) => isTypeLabel(l) && !sameLabel(l, label)) ?? null;
+  return have.map(String).find((l) => isTypeLabel(l) && !sameLabel(l, label) && !removing.some((r) => sameLabel(r, l))) ?? null;
 }
 
 type Checked<T> = { value: T } | { note: string };
@@ -248,10 +248,10 @@ function commentText(raw: unknown, drop: ReadonlySet<string>): Checked<string> {
   return { value: text };
 }
 
-function labelStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
+function labelStep(db: DatabaseSync, repo: string, n: number, raw: unknown, removing: readonly string[]): Checked<Step> {
   const l = typeof raw === "string" ? ALL_LABELS.find((x) => sameLabel(x.name, raw)) : undefined;
   if (!l) return { note: `dropped a resolution: "${String(raw).slice(0, 40)}" is not a label the pipeline manages` };
-  const other = otherTypeLabel(db, repo, n, l.name);
+  const other = otherTypeLabel(db, repo, n, l.name, removing);
   if (other) return { note: `dropped a resolution: the item already has the type label "${other}" and an item has one type label` };
   return { value: { kind: "label", label: l.name } };
 }
@@ -276,6 +276,8 @@ function duplicateStep(db: DatabaseSync, repo: string, n: number, of: unknown): 
 type ItemFacts = { kind: string; state: string; author: string | null };
 const itemFacts = (db: DatabaseSync, repo: string, n: number): ItemFacts | undefined =>
   db.prepare("SELECT kind, state, author FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemFacts | undefined;
+/** A repository name as the model wrote it, without a leading `storytold/`. */
+const bareRepo = (v: unknown): unknown => (typeof v === "string" ? v.replace(/^storytold\//i, "") : v);
 const isTracked = (db: DatabaseSync, repo: unknown): repo is string => typeof repo === "string" && !!db.prepare("SELECT 1 FROM tracked_repos WHERE name = ?").get(repo);
 const sameLogin = (a: string | null, b: string): boolean => a !== null && a.toLowerCase() === b.toLowerCase();
 
@@ -301,15 +303,17 @@ function issueText(raw: unknown, max: number, what: string, drop: ReadonlySet<st
 }
 
 function openIssueStep(db: DatabaseSync, st: Record<string, unknown>, drop: ReadonlySet<string>): Checked<Step> {
-  if (!isTracked(db, st.repo)) return { note: `dropped a resolution: "${String(st.repo).slice(0, 40)}" is not a tracked repository` };
+  const repo = bareRepo(st.repo);
+  if (!isTracked(db, repo)) return { note: `dropped a resolution: "${String(st.repo).slice(0, 40)}" is not a tracked repository` };
   const title = issueText(st.title, ISSUE_TITLE_MAX, "title", drop, true);
   if ("note" in title) return title;
   const body = issueText(st.body, COMMENT_MAX, "body", drop, false);
   if ("note" in body) return body;
-  return { value: { kind: "open_issue", repo: st.repo, title: title.value, body: body.value } };
+  return { value: { kind: "open_issue", repo, title: title.value, body: body.value } };
 }
 
-function transferStep(db: DatabaseSync, repo: string, n: number, to: unknown): Checked<Step> {
+function transferStep(db: DatabaseSync, repo: string, n: number, toRaw: unknown): Checked<Step> {
+  const to = bareRepo(toRaw);
   const f = itemFacts(db, repo, n);
   if (pr(f)) return { note: "dropped a resolution: only an issue can be moved to another repository" };
   if (!isTracked(db, to) || to === repo) return { note: `dropped a resolution: "${String(to).slice(0, 40)}" is not another tracked repository` };
@@ -431,12 +435,13 @@ function closeSettle(db: DatabaseSync, repo: string, d: DecisionRow, st: Settlin
 function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record<string, unknown>, drop: ReadonlySet<string>): { card: NewCard } | { note: string } {
   if (!Array.isArray(c.steps) || c.steps.length > MAX_STEPS) return { note: "dropped a resolution without a list of steps" };
   const steps: Step[] = [];
+  const removing = c.steps.flatMap((x) => (x && (x as { kind?: unknown }).kind === "unlabel" && typeof (x as { label?: unknown }).label === "string" ? [(x as { label: string }).label] : []));
   for (const raw of c.steps) {
     const st = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
     let r: Checked<Step>;
     switch (st.kind) {
       case "comment": r = { value: { kind: "comment" } }; break;
-      case "label": r = labelStep(db, repo, n, st.label); break;
+      case "label": r = labelStep(db, repo, n, st.label, removing); break;
       case "close": r = closeStep(db, repo, n, st.reason); break;
       case "duplicate": r = duplicateStep(db, repo, n, st.of); break;
       case "unlabel": r = unlabelStep(db, repo, n, st.label); break;
@@ -460,6 +465,7 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
   const count = (k: Step["kind"]) => steps.filter((x) => x.kind === k).length;
   for (const k of ["comment", "reopen", "open_issue", "assign", "request_reviewers", "review", "fixup"] as const) if (count(k) > 1) return { note: `dropped a resolution with more than one ${k} step` };
   if (count("review") + count("fixup") > 1) return { note: "dropped a resolution with both a review and a fixup step" };
+  if ((count("review") || count("fixup")) && (count("close") || count("duplicate"))) return { note: "dropped a resolution that closes the PR and also reviews or fixes it up" };
   const closing = steps.filter((x): x is Extract<Step, { kind: "close" | "duplicate" | "transfer" }> => x.kind === "close" || x.kind === "duplicate" || x.kind === "transfer");
   if (closing.length > 1) return { note: "dropped a resolution that ends the item twice (close, duplicate or transfer)" };
   if (closing.length === 1 && steps[steps.length - 1] !== closing[0]) return { note: "dropped a resolution whose close, duplicate or transfer step is not last" };
@@ -525,9 +531,11 @@ export function commentTexts(reply: string): { field: string; text: string }[] {
     const out: { field: string; text: string }[] = [];
     const text = typeof c.text === "string" ? cleanComment(c.text) : "";
     if (text) out.push({ field: `cards[${i}].text`, text });
-    if (Array.isArray(c.steps)) c.steps.forEach((st: { kind?: unknown; body?: unknown }, j) => {
-      const body = st && st.kind === "open_issue" && typeof st.body === "string" ? cleanComment(st.body) : "";
+    if (Array.isArray(c.steps)) c.steps.forEach((st: { kind?: unknown; body?: unknown; title?: unknown }, j) => {
+      if (!st || st.kind !== "open_issue") return;
+      const body = typeof st.body === "string" ? cleanComment(st.body) : "", title = typeof st.title === "string" ? cleanComment(st.title).replace(/\s+/g, " ") : "";
       if (body) out.push({ field: `cards[${i}].steps[${j}].body`, text: body });
+      if (title) out.push({ field: `cards[${i}].steps[${j}].title`, text: title });
     });
     return out;
   });

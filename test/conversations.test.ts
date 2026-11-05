@@ -193,6 +193,25 @@ describe("Do it", () => {
     return { sent, querier };
   };
 
+  test("a transfer needs the comment approval of the target repository too", async () => {
+    const db = fresh();
+    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('lib', 'op', ?, 1)").run(T0);
+    const sent: string[] = [];
+    const querier = { query: async (q: string) => {
+      if (q.includes("issueOrPullRequest")) return { repository: { issueOrPullRequest: { __typename: "Issue", id: "I_1", state: "OPEN" } } };
+      sent.push(q.includes("transferIssue") ? "transfer" : "other");
+      return q.includes("transferIssue") ? { transferIssue: { issue: { url: "https://x.test/lib/1" } } } : { repository: { id: "R_lib" } };
+    } };
+    const first = await doCard(db, resolution(db, [{ kind: "transfer", to: "storytold/lib" }], null, null), "op", { querier: querier as never });
+    assert.equal(first.card.state, "failed");
+    assert.match(first.card.error ?? "", /lib/);
+    assert.equal(sent.includes("transfer"), false);
+    setCommentApproval(db, "op", "lib", true);
+    const second = await doCard(db, resolution(db, [{ kind: "transfer", to: "lib" }], null, null), "op", { querier: querier as never });
+    assert.equal(second.card.state, "done", second.card.error ?? "");
+    assert.ok(sent.includes("transfer"));
+  });
+
   test("a resolution runs its steps in order, then answers the decision with the operator's login; a failing step leaves it open", async () => {
     const ok = fresh();
     setLabelApproval(ok, "op", "app", true);

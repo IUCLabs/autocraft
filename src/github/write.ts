@@ -291,12 +291,12 @@ const REFUSED = /issues are disabled|has disabled issues|could not resolve to a 
  * Opens an issue; returns its number and URL. Throws an IssueError when `gh` fails or prints no issue URL; `clear` tells
  * whether the failure certainly left no issue behind. `target` is the item the issue follows up.
  */
-export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: string; target: string; title: string; body: string }, note: Note, details: Details = {}): Promise<{ number: number; url: string }> {
+export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: string; target: string; title: string; body: string; /** The audit action; the post-merge step's by default. */ action?: string }, note: Note, details: Details = {}): Promise<{ number: number; url: string }> {
   covers(g, o.repo);
   const body = withNote(note, o.body);
   let r: ExecResult;
   try {
-    r = await viaGh(w, exec, "postmerge-file", o.target, { ...details, title: o.title, text: body },
+    r = await viaGh(w, exec, o.action ?? "postmerge-file", o.target, { ...details, title: o.title, text: body },
       ["issue", "create", "--repo", `${ORG}/${o.repo}`, "--title", o.title, "--body-file", "-"], body);
   } catch (e) {
     // exec rejects only when the command could not be started.
