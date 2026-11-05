@@ -6,8 +6,6 @@ import { FIXUP_MAX_ATTEMPTS } from "../core/rules.ts";
 const TRY_STATES = ["pushing", "pushed", "failed", "refused", "rejected"];
 /** Fix-up states that end the work of an operator fix-up (`linting` is a stored patch waiting for its lint task; `superseded` is one the plan dropped). */
 const ENDED_STATES = ["pushing", "pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "push-denied", "asked", "comment-failed", "superseded"];
-/** A fix-up request that has not been worked this long stops holding the PR's merge. */
-export const HOLD_MAX_MS = 24 * 3600_000;
 const ENDED_SQL = `EXISTS (SELECT 1 FROM fixups f WHERE f.operator_fix = o.id AND f.source = 'operator' AND f.state IN (${ENDED_STATES.map(() => "?").join(",")}))`;
 
 /** Tries the operator's fix-ups used on the PR; the fix-up limit of the PR applies to them as to the review's. */
@@ -29,7 +27,7 @@ export function queuedOperatorFix(db: DatabaseSync, repo: string, number: number
 
 export type OperatorWork = { fixHeads: Set<string>; hold: boolean; /** The pushed head of a pre-approved merge waiting for its pre-merge review (state `ci`). */ premergeHeads: Set<string> };
 
-/** Per PR ("repo#n"): the heads with an operator fix-up still to work, whether the PR's merge is held (a pre-approved merge before its merge answer, or a fix-up request still being worked), and the heads due a pre-merge review. Small tables, read once per pass. */
+/** Per PR ("repo#n"): the heads with an operator fix-up still to work, whether a pre-approved merge is before its merge answer, and the heads due a pre-merge review. Small tables, read once per pass. */
 export function operatorWork(db: DatabaseSync, repo?: string): Map<string, OperatorWork> {
   const out = new Map<string, OperatorWork>();
   const get = (r: string, n: number): OperatorWork => {
@@ -39,16 +37,20 @@ export function operatorWork(db: DatabaseSync, repo?: string): Map<string, Opera
     return w;
   };
   const q = (sql: string) => db.prepare(`${sql}${repo ? " AND repo = ?" : ""}`).all(...(repo ? [repo] : []));
-  const since = new Date(Date.now() - HOLD_MAX_MS).toISOString();
-  for (const o of db.prepare(`SELECT repo, number, from_head, at FROM operator_fixups o WHERE state = 'queued' AND NOT ${ENDED_SQL}${repo ? " AND repo = ?" : ""}`).all(...ENDED_STATES, ...(repo ? [repo] : [])) as { repo: string; number: number; from_head: string; at: string }[]) {
-    const w = get(o.repo, o.number);
-    w.fixHeads.add(o.from_head);
-    if (o.at > since) w.hold = true;
-  }
+  for (const o of db.prepare(`SELECT repo, number, from_head FROM operator_fixups o WHERE state = 'queued' AND NOT ${ENDED_SQL}${repo ? " AND repo = ?" : ""}`).all(...ENDED_STATES, ...(repo ? [repo] : [])) as { repo: string; number: number; from_head: string }[]) get(o.repo, o.number).fixHeads.add(o.from_head);
   for (const p of q("SELECT repo, number, state, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci')") as { repo: string; number: number; state: string; head: string | null }[]) {
     const w = get(p.repo, p.number);
     w.hold = true;
     if (p.state === "ci" && p.head) w.premergeHeads.add(p.head);
   }
   return out;
+}
+
+export type OpenRequest = { id: number; repo: string; number: number; head: string; preapprovalId: number | null; started: boolean };
+
+/** Every operator fix-up request still queued (no final fixups row of its own); `started` when a fixups row of it exists (a stored patch or a push under way). */
+export function openOperatorFixups(db: DatabaseSync): OpenRequest[] {
+  const rows = db.prepare(`SELECT id, repo, number, from_head, preapproval_id, EXISTS (SELECT 1 FROM fixups f WHERE f.operator_fix = o.id) AS started FROM operator_fixups o WHERE state = 'queued' AND NOT ${ENDED_SQL}`)
+    .all(...ENDED_STATES) as { id: number; repo: string; number: number; from_head: string; preapproval_id: number | null; started: number }[];
+  return rows.map((r) => ({ id: r.id, repo: r.repo, number: r.number, head: r.from_head, preapprovalId: r.preapproval_id, started: !!r.started }));
 }

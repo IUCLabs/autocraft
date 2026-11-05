@@ -214,7 +214,9 @@ class Recorder {
       if (c.lint) this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ?, patch = NULL WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, c.lint.rowid);
       return;
     }
-    const open = this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushing', 'linting') ORDER BY rowid DESC").get(c.repo, c.number, c.head) as { id: number } | undefined;
+    // The candidate's own row: its stored patch, else the open row of its source (and of its operator request).
+    const open = (c.lint ? { id: c.lint.rowid } : this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushing', 'linting') AND COALESCE(source, 'review') = ? AND operator_fix IS ? ORDER BY rowid DESC")
+      .get(c.repo, c.number, c.head, c.source ?? "review", c.operator?.id ?? null)) as { id: number } | undefined;
     if (open) {
       this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, open.id);
     } else {

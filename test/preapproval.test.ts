@@ -143,4 +143,33 @@ describe("pre-approved merge", () => {
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 12)?.state, "failed");
   });
+
+  test("a fix-up request without merge ends when the head moves, and a pre-approval whose fix-up cannot run asks", async () => {
+    const w = fresh().pr(13).pr(14).review(14, { verdict: "take-fix" });
+    await start(w, 13, false);
+    w.synced(13, "moved13");
+    settle(w);
+    assert.equal(w.rows("SELECT state FROM operator_fixups WHERE number = 13")[0]!.state, "ended");
+
+    await start(w, 14);
+    w.db.prepare("UPDATE pr_checks SET mergeable = 'CONFLICTING' WHERE number = 14").run();
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 14)?.state, "asked");
+  });
+
+  test("a cancel is refused while a merge job runs, and a merge that lands after a cancel turns the row into merged", async () => {
+    const w = fresh().pr(15).review(15, { verdict: "take-fix" });
+    await inCi(w, 15);
+    w.premerge(15, "clean");
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 15)?.state, "queued");
+    const job = w.db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, repo) VALUES ('merge', '{}', 'pipeline', ?, 'running', 'app')").run(T0);
+    assert.throws(() => cancelPreapproval(w.db, OPERATOR, "app", 15), /merge of the repo is running/);
+    assert.equal(preapprovalOf(w.db, "app", 15)?.state, "queued");
+    w.db.prepare("UPDATE jobs SET state = 'done' WHERE id = ?").run(Number(job.lastInsertRowid));
+    cancelPreapproval(w.db, OPERATOR, "app", 15);
+    w.db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome) VALUES ('app', 15, 'sha15b', 'r', ?, 'operator', 'squash', 'merged')").run(new Date().toISOString());
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 15)?.state, "merged");
+  });
 });

@@ -22,7 +22,7 @@ import { repoHasNoCi } from "../merge/no-ci.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { inPilot, pilotSql, pipelineRepos } from "../pilot.ts";
 import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
-import { operatorTries, operatorWork, queuedOperatorFix } from "../preapproval/state.ts";
+import { operatorTries, operatorTriesLeft, operatorWork, queuedOperatorFix } from "../preapproval/state.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
 import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, OPEN_QUESTION_SQL, UNSURE_AT_SQL, mergeDecisionId } from "./rules.ts";
@@ -263,6 +263,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived);
     const ow = operator.get(ref);
     if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold, premerge: !!head && ow.premergeHeads.has(head) };
+    // A fix-up request holds the PR's merge only while the planner can work it: same head, pushable, approved, not conflicting, not a draft, tries left.
+    if (base.operator?.fix && !base.heldBacklog && !base.draft && base.mergeable !== "CONFLICTING" && base.pushable && base.repoFacts.pushApproved && operatorTriesLeft(db, r.repo, r.number)) base.operator.hold = true;
     if (ow && r.state === "OPEN" && head) {
       for (const x of lintOperator.all(r.repo, r.number, head) as { lint_task: number | null }[]) base.lint.push({ step: "fixup", source: "operator", ended: taskEnded(x.lint_task) });
       if (base.lint.length) base.inFlight = true;

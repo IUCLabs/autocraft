@@ -9,7 +9,7 @@
 //              then merges it with every check it always makes (safe-merge included)
 //   merged / asked / cancelled / failed end it.
 // Every transition is a pure reaction to rows other steps write (fixups, opus_reviews, pr_checks, items, merges), evaluated by
-// advancePreapprovals on each runner tick: no timer, no wait of its own. Merging itself is never called from here.
+// advancePreapprovals on each runner tick: no timer and no wait of its own; the one time comparison (the mirror's last sync against the push) is made when the tick runs anyway. Merging itself is never called from here.
 import type { DatabaseSync } from "node:sqlite";
 import type { Preapproval } from "../../web/src/api/types.ts";
 import type { Step } from "../conversations/cards.ts";
@@ -26,15 +26,14 @@ import { repoHasNoCi } from "../merge/no-ci.ts";
 import { withdrawOtherHeadQuestions } from "../merge/withdraw.ts";
 import { findingsOf, premergeAt } from "../premerge/store.ts";
 import { markReviewsStale, staleReviews } from "../review/discussion.ts";
-import { operatorTriesLeft, queuedOperatorFix } from "./state.ts";
+import type { PrFacts } from "../core/plan.ts";
+import { openOperatorFixups, operatorTriesLeft, queuedOperatorFix } from "./state.ts";
 
 export type PipelineStep = Extract<Step, { kind: "review" | "fixup" }>;
 
 const ACTOR = "pipeline";
 export const INSTRUCTIONS_MAX = 1500;
 const ACTIVE = ["fixup", "review", "ci", "queued"] as const;
-/** After the push, the mirror may still show the earlier head this long before a head that went back counts as another push. */
-const SYNC_LAG_MS = 10 * 60_000;
 /** Plan states in which the PR gets no review, so a pre-approved merge cannot go on. */
 const NOT_REVIEWABLE = ["out-of-scope", "integration", "backlog", "duplicate", "draft", "label-not-reviewed", "scope"];
 const iso = () => new Date().toISOString();
@@ -105,6 +104,7 @@ function cancelRow(db: DatabaseSync, id: number, by: string, reason: string, lin
     // Past the guard of the merge queue, a cancel cannot stop the merge: a batch holds the PR, or it is merged.
     if (guard && p.state === "queued") {
       if (db.prepare(`SELECT 1 FROM main.merge_batch_prs x JOIN main.merge_batches b ON b.id = x.batch_id WHERE b.repo = ? AND x.number = ? AND b.state IN ('checking', 'open')`).get(p.repo, p.number)) throw new Error("the PR is in an integration batch: the merge can no longer be stopped");
+      if (db.prepare("SELECT 1 FROM jobs WHERE repo = ? AND step = 'merge' AND state = 'running'").get(p.repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
       if (p.head && db.prepare("SELECT 1 FROM merges WHERE repo = ? AND number = ? AND head_oid = ? AND outcome = 'merged'").get(p.repo, p.number, p.head)) throw new Error("the PR is already merged");
     }
     if (!moveRaw(db, p, "cancelled", { by, reason })) {
@@ -200,30 +200,30 @@ type Hand = { done: true } | { gone: true } | { stop: string };
 function handOver(db: DatabaseSync, p: Row, head: string): Hand {
   const id = mergeDecisionId(p.repo, p.number, head);
   const at = iso();
-  if (!getDecision(db, id)) {
-    ask(db, [{
-      id, kind: "merge", repo: p.repo, number: p.number, question: "Merge this PR?",
-      context: `${p.by} approved this merge ahead of a fix-up; the fix-up was pushed, its review says take, CI is green and its pre-merge review is clean.`,
-      facts: [`fix-up pushed by the pipeline from ${short(p.from_head)} to ${short(head)}`, `${HEAD_FACT}${head}`],
-      options: Object.values(MERGE_OPTIONS).map((x) => ({ ...x })), asked_by: ACTOR, asked_at: at,
-    }]);
-  }
   db.exec("BEGIN IMMEDIATE");
   try {
     if (!isOperator(db, p.by)) {
       db.exec("ROLLBACK");
       return { stop: `${p.by} is no longer an operator` };
     }
-    const d = getDecision(db, id)!;
-    if (d.answer !== null && d.answer !== "merge") {
+    const d0 = getDecision(db, id);
+    if (d0 && d0.answer !== null && d0.answer !== "merge") {
       db.exec("ROLLBACK");
-      return { stop: `the Merge? question at this head was answered ${d.answer}` };
+      return { stop: `the Merge? question at this head was answered ${d0.answer}` };
     }
     if (!moveRaw(db, p, "queued", { head })) {
       db.exec("ROLLBACK");
       return { gone: true };
     }
-    if (d.answer === null) {
+    if (!getDecision(db, id)) {
+      ask(db, [{
+        id, kind: "merge", repo: p.repo, number: p.number, question: "Merge this PR?",
+        context: `${p.by} approved this merge ahead of a fix-up; the fix-up was pushed, its review says take, CI is green and its pre-merge review is clean.`,
+        facts: [`fix-up pushed by the pipeline from ${short(p.from_head)} to ${short(head)}`, `${HEAD_FACT}${head}`],
+        options: Object.values(MERGE_OPTIONS).map((x) => ({ ...x })), asked_by: ACTOR, asked_at: at,
+      }], true);
+    }
+    if (getDecision(db, id)!.answer === null) {
       db.prepare(`UPDATE main.decisions SET answer = 'merge', answer_note = NULL, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
         WHERE id = ? AND answer IS NULL`).run(p.by, at, id);
       db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(id);
@@ -248,6 +248,18 @@ function reviewAt(db: DatabaseSync, p: Row, head: string): ReviewRead {
   if (staleReviews(db, p.repo).has(`${p.repo}#${p.number}@${head}`)) return { kind: "stale", why: "" };
   if (r.verdict === "take" && r.sure === 1) return { kind: "take", why: "" };
   return { kind: "bad", why: `the review says ${r.verdict}${r.sure === 1 ? "" : " (unsure)"}${r.reason ? `: ${oneLine(r.reason, 160)}` : ""}` };
+}
+
+/** Why the planner does not list the operator's fix-up for the PR now; null when it does. */
+function whyNotPlanned(db: DatabaseSync, f: PrFacts): string | null {
+  if (decidePr(f).actions.some((a) => a.kind === "fixup" && a.params?.source === "operator")) return null;
+  if (f.draft) return "the PR is a draft";
+  if (f.heldBacklog) return "the PR is held in the backlog";
+  if (f.mergeable === "CONFLICTING") return "the PR conflicts with its base branch";
+  if (!f.pushable) return "the PR's branch cannot be pushed to";
+  if (!f.repoFacts.pushApproved) return "pushing is not approved for the repo";
+  if (!operatorTriesLeft(db, f.repo, f.number)) return "the fix-up tries are used up";
+  return "the pipeline does not plan the fix-up";
 }
 
 const FAILED_FIXUP = ["failed", "refused", "rejected", "cannot-push", "too-large", "push-denied", "asked", "comment-failed", "superseded"];
@@ -277,13 +289,21 @@ function advance(db: DatabaseSync, p: Row): void {
     if (fx?.state === "pushing" && fx.to_head && cur === fx.to_head) return void move(db, p, "review", { head: fx.to_head, line: `The fix-up pushed ${short(fx.to_head)}; Opus reviews it next.` });
     // Whatever the fix-up row says (none yet, linting, pushing), a head that is neither its start nor its push is someone else's.
     if (cur !== null && cur !== p.from_head && cur !== fx?.to_head) return cancel(`another push moved the head to ${short(cur)}`);
+    // No try yet and the planner would not work the request (not pushable, conflicting, a draft, ...): it would wait for ever.
+    if (!fx) {
+      const f = loadPrFact(db, p.repo, p.number);
+      const why = f ? whyNotPlanned(db, f) : null;
+      if (why) stop("asked", `the fix-up cannot run: ${why}`, cur ?? p.from_head);
+    }
     return;
   }
 
   // Every later state: the head is the fix-up's push. Until a review exists at it, the mirror may still show the head the push started from, for a short time.
   const head = p.head!;
   if (cur !== null && cur !== head) {
-    const lag = p.state === "review" && cur === p.from_head && Date.now() - Date.parse(p.updated_at) < SYNC_LAG_MS
+    // The mirror row shows the old head until a sync finishes after the push (the row's state entry follows the push); a review at the pushed head also shows the mirror saw it.
+    const synced = (db.prepare("SELECT synced_at FROM repos WHERE name = ?").get(p.repo) as { synced_at: string | null } | undefined)?.synced_at ?? null;
+    const lag = p.state === "review" && cur === p.from_head && (synced === null || synced <= p.updated_at)
       && !db.prepare("SELECT 1 FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head);
     if (!lag) return cancel(cur === p.from_head ? `the head went back to ${short(cur)}` : `another push moved the head to ${short(cur)}`);
   }
@@ -337,10 +357,38 @@ function advance(db: DatabaseSync, p: Row): void {
   if (!isOperator(db, d.answered_by ?? p.by)) cancel(`${d.answered_by ?? p.by} is no longer an operator, so the Merge answer no longer counts`);
 }
 
+/** Ends fix-up requests the planner can no longer work (the PR's head moved, it closed, the push is not possible), with the reason in the thread. Requests of a pre-approved merge end with it. */
+function endStaleRequests(db: DatabaseSync): void {
+  for (const o of openOperatorFixups(db)) {
+    if (o.preapprovalId !== null) continue;
+    const f = loadPrFact(db, o.repo, o.number);
+    const why = !f ? "the PR is no longer open" : f.head !== o.head ? `the head moved to ${short(f.head)}` : o.started ? null : whyNotPlanned(db, f);
+    if (!why) continue;
+    if (db.prepare("UPDATE operator_fixups SET state = 'ended' WHERE id = ? AND state = 'queued'").run(o.id).changes !== 1) continue;
+    audit(db, ACTOR, "operator-fixup", `${o.repo}#${o.number}`, { id: o.id, ended: true, reason: why });
+    say(db, o.repo, o.number, `The queued fix-up of ${short(o.head)} was dropped: ${why}.`);
+  }
+}
+
+/** A cancel that came too late for a merge already past its guard: the merge row that appears at the head turns the row into merged. */
+function settleCancelled(db: DatabaseSync): void {
+  const since = new Date(Date.now() - 86_400_000).toISOString();
+  const rows = db.prepare("SELECT * FROM preapprovals WHERE state = 'cancelled' AND head IS NOT NULL AND updated_at > ?").all(since) as Row[];
+  for (const p of rows) {
+    if (db.prepare("SELECT 1 FROM merges WHERE repo = ? AND number = ? AND head_oid = ? AND outcome = 'merged' AND at >= ?").get(p.repo, p.number, p.head, p.at)) move(db, p, "merged", { line: "The merge went through before the cancel took effect: the PR is merged." });
+  }
+}
+
 /** Runs on every runner tick: moves each pre-approved merge that other steps' rows have carried to a new state. Writes nothing when nothing moved. */
 export function advancePreapprovals(db: DatabaseSync, log: (line: string) => void = () => {}): number {
   const rows = db.prepare(`SELECT * FROM preapprovals WHERE state IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id`).all(...ACTIVE) as Row[];
   let n = 0;
+  try {
+    endStaleRequests(db);
+    settleCancelled(db);
+  } catch (e) {
+    log(`preapproval requests: ${(e as Error).message}`);
+  }
   for (const p of rows) {
     try {
       advance(db, p);
