@@ -943,6 +943,8 @@ CREATE TABLE IF NOT EXISTS review_posts (
   head_oid TEXT NOT NULL,
   posted_at TEXT NOT NULL,
   edited_at TEXT,
+  -- Who posted it: `legacy` (the box account) or the identity of the grant; NULL for rows from before this was recorded (legacy).
+  posted_as TEXT,
   PRIMARY KEY (repo, number)
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('review-post', 40);

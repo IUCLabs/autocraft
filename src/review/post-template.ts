@@ -116,5 +116,5 @@ export function reviewBody(r: ReviewPostInput): string {
     kept.push(line);
     used += line.length + 1;
   }
-  return `${head}\n\n${summary ? `${summary}\n\n` : ""}${kept.length ? `${kept.join("\n")}\n\n` : ""}${claimBlock}${rec}\n\n${foot}`;
+  return `${head}\n\n${summary ? `${summary}\n\n` : ""}${kept.length ? `${kept.join("\n")}\n\n` : ""}${claimBlock}${foot}\n\n${rec}`;
 }

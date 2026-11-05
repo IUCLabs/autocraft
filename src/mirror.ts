@@ -12,6 +12,8 @@ import { trackedNames } from "./repos.ts";
 import { audit } from "./dash/audit.ts";
 import { hashColumns } from "./itemhash.ts";
 import { syncActivity } from "./activity.ts";
+import { mentionNames, rememberSlug } from "./github/slugs.ts";
+import { appSlug } from "./github/identity.ts";
 import { envVar } from "./env.ts";
 import { DEFAULT_OWNER, loadOwners, ownerOf, slugOf } from "./owners.ts";
 import { classifyFailure, clearRepoFailure, recordRepoFailure } from "./sync-errors.ts";
@@ -246,9 +248,13 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
 }
 
 /** 1 when the body names the pipeline login; the needs page lists such comments through an index. */
-const mentions = (body: unknown, own: string): number => (own && typeof body === "string" && body.toLowerCase().includes(`@${own.toLowerCase()}`) ? 1 : 0);
+const mentions = (body: unknown, names: string[]): number => {
+  if (typeof body !== "string") return 0;
+  const b = body.toLowerCase();
+  return names.some((n) => n && b.includes(`@${n.toLowerCase()}`)) ? 1 : 0;
+};
 
-function commentRows(repo: string, kind: Kind, n: Node, own: string): SQLInputValue[][] {
+function commentRows(repo: string, kind: Kind, n: Node, own: string[]): SQLInputValue[][] {
   // `counted`: whether the entry counts as new discussion for the review stage (src/review/discussion.ts).
   const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body, inline: c.comments?.totalCount }));
   const rows = n.comments.nodes.map((c: Node) =>
@@ -271,7 +277,9 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const insComment = db.prepare(`INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
     body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association, mentions_pipeline=excluded.mentions_pipeline`);
-  const own = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
+  const live = appSlug();
+  if (live) { try { rememberSlug(db, live); } catch { /* read-only connection */ } }
+  const own = mentionNames(db, live);
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const n of nodes) {

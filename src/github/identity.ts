@@ -8,6 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Grant, Guarded } from "../core/guard.ts";
 import { ownerOf } from "../owners.ts";
+import { knownSlugs, rememberSlug } from "./slugs.ts";
 import { AppError, call, GITHUB_API } from "./app.ts";
 import { AppNotInstalledError, installationToken, readAppSecrets, RepoNotInInstallationError } from "./install-token.ts";
 
@@ -113,6 +114,14 @@ export async function commitIdentity(
   return { name: w.login, login: w.login, email: w.email };
 }
 
+/** The bot logins (bare slug and `<slug>[bot]`) of every known slug plus `extra`; the registered app's slug is recorded when `db` is given. */
+export function ownBotLogins(db: DatabaseSync, extra: string | null = null): string[] {
+  const live = appSlug();
+  if (live) { try { rememberSlug(db, live); } catch { /* a read-only connection: the live slug is still used below */ } }
+  const slugs = new Set([...knownSlugs(db), ...(live ? [live] : []), ...(extra ? [extra] : [])]);
+  return [...slugs].flatMap((s) => [s, `${s}[bot]`]);
+}
+
 /** Slug of the registered GitHub App, read from the secrets file at most once a minute; null when none is registered or the file is unreadable. */
 let slugMemo: { at: number; slug: string | null } | null = null;
 export function appSlug(): string | null {
@@ -124,21 +133,21 @@ export function appSlug(): string | null {
 }
 
 /**
- * Logins whose items and comments are ours on `repo`: the box account (when recorded) and, on a repo that writes as the app, the app's bot
- * (a bare slug in the mirror, `<slug>[bot]` in REST). The box account stays in the set so items from before a switch remain ours.
- * Lower-cased. `slug` is injectable for tests; by default the registered app's.
+ * Logins whose items and comments are ours: the box account (when recorded) and the bot of every app slug ever seen (a bare slug in the
+ * mirror, `<slug>[bot]` in REST), on every repo whatever its `repo_identity`, so items from before a switch stay ours.
+ * `slug` is an extra slug injectable for tests; the registered app's is recorded and included by default.
  */
-export function ownLogins(db: DatabaseSync, repo: string, slug: string | null = appSlug()): Set<string> {
+export function ownLogins(db: DatabaseSync, _repo: string, slug: string | null = null): Set<string> {
   const out = new Set<string>();
   const box = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value;
   if (box) out.add(box);
-  if (slug && repoIdentity(db, repo) === "app") { out.add(slug); out.add(`${slug}[bot]`); }
+  for (const l of ownBotLogins(db, slug)) out.add(l);
   return out;
 }
 
 /** Every login that is ours on any repo (for views that span repos). */
-export function allOwnLogins(db: DatabaseSync, slug: string | null = appSlug()): Set<string> {
-  const out = ownLogins(db, "", null);
-  if (slug) { out.add(slug); out.add(`${slug}[bot]`); }
-  return out;
+export function allOwnLogins(db: DatabaseSync, slug: string | null = null): Set<string> {
+  return ownLogins(db, "", slug);
 }
+
+export { knownSlugs, rememberSlug };
