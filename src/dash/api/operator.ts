@@ -30,7 +30,7 @@ export async function cancelItemPreapproval(db: DatabaseSync, req: Req) {
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
   await needVisible(db, req, repo);
   try {
-    return cancelPreapproval(db, req.user.login, repo, n);
+    return await cancelPreapproval(db, req.user.login, repo, n);
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }

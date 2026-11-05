@@ -14,7 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Preapproval } from "../../web/src/api/types.ts";
 import type { Step } from "../conversations/cards.ts";
 import { conversationOf, insertTurn, systemBlock } from "../conversations/store.ts";
-import { decidePr } from "../core/decide.ts";
+import { cifixBucket, decidePr } from "../core/decide.ts";
 import { loadPrFact } from "../core/facts.ts";
 import { HEAD_FACT, MERGE_OPTIONS, PREMERGE_MAX_TRIES, mergeDecisionId } from "../core/rules.ts";
 import { audit } from "../dash/audit.ts";
@@ -25,6 +25,8 @@ import { mergeApprovalOf } from "../merge/approval.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
 import { withdrawOtherHeadQuestions } from "../merge/withdraw.ts";
 import { findingsOf, premergeAt } from "../premerge/store.ts";
+import { removeFromBatch } from "../merge/controls.ts";
+import type { Exec } from "../fixup/git.ts";
 import { markReviewsStale, staleReviews } from "../review/discussion.ts";
 import type { PrFacts } from "../core/plan.ts";
 import { openOperatorFixups, operatorTriesLeft, queuedOperatorFix } from "./state.ts";
@@ -103,8 +105,8 @@ function cancelRow(db: DatabaseSync, id: number, by: string, reason: string, lin
     }
     // Past the guard of the merge queue, a cancel cannot stop the merge: a batch holds the PR, or it is merged.
     if (guard && p.state === "queued") {
-      if (db.prepare(`SELECT 1 FROM main.merge_batch_prs x JOIN main.merge_batches b ON b.id = x.batch_id WHERE b.repo = ? AND x.number = ? AND b.state IN ('checking', 'open')`).get(p.repo, p.number)) throw new Error("the PR is in an integration batch: the merge can no longer be stopped");
-      if (db.prepare("SELECT 1 FROM jobs WHERE repo = ? AND step = 'merge' AND state = 'running'").get(p.repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
+      if (inActiveBatch(db, p.repo, p.number)) throw new Error("the PR is still in an integration batch");
+      if (mergeRunning(db, p.repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
       if (p.head && db.prepare("SELECT 1 FROM merges WHERE repo = ? AND number = ? AND head_oid = ? AND outcome = 'merged'").get(p.repo, p.number, p.head)) throw new Error("the PR is already merged");
     }
     if (!moveRaw(db, p, "cancelled", { by, reason })) {
@@ -250,6 +252,13 @@ function reviewAt(db: DatabaseSync, p: Row, head: string): ReviewRead {
   return { kind: "bad", why: `the review says ${r.verdict}${r.sure === 1 ? "" : " (unsure)"}${r.reason ? `: ${oneLine(r.reason, 160)}` : ""}` };
 }
 
+/** "CI fix" or "conflict merge" when the pipeline itself pushed `cur` on top of the row's head, else null. */
+function ownPush(db: DatabaseSync, p: Row, cur: string): string | null {
+  if (db.prepare("SELECT 1 FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND to_head = ? AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "CI fix";
+  if (db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND state IN ('pushing', 'merged')").get(p.repo, p.number, p.head, cur)) return "conflict merge";
+  return null;
+}
+
 /** Why the planner does not list the operator's fix-up for the PR now; null when it does. */
 function whyNotPlanned(db: DatabaseSync, f: PrFacts): string | null {
   if (decidePr(f).actions.some((a) => a.kind === "fixup" && a.params?.source === "operator")) return null;
@@ -305,6 +314,11 @@ function advance(db: DatabaseSync, p: Row): void {
     const synced = (db.prepare("SELECT synced_at FROM repos WHERE name = ?").get(p.repo) as { synced_at: string | null } | undefined)?.synced_at ?? null;
     const lag = p.state === "review" && cur === p.from_head && (synced === null || synced <= p.updated_at)
       && !db.prepare("SELECT 1 FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head);
+    if (!lag && p.state !== "queued") {
+      // The pipeline's own CI fix or conflict merge on the pushed head carries the pre-approval on: the new head needs the whole chain again.
+      const own = ownPush(db, p, cur);
+      if (own) return void move(db, p, "review", { head: cur, line: `The ${own} pushed ${short(cur)}; it needs a fresh review, a clean pre-merge review and green CI before the PR goes to the merge queue.` });
+    }
     if (!lag) return cancel(cur === p.from_head ? `the head went back to ${short(cur)}` : `another push moved the head to ${short(cur)}`);
   }
 
@@ -332,11 +346,19 @@ function advance(db: DatabaseSync, p: Row): void {
     const c = db.prepare("SELECT overall, mergeable FROM pr_checks WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head) as { overall: string; mergeable: string | null } | undefined;
     if (!c || c.overall === "pending") return;
     if (c.overall === "failure") {
-      // The CI fix step may still run on the red head as usual, but the pre-approval does not wait for it: its push would be a new head. The operator decides now.
-      return stop("asked", "CI failed at the pushed head", head, ["review of the fix-up: take", "CI failed at the pushed head"]);
+      // The CI fix step works the red head as it would for any PR; its push is a new head that continues this pre-approval (see ownPush). The operator decides when the step has given up.
+      const f = loadPrFact(db, p.repo, p.number);
+      const bucket = f ? cifixBucket(f) : null;
+      if (bucket !== null && ["work", "formatting", "linting", "collect", "rerun", "rerun-wait"].includes(bucket)) return;
+      return stop("asked", "CI failed at the pushed head and the CI fix did not repair it", head, ["review of the fix-up: take", "CI failed at the pushed head"]);
     }
     if (c.overall === "none" && !repoHasNoCi(db, p.repo)) return;
-    if (c.mergeable === "CONFLICTING") return stop("asked", "the PR conflicts with its base branch", head);
+    if (c.mergeable === "CONFLICTING") {
+      // The conflict step merges the base into the PR when it can; its push is a new head that continues this pre-approval.
+      const f = loadPrFact(db, p.repo, p.number);
+      if (f?.conflict?.baseOk && f.conflict.bucket === "merge") return;
+      return stop("asked", "the PR conflicts with its base branch", head);
+    }
     // The pre-merge review of this head must be clean; the planner runs it (src/core/decide.ts) and retries a failed one.
     const pm = premergeAt(db, p.repo, p.number, head);
     if (!pm || (pm.findings === null && pm.tries < PREMERGE_MAX_TRIES)) return;
@@ -400,10 +422,23 @@ export function advancePreapprovals(db: DatabaseSync, log: (line: string) => voi
   return n;
 }
 
-/** An operator cancels the PR's pre-approved merge before the merge queue has merged it. Throws when there is none or the queue is past stopping it. */
-export function cancelPreapproval(db: DatabaseSync, by: string, repo: string, n: number): Preapproval {
+const mergeRunning = (db: DatabaseSync, repo: string): boolean => !!db.prepare("SELECT 1 FROM jobs WHERE repo = ? AND step = 'merge' AND state = 'running'").get(repo);
+const inActiveBatch = (db: DatabaseSync, repo: string, n: number): boolean =>
+  !!db.prepare("SELECT 1 FROM main.merge_batch_prs x JOIN main.merge_batches b ON b.id = x.batch_id WHERE b.repo = ? AND x.number = ? AND b.state IN ('checking', 'open')").get(repo, n);
+
+/**
+ * An operator cancels the PR's pre-approved merge before the merge queue has merged it. A queued PR in an integration batch is first
+ * removed from the batch (the operator control: the batch PR is closed and the PR is held) unless the merge is running.
+ * Throws when there is none or the queue is past stopping it.
+ */
+export async function cancelPreapproval(db: DatabaseSync, by: string, repo: string, n: number, run?: Exec): Promise<Preapproval> {
   const p = db.prepare(`SELECT id FROM preapprovals WHERE repo = ? AND number = ? AND state IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 1`).get(repo, n, ...ACTIVE) as { id: number } | undefined;
   if (!p) throw new Error(`${repo}#${n} has no pre-approved merge in progress`);
+  const state = (db.prepare("SELECT state FROM preapprovals WHERE id = ?").get(p.id) as { state: string }).state;
+  if (state === "queued" && inActiveBatch(db, repo, n)) {
+    if (mergeRunning(db, repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
+    await removeFromBatch(db, by, repo, n, run);
+  }
   // The state change and the take-back of the hand-over answer are one transaction, so the merge queue never sees a cancelled row with a live answer.
   if (!cancelRow(db, p.id, by, `cancelled by ${by}`, `${by} cancelled the pre-approved merge.`, true)) throw new Error("the pre-approved merge changed a moment ago");
   return preapprovalOf(db, repo, n)!;

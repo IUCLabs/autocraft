@@ -4,6 +4,8 @@ import { afterEach, describe, test } from "node:test";
 import { actionable } from "../src/decisions.ts";
 import { mergeDecisionId } from "../src/core/rules.ts";
 import { advancePreapprovals, cancelPreapproval, preapprovalOf, runPipelineStep } from "../src/preapproval/index.ts";
+import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
+import { operatorCommentText } from "../src/fixup/template.ts";
 import { OPERATOR, T0, world, type World } from "./world-db.ts";
 
 let current: World | null = null;
@@ -71,6 +73,10 @@ describe("pre-approved merge", () => {
     pushed(w, 3, "sha3b");
     w.synced(3, "sha3b").review(3, { head: "sha3b" });
     w.db.prepare("UPDATE pr_checks SET overall = 'failure' WHERE number = 3").run();
+    // The CI fix step may still repair the red head: the pre-approval waits for it, and asks once it has given up.
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 3)?.state, "ci");
+    w.db.prepare("INSERT INTO ci_fixes (repo, number, head, kind, state, attempt, created_at) VALUES ('app', 3, 'sha3b', 'code', 'capped', 1, ?)").run(T0);
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 3)?.state, "asked");
     const q = w.rows("SELECT answer FROM decisions WHERE id = ?", mergeDecisionId("app", 3, "sha3b"));
@@ -122,7 +128,7 @@ describe("pre-approved merge", () => {
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 6)?.state, "queued");
     assert.deepEqual(answerOf(w, 6, "sha6b"), [{ answer: "merge" }]);
-    assert.equal(cancelPreapproval(w.db, OPERATOR, "app", 6).state, "cancelled");
+    assert.equal((await cancelPreapproval(w.db, OPERATOR, "app", 6)).state, "cancelled");
     assert.deepEqual(answerOf(w, 6, "sha6b"), [{ answer: null }]);
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 6)?.state, "cancelled");
@@ -164,12 +170,49 @@ describe("pre-approved merge", () => {
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 15)?.state, "queued");
     const job = w.db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, repo) VALUES ('merge', '{}', 'pipeline', ?, 'running', 'app')").run(T0);
-    assert.throws(() => cancelPreapproval(w.db, OPERATOR, "app", 15), /merge of the repo is running/);
+    await assert.rejects(cancelPreapproval(w.db, OPERATOR, "app", 15), /merge of the repo is running/);
     assert.equal(preapprovalOf(w.db, "app", 15)?.state, "queued");
     w.db.prepare("UPDATE jobs SET state = 'done' WHERE id = ?").run(Number(job.lastInsertRowid));
-    cancelPreapproval(w.db, OPERATOR, "app", 15);
+    await cancelPreapproval(w.db, OPERATOR, "app", 15);
     w.db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome) VALUES ('app', 15, 'sha15b', 'r', ?, 'operator', 'squash', 'merged')").run(new Date().toISOString());
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 15)?.state, "merged");
+  });
+
+  test("the pipeline's own CI fix push continues the pre-approval at the new head; a foreign push cancels it", async () => {
+    const w = fresh().pr(16).review(16, { verdict: "take-fix" }).pr(17).review(17, { verdict: "take-fix" });
+    await inCi(w, 16);
+    w.db.prepare("INSERT INTO ci_fixes (repo, number, head, to_head, kind, state, attempt, created_at) VALUES ('app', 16, 'sha16b', 'sha16c', 'format', 'pushed', 1, ?)").run(T0);
+    w.synced(16, "sha16c");
+    settle(w);
+    const p = preapprovalOf(w.db, "app", 16)!;
+    assert.deepEqual([p.state, p.head], ["review", "sha16c"]);
+
+    await inCi(w, 17);
+    w.synced(17, "foreign17");
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 17)?.state, "cancelled");
+  });
+
+  test("cancelling a queued PR that is in a batch removes it from the batch and takes the answer back", async () => {
+    const w = fresh().pr(18).review(18, { verdict: "take-fix" });
+    await inCi(w, 18);
+    w.premerge(18, "clean");
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 18)?.state, "queued");
+    w.db.prepare("INSERT INTO merge_batches (id, repo, branch, state, base_sha, commit_sha, created_at, updated_at) VALUES (5, 'app', 'integration-app-1', 'open', 'b', 't', ?, ?)").run(T0, T0);
+    w.db.prepare("INSERT INTO merge_batch_prs (batch_id, number, head_oid, position) VALUES (5, 18, 'sha18b', 1)").run();
+    assert.equal((await cancelPreapproval(w.db, OPERATOR, "app", 18)).state, "cancelled");
+    assert.equal(w.rows("SELECT state FROM merge_batches WHERE id = 5")[0]!.state, "superseded");
+    assert.deepEqual(answerOf(w, 18, "sha18b"), [{ answer: null }]);
+  });
+
+  test("an operator fix-up may edit any file but the protected ones, and its comment lists the model's changes", () => {
+    assert.ok(operatorEditable("docs/guide.txt") && operatorEditable("Cargo.toml") && operatorEditable("src/a.rs"));
+    assert.ok(!operatorEditable(".github/workflows/ci.yml") && !operatorEditable("build.rs") && !operatorEditable("CLAUDE.md") && !operatorEditable("a/../b"));
+    const r = splitChanges("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\nCHANGES:\n1. Renamed a to b.\n2) Fixed the doc.\n");
+    assert.deepEqual(r.changes, ["Renamed a to b.", "Fixed the doc."]);
+    assert.ok(r.diff.endsWith("+b"));
+    assert.equal(operatorCommentText(["x"], r.changes), "Fixes included:\n1. Renamed a to b.\n2. Fixed the doc.");
   });
 });

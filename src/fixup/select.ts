@@ -69,8 +69,8 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
     }
   }
   // Stored patches (review, pre-merge and carry-over sources) whose lint task ended. Their row is found by source; a carry-over's also by its decision.
-  const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state, carry_decision, session, operator_fix FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND COALESCE(source, 'review') = ? AND state = 'linting' ORDER BY rowid");
-  type LintRow = { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; carry_decision: string | null; session: string | null; operator_fix: number | null };
+  const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state, carry_decision, session, operator_fix, changes FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND COALESCE(source, 'review') = ? AND state = 'linting' ORDER BY rowid");
+  type LintRow = { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; carry_decision: string | null; session: string | null; operator_fix: number | null; changes: string | null };
   const seenLint = new Set<string>();
   for (const { facts: f, action } of planned(db, "lint", { ...opts, bucket: "fixup" })) {
     const head = action.head!, source = String(action.params?.source ?? "review");
@@ -80,7 +80,7 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
     seenLint.add(key);
     for (const w of row.all(repo, f.number, head, source) as LintRow[]) {
       if (!w.patch) continue;
-      const lint = { rowid: w.id, round: w.lint_round ?? 1, task: w.lint_task, state: w.lint_state ?? "pending", patch: w.patch, session: w.session };
+      const lint = { rowid: w.id, round: w.lint_round ?? 1, task: w.lint_task, state: w.lint_state ?? "pending", patch: w.patch, session: w.session, changes: changesOf(w.changes) };
       if (source === "carry") {
         const c = carriesOf(db, f, head).find((x) => x.carry!.decisionId === w.carry_decision);
         if (c) out.lint.push({ ...c, attempt: w.attempt, lint });
@@ -113,4 +113,9 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
   out.fix.push(...carryFix, ...fix);
   out.ask.unshift(...carryAsk);
   return out;
+}
+
+/** The stored list of changes of an operator fix-up row; empty when none or unreadable. */
+function changesOf(json: string | null): string[] {
+  try { const v = JSON.parse(json ?? "[]") as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; }
 }
