@@ -786,6 +786,15 @@ async function sync(args: string[]): Promise<void> {
           console.log(`main-ci: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
         }
       }
+      // Findings whose fix is landing: a merged pull request, or a fix that reached the default branch through an advisory.
+      if (!opts.full && !opts.only.length) {
+        try {
+          const { exec, fixupDir } = await import("./fixup/git.ts");
+          await (await import("./security/land.ts")).pollLandingIfDue(db, { exec, root: fixupDir(), log: (l) => console.log(l) });
+        } catch (e) {
+          console.log(`security: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        }
+      }
     } catch (e) {
       db.prepare("UPDATE sync_runs SET ended_at = ?, error = ? WHERE rowid = ?").run(iso(new Date()), String((e as Error)?.message ?? e).slice(0, 300), row);
       throw e;

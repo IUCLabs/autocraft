@@ -18,6 +18,7 @@ import type { Querier } from "../mirror.ts";
 import { type Note, withNote } from "./note.ts";
 import { slugOf, splitSlug } from "../owners.ts";
 import { call, GITHUB_API } from "./app.ts";
+import { giveaway } from "../security/rules.ts";
 
 export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
@@ -354,6 +355,90 @@ async function pushed(w: Writer, git: Pick<Git, "git">, action: string, target: 
     try { recordPush(w.db, action, { ...pr, from: typeof details.from === "string" ? details.from : null, to: o.sha, base: typeof details.base === "string" ? details.base : null }); } catch (e) { console.error(`push outcome not recorded: ${oneLine(String((e as Error).message ?? e))}`); }
   }
   return r;
+}
+
+// ---- security fixes ------------------------------------------------------------
+// Rows of these actions are not in GITHUB_ACTIONS: no feed, activity page or live topic shows them to viewers.
+
+/** What a quiet pull request may say: refuses any text that names the problem. Checked here, so no caller can skip it. */
+function assertQuiet(...texts: string[]): void {
+  for (const t of texts) {
+    const w = giveaway(t);
+    if (w) throw new Error(`a landing write may not mention "${w}"`);
+  }
+}
+
+/** The HTTP status in gh's error text, or null. */
+export const httpStatus = (r: ExecResult): number | null => {
+  const text = `${r.stderr} ${r.stdout}`;
+  // gh prints "HTTP 403"; git prints "The requested URL returned error: 403" or "Permission to <repo> denied".
+  const m = /HTTP (\d{3})/.exec(text) ?? /returned error: (\d{3})/.exec(text);
+  return m ? Number(m[1]) : /Permission to .* denied/i.test(text) ? 403 : /not found/i.test(text) ? 404 : null;
+};
+
+/** Pushes the fix commit to the pipeline's fork under a neutral branch name: the quiet landing's push. */
+export async function ghLandPush(w: Writer, g: Grant, git: Pick<Git, "git">, o: { repo: string; fork: string; branch: string; sha: string; base: string; key: string }): Promise<ExecResult> {
+  // The pushed commit is public with its branch: its message is checked as well as the branch name.
+  const message = await git.git(["log", "-1", "--format=%B", o.sha]);
+  if (message.code !== 0) throw new Error("the commit message could not be read");
+  assertQuiet(o.branch, message.stdout);
+  return pushOwnBranch(w, g, git, "security-land-push", { repo: o.repo, remote: o.fork, branch: o.branch, sha: o.sha }, { base: o.base, finding: o.key });
+}
+
+/** Opens the quiet pull request: plain title and body, neutral branch. */
+export function ghLandPr(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; base: string; head: string; title: string; body: string }, note: Note): Promise<ExecResult> {
+  assertQuiet(o.head, o.title, o.body);
+  return ghOpenPr(w, g, exec, "security-land", { repo: o.repo, target: o.key, base: o.base, head: o.head, title: o.title, body: o.body }, note, {});
+}
+
+const json = (v: unknown): string => JSON.stringify(v);
+
+/** Creates the repository's draft advisory (private to admins and security managers). The text is not kept in the audit row. */
+export async function ghAdvisoryCreate(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; summary: string; description: string; severity: "critical" | "high" | "medium" | "low" }): Promise<{ ghsa: string | null; result: ExecResult }> {
+  covers(g, o.repo);
+  const body = json({ summary: o.summary, description: o.description, severity: o.severity, vulnerabilities: [{ package: { ecosystem: "other", name: o.repo }, vulnerable_version_range: null, patched_versions: null }] });
+  let ghsa: string | null = null;
+  const result = await recorded(w, "security-advisory", o.key, { repo: o.repo },
+    () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories`, "--input", "-", "--jq", ".ghsa_id"], { input: body }),
+    (r) => { ghsa = r.stdout.trim() || null; return { ghsa: ghsa ?? undefined }; },
+    (r) => (r.code === 0 && r.stdout.trim() ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
+  return { ghsa, result };
+}
+
+/** Creates the advisory's temporary private fork; returns its owner/name. */
+export async function ghAdvisoryFork(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string }): Promise<{ fork: string | null; result: ExecResult }> {
+  covers(g, o.repo);
+  let fork: string | null = null;
+  const result = await recorded(w, "security-advisory-fork", o.key, { repo: o.repo, ghsa: o.ghsa },
+    () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}/forks`, "--jq", ".full_name"]),
+    (r) => { fork = r.stdout.trim() || null; return { fork: fork ?? undefined }; },
+    (r) => (r.code === 0 && r.stdout.trim() ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
+  return { fork, result };
+}
+
+/** Pushes the fix to the advisory's private fork with the box user's token: the GitHub App cannot reach these forks. */
+export function ghAdvisoryPush(w: Writer, g: Grant, git: Pick<Git, "git">, o: { repo: string; fork: string; branch: string; sha: string; key: string }): Promise<ExecResult> {
+  return pushOwnBranch(w, g, git, "security-advisory-push", { repo: o.repo, remote: o.fork, branch: o.branch, sha: o.sha }, { finding: o.key });
+}
+
+/** Opens the fix pull request inside the private fork. */
+export function ghAdvisoryPr(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; fork: string; base: string; head: string; title: string; body: string }): Promise<ExecResult> {
+  covers(g, o.repo);
+  return viaGh(w, exec, "security-advisory-pr", o.key, { repo: o.repo, fork: o.fork },
+    ["pr", "create", "--repo", o.fork, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], o.body);
+}
+
+/** Publishes the draft advisory; a published advisory deletes its private fork. */
+export function ghAdvisoryPublish(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string }): Promise<ExecResult> {
+  covers(g, o.repo);
+  return viaGh(w, exec, "security-publish", o.key, { repo: o.repo, ghsa: o.ghsa },
+    ["api", "-X", "PATCH", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}`, "--input", "-"], json({ state: "published" }));
+}
+
+/** Requests a CVE for the advisory (public repositories only). */
+export function ghAdvisoryCve(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string }): Promise<ExecResult> {
+  covers(g, o.repo);
+  return viaGh(w, exec, "security-cve", o.key, { repo: o.repo, ghsa: o.ghsa }, ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}/cve`]);
 }
 
 // ---- merges ---------------------------------------------------------------------

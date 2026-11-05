@@ -116,6 +116,24 @@ async function checkFixIssueApproved(db: DatabaseSync, p: Params): Promise<strin
   return fixIssueApprovalOf(db, String(p.repo)) ? null : `fixing issues in ${p.repo} is not approved`;
 }
 
+const SECURITY_FINDING_PARAMS: ParamDef[] = [
+  { name: "repo", label: "Repo", kind: "repo", required: true },
+  { name: "number", label: "Finding", kind: "int", min: 1, max: 1_000_000_000, required: true, help: "the finding's number in the repo" },
+];
+
+/** The finding exists and is in a state the step works on. */
+async function securityFindingCheck(db: DatabaseSync, p: Params, states: string[]): Promise<string | null> {
+  const row = db.prepare("SELECT state FROM security_findings WHERE repo = ? AND number = ?").get(String(p.repo), Number(p.number)) as { state: string } | undefined;
+  if (!row) return "no such finding";
+  return states.includes(row.state) ? null : `the finding is ${row.state}`;
+}
+
+async function securityLandDeps(ctx: StepContext): Promise<import("../security/land.ts").LandDeps> {
+  const { exec, fixupDir } = await import("../fixup/git.ts");
+  const { whoAmI } = await import("../fixup/index.ts");
+  return { exec, root: fixupDir(), who: () => whoAmI(exec), log: ctx.log };
+}
+
 /** The run number a step records in agent_runs.stage: its stage's, from the registry. */
 function runStage(step: string): number {
   const s = stageOfStep(step);
@@ -493,6 +511,68 @@ export const STEPS: StepDef[] = [
       const { usageRunId } = await import("../security/real.ts");
       ctx.usageRun(usageRunId(Number(ctx.params.scan)));
       return runScan(ctx.db, Number(ctx.params.scan), realDeps(ctx.db, Number(ctx.params.scan), { cancelled: ctx.cancelled, log: ctx.log, progress: ctx.progress }));
+    },
+  },
+  {
+    name: "security-fix",
+    title: "Security fix",
+    description: "Writes the private fix of one finding on the scan's pinned commit: Opus writes the patch and a regression test, the worker container builds and tests it, and Opus reviews the diff. The commit stays in the local cache and is never pushed. Started only by an operator on the finding page; nothing goes to GitHub.",
+    stage: 9,
+    requires: "operator",
+    group: "security-work",
+    models: ["opus"],
+    params: SECURITY_FINDING_PARAMS,
+    check: (db, p) => securityFindingCheck(db, p, ["fixing"]),
+    run: async (ctx) => {
+      const { runFix, defaultFixDeps } = await import("../security/fix.ts");
+      const { usageRunId } = await import("../security/real.ts");
+      const { rawFinding } = await import("../security/store.ts");
+      const repo = String(ctx.params.repo), n = Number(ctx.params.number);
+      const scan = rawFinding(ctx.db, repo, n)!.scan_id;
+      ctx.usageRun(usageRunId(scan));
+      return runFix(ctx.db, repo, n, defaultFixDeps(ctx.db, scan, { cancelled: ctx.cancelled, log: ctx.log }));
+    },
+  },
+  {
+    name: "security-land",
+    title: "Land a security fix",
+    description: "Opens the finding's fix as a plain pull request from the pipeline's fork, with a neutral branch, title and description. The normal Verify and merge path takes it from there. Started only by an operator.",
+    stage: 9,
+    requires: "operator",
+    group: "security-work",
+    params: SECURITY_FINDING_PARAMS,
+    check: (db, p) => securityFindingCheck(db, p, ["landing"]),
+    run: async (ctx) => {
+      const { runLand } = await import("../security/land.ts");
+      return runLand(ctx.db, String(ctx.params.repo), Number(ctx.params.number), byOfJob(ctx.job.requestedBy), await securityLandDeps(ctx));
+    },
+  },
+  {
+    name: "security-advisory",
+    title: "Security advisory route",
+    description: "For an urgent finding: creates the draft advisory and its private fork, pushes the fix there with the box account's token and opens the pull request inside the fork. A repository admin merges it on the advisory page. Started only by an operator.",
+    stage: 9,
+    requires: "operator",
+    group: "security-work",
+    params: SECURITY_FINDING_PARAMS,
+    check: (db, p) => securityFindingCheck(db, p, ["landing"]),
+    run: async (ctx) => {
+      const { runAdvisory } = await import("../security/land.ts");
+      return runAdvisory(ctx.db, String(ctx.params.repo), Number(ctx.params.number), byOfJob(ctx.job.requestedBy), await securityLandDeps(ctx));
+    },
+  },
+  {
+    name: "security-publish",
+    title: "Publish a security advisory",
+    description: "Publishes the finding's advisory after a release, and requests a CVE when asked (public repositories only). Started only by an operator.",
+    stage: 9,
+    requires: "operator",
+    group: "security-work",
+    params: [...SECURITY_FINDING_PARAMS, { name: "cve", label: "CVE", kind: "int", min: 0, max: 1, default: 0, help: "1 to request a CVE" }],
+    check: (db, p) => securityFindingCheck(db, p, ["landed", "advisory"]),
+    run: async (ctx) => {
+      const { runPublish } = await import("../security/land.ts");
+      return runPublish(ctx.db, String(ctx.params.repo), Number(ctx.params.number), byOfJob(ctx.job.requestedBy), Number(ctx.params.cve) === 1, await securityLandDeps(ctx));
     },
   },
   {

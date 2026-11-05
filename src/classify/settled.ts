@@ -263,3 +263,7 @@ export function fromRow(r: Partial<SettledRow> | undefined): Settled {
     referee: r.referee_label != null && r.referee_sure != null ? { label: r.referee_label, sure: !!r.referee_sure, reason: r.referee_reason ?? "", ...(r.referee_final ? { final: true } : {}) } : null,
   };
 }
+
+/** The verdict of a quiet pull request without its `security` flag (for every role), and without the referee's reason for viewers. */
+export const unflagged = (s: Settled, quiet: boolean, staff = true): Settled =>
+  quiet ? { ...s, flags: s.flags.filter((f) => f !== "security"), referee: s.referee && !staff ? { ...s.referee, reason: "" } : s.referee } : s;

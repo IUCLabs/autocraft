@@ -92,7 +92,7 @@ export function decideItem(f: ItemFacts): ItemPlan {
     && (f.scope.recommend.failedAt === null || Date.parse(f.scope.recommend.failedAt) < f.now - RECOMMEND_RETRY_MS)) actions.push(act("decide", null, { source: "prepare" }));
   // label: the repo's labelling approval is applied by gates().
   if (f.run && live && f.held !== "backlog") {
-    const settled = c.status === "settled" && c.label ? { type: c.label, security: c.flags.includes("security"), needsDecision: c.flags.includes("needs decision") } : null;
+    const settled = c.status === "settled" && c.label ? { type: c.label, security: c.flags.includes("security") && !f.labels.quietFix, needsDecision: c.flags.includes("needs decision") } : null;
     const add = labelsToAdd(settled, f.labels.pluginAnswer, f.labels.existing);
     if (add && add.length && !alreadyLabeled(f.labels.labeledNote, add)) actions.push(act("label", null, { add }));
   }

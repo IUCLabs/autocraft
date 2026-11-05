@@ -266,7 +266,7 @@ export const STAGES: StageDef[] = [
     ],
     promptIds: ["fixissue.triage", "fixissue.patch", "fixissue.check"], promptStage: "Fix",
     waits: [
-
+      { name: "Fix landing poll", why: "A deep-scan fix that went out as a pull request waits for its merge, which the mirror reports; a fix that went the advisory way waits for a repository admin to merge it, which shows as the patch reaching the default branch", howLong: "2 minutes, read by the sync run, with the pipeline on or off", showsAs: "The finding's state: landing, awaiting admin, then landed or advisory", kind: "external" },
     ],
     writes: [{ what: "Branch and pull request", approval: "fix" }],
     person: "Per-repo approval",

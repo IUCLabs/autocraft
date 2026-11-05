@@ -58,6 +58,16 @@ before(async () => {
   const fix = db.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('photocraft', ?, ?, ?, ?, '[]', 1, ?)");
   fix.run(8, "h8", "cannot-push", "maintainers may not modify the branch", now);
   fix.run(9, "h9", "pushing", null, now);
+  // The quiet pull request of a landing security fix, for the veil test.
+  {
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, head_oid) VALUES ('photocraft', 11, 'pr', 'OPEN', 'Check layer length', 'b', 'pipeline-bot', ?, ?, 'q1')").run(now, now);
+    db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, want, reason) VALUES ('photocraft', 11, 'haiku', 'r', ?, 'bugfix', 'yes', 'closes a traversal hole')").run(now);
+    db.prepare("INSERT INTO security_scans (id, repo, state, started_by, started_at) VALUES (900, 'photocraft', 'done', 'boss', ?)").run(now);
+    db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, reach, impact, fingerprint, fix_pr, created_at, updated_at)
+      VALUES ('photocraft', 900, 900, 'a', 't', 'high', 0, 'landing', '[]', 'r', 'i', 'fp900', 11, ?, ?)`).run(now, now);
+    ask(db, [{ id: "photocraft#11:scope", kind: "scope", repo: "photocraft", number: 11, question: "Is this wanted?", options: OPTS, recommended: "small", summary: "Closes a traversal hole." }]);
+  }
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);
   addLogin(db, "cli", "maint", "maintainer", null);
@@ -241,7 +251,7 @@ describe("tools", () => {
   test("list_inbox and list_repos show only repos the user may see", async () => {
     const viewer = await viewerToken();
     const ids = data((await call(viewer, "list_inbox")).text).decisions.map((d: { id: string }) => d.id).sort();
-    assert.deepEqual(ids, [F3, P1, P10].sort());
+    assert.deepEqual(ids, [F3, P1, P10, "photocraft#11:scope"].sort());
     const repos = data((await call(viewer, "list_repos")).text).map((r: { repo: string }) => r.repo);
     assert.equal(repos.includes("secretcraft"), false);
     assert.equal((await call(viewer, "get_inbox_item", { id: S7 })).isError, true);
@@ -249,7 +259,7 @@ describe("tools", () => {
     const maint = await tokenFor("maint");
     assert.ok(data((await call(maint, "list_inbox")).text).decisions.some((d: { id: string }) => d.id === S7));
     const photo = data((await call(maint, "list_inbox", { repo: "storytold/photocraft", limit: 5 })).text);
-    assert.deepEqual(photo.decisions.map((d: { id: string }) => d.id).sort(), [P1, P10].sort());
+    assert.deepEqual(photo.decisions.map((d: { id: string }) => d.id).sort(), [P1, P10, "photocraft#11:scope"].sort());
     assert.match(photo.decisions.find((d: { id: string }) => d.id === P1).link, /^\/needs\/decisions\/photocraft\/1(\/scope)?$/);
   });
 
@@ -273,6 +283,18 @@ describe("tools", () => {
     const d = data(r.text);
     assert.equal(d.question, "Small extra or plugin?");
     assert.deepEqual(d.options.map((o: { key: string }) => o.key), ["small", "plugin", "backlog"]);
+  });
+
+  test("the quiet pull request of a security fix: viewers get no model text about it, staff do", async () => {
+    const op = await signedIn("boss");
+    const viewer = await signedIn("viewer1");
+    assert.equal((await op.json<{ classifications: { reason: string }[] }>("GET", "/api/items/photocraft/11")).classifications[0]!.reason, "closes a traversal hole");
+    assert.equal((await viewer.json<{ classifications: { reason: string }[] }>("GET", "/api/items/photocraft/11")).classifications[0]!.reason, "");
+    const asViewer = data((await call(await viewerToken(), "get_inbox_item", { id: "photocraft#11:scope" })).text);
+    assert.equal(asViewer.summary, null);
+    assert.equal(asViewer.question, "");
+    assert.equal(data((await call(await tokenFor("boss", "staff"), "get_inbox_item", { id: "photocraft#11:scope" })).text).summary, "Closes a traversal hole.");
+    
   });
 
   test("send_feedback records the same display-only feedback as the dashboard; the pipeline reads none of it", async () => {

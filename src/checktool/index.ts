@@ -81,8 +81,10 @@ const firstLines = (text: string, n: number): string => {
 export type CheckTarget = {
   db: DatabaseSync;
   /** The pipeline step that owns the model call: fixup, cifix or fixissue. */
-  step: "fixup" | "cifix" | "fixissue";
+  step: "fixup" | "cifix" | "fixissue" | "fix-check";
   repo: string; number: number | null; head: string; base: string | null;
+  /** The repo name under which the model_checks row is recorded, when it differs from `repo` (the tasks need the real repo to fetch it; a private call records its check under a hidden name). */
+  recordRepo?: string;
   /** Null when the patch applies to `head`, else why it does not. */
   applies: (patch: string) => Promise<string | null>;
 };
@@ -163,7 +165,7 @@ export class CheckTool {
     this.calls++;
     const started = Date.now();
     const row = Number(t.db.prepare("INSERT INTO model_checks (run_id, step, repo, number, head, command, crate, test_name, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(runId, t.step, t.repo, t.number, t.head, i.command, i.crate ?? null, i.test_name ?? null, new Date().toISOString()).lastInsertRowid);
+      .run(runId, t.step, t.recordRepo ?? t.repo, t.number, t.head, i.command, i.crate ?? null, i.test_name ?? null, new Date().toISOString()).lastInsertRowid);
     const end = (outcome: string, taskId: number | null) => t.db.prepare("UPDATE model_checks SET outcome = ?, task_id = ?, ended_at = ? WHERE id = ?").run(outcome.slice(0, 200), taskId, new Date().toISOString(), row);
     let taskId: number | null = null;
     try {

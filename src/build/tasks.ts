@@ -188,8 +188,8 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
         for (const t of queued) {
           if (out.length >= room) break;
           if (!satisfies(caps, json<Requires>(t.requires, {}))) continue;
-          // Operator smoke tests run anywhere; pipeline builds only for repos in scope, or for fast-tracked items of any repo.
-          if (t.step !== "smoke-test" && !scope.has(t.repo) && !fastTask(db, t)) continue;
+          // Operator smoke tests and the security fix's builds (an operator's request, under the finding's real repo) run anywhere; pipeline builds only for repos in scope, or for fast-tracked items of any repo.
+          if (t.step !== "smoke-test" && t.step !== "fix-check" && !scope.has(t.repo) && !fastTask(db, t)) continue;
           take.run(envId, at, at, t.id);
           out.push({
             id: t.id, repo: t.repo, headSha: t.head_sha, baseSha: t.base_sha, requires: json<Requires>(t.requires, {}), plan: json<TaskStep[]>(t.plan, []),
@@ -421,9 +421,12 @@ export function getTaskDetail(db: DatabaseSync, id: number): BuildTaskDetail | n
 const CURSOR_RE = /^[1-9][0-9]{0,15}$/;
 const FILTER_STATES = ["queued", "claimed", "running", "done", "failed", "cancelled", "lost", "active"];
 
-/** Newest first, keyset-paged by id. `hidden` repos are left out. */
-export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = []): TaskPage {
-  const where: string[] = [];
+/** The step of a security fix's builds: its tasks run under the finding's real repo, so viewers must not see them. */
+export const FIX_CHECK_STEP = "fix-check";
+
+/** Newest first, keyset-paged by id. `hidden` repos are left out, and the security fix's tasks unless `staff`. */
+export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = [], staff = true): TaskPage {
+  const where: string[] = staff ? [] : [`t.step <> '${FIX_CHECK_STEP}'`];
   const params: Record<string, SQLInputValue> = {};
   const hide = excludeHidden("t.repo", hidden, params);
   if (hide) where.push(hide);
@@ -449,10 +452,10 @@ export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = []
 
 export type { BuildSummary };
 /** Queued and running tasks and the slots left, over all enabled environments (the flowchart's Verify node). */
-export function summary(db: DatabaseSync, hidden: string[] = []): BuildSummary {
+export function summary(db: DatabaseSync, hidden: string[] = [], staff = true): BuildSummary {
   const params: Record<string, SQLInputValue> = {};
   const hide = excludeHidden("repo", hidden, params);
-  const c = db.prepare(`SELECT COALESCE(SUM(state = 'queued'), 0) AS queued, COALESCE(SUM(state IN ('claimed', 'running')), 0) AS running FROM build_tasks WHERE state IN ('queued', 'claimed', 'running')${hide ? ` AND ${hide}` : ""}`).get(params) as { queued: number; running: number };
+  const c = db.prepare(`SELECT COALESCE(SUM(state = 'queued'), 0) AS queued, COALESCE(SUM(state IN ('claimed', 'running')), 0) AS running FROM build_tasks WHERE state IN ('queued', 'claimed', 'running')${staff ? "" : ` AND step <> '${FIX_CHECK_STEP}'`}${hide ? ` AND ${hide}` : ""}`).get(params) as { queued: number; running: number };
   const all = db.prepare("SELECT * FROM build_envs WHERE enabled = 1 AND last_seen_at > ?").all(new Date(Date.now() - 60_000).toISOString()) as { slots: number; reported_slots: number | null; id: string }[];
   const used = db.prepare("SELECT env_id AS id, COUNT(*) AS n FROM build_tasks WHERE state IN ('claimed', 'running') GROUP BY env_id").all() as { id: string; n: number }[];
   const byEnv = new Map(used.map((u) => [u.id, u.n]));

@@ -1,6 +1,7 @@
 // The item trace: every event of one GitHub item, oldest first, from the tables that hold per-item history.
 // Each source is a small function that returns events for the item through an index on (repo, number) or a
 // key derived from it; the list carries no bodies. A source also keeps the fields its detail view shows.
+import { isQuiet } from "../../security/quiet.ts";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemTrace, ItemTraceDetail, ItemTraceHeader, TraceActor, TraceEvent, TraceKind } from "../../../web/src/api/types.ts";
@@ -16,7 +17,7 @@ import { hiddenRepos, needVisible } from "./visible.ts";
 
 export type Ev = TraceEvent & { detail?: Record<string, unknown> };
 /** `staff`: operators and maintainers; `hidden`: repos the viewer may not see, whose runs are left out like getRun does. */
-type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: string; staff: boolean; operator: boolean; hidden: string[] };
+type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: string; staff: boolean; /** A quiet pull request seen by a viewer: model output stays out of the trace. */ veiled: boolean; operator: boolean; hidden: string[] };
 type Source = { kinds: TraceKind[]; run: (c: Ctx) => Ev[] };
 
 export const TRACE_PAGE_DEFAULT = 100, TRACE_PAGE_MAX = 500;
@@ -383,15 +384,27 @@ export function linkReviewCalls(events: Ev[]): Set<number> {
 }
 
 /** Every source runs whatever the filter, so a filtered event still gets the head its neighbours carry. */
+const VEILED_KINDS: TraceKind[] = ["model-call", "check", "review", "decision", "conversation"];
+
 function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   const all: Ev[] = [];
   for (const e of SOURCES.flatMap((s) => s.run(c))) {
+    if (c.veiled && VEILED_KINDS.includes(e.kind)) continue;
     const at = iso(e.at);
     if (at) all.push({ ...e, at });
   }
   carryHeads(all);
   const taken = !kinds || kinds.has("review") ? linkReviewCalls(all) : new Set<number>();
   return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).filter((e) => !(e.kind === "model-call" && taken.has(e.ref.runId ?? -1))).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
+}
+
+/** The header of a quiet pull request for viewers: the state only, without the planner's reasons and notes or the questions asked about it. */
+function veilHeader(h: ItemTraceHeader): ItemTraceHeader {
+  return {
+    ...h,
+    now: { ...h.now, text: h.now.state ?? "Not planned yet", waitsOn: null, reasons: [], note: null },
+    who: { ...h.who, openDecisions: h.who.openDecisions.map((d) => ({ ...d, question: "" })) },
+  };
 }
 
 function headerOf({ db, repo, n, own, hidden }: Ctx): ItemTraceHeader {
@@ -467,7 +480,7 @@ async function context(db: DatabaseSync, req: Req): Promise<Ctx> {
   await needVisible(db, req, repo);
   if (!db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ?").get(repo, n)) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
   const own = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
-  return { db, repo, n, ref: `${repo}#${n}`, own, staff: canSeeInternals(req), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req) };
+  return { db, repo, n, ref: `${repo}#${n}`, own, staff: canSeeInternals(req), veiled: !canSeeInternals(req) && isQuiet(db, repo, n), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req) };
 }
 
 /** Job errors and patch-check reasons carry log and patch text: viewers get the other fields. */
@@ -508,7 +521,7 @@ export async function trace(db: DatabaseSync, req: Req): Promise<ItemTrace | { u
   const rest = after ? events.filter((e) => e.at > after.at || (e.at === after.at && e.id > after.id)) : events;
   const page = rest.slice(0, limit).map(strip);
   const last = page[page.length - 1];
-  return { header: headerOf(c), events: page, nextCursor: rest.length > limit && last ? `${last.at}|${last.id}` : null, stamp };
+  return { header: c.veiled ? veilHeader(headerOf(c)) : headerOf(c), events: page, nextCursor: rest.length > limit && last ? `${last.at}|${last.id}` : null, stamp };
 }
 
 /** The fields an event keeps back from the list, for the kinds whose detail has no endpoint of its own (runs, build tasks and decisions have theirs). */

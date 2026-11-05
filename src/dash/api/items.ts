@@ -1,10 +1,12 @@
 // The Items browser (`GET /api/items`) and the top-bar search (`GET /api/search`),
 // both over the full-text tables items_fts and comments_fts (src/schema.sql).
+import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
   ItemList, ItemListRow, ItemSort, SearchHit, SettledStatus, Snippet, Stage,
 } from "../../../web/src/api/types.ts";
-import { fromRow, latestRun, settledTable, type SettledRow } from "../../classify/settled.ts";
+import { quietFixPrs, quietSqlFor } from "../../security/quiet.ts";
+import { fromRow, unflagged, latestRun, settledTable, type SettledRow } from "../../classify/settled.ts";
 import { LABELS } from "../../classify/rules.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -127,7 +129,7 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
   }
   list(req, "flag").forEach((f) => {
     if (!FLAGS.includes(f)) throw new HttpError(400, "flag must be security or needs decision");
-    where.push(f === "security" ? "s.security = 1" : "s.needs_decision = 1");
+    where.push(f === "security" ? "s.security = 1 AND NOT " + quietSqlFor("i.repo", "i.number") : "s.needs_decision = 1");
   });
   const author = q.get("author")?.trim();
   if (author) {
@@ -269,13 +271,14 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
   const stages = stagesOf(db, rows);
   const snips = b.text ? snippets(db, b.params.q as string, rows) : new Map<number, Snippet>();
   const how = mergedHow(db, rows);
+  const quiet = quietFixPrs(db);
   const slots = queueSlots(db, await visibleRepos(db, req));
   return {
     total, byStatus, run: b.run,
     rows: rows.map((r): ItemListRow => ({
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state),
       title: r.title ?? "", author: r.author ?? "", createdAt: r.created_at ?? "", updatedAt: r.updated_at ?? "",
-      comments: r.comments_count ?? 0, settled: fromRow(r) as ItemListRow["settled"],
+      comments: r.comments_count ?? 0, settled: unflagged(fromRow(r), quiet.has(`${r.repo}#${r.number}`), canSeeInternals(req)) as ItemListRow["settled"],
       stage: (stages.get(`${r.repo}#${r.number}`) ?? null) as Stage | null, snippet: snips.get(r.rid) ?? null,
       queue: slots.get(`${r.repo}#${r.number}`) ?? null,
       mergedHow: how.get(`${r.repo}#${r.number}`) ?? null, mergedAt: how.has(`${r.repo}#${r.number}`) ? r.merged_by_us_at ?? null : null,
