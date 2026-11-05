@@ -358,13 +358,17 @@ describe("close journey", () => {
 });
 
 describe("issue journey", () => {
-  test("a duplicate group whose kept item is closed is prepared while a member it would close is open", () => {
+  test("a duplicate group whose kept item is closed is prepared while a member it would close is open", async () => {
     const w = fresh().issue(7).issue(8);
     ask(w.db, [{ id: "app:dupegroup:7", kind: "duplicate", repo: "app", number: 7, question: "Keep #7 and close #8?", options: [{ key: "accept", label: "Use this answer" }, { key: "distinct", label: "Not duplicates" }] }]);
     w.db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, base_role, base_target) VALUES ('app:dupegroup:7', 'app', 8, 'issue', 'close', 7, 'close', 7)").run();
     w.db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 7").run();
     assert.deepEqual(prepareIds(w.db), ["app:dupegroup:7"]);
     assert.equal(preparing(w.db, getDecision(w.db, "app:dupegroup:7")!), true);
+    w.models(() => "Pick: accept | same report.\nBoth issues report the same crash when opening an empty file, and #7 already has the fix, so #8 can be closed as its duplicate.");
+    assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
+    assert.deepEqual(prepareIds(w.db), []);
+    w.db.prepare("UPDATE decisions SET prepared_at = NULL").run();
     w.db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 8").run();
     assert.deepEqual(prepareIds(w.db), []);
   });
