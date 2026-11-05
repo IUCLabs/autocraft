@@ -12,6 +12,7 @@ import { after, before, describe, test } from "node:test";
 import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
+import { sha256hex } from "../src/dash/server/crypto.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import type { Route } from "../src/dash/types.ts";
@@ -31,6 +32,10 @@ const db = connect(dbFile);
 let github: Server;
 let converted: string[] = [];
 let onConvert: () => void = () => {};
+// The org setup link's fake GitHub: bearer tokens seen on the visitor's calls, what organization-roles answers, and the PUTs it got.
+const visitorTokens = new Set<string>();
+let rolesAnswer: 404 | 200 = 404;
+const rolePuts: string[] = [];
 const closers: Array<() => Promise<void>> = [];
 let base = "";
 
@@ -50,6 +55,21 @@ before(async () => {
         : send(404, { message: "Not Found" });
     }
     if (!(req.headers.authorization ?? "").startsWith("Bearer ")) return send(401, {});
+    const bearer = (req.headers.authorization ?? "").slice(7);
+    if (url.startsWith("/user/memberships/orgs/")) {
+      visitorTokens.add(bearer);
+      return url.endsWith("/glasswing") ? send(200, { state: "active", role: "admin" }) : send(200, { state: "active", role: "member" });
+    }
+    if (url === "/orgs/glasswing/organization-roles") {
+      visitorTokens.add(bearer);
+      return rolesAnswer === 404 ? send(404, {}) : send(200, { total_count: 2, roles: [{ id: 1, name: "all_repo_read" }, { id: 8140, name: "GitHub App Manager" }] });
+    }
+    if (req.method === "PUT" && url.startsWith("/orgs/glasswing/organization-roles/users/")) {
+      visitorTokens.add(bearer);
+      rolePuts.push(url);
+      res.writeHead(204);
+      return void res.end();
+    }
     if (url === "/app") return send(200, { name: "AutoCraft" });
     if (url.startsWith("/app/installations?")) return send(200, [{ id: 7, account: { login: "glasswing" }, repository_selection: "selected" }]);
     if (req.method === "POST" && url === "/app/installations/7/access_tokens") return send(201, { token: "ghs_installation" });
@@ -97,7 +117,17 @@ class Client {
       method: "POST", body: new URLSearchParams(form), redirect: "manual",
       headers: { cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join("; ") },
     });
+    for (const c of r.headers.getSetCookie()) {
+      const [kv] = c.split(";");
+      this.jar.set(kv!.slice(0, kv!.indexOf("=")), kv!.slice(kv!.indexOf("=") + 1));
+    }
     return r;
+  }
+  async json(path: string, body: unknown): Promise<Response> {
+    return fetch(new URL(path, this.origin), {
+      method: "POST", body: JSON.stringify(body),
+      headers: { cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join("; "), "content-type": "application/json", "x-csrf-token": await this.csrf() },
+    });
   }
 }
 
@@ -220,5 +250,95 @@ describe("github app registration", () => {
     const after = row();
     assert.equal(after.version, before.version + 1);
     assert.notEqual(after.token_enc, before.token_enc);
+  });
+
+  test("org setup link: owners only, single use, the owner's token is never stored, app manager falls back on 404", async () => {
+    const file = join(dir, "setup-secrets.json");
+    writeFileSync(file, "{}");
+    const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
+    const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [], githubApi: `http://127.0.0.1:${(github.address() as AddressInfo).port}` });
+    closers.push(s.close);
+    const boss = await signedIn("boss", s.url);
+    const mint = async (org: string) => ((await (await boss.json("/api/admin/github-app/links", { org })).json()) as { path: string }).path;
+    const pages: string[] = [];
+    const get = async (c: Client, path: string) => {
+      const r = await c.req(path);
+      const t = await r.text();
+      pages.push(t);
+      return { r, t };
+    };
+    /** Opens the link and signs in as `login` through the fake GitHub; returns the response of the OAuth callback. */
+    const signIn = async (c: Client, path: string, login: string, manager = true) => {
+      const start = await c.post(`${path}/signin`, manager ? { manager: "1" } : {});
+      assert.equal(start.status, 303);
+      const authorize = start.headers.get("location")!;
+      assert.equal(new URL(authorize, s.url).searchParams.get("scope"), manager ? "read:org admin:org" : "read:org");
+      const back = await c.req(`${authorize}&login=${login}`);
+      return c.req(back.headers.get("location")!);
+    };
+
+    // The list shows open links; the database keeps only the hash.
+    const path = await mint("glasswing");
+    const secret = path.split("/").pop()!;
+    assert.ok(!JSON.stringify(db.prepare("SELECT * FROM github_setup_links").all()).includes(secret));
+    const status = (await (await boss.req("/api/admin/github-app")).json()) as { links: { org: string }[] };
+    assert.deepEqual(status.links.map((l) => l.org), ["glasswing"]);
+
+    // A signed-in dashboard user who is not an org owner is refused, and the link stays open.
+    const stranger = new Client(s.url);
+    const other = await mint("otherorg");
+    const refused = await signIn(stranger, other, "carol");
+    assert.equal(refused.status, 403);
+    assert.match(await refused.text(), /not an owner of otherorg/);
+    assert.equal((await get(new Client(s.url), other)).r.status, 200);
+
+    // The owner: the landing page has the app-manager box ticked, then Create posts the manifest to the org.
+    const owner = new Client(s.url);
+    const landing = await get(owner, path);
+    assert.match(landing.t, /Make boss an app manager/);
+    assert.match(landing.t, /type="checkbox" name="manager" value="1" checked/);
+    assert.equal((await signIn(owner, path, "alice")).status, 303);
+    const create = await get(owner, "/auth/setup");
+    const state = /organizations\/glasswing\/settings\/apps\/new\?state=([A-Za-z0-9_-]+)/.exec(create.t)?.[1];
+    assert.ok(state, "the manifest goes to the org");
+    assert.match(create.t, /&#34;setup_url&#34;:&#34;http:\/\/127\.0\.0\.1:\d+\/auth\/github-app\/setup&#34;/);
+    assert.equal((await owner.req(`/auth/github-app/callback?code=good-code&state=${state}`)).status, 303);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).github_app_slug, "autocraft-test");
+
+    // Organization roles answer 404 (Free plan): the page offers the settings link instead.
+    const manage = await owner.post("/auth/setup/manager", {});
+    assert.equal(manage.status, 303);
+    const fallback = await get(owner, "/auth/setup");
+    assert.match(fallback.t, /href="https:\/\/github\.com\/organizations\/glasswing\/settings\/apps\/autocraft-test"[^>]*>App managers &rarr; Grant boss/);
+    assert.deepEqual(rolePuts, []);
+
+    // Install: GitHub returns to the setup URL; the link is then used up.
+    const installState = /installations\/new\?state=([A-Za-z0-9_-]+)/.exec(fallback.t)?.[1];
+    assert.ok(installState);
+    const done = await get(owner, `/auth/github-app/setup?installation_id=99&setup_action=install&state=${installState}`);
+    assert.match(done.t, />Done</);
+    assert.equal((await get(new Client(s.url), path)).r.status, 410);
+    assert.equal((await get(owner, `/auth/github-app/setup?installation_id=99&state=${installState}`)).r.status, 410);
+    assert.equal((await new Client(s.url).post(`${path}/signin`, { manager: "1" })).status, 410);
+    const used = db.prepare("SELECT used_by, installation_id FROM github_setup_links WHERE hash IS NOT NULL AND org = 'glasswing'").get() as { used_by: string; installation_id: number };
+    assert.deepEqual({ ...used }, { used_by: "alice", installation_id: 99 });
+
+    // With the role available the PUT is made with the owner's token and audited without it; a revoked link is dead.
+    rolesAnswer = 200;
+    const second = new Client(s.url);
+    const path2 = await mint("glasswing");
+    assert.equal((await signIn(second, path2, "alice")).status, 303);
+    assert.equal((await second.post("/auth/setup/manager", {})).status, 303);
+    assert.deepEqual(rolePuts, ["/orgs/glasswing/organization-roles/users/boss/8140"]);
+    const row = db.prepare("SELECT details FROM audit WHERE action = 'github-app-manager'").get() as { details: string };
+    assert.deepEqual(JSON.parse(row.details), { user: "boss", role: "GitHub App Manager", roleId: 8140, state: "done" });
+    const id = (db.prepare("SELECT id FROM github_setup_links WHERE hash = ?").get(sha256hex(path2.split("/").pop()!)) as { id: string }).id;
+    assert.equal((await boss.json("/api/admin/github-app/links/revoke", { id })).status, 200);
+    assert.equal((await get(new Client(s.url), path2)).r.status, 410);
+
+    assert.ok(visitorTokens.size >= 1 && ![...visitorTokens].includes(""));
+    const everything = JSON.stringify([db.prepare("SELECT * FROM audit").all(), db.prepare("SELECT * FROM github_setup_links").all(), db.prepare("SELECT * FROM github_app_states").all(), db.prepare("SELECT * FROM oauth_states").all(), db.prepare("SELECT * FROM sessions").all()]) + readFileSync(file, "utf8") + pages.join("");
+    for (const t of visitorTokens) assert.ok(!everything.includes(t), "the owner's token is kept nowhere");
+    for (const a of ["github-app-link-create", "github-app-link-use", "github-app-link-revoke"]) assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = ?").get(a), a);
   });
 });
