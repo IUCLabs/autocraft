@@ -255,6 +255,68 @@ export function withdrawOpen(db: DatabaseSync, scope: BacklogScope, by: string, 
   return { applied: true, decisions };
 }
 
+const testKey = (repo: string): string => `test_repo:${repo}`;
+
+/** Test repos accept answers from the CLI (`decisions answer`), so a session can run scenarios on them without a person pressing buttons. */
+export function isTestRepo(db: DatabaseSync, repo: string): boolean {
+  return db.prepare("SELECT 1 FROM main.settings WHERE key = ?").get(testKey(repo)) !== undefined;
+}
+
+export function testRepos(db: DatabaseSync): string[] {
+  return (db.prepare("SELECT key FROM main.settings WHERE key LIKE 'test_repo:%' ORDER BY key").all() as { key: string }[]).map((r) => r.key.slice("test_repo:".length));
+}
+
+/** Returns false when nothing changed. */
+export function setTestRepo(db: DatabaseSync, by: string, repo: string, on: boolean): boolean {
+  if (!db.prepare("SELECT 1 FROM main.tracked_repos WHERE name = ?").get(repo)) throw new Error(`${repo} is not tracked`);
+  if (isTestRepo(db, repo) === on) return false;
+  if (on) db.prepare("INSERT INTO main.settings (key, value) VALUES (?, '1')").run(testKey(repo));
+  else db.prepare("DELETE FROM main.settings WHERE key = ?").run(testKey(repo));
+  audit(db, by, "test-repo", repo, { on });
+  return true;
+}
+
+/**
+ * Answers an open decision as `login` the way the dashboard's Answer button does. Refused unless every repo the decision
+ * concerns is a test repo and `login` is an operator. The audit row says the answer came from a session.
+ */
+export async function answerAsSession(db: DatabaseSync, id: string, option: string, login: string, note?: string): Promise<DecisionRow> {
+  const d = getDecision(db, id);
+  if (!d) throw new Error(`no decision ${id}`);
+  if (d.answer) throw new Error(`decision ${id} is already answered by ${d.answered_by}`);
+  const repos = [...new Set([...reposOf(d), ...itemsOf(d).map((r) => r.repo)])];
+  const outside = repos.filter((r) => !isTestRepo(db, r));
+  if (!repos.length || outside.length) throw new Error(`refused: ${outside.join(", ") || "no repo"} is not marked as a test repo (decisions test-repo REPO on)`);
+  if (!operators(db).has(login)) throw new Error(`refused: ${login} is not an operator`);
+  const { applyAnswer } = await import("./dash/api/decisions.ts");
+  applyAnswer(db, d, login, { answer: option, note }, "cli", "session");
+  db.prepare("DELETE FROM decision_claims WHERE decision_id = ?").run(id);
+  return getDecision(db, id)!;
+}
+
+async function answerCmd(args: string[]): Promise<void> {
+  const [id, option] = args;
+  const ai = args.indexOf("--as");
+  const ni = args.indexOf("--note");
+  const login = ai >= 0 ? args[ai + 1] : undefined;
+  if (!id || !option || id.startsWith("--") || option.startsWith("--") || !login || (ni >= 0 && args[ni + 1] === undefined))
+    throw new Error("usage: decisions answer ID OPTION --as LOGIN [--note TEXT]");
+  const d = await answerAsSession(connect(), id, option, login, ni >= 0 ? args[ni + 1] : undefined);
+  console.log(`${d.id}\tanswered ${d.answer} as ${d.answered_by} (source cli, via session)`);
+  console.log(`state: ${d.applied_at ? "applied" : "waiting for the pipeline to act"}`);
+}
+
+function testRepoCmd(args: string[]): void {
+  const db = connect();
+  const [repo, mode] = args;
+  if (!repo) {
+    for (const r of testRepos(db)) console.log(r);
+    return;
+  }
+  if (mode !== "on" && mode !== "off") throw new Error("usage: decisions test-repo [REPO on|off]");
+  console.log(setTestRepo(db, "cli", repo, mode === "on") ? `${repo} test repo ${mode}` : `${repo} test repo already ${mode}`);
+}
+
 function withdrawCmd(args: string[]): void {
   const ri = args.indexOf("--repo");
   const scope: BacklogScope = { outsidePilot: args.includes("--outside-pilot"), repo: ri >= 0 ? args[ri + 1] : undefined };
@@ -296,7 +358,8 @@ function list(args: string[]): void {
     const target = isBatch(d) ? `batch of ${itemsOf(d).length}` : `${d.repo}#${d.number}`;
     const by = isBacklog(d.answer) || (d.answered_by && ops.has(d.answered_by)) ? "" : " (not actionable: not answered by an operator)";
     const state = d.answer ? `answered ${d.answer}${d.applied_at ? ", applied" : ""}${by}` : "open";
-    console.log(`${d.id}\t${d.kind}\t${target}\t${state}\t${d.question}`);
+    const keys = optionsOf(d).map((o) => o.key).join(",");
+    console.log(`${d.id}\t${d.kind}\t${target}\t${state}\t${d.question}\toptions: ${keys}`);
   }
 }
 
@@ -327,19 +390,19 @@ function askCmd(args: string[]): void {
   console.log(`${r.inserted} asked, ${r.updated} updated`);
 }
 
-const SUB: Record<string, (args: string[]) => void> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd };
+const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, "test-repo": testRepoCmd };
 
 export const commands = {
   decisions: {
-    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] (answers come from the dashboard; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
-    run(args: string[]): void {
+    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] | answer ID OPTION --as LOGIN [--note TEXT] | test-repo [REPO on|off] (answers come from the dashboard, or `answer` on test repos as an operator login; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
+    run(args: string[]): void | Promise<void> {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log("usage: autocraft decisions list|show|ask|backlog|withdraw ...");
+        console.log("usage: autocraft decisions list|show|ask|backlog|withdraw|answer|test-repo ...");
         process.exit(sub ? 1 : 0);
       }
-      fn(rest);
+      return fn(rest);
     },
   },
 };
