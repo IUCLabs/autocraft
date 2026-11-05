@@ -924,6 +924,9 @@ export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
   if (!changed && plannedAt !== null && t - planned < PLAN_EVERY_MS && !finished && !released && !woken) return false;
   setSetting(db, KEY_SEQS_SEEN, sig);
   setSetting(db, KEY_PLANNED_AT, new Date(t).toISOString());
+  // The pass about to run sets the next wake time when it is applied. With the switch off nothing is applied, so a
+  // wake time that has passed would stay and make every tick plan again.
+  if (woken) db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_WAKE_AT);
   return true;
 }
 

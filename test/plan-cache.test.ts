@@ -55,6 +55,14 @@ describe("Plan cache", () => {
     assert.deepEqual(cache().map((x) => x.number), [1, 2]);
   });
 
+  test("with the pipeline off a wake time that has passed makes one pass due, not every tick", () => {
+    setEnabled(db, false, "op");
+    planDue(db);
+    db.prepare("INSERT INTO settings (key, value) VALUES ('pipeline_wake_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(new Date(Date.now() - 60_000).toISOString());
+    assert.equal(planDue(db), true);
+    assert.equal(planDue(db), false);
+  });
+
   test("the history gets a row for each change of an item's state, none for a pass that changes nothing else", () => {
     const before = planHistory(db, "app", 1).length;
     refreshPlanCache(db);
