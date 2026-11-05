@@ -19,7 +19,8 @@ export type GroupIo = {
   live(number: number): Promise<GroupLive | null>;
   /** Returns the comment's URL. */
   comment(live: GroupLive, body: string, at: { number: number; decision: string }): Promise<string>;
-  close(live: GroupLive, at: { number: number; decision: string }): Promise<void>;
+  /** `kept` is the group's kept item (an issue when there is one) the closed member duplicates. */
+  close(live: GroupLive, at: { number: number; decision: string }, kept?: GroupLive & { number: number }): Promise<void>;
   /** Called before a decision's writes: a string says why the decision waits (its operator has no token or no access), and it is left for a later run. */
   begin?(decision: string): Promise<string | null>;
   /** A write of the decision failed with `why` (the error `err`); true when that is a wait for the operator's access or a transient failure, not a failure to count. */
@@ -159,7 +160,9 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
           record(dec.id, c.number, "comment", url);
         }
         if (changed(c)) continue decisions;
-        await run.io.close(live, { number: c.number, decision: dec.id });
+        const keep = items.find((i) => i.role === "keep" && i.kind === "issue") ?? items.find((i) => i.role === "keep");
+        const keptLive = keep ? await run.io.live(keep.number) : null;
+        await run.io.close(live, { number: c.number, decision: dec.id }, keep && keptLive ? { ...keptLive, number: keep.number } : undefined);
         record(dec.id, c.number, "close", url);
         db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(run.repo, c.number, run.at(), ACTOR, `closed after duplicate group decision ${dec.id}`);
         res.done.push(ref(c.number));

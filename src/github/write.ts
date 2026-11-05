@@ -138,6 +138,7 @@ const ADD_COMMENT = `mutation($id: ID!, $body: String!) {
 }`;
 const CLOSE_ISSUE = `mutation($id: ID!) { closeIssue(input: { issueId: $id }) { clientMutationId } }`;
 const CLOSE_ISSUE_AS = `mutation($id: ID!, $reason: IssueClosedStateReason!) { closeIssue(input: { issueId: $id, stateReason: $reason }) { clientMutationId } }`;
+const CLOSE_ISSUE_DUPLICATE = `mutation($id: ID!, $reason: IssueClosedStateReason!, $dup: ID!) { closeIssue(input: { issueId: $id, stateReason: $reason, duplicateIssueId: $dup }) { clientMutationId } }`;
 const CLOSE_PR = `mutation($id: ID!) { closePullRequest(input: { pullRequestId: $id }) { clientMutationId } }`;
 const ASSIGN = `mutation($id: ID!, $user: ID!) {
   addAssigneesToAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
@@ -181,12 +182,36 @@ export async function commentOn(w: Writer, g: Grant, q: Querier, action: string,
   return r.addComment?.commentEdge?.node?.url ?? "";
 }
 
-export async function closeItem(w: Writer, g: Grant, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}, reason?: "COMPLETED" | "NOT_PLANNED"): Promise<void> {
+export type CloseReason = "COMPLETED" | "NOT_PLANNED" | "DUPLICATE";
+export type CloseHow = CloseReason | { reason: CloseReason; /** Node id of the kept issue (DUPLICATE only). */ duplicateOf?: string; /** Ref of the kept item, recorded in the audit details. */ keptRef?: string };
+
+/** The reason for closing a duplicate of `kept`: GitHub links duplicates to issues only, so a kept PR gives NOT_PLANNED. */
+export function duplicateClose(kept: { id: string; pr: boolean }, keptRef?: string): CloseHow {
+  return kept.pr ? "NOT_PLANNED" : { reason: "DUPLICATE", duplicateOf: kept.id, keptRef };
+}
+
+/** Closes an issue or PR. Issues get a state reason; a DUPLICATE close that GitHub rejects is retried once as NOT_PLANNED. */
+export async function closeItem(w: Writer, g: Grant, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}, how?: CloseHow): Promise<void> {
   covers(g, item.repo, item.number);
   q = laneQuery(w, g, q);
+  const o = typeof how === "string" ? { reason: how } as Exclude<CloseHow, string> : how;
   // GitHub has a state reason for issues only.
-  await recorded(w, idOf(w, g), "act-close", refOf(item.repo, item.number), reason && !item.pr ? { ...details, reason } : details,
-    () => (item.pr ? q.query(CLOSE_PR, { id: item.id }) : reason ? q.query(CLOSE_ISSUE_AS, { id: item.id, reason }) : q.query(CLOSE_ISSUE, { id: item.id })));
+  const reason = o && !item.pr ? o.reason : undefined;
+  const duplicateOf = reason === "DUPLICATE" ? o?.duplicateOf : undefined;
+  const d0 = reason ? { ...details, reason, ...(o?.keptRef ? { kept: o.keptRef } : {}) } : details;
+  let fellBack = false;
+  await recorded(w, idOf(w, g), "act-close", refOf(item.repo, item.number), d0, async () => {
+    if (item.pr) return q.query(CLOSE_PR, { id: item.id });
+    if (!reason) return q.query(CLOSE_ISSUE, { id: item.id });
+    if (reason !== "DUPLICATE") return q.query(CLOSE_ISSUE_AS, { id: item.id, reason });
+    try {
+      return await q.query(duplicateOf ? CLOSE_ISSUE_DUPLICATE : CLOSE_ISSUE_AS, duplicateOf ? { id: item.id, reason, dup: duplicateOf } : { id: item.id, reason });
+    } catch (e) {
+      if (!/validat|stateReason|duplicateIssueId|IssueClosedStateReason|argument/i.test(String((e as Error).message ?? e))) throw e;
+      fellBack = true;
+      return q.query(CLOSE_ISSUE_AS, { id: item.id, reason: "NOT_PLANNED" });
+    }
+  }, () => (fellBack ? { reason: "NOT_PLANNED", requestedReason: "DUPLICATE", fallback: "GitHub rejected DUPLICATE" } : {}));
 }
 
 export async function assignTo(w: Writer, g: Grant, q: Querier, item: ItemRef, user: { id: string; login: string }, details: Details = {}): Promise<void> {
