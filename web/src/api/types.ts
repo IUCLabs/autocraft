@@ -121,6 +121,8 @@ export interface Decision {
   risks: string[];
   /** True while Undo still works: answered and not yet applied or posted. */
   undoable: boolean;
+  /** The prepare step is writing this decision's options and recommendation (asked, or the PR got a push since the last prepare). */
+  preparing: boolean;
   /** Open and snoozed: out of the inbox until new activity on the item (a GitHub comment or push, a feedback post, an operator message), which clears it. */
   snoozed: { by: string; at: string } | null;
   publicText: string | null;
@@ -270,6 +272,29 @@ export interface Item extends ItemRef {
   priority?: PriorityInfo | null;
   /** Place in line for the item's next queued stage; null or absent when not queued. */
   queue?: QueueSlot | null;
+  /** PRs: the newest pre-approved merge ("Fix-up for … then merge"); null or absent when there is none. */
+  preapproval?: Preapproval | null;
+}
+
+/**
+ * An operator's merge approval given ahead of a fix-up: the fix-up runs with the operator's instructions, a fresh review and CI
+ * follow, and the PR goes to the merge queue only if the review says take and CI is green. Any other outcome asks a prepared question.
+ * States: "fixup" (fix-up running or queued), "review" (waiting for the review of the fix-up's head), "ci" (review take, waiting for CI),
+ * "queued" (in the merge queue), "merged", "asked" (review or CI did not pass: a new question was asked), "cancelled" (someone else
+ * pushed, the PR closed, or an operator cancelled), "failed" (the fix-up could not push).
+ */
+export interface Preapproval {
+  id: number;
+  by: string;
+  at: string;
+  instructions: string;
+  state: "fixup" | "review" | "ci" | "queued" | "merged" | "asked" | "cancelled" | "failed";
+  /** The head the fix-up started from, and the head it pushed (null until it pushed). */
+  fromHead: string;
+  head: string | null;
+  /** Why it ended in asked, cancelled or failed, one plain sentence. */
+  reason: string | null;
+  updatedAt: string;
 }
 
 export type VerificationKind = "ci-enough" | "tests" | "regression" | "error" | "unavailable";
@@ -1025,7 +1050,7 @@ export type StageLimit = { step: string; title: string; perDay: number | null; u
   tripped?: string;
   /** What the stage is doing when nothing pauses it: "running", "queued", or why it is not starting ("nothing to do", "waiting for CI on 3 PRs in x"). */
   status?: string | null };
-export type PipelineState = { enabled: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[] };
+export type PipelineState = { /** The model that prepares every question's options and recommendation (the prepare step), and the models an operator may pick ("opus", "sonnet"). */ judgementModel: string; judgementModels: string[]; enabled: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[] };
 
 export interface PipelineStep {
   name: string;
@@ -1689,6 +1714,9 @@ export interface QueuePage {
 // ---- conversations with Opus (src/dash/api/conversations.ts) ----
 
 /** "replaced": a later Opus reply proposed a new set; the card can no longer run. */
+/** A proposed card's drafts as an operator edited them; a field left out stays as it is. */
+export type CardEdit = { text?: string; issue?: { title: string; body: string }; instructions?: string };
+
 export type ConversationCardState = "proposed" | "running" | "done" | "failed" | "dismissed" | "replaced";
 
 /**
@@ -1709,6 +1737,10 @@ export interface ConversationCard {
   stale?: "pr-changed" | "new-comments";
   /** Index in `steps` of the comment step, whose text is `text`. Absent: the card has no comment. */
   commentStep?: number;
+  /** The open-issue step's draft (at most one per card), editable like `text`; `step` is its index in `steps`. `repo` is where it opens. */
+  issue?: { step: number; repo: RepoName; title: string; body: string };
+  /** The fix-up step's instructions to the fix-up model (at most one per card), editable like `text`; `step` is its index in `steps`. `merge`: a pre-approved merge follows. Never posted to GitHub. */
+  fixup?: { step: number; instructions: string; merge: boolean };
   /** How the open question ends when the card runs, e.g. 'Answers the scope question with "Small extra"', "Closes the scope question as handled". Absent: the question stays open. */
   settles?: string;
   /** The primary button: the action in a few words, written by the server from the card's parameters. */

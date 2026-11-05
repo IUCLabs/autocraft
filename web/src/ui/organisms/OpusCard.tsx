@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { CheckIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
-import type { ConversationCard } from "../../api/types";
+import type { CardEdit, ConversationCard } from "../../api/types";
 import { Button } from "../atoms/Button";
 import { TimeAgo } from "../atoms/TimeAgo";
+import { StepDraft } from "../molecules/StepDraft";
 import { cn } from "../cn";
 
+const area = "block w-full [field-sizing:content] max-h-[60vh] min-h-24 resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60";
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
@@ -14,17 +16,32 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
   card: ConversationCard;
   operator: boolean;
-  /** Runs the card; `text` is the edited comment when it differs from the proposed one. */
-  onRun: (text?: string) => Promise<unknown>;
+  /** Runs the card; `edit` holds the drafts (comment text, issue, fix-up instructions) that differ from the proposed ones. */
+  onRun: (edit?: CardEdit) => Promise<unknown>;
   onDismiss: () => Promise<unknown>;
   className?: string;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(a.text ?? "");
+  // The drafts being edited, and their edited values; a draft left out of `vals` shows the card's own.
+  const [editing, setEditing] = useState<Set<"text" | "issue" | "fixup">>(new Set());
+  const [vals, setVals] = useState<{ text?: string; issue?: { title: string; body: string }; instructions?: string }>({});
+  const text = vals.text ?? a.text ?? "";
+  const issue = vals.issue ?? (a.issue ? { title: a.issue.title, body: a.issue.body } : undefined);
+  const instructions = vals.instructions ?? a.fixup?.instructions ?? "";
+  const isEditing = (k: "text" | "issue" | "fixup") => editing.has(k);
+  const toggle = (k: "text" | "issue" | "fixup") => {
+    const was = editing.has(k);
+    setEditing((e) => {
+      const n = new Set(e);
+      if (!n.delete(k)) n.add(k);
+      return n;
+    });
+    if (was) setVals((v) => ({ ...v, ...(k === "text" ? { text: undefined } : k === "issue" ? { issue: undefined } : { instructions: undefined }) }));
+  };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   // A card that writes to GitHub needs a second press, like the decision page.
   const [armed, setArmed] = useState(false);
+  const locked = busy || a.state === "running";
   const proposed = a.state === "proposed";
   const resolution = a.settles !== undefined;
 
@@ -33,7 +50,7 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
     setError(undefined);
     try {
       await f();
-      setEditing(false);
+      setEditing(new Set());
     } catch (e) {
       setError(message(e));
     } finally {
@@ -43,7 +60,11 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
   const run = () => {
     if (a.writes && !armed) return setArmed(true);
     setArmed(false);
-    return act(() => onRun(editing && text !== a.text ? text : undefined));
+    const edit: CardEdit = {};
+    if (a.text !== undefined && text !== a.text) edit.text = text;
+    if (a.issue && issue && (issue.title !== a.issue.title || issue.body !== a.issue.body)) edit.issue = issue;
+    if (a.fixup && instructions !== a.fixup.instructions) edit.instructions = instructions;
+    return act(() => onRun(Object.keys(edit).length ? edit : undefined));
   };
   const btn = "max-md:h-11";
 
@@ -66,25 +87,56 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
         {a.state === "running" && <span className="shrink-0 text-xs font-normal text-ink/55">Running…</span>}
         {a.state === "dismissed" && <span className="shrink-0 text-xs font-normal text-ink/45">Dismissed</span>}
       </div>
-      {resolution && proposed && a.steps.length > 0 && (
+      {proposed && a.steps.length > 0 && (resolution || a.issue || a.fixup) && (
         <ol className="mt-2 list-decimal space-y-0.5 pl-5 text-sm leading-5 text-ink/80 marker:text-ink/40">
-          {a.steps.map((s, i) => (
-            <li key={i}>{s}</li>
+          {a.steps.map((st, i) => (
+            <li key={i}>
+              {st}
+              {a.issue && issue && i === a.issue.step && (
+                <StepDraft
+                  editing={isEditing("issue")}
+                  onToggle={() => toggle("issue")}
+                  disabled={locked}
+                  preview={
+                    <div className="border-l-2 border-line-strong pl-3 text-ink/75">
+                      <p className="font-medium text-ink/90">{issue.title}</p>
+                      <p className="mt-0.5 whitespace-pre-wrap">{issue.body}</p>
+                    </div>
+                  }
+                  editor={
+                    <div className="space-y-1.5">
+                      <input value={issue.title} maxLength={120} disabled={locked} onChange={(e) => setVals((v) => ({ ...v, issue: { ...issue, title: e.target.value } }))} aria-label="Issue title" className="block h-8 w-full rounded border border-line bg-sunken px-2.5 text-sm outline-none focus:border-accent/60 max-md:h-11" />
+                      <textarea value={issue.body} disabled={locked} onChange={(e) => setVals((v) => ({ ...v, issue: { ...issue, body: e.target.value } }))} rows={6} aria-label="Issue body" className={area} />
+                    </div>
+                  }
+                />
+              )}
+              {a.fixup && i === a.fixup.step && (
+                <StepDraft
+                  editing={isEditing("fixup")}
+                  onToggle={() => toggle("fixup")}
+                  disabled={locked}
+                  preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-ink/75">{instructions}</blockquote>}
+                  editor={<textarea value={instructions} maxLength={1500} disabled={locked} onChange={(e) => setVals((v) => ({ ...v, instructions: e.target.value }))} rows={5} aria-label="Fix-up instructions" className={area} />}
+                />
+              )}
+            </li>
           ))}
         </ol>
       )}
       {resolution && proposed && <p className="mt-2 text-xs text-ink/60">{a.settles}</p>}
       {a.text !== undefined && a.state !== "dismissed" &&
-        (editing ? (
+        (isEditing("text") ? (
           <textarea
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            disabled={locked}
+            onChange={(e) => setVals((v) => ({ ...v, text: e.target.value }))}
             rows={5}
             aria-label="Comment text"
-            className="mt-2 block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60"
+            className={cn(area, "mt-2")}
           />
         ) : (
-          <blockquote className={cn("mt-2 whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75", resolution ? "text-sm" : "text-xs")}>{a.text}</blockquote>
+          <blockquote className={cn("mt-2 whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75", resolution ? "text-sm" : "text-xs")}>{text}</blockquote>
         ))}
       {a.state === "failed" && a.error && <p className="mt-2 text-xs text-bad">{a.error}</p>}
       {a.state === "done" && a.done && (
@@ -107,7 +159,7 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
             size="sm"
             variant={resolution ? "primary" : "secondary"}
             className={cn(btn, armed && "border-bad bg-bad text-white hover:bg-bad/90")}
-            disabled={busy}
+            disabled={locked || (!!a.issue && !issue?.title.trim())}
             onClick={() => void run()}
           >
             {armed ? `Confirm: ${a.writes}` : a.label}
@@ -117,17 +169,16 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
               Cancel
             </Button>
           )}
-          {editing ? (
-            <Button size="sm" variant="ghost" className={btn} disabled={busy} onClick={() => { setEditing(false); setText(a.text ?? ""); }}>
-              Cancel
-            </Button>
-          ) : (
-            a.text !== undefined && (
-              <Button size="sm" variant="secondary" className={btn} disabled={busy} onClick={() => setEditing(true)}>
+          {a.text !== undefined &&
+            (isEditing("text") ? (
+              <Button size="sm" variant="ghost" className={btn} disabled={locked} onClick={() => toggle("text")}>
+                Cancel
+              </Button>
+            ) : (
+              <Button size="sm" variant="secondary" className={btn} disabled={locked} onClick={() => toggle("text")}>
                 Edit
               </Button>
-            )
-          )}
+            ))}
           <Button size="sm" variant="ghost" className={btn} disabled={busy} onClick={() => void act(onDismiss)}>
             Dismiss
           </Button>

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { parseAreaReply } from "../src/areas/parse.ts";
-import { parseRecommendReply } from "../src/decide/recommend.ts";
+import { splitPick } from "../src/decide/prepare.ts";
 import { parsePairReply } from "../src/dupes/pair.ts";
 import { parseIssueComparison, parsePrComparison } from "../src/dupes/group.ts";
 import { parseVerdicts } from "../src/mainfix/index.ts";
@@ -17,11 +17,21 @@ import { parseGateCall } from "../src/worker/gate.ts";
 const fence = (o: unknown) => "Here is my answer.\n```json\n" + JSON.stringify(o) + "\n```\n";
 
 describe("model replies", () => {
-  test("recommendation: a known option is kept, an unknown one becomes none, no JSON is no reply", () => {
-    assert.equal(parseRecommendReply(fence({ recommended: "small", reason: "a  small\nchange" }), ["small", "plugin"])?.recommended, "small");
-    assert.equal(parseRecommendReply(fence({ recommended: "small", reason: "a  small\nchange" }), ["small"])?.reason, "a small change");
-    assert.equal(parseRecommendReply(fence({ recommended: "huge", reason: "x" }), ["small"])?.recommended, null);
-    assert.equal(parseRecommendReply("I cannot decide.", ["small"]), null);
+  test("prepare reply: the pick is a known option key, anything else is none", () => {
+    assert.deepEqual(splitPick("Pick: small | a  small\nchange\nSummary text", ["small", "plugin"]), { pick: "small", reason: "a small", rest: "change\nSummary text", matched: true });
+    assert.equal(splitPick("Pick: `plugin` | fits", ["small", "plugin"]).pick, "plugin");
+    assert.equal(splitPick("Pick: huge | x\nSummary", ["small"]).pick, null);
+    assert.equal(splitPick("Pick: none\nSummary", ["small"]).pick, null);
+    assert.equal(splitPick("No pick line.\nSummary", ["small"]).rest, "No pick line.\nSummary");
+    assert.equal(splitPick("No pick line.\nSummary", ["small"]).matched, false);
+    // "none" is a pick line; the other spellings of the line are read too.
+    assert.equal(splitPick("Pick: none\nSummary", ["small"]).matched, true);
+    for (const line of ["**Pick:** small - fits", "**Pick: small** | fits", "_Pick_: small \u2014 fits", "* Pick: small: fits"]) {
+      const r = splitPick(`${line}\nSummary`, ["small", "need-info"]);
+      assert.deepEqual([r.pick, r.rest], ["small", "Summary"], line);
+    }
+    assert.equal(splitPick("Pick: need-info - unclear\nSummary", ["small", "need-info"]).pick, "need-info");
+    assert.equal(splitPick("Pick:\nSummary", ["small"]).rest, "Summary");
   });
 
   test("main-fix verdicts: a check the reply leaves out or mislabels is code; a reply without checks is no reply", () => {
@@ -72,11 +82,6 @@ describe("model replies", () => {
     assert.deepEqual(r.missing, ["a#2"]);
   });
 
-  test("recommendation reply: a summary outside the length bounds is null", () => {
-    const good = "This change adds a ripple filter to the image editor and a test for it.";
-    assert.equal(parseRecommendReply(fence({ summary: good, recommended: null, reason: "" }), ["small"])?.summary, good);
-    assert.equal(parseRecommendReply(fence({ summary: "short", recommended: null, reason: "" }), ["small"])?.summary, null);
-  });
 
   test("Opus review: only a code-wrong claim blocks a take; unknown impact or no claims list is unsure", () => {
     const take = { ref: "app#1", verdict: "take", sure: true, reason: "fine", fixes: [], summary: "Adds a filter.", why: "It is correct." };

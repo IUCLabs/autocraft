@@ -139,6 +139,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   options TEXT NOT NULL,              -- JSON [{key, label}]
   recommended TEXT,
   recommended_reason TEXT, recommended_by TEXT,
+  prepared_at TEXT, prepared_head TEXT,  -- when the prepare step stored its summary, pick and drafts, and the PR head it prepared for
+  prepare_failed_head TEXT,           -- the PR head at the last failed prepare try (a new head starts the tries again)
   recommend_failures INTEGER, recommend_failed_at TEXT,  -- recommendation calls that gave no valid answer, and the last one  -- one-sentence reason and the model that gave the recommendation (null: none from a model)
   public_text TEXT,
   asked_at TEXT NOT NULL, asked_by TEXT,
@@ -1417,3 +1419,35 @@ CREATE INDEX IF NOT EXISTS actions_created ON actions(created_at);
 CREATE INDEX IF NOT EXISTS conversation_turns_at ON conversation_turns(at);
 CREATE INDEX IF NOT EXISTS decisions_asked_at ON decisions(asked_at);
 CREATE INDEX IF NOT EXISTS decision_comments_at ON decision_comments(at);
+
+-- Fix-ups an operator asked for by hand (a resolution card's fix-up step), one per PR head: the fix-up step works them with
+-- source 'operator' in its fixups rows. state: queued | ended (a try was made, or it was cancelled). preapproval_id is set when the
+-- fix-up is the first part of a pre-approved merge.
+CREATE TABLE IF NOT EXISTS operator_fixups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  from_head TEXT NOT NULL,
+  instructions TEXT NOT NULL,
+  by TEXT NOT NULL,
+  at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'queued',
+  preapproval_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS operator_fixups_item ON operator_fixups(repo, number, from_head);
+
+-- Pre-approved merges (src/preapproval): an operator's merge approval given ahead of a fix-up. state: fixup | review | ci | queued |
+-- merged | asked | cancelled | failed (see Preapproval in web/src/api/types.ts). head is the pushed commit; fix_id the operator_fixups row.
+CREATE TABLE IF NOT EXISTS preapprovals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  by TEXT NOT NULL,
+  at TEXT NOT NULL,
+  instructions TEXT NOT NULL,
+  state TEXT NOT NULL,
+  from_head TEXT NOT NULL,
+  head TEXT,
+  reason TEXT,
+  updated_at TEXT NOT NULL,
+  fix_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS preapprovals_item ON preapprovals(repo, number, id);

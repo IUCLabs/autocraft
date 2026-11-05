@@ -1,6 +1,6 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
-import type { Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
+import type { CardEdit, Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
 import { buttonLabel, cardEffect, cardLines, type CardParams } from "../../conversations/cards.ts";
 import { cardOf, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, staleOf, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
@@ -33,10 +33,16 @@ export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
   const effect = c.kind === "answer" || c.kind === "close" || c.kind === "resolution" ? cardEffect(db, params) : null;
   const lines = cardLines(db, params, c.description);
   const commentStep = params.kind === "resolution" ? params.steps.findIndex((x) => x.kind === "comment") : params.kind === "comment" || (params.kind === "close" && c.text !== null) ? 0 : -1;
+  const issueAt = params.kind === "resolution" ? params.steps.findIndex((x) => x.kind === "open_issue") : -1;
+  const fixupAt = params.kind === "resolution" ? params.steps.findIndex((x) => x.kind === "fixup") : -1;
+  const issueStep = params.kind === "resolution" ? params.steps[issueAt] : undefined;
+  const fixupStep = params.kind === "resolution" ? params.steps[fixupAt] : undefined;
   const stale = c.state === "proposed" ? staleOf(db, c.repo, c.number, c.seen) : undefined;
   return {
     steps: lines.steps,
     ...(commentStep >= 0 && { commentStep }),
+    ...(issueStep?.kind === "open_issue" && { issue: { step: issueAt, repo: issueStep.repo, title: issueStep.title, body: issueStep.body } }),
+    ...(fixupStep?.kind === "fixup" && { fixup: { step: fixupAt, instructions: fixupStep.instructions, merge: fixupStep.merge } }),
     ...(params.kind === "resolution" && params.settle?.kind === "answer" && { option: params.settle.option }),
     ...(stale && { stale }),
     ...(lines.settles && { settles: lines.settles }),
@@ -78,6 +84,22 @@ function itemOf(req: Req): { repo: string; n: number } {
   const n = Number(req.params.n);
   if (!Number.isInteger(n) || n < 1) throw new HttpError(400, "the item number must be a whole number");
   return { repo: req.params.repo!, n };
+}
+
+/** The edit a card-edit request carries: any of text, issue ({title, body}) and instructions. */
+function cardEdit(req: Req): CardEdit {
+  const b = req.json as Record<string, unknown> | null;
+  if (!b || typeof b !== "object" || Array.isArray(b)) throw new HttpError(400, "the body must be an object");
+  const edit: CardEdit = {};
+  if (b.text !== undefined) { if (typeof b.text !== "string") throw new HttpError(400, "text must be a string"); edit.text = b.text; }
+  if (b.instructions !== undefined) { if (typeof b.instructions !== "string") throw new HttpError(400, "instructions must be a string"); edit.instructions = b.instructions; }
+  if (b.issue !== undefined) {
+    const i = b.issue as Record<string, unknown> | null;
+    if (!i || typeof i !== "object" || typeof i.title !== "string" || typeof i.body !== "string") throw new HttpError(400, "issue must be an object with a title and a body");
+    edit.issue = { title: i.title, body: i.body };
+  }
+  if (Object.keys(edit).length === 0) throw new HttpError(400, "the body must have a text, an issue or instructions");
+  return edit;
 }
 
 function text(req: Req): string {
@@ -134,7 +156,7 @@ async function needCard(db: DatabaseSync, req: Req): Promise<CardRow> {
 
 export async function editCardText(db: DatabaseSync, req: Req): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView(db, guard(() => editCard(db, c.id, req.user.login, text(req))));
+  return cardView(db, guard(() => editCard(db, c.id, req.user.login, cardEdit(req))));
 }
 
 export async function dismiss(db: DatabaseSync, req: Req): Promise<ConversationCard> {

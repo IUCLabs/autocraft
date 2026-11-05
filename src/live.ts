@@ -78,6 +78,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   conversations: [{ table: "conversations" }, { table: "conversation_turns" }, { table: "conversation_cards" }],
   fixes: [{ table: "fix_attempts" }, { table: "patch_checks" }, { table: "dupe_carries" }],
   verify: [{ table: "verifications" }, { table: "fixups" }, { table: "ci_fixes" }],
+  // Pre-approved merges and the operator fix-ups behind them: the planner works them, so the topic is planner input.
+  preapprovals: [{ table: "preapprovals" }, { table: "operator_fixups" }],
   postmerge: [{ table: "postmerge_reviews" }, { table: "postmerge_followups" }, { table: "premerge_reviews" }],
   // Sessions change on every request (last_seen); only sign-ins and revocations matter.
   access: [{ table: "access" }, { table: "sessions", ops: ["INSERT", "DELETE"] }, { table: "audit" }],

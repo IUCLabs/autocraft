@@ -40,9 +40,13 @@ import { scrubGitError } from "../worker/patch.ts";
 import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
 import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
-import { fixupEditable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
+import { referenceDir } from "../reference.ts";
+import { cleanReason } from "../act/templates.ts";
+import { defaultSemanticDeps, referenceProblems } from "../reference-lint.ts";
+import { dropTexts } from "../replylint.ts";
+import { fixupEditable, operatorEditable, quotesText, splitChanges, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
-import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
+import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage, operatorCommentText } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 
@@ -175,18 +179,19 @@ class Recorder {
       return;
     }
     if (c.lint) return;
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at(), c.source ?? null);
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, operator_fix) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at(), c.source ?? null, c.operator?.id ?? null);
   }
 
   /** The model patch waits for its lint task: a first row, or the same row with the next round's patch and task. */
-  linting(c: FixCandidate, patch: string, files: string[], task: number, lintState: "pending" | "requeued", round: number, session: string | null): void {
+  linting(c: FixCandidate, patch: string, files: string[], task: number, lintState: "pending" | "requeued", round: number, session: string | null, changes: string[] = []): void {
+    const list = changes.length ? JSON.stringify(changes) : null;
     if (c.lint) {
-      this.db.prepare("UPDATE fixups SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ?, session = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, session, c.lint.rowid);
+      this.db.prepare("UPDATE fixups SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ?, session = ?, changes = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, session, list, c.lint.rowid);
       return;
     }
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state, carry_decision, session) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.carry ? "carry" : c.source ?? null, patch, task, round, lintState, c.carry?.decisionId ?? null, session);
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state, carry_decision, session, operator_fix, changes) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.carry ? "carry" : c.source ?? null, patch, task, round, lintState, c.carry?.decisionId ?? null, session, c.operator?.id ?? null, list);
   }
 
   /** Stored patches whose Plan no longer lists the push (head moved, a Hold or Close answer, approval revoked) are dropped. */
@@ -214,12 +219,14 @@ class Recorder {
       if (c.lint) this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ?, patch = NULL WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, c.lint.rowid);
       return;
     }
-    const open = this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushing', 'linting') ORDER BY rowid DESC").get(c.repo, c.number, c.head) as { id: number } | undefined;
+    // The candidate's own row: its stored patch, else the open row of its source (and of its operator request).
+    const open = (c.lint ? { id: c.lint.rowid } : this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushing', 'linting') AND COALESCE(source, 'review') = ? AND operator_fix IS ? ORDER BY rowid DESC")
+      .get(c.repo, c.number, c.head, c.source ?? "review", c.operator?.id ?? null)) as { id: number } | undefined;
     if (open) {
       this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, open.id);
     } else {
-      this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at, c.source ?? null);
+      this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, operator_fix) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at, c.source ?? null, c.operator?.id ?? null);
     }
     const hold = state === "cannot-push" || state === "too-large" || state === "push-denied";
     const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`
@@ -374,6 +381,10 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
       if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
       if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
+      // An operator's fix-up may edit any file of the repository a fix-up may touch: the instructions name no file. The PR's own files are the ones shown.
+      if (c.operator) {
+        files = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(operatorEditable);
+      }
       // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
       const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
@@ -402,7 +413,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
           if (c.lint.state === "requeued") { fail("failed", `lint: ${res.reason}`); continue; }
           const again = queueLint(db, { step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, patch: c.lint.patch });
           if (again === null) { fail("failed", `lint: ${res.reason}`); continue; }
-          rec.linting(c, c.lint.patch, files, again, "requeued", c.lint.round, c.lint.session);
+          rec.linting(c, c.lint.patch, files, again, "requeued", c.lint.round, c.lint.session, c.lint.changes);
           log(`  ${ref}: lint task failed (${res.reason}); queued again as task ${again}`);
           continue;
         }
@@ -418,13 +429,16 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // The model's patch: the stored one when it is clean, else a new answer (with the findings on the earlier patch).
       const ses: SessionAsk = c.lint && findings.length ? sessionAsk(c.lint.session, "", findings, new Date(at())) : {};
       if (folded !== null) dropSessions(c.lint!.session);
-      const reply = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}),
+      const raw = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(c.operator ? { operator: c.operator.instructions } : {}), ...(carried ? { carried_from: carried } : {}),
         ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout,
-        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) }), ses);
+        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(c.operator ? validatePatch(splitChanges(p).diff, null, operatorEditable) : validatePatch(p, files, fixupEditable))) }), ses);
       ledger.hold(ses.kept);
       if (c.lint && folded === null) dropSessions(c.lint.session, ses.kept ? { "": ses.kept } : {});
-      if (reply === null) { fail("failed", "the model gave no answer"); continue; }
-      const v = validatePatch(reply, files, fixupEditable);
+      if (raw === null) { fail("failed", "the model gave no answer"); continue; }
+      // An operator fix-up's reply ends with the model's list of what it changed; a stored patch keeps the list in its row.
+      const split = c.operator && folded === null ? splitChanges(raw, c.operator.instructions) : { diff: raw, changes: c.lint?.changes ?? [] };
+      const reply = split.diff;
+      const v = c.operator ? validatePatch(reply, null, operatorEditable) : validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
 
       const scratch = mkdtempSync(join(d.root, ".index-"));
@@ -435,7 +449,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         rmSync(scratch, { recursive: true, force: true });
       }
       if (!applied.ok) { fail("refused", applied.reason); continue; }
-      const commit = await git.commit(applied.tree, head, commitMessage(v.files), { name: who.login, email: who.email });
+      const commit = await git.commit(applied.tree, head, commitMessage(v.files, !!c.operator), { name: who.login, email: who.email });
       const changes = await git.rawChanges(head, commit);
       const touched = changes.map((x) => x[3]!).sort().join("\n");
       if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...v.files].sort().join("\n")) {
@@ -449,7 +463,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // Opus checks the validated patch; only an approve goes on. A stored patch that came back clean was checked already (the format changes are whitespace only).
       if (folded === null) {
         if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
-        const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
+        const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, ...(c.operator ? { operator: c.operator.instructions } : {}), diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
         if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
         const verdict = parseCheck(checkReply);
         if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }
@@ -472,7 +486,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         const round = c.lint ? c.lint.round + 1 : 1;
         const task = queueLint(db, { step: "fixup", repo, number: c.number, head, base: now.baseRefOid ?? null, patch: v.patch });
         if (task !== null) {
-          rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null);
+          rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null, split.changes);
           if (ses.kept) ledger.stored({ "": ses.kept });
           jobItem(db, repo, c.number, `patch stored; lint task ${task} queued (round ${round})`, log);
           continue;
@@ -491,8 +505,8 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       summary.pushed.push(ref);
       jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 
-      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files, c.attempt);
-      const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
+      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files, await postableChanges(db, repo, `${repo}#${c.number}`, split.changes, c.operator.instructions)) : commentText(v.files, c.attempt);
+      const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : c.operator ? { by: "fixed-operator" } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));
@@ -501,6 +515,14 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   for (const c of cMerges) await mergeConflict(db, conflictRun, c);
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
+}
+
+/** The model's list of changes with the items the reference lint flags (a mention or quote of the reference documentation) left out. */
+async function postableChanges(db: DatabaseSync, repo: string, ref: string, changes: string[], instructions: string): Promise<string[]> {
+  const items = changes.map((t) => cleanReason(t, 200) ?? "").filter((t) => t && !quotesText(t, instructions));
+  const dir = referenceDir(repo);
+  const bad = dropTexts(await referenceProblems(items.map((text, i) => ({ field: `changes[${i}]`, text })), dir, dir ? defaultSemanticDeps(db, ref) : undefined));
+  return items.filter((t) => !bad.has(t));
 }
 
 const DIFF_FILE = /^diff --git a\/(\S+) b\/\S+$/gm;

@@ -33,8 +33,8 @@ export const KIND_ICON: Record<DecisionKind, PhosphorIcon> = {
 export function KindTag({ kind, batch }: { kind: DecisionKind; batch?: number }) {
   const Icon = KIND_ICON[kind];
   return (
-    <span className="inline-flex h-5 items-center gap-1 rounded-full border border-line-strong px-2 text-2xs font-medium text-ink/75">
-      <Icon className="text-[11px] text-ink/55" />
+    <span className="inline-flex items-center gap-1 text-xs font-medium text-ink/75">
+      <Icon className="text-[12px] text-ink/55" />
       {KIND_LABEL[kind]}
       {batch ? <span className="text-ink/55">· batch of {batch}</span> : null}
     </span>

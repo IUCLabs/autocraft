@@ -301,6 +301,8 @@ async function readRepoSince(db: DatabaseSync, client: Querier, name: string, cu
 
 // high_water is written only when the whole repo finished, so a crash leaves the repo incomplete.
 async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: boolean): Promise<number> {
+  // synced_at is the start of the sync: every item the sync read is at least as new as it (the pre-approved merge compares it with a push).
+  const startedAt = iso(new Date());
   const row = db.prepare("SELECT high_water FROM repos WHERE name=?").get(name) as { high_water: string | null } | undefined;
   const high = row?.high_water ?? null;
   const cutoff = high && !full ? iso(new Date(new Date(high).getTime() - OVERLAP_MS)) : null;
@@ -309,7 +311,7 @@ async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: b
   const newest = read.newest > (high ?? "") ? read.newest : (high ?? "");
   // max(): an incremental sync may have moved the high water further while a full pass ran.
   db.prepare(`UPDATE repos SET synced_at=:at, high_water=CASE WHEN :hw IS NOT NULL AND (high_water IS NULL OR high_water < :hw) THEN :hw ELSE high_water END
-    WHERE name=:name`).run({ at: iso(new Date()), hw: newest || null, name });
+    WHERE name=:name`).run({ at: startedAt, hw: newest || null, name });
   return count;
 }
 

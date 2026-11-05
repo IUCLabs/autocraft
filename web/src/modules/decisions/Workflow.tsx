@@ -4,6 +4,7 @@ import { Button } from "../../ui/atoms/Button";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
 import { canActOn } from "./DecisionDetail";
+import { OpusWorking } from "../../ui/molecules/OpusWorking";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";
 
@@ -97,6 +98,7 @@ export function WorkflowBox({
     <section className="mt-8 scroll-mt-3 rounded-md border border-line-strong bg-raised">
       <h2 className="border-b border-line px-3 py-2 text-sm font-semibold">{title}</h2>
       <div className="px-3 py-2.5">
+        {!many && d.preparing && <OpusWorking text="Opus is preparing options…" className="mb-2 px-2" />}
         {!many && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
         <div role="radiogroup" aria-label={title} className="grid gap-0.5">
           {d.options.map((o, i) => {

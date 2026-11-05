@@ -1,6 +1,9 @@
 // Validation of the unified diff a model returns for the fix-up step. Pure text
 // checks; whether it applies is decided by `git apply --check` in index.ts.
 
+import { cleanReason } from "../act/templates.ts";
+import { isInstructionPath } from "../sandbox/checkout.ts";
+import { QUOTE_WORDS } from "../replylint.ts";
 import type { ShownFile } from "./excerpt.ts";
 
 export const MAX_CHANGED_LINES = 300;
@@ -18,6 +21,40 @@ export function fixupEditable(path: string): boolean {
   if (editable(path)) return true;
   const parts = path.split("/");
   return safePath(path) && path.toLowerCase().endsWith(".md") && !parts.some((s) => s.startsWith(".")) && !AGENT_DOCS.test(parts[parts.length - 1]!);
+}
+
+/**
+ * Files an operator's fix-up may edit: any file of the repository except what every fix-up refuses (CI workflows, cargo
+ * configuration, build scripts, files that instruct coding agents) and hidden-directory paths of the git metadata.
+ */
+export function operatorEditable(path: string): boolean {
+  const parts = path.split("/");
+  const name = parts[parts.length - 1]!.toLowerCase();
+  return safePath(path) && path !== "build.rs" && !path.endsWith("/build.rs") && !parts.some((s) => s === ".cargo" || s === ".github")
+    && !AGENT_DOCS.test(parts[parts.length - 1]!) && !isInstructionPath(path)
+    && name !== "cargo.toml" && name !== "cargo.lock" && !name.startsWith("rust-toolchain")
+    && name !== ".gitmodules" && name !== ".gitattributes" && name !== "codeowners";
+}
+
+const words = (s: string): string[] => s.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
+
+/** True when `text` shares a run of QUOTE_WORDS consecutive words with `source`. */
+export function quotesText(text: string, source: string): boolean {
+  const w = words(text), v = words(source);
+  if (w.length < QUOTE_WORDS || v.length < QUOTE_WORDS) return false;
+  const runs = new Set<string>();
+  for (let i = 0; i + QUOTE_WORDS <= v.length; i++) runs.add(v.slice(i, i + QUOTE_WORDS).join(" "));
+  for (let i = 0; i + QUOTE_WORDS <= w.length; i++) if (runs.has(w.slice(i, i + QUOTE_WORDS).join(" "))) return true;
+  return false;
+}
+
+/** The reply of an operator's fix-up splits at its last `CHANGES:` line into the diff and the model's numbered list of what it changed (items cleaned like any public reason, one line each, at most 8; an item that quotes the operator's `instructions` is dropped). */
+export function splitChanges(text: string, instructions = ""): { diff: string; changes: string[] } {
+  const t = text.replace(/\r\n/g, "\n");
+  const i = t.search(/^CHANGES:[ \t]*$(?![\s\S]*^CHANGES:)/m);
+  if (i < 0) return { diff: text, changes: [] };
+  const changes = t.slice(i).split("\n").slice(1).map((l) => cleanReason(l.replace(/^\s*(?:\d+[.)]|[-*])\s*/, ""), 200) ?? "").filter((x) => x && !quotesText(x, instructions)).slice(0, 8);
+  return { diff: t.slice(0, i).trimEnd(), changes };
 }
 
 /** Markdown files that instruct coding agents; a fix-up never edits them. */
@@ -74,11 +111,11 @@ const REJECT_HEADER = /^(old mode|new mode|new file mode|deleted file mode|renam
 const HUNK = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
 
 /**
- * Accepts only content edits to existing regular files named in `allowed`:
+ * Accepts only content edits to existing regular files named in `allowed` (any file `canEdit` accepts when null):
  * no new, deleted, renamed, mode-changed, symlink or binary files, at most
  * MAX_CHANGED_LINES added plus removed lines.
  */
-export function validatePatch(text: string, allowed: string[], canEdit: (path: string) => boolean = editable): PatchCheck {
+export function validatePatch(text: string, allowed: string[] | null, canEdit: (path: string) => boolean = editable): PatchCheck {
   const patch = recountHunks(extractDiff(text));
   if (!patch.startsWith("diff --git ")) return { ok: false, reason: "the reply is not a unified diff" };
   const lines = patch.split("\n");
@@ -98,7 +135,7 @@ export function validatePatch(text: string, allowed: string[], canEdit: (path: s
       cur = m[1]!;
       if (!safePath(cur)) return { ok: false, reason: `unsafe path ${cur}` };
       if (!canEdit(cur)) return { ok: false, reason: `${cur} is not a file a fix-up may edit` };
-      if (!allowed.includes(cur)) return { ok: false, reason: `${cur} is not a file named in the review's fixes` };
+      if (allowed && !allowed.includes(cur)) return { ok: false, reason: `${cur} is not a file named in the review's fixes` };
       if (files.includes(cur)) return { ok: false, reason: `${cur} appears twice` };
       files.push(cur);
       sawOld = sawNew = false;
@@ -160,6 +197,8 @@ export type FixupPr = {
   files: ShownFile[];
   /** The PR's diff. */
   diff: string;
+  /** An operator's instructions (a maintainer of the project, not the PR's author): trusted text that replaces the fix list. */
+  operator?: string;
   /** For a carry-over: the PRs closed as duplicates, their diffs and the parts to port onto this one. */
   carried_from?: { ref: string; points: string[]; diff: string }[];
   /** Present when an earlier patch for these fixes failed the lint check: that patch and the lint findings on the lines it changed. */

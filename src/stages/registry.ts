@@ -161,11 +161,11 @@ export const STAGES: StageDef[] = [
   },
   {
     id: "decide", title: "Decide", order: 5, runStage: 3, docSection: "Decide", mode: "gate",
-    description: "Asks an operator for scope calls, with a summary and a recommendation, and answers questions about an item in its conversation.",
+    description: "Asks an operator for scope calls, prepares every open decision with a summary, a pick and drafted answers, and answers questions about an item in its conversation.",
     steps: [{ name: "decide", label: "Decide", limit: null, seeded: 100 }, { name: "conversation", label: "Conversations", limit: 30 }],
     lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 20 }],
     reads: ["Classified items", "Reviews", "Operator answers"],
-    sets: ["Decisions with summary and recommendation", "Conversation replies"],
+    sets: ["Decisions with summary, pick and drafted answers", "Conversation replies"],
     states: [
       { id: "not-asked", label: "Not asked yet", waitsOn: "model", tone: "neutral", hint: "Needs a decision; the decide step writes the question and summary" },
       { id: "open", label: "Waiting for an answer", waitsOn: "person", tone: "accent", gate: true },
@@ -178,11 +178,11 @@ export const STAGES: StageDef[] = [
     ],
     models: [
       { model: "haiku", use: "Summaries of duplicate decisions" },
-      { model: "opus", use: "Writes the scope decision summary and recommendation, and conversation replies" },
+      { model: "opus", use: "Prepares every open decision (summary, pick, drafted answers; the judgement model setting), and conversation replies" },
     ],
-    promptIds: ["decide.recommend", "conversation.turn"], promptStage: "Decide",
+    promptIds: ["decide.prepare", "conversation.turn"], promptStage: "Decide",
     waits: [
-      { name: "Failed recommendation", why: "A scope recommendation call that keeps failing must not re-run Decide", howLong: "1 hour between tries, at most 3; then the decision keeps no recommendation", showsAs: "none (the decision shows no recommendation)", kind: "backoff" },
+      { name: "Failed prepare", why: "A prepare call that keeps failing must not re-run Decide", howLong: "1 hour between tries, at most 3 at one PR head; then the decision keeps what it has", showsAs: "none (the decision shows no pick or drafts)", kind: "backoff" },
     ],
     writes: [],
     person: "An operator answers",
@@ -341,7 +341,7 @@ export const STAGES: StageDef[] = [
   },
   {
     id: "merge", title: "Merge queue", order: 11, runStage: 6, docSection: "Merge queue", mode: "steps",
-    description: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Before a PR the rule would merge goes into a batch, Opus reviews its head commit once more, adversarially and independently of the first review; a defect it verifies becomes a fix-up or a Merge? question. Approves held CI runs of outside contributors where the repo allows it.",
+    description: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Before a PR the rule would merge goes into a batch, and before a pre-approved merge is handed over to the queue, Opus reviews its head commit once more, adversarially and independently of the first review; a defect it verifies becomes a fix-up or a Merge? question (for a pre-approved merge, a Merge? question). Approves held CI runs of outside contributors where the repo allows it.",
     steps: [{ name: "merge", label: "Merge", limit: null, seeded: 10 }, { name: "premerge", label: "Pre-merge review", limit: null }, { name: "merge-ask" }, { name: "ci-approve", label: "Approve CI runs", limit: 30 }, { name: "unassign" }],
     lanes: [{ name: "premerge", steps: ["premerge"], order: 9 }, { name: "merge-ask", steps: ["merge-ask"], order: 10 }, { name: "merge", steps: ["checks", "merge"], order: 11 }, { name: "ci-approve", steps: ["ci-approve"], order: 21 }, { name: "unassign", steps: ["unassign"], order: 27 }],
     reads: ["Reviews", "Verification results", "CI state", "Merge decisions"],
@@ -369,7 +369,7 @@ export const STAGES: StageDef[] = [
     models: [{ model: "opus", use: "Pre-merge review of the head commit" }],
     promptIds: ["premerge.opus"], promptStage: "Merge",
     waits: [
-      { name: "Pre-merge review", why: "A PR the rule would merge waits for an adversarial Opus review of its head commit (one model call per head); while the step cannot run (pipeline off, usage pause) it waits", howLong: "Until the call ends; a failed call is tried again after 1 hour, at most 3 tries, then a person decides", showsAs: "Queue state `waiting-premerge`", kind: "external" },
+      { name: "Pre-merge review", why: "A PR the rule would merge, or a pre-approved merge before its hand-over, waits for an adversarial Opus review of its head commit (one model call per head); while the step cannot run (pipeline off, usage pause) it waits", howLong: "Until the call ends; a failed call is tried again after 1 hour, at most 3 tries, then a person decides", showsAs: "Queue state `waiting-premerge`", kind: "external" },
       { name: "Pre-merge review retry", why: "The model call for the head failed or returned no valid review", howLong: "1 hour between tries; after 3 failed tries the merge queue asks a person", showsAs: "Queue state `waiting-premerge` (tries left) or a Merge? question (\"pre-merge review failed\")", kind: "backoff" },
       { name: "Upstream CI of PRs and open batch PRs", why: "External", howLong: "Read again every minute per repo while any waits", showsAs: "\"waiting for CI on N PRs in repo\"", kind: "external" },
       { name: "Runs waiting for approval", why: "GitHub holds the runs of an outside contributor's PR until a maintainer approves them; the pipeline approves them once the head has a final take or take-fix review and the repo's CI approval is on", howLong: "Until the step runs (read again with each checks job)", showsAs: "Queue state `ci-approval`", kind: "external" },

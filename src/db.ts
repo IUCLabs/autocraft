@@ -87,6 +87,10 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["fixups", "lint_round", "INTEGER"],
   ["fixups", "lint_state", "TEXT"],
   ["fixups", "carry_decision", "TEXT"],
+  // The operator_fixups request an operator-source row works (src/preapproval).
+  ["fixups", "operator_fix", "INTEGER"],
+  // The operator fix-up model's list of what it changed (JSON [text]), kept with its stored patch until the push comment.
+  ["fixups", "changes", "TEXT"],
   // The model session that wrote the stored patch (JSON, src/prepush/resume.ts), kept for 60 minutes so the lint findings continue it.
   ["fixups", "session", "TEXT"],
   ["ci_fixes", "session", "TEXT"],
@@ -101,6 +105,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["decisions", "recommend_failures", "INTEGER"],
   ["decisions", "recommend_failed_at", "TEXT"],
   ["decisions", "recommended_by", "TEXT"],
+  ["decisions", "prepared_at", "TEXT"],
+  ["decisions", "prepared_head", "TEXT"],
+  ["decisions", "prepare_failed_head", "TEXT"],
   ["tracked_repos", "pipeline", "INTEGER NOT NULL DEFAULT 0"],
   ["conversation_turns", "seq", "INTEGER"],
   ["conversation_turns", "claim", "TEXT"],

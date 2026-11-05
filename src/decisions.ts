@@ -21,6 +21,7 @@ export type DecisionRow = {
   recommended: string | null; recommended_reason: string | null; recommended_by: string | null; public_text: string | null; asked_at: string; asked_by: string | null;
   docket: string | null; answer: string | null; answer_note: string | null; exceptions: string | null;
   answered_by: string | null; answered_at: string | null; applied_at: string | null;
+  prepared_at?: string | null; prepared_head?: string | null; prepare_failed_head?: string | null; recommend_failures?: number | null; recommend_failed_at?: string | null;
   summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null; snoozed_by: string | null; snoozed_at: string | null;
 };
 
@@ -120,14 +121,22 @@ export function validateAsk(q: Record<string, unknown>): Record<string, string |
   };
 }
 
-// Inserts or updates the question by id; answer columns are never touched, a re-ask replaces the recommendation along with its reason and clears its author (and the snooze when the question or options changed), and neither is a summary the new question lacks.
+// Inserts or updates the question by id; answer columns are never touched. A re-ask replaces the recommendation along with its reason and clears its author, except that a question and options the prepare step already covered keep its pick. A changed question or options clear the snooze and the prepare. A summary the new question lacks is kept.
 export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTransaction = false): { inserted: number; updated: number } {
   const rows = questions.map(validateAsk);
   const cols = ["id", ...ASK_FIELDS];
+  const changed = "(excluded.question IS NOT question OR excluded.options IS NOT options)";
+  const keepsPick = "(prepared_at IS NOT NULL AND NOT " + changed + ")";
+  const set = (c: string): string =>
+    SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})`
+    : c === "recommended" || c === "recommended_reason" ? `${c} = CASE WHEN ${keepsPick} THEN ${c} ELSE excluded.${c} END`
+    : `${c} = excluded.${c}`;
   const stmt = db.prepare(`INSERT INTO decisions (${cols.join(",")}) VALUES (${cols.map((c) => `:${c}`).join(",")})
-    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}, recommended_by = NULL,
-      snoozed_by = CASE WHEN excluded.question IS NOT question OR excluded.options IS NOT options THEN NULL ELSE snoozed_by END,
-      snoozed_at = CASE WHEN excluded.question IS NOT question OR excluded.options IS NOT options THEN NULL ELSE snoozed_at END`);
+    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map(set).join(", ")}, recommended_by = CASE WHEN ${keepsPick} THEN recommended_by ELSE NULL END,
+      prepared_at = CASE WHEN ${changed} THEN NULL ELSE prepared_at END,
+      recommend_failures = CASE WHEN ${changed} THEN NULL ELSE recommend_failures END,
+      snoozed_by = CASE WHEN ${changed} THEN NULL ELSE snoozed_by END,
+      snoozed_at = CASE WHEN ${changed} THEN NULL ELSE snoozed_at END`);
   const exists = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
   let inserted = 0, updated = 0;
   if (!inTransaction) db.exec("BEGIN IMMEDIATE");

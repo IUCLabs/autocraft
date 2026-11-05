@@ -1,6 +1,6 @@
 import type { Api } from "../client";
 import type { Conversation, ConversationCard, ConversationTurn, User } from "../types";
-import { NOW } from "./fixtures";
+import { NOW, PREAPPROVALS } from "./fixtures";
 
 const MIN = 60_000;
 const at = (min: number) => new Date(NOW - min * MIN).toISOString();
@@ -85,6 +85,38 @@ function seed(): ConversationTurn[] {
           state: "proposed",
         }),
         card({
+          id: 10,
+          kind: "resolution",
+          label: "Merge and open the issue",
+          title: "Merge now and open a follow-up issue",
+          steps: ["Open an issue in designcraft: Load Hungarian from the language pack"],
+          settles: 'Answers the merge question with "Merge"',
+          option: "merge",
+          issue: {
+            step: 0,
+            repo: "designcraft",
+            title: "Load Hungarian from the language pack",
+            body: "designcraft#1484 commits the Hungarian dictionary and hyphenation patterns. craft-i18n ships the same data as the `hu` pack.\n\nSwitch the spellchecker to load the pack through craft-proof and remove the committed files.",
+          },
+          writes: "merges the PR and opens an issue on GitHub",
+          state: "proposed",
+        }),
+        card({
+          id: 11,
+          kind: "resolution",
+          label: "Fix up, then merge",
+          title: "Fix up the PR, then merge it",
+          steps: ["Fix up the PR with the instructions below, then merge it once the review and CI pass"],
+          settles: "Pre-approves the merge",
+          fixup: {
+            step: 0,
+            merge: true,
+            instructions: "Drop the committed dictionary files and load the `hu` pack through craft-proof's `load_pack`. Keep the hyphenation tests.",
+          },
+          writes: "pushes to the PR branch and merges it",
+          state: "proposed",
+        }),
+        card({
           id: 9,
           kind: "comment",
           label: "Post comment",
@@ -100,7 +132,20 @@ function seed(): ConversationTurn[] {
 
 /** In-memory conversations. Only designcraft#1484 starts with one; an operator's message is answered after a few seconds. */
 export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void): Pick<Api, "conversations"> {
-  const store = new Map<string, Conversation>([[REF, { repo: "designcraft", number: 1484, exists: true, pending: false, startedBy: "opus", turns: seed(), includes: [{ source: "decision-opinion:designcraft#1484:merge/o0", by: "mosswood", at: at(100), sent: false }] }]]);
+  const sys = (id: number, min: number, body: string): ConversationTurn => ({ id, kind: "system", login: "system", at: at(min), body, actions: [], notes: [] });
+  const store = new Map<string, Conversation>([
+    ["vectorcraft#1402", { repo: "vectorcraft", number: 1402, exists: true, pending: false, startedBy: "opus", includes: [], turns: [
+      sys(201, 26, "ochre-fox approved a fix-up, then merge. Instructions: rename the curvature toggle and add the shortcut."),
+      sys(202, 14, "Fix-up pushed 9a1f3c5."),
+      sys(203, 6, "Review of 9a1f3c5 says take. Waiting for CI."),
+    ] }],
+    ["gridcraft#977", { repo: "gridcraft", number: 977, exists: true, pending: false, startedBy: "opus", includes: [], turns: [
+      sys(211, 180, "ochre-fox approved a fix-up, then merge. Instructions: cover the range spill case with a test, then merge."),
+      sys(212, 150, "Fix-up pushed 0f1e2d3."),
+      sys(213, 120, "CI failed on 0f1e2d3. The merge question was asked again."),
+    ] }],
+    [REF, { repo: "designcraft", number: 1484, exists: true, pending: false, startedBy: "opus", turns: seed(), includes: [{ source: "decision-opinion:designcraft#1484:merge/o0", by: "mosswood", at: at(100), sent: false }] }],
+  ]);
   let nextId = 100;
   const open = (repo: string, n: number): Conversation => {
     const k = `${repo}#${n}`;
@@ -155,10 +200,23 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         changed();
         return snap(c);
       },
-      async editCard(id, text) {
+      async cancelPreapproval(repo, number) {
+        need();
+        const p = PREAPPROVALS[`${repo}#${number}`];
+        if (!p) throw new Error(`no pre-approved merge on ${repo}#${number}`);
+        if (!["fixup", "review", "ci", "queued"].includes(p.state)) throw new Error(`the pre-approved merge is already ${p.state}`);
+        Object.assign(p, { state: "cancelled", reason: `Cancelled by ${me.login}`, updatedAt: new Date().toISOString() });
+        open(repo, number).turns.push(sys(nextId++, 0, `${me.login} cancelled the pre-approved merge.`));
+        changed();
+        return snap(p);
+      },
+      async editCard(id, edit) {
         need();
         const k = find(id);
-        Object.assign(k, { text, edited: true });
+        if (edit.text !== undefined) k.text = edit.text;
+        if (edit.issue && k.issue) Object.assign(k.issue, edit.issue);
+        if (edit.instructions !== undefined && k.fixup) k.fixup.instructions = edit.instructions;
+        k.edited = true;
         changed();
         return snap(k);
       },

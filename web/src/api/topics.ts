@@ -7,15 +7,15 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "decision-snooze" | "steps" | "mainci" | "limits";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "decision-snooze" | "steps" | "mainci" | "limits" | "preapprovals";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
 
 /** Everything an item page shows about a pull request. */
-const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "checks");
+const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "checks", "preapprovals");
 
-const TRACE: Topic[] = withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace");
+const TRACE: Topic[] = withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "preapprovals");
 
 const RULES: [prefix: string, topics: Topic[]][] = [
   // Agent progress lines arrive through `agents`; the shared 3 s window in live.tsx limits the refetch.

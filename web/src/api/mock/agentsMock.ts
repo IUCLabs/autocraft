@@ -14,7 +14,7 @@ const rnd = () => ((seedN = (seedN * 48271) % 2147483647) / 2147483647);
 const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)]!;
 
 const STEPS = [
-  { step: "decide", stage: 3, title: "Ask decisions", promptId: "decide.recommend", provider: "claude" as const, model: "opus" },
+  { step: "decide", stage: 3, title: "Ask decisions", promptId: "decide.prepare", provider: "claude" as const, model: "opus" },
   { step: "opus-review", stage: 5, title: "Review pull requests", promptId: "review.opus", provider: "claude" as const, model: "opus" },
   { step: "classify-new", stage: 2, title: "Classify new and changed items", promptId: "classify.haiku", provider: "claude" as const, model: "haiku" },
   { step: "classify-new", stage: 2, title: "Classify new and changed items", promptId: "classify.jev", provider: "jev" as const, model: "jev" },

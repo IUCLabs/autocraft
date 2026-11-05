@@ -10,6 +10,7 @@ import type {
   Decision,
   DecisionComment,
   DecisionKind,
+  Preapproval,
   DecisionOption,
   Item,
   Progress,
@@ -737,6 +738,7 @@ function toDecision(s: Seed): Decision {
   return {
     id,
     snoozed: null,
+    preparing: false,
     kind: s.kind,
     repo: s.repo,
     number: s.number,
@@ -779,6 +781,36 @@ function toDecision(s: Seed): Decision {
 
 const ALL_SEEDS = [...SEEDS, ...FILLER.map((_, i) => fillerSeed(i))];
 export const DECISIONS: Decision[] = ALL_SEEDS.map(toDecision);
+
+// One open decision is still being prepared: no recommendation yet.
+const PREPARING = DECISIONS.find((d) => d.id === "designcraft#2210:scope");
+if (PREPARING) Object.assign(PREPARING, { preparing: true, recommended: "", recommendedReason: "" });
+
+/** Pre-approved merges by item. Mutable so the mock's cancel changes what the item shows. */
+export const PREAPPROVALS: Record<string, Preapproval> = {
+  "vectorcraft#1402": {
+    id: 1,
+    by: "ochre-fox",
+    at: iso(26 * M),
+    instructions: "Rename the curvature toggle to match the reference app's Curvature tool and add the missing keyboard shortcut.",
+    state: "ci",
+    fromHead: "4be07a1c9d3f5528a6b7c0e1d2f34a5b6c7d8e9f",
+    head: "9a1f3c52e7d84b60a1c2d3e4f5061728394a5b6c",
+    reason: null,
+    updatedAt: iso(6 * M),
+  },
+  "gridcraft#977": {
+    id: 2,
+    by: "ochre-fox",
+    at: iso(3 * H),
+    instructions: "Cover the range spill case with a test, then merge.",
+    state: "asked",
+    fromHead: "c3d4e5f60718293a4b5c6d7e8f9001a2b3c4d5e6",
+    head: "0f1e2d3c4b5a69788796a5b4c3d2e1f001122334",
+    reason: "CI failed on the new test: the spill case wrote into a locked cell.",
+    updatedAt: iso(2 * H),
+  },
+};
 
 // One decision starts snoozed, for the Snoozed tab and the item page.
 const SNOOZED = DECISIONS.find((d) => d.id === "photocraft#4133:duplicate");
@@ -900,6 +932,7 @@ export function itemFor(repo: string, number: number): Item {
     settled: { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: null, flags: [], referee: null },
     verification: null,
     fixups: [],
+    preapproval: PREAPPROVALS[`${repo}#${number}`] ?? null,
     reviews: null,
     actions: [],
     releases: { reviewAgain: false, verifyAgain: false, fixAgain: false, batchAgain: false },

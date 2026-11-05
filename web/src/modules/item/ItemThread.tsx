@@ -1,15 +1,16 @@
 // The item page as one thread, oldest first: the description, GitHub comments, operator messages and Opus turns,
 // with runs of pipeline events folded between them, then the open question and the composer.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CheckCircleIcon, PlusCircleIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { CheckCircleIcon, PlusCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery, usePagedQuery } from "../../api/client";
-import type { ConversationTurn, Decision, Item, ItemTrace, TraceEvent, TraceKind } from "../../api/types";
-import { Avatar } from "../../ui/atoms/Avatar";
+import type { ConversationTurn, Decision, Item, ItemTrace, Preapproval, TraceEvent, TraceKind } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ChatEntry } from "../../ui/molecules/ChatEntry";
 import { Collapsible, Markdown } from "../../ui/molecules/Markdown";
+import { OpusWorking } from "../../ui/molecules/OpusWorking";
+import { PreapprovalRow } from "../../ui/organisms/PreapprovalRow";
 import { PipelineRun } from "../../ui/molecules/PipelineRun";
 import { TraceFilters } from "../../ui/molecules/TraceFilters";
 import { TraceHeader } from "../../ui/organisms/TraceHeader";
@@ -206,19 +207,17 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
           )}
           {list}
           {conv?.pending && (
-            <li className="list-none text-sm text-ink/55">
-              <div className="flex items-center gap-2">
-                <Avatar login="opus" size={20} />
-                <SpinnerIcon className="animate-spin text-ink/45" />
-                Opus is replying…
-              </div>
-              <Progress lines={conv.progress} />
+            <li className="list-none">
+              <OpusWorking text="Opus is replying…">
+                <Progress lines={conv.progress} />
+              </OpusWorking>
             </li>
           )}
         </ol>
         {list.length === 0 && !it.body && <p className="text-sm text-ink/55">No events match.</p>}
         <ErrorLine error={q.error?.message} className="mt-2" />
       </section>
+      {it.preapproval && <PreapprovalPart it={it} operator={operator} />}
       <OpenQuestions ds={ds ?? []} focus={decision} resolutions={resolutions} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
       {operator && suggestions.length > 0 && (
         <div className="mt-3 space-y-2">
@@ -237,6 +236,32 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
         feedbackOn={decision && !decision.answer ? decision : openDecisions.length === 1 ? openDecisions[0] : undefined}
       />
     </>
+  );
+}
+
+function PreapprovalPart({ it, operator }: { it: Item; operator: boolean }) {
+  const api = useApi();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const [applied, setApplied] = useState<Preapproval>();
+  // The returned row shows at once; a newer server row (a later update time) replaces it.
+  const p = applied && applied.id === it.preapproval!.id && applied.updatedAt >= it.preapproval!.updatedAt ? applied : it.preapproval!;
+  const cancel = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      setApplied(await api.conversations.cancelPreapproval(it.repo, it.number));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-6">
+      <PreapprovalRow p={p} repo={it.repo} number={it.number} canCancel={operator} onCancel={() => void cancel()} loading={busy} />
+      <ErrorLine error={error} className="mt-2" />
+    </div>
   );
 }
 

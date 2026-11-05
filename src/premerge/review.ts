@@ -54,7 +54,7 @@ export function premergeCandidates(db: DatabaseSync, opts: { repo?: string; at?:
     ...rest, ...(at !== undefined ? { now: at } : {}),
     onPlan: wake ? (f, plan) => {
       const pm = f.premerge;
-      if (plan.state === "waiting-premerge" && f.repoFacts.mergeApproved && pm && !pm.hasFindings && pm.tries < PREMERGE_MAX_TRIES) wake.push(Date.parse(pm.at) + RETRY_AFTER_MS);
+      if ((plan.state === "waiting-premerge" || f.operator?.premerge) && f.repoFacts.mergeApproved && pm && !pm.hasFindings && pm.tries < PREMERGE_MAX_TRIES) wake.push(Date.parse(pm.at) + RETRY_AFTER_MS);
     } : undefined,
   }).map((p) => ({ repo: p.facts.repo, number: p.facts.number, head: p.action.head!, facts: p.facts }));
 }

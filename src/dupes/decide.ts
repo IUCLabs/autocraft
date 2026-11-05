@@ -112,10 +112,12 @@ function supersede(db: DatabaseSync, p: GroupPlan, id: string, at: string): void
 
 function unchanged(db: DatabaseSync, q: Record<string, unknown>, p: GroupPlan): boolean {
   const id = q.id as string;
-  const cur = db.prepare("SELECT question, context, facts, options, recommended, recommended_reason, summary, summary_by FROM decisions WHERE id = ? AND answer IS NULL").get(id) as Record<string, string | null> | undefined;
+  const cur = db.prepare("SELECT question, context, facts, options, recommended, recommended_reason, summary, summary_by, prepared_at FROM decisions WHERE id = ? AND answer IS NULL").get(id) as Record<string, string | null> | undefined;
   if (!cur) return false;
   const next = validateAsk(q);
-  if (["question", "context", "facts", "options", "recommended", "recommended_reason", "summary", "summary_by"].some((c) => cur[c] !== next[c])) return false;
+  // A prepared decision keeps the judgement model's summary and pick.
+  const cols = ["question", "context", "facts", "options", ...(cur.prepared_at ? [] : ["recommended", "recommended_reason", "summary", "summary_by"])];
+  if (cols.some((c) => cur[c] !== next[c])) return false;
   const g = db.prepare("SELECT source, applied_answer FROM dupe_groups WHERE decision_id = ?").get(id) as { source: string; applied_answer: string | null } | undefined;
   if (!g || g.source !== p.source || g.applied_answer !== null) return false;
   type Row = { number: number; role: string; target: number | null; base_role: string; base_target: number | null; detail: string | null; head: string | null };

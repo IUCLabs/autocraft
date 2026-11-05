@@ -86,10 +86,10 @@ export function decideItem(f: ItemFacts): ItemPlan {
   // dupe-answer: operator answers to duplicate decisions that change no GitHub state. The pilot test is in the loader.
   if (f.dupeAnswers.length) actions.push(act("dupe-answer", null, { decisions: f.dupeAnswers }));
   if (f.inCompareSet) actions.push(act("dupes-compare", null));
-  // decide: a new scope decision, or Opus's recommendation for an open one.
+  // decide: a new scope decision, or the prepare step for an open decision of the item (any kind, held or not; in scope only) that has no prepare for its current state.
   if (f.run && live && !f.draft && state === "scope-due") actions.push(act("decide", null, { source: "new" }));
-  else if (live && !f.held && f.scope.recommend && f.scope.recommend.failures < RECOMMEND_MAX_FAILURES
-    && (f.scope.recommend.failedAt === null || Date.parse(f.scope.recommend.failedAt) < f.now - RECOMMEND_RETRY_MS)) actions.push(act("decide", null, { source: "recommend" }));
+  else if (live && f.scope.recommend && f.scope.recommend.failures < RECOMMEND_MAX_FAILURES
+    && (f.scope.recommend.failedAt === null || Date.parse(f.scope.recommend.failedAt) < f.now - RECOMMEND_RETRY_MS)) actions.push(act("decide", null, { source: "prepare" }));
   // label: the repo's labelling approval is applied by gates().
   if (f.run && live && f.held !== "backlog") {
     const settled = c.status === "settled" && c.label ? { type: c.label, security: c.flags.includes("security"), needsDecision: c.flags.includes("needs decision") } : null;

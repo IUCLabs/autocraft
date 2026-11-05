@@ -10,6 +10,7 @@ import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
+import { Select } from "../../ui/atoms/Select";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { GITHUB_ORG } from "../../lib/links";
 import { Block, ConfirmButton, ErrorLine, TextInput, useWrite } from "../admin/parts";
@@ -276,13 +277,47 @@ export function PilotPanel({ className }: { className?: string }) {
               className="num w-full rounded border border-line bg-sunken px-2.5 py-1.5 text-sm outline-none focus:border-accent/60"
             />
             <div className="flex flex-wrap items-center gap-2">
-              <ConfirmButton label="Save" confirmLabel="Confirm save" loading={write.busy === "pilot"} onConfirm={() => save(refs)} />
-              {pilot.length > 0 && <ConfirmButton label="Clear" confirmLabel="Confirm clear" loading={write.busy === "pilot"} onConfirm={() => save([])} />}
+              <ConfirmButton idle="secondary" label="Save" confirmLabel="Confirm save" loading={write.busy === "pilot"} onConfirm={() => save(refs)} />
+              {pilot.length > 0 && <ConfirmButton idle="secondary" label="Clear" confirmLabel="Confirm clear" loading={write.busy === "pilot"} onConfirm={() => save([])} />}
             </div>
             <ErrorLine error={write.error} />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+const MODEL_LABEL: Record<string, string> = { opus: "Opus", sonnet: "Sonnet" };
+const modelLabel = (m: string) => MODEL_LABEL[m] ?? m;
+
+/** The model that prepares every question's options and recommendation. Operators pick it; everyone else sees it. */
+export function JudgementModel({ className }: { className?: string }) {
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const q = usePipelineState();
+  const write = useWrite();
+  const s = q.data;
+  if (!s) return null;
+  return (
+    <div className={className}>
+      <div className="flex flex-wrap items-center gap-3 rounded-md border border-line p-4">
+        <label htmlFor="judgement-model" className="text-sm font-semibold">
+          Judgement model
+        </label>
+        {operator ? (
+          <Select id="judgement-model" value={s.judgementModel} disabled={write.busy === "model"} onChange={(e) => void write.run("model", () => api.pipeline.setJudgementModel(e.target.value))}>
+            {s.judgementModels.map((m) => (
+              <option key={m} value={m}>
+                {modelLabel(m)}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <span id="judgement-model" className="text-sm">{modelLabel(s.judgementModel)}</span>
+        )}
+      </div>
+      <ErrorLine error={write.error} className="mt-2" />
     </div>
   );
 }

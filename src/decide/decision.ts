@@ -30,7 +30,7 @@ const OPTION_OF_LABEL: Record<string, OptionKey> = {
 
 type Shape = { question: string; options: OptionKey[] };
 
-/** Question and options by the settled label, or by the two labels in a disagreement. The decision asks because the item needs a maintainer's call, so no option is recommended here (see recommend.ts). */
+/** Question and options by the settled label, or by the two labels in a disagreement. The decision asks because the item needs a maintainer's call, so no option is recommended here (see prepare.ts). */
 export function shapeOf(c: Candidate): Shape {
   const s = c.settled;
   if (c.reason === "scope-disagreement") {

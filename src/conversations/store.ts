@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { factsOf, getDecision, optionsOf, type DecisionRow } from "../decisions.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
-import { cleanComment, openDecision, type NewCard } from "./cards.ts";
+import { applicableSteps, cleanComment, openDecision, type NewCard } from "./cards.ts";
 import { ITEM_BODY_LIMIT, ITEM_COMMENT_LIMIT, ITEM_COMMENTS, ITEM_DIFF_LIMIT, MESSAGE_MAX, OPENING_MAX, type TurnKind } from "./types.ts";
 
 export class ConversationError extends Error {
@@ -40,16 +40,28 @@ const STALE_CLAIM_MS = (CLAUDE_PROMPTS["conversation.turn"].limits.timeoutSecond
 // ---- blocks ------------------------------------------------------------------
 
 /** Text of operators and Opus must not close or open the frame the prompt puts around turns. */
-const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included)\b/gi, "&lt;$1$2");
+const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included|steps)\b/gi, "&lt;$1$2");
 
 export type Included = { login: string; at: string; text: string };
 
 const attr = (v: string): string => v.replace(/[^\w.:-]/g, "");
 
 /** `included`: maintainers' posts the operator chose to share, carried in this turn once. */
-export function operatorBlock(login: string, text: string, included: Included[] = []): string {
+export function operatorBlock(login: string, text: string, included: Included[] = [], steps?: string[]): string {
   const extra = included.map((i) => `<included from="maintainer" login="${attr(i.login)}" at="${attr(i.at)}">\n${frameSafe(i.text)}\n</included>\n`).join("");
-  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}</turn>\n`;
+  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}${steps ? `<steps>${JSON.stringify(steps)}</steps>\n` : ""}</turn>\n`;
+}
+
+/** The steps list Opus last saw: the newest `<steps>` line of the stored turns, else the item block's. */
+function seenSteps(db: DatabaseSync, repo: string, n: number): string[] | null {
+  const parse = (j: string): string[] | null => { try { const v = JSON.parse(j) as unknown; return Array.isArray(v) ? v.map(String) : null; } catch { return null; } };
+  for (const t of [...turnsOf(db, repo, n)].reverse()) {
+    if (t.kind !== "operator") continue;
+    const m = /\n<steps>(\[[^\n]*\])<\/steps>\n<\/turn>\n$/.exec(t.block);
+    if (m) return parse(m[1]!);
+  }
+  const m = /"steps": (\[[^\]]*\])/.exec(conversationOf(db, repo, n)?.item_block ?? "");
+  return m ? parse(m[1]!) : null;
 }
 
 export function opusBlock(text: string, cards: NewCard[]): string {
@@ -135,6 +147,7 @@ export async function buildItemBlock(db: DatabaseSync, repo: string, n: number, 
     comments: comments.map((c) => ({ author: c.author, body: cut(c.body, ITEM_COMMENT_LIMIT) })),
     ...(pr ? { head: i.head_oid, lines: { additions: i.additions, deletions: i.deletions, files: i.changed_files }, diff: diff === null ? null : cut(diff, ITEM_DIFF_LIMIT) + (diff.length > ITEM_DIFF_LIMIT ? "\n[diff cut]" : "") } : {}),
     decision: decisionPart(openDecision(db, repo, n) ?? latestDecision(db, repo, n)),
+    steps: applicableSteps(db, repo, n),
   };
   return { block: untrustedJson(data), sig: sigOf(db, i) };
 }
@@ -261,7 +274,9 @@ export async function addOperatorMessage(db: DatabaseSync, repo: string, n: numb
   const shared = ask ? unsentIncludes(db, repo, n) : [];
   try {
     return inTx(db, () => {
-      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post)), ...(ask && { status: "pending" }) }, deps);
+      const now = applicableSteps(db, repo, n), seen = seenSteps(db, repo, n);
+      const steps = seen && JSON.stringify(seen) === JSON.stringify(now) ? undefined : now;
+      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post), steps), ...(ask && { status: "pending" }) }, deps);
       for (const x of shared) db.prepare("UPDATE conversation_includes SET sent_turn = ? WHERE repo = ? AND number = ? AND source = ? AND sent_turn IS NULL").run(id, repo, n, x.source);
       return id;
     });

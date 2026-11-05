@@ -20,6 +20,7 @@ import { issuesWithOpenPr, notRustKey, textHash } from "../fixissue/candidates.t
 import { headOf, scopeAnswers } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql } from "../pilot.ts";
+import { isPreparing, type PrepareColumns } from "../decide/prepared.ts";
 import type { ItemFacts } from "./plan.ts";
 
 export type { ItemFacts } from "./plan.ts";
@@ -92,15 +93,25 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const operatorAnswers = scopeAnswers(db, true);
   const operators = new Set((db.prepare("SELECT login FROM access WHERE role = 'operator'").all() as { login: string }[]).map((r) => r.login));
   const latestScope = new Map<string, { answer: string | null; byOperator: boolean }>(), securityIds = new Set<string>();
+  const head = db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?");
   const openScope = new Set<string>(), covered = new Set<string>(), recommend = new Map<string, { failures: number; failedAt: string | null }>();
-  for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, recommended_by, recommend_failures, recommend_failed_at FROM decisions ORDER BY asked_at, id`).all() as
-    { id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null; recommended_by: string | null; recommend_failures: number | null; recommend_failed_at: string | null }[]) {
+  for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, prepared_at, prepared_head, prepare_failed_head, recommend_failures, recommend_failed_at FROM decisions ORDER BY asked_at, id`).all() as
+    (PrepareColumns & { id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null })[]) {
     const dupegroup = d.id.includes(":dupegroup:");
     if (d.kind === "scope" && d.number !== null && !(d.answer === "withdrawn" && d.answered_by === "pipeline")) latestScope.set(`${d.repo}#${d.number}`, { answer: d.answer, byOperator: !!d.answered_by && operators.has(d.answered_by) });
     if (d.asked_by === SECURITY_ASKER) securityIds.add(d.id);
     if (d.kind === "scope" && d.answer === null) {
       for (const r of refsOf(d)) openScope.add(r);
-      if (d.number !== null && d.recommended_by === null) { const k = `${d.repo}#${d.number}`; if (!recommend.has(k)) recommend.set(k, { failures: d.recommend_failures ?? 0, failedAt: d.recommend_failed_at }); }
+    }
+    // Any open decision of one item that the prepare step has not covered at the item's current head (the item's fewest failed tries win).
+    if (d.answer === null && d.number !== null) {
+      const k = `${d.repo}#${d.number}`;
+      const it = head.get(d.repo, d.number) as { kind: string; head_oid: string | null } | undefined;
+      const h = it?.kind === "pr" ? it.head_oid : null;
+      if (isPreparing(d, h)) {
+        const failures = (d.prepare_failed_head ?? null) === h ? d.recommend_failures ?? 0 : 0;
+        if (failures < (recommend.get(k)?.failures ?? Infinity)) recommend.set(k, { failures, failedAt: failures ? d.recommend_failed_at : null });
+      }
     }
     // A question the pipeline withdrew (its item closed) does not cover the item: if it reopens, it is asked again.
     const withdrawn = d.answer === "withdrawn" && d.answered_by === "pipeline";

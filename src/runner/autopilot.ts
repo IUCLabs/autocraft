@@ -32,6 +32,7 @@ import { isQueueState } from "../core/plan.ts";
 import { isWork } from "../core/assignment.ts";
 import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
+import { actUsedToday } from "../conversations/usage.ts";
 import { openedToday, perDay } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
 import { defaultPerDay, lanesInOrder, limitSteps, zeroOnlySteps } from "../stages/registry.ts";
@@ -46,6 +47,7 @@ import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
+import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
 import { FAST_FLOOR, fastFirst, fastScoreOf } from "../fasttrack.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
@@ -557,8 +559,9 @@ export const DEFAULT_PER_DAY: Record<string, number> = defaultPerDay();
 export const limitRow = (db: DatabaseSync, step: string): LimitRow =>
   (db.prepare("SELECT * FROM stage_limits WHERE step = ?").get(step) as LimitRow | undefined) ?? { step, per_day: DEFAULT_PER_DAY[step] ?? null, updated_by: null, updated_at: null };
 
-/** Items handled by the step's jobs that started today (UTC) and after the operator's last reset of its count. */
+/** Items handled by the step's jobs that started today (UTC) and after the operator's last reset of its count; for Act, also the GitHub writes of conversation cards. */
 export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now()): number {
+  if (step === "act") return actUsedToday(db, ms);
   const day = dayStart(ms), reset = getSetting(db, KEY_RESET + step);
   return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, reset && reset > day ? reset : day) as { n: number }).n;
 }
@@ -712,6 +715,7 @@ export async function stageLimits(db: DatabaseSync): Promise<StageLimit[]> {
 
 export async function pipelineState(db: DatabaseSync): Promise<PipelineState> {
   return {
+    judgementModel: judgementModel(db), judgementModels: [...JUDGEMENT_MODELS],
     enabled: isEnabled(db), changedBy: getSetting(db, KEY_BY), changedAt: getSetting(db, KEY_AT),
     heartbeat: getSetting(db, "runner_heartbeat"), limits: await stageLimits(db), pilot: pilotItems(db),
   };

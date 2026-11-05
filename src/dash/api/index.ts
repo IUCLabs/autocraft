@@ -4,6 +4,7 @@
 // permissions themselves. Item and comment text is returned as data only.
 import { checksOf } from "../../patchcheck/index.ts";
 import { priorityOf } from "../../priority/read.ts";
+import { preapprovalOf } from "../../preapproval/index.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
   CiState, DecisionKind, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemPremerge, ItemReviews, ItemState, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
@@ -144,6 +145,8 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     postmerge: it.kind === "pr" ? postmergeOf(db, repo, n, canSeeInternals(req)) : null,
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
     queue: queueSlots(db, await visibleRepos(db, req)).get(`${repo}#${n}`) ?? null,
+    // The operator's instructions are shown to those who see the internals only.
+    ...(it.kind === "pr" ? { preapproval: ((p) => (p && !canSeeInternals(req) ? { ...p, instructions: "" } : p))(preapprovalOf(db, repo, n)) } : {}),
   };
 }
 
@@ -378,6 +381,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/conversation-cards/:id/edit", operator: true, handler: ok(conv.editCardText) },
     { method: "POST", pattern: "/api/conversation-cards/:id/do", operator: true, handler: ok((db, req) => conv.doIt(db, req)) },
     { method: "POST", pattern: "/api/conversation-cards/:id/dismiss", operator: true, handler: ok(conv.dismiss) },
+    { method: "POST", pattern: "/api/items/:repo/:n/preapproval/cancel", operator: true, handler: ok(operator.cancelItemPreapproval) },
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },
@@ -442,6 +446,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/pipeline/jobs/:id/cancel", operator: true, handler: ok(pipeline.cancel) },
     get("/api/pipeline/state", pipeline.state),
     { method: "PUT", pattern: "/api/pipeline/state", operator: true, handler: ok(pipeline.putState) },
+    { method: "GET", pattern: "/api/pipeline/judgement-model", operator: true, handler: ok((db) => pipeline.getJudgementModel(db)) },
+    { method: "PUT", pattern: "/api/pipeline/judgement-model", operator: true, handler: ok(pipeline.putJudgementModel) },
     { method: "PUT", pattern: "/api/pipeline/limits/:step", operator: true, handler: ok(pipeline.putLimit) },
     { method: "POST", pattern: "/api/pipeline/limits/:step/reset", operator: true, handler: ok(pipeline.resetLimit) },
     { method: "POST", pattern: "/api/pipeline/trips/:stage/resume", operator: true, handler: ok(pipeline.resumeTrip) },
