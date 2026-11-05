@@ -36,7 +36,8 @@ import { parsePublic } from "../review/opus-parse.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { ownerOf } from "../owners.ts";
 import { sensitiveReasons } from "./sensitive.ts";
-import { carriedReview } from "../review/carry.ts";
+import { CARRIED, carriedReview } from "../review/carry.ts";
+import { postSource } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
 import { scopeAnswers } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
@@ -295,8 +296,10 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.sensitive = sensitiveAt(r.repo, r.number, r.r_head);
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);
-    const hasPublic = r.r_public !== null;
-    const pub = !hasPublic ? { ok: true } : parsePublic(safeJson(r.r_public!));
+    // A carried review has no text of its own: the post uses the text of the review it was carried from.
+    const src = r.r_mode === CARRIED ? postSource(db, r.repo, r.number, r.r_head) : null;
+    const hasPublic = src ? src.hasPublic : r.r_public !== null;
+    const pub = src ? src.public : !hasPublic ? { ok: true } : parsePublic(safeJson(r.r_public!));
     base.post = {
       postable: (hasPublic || !!p?.review_id) && !!pub,
       posted: p ? { head: p.head_oid, at: p.posted_at, opusAt: p.opus_at } : null,
