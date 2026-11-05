@@ -90,7 +90,9 @@ const labelsOf = (i: { labels: string | null }): string[] => {
 /** What a block or update turn described of the item; a change in any field sends an update turn. */
 type Snapshot = { head: string | null; title: string; body: string; state: string; labels: string[]; comments: number; last_comment: string | null; decision: string | null; answer: string | null };
 
-const COMMENTS_WHERE = "repo = ? AND number = ? AND COALESCE(TRIM(body), '') <> '' AND COALESCE(author, '') NOT LIKE '%[bot]'";
+// The app's bot (the mirror stores its bare slug) is the pipeline itself: its posts are no news for the conversation.
+const COMMENTS_WHERE = `repo = ? AND number = ? AND COALESCE(TRIM(body), '') <> '' AND COALESCE(author, '') NOT LIKE '%[bot]'
+  AND COALESCE(author, '') NOT IN (SELECT value FROM json_each(COALESCE((SELECT value FROM main.settings WHERE key = 'app_slugs'), '[]')))`;
 
 function snapshotOf(db: DatabaseSync, i: ItemRow): Snapshot {
   const cnt = db.prepare(`SELECT COUNT(*) AS n FROM comments WHERE ${COMMENTS_WHERE}`).get(i.repo, i.number) as { n: number };
