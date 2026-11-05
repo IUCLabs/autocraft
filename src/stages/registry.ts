@@ -24,7 +24,7 @@ export type StageDef = {
   /** auto: runs on its own; steps: runner steps; gate: a person decides; planned: not built yet. */
   mode: "auto" | "steps" | "gate" | "planned";
   /** Runner steps the stage owns. label: the name in the daily limits table, for steps with a limit. limit: default items per day when no row exists (null: limited by setting only, absent: not limited). seeded: the value src/schema.sql inserts into a new database. */
-  steps: { name: string; label?: string; limit?: number | null; seeded?: number; zeroOnly?: boolean }[];
+  steps: { name: string; maxMin: number; label?: string; limit?: number | null; seeded?: number; zeroOnly?: boolean }[];
   /** Autopilot lanes. order is the lane's place in the autopilot's pass; a step may sit in lanes of other stages. */
   lanes: { name: string; steps: string[]; order: number }[];
   reads: string[];
@@ -47,7 +47,7 @@ export const STAGES: StageDef[] = [
   {
     id: "synced", title: "Synced", order: 1, runStage: 1, docSection: "Sync", mode: "auto",
     description: "Mirrors every issue, PR and comment of the tracked repos into the local database each minute, reads the CI state of each default branch every 2 minutes, and makes a vector of each item's title and body for similar-item search.",
-    steps: [{ name: "embed", label: "Embed", limit: null }, { name: "main-ci" }],
+    steps: [{ name: "embed", maxMin: 60, label: "Embed", limit: null }, { name: "main-ci", maxMin: 10 }],
     lanes: [{ name: "embed", steps: ["embed"], order: 3 }],
     reads: ["GitHub issues, PRs and comments"],
     sets: ["Mirror rows", "Item vectors"],
@@ -73,7 +73,7 @@ export const STAGES: StageDef[] = [
   {
     id: "dupes", title: "Duplicates", order: 2, runStage: 3, docSection: "Duplicates", mode: "steps",
     description: "Finds items that describe the same bug or request as another open item, or one closed in the last year, and compares each group.",
-    steps: [{ name: "dupes", label: "Duplicates", limit: 2000 }, { name: "dupes-compare", label: "Compare duplicate groups", limit: 200 }],
+    steps: [{ name: "dupes", maxMin: 10, label: "Duplicates", limit: 2000 }, { name: "dupes-compare", maxMin: 50, label: "Compare duplicate groups", limit: 200 }],
     lanes: [{ name: "dupes", steps: ["dupes"], order: 4 }, { name: "dupes-compare", steps: ["dupes-compare"], order: 5 }],
     reads: ["Item vectors", "Duplicate decisions already answered"],
     sets: ["Duplicate pair verdicts", "Duplicate decisions"],
@@ -106,7 +106,7 @@ export const STAGES: StageDef[] = [
   {
     id: "classify", title: "Classify", order: 3, runStage: 2, docSection: "Classify", mode: "steps",
     description: "Gives each open item one type label and two flags (security, needs decision). Jev goes first, Haiku gives a second opinion, and a referee settles disagreements outside the scope labels.",
-    steps: [{ name: "classify-new", label: "Classify", limit: null, seeded: 2000 }, { name: "classify-all" }, { name: "referee", label: "Referee", limit: 500 }, { name: "areas-propose" }, { name: "areas-suggest" }, { name: "areas-rescan" }],
+    steps: [{ name: "classify-new", maxMin: 20, label: "Classify", limit: null, seeded: 2000 }, { name: "classify-all", maxMin: 120 }, { name: "referee", maxMin: 10, label: "Referee", limit: 500 }, { name: "areas-propose", maxMin: 30 }, { name: "areas-suggest", maxMin: 30 }, { name: "areas-rescan", maxMin: 30 }],
     lanes: [{ name: "classify", steps: ["classify-new"], order: 0 }, { name: "referee", steps: ["referee"], order: 18 }],
     reads: ["Item text", "Area list"],
     sets: ["Type label and flags per item", "Area list"],
@@ -138,7 +138,7 @@ export const STAGES: StageDef[] = [
   {
     id: "priority", title: "Priority", order: 4, runStage: 2, docSection: "Priority", mode: "steps",
     description: "Gives each open item a level from P0 to P4, then orders the candidates of later stages by a work rank.",
-    steps: [{ name: "prioritize", label: "Priority", limit: null, seeded: 3000 }, { name: "rank" }],
+    steps: [{ name: "prioritize", maxMin: 30, label: "Priority", limit: null, seeded: 3000 }, { name: "rank", maxMin: 10 }],
     lanes: [{ name: "priority", steps: ["prioritize"], order: 1 }, { name: "rank", steps: ["rank"], order: 2 }],
     reads: ["Item text", "Type, size and security flag"],
     sets: ["Priority level", "Work rank"],
@@ -162,7 +162,7 @@ export const STAGES: StageDef[] = [
   {
     id: "decide", title: "Decide", order: 5, runStage: 3, docSection: "Decide", mode: "gate",
     description: "Asks an operator for scope calls, prepares every open decision with a summary, a pick and drafted answers, and answers questions about an item in its conversation.",
-    steps: [{ name: "decide", label: "Decide", limit: null, seeded: 100 }, { name: "conversation", label: "Conversations", limit: 30 }],
+    steps: [{ name: "decide", maxMin: 75, label: "Decide", limit: null, seeded: 100 }, { name: "conversation", maxMin: 30, label: "Conversations", limit: 30 }],
     lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 20 }],
     reads: ["Classified items", "Reviews", "Operator answers"],
     sets: ["Decisions with summary, pick and drafted answers", "Conversation replies"],
@@ -194,7 +194,7 @@ export const STAGES: StageDef[] = [
   {
     id: "labels", title: "Labels", order: 6, runStage: 4, docSection: "Label", mode: "steps",
     description: "Writes each settled type label and flag to GitHub. A label a person set is never changed.",
-    steps: [{ name: "labels-ensure" }, { name: "labels-apply", label: "Label", limit: null }],
+    steps: [{ name: "labels-ensure", maxMin: 10 }, { name: "labels-apply", maxMin: 30, label: "Label", limit: null }],
     lanes: [{ name: "labels", steps: ["labels-apply"], order: 8 }],
     reads: ["Settled types and flags", "Repo label approval"],
     sets: ["Labels on GitHub"],
@@ -218,7 +218,7 @@ export const STAGES: StageDef[] = [
   {
     id: "review", title: "Review", order: 7, runStage: 5, docSection: "Review", mode: "steps",
     description: "Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted.",
-    steps: [{ name: "opus-review", label: "Review (Opus)", limit: null, seeded: 40 }, { name: "review-carry" }, { name: "checks", label: "Checks", limit: null, zeroOnly: true }, { name: "review-post", label: "Post reviews", limit: null, seeded: 40 }],
+    steps: [{ name: "opus-review", maxMin: 70, label: "Review (Opus)", limit: null, seeded: 40 }, { name: "review-carry", maxMin: 10 }, { name: "checks", maxMin: 10, label: "Checks", limit: null, zeroOnly: true }, { name: "review-post", maxMin: 10, label: "Post reviews", limit: null, seeded: 40 }],
     lanes: [{ name: "review", steps: ["checks", "opus-review"], order: 7 }, { name: "review-carry", steps: ["review-carry"], order: 28 }, { name: "review-post", steps: ["review-post"], order: 19 }],
     reads: ["PR head and diff", "CI results", "Repo checkout"],
     sets: ["Review verdict and fix list"],
@@ -245,7 +245,7 @@ export const STAGES: StageDef[] = [
   {
     id: "fix", title: "Fix", order: 8, runStage: 7, docSection: "Fix", mode: "steps",
     description: "Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.",
-    steps: [{ name: "fixissue", label: "Fix", limit: null, seeded: 10 }, { name: "fixissue-collect" }],
+    steps: [{ name: "fixissue", maxMin: 50, label: "Fix", limit: null, seeded: 10 }, { name: "fixissue-collect", maxMin: 10 }],
     lanes: [{ name: "fixissue", steps: ["fixissue"], order: 16 }, { name: "fixissue-collect", steps: ["fixissue-collect"], order: 17 }],
     reads: ["Open bugfix issues", "Repo checkout at the base commit"],
     sets: ["Fix attempts", "Pull requests"],
@@ -280,7 +280,7 @@ export const STAGES: StageDef[] = [
   {
     id: "fixup", title: "Fix-up", order: 9, runStage: 6, docSection: "Fix-up", mode: "steps",
     description: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code. For a red default branch in an approved repo, reruns a flaky failure once and asks an operator about reporting an infrastructure failure.",
-    steps: [{ name: "fixup", label: "Fix-up", limit: null, seeded: 20 }, { name: "cifix", label: "CI fix", limit: null }, { name: "cifix-rerun", label: "CI fix reruns", limit: 30 }, { name: "main-fix", label: "Fix red main", limit: 20 }],
+    steps: [{ name: "fixup", maxMin: 120, label: "Fix-up", limit: null, seeded: 20 }, { name: "cifix", maxMin: 40, label: "CI fix", limit: null }, { name: "cifix-rerun", maxMin: 10, label: "CI fix reruns", limit: 30 }, { name: "main-fix", maxMin: 60, label: "Fix red main", limit: 20 }],
     lanes: [{ name: "fixup", steps: ["fixup"], order: 13 }, { name: "cifix", steps: ["cifix"], order: 24 }, { name: "cifix-rerun", steps: ["cifix-rerun"], order: 25 }, { name: "main-fix", steps: ["main-fix"], order: 26 }],
     reads: ["Review fix lists", "Repo checkout at the PR head", "Failed CI check logs"],
     sets: ["Pushed commits", "Fix comments", "Formatter tasks", "CI reruns"],
@@ -312,7 +312,7 @@ export const STAGES: StageDef[] = [
   {
     id: "verify", title: "Verify", order: 10, runStage: 6, docSection: "Verify", mode: "steps",
     description: "Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.",
-    steps: [{ name: "verify", label: "Verify", limit: null, seeded: 30 }, { name: "verify-collect" }],
+    steps: [{ name: "verify", maxMin: 10, label: "Verify", limit: null, seeded: 30 }, { name: "verify-collect", maxMin: 10 }],
     lanes: [{ name: "verify", steps: ["checks", "verify"], order: 14 }, { name: "verify-collect", steps: ["verify-collect"], order: 15 }],
     reads: ["Taken PRs", "CI results"],
     sets: ["Verification tasks and results"],
@@ -342,7 +342,7 @@ export const STAGES: StageDef[] = [
   {
     id: "merge", title: "Merge queue", order: 11, runStage: 6, docSection: "Merge queue", mode: "steps",
     description: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Before a PR the rule would merge goes into a batch, and before a pre-approved merge is handed over to the queue, Opus reviews its head commit once more, adversarially and independently of the first review; a defect it verifies becomes a fix-up or a Merge? question (for a pre-approved merge, a Merge? question). Approves held CI runs of outside contributors where the repo allows it.",
-    steps: [{ name: "merge", label: "Merge", limit: null, seeded: 10 }, { name: "premerge", label: "Pre-merge review", limit: null }, { name: "merge-ask" }, { name: "ci-approve", label: "Approve CI runs", limit: 30 }, { name: "unassign" }],
+    steps: [{ name: "merge", maxMin: 15, label: "Merge", limit: null, seeded: 10 }, { name: "premerge", maxMin: 60, label: "Pre-merge review", limit: null }, { name: "merge-ask", maxMin: 10 }, { name: "ci-approve", maxMin: 10, label: "Approve CI runs", limit: 30 }, { name: "unassign", maxMin: 10 }],
     lanes: [{ name: "premerge", steps: ["premerge"], order: 9 }, { name: "merge-ask", steps: ["merge-ask"], order: 10 }, { name: "merge", steps: ["checks", "merge"], order: 11 }, { name: "ci-approve", steps: ["ci-approve"], order: 21 }, { name: "unassign", steps: ["unassign"], order: 27 }],
     reads: ["Reviews", "Verification results", "CI state", "Merge decisions"],
     sets: ["Integration batches", "Merged PRs", "Merge? decisions"],
@@ -393,7 +393,7 @@ export const STAGES: StageDef[] = [
   {
     id: "act", title: "Act", order: 12, runStage: 6, docSection: "Act", mode: "steps",
     description: "Makes the comments and closes that follow an operator's answer, from fixed templates.",
-    steps: [{ name: "act", label: "Act", limit: null, seeded: 20 }],
+    steps: [{ name: "act", maxMin: 10, label: "Act", limit: null, seeded: 20 }],
     lanes: [{ name: "act", steps: ["act"], order: 12 }],
     reads: ["Operator answers", "Close? decisions"],
     sets: ["Comments and closes on GitHub"],
@@ -420,7 +420,7 @@ export const STAGES: StageDef[] = [
   {
     id: "postmerge", title: "Post-merge review", order: 13, runStage: 8, docSection: "Post-merge review", mode: "steps",
     description: "Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown.",
-    steps: [{ name: "postmerge", label: "Post-merge review", limit: null }, { name: "postmerge-file", label: "File follow-up issues", limit: 20 }],
+    steps: [{ name: "postmerge", maxMin: 30, label: "Post-merge review", limit: null }, { name: "postmerge-file", maxMin: 10, label: "File follow-up issues", limit: 20 }],
     lanes: [{ name: "postmerge", steps: ["postmerge"], order: 22 }, { name: "postmerge-file", steps: ["postmerge-file"], order: 23 }],
     reads: ["Merged PRs and their merge commits", "Our commits and reviews of each PR", "Open issues and PRs, for duplicates", "Repo checkout"],
     sets: ["Findings per merged PR", "Follow-up issues on GitHub"],
@@ -446,6 +446,19 @@ export const STAGES: StageDef[] = [
     edges: [{ to: "fix", branch: "filed", label: "follow-up issues" }],
   },
 ];
+
+/**
+ * Longest run of a job of a step, in minutes (StageDef.steps[].maxMin): about twice the longest realistic job, from the 30-day
+ * history of finished jobs (longest done job: fixup 92 incl. one stuck check, decide 35, opus-review 33, premerge 31,
+ * dupes-compare 25, fixissue 25, cifix 17, postmerge 14, prioritize 10, labels-apply 9, classify-new 7, others under 2) and the
+ * limits in the code (a model call is at most 40 min, a job a handful of items). The runner stops a job past it and fails it.
+ * A step with no registry entry (the security steps, review-batch) gets DEFAULT_STEP_MAX_MIN.
+ */
+export const DEFAULT_STEP_MAX_MIN = 60;
+export function stepMaxMin(step: string): number {
+  for (const s of STAGES) for (const x of s.steps) if (x.name === step) return x.maxMin;
+  return DEFAULT_STEP_MAX_MIN;
+}
 
 /** Waits that belong to no single stage. */
 export const GLOBAL_WAITS: { name: string; why: string; howLong: string; showsAs: string; kind: "external" | "backoff" }[] = [

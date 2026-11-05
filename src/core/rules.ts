@@ -104,5 +104,19 @@ export const PIPELINE_LOGIN_KEY = "pipeline_login";
 /** Build-tool (check) calls one patch-writing model call may make, and the wall time they may take in all. */
 export const CHECK_MAX_CALLS = 6;
 export const CHECK_MAX_WALL_MS = 45 * 60_000;
+/** One check is stopped after CHECK_LIMIT_FACTOR times the repo's median recent duration of that command, clamped to [CHECK_LIMIT_MIN_MS, CHECK_LIMIT_MAX_MS]; without CHECK_HISTORY_MIN finished runs it gets the maximum. */
+export const CHECK_LIMIT_FACTOR = 5;
+export const CHECK_LIMIT_MIN_MS = 5 * 60_000;
+export const CHECK_LIMIT_MAX_MS = 15 * 60_000;
+export const CHECK_HISTORY_MIN = 3;
+export const CHECK_HISTORY_RUNS = 20;
 /** Lines of command output the tool returns to the model. */
 export const CHECK_OUTPUT_LINES = 150;
+
+/**
+ * Value of the `pipeline_enabled` setting: "1" is on, "drain" is draining (no new jobs; jobs already running keep their writes),
+ * anything else is off (running jobs stop writing).
+ */
+export const PIPELINE_DRAIN = "drain";
+/** Whether a job's GitHub writes pass the pipeline switch: on, or draining. */
+export const pipelineWrites = (value: string | undefined): boolean => value === "1" || value === PIPELINE_DRAIN;

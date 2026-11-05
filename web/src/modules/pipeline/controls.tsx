@@ -67,15 +67,15 @@ export function PipelineSwitch({ className }: { className?: string }) {
   return (
     <div className={className}>
       <div className="flex flex-wrap items-center gap-3 rounded-md border border-line p-4">
-        <span className={s.enabled ? "size-2.5 rounded-full bg-ok" : "size-2.5 rounded-full bg-ink/30"} aria-hidden />
+        <span className={s.enabled ? "size-2.5 rounded-full bg-ok" : s.draining ? "size-2.5 rounded-full bg-warn" : "size-2.5 rounded-full bg-ink/30"} aria-hidden />
         <div className="min-w-0">
-          <div className="text-sm font-semibold">Pipeline is {s.enabled ? "On" : "Off"}</div>
+          <div className="text-sm font-semibold">Pipeline is {s.enabled ? "On" : s.draining ? "Draining" : "Off"}</div>
           <div className="text-xs text-ink/55">
-            {s.enabled ? "Watching all issues and running the automations." : "Stopped: no new jobs start. Jobs already running finish."}
+            {s.enabled ? "Watching all issues and running the automations." : s.draining ? "No new jobs start. Jobs already running finish and keep their writes." : "Stopped: no new jobs start. Jobs already running finish."}
             {s.changedAt && (
               <span title={s.changedAt}>
                 {" "}
-                Switched {s.enabled ? "on" : "off"} by {s.changedBy ?? "unknown"} <TimeAgo iso={s.changedAt} /> ({when(s.changedAt)}).
+                Switched {s.enabled ? "on" : s.draining ? "to drain" : "off"} by {s.changedBy ?? "unknown"} <TimeAgo iso={s.changedAt} /> ({when(s.changedAt)}).
               </span>
             )}
           </div>
@@ -87,9 +87,16 @@ export function PipelineSwitch({ className }: { className?: string }) {
                 Turn off
               </Button>
             ) : (
-              <Button variant="primary" icon={PlayIcon} onClick={() => setConfirming(true)} className="max-md:h-11">
-                Turn on
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                {s.draining && (
+                  <Button icon={PauseIcon} loading={write.busy === "switch"} onClick={() => void set(false)} className="max-md:h-11">
+                    Turn off
+                  </Button>
+                )}
+                <Button variant="primary" icon={PlayIcon} onClick={() => setConfirming(true)} className="max-md:h-11">
+                  Turn on
+                </Button>
+              </div>
             )}
           </div>
         )}

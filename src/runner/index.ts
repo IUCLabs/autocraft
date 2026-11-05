@@ -127,7 +127,7 @@ function cancel(args: string[]): void {
 const SUB: Record<string, (args: string[]) => Promise<void> | void> = { serve, exec, steps, enqueue: enqueueCmd, jobs, cancel };
 
 export const commands = {
-  pipeline: { summary: "pipeline switch and limits: on | off | status | limit <step> --per-day N | resume <stage>", run: (args: string[]) => pipeline(args) },
+  pipeline: { summary: "pipeline switch and limits: on | off | drain | status | limit <step> --per-day N | resume <stage>", run: (args: string[]) => pipeline(args) },
   runner: {
     summary: "pipeline runner: serve | steps | enqueue | jobs | cancel",
     run: async (args: string[]) => {
@@ -138,7 +138,7 @@ export const commands = {
   },
 };
 
-const PIPELINE_USAGE = `usage: autocraft pipeline on | off | status
+const PIPELINE_USAGE = `usage: autocraft pipeline on | off | drain | status
        autocraft pipeline limit <step> --per-day <N|none>
        autocraft pipeline limit reset <step>|--all
        autocraft pipeline resume <fixup|cifix|fixissue|merge>
@@ -148,9 +148,9 @@ const PIPELINE_USAGE = `usage: autocraft pipeline on | off | status
 async function pipeline(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const db = connect();
-  if (sub === "on" || sub === "off") {
-    setEnabled(db, sub === "on", "cli");
-    audit(db, "cli", "pipeline-switch", "pipeline", { enabled: sub === "on" });
+  if (sub === "on" || sub === "off" || sub === "drain") {
+    setEnabled(db, sub === "on", "cli", sub === "drain" ? "drain" : "off");
+    audit(db, "cli", "pipeline-switch", "pipeline", { enabled: sub === "on", ...(sub === "drain" && { draining: true }) });
     console.log(`pipeline ${sub}`);
   } else if (sub === "resume") {
     if (rest.length !== 1) die(PIPELINE_USAGE);
@@ -196,7 +196,7 @@ async function pipeline(args: string[]): Promise<void> {
     return;
   } else if (sub !== "status") die(PIPELINE_USAGE);
   const s = await pipelineState(db);
-  console.log(`pipeline ${s.enabled ? "ON" : "OFF"}${s.changedAt ? ` (set by ${s.changedBy} at ${s.changedAt.slice(0, 16)})` : ""}`);
+  console.log(`pipeline ${s.enabled ? "ON" : s.draining ? "DRAINING" : "OFF"}${s.changedAt ? ` (set by ${s.changedBy} at ${s.changedAt.slice(0, 16)})` : ""}`);
   for (const l of s.limits) {
     console.log(`${l.step.padEnd(14)} ${String(l.usedToday).padStart(5)} / ${l.perDay === null ? "no limit" : l.perDay}${l.pausedReason ? `  ${l.pausedReason}` : ""}`);
   }

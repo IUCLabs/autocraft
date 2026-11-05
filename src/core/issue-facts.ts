@@ -1,5 +1,6 @@
 // Facts of open items (issues and PRs) for the triage steps: classification, priority, embedding, duplicates, scope decision, labels.
 // Loaded in one pass for a whole database or a slice. Reads only: the old selectors fill missing text hashes in the database on the way; here a missing hash is computed.
+import { pipelineWrites } from "./rules.ts";
 import { assignmentsOf, ownFixPrs } from "./facts.ts";
 import { activeTrips } from "../push-outcomes.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -78,7 +79,7 @@ type Cls = { classifier: string; at: string; type_label: string; flags: string |
 export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): ItemFacts[] {
   const now = opts.now ?? Date.now();
   const model = opts.model ?? embedderId(modelName());
-  const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
+  const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
 
   // Values read once for all items.
   const run = opts.run !== undefined ? opts.run : latestRun(db);

@@ -5,9 +5,10 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { TaskStep } from "../../web/src/api/types.ts";
-import { cancelTask, createTask, getTask, TERMINAL, warmKeyOf } from "../build/tasks.ts";
+import { cancelTask, createTask, getTask, logTail, TERMINAL, warmKeyOf } from "../build/tasks.ts";
 import { gitFormatDiff } from "../cifix/index.ts";
-import { CHECK_MAX_CALLS, CHECK_MAX_WALL_MS, CHECK_OUTPUT_LINES } from "../core/rules.ts";
+import { CHECK_HISTORY_MIN, CHECK_HISTORY_RUNS, CHECK_LIMIT_FACTOR, CHECK_LIMIT_MAX_MS, CHECK_LIMIT_MIN_MS, CHECK_MAX_CALLS, CHECK_MAX_WALL_MS, CHECK_OUTPUT_LINES } from "../core/rules.ts";
+import { scrub } from "../runner/scrub.ts";
 import type { Git } from "../fixup/git.ts";
 import { artifactText, changedRsFiles, lintPlan, lintSteps, readLint } from "../prepush/index.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -44,8 +45,8 @@ export function parseCheckInput(raw: unknown): CheckInput {
   return { patch: o.patch, command, ...(crate && { crate }), ...(test_name && { test_name }) };
 }
 
-/** Wraps a cargo command so its output and exit code come back as artifacts whatever the exit code. */
-const cargoScript = (name: string, command: string): string => `${command} > /out/${name}.txt 2>&1; echo $? > /out/${name}.exit; true`;
+/** Wraps a cargo command so its output and exit code come back as artifacts whatever the exit code. The output also streams to the task log, which is what a stopped check shows in the job log. */
+const cargoScript = (name: string, command: string): string => `( ${command}; echo $? > /out/${name}.exit ) 2>&1 | tee /out/${name}.txt; true`;
 
 /** The worker steps for a command on a patch, or null when the command has nothing to do (fmt and clippy on a patch with no `.rs` file). */
 export function checkPlan(i: CheckInput): TaskStep[] | null {
@@ -76,6 +77,21 @@ const firstLines = (text: string, n: number): string => {
   const lines = text.replace(/\s+$/, "").split("\n");
   return lines.length <= n ? lines.join("\n") : `${lines.slice(0, n).join("\n")}\n[${lines.length - n} more lines left out]`;
 };
+
+/**
+ * The wall time one check of `command` may take in `repo`: CHECK_LIMIT_FACTOR times the median duration of its recent finished runs
+ * (model_checks rows that ran to a result), within [CHECK_LIMIT_MIN_MS, CHECK_LIMIT_MAX_MS]; the maximum without enough history.
+ */
+export function checkLimitMs(db: DatabaseSync, repo: string, command: CheckCommand): number {
+  const rows = db.prepare(`SELECT (julianday(ended_at) - julianday(started_at)) * 86400000 AS ms FROM model_checks
+    WHERE repo = ? AND command = ? AND ended_at IS NOT NULL AND outcome IS NOT NULL
+      AND outcome NOT LIKE 'failed%' AND outcome NOT LIKE 'refused%' AND outcome NOT LIKE 'cancelled%' AND outcome NOT LIKE 'stopped%' AND outcome <> 'out of time'
+    ORDER BY id DESC LIMIT ?`).all(repo, command, CHECK_HISTORY_RUNS) as { ms: number }[];
+  if (rows.length < CHECK_HISTORY_MIN) return CHECK_LIMIT_MAX_MS;
+  const ms = rows.map((r) => r.ms).sort((a, b) => a - b);
+  const median = ms.length % 2 ? ms[(ms.length - 1) / 2]! : (ms[ms.length / 2 - 1]! + ms[ms.length / 2]!) / 2;
+  return Math.min(CHECK_LIMIT_MAX_MS, Math.max(CHECK_LIMIT_MIN_MS, Math.round(median * CHECK_LIMIT_FACTOR)));
+}
 
 /** What the item is and which commit the patch applies to. */
 export type CheckTarget = {
@@ -115,6 +131,10 @@ export function applyCheck(git: Pick<Git, "applyToTree">, root: string, head: st
  */
 export class CheckTool {
   pollMs = 1000;
+  /** Where a stopped check is reported: the job log (the process's output). Tests replace it. */
+  log: (line: string) => void = (line) => console.log(line);
+  /** Replaces the history-based limit of one check (tests). */
+  checkLimitMs: ((command: CheckCommand) => number) | undefined;
   calls = 0;
   usedMs = 0;
   /** Commands that came back with a result (not refused, not failed to run). */
@@ -167,6 +187,8 @@ export class CheckTool {
 
     this.calls++;
     const started = Date.now();
+    const perCheck = this.checkLimitMs?.(i.command) ?? checkLimitMs(t.db, t.recordRepo ?? t.repo, i.command);
+    const limit = Math.min(left, perCheck);
     const row = Number(t.db.prepare("INSERT INTO model_checks (run_id, step, repo, number, head, command, crate, test_name, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(runId, t.step, t.recordRepo ?? t.repo, t.number, t.head, i.command, i.crate ?? null, i.test_name ?? null, new Date().toISOString()).lastInsertRowid);
     const end = (outcome: string, taskId: number | null) => t.db.prepare("UPDATE model_checks SET outcome = ?, task_id = ?, ended_at = ? WHERE id = ?").run(outcome.slice(0, 200), taskId, new Date().toISOString(), row);
@@ -180,10 +202,12 @@ export class CheckTool {
       let state = getTask(t.db, taskId)?.state;
       while (state && !TERMINAL.includes(state)) {
         if (this.closed) { end("cancelled: the model call ended", taskId); return { text: "the model call is over", isError: true }; }
-        if (Date.now() - started >= left) {
+        if (Date.now() - started >= limit) {
+          const overCheck = perCheck <= left;
+          this.logStopped(i, taskId, Math.round((Date.now() - started) / 1000), overCheck ? perCheck : left);
           try { cancelTask(t.db, taskId, "check-tool"); } catch { /* it ended meanwhile */ }
-          end("out of time", taskId);
-          return { text: "the check ran out of the time allowed for checks and was stopped; answer with your best patch", isError: true };
+          end(overCheck ? "stopped: over the check time limit" : "out of time", taskId);
+          return { text: overCheck ? `the check ran past its limit of ${Math.round(perCheck / 60_000)} minutes and was stopped; answer with your best patch` : "the check ran out of the time allowed for checks and was stopped; answer with your best patch", isError: true };
         }
         await new Promise((r) => setTimeout(r, this.pollMs));
         state = getTask(t.db, taskId)?.state;
@@ -202,6 +226,15 @@ export class CheckTool {
       }
       this.usedMs += Date.now() - started;
     }
+  }
+
+  /** Writes a plain note to the job log about a check the tool stopped: what it was doing and the last output the worker sent. */
+  private logStopped(i: CheckInput, taskId: number, secs: number, limitMs: number): void {
+    const { db, repo, number } = this.target;
+    const task = getTask(db, taskId);
+    const where = task?.state === "queued" ? "no worker had taken it (still queued)" : `the task was ${task?.state ?? "gone"}`;
+    const out = logTail(db, taskId).text.replace(/\s+$/, "").split("\n").slice(-20).join("\n");
+    this.log(`${new Date().toISOString()} ${repo}${number === null ? "" : `#${number}`}: check ${i.command} stopped after ${secs} s (limit ${Math.round(limitMs / 1000)} s); ${where}\n${out ? `last worker output:\n${scrub(out).slice(-4000)}` : "the worker sent no output for it"}`);
   }
 
   private read(i: CheckInput, taskId: number): { text: string; outcome: string; isError?: boolean } {

@@ -222,6 +222,7 @@ export function createHttpApi(): Api {
       setEnabled: (enabled) => put("/api/pipeline/state", { enabled }),
       setLimit: (step, limit) => put(`/api/pipeline/limits/${encodeURIComponent(step)}`, limit),
       resetLimit: (step) => post(`/api/pipeline/limits/${encodeURIComponent(step)}/reset`),
+      ackDeadline: (step) => post(`/api/pipeline/steps/${encodeURIComponent(step)}/deadline-ack`),
       resumeTrip: (stage) => post(`/api/pipeline/trips/${encodeURIComponent(stage)}/resume`),
       setPilot: (items) => put("/api/pipeline/pilot", { items }),
       setJudgementModel: (model) => put("/api/pipeline/judgement-model", { model }),

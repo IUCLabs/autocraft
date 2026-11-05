@@ -41,6 +41,7 @@ import { premergeCandidates } from "../premerge/review.ts";
 import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { mainFixDue } from "../mainfix/index.ts";
 import { latestRun } from "../classify/settled.ts";
+import { PIPELINE_DRAIN } from "../core/rules.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
@@ -643,10 +644,13 @@ export function pauseReason(db: DatabaseSync, step: string, ms: number = Date.no
 
 // ---- state ---------------------------------------------------------------------
 
+/** On: the planner queues jobs and the runner starts them. Draining and off are both not enabled. */
 export const isEnabled = (db: DatabaseSync): boolean => getSetting(db, KEY_ENABLED) === "1";
+/** Draining: like off for new work, but the writes of jobs already running go through. */
+export const isDraining = (db: DatabaseSync): boolean => getSetting(db, KEY_ENABLED) === PIPELINE_DRAIN;
 
-export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void {
-  setSetting(db, KEY_ENABLED, enabled ? "1" : "0");
+export function setEnabled(db: DatabaseSync, enabled: boolean, by: string, mode: "off" | "drain" = "off"): void {
+  setSetting(db, KEY_ENABLED, enabled ? "1" : mode === "drain" ? PIPELINE_DRAIN : "0");
   setSetting(db, KEY_BY, by);
   setSetting(db, KEY_AT, now());
   // Automatic jobs still waiting are dropped; running ones finish.
@@ -659,6 +663,22 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
   }
   // Turning on plans at once; the sync that already happened is not new.
   if (enabled) db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_PLANNED_AT);
+}
+
+/** Jobs the runner stopped for running past their step's limit that nobody has acknowledged and no later job of the step has beaten. */
+export function deadlineStops(db: DatabaseSync): { step: string; jobId: number; error: string; endedAt: string; count: number }[] {
+  const rows = db.prepare(`SELECT j.step, j.id, j.error, j.ended_at AS endedAt,
+      (SELECT COUNT(*) FROM jobs k WHERE k.step = j.step AND k.state = 'failed' AND k.error LIKE 'stopped: ran past %' AND k.id <= j.id AND k.id > COALESCE((SELECT MAX(d.id) FROM jobs d WHERE d.step = j.step AND d.state = 'done'), 0)) AS count
+    FROM jobs j WHERE j.state = 'failed' AND j.error LIKE 'stopped: ran past %' AND j.id = (SELECT MAX(l.id) FROM jobs l WHERE l.step = j.step AND l.state = 'failed' AND l.error LIKE 'stopped: ran past %')
+      AND NOT EXISTS (SELECT 1 FROM jobs d WHERE d.step = j.step AND d.state = 'done' AND d.id > j.id)`).all() as { step: string; id: number; error: string; endedAt: string; count: number }[];
+  // The acknowledgement is an audit row, which the header's query refetches on and the planner does not.
+  const acked = db.prepare("SELECT MAX(at) AS at FROM audit WHERE action = 'deadline-ack' AND target = ?");
+  return rows.filter((r) => { const ack = (acked.get(`step:${r.step}`) as { at: string | null }).at; return !ack || ack < r.endedAt; }).map((r) => ({ step: r.step, jobId: r.id, error: r.error, endedAt: r.endedAt, count: r.count }));
+}
+
+/** An operator acknowledges the deadline stops of a step: they leave the warnings until the next one. */
+export function ackDeadline(db: DatabaseSync, step: string, by: string): void {
+  audit(db, by, "deadline-ack", `step:${step}`, {});
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
@@ -716,7 +736,7 @@ export async function stageLimits(db: DatabaseSync): Promise<StageLimit[]> {
 export async function pipelineState(db: DatabaseSync): Promise<PipelineState> {
   return {
     judgementModel: judgementModel(db), judgementModels: [...JUDGEMENT_MODELS],
-    enabled: isEnabled(db), changedBy: getSetting(db, KEY_BY), changedAt: getSetting(db, KEY_AT),
+    enabled: isEnabled(db), draining: isDraining(db), changedBy: getSetting(db, KEY_BY), changedAt: getSetting(db, KEY_AT),
     heartbeat: getSetting(db, "runner_heartbeat"), limits: await stageLimits(db), pilot: pilotItems(db),
   };
 }
@@ -1024,7 +1044,7 @@ export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "brea
 
 /** Whether a job of the lane can start now, from the same checks the planner's gate() makes. */
 export function laneGate(db: DatabaseSync, lane: Pick<Lane, "steps">, ms: number = Date.now()): LaneGate {
-  if (!isEnabled(db)) return { canRun: false, kind: "off", why: "The pipeline is off" };
+  if (!isEnabled(db)) return { canRun: false, kind: "off", why: isDraining(db) ? "The pipeline is draining" : "The pipeline is off" };
   const steps = lane.steps ?? [];
   let blocked: LaneGate | null = null;
   for (const s of steps) {

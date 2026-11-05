@@ -2,7 +2,10 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Popover } from "radix-ui";
 import { WarningCircleIcon, WarningIcon } from "@phosphor-icons/react";
-import { useQuery } from "../../api/client";
+import { useApi, useQuery } from "../../api/client";
+import { useUser } from "../../shell/UserContext";
+import { useWrite } from "../../lib/hooks";
+import { Button } from "../atoms/Button";
 import type { NowProblem } from "../../api/types";
 import { cn } from "../cn";
 import { TimeAgo } from "../atoms/TimeAgo";
@@ -20,6 +23,9 @@ const place = (p: NowProblem) => AREAS.indexOf(p.area);
 export function HealthMenu() {
   const { data } = useQuery("now", (a) => a.now());
   const [open, setOpen] = useState(false);
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const write = useWrite();
   const problems = data?.health.problems ?? [];
   if (problems.length === 0) return null;
   const worst = problems.some((p) => p.tone === "bad") ? "bad" : "warn";
@@ -40,12 +46,17 @@ export function HealthMenu() {
             {sorted.map((p) => {
               const t = TONE[p.tone];
               return (
-                <li key={p.id}>
-                  <Link to={p.to} onClick={() => setOpen(false)} className="flex items-start gap-2 rounded px-2 py-2 text-sm hover:bg-ink/[0.07] max-md:min-h-11">
+                <li key={p.id} className="flex items-start">
+                  <Link to={p.to} onClick={() => setOpen(false)} className="flex min-w-0 flex-1 items-start gap-2 rounded px-2 py-2 text-sm hover:bg-ink/[0.07] max-md:min-h-11">
                     <t.Icon className={cn("mt-0.5 shrink-0", t.text)} aria-hidden />
                     <span className="min-w-0 flex-1 break-words text-ink [overflow-wrap:anywhere]">{p.text}</span>
                     {p.since && <TimeAgo iso={p.since} className="num ml-1 shrink-0 text-xs text-ink/50" />}
                   </Link>
+                  {operator && p.ackStep && (
+                    <Button loading={write.busy === p.id} onClick={() => void write.run(p.id, () => api.pipeline.ackDeadline(p.ackStep!))} className="m-1 shrink-0 max-md:h-11">
+                      Acknowledge
+                    </Button>
+                  )}
                 </li>
               );
             })}
