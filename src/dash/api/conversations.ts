@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
 import { buttonLabel, cardEffect, cardLines, type CardParams } from "../../conversations/cards.ts";
 import { cardOf, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
-import { ConversationError, addOperatorMessage, conversationOf, pendingTurn, turnsOf, type StoreDeps } from "../../conversations/store.ts";
+import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { needVisible } from "./visible.ts";
@@ -47,11 +47,15 @@ export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
   };
 }
 
-export function conversationView(db: DatabaseSync, repo: string, n: number): Conversation {
+/** The conversation plus the maintainer posts shared with Opus. */
+export type ConversationView = Conversation & { includes: IncludeRow[] };
+
+export function conversationView(db: DatabaseSync, repo: string, n: number): ConversationView {
   // A card left Running by a crash must not show as running until the next restart.
   sweepRunningCards(db);
   const c = conversationOf(db, repo, n);
-  if (!c) return { repo, number: n, exists: false, pending: false, startedBy: null, turns: [] };
+  const includes = includesOf(db, repo, n);
+  if (!c) return { repo, number: n, exists: false, pending: false, startedBy: null, turns: [], includes };
   const cards = db.prepare("SELECT * FROM conversation_cards WHERE repo = ? AND number = ? ORDER BY id").all(repo, n) as unknown as CardRow[];
   const turns: ConversationTurn[] = turnsOf(db, repo, n).map((t) => ({
     id: t.id, kind: t.kind, login: t.login, at: t.at, body: t.body,
@@ -62,7 +66,7 @@ export function conversationView(db: DatabaseSync, repo: string, n: number): Con
   }));
   const wait = pendingTurn(db, repo, n);
   const progress = wait?.status === "answering" && wait.progress ? (JSON.parse(wait.progress) as string[]) : [];
-  return { repo, number: n, exists: true, pending: !!wait, ...(progress.length > 0 && { progress }), startedBy: c.created_by, turns };
+  return { repo, number: n, exists: true, pending: !!wait, ...(progress.length > 0 && { progress }), startedBy: c.created_by, turns, includes };
 }
 
 function itemOf(req: Req): { repo: string; n: number } {
@@ -88,17 +92,28 @@ function needOperator(req: Req): void {
   if (!isOperator(req)) throw new HttpError(403, "only operators write in conversations");
 }
 
-export async function getConversation(db: DatabaseSync, req: Req): Promise<Conversation> {
+export async function getConversation(db: DatabaseSync, req: Req): Promise<ConversationView> {
   const { repo, n } = itemOf(req);
   await needVisible(db, req, repo);
   return conversationView(db, repo, n);
 }
 
-export async function postMessage(db: DatabaseSync, req: Req, deps?: StoreDeps): Promise<Conversation> {
+export async function postMessage(db: DatabaseSync, req: Req, deps?: StoreDeps): Promise<ConversationView> {
   needOperator(req);
   const { repo, n } = itemOf(req);
   await needVisible(db, req, repo);
   await guardAsync(() => addOperatorMessage(db, repo, n, req.user.login, text(req), deps, ask(req)));
+  return conversationView(db, repo, n);
+}
+
+/** Shares a maintainer post with Opus (`on`) or stops sharing it; the next asked message carries it. */
+export async function postInclude(db: DatabaseSync, req: Req, deps?: StoreDeps): Promise<ConversationView> {
+  needOperator(req);
+  const { repo, n } = itemOf(req);
+  await needVisible(db, req, repo);
+  const b = req.json as { source?: unknown; on?: unknown } | null;
+  if (!b || typeof b !== "object" || typeof b.source !== "string" || typeof b.on !== "boolean") throw new HttpError(400, "the body must be an object with a source and on (true or false)");
+  guard(() => setInclude(db, repo, n, b.source as string, b.on as boolean, req.user.login, deps));
   return conversationView(db, repo, n);
 }
 

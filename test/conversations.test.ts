@@ -175,9 +175,17 @@ describe("Do it", () => {
     assert.equal(row.status, null);
     assert.ok(row.seq);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_turns WHERE status = 'pending'").get()!.n, 0);
+    // A shared maintainer post rides in the next asked turn once.
+    db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('c1', 'app#1:scope', 'maint', ?, 'I think it is fine @x')").run(T0);
+    await conv.postInclude(db, req("operator", { repo: "app", n: "1" }, { source: "decision-comment:c1", on: true }));
+    await conv.postMessage(db, req("operator", { repo: "app", n: "1" }, { text: "Look at this" }));
+    const blocks = db.prepare("SELECT block FROM conversation_turns WHERE repo = 'app' AND number = 1 AND kind = 'operator'").all() as { block: string }[];
+    assert.equal(blocks.filter((b) => b.block.includes('<included from="maintainer" login="maint"') && b.block.includes("I think it is fine ")).length, 1);
+    assert.ok(!blocks[0]!.block.includes("@x"));
+    await assert.rejects(() => conv.postInclude(db, req("operator", { repo: "app", n: "1" }, { source: "decision-comment:c1", on: false })), (e) => e instanceof HttpError && e.status === 409);
     // A question can follow at once.
     await conv.postMessage(db, req("operator", { repo: "app", n: "3" }, { text: "What do you think?" }));
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_turns WHERE status = 'pending'").get()!.n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_turns WHERE status = 'pending' AND number = 3").get()!.n, 1);
   });
 });
 
@@ -209,7 +217,7 @@ describe("access", () => {
     ]) await assert.rejects(f, (e) => e instanceof HttpError && e.status === 403);
     assert.equal(db.prepare("SELECT state FROM conversation_cards").get()!.state, "proposed");
     const writes = apiRoutes().filter((r) => r.method === "POST" && /conversation/.test(r.pattern));
-    assert.equal(writes.length, 4);
+    assert.equal(writes.length, 5);
     assert.ok(writes.every((r) => r.operator === true));
     // A second message while Opus has not answered the first is refused.
     await conv.postMessage(db, req("operator", { repo: "app", n: "1" }, { text: "More" }));

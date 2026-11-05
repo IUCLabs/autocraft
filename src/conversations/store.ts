@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { factsOf, optionsOf, type DecisionRow } from "../decisions.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
-import { openDecision, type NewCard } from "./cards.ts";
+import { cleanComment, openDecision, type NewCard } from "./cards.ts";
 import { ITEM_BODY_LIMIT, ITEM_COMMENT_LIMIT, ITEM_COMMENTS, ITEM_DIFF_LIMIT, MESSAGE_MAX, OPENING_MAX, type TurnKind } from "./types.ts";
 
 export class ConversationError extends Error {
@@ -40,10 +40,16 @@ const STALE_CLAIM_MS = (CLAUDE_PROMPTS["conversation.turn"].limits.timeoutSecond
 // ---- blocks ------------------------------------------------------------------
 
 /** Text of operators and Opus must not close or open the frame the prompt puts around turns. */
-const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted)\b/gi, "&lt;$1$2");
+const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included)\b/gi, "&lt;$1$2");
 
-export function operatorBlock(login: string, text: string): string {
-  return `<turn from="operator" login="${login.replace(/[^\w.-]/g, "")}">\n${frameSafe(text)}\n</turn>\n`;
+export type Included = { login: string; at: string; text: string };
+
+const attr = (v: string): string => v.replace(/[^\w.:-]/g, "");
+
+/** `included`: maintainers' posts the operator chose to share, carried in this turn once. */
+export function operatorBlock(login: string, text: string, included: Included[] = []): string {
+  const extra = included.map((i) => `<included from="maintainer" login="${attr(i.login)}" at="${attr(i.at)}">\n${frameSafe(i.text)}\n</included>\n`).join("");
+  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}</turn>\n`;
 }
 
 export function opusBlock(text: string, cards: NewCard[]): string {
@@ -231,12 +237,52 @@ export async function addOperatorMessage(db: DatabaseSync, repo: string, n: numb
   if (ask && pendingTurn(db, repo, n)) throw new ConversationError(409, "Opus has not answered the last message yet");
   await ensureConversation(db, repo, n, login, deps);
   await refreshItem(db, repo, n, deps);
+  const shared = ask ? unsentIncludes(db, repo, n) : [];
   try {
-    return insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body), ...(ask && { status: "pending" }) }, deps);
+    const id = insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post)), ...(ask && { status: "pending" }) }, deps);
+    for (const x of shared) db.prepare("UPDATE conversation_includes SET sent_turn = ? WHERE repo = ? AND number = ? AND source = ? AND sent_turn IS NULL").run(id, repo, n, x.source);
+    return id;
   } catch (e) {
     if (/UNIQUE/i.test(String((e as Error).message))) throw new ConversationError(409, "Opus has not answered the last message yet");
     throw e;
   }
+}
+
+// ---- maintainer posts shared with Opus ---------------------------------------
+
+export type IncludeRow = { source: string; by: string; at: string; sent: boolean };
+
+/** The stored post behind an include source of this item, or null. Only decision comments and opinions on the item's own decisions can be shared. */
+function postOf(db: DatabaseSync, repo: string, n: number, source: string): Included | null {
+  const m = /^(decision-comment|decision-opinion):(.+)$/.exec(source);
+  if (!m) return null;
+  const row = (m[1] === "decision-comment"
+    ? db.prepare("SELECT c.login, c.at, c.body AS text FROM decision_comments c JOIN decisions d ON d.id = c.decision_id WHERE c.id = ? AND d.repo = ? AND d.number = ?")
+    : db.prepare("SELECT o.login, o.at, o.note AS text FROM decision_opinions o JOIN decisions d ON d.id = o.decision_id WHERE o.id = ? AND d.repo = ? AND d.number = ? AND o.retracted_at IS NULL"))
+    .get(m[2]!, repo, n) as { login: string; at: string; text: string | null } | undefined;
+  const text = row?.text ? cleanComment(row.text).slice(0, ITEM_COMMENT_LIMIT) : "";
+  return row && text ? { login: row.login, at: row.at, text } : null;
+}
+
+function unsentIncludes(db: DatabaseSync, repo: string, n: number): { source: string; post: Included }[] {
+  const rows = db.prepare("SELECT source FROM conversation_includes WHERE repo = ? AND number = ? AND sent_turn IS NULL ORDER BY at, source").all(repo, n) as { source: string }[];
+  return rows.flatMap((r) => { const post = postOf(db, repo, n, r.source); return post ? [{ source: r.source, post }] : []; });
+}
+
+export function includesOf(db: DatabaseSync, repo: string, n: number): IncludeRow[] {
+  const rows = db.prepare("SELECT source, by, at, sent_turn FROM conversation_includes WHERE repo = ? AND number = ? ORDER BY at, source").all(repo, n) as { source: string; by: string; at: string; sent_turn: number | null }[];
+  return rows.map((r) => ({ source: r.source, by: r.by, at: r.at, sent: r.sent_turn !== null }));
+}
+
+/** Shares (`on`) or stops sharing a maintainer post with Opus. A post already sent stays sent. */
+export function setInclude(db: DatabaseSync, repo: string, n: number, source: string, on: boolean, by: string, deps?: StoreDeps): void {
+  const row = db.prepare("SELECT sent_turn FROM conversation_includes WHERE repo = ? AND number = ? AND source = ?").get(repo, n, source) as { sent_turn: number | null } | undefined;
+  if (row?.sent_turn != null) throw new ConversationError(409, "already sent to Opus");
+  if (!on) { db.prepare("DELETE FROM conversation_includes WHERE repo = ? AND number = ? AND source = ?").run(repo, n, source); return; }
+  if (row) return;
+  if (!itemRow(db, repo, n)) throw new ConversationError(404, `no item ${repo}#${n} in the mirror`);
+  if (!postOf(db, repo, n, source)) throw new ConversationError(400, "no such post on this item's questions");
+  db.prepare("INSERT INTO conversation_includes (repo, number, source, by, at) VALUES (?, ?, ?, ?, ?)").run(repo, n, source, by, nowOf(deps));
 }
 
 /** Opus's opening turn (a question or proposal from the recommendation). Does nothing when the item already has a conversation. */

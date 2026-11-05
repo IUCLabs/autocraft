@@ -93,7 +93,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   ],
   // What the item trace reads that no page topic watches. A model call's progress line is not a change here.
   trace: [
-    { table: "model_checks" }, { table: "conflict_merges" }, { table: "job_items" }, { table: "opus_review_history" }, { table: "plan_history" }, { table: "patch_checks" },
+    { table: "conversation_includes" }, { table: "model_checks" }, { table: "conflict_merges" }, { table: "job_items" }, { table: "opus_review_history" }, { table: "plan_history" }, { table: "patch_checks" },
     { table: "pr_files" }, { table: "pr_commits" }, { table: "item_activity" }, { table: "agent_run_items" }, { table: "agent_run_tools" },
     { table: "agent_runs", ops: ["INSERT"] },
     { table: "agent_runs", ops: ["UPDATE"], when: "old.state IS NOT new.state OR old.ended_at IS NOT new.ended_at OR old.cost_usd IS NOT new.cost_usd OR old.summary IS NOT new.summary" },

@@ -1022,6 +1022,16 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
   edited_by TEXT,
   edited_at TEXT
 );
+-- Maintainer posts (decision comments and opinions) an operator chose to share with Opus. Excluded unless a row exists; `sent_turn`
+-- is the operator turn whose stored block carries the text (each post is sent once).
+CREATE TABLE IF NOT EXISTS conversation_includes (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  source TEXT NOT NULL,               -- decision-comment:<id> | decision-opinion:<id>
+  by TEXT NOT NULL,
+  at TEXT NOT NULL,
+  sent_turn INTEGER,
+  PRIMARY KEY (repo, number, source)
+);
 CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
 CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);
 

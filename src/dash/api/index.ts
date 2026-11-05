@@ -373,6 +373,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/items/:repo/:n/decision", dec.forItem),
     get("/api/conversations/:repo/:n", conv.getConversation),
     { method: "POST", pattern: "/api/conversations/:repo/:n/messages", operator: true, handler: ok((db, req) => conv.postMessage(db, req)) },
+    { method: "POST", pattern: "/api/conversations/:repo/:n/includes", operator: true, handler: ok((db, req) => conv.postInclude(db, req)) },
     { method: "POST", pattern: "/api/conversation-cards/:id/edit", operator: true, handler: ok(conv.editCardText) },
     { method: "POST", pattern: "/api/conversation-cards/:id/do", operator: true, handler: ok((db, req) => conv.doIt(db, req)) },
     { method: "POST", pattern: "/api/conversation-cards/:id/dismiss", operator: true, handler: ok(conv.dismiss) },
