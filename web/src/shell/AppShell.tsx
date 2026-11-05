@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon, PlugsConnectedIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -30,7 +30,7 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 // The rail is laid out here by path, so a module only declares its own entry. A path no module
 // registers (a page the reader's role cannot open) is left out.
 const RAIL: { label: string; paths: string[] }[] = [
-  { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity", "/connect"] },
+  { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity"] },
   { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/audit", "/prompts"] },
   { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/classifiers", "/contributors", "/main-ci", "/about"] },
 ];
@@ -347,6 +347,7 @@ const labelCls = "px-2 pb-1 pt-2 text-2xs font-medium text-ink/45";
 function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t: ThemePref) => void; onHelp?: () => void }) {
   const user = useUser();
   const api = useApi();
+  const navigate = useNavigate();
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger className="flex size-9 items-center justify-center rounded-full hover:bg-ink/[0.06]" aria-label={`Signed in as ${user.login}`}>
@@ -383,6 +384,9 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
             </Suspense>
           )}
           <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
+          <DropdownMenu.Item onSelect={() => navigate("/connect")} className={itemCls}>
+            <PlugsConnectedIcon className="text-ink/55" /> Connect agent
+          </DropdownMenu.Item>
           <DropdownMenu.Item onSelect={() => onHelp?.()} className={itemCls}>
             <KeyboardIcon className="text-ink/55" /> <span className="flex-1">Keyboard shortcuts</span> <Kbd keys="?" />
           </DropdownMenu.Item>

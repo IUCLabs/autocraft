@@ -156,7 +156,7 @@ Sign in at the base URL. Further users are added on the Access page or with `aut
 
 ### Contributors' agents
 
-Maintainers (and operators) can work the Inbox from their own agent: on the dashboard's Connect page they make an agent token and get the command that adds the Inbox MCP server to Claude Code (`claude mcp add --transport http autocraft-inbox <base URL>/mcp --header "Authorization: Bearer <token>"`). Then they ask things like "is there anything open in photocraft I can help with?" or "give me 5 PRs that need a fix-up". The agent lists open decisions and held fix-ups, works one through with them locally, and sends their pick and note back as feedback. See [Inbox MCP server](docs/operations.md#inbox-mcp-server).
+Maintainers (and operators) can work the Inbox from their own agent: from the user menu (top right, **Connect agent**) they make an agent token and get the command that adds the Inbox MCP server to Claude Code (`claude mcp add --transport http autocraft-inbox <base URL>/mcp --header "Authorization: Bearer <token>"`). Then they ask things like "is there anything open in photocraft I can help with?" or "give me 5 PRs that need a fix-up". The agent lists open decisions and held fix-ups, works one through with them locally, and sends their pick and note back as feedback. See [Inbox MCP server](docs/operations.md#inbox-mcp-server).
 
 ### Deployment
 
