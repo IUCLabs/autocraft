@@ -39,14 +39,14 @@ import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
 import { claimForWork } from "../github/claim.ts";
-import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
+import { askConflict, mergeConflict, newestOwnComment, type ConflictRun } from "./conflict.ts";
 import { referenceDir } from "../reference.ts";
 import { cleanReason } from "../act/templates.ts";
 import { defaultSemanticDeps, referenceProblems } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
 import { fixupEditable, operatorEditable, quotesText, splitChanges, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
-import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage, operatorCommentText } from "./template.ts";
+import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage, fixupCommentEdited, fixupCommentLines, operatorCommentText } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 
@@ -506,7 +506,13 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 
       const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files, await postableChanges(db, repo, `${repo}#${c.number}`, split.changes, c.operator.instructions)) : commentText(v.files, c.attempt);
-      const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : c.operator ? { by: "fixed-operator" } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
+      const note: Note = c.carry ? { by: "operator", model: PROMPT.models[0] } : c.operator ? { by: "fixed-operator" } : { by: "model", kind: "comment", model: PROMPT.models[0] };
+      // A plain review-fix push right after our own review-fix comment extends that comment instead of adding a second one.
+      const prev = c.carry || c.operator ? null : await newestOwnComment(d.querier, who.login, repo, c.number);
+      const prevLines = prev ? fixupCommentLines(prev.body) : null;
+      const cm = prev && prevLines
+        ? await ghEditComment(gw, g, d.exec, "fixup-comment-edit", { repo, number: c.number, commentId: prev.id }, note, fixupCommentEdited(prevLines, v.files), { run: runId })
+        : await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, note, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));

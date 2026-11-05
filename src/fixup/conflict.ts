@@ -97,24 +97,32 @@ const NEWEST_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
 }`;
 
 /**
- * Our own conflict note when it is the newest comment on the PR and no review came after it, read live in one call
- * (the number of merges it reports and its comment id); null otherwise, and when the read fails.
+ * Our own comment (author `login`) when it is the newest comment on the PR and no review came after it, read live in
+ * one call; null otherwise, and when the read fails.
  */
-export async function newestConflictNote(x: ConflictRun, c: ConflictCandidate): Promise<{ id: string; count: number } | null> {
+export async function newestOwnComment(querier: { query(q: string, v: object): Promise<unknown> }, login: string, repo: string, number: number): Promise<{ id: string; body: string } | null> {
   try {
-    const r = await x.d.querier.query(NEWEST_QUERY, { owner: BASE_ORG, name: x.repo, n: c.number }) as { repository?: { pullRequest?: {
+    const r = await querier.query(NEWEST_QUERY, { owner: BASE_ORG, name: repo, n: number }) as { repository?: { pullRequest?: {
       comments?: { nodes?: { databaseId: number; body: string; createdAt: string; author: { login: string } | null }[] };
       reviews?: { nodes?: { submittedAt: string | null }[] };
     } | null } };
     const pr = r.repository?.pullRequest;
     const last = pr?.comments?.nodes?.[0];
-    if (!pr || !last || last.author?.login !== (await x.who()).login) return null;
-    const count = conflictCommentCount(last.body, c.base);
-    if (count === null) return null;
+    if (!pr || !last || last.author?.login !== login) return null;
     const posted = last.createdAt;
     const review = pr.reviews?.nodes?.[0]?.submittedAt;
     if (review && (!posted || review > posted)) return null;
-    return { id: String(last.databaseId), count };
+    return { id: String(last.databaseId), body: last.body };
+  } catch { return null; }
+}
+
+/** Our own conflict note when it is the newest comment on the PR and no review came after it: its comment id and the number of merges it reports. */
+export async function newestConflictNote(x: ConflictRun, c: ConflictCandidate): Promise<{ id: string; count: number } | null> {
+  try {
+    const last = await newestOwnComment(x.d.querier, (await x.who()).login, x.repo, c.number);
+    if (!last) return null;
+    const count = conflictCommentCount(last.body, c.base);
+    return count === null ? null : { id: last.id, count };
   } catch { return null; }
 }
 

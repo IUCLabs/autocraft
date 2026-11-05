@@ -11,6 +11,23 @@ export function commentText(files: string[], attempt = 1): string {
   return (attempt > 1 ? LATER_COMMENT_TEMPLATE : COMMENT_TEMPLATE).replace("{{files}}", files.map((f) => `\`${f}\``).join(", "));
 }
 
+/**
+ * The paragraphs of a body (after its note line) when every one is a review-fix comment of ours (first or later round),
+ * else null. Carry, operator and other texts never match.
+ */
+export function fixupCommentLines(body: string): string[] | null {
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = (t: string) => new RegExp(`^${esc(t).replace(esc("{{files}}"), "`[^`\\n]+`(?:, `[^`\\n]+`)*")}$`);
+  const [first, later] = [re(COMMENT_TEMPLATE), re(LATER_COMMENT_TEMPLATE)];
+  const lines = body.replace(/^_[^\n]*_\n\n/, "").split("\n\n");
+  return lines.every((l, i) => (i === 0 ? first.test(l) || later.test(l) : later.test(l))) ? lines : null;
+}
+
+/** The comment after a further push when our review-fix comment (`lines`, from fixupCommentLines) is still the newest. */
+export function fixupCommentEdited(lines: string[], files: string[]): string {
+  return [...lines, commentText(files, 2)].join("\n\n");
+}
+
 /** The one comment posted on the PR after a push made from a maintainer's instructions: the fix-up model's own list of what it changed (the files when it gave none); the instructions themselves are never posted. */
 export const OPERATOR_COMMENT_TEMPLATE = "Fixes included:\n{{changes}}";
 export function operatorCommentText(files: string[], changes: string[] = []): string {

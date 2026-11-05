@@ -212,7 +212,7 @@ Claims check, before any verdict: list every behavioural claim the title and bod
 
 Verdicts:
 - take: wanted, correct, nothing to change.
-- take-fix: wanted and nearly right. fixes stay within what the PR sets out to do; the same problem in code the PR doesn't touch goes in risks, not fixes. fixes must be the complete list of changes to make, each with the file and the exact change; fixes are applied mechanically (about 20 lines in all, at most ${OPUS_MAX_FIXES} entries); a larger change is a hold.
+- take-fix: wanted and nearly right. fixes stay within what the PR sets out to do; the same problem in code the PR doesn't touch goes in risks, not fixes. fixes must be the complete list of changes to make, each with the file and the exact change, including every edit a fix implies elsewhere (doc comments, docs, help text and tests that describe the behaviour the fix changes); fixes are applied mechanically (about 20 lines in all, at most ${OPUS_MAX_FIXES} entries); a larger change is a hold.
 - hold: needs a person: reference behaviour you are unsure of, a design or scope choice, a problem you cannot judge from the diff.
 - close: wrong or broken beyond a small fix, clearly not wanted, already done on the main branch, or superseded. Only when you are sure.
 
