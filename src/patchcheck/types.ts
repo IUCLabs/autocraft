@@ -23,6 +23,8 @@ export type FixupCheckInput = {
   diff: string;
   /** Our patch, on top of the PR's head. */
   patch: string;
+  /** An operator's instructions the patch is meant to carry out (trusted text; the fix list is empty). */
+  operator?: string;
   /** For a carry-over: the closed duplicates with the parts to port and their diffs (each cut to a share of the cap). */
   carried_from?: { ref: string; points: string[]; diff: string }[];
   /** For a CI fix (`fixes` is empty): the failing checks and the tails of their failed steps' logs (untrusted text from the PR's CI run). `patch` is meant only to make them pass. */

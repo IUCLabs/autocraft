@@ -41,7 +41,7 @@ export type AssignFacts = { login: string | null; assignees: string[]; ours: boo
 
 export type Action = { kind: ActionKind; head: string | null; params?: Record<string, unknown> };
 
-export type LintFact = { step: "fixup" | "cifix" | "conflict"; source: "review" | "premerge" | "carry"; ended: boolean };
+export type LintFact = { step: "fixup" | "cifix" | "conflict"; source: "review" | "premerge" | "carry" | "operator"; ended: boolean };
 
 export type Plan = {
   repo: string; number: number; head: string | null;
@@ -201,6 +201,12 @@ export type PrFacts = {
   fixup: { fixes: number; attempts: number; recorded: string[] } | null;
   /** Queued carry-over jobs of the duplicate groups (one per group decision) whose closed PRs left points to carry: tries used. */
   carry: { attempts: number }[];
+  /**
+   * An operator's fix-up (src/preapproval): `fix` is the queued one for the current head with the tries the PR's operator fix-ups used;
+   * `hold` is true while a pre-approved merge waits for its fix-up, review or CI (or an operator fix-up request is still worked), so nothing merges or asks Merge? meanwhile.
+   * `premerge` is true when the PR's pre-approved merge waits for the pre-merge review of this head.
+   */
+  operator?: { fix: { attempts: number } | null; hold: boolean; premerge: boolean };
   /** Stored model patches at the reviewed head whose lint task is queued, oldest first: `ended` once the task has a final state. A CI fix's source is `review`. */
   lint: LintFact[];
   /** CI fix state at the reviewed head, loaded while CI fails. */
