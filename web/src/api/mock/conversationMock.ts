@@ -155,6 +155,10 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         changed();
         return snap(c);
       },
+      async cancelPreapproval(repo, number) {
+        need();
+        throw new Error(`no pre-approved merge on ${repo}#${number}`);
+      },
       async editCard(id, edit) {
         need();
         const k = find(id);

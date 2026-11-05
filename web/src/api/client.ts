@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
   CardEdit,
+  Preapproval,
   NextPage,
   ReleaseAction,
   DecisionKind,
@@ -122,6 +123,8 @@ export interface Api {
     /** `skip`: indexes into `steps` the operator removed; the rest run in order. `note`: kept with the choice (on the decision it settles, in the thread), never posted to GitHub; at most 500 characters. */
     doCard(id: number, opts?: { skip?: number[]; note?: string }): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
+    /** Operator only: stops the item's running pre-approved merge (state becomes "cancelled"); the PR's open question, if any, stays. */
+    cancelPreapproval(repo: RepoName, number: number): Promise<Preapproval>;
   };
   /** A repo's area list. Reading is for everyone who sees the repo; every write is operator only. */
   areas: {
