@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
 import { decisionPath, parseDecisionRoute } from "../../lib/links";
@@ -86,6 +86,28 @@ export function useSelection() {
 export function usePinned(id: string | undefined, inList: boolean) {
   const d = useQuery(`decision:${id ?? ""}`, (a) => (id ? a.decisions.get(id) : Promise.reject(new Error("no decision"))), { enabled: !!id && !inList }).data;
   return d && d.id === id ? d : undefined;
+}
+
+/**
+ * After a filter change, leaves a selection that the new list does not hold: opens the new
+ * list's first decision, or the empty page when there is none. Runs once the new list has
+ * loaded. A just-answered decision stays, and so does everything while the filter is unchanged
+ * (direct links, answered decisions pinned on screen).
+ */
+export function useReselectOnFilter(list: Decision[], loading: boolean, id: string | undefined, keep: boolean, go: ReturnType<typeof useSelection>["go"]) {
+  const { search } = useDecisionFilter();
+  const seen = useRef(search);
+  const pending = useRef(false);
+  if (seen.current !== search) {
+    seen.current = search;
+    pending.current = true;
+  }
+  useEffect(() => {
+    if (!pending.current || loading) return;
+    pending.current = false;
+    if (id && (keep || list.some((d) => d.id === id))) return;
+    go(list[0], true);
+  }); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 // ---- view-local state shared by the list, detail and thread panels ----

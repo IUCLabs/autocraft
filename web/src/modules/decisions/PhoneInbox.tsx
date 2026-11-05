@@ -7,11 +7,11 @@ import { AnswerNotice } from "./AnswerNotice";
 import { DecisionBody, NoDecision } from "./DecisionDetail";
 import { useInboxKeys, summaryLine } from "./InboxList";
 import { DecisionsToolbar } from "./Toolbar";
-import { ordered, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection } from "./state";
+import { ordered, useDecisionFilter, useDecisionList, useLocal, usePinned, useReselectOnFilter, useSelection } from "./state";
 
 /** Phone flow: one decision per screen with previous/next, filters in a sheet. */
 export function PhoneInbox(props: ViewProps) {
-  const { data } = useDecisionList();
+  const { data, loading } = useDecisionList();
   const { filter } = useDecisionFilter();
   const { id, go, byLink, item, missing } = useSelection();
   const loc = useLocal();
@@ -23,6 +23,7 @@ export function PhoneInbox(props: ViewProps) {
   const d = list[idx] ?? pinned;
   const active = (filter.kind?.length ?? 0) + (filter.repo?.length ?? 0) + (filter.minAge ? 1 : 0) + (filter.mine ? 1 : 0);
 
+  useReselectOnFilter(list, loading, id, loc.justAnswered.some((a) => a.id === id), go);
   useEffect(() => {
     if (!id && !byLink && list.length) go(list[0], true);
   }, [id, list.length]); // eslint-disable-line react-hooks/exhaustive-deps

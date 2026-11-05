@@ -15,7 +15,7 @@ import { ClaimPill, KIND_ICON } from "./parts";
 import { canActOn } from "./DecisionDetail";
 import { AnswerNotice } from "./AnswerNotice";
 import { ExecLine } from "./ExecLine";
-import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
+import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useReselectOnFilter, useSelection, useUndo } from "./state";
 import { useNow } from "../../lib/useNow";
 import { itemPath } from "../../lib/links";
 
@@ -67,6 +67,7 @@ export function InboxList({ user }: ViewProps) {
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [id]);
+  useReselectOnFilter(list, loading, id, loc.justAnswered.some((a) => a.id === id), go);
   // Open the oldest decision when nothing is selected, so the detail pane is never empty on arrival.
   useEffect(() => {
     if (!id && !byLink && list.length && !loc.justAnswered.length) go(list[0], true);
