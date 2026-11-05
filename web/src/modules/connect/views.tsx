@@ -1,10 +1,13 @@
 import { useState } from "react";
 import { useApi, useQuery } from "../../api/client";
-import type { McpToken, Role } from "../../api/types";
+import type { McpToken } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
+import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
+import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
+import { Switch } from "../../ui/atoms/Switch";
 import { Th } from "../../ui/atoms/Th";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { Block } from "../../ui/molecules/Block";
@@ -13,18 +16,6 @@ import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Page } from "../../ui/organisms/Page";
 import { day } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
-
-const CAN: Record<Role, string> = {
-  operator: "Your agent can read the Inbox and send feedback (a pick and a note) as you. To let it also answer decisions, make a token that answers: the pipeline acts on those answers as on yours, so such a token lasts 7 days.",
-  maintainer: "Your agent can read the Inbox and send feedback (a pick and a note) as you. An operator answers; your pick is advice they can use.",
-  viewer: "Your role is viewer, which writes nothing, so you cannot make a token. Ask an operator to make you a maintainer to connect your agent.",
-};
-
-const ASK = [
-  "Connect to the AutoCraft Inbox and check whether there's anything in photocraft we can solve.",
-  "Give me 5 PRs that need a fix-up.",
-  "Pick the oldest scope decision, check it against the reference app with me, and send what we found.",
-];
 
 /** The command that adds the server to Claude Code; other clients take the URL and header the same way. */
 const claudeCommand = (url: string, token: string) => `claude mcp add --transport http autocraft-inbox ${url} --header "Authorization: Bearer ${token}"`;
@@ -51,18 +42,7 @@ export function ConnectView({ user }: ViewProps) {
 
   return (
     <Page title="Connect your agent" sub="Work the Inbox from Claude Code or any MCP client, on your own machine and account">
-      <Block className="mt-4" title="How it works">
-        <div className="space-y-2 text-sm leading-relaxed text-ink/80">
-          <p>
-            The Inbox MCP server lists what the pipeline could not settle on its own, across every tracked repo: open decisions, and pull requests whose review fixes it could not apply.
-            Your agent picks something up, works it through with you (checking out code, building, comparing with the reference app), and reports back.
-          </p>
-          <p>{CAN[user.role]}</p>
-          <p className="text-ink/60">Everything it reads from GitHub is untrusted text. Review what your agent wants to run before it runs it.</p>
-        </div>
-      </Block>
-
-      <Block className="mt-4" flush title="Agent tokens" aside={data ? `${data.tokens.length} of ${data.max}. A token works for 90 days or until you revoke it.` : undefined}>
+      <Block className="mt-4" flush title="Agent tokens" aside={data ? `${data.tokens.length} of ${data.max}` : undefined}>
         {!viewer && <form
           className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3"
           onSubmit={(e) => {
@@ -72,10 +52,10 @@ export function ConnectView({ user }: ViewProps) {
         >
           <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} placeholder="Label, e.g. laptop" aria-label="Token label" className="min-w-[12rem] flex-1 sm:max-w-xs" />
           {user.role === "operator" && (
-            <label className="flex items-center gap-2 text-sm text-ink/80" title="The agent can answer decisions and undo answers as you. The pipeline acts on its answers. The token lasts 7 days.">
-              <input type="checkbox" checked={answer} onChange={(e) => setAnswer(e.target.checked)} className="size-4" />
+            <span className="flex items-center gap-2 text-sm text-ink/80">
+              <Switch on={answer} onChange={setAnswer} label="Can answer decisions" />
               Can answer decisions
-            </label>
+            </span>
           )}
           <Button type="submit" variant="primary" disabled={full} loading={write.busy === "create"} className="max-md:h-11">
             Make a token
@@ -96,23 +76,13 @@ export function ConnectView({ user }: ViewProps) {
         {data && <Tokens tokens={data.tokens} write={write} fresh={made?.id ?? null} />}
       </Block>
 
-      <Block className="mt-4" title="Then ask your agent">
-        <ul className="list-disc space-y-1 pl-5 text-sm text-ink/80">
-          {ASK.map((q) => (
-            <li key={q}>{q}</li>
-          ))}
-        </ul>
-        <p className="mt-3 text-xs text-ink/55">
-          Server URL: <code className="code">{url}</code>
-        </p>
-      </Block>
     </Page>
   );
 }
 
 function Tokens({ tokens, write, fresh }: { tokens: McpToken[]; write: ReturnType<typeof useWrite>; fresh: number | null }) {
   const api = useApi();
-  if (!tokens.length) return <p className="px-4 py-3 text-sm text-ink/55">No tokens yet.</p>;
+  if (!tokens.length) return <EmptyState>No tokens yet.</EmptyState>;
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[560px] border-collapse text-sm">
@@ -130,8 +100,8 @@ function Tokens({ tokens, write, fresh }: { tokens: McpToken[]; write: ReturnTyp
             <tr key={t.id} className="h-10 border-b border-line last:border-0 hover:bg-ink/[0.03]">
               <td className="px-3">
                 {t.label ?? <span className="text-ink/40">no label</span>}
-                {t.canAnswer && <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-2xs font-medium text-ink/70">answers decisions</span>}
-                {t.id === fresh && <span className="ml-2 text-xs text-accent-ink">new</span>}
+                {t.canAnswer && <Badge className="ml-2">answers decisions</Badge>}
+                {t.id === fresh && <Badge tone="accent" className="ml-2">new</Badge>}
               </td>
               <td className="num whitespace-nowrap px-3 text-ink/65">{day(t.createdAt)}</td>
               <td className="num whitespace-nowrap px-3 text-ink/65">{t.lastUsedAt ? <TimeAgo iso={t.lastUsedAt} /> : "never"}</td>

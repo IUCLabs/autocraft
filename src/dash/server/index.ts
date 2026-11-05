@@ -12,6 +12,7 @@ import { isLoopbackHost, type Config } from "./config.ts";
 import { pkceChallenge, randomToken, safeEqual, TokenBox } from "./crypto.ts";
 import { ImageIndex } from "./image-index.ts";
 import { visibleTo } from "../api/visible.ts";
+import type { ApiRoutes } from "../api/index.ts";
 import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "./images.ts";
 import { TokenBucket } from "./limits.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
@@ -155,7 +156,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The Inbox MCP server (POST /mcp): calls per token and per client address, and feedback posts per login as on the dashboard.
   const mcpLimitToken = new RateLimiter(120, 60_000);
   const mcpLimitIp = new RateLimiter(300, 60_000);
-  const mcpFeedback = new RateLimiter(60, 3600_000);
+  // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
+  const mcpFeedback = (opts.routes as Partial<ApiRoutes>).feedbackLimiter ?? new RateLimiter(60, 3600_000);
+  // list_repos and list_fixups aggregate the mirror like the dashboard's expensive GETs: a burst, then 30 a minute, per token.
+  const mcpExpensive = new TokenBucket(20, 0.5);
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
 
@@ -434,7 +438,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return reply(400, rpcError(-32600, "send one JSON-RPC message as an object; batches are not supported"));
     const m = msg as McpMsg;
     const out = await handleMcp({
-      db, baseUrl: config.baseUrl, limiter: mcpFeedback, canAnswer: caller.canAnswer && caller.role === "operator",
+      db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(String(caller.tokenId)), canAnswer: caller.canAnswer && caller.role === "operator",
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
     }, m);
     if (mcpWrites(m)) live.poke();

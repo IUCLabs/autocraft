@@ -352,12 +352,15 @@ function progress(db: DatabaseSync, hidden: string[]): Progress {
 
 // ---- routes --------------------------------------------------------------
 
-export function apiRoutes(opts: ApiOptions = {}): Route[] {
+/** The routes, with the limiter of opinions and comments that the MCP server's feedback shares with them. */
+export type ApiRoutes = Route[] & { feedbackLimiter: RateLimiter };
+
+export function apiRoutes(opts: ApiOptions = {}): ApiRoutes {
   const limiter = new RateLimiter(opts.writesPerHour ?? 60, 3600_000);
   const vectors = new VectorIndex(opts.embedder ?? localEmbedder({ threads: 2 }));
   const get = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "GET", pattern, handler: ok(fn) });
   const post = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "POST", pattern, handler: ok(fn) });
-  return [
+  const routes: Route[] = [
     get("/api/me", me),
     get("/api/repos", visibleRepos),
     get("/api/repos/owners", repoOwners),
@@ -441,6 +444,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/access/remove", adm.accessRemove),
     post("/api/access/role", adm.accessRole),
     post("/api/access/sessions/revoke", adm.revokeSession),
+    post("/api/access/tokens/revoke", adm.revokeAgentToken),
     get("/api/audit", adm.auditLog),
     get("/api/classifiers", insight.classifiersReport),
     get("/api/classifiers/disagreements", insight.disagreements),
@@ -513,4 +517,5 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/now/feed", nowFeed),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];
+  return Object.assign(routes, { feedbackLimiter: limiter });
 }

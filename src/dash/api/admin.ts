@@ -23,6 +23,7 @@ import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepoChecked, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
+import { endTokens, listAllTokens, revokeAnyToken } from "../mcp/tokens.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
@@ -34,10 +35,10 @@ const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 // Accounts and access (who can sign in, sessions, the Claude accounts) are audited for operators only.
-export const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("account-") || ["session-revoke", "sign-in", "sign-in-refused"].includes(a);
+export const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("account-") || a.startsWith("mcp-token-") || ["session-revoke", "sign-in", "sign-in-refused"].includes(a);
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-token-start", "account-token-code", "account-token-cancel", "account-token-set", "account-token-remove", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-reopen", "act-open-issue", "act-unlabel", "act-transfer", "act-request-reviewers", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "optional-check-add", "optional-check-remove", "fixissue-push", "fixissue-pr", "fixissue-comment",
+  "session-revoke", "mcp-token-create", "mcp-token-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-token-start", "account-token-code", "account-token-cancel", "account-token-set", "account-token-remove", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-reopen", "act-open-issue", "act-unlabel", "act-transfer", "act-request-reviewers", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "optional-check-add", "optional-check-remove", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "security-scan-start", "security-scan-stop", "security-finding-dismiss", "security-finding-backlog", "security-finding-reopen", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
   "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "ci-approve", "ci-revoke", "ci-run-approve", "ci-rerun", "cifix-push", "cifix-comment", "cifix-check", "postmerge-file", "postmerge-file-one", "postmerge-review", "postmerge-backfill",
@@ -436,6 +437,7 @@ export function accessOverview(db: DatabaseSync, req: Req): AccessOverview {
       id: s.id, login: s.login, createdAt: s.created_at, lastSeen: s.last_seen, expiresAt: s.expires_at,
       userAgent: s.user_agent ? s.user_agent.slice(0, 200) : null, current: s.csrf === req.csrf,
     })),
+    tokens: listAllTokens(db),
   };
 }
 
@@ -473,7 +475,19 @@ export function revokeSession(db: DatabaseSync, req: Req): AccessOverview {
   const s = db.prepare("DELETE FROM sessions WHERE rowid = ? RETURNING login, created_at").get(id as number) as
     { login: string; created_at: string } | undefined;
   if (!s) throw new HttpError(404, "that session has already ended");
-  audit(db, req.user.login, "session-revoke", s.login, { created_at: s.created_at });
+  // Revoking a session cuts off the login's agent tokens too: they act with that login's permissions.
+  const mcpTokens = endTokens(db, s.login);
+  audit(db, req.user.login, "session-revoke", s.login, { created_at: s.created_at, ...(mcpTokens ? { mcpTokens } : {}) });
+  return accessOverview(db, req);
+}
+
+export function revokeAgentToken(db: DatabaseSync, req: Req): AccessOverview {
+  requireOperator(req, "manage access");
+  const id = body(req).id;
+  if (!Number.isInteger(id)) throw new HttpError(400, "id must be a token id");
+  const login = revokeAnyToken(db, id as number);
+  if (!login) throw new HttpError(404, "that token has already ended");
+  audit(db, req.user.login, "mcp-token-revoke", login, { id });
   return accessOverview(db, req);
 }
 

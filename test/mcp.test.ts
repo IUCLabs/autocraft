@@ -14,6 +14,7 @@ import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
+import { answering } from "../src/dash/mcp/index.ts";
 import { MCP_TOKENS_PER_LOGIN } from "../src/dash/mcp/tokens.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -334,6 +335,22 @@ describe("answering", () => {
     assert.equal(actionable(db).length, 0);
   });
 
+  test("while answering is not available, the answer tools are listed but refuse, and nothing is recorded", async () => {
+    const b = await signedIn("boss");
+    const t = (await b.json<McpTokenCreated>("POST", "/api/mcp/tokens", { label: "answers", answer: true })).token;
+    assert.deepEqual((await toolNames(t)).filter((n) => n.includes("answer")).sort(), ["answer_decision", "undo_answer"]);
+    for (const [name, args] of [["answer_decision", { id: P10, option: "small" }], ["undo_answer", { id: P10 }]] as const) {
+      const r = await call(t, name, args);
+      assert.equal(r.isError, true);
+      assert.match(r.text, /sign in to AutoCraft again with GitHub App sign-in/);
+    }
+    assert.equal(actionable(db).length, 0);
+  });
+
+  describe("with answering switched on", () => {
+    before(() => { answering.enabled = true; });
+    after(() => { answering.enabled = false; });
+
   test("an answering token answers as the operator, the pipeline sees it, and undo takes it back", async () => {
     const t = await (async () => {
       const b = await signedIn("boss");
@@ -351,7 +368,7 @@ describe("answering", () => {
     assert.match((await call(t, "answer_decision", { id: P10, option: "nope" })).text, /one of the option keys/);
     const done = await call(t, "answer_decision", { id: P10, option: "small", note: "Agreed with the reporter." });
     assert.equal(done.isError, false, done.text);
-    assert.match(done.text, /Answered photocraft#10 with "Small extra" as boss/);
+    assert.match(done.text, /Answered photocraft#10:scope as boss/);
     assert.match(done.text, /undo_answer/);
     assert.deepEqual(actionable(db).map((a) => [a.id, a.answer]), [[P10, "small"]]);
     const a = db.prepare("SELECT details FROM audit WHERE action = 'answer' AND target = ?").get(P10) as { details: string };
@@ -363,13 +380,45 @@ describe("answering", () => {
     assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'undo' AND target = ? AND details LIKE '%\"via\":\"mcp\"%'").get(P10));
   });
 
-  test("an answering token of a login that is no longer an operator loses the answer tools", async () => {
-    const b = await signedIn("op2");
+  test("an answer needs a live dashboard session of the operator", async () => {
+    const b = await signedIn("boss");
     const t = (await b.json<McpTokenCreated>("POST", "/api/mcp/tokens", { label: "answers", answer: true })).token;
-    assert.ok((await toolNames(t)).includes("answer_decision"));
-    setRole(db, "cli", "op2", "maintainer");
-    assert.equal((await toolNames(t)).includes("answer_decision"), false);
-    assert.match((await call(t, "answer_decision", { id: P10, option: "small" })).text, /cannot answer decisions/);
+    db.prepare("DELETE FROM sessions WHERE login = 'boss'").run();
+    db.prepare("DELETE FROM repo_permissions WHERE login = 'boss'").run();
+    const r = await call(t, "answer_decision", { id: P10, option: "small" });
+    assert.equal(r.isError, true);
     assert.equal(actionable(db).length, 0);
+  });
+  });
+});
+
+describe("token revocation", () => {
+  const live = (login: string): number => (db.prepare("SELECT COUNT(*) AS n FROM mcp_tokens WHERE login = ?").get(login) as { n: number }).n;
+
+  test("demoting an operator ends its answering tokens for good; plain tokens stay", async () => {
+    const b = await signedIn("op2");
+    const answer = (await b.json<McpTokenCreated>("POST", "/api/mcp/tokens", { label: "answers", answer: true })).token;
+    const plain = (await b.json<McpTokenCreated>("POST", "/api/mcp/tokens", { label: "plain" })).token;
+    setRole(db, "cli", "op2", "maintainer");
+    assert.equal((await rpc(answer, "ping")).status, 401);
+    assert.equal((await rpc(plain, "ping")).status, 200);
+    setRole(db, "cli", "op2", "operator");
+    assert.equal((await rpc(answer, "ping")).status, 401);
+    assert.equal(live("op2"), 1);
+  });
+
+  test("revoking a session ends that login's tokens; an operator revokes any token on the Access page", async () => {
+    const t1 = await tokenFor("pal");
+    const pal = await signedIn("pal");
+    const boss = await signedIn("boss");
+    let access = await boss.json<{ sessions: { id: number; login: string }[]; tokens: { id: number; login: string }[] }>("GET", "/api/access");
+    assert.ok(access.tokens.some((x) => x.login === "pal"));
+    await pal.json("POST", "/api/access/tokens/revoke", { id: access.tokens[0]!.id }, 403);
+    await boss.json("POST", "/api/access/sessions/revoke", { id: access.sessions.find((x) => x.login === "pal")!.id });
+    assert.equal((await rpc(t1, "ping")).status, 401);
+    const t2 = await tokenFor("pal", "again");
+    access = await boss.json("GET", "/api/access");
+    await boss.json("POST", "/api/access/tokens/revoke", { id: access.tokens.find((x) => x.login === "pal")!.id });
+    assert.equal((await rpc(t2, "ping")).status, 401);
   });
 });

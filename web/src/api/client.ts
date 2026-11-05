@@ -223,6 +223,7 @@ export interface Api {
     remove(login: string): Promise<AccessOverview>;
     setRole(login: string, role: Role): Promise<AccessOverview>;
     revokeSession(id: number): Promise<AccessOverview>;
+    revokeToken(id: number): Promise<AccessOverview>;
     audit(filter: AuditFilter): Promise<AuditPage>;
   };
   classifiers: {

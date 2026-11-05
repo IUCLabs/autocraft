@@ -841,9 +841,13 @@ export interface SessionInfo {
   current: boolean;
 }
 
+/** A live agent token of any login (operators see all of them). */
+export type AccessToken = McpToken & { login: string };
+
 export interface AccessOverview {
   entries: AccessEntry[];
   sessions: SessionInfo[];
+  tokens: AccessToken[];
 }
 
 export interface AuditEntry {

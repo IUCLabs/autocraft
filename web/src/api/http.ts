@@ -196,6 +196,7 @@ export function createHttpApi(): Api {
       remove: (login) => post("/api/access/remove", { login }),
       setRole: (login, role) => post("/api/access/role", { login, role }),
       revokeSession: (id) => post("/api/access/sessions/revoke", { id }),
+      revokeToken: (id) => post("/api/access/tokens/revoke", { id }),
       audit: (filter) => get(`/api/audit${qs(filter)}`),
     },
     classifiers: {

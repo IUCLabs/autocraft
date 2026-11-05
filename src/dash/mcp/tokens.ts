@@ -55,6 +55,23 @@ export function endTokens(db: DatabaseSync, login: string): number {
   return Number(db.prepare("DELETE FROM mcp_tokens WHERE login = ?").run(login).changes);
 }
 
+/** Ends a login's answering tokens (it stopped being an operator); its read and feedback tokens stay. */
+export function endAnswerTokens(db: DatabaseSync, login: string): number {
+  return Number(db.prepare("DELETE FROM mcp_tokens WHERE login = ? AND can_answer = 1").run(login).changes);
+}
+
+/** Every login's live tokens, for operators on the Access page. */
+export function listAllTokens(db: DatabaseSync): (McpTokenRow & { login: string })[] {
+  return (db.prepare(`SELECT login, ${COLS} FROM mcp_tokens WHERE expires_at > ? ORDER BY login COLLATE NOCASE, created_at DESC, id DESC`)
+    .all(new Date().toISOString()) as (Raw & { login: string })[]).map((r) => ({ ...toRow(r), login: r.login }));
+}
+
+/** Revokes any login's token by id (an operator's action); the token's login, or null when there is none. */
+export function revokeAnyToken(db: DatabaseSync, id: number): string | null {
+  const r = db.prepare("DELETE FROM mcp_tokens WHERE id = ? RETURNING login").get(id) as { login: string } | undefined;
+  return r?.login ?? null;
+}
+
 /** The caller a bearer token stands for, or null when it is unknown, expired or its login is off the access list. */
 export function loadToken(db: DatabaseSync, token: string | undefined): McpCaller | null {
   if (!token || token.length > 200 || !token.startsWith(MCP_TOKEN_PREFIX)) return null;

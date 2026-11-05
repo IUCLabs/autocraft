@@ -19,6 +19,13 @@ export const MCP_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const BODY_MAX = 20_000;
 const LIST_MAX = 25;
 
+/**
+ * Whether answer_decision and undo_answer run. Answering is the user's own action and has to execute as that GitHub
+ * user, which needs GitHub App user tokens that this server does not have yet. Until then both tools are listed for
+ * an answering token but refuse (see `requireAnswering`); the checks behind them stay, ready to be switched on.
+ */
+export const answering = { enabled: false };
+
 export type McpEnv = {
   db: DatabaseSync;
   /** The token's user; `forWrite` asks for permission checks fresh enough for a write. */
@@ -29,6 +36,8 @@ export type McpEnv = {
   limiter: RateLimiter;
   /** The token was made to answer and its login is an operator now: the answer tools are offered and allowed. */
   canAnswer: boolean;
+  /** Spends one of the token's expensive calls (list_repos, list_fixups); the number of seconds to wait when it has none left, else 0. */
+  expensive: () => number;
 };
 
 export type Msg = { jsonrpc?: unknown; id?: string | number | null; method?: unknown; params?: Record<string, unknown> };
@@ -181,6 +190,7 @@ const cut = (s: string | null | undefined, n: number): string | null => (s == nu
 const show = (header: string, label: string, data: unknown): ToolResult => ({ text: `${header}\n\n${frame(label, JSON.stringify(data, null, 1))}` });
 
 async function listRepos(env: McpEnv): Promise<ToolResult> {
+  spend(env);
   const user = env.user(false);
   const repos = await visibleTo(env.db, user);
   const held = heldFixups(env.db, repos, null, 10_000);
@@ -259,20 +269,32 @@ async function sendFeedback(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const tally = new Map<string, number>();
   for (const o of d.opinions) if (o.option) tally.set(o.option, (tally.get(o.option) ?? 0) + 1);
   const mine = d.opinions.find((o) => o.login.toLowerCase() === user.login.toLowerCase());
-  const what = picked ? `your pick "${picked}"${a.text ? " with your note" : ""}` : "your comment";
+  // Option labels come from the pipeline's text about GitHub items, so they are framed as untrusted.
   const lines = [
-    `Sent ${what} on ${ref(d)} as ${user.login}. An operator answers the decision; until then it is advice, shown with your GitHub permission (${mine?.permission ?? "n/a"}).`,
-    `Picks so far: ${[...tally].map(([k, n]) => `${d.options.find((o) => o.key === k)?.label ?? k} ${n}`).join(", ") || "none"}.`,
+    `Sent ${picked ? `your pick${a.text ? " with your note" : ""}` : "your comment"} on ${d.id} as ${user.login}. An operator answers the decision; until then it is advice, shown with your GitHub permission (${mine?.permission ?? "n/a"}).`,
     `Decision: ${link(env, decisionPath(d))}`,
   ];
-  return { text: lines.join("\n") };
+  const facts = { item: ref(d), pick: picked, picksSoFar: Object.fromEntries([...tally].map(([k, n]) => [d.options.find((o) => o.key === k)?.label ?? k, n])) };
+  return { text: `${lines.join("\n")}\n\n${frame("feedback result", JSON.stringify(facts, null, 1))}` };
 }
 
+const NOT_YET = "answering from an agent needs you to sign in to AutoCraft again with GitHub App sign-in, which this server does not offer yet; answer on the dashboard";
 const NO_ANSWER = "this token cannot answer decisions: an operator makes an answering token on the dashboard (user menu, Connect agent)";
 const PERMISSION_HINT = " (your GitHub permission is read with your newest dashboard session; sign in to the dashboard if you have none)";
 
-async function answerDecision(env: McpEnv, raw: unknown): Promise<ToolResult> {
+/** The one place that refuses the answer tools while answering is not available. */
+function requireAnswering(env: McpEnv): void {
   if (!env.canAnswer) throw new HttpError(403, NO_ANSWER);
+  if (!answering.enabled) throw new HttpError(403, NOT_YET);
+}
+
+const spend = (env: McpEnv): void => {
+  const wait = env.expensive();
+  if (wait) throw new HttpError(429, `too many list calls; wait ${wait} seconds`);
+};
+
+async function answerDecision(env: McpEnv, raw: unknown): Promise<ToolResult> {
+  requireAnswering(env);
   const { exceptions, ...rest } = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
   if (exceptions !== undefined && exceptions !== null && (!Array.isArray(exceptions) || exceptions.length > 500)) throw new BadArgs(`"exceptions" must be a list of {repo, number, answer}`);
   const a = args(raw === undefined ? raw : rest, { id: "id", option: "option", note: "text", textsHash: "id" }, ["id", "option"]);
@@ -282,15 +304,17 @@ async function answerDecision(env: McpEnv, raw: unknown): Promise<ToolResult> {
     json: { answer: a.option, note: a.note ?? null, exceptions: exceptions ?? null, textsHash: a.textsHash },
   }), "mcp");
   const o = d.options.find((x) => x.key === d.answer);
-  return { text: [
-    `Answered ${ref(d)} with "${o?.label ?? d.answer}" as ${user.login}. ${o?.writes ? `The pipeline will act on it: ${o.writes}.` : "It writes nothing on GitHub."}`,
+  const lines = [
+    `Answered ${d.id} as ${user.login}.`,
     d.undoable ? `undo_answer with id "${d.id}" takes it back until the pipeline acts on it.` : "It cannot be undone.",
     `Decision: ${link(env, decisionPath(d))}`,
-  ].join("\n") };
+  ];
+  const facts = { item: ref(d), answer: o?.label ?? d.answer, pipelineWrites: o?.writes ?? "nothing on GitHub" };
+  return { text: `${lines.join("\n")}\n\n${frame("answer result", JSON.stringify(facts, null, 1))}` };
 }
 
 async function undoAnswer(env: McpEnv, raw: unknown): Promise<ToolResult> {
-  if (!env.canAnswer) throw new HttpError(403, NO_ANSWER);
+  requireAnswering(env);
   const a = args(raw, { id: "id" }, ["id"]);
   const user = env.user(true);
   const d = await dec.undo(env.db, reqOf(user, { method: "POST", params: { id: a.id as string } }), "mcp");
@@ -315,6 +339,7 @@ function heldFixups(db: DatabaseSync, repos: string[], repo: string | null, limi
 
 async function listFixups(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { repo: "repo", limit: "limit" });
+  spend(env);
   const user = env.user(false);
   const repos = await visibleTo(env.db, user);
   if (a.repo !== undefined && !repos.includes(a.repo as string)) throw new HttpError(404, `${a.repo} is not a tracked repo`);
