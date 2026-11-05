@@ -232,6 +232,20 @@ CREATE TABLE IF NOT EXISTS github_app_states (
   created_at TEXT NOT NULL
 );
 
+-- One-time links an operator hands to an org owner to set the GitHub App up in their org. Only the hash of the link's secret is kept.
+CREATE TABLE IF NOT EXISTS github_setup_links (
+  id TEXT PRIMARY KEY,
+  org TEXT NOT NULL,
+  created_by TEXT NOT NULL,           -- the operator the owner is asked to make an app manager
+  hash TEXT NOT NULL UNIQUE,          -- sha256 of the secret in the URL
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  used_at TEXT,
+  used_by TEXT,                       -- the org owner's login
+  installation_id INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS repo_permissions (
   login TEXT NOT NULL COLLATE NOCASE,
   repo TEXT NOT NULL,

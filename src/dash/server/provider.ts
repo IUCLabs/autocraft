@@ -24,7 +24,7 @@ export type GithubUser = { login: string; id: number };
 
 export interface Provider {
   /** With selectAccount the provider shows its account picker even when someone is already signed in there. */
-  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount?: boolean): string;
+  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount?: boolean, scopes?: string[]): string;
   // Each returns null when the provider rejects the code or refresh token, and
   // throws on a transport failure.
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null>;
@@ -55,13 +55,14 @@ export class GitHubProvider implements Provider {
     this.#id = clientId;
     this.#secret = clientSecret;
   }
-  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount = false): string {
-    // No scopes: the token reads public data, which is all a permission check on a public repo needs.
+  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount = false, scopes: string[] = []): string {
+    // Dashboard sign-in asks for no scopes: the token reads public data, which is all a permission check on a public repo needs.
     const q = new URLSearchParams({
       client_id: this.#id, redirect_uri: redirectUri, state,
       code_challenge: challenge, code_challenge_method: "S256", allow_signup: "false",
     });
     if (selectAccount) q.set("prompt", "select_account");
+    if (scopes.length) q.set("scope", scopes.join(" "));
     return `https://github.com/login/oauth/authorize?${q}`;
   }
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null> {
@@ -130,8 +131,8 @@ export class FakeProvider implements Provider {
     this.#permsFile = permsFile;
     this.tokenTtlMs = tokenTtlMs;
   }
-  authorizeUrl(state: string, challenge: string, redirectUri: string): string {
-    return `/auth/dev/authorize?${new URLSearchParams({ state, code_challenge: challenge, redirect_uri: redirectUri })}`;
+  authorizeUrl(state: string, challenge: string, redirectUri: string, _selectAccount = false, scopes: string[] = []): string {
+    return `/auth/dev/authorize?${new URLSearchParams({ state, code_challenge: challenge, redirect_uri: redirectUri, ...(scopes.length ? { scope: scopes.join(" ") } : {}) })}`;
   }
   issueCode(login: string, challenge: string, redirectUri: string): string {
     const code = randomToken(16);

@@ -16,6 +16,7 @@ import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "
 import { TokenBucket } from "./limits.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
+import { OrgSetup } from "./github-setup.ts";
 import { saveUserTokens } from "./user-tokens.ts";
 import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
@@ -273,20 +274,36 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     live.add(res, () => loadSession(db, cookieId) !== null);
   }
 
+  function startOAuth(returnTo: string, selectAccount: boolean, scopes?: string[]): { r: Res; cookies: string[] } {
+    const state = randomToken(24), verifier = randomToken(48);
+    db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
+      .run(state, verifier, returnTo, new Date().toISOString());
+    return {
+      r: { redirect: provider.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, selectAccount, scopes) },
+      cookies: [cookie(STATE_COOKIE, state, 600)],
+    };
+  }
+
+  const setup = new OrgSetup({
+    db, config, deps: appDeps,
+    startOAuth: (returnTo, scopes) => startOAuth(returnTo, true, scopes),
+    sameOrigin: (req) => sameOrigin(req),
+    readForm: readBody,
+  });
+
   async function auth(req: IncomingMessage, url: URL, nonce: string, cookies: Map<string, string>): Promise<{ r: Res; cookies?: string[] }> {
     const ip = clientIp(req);
     const path = url.pathname;
+    if (path.startsWith("/auth/setup") || path === "/auth/github-app/setup" || (path === "/auth/github-app/callback" && setup.ownsState(url.searchParams.get("state") ?? ""))) {
+      if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
+      const out = await setup.handle(req, url, nonce, cookies);
+      if (out) return out;
+    }
     if (req.method === "GET" && path === "/auth/signin") {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
       const returnTo = safeReturnTo(url.searchParams.get("return_to"));
       if (loadSession(db, cookies.get(SESSION_COOKIE))) return { r: { redirect: returnTo } };
-      const state = randomToken(24), verifier = randomToken(48);
-      db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
-        .run(state, verifier, returnTo, new Date().toISOString());
-      return {
-        r: { redirect: provider.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, url.searchParams.get("select") === "1") },
-        cookies: [cookie(STATE_COOKIE, state, 600)],
-      };
+      return startOAuth(returnTo, url.searchParams.get("select") === "1");
     }
     if (req.method === "GET" && path === "/auth/callback") {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
@@ -312,6 +329,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       if (!tokens || !who) {
         return { r: errorPage(nonce, 400, "Sign-in failed", "GitHub did not accept the sign-in. Start again."), cookies: clear };
+      }
+      if (row.return_to?.startsWith("setup:")) {
+        const out = await setup.signedIn(row.return_to, tokens, who, nonce, cookies);
+        return { r: out.r, cookies: [...clear, ...(out.cookies ?? [])] };
       }
       const login = who.login;
       const access = getAccess(db, login);

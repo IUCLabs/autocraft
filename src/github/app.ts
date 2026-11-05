@@ -13,12 +13,15 @@ export const GITHUB_API = "https://api.github.com";
 export const REPO_URL = "https://github.com/storytold/autocraft";
 const UA = "autocraft-dashboard";
 
-export class AppError extends Error {}
+/** `status` is the HTTP status of a failed GitHub call, 0 for other failures. */
+export class AppError extends Error {
+  status = 0;
+}
 
 export type AppDeps = { apiBase?: string };
 
 export type Manifest = {
-  name: string; url: string; hook_attributes: { url: string; active: false }; redirect_url: string; callback_urls: string[];
+  name: string; url: string; hook_attributes: { url: string; active: false }; redirect_url: string; setup_url: string; callback_urls: string[];
   public: false; default_permissions: Record<string, "read" | "write">; default_events: string[];
 };
 
@@ -32,6 +35,7 @@ export function appManifest(name: string, baseUrl: string): Manifest {
     // Webhooks stay off (the mirror polls); GitHub still wants a URL in the field.
     hook_attributes: { url: `${baseUrl}/github-app/hook`, active: false },
     redirect_url: `${baseUrl}/auth/github-app/callback`,
+    setup_url: `${baseUrl}/auth/github-app/setup`,
     callback_urls: [`${baseUrl}/auth/callback`],
     public: false,
     default_permissions: {
@@ -65,7 +69,7 @@ export function appJwt(app: Pick<AppSecrets, "clientId" | "privateKey">, nowMs =
   return `${body}.${createSign("RSA-SHA256").update(body).sign(app.privateKey, "base64url")}`;
 }
 
-async function call(base: string, path: string, token: string | null, method = "GET"): Promise<unknown> {
+export async function call(base: string, path: string, token: string | null, method = "GET"): Promise<unknown> {
   const r = await fetch(`${base}${path}`, {
     method,
     headers: {
@@ -74,8 +78,8 @@ async function call(base: string, path: string, token: string | null, method = "
     },
     signal: AbortSignal.timeout(15_000),
   });
-  if (!r.ok) throw new AppError(`${method} ${path.replace(/\/[^/]*\/conversions$/, "/…/conversions")}: HTTP ${r.status}`);
-  return r.json();
+  if (!r.ok) throw Object.assign(new AppError(`${method} ${path.replace(/\/[^/]*\/conversions$/, "/…/conversions")}: HTTP ${r.status}`), { status: r.status });
+  return r.status === 204 ? null : r.json();
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);

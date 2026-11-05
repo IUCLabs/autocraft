@@ -854,8 +854,19 @@ export interface GithubAppStatus {
   app: { id: string; slug: string; name: string | null; installUrl: string; transferUrl: string } | null;
   /** Each account the app is installed on, with the repos it covers. */
   installations: { owner: string; selection: "all" | "selected"; repos: string[] }[];
+  /** Org setup links that can still be used. */
+  links: GithubSetupLink[];
   /** Set when GitHub could not be read. */
   error: string | null;
+}
+
+/** A one-time link for an organization's owner to set the app up; the link's URL is shown once, when it is created. */
+export interface GithubSetupLink {
+  id: string;
+  org: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface AccessOverview {

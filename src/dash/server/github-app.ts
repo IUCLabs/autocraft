@@ -13,6 +13,7 @@ import { envVar } from "../../env.ts";
 import { checkSecretsWritable, writeAppSecrets, type Config } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import { esc, plainPage } from "./util.ts";
+import { createLink, openLinks, revokeLink } from "./github-setup.ts";
 
 export const DEFAULT_APP_NAME = "AutoCraft";
 const STATE_TTL_MS = 3_600_000;   // GitHub's one-time code lives an hour
@@ -23,15 +24,29 @@ export const publicBase = (config: Config, req: IncomingMessage): string => conf
 export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
   return [{
     method: "GET", pattern: "/api/admin/github-app", operator: true,
-    handler: async (_db, r): Promise<Res> => ({ json: { ...(await githubAppStatus(config, deps)), csrf: r.csrf } }),
+    handler: async (db, r): Promise<Res> => ({ json: { ...(await githubAppStatus(db, config, deps)), csrf: r.csrf } }),
+  }, {
+    // Creates a one-time setup link; the URL path is in this answer only.
+    method: "POST", pattern: "/api/admin/github-app/links", operator: true,
+    handler: (db, r): Res => {
+      const org = String((r.json as { org?: unknown } | undefined)?.org ?? "").trim();
+      const made = createLink(db, r.user.login, org);
+      return made ? { json: made } : { status: 400, json: { error: "That is not a GitHub organization name." } };
+    },
+  }, {
+    method: "POST", pattern: "/api/admin/github-app/links/revoke", operator: true,
+    handler: (db, r): Res => {
+      const id = String((r.json as { id?: unknown } | undefined)?.id ?? "");
+      return revokeLink(db, r.user.login, id) ? { json: { links: openLinks(db) } } : { status: 404, json: { error: "That link is not open." } };
+    },
   }];
 }
 
-export async function githubAppStatus(config: Config, deps: AppDeps): Promise<Omit<GithubAppStatus, "csrf">> {
+export async function githubAppStatus(db: DatabaseSync, config: Config, deps: AppDeps): Promise<Omit<GithubAppStatus, "csrf">> {
   const app = config.secrets.app;
   const status: Omit<GithubAppStatus, "csrf"> = {
     configured: !!app, loginMode: config.loginApp, canRegister: !!config.secretsFile,
-    defaultName: envVar("GITHUB_APP_NAME") ?? DEFAULT_APP_NAME, app: null, installations: [], error: null,
+    defaultName: envVar("GITHUB_APP_NAME") ?? DEFAULT_APP_NAME, app: null, installations: [], links: openLinks(db), error: null,
   };
   if (!app) return status;
   status.app = { id: app.id, slug: app.slug, name: null, installUrl: installUrl(app.slug), transferUrl: transferUrl(app.slug, app.owner) };
@@ -52,8 +67,8 @@ export function auditLoginMode(db: DatabaseSync, config: Config): void {
   if ((last?.target ?? "oauth") !== config.loginApp) audit(db, "system", "github-app-login-mode", config.loginApp, { from: last?.target ?? "oauth" });
 }
 
-const refuse = (nonce: string, status: number, text: string): Res =>
-  ({ status, html: plainPage(nonce, "GitHub App", `<p>${esc(text)}</p><p><a href="/admin/github-app">GitHub App</a></p>`) });
+const refuse = (nonce: string, status: number, text: string, to: { back: string; backLabel: string } = { back: "/admin/github-app", backLabel: "GitHub App" }): Res =>
+  ({ status, html: plainPage(nonce, "GitHub App", `<p>${esc(text)}</p><p><a href="${esc(to.back)}">${esc(to.backLabel)}</a></p>`) });
 
 /**
  * POST /auth/github-app/start (form fields name, org; the caller has checked
@@ -103,16 +118,28 @@ export async function finishRegistration(db: DatabaseSync, config: Config, deps:
   // The session and login are checked before the state row is consumed, so another session cannot burn it.
   const found = db.prepare("SELECT login, session_hash, created_at FROM github_app_states WHERE state = ?").get(state) as { login: string; session_hash: string; created_at: string } | undefined;
   if (!found || !code || found.login !== session.login || found.session_hash !== session.idHash || Date.now() - Date.parse(found.created_at) > STATE_TTL_MS) return refuse(nonce, 400, stale);
-  if (config.secrets.app || !config.secretsFile || converting.has(config)) return refuse(nonce, 409, "An app is already registered, or no secrets file is set.");
+  return await convertAndStore(db, config, deps, code, state, nonce, { login: session.login, back: "/admin/github-app", backLabel: "GitHub App", redirect: "/admin/github-app" }, stale);
+}
+
+/** Who a registration runs for, and where its result page leads back. */
+export type Actor = { login: string; back: string; backLabel: string; redirect: string; details?: Record<string, unknown> };
+
+/**
+ * Turns the manifest code into the app's keys and stores them; the caller has
+ * checked the state row. Redirects to `actor.redirect` on success.
+ */
+export async function convertAndStore(db: DatabaseSync, config: Config, deps: AppDeps, code: string, state: string, nonce: string, actor: Actor, stale: string): Promise<Res> {
+  const refuseTo = (status: number, text: string): Res => refuse(nonce, status, text, actor);
+  if (config.secrets.app || !config.secretsFile || converting.has(config)) return refuseTo(409, "An app is already registered, or no secrets file is set.");
   // Prove the file can take the keys before the state is consumed: GitHub's code works once, and a lost PEM leaves an app nobody holds keys for.
   // GitHub has already created the app by now; a failed probe keeps the state and the unconverted code, so a reload recovers.
   try {
     checkSecretsWritable(config.secretsFile);
   } catch (e) {
     console.error(`github-app registration: secrets file not writable (${errorCode(e)})`);
-    return refuse(nonce, 409, `The app exists on GitHub, but the secrets file cannot be updated (${errorCode(e)}). Fix the file and reload this page within an hour.`);
+    return refuseTo(409, `The app exists on GitHub, but the secrets file cannot be updated (${errorCode(e)}). Fix the file and reload this page within an hour.`);
   }
-  if (db.prepare("DELETE FROM github_app_states WHERE state = ?").run(state).changes !== 1) return refuse(nonce, 400, stale);
+  if (db.prepare("DELETE FROM github_app_states WHERE state = ?").run(state).changes !== 1) return refuseTo(400, stale);
   converting.add(config);
   try {
     let converted: Awaited<ReturnType<typeof convertManifest>>;
@@ -120,7 +147,7 @@ export async function finishRegistration(db: DatabaseSync, config: Config, deps:
       converted = await convertManifest(code, deps);
     } catch (e) {
       console.error(`github-app registration: ${e instanceof AppError ? e.message : "failed"}`);
-      return refuse(nonce, 502, "GitHub did not return the app. Start again.");
+      return refuseTo(502, "GitHub did not return the app. Start again.");
     }
     const { name, ...app } = converted;
     try {
@@ -128,17 +155,17 @@ export async function finishRegistration(db: DatabaseSync, config: Config, deps:
       writeAppSecrets(config.secretsFile, app);
     } catch (e) {
       console.error(`github-app registration: app ${app.slug} exists on GitHub but its keys were not stored (${errorCode(e)})`);
-      audit(db, session.login, "github-app-register-failed", app.slug, { id: app.id, code: errorCode(e) });
+      audit(db, actor.login, "github-app-register-failed", app.slug, { id: app.id, code: errorCode(e) });
       const link = settingsUrl(app.slug, app.owner);
       return {
         status: 500,
-        html: plainPage(nonce, "GitHub App", `<p>GitHub created the app <code>${esc(app.slug)}</code>, but its keys could not be stored (${esc(errorCode(e))}). Delete the app on GitHub, fix the secrets file and start again.</p><p><a href="${esc(link)}">${esc(link)}</a></p><p><a href="/admin/github-app">GitHub App</a></p>`),
+        html: plainPage(nonce, "GitHub App", `<p>GitHub created the app <code>${esc(app.slug)}</code>, but its keys could not be stored (${esc(errorCode(e))}). Delete the app on GitHub, fix the secrets file and start again.</p><p><a href="${esc(link)}">${esc(link)}</a></p><p><a href="${esc(actor.back)}">${esc(actor.backLabel)}</a></p>`),
       };
     }
     config.secrets.app = app;
-    audit(db, session.login, "github-app-register", app.slug, { id: app.id, name, owner: app.owner?.login ?? null });
+    audit(db, actor.login, "github-app-register", app.slug, { id: app.id, name, owner: app.owner?.login ?? null, ...actor.details });
   } finally {
     converting.delete(config);
   }
-  return { redirect: "/admin/github-app" };
+  return { redirect: actor.redirect };
 }

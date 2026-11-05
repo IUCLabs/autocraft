@@ -8,7 +8,7 @@ import type {
   ReleaseAction,
   DecisionKind,
   AccessOverview,
-  GithubAppStatus,
+  GithubAppStatus, GithubSetupLink,
   AccountInput,
   AgentRunDetail,
   ActivityPage,
@@ -220,6 +220,9 @@ export interface Api {
   /** Operator only. */
   githubApp: {
     status(): Promise<GithubAppStatus>;
+    /** The link's URL path is in this answer only. */
+    createLink(org: string): Promise<{ link: GithubSetupLink; path: string }>;
+    revokeLink(id: string): Promise<{ links: GithubSetupLink[] }>;
   };
   classifiers: {
     /** `run`, `a` and `b` default to the latest run and its first pair. */
