@@ -15,6 +15,7 @@ import { COMPARE_ISSUES, COMPARE_PRS } from "../agents/steps.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
+import { ownerOf } from "../owners.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { checksOf } from "../review/checks.ts";
@@ -79,7 +80,7 @@ export const liveQuery = (numbers: number[]) => `query($owner: String!, $name: S
 /** Live state and head of the items; an item GitHub returned null for is left out. */
 async function liveOf(q: Querier, repo: string, numbers: number[]): Promise<Map<number, { state: string; head: string | null }>> {
   const out = new Map<number, { state: string; head: string | null }>();
-  const data = await q.query(liveQuery(numbers), { name: repo }) as { repository?: Record<string, { state?: string; headRefOid?: string } | null> };
+  const data = await q.query(liveQuery(numbers), { owner: ownerOf(repo), name: repo }) as { repository?: Record<string, { state?: string; headRefOid?: string } | null> };
   for (const n of numbers) {
     const x = data.repository?.[`i${n}`];
     if (x?.state) out.set(n, { state: x.state, head: x.headRefOid ?? null });
