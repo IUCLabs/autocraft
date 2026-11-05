@@ -281,17 +281,41 @@ export function setTestRepo(db: DatabaseSync, by: string, repo: string, on: bool
  * concerns is a test repo and `login` is an operator. The audit row says the answer came from a session.
  */
 export async function answerAsSession(db: DatabaseSync, id: string, option: string, login: string, note?: string): Promise<DecisionRow> {
-  const d = getDecision(db, id);
-  if (!d) throw new Error(`no decision ${id}`);
+  const d = sessionDecision(db, id, login);
   if (d.answer) throw new Error(`decision ${id} is already answered by ${d.answered_by}`);
-  const repos = [...new Set([...reposOf(d), ...itemsOf(d).map((r) => r.repo)])];
-  const outside = repos.filter((r) => !isTestRepo(db, r));
-  if (!repos.length || outside.length) throw new Error(`refused: ${outside.join(", ") || "no repo"} is not marked as a test repo (decisions test-repo REPO on)`);
-  if (!operators(db).has(login)) throw new Error(`refused: ${login} is not an operator`);
   const { applyAnswer } = await import("./dash/api/decisions.ts");
   applyAnswer(db, d, login, { answer: option, note }, "cli", "session");
   db.prepare("DELETE FROM decision_claims WHERE decision_id = ?").run(id);
   return getDecision(db, id)!;
+}
+
+/** A decision a session may act on as `login`: every repo it concerns is a test repo and `login` is an operator. */
+function sessionDecision(db: DatabaseSync, id: string, login: string): DecisionRow {
+  const d = getDecision(db, id);
+  if (!d) throw new Error(`no decision ${id}`);
+  const repos = [...new Set([...reposOf(d), ...itemsOf(d).map((r) => r.repo)])];
+  const outside = repos.filter((r) => !isTestRepo(db, r));
+  if (!repos.length || outside.length) throw new Error(`refused: ${outside.join(", ") || "no repo"} is not marked as a test repo (decisions test-repo REPO on)`);
+  if (!operators(db).has(login)) throw new Error(`refused: ${login} is not an operator`);
+  return d;
+}
+
+/** Tries the GitHub write of a waiting or failed answer again, like the dashboard's Retry; test repos only. */
+export async function retryAsSession(db: DatabaseSync, id: string, login: string): Promise<void> {
+  const d = sessionDecision(db, id, login);
+  if (!d.answer || d.applied_at) throw new Error(`decision ${id} has nothing waiting to run`);
+  const { retryDecision } = await import("./github/user-lane.ts");
+  if (!retryDecision(db, id)) throw new Error(`decision ${id} is not waiting or failed`);
+  audit(db, login, "retry", id, { answer: d.answer, source: "cli", via: "session" });
+}
+
+async function retryCmd(args: string[]): Promise<void> {
+  const [id] = args;
+  const ai = args.indexOf("--as");
+  const login = ai >= 0 ? args[ai + 1] : undefined;
+  if (!id || id.startsWith("--") || !login) throw new Error("usage: decisions retry ID --as LOGIN");
+  await retryAsSession(connect(), id, login);
+  console.log(`${id}\tqueued again as ${login} (source cli, via session)`);
 }
 
 async function answerCmd(args: string[]): Promise<void> {
@@ -390,16 +414,16 @@ function askCmd(args: string[]): void {
   console.log(`${r.inserted} asked, ${r.updated} updated`);
 }
 
-const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, "test-repo": testRepoCmd };
+const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, retry: retryCmd, "test-repo": testRepoCmd };
 
 export const commands = {
   decisions: {
-    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] | answer ID OPTION --as LOGIN [--note TEXT] | test-repo [REPO on|off] (answers come from the dashboard, or `answer` on test repos as an operator login; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
+    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] | answer ID OPTION --as LOGIN [--note TEXT] | retry ID --as LOGIN | test-repo [REPO on|off] (answers come from the dashboard, or `answer` on test repos as an operator login; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
     run(args: string[]): void | Promise<void> {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log("usage: autocraft decisions list|show|ask|backlog|withdraw|answer|test-repo ...");
+        console.log("usage: autocraft decisions list|show|ask|backlog|withdraw|answer|retry|test-repo ...");
         process.exit(sub ? 1 : 0);
       }
       return fn(rest);
