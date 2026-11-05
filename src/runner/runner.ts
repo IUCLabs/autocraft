@@ -5,13 +5,13 @@
 // pipeline switch is on) and marks
 // jobs left running by an earlier runner as failed.
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, mkdirSync, openSync, readFileSync, utimesSync } from "node:fs";
+import { appendFileSync, statSync, closeSync, mkdirSync, openSync, readFileSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
 import { advancePreapprovals } from "../preapproval/index.ts";
-import { applyProposals, AUTOPILOT_USER, isEnabled, planDue, type Detected } from "./autopilot.ts";
+import { applyProposals, AUTOPILOT_USER, isDraining, isEnabled, planDue, type Detected } from "./autopilot.ts";
 import { recordUsageSamples } from "../agents/accounts.ts";
 import { AccountWatcher } from "../agents/manage.ts";
 import { failRunning, pruneRuns } from "../agents/runs.ts";
@@ -21,6 +21,7 @@ import { checkPendingUpdate } from "../build/worker-update.ts";
 import { endJob, JOB_KEEP_MS, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
+import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
 import { envVar } from "../env.ts";
 
 export const logsDir = (): string => envVar("RUNNER_LOGS") ?? join(homedir(), ".cache/autocraft-logs/jobs");
@@ -53,9 +54,19 @@ export type RunnerOptions = {
   detect?: (nowMs: number) => Promise<Detected>;
   /** The flowchart summary refresh (default: a worker thread). */
   refreshFlow?: () => Promise<unknown>;
+  /** Longest run of a job of a step in minutes, given the job's `limit` param (default: stepDeadlineMin). Tests pass a short one. */
+  maxMin?: (step: string, items?: number) => number;
+  /** Minutes a job may show no progress, by step (default: stepNoProgressMin). */
+  noProgressMin?: (step: string) => number;
+  /** How long past its deadline a job may finish its current item before the runner stops its process (default 10 minutes). */
+  graceMs?: number;
 };
 
-type Running = { child: ChildProcess; group: string; termAt: number | null; exited: Promise<void> };
+type Running = { child: ChildProcess; group: string; termAt: number | null; exited: Promise<void>; startedAt: number; deadlineMin: number; logPath: string; /** When the job was told to finish its current item and stop. */ flaggedAt: number | null; noProgressMin: number; /** Why it was told to stop. */ stopMsg: string | null };
+
+/** The error of a job the runner stopped for running past its step's limit. */
+export const deadlineError = (min: number): string => `stopped: ran past ${min} min`;
+export const noProgressError = (min: number): string => `stopped: no progress for ${min} min`;
 
 /** True when `pid` is alive and is the child of job `id`. */
 function isJobProcess(pid: number, id: number): boolean {
@@ -84,9 +95,12 @@ export class Runner {
   private flowing: Promise<void> | null = null;
   private readonly planThread: OffThread;
   private readonly flowThread: OffThread;
-  private readonly o: Required<Omit<RunnerOptions, "db" | "lockFile" | "detect" | "refreshFlow">> & { lockFile: string | null };
+  private readonly o: Required<Omit<RunnerOptions, "db" | "lockFile" | "detect" | "refreshFlow" | "maxMin" | "graceMs" | "noProgressMin">> & { lockFile: string | null };
   private readonly detect: (nowMs: number) => Promise<Detected>;
   private readonly refreshFlow: () => Promise<unknown>;
+  private readonly maxMin: (step: string, items?: number) => number;
+  private readonly graceMs: number;
+  private readonly noProgressMin: (step: string) => number;
 
   constructor(opts: RunnerOptions) {
     this.db = opts.db;
@@ -98,6 +112,9 @@ export class Runner {
     this.planThread = new OffThread(this.o.dbFile);
     this.flowThread = new OffThread(this.o.dbFile);
     this.detect = opts.detect ?? ((t) => this.planThread.plan(t));
+    this.maxMin = opts.maxMin ?? stepDeadlineMin;
+    this.graceMs = opts.graceMs ?? 600_000;
+    this.noProgressMin = opts.noProgressMin ?? stepNoProgressMin;
     this.refreshFlow = opts.refreshFlow ?? (() => this.flowThread.flow());
   }
 
@@ -232,13 +249,33 @@ export class Runner {
   private cancels(): void {
     for (const [id, r] of this.running) {
       const row = this.db.prepare("SELECT cancel_requested_at FROM jobs WHERE id = ?").get(id) as { cancel_requested_at: string | null } | undefined;
-      if (!row?.cancel_requested_at && !this.stopping) continue;
+      const late = Date.now() - r.startedAt >= r.deadlineMin * 60_000;
+      const cancel = !!row?.cancel_requested_at || this.stopping;
+      // Progress is a new line in the job's log (the job's own output: progress lines, check-tool notes, results); reading its mtime costs one stat.
+      let lastLine = r.startedAt;
+      try { lastLine = Math.max(lastLine, statSync(r.logPath).mtimeMs); } catch { /* no log yet */ }
+      const idle = r.flaggedAt === null && Date.now() - lastLine >= r.noProgressMin * 60_000;
+      // Past its deadline a job is first asked to stop: the failure is recorded, which the job reads at its item boundaries (ctx.cancelled)
+      // and finishes the writes of its current item. Only after the grace does the process get the signals a cancel gets.
+      if ((late || idle) && !cancel && r.flaggedAt === null && r.termAt === null) {
+        r.flaggedAt = Date.now();
+        const msg = r.stopMsg = idle && !late ? noProgressError(r.noProgressMin) : deadlineError(r.deadlineMin);
+        this.db.prepare("UPDATE jobs SET error = ? WHERE id = ? AND state = 'running'").run(msg, id);
+        try { appendFileSync(r.logPath, `${now()} ${msg}; the job may finish its current item, and is stopped ${Math.round(this.graceMs / 60_000)} min from now\n`); } catch { /* the log is gone */ }
+        this.o.log(`job ${id}: ${msg}; finishing its current item`);
+      }
+      const graceOver = r.flaggedAt !== null && Date.now() - r.flaggedAt >= this.graceMs;
+      if (!cancel && !graceOver) continue;
       const pid = r.child.pid;
       if (!pid) continue;
       if (r.termAt === null) {
         r.termAt = Date.now();
+        const deadline = !cancel;
+        if (deadline) {
+          try { appendFileSync(r.logPath, `${now()} ${r.stopMsg ?? deadlineError(r.deadlineMin)}; the job did not finish in time and is stopped\n`); } catch { /* the log is gone */ }
+        }
         killGroup(pid, "SIGTERM");
-        this.o.log(`job ${id}: stopping (${this.stopping ? "runner stopping" : "cancel requested"})`);
+        this.o.log(`job ${id}: stopping (${this.stopping ? "runner stopping" : deadline ? `${r.stopMsg} grace over` : "cancel requested"})`);
       } else if (Date.now() - r.termAt >= this.o.killAfterMs) {
         killGroup(pid, "SIGKILL");
       }
@@ -248,10 +285,10 @@ export class Runner {
   private async startJobs(): Promise<void> {
     const steps = await loadSteps();
     const queued = this.db.prepare("SELECT id, step, requested_by FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string; requested_by: string }[];
-    // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off.
-    const on = isEnabled(this.db);
+    // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off. While it drains, nothing new starts.
+    const on = isEnabled(this.db), draining = isDraining(this.db);
     for (const q of queued) {
-      if (q.requested_by === AUTOPILOT_USER && !on) continue;
+      if (draining || (q.requested_by === AUTOPILOT_USER && !on)) continue;
       if (this.running.size >= this.o.maxJobs) return;
       const step = steps.get(q.step);
       if (!step) {
@@ -259,7 +296,7 @@ export class Runner {
         continue;
       }
       if ([...this.running.values()].some((r) => r.group === step.group)) continue;
-      this.start(q.id, step.group, steps);
+      this.start(q.id, step.group, step.name, steps);
     }
   }
 
@@ -269,7 +306,15 @@ export class Runner {
     return new Set(rows.filter((r) => !this.running.has(r.id)).map((r) => steps.get(r.step)?.group ?? r.step));
   }
 
-  private start(id: number, group: string, steps: Awaited<ReturnType<typeof loadSteps>>): void {
+  /** The job's `limit` param (its items), when it has one. */
+  private limitOf(id: number): number | undefined {
+    try {
+      const p = JSON.parse((this.db.prepare("SELECT params FROM jobs WHERE id = ?").get(id) as { params: string }).params) as { limit?: unknown };
+      return typeof p.limit === "number" ? p.limit : undefined;
+    } catch { return undefined; }
+  }
+
+  private start(id: number, group: string, stepName: string, steps: Awaited<ReturnType<typeof loadSteps>>): void {
     const logPath = join(this.o.logs, `job-${id}.log`);
     // The group check and the claim are one write transaction, so a command-line run cannot take the group in between.
     this.db.exec("BEGIN IMMEDIATE");
@@ -305,7 +350,7 @@ export class Runner {
         resolve();
       });
     });
-    this.running.set(id, { child, group, termAt: null, exited });
+    this.running.set(id, { child, group, termAt: null, exited, startedAt: Date.now(), deadlineMin: this.maxMin(stepName, this.limitOf(id)), logPath, flaggedAt: null, noProgressMin: this.noProgressMin(stepName), stopMsg: null });
   }
 
   private finish(id: number, code: number | null, signal: NodeJS.Signals | null, spawnError: string | null): void {

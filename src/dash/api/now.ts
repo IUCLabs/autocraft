@@ -8,7 +8,7 @@ import { jevEnabled, jevOutage } from "../../agents/jev.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { mainCiRepos } from "../../mainci/index.ts";
 import { pipelineRepos } from "../../pilot.ts";
-import { pipelineState } from "../../runner/autopilot.ts";
+import { deadlineStops, pipelineState } from "../../runner/autopilot.ts";
 import { trackedNames } from "../../repos.ts";
 import type { Req } from "../types.ts";
 import { batchIdOf, clip, stepTitle, writeEvent } from "./trace.ts";
@@ -71,7 +71,10 @@ async function healthOf(db: DatabaseSync, hidden: string[], nowMs: number): Prom
   const on = pipelineRepos(db);
   const add = (p: NowProblem) => void out.push(p);
 
-  if (!state.enabled) add({ id: "pipeline", area: "pipeline", tone: "warn", text: `Pipeline is off${state.changedBy ? `, switched off by ${state.changedBy}` : ""}`, to: "/pipeline", since: state.changedAt });
+  if (!state.enabled) add({ id: "pipeline", area: "pipeline", tone: "warn", text: `Pipeline is ${state.draining ? "draining" : "off"}${state.changedBy ? `, switched ${state.draining ? "to drain" : "off"} by ${state.changedBy}` : ""}`, to: "/pipeline", since: state.changedAt });
+  for (const d of deadlineStops(db)) {
+    add({ id: `deadline:${d.step}`, area: "jobs", tone: "warn", text: `${stepTitle(d.step)} was stopped (job ${d.jobId}: ${d.error})${d.count > 1 ? `, ${d.count} times in a row` : ""}`, to: `/pipeline/${d.jobId}`, since: d.endedAt, ackStep: d.step });
+  }
   const beat = state.heartbeat ? Date.parse(state.heartbeat) : NaN;
   if (Number.isNaN(beat) || nowMs - beat > RUNNER_STALE_MS) {
     add({ id: "runner", area: "runner", tone: "bad", text: Number.isNaN(beat) ? "The runner has not reported" : `The runner has not reported for ${minutes(nowMs - beat)}`, to: "/pipeline", since: state.heartbeat });

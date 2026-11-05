@@ -6,7 +6,7 @@ import type { JobUsage } from "../../web/src/api/types.ts";
 import { setCallContext } from "../agents/call.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
-import { jobRow, scrub } from "./jobs.ts";
+import { DEADLINE_ERROR, jobRow, scrub } from "./jobs.ts";
 import { loadSteps, validateParams, type StepContext } from "./steps.ts";
 
 const oneLine = (s: string, max = 500): string => scrub(s.replace(/\s+/g, " ").trim()).slice(0, max);
@@ -73,7 +73,10 @@ export async function execJob(id: number): Promise<number> {
     usageRun: (r) => void runs.add(r),
     handled: (n) => void db.prepare("UPDATE jobs SET items = ? WHERE id = ?").run(n, id),
     acted: (n) => void db.prepare("UPDATE jobs SET acted = ? WHERE id = ?").run(n, id),
-    cancelled: () => !!(db.prepare("SELECT cancel_requested_at FROM jobs WHERE id = ?").get(id) as { cancel_requested_at: string | null }).cancel_requested_at,
+    cancelled: () => {
+      const r = db.prepare("SELECT cancel_requested_at, error FROM jobs WHERE id = ?").get(id) as { cancel_requested_at: string | null; error: string | null };
+      return !!r.cancel_requested_at || DEADLINE_ERROR.test(r.error ?? "");
+    },
   };
   setCallContext({ jobId: id, step: step.name, stage: step.stage, cancelled: ctx.cancelled });
   try {

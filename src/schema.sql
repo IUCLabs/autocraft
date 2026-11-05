@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | comment-approve | comment-revoke | review-post | review-edit | act-comment | act-close | act-skip | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel | unassign | batch-again | ci-approve | ci-revoke | ci-run-approve
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | comment-approve | comment-revoke | review-post | review-edit | act-comment | act-close | act-skip | job-request | job-cancel | deadline-ack | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel | unassign | batch-again | ci-approve | ci-revoke | ci-run-approve
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -1340,6 +1340,7 @@ CREATE TABLE IF NOT EXISTS model_checks (
   ended_at TEXT
 );
 CREATE INDEX IF NOT EXISTS model_checks_item ON model_checks(repo, number, id);
+CREATE INDEX IF NOT EXISTS model_checks_median ON model_checks(repo, command, id);
 
 -- Every push of ours to a PR branch (fix-up, conflict merge, CI fix, fix-issue PR) and what it did to the PR's required checks.
 -- before_res / after_res: green | red | pending | none | unknown (required checks only; optional ones are ignored). A branch created

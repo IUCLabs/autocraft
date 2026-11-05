@@ -1,6 +1,7 @@
 // Facts: everything the review-to-merge rules read about open PRs, loaded in one pass for a whole database or a slice of it.
 // Each concept has one definition here. Where a step selector and the merge queue used different
 // definitions, the queue's wins; the differences are listed in the report of this change, not here.
+import { pipelineWrites } from "./rules.ts";
 import { quietFixPrs } from "../security/quiet.ts";
 export { quietFixPrs };
 import type { DatabaseSync } from "node:sqlite";
@@ -138,7 +139,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const ourFixupHead = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' AND source IS NULL LIMIT 1");
   const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ? AND number = ? AND to_oid = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
-  const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
+  const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
   const pipelineLogin = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? null;
   const posts = new Map((db.prepare("SELECT repo, number, review_id, head_oid, posted_at, opus_at FROM review_posts").all() as { repo: string; number: number; review_id: string; head_oid: string | null; posted_at: string | null; opus_at: string | null }[])
     .map((p) => [`${p.repo}#${p.number}`, p]));

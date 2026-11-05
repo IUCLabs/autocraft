@@ -87,12 +87,19 @@ Jev: 80 of 164 items
 jev: no valid answer for photocraft#2214
 Jev: 120 of 164 items`;
 
+/** `?mock=drain` on the page address starts the mock pipeline in the Draining state, for screenshots. */
+const MOCK_DRAIN = typeof location !== "undefined" && /[?&]mock=drain\b/.test(location.search);
+/** Steps whose deadline warning an operator acknowledged in this mock session; read by the Now mock. */
+export const ackedDeadlines = new Set<string>();
+/** Whether the mock pipeline is draining; read by the Now mock for its header warning. */
+export const mockSwitch = { draining: MOCK_DRAIN };
+
 export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pipeline"> {
   const jobs = seed();
   const steps = structuredClone(STEPS);
   let next = 49;
   const judgement = { judgementModel: "opus", judgementModels: ["opus", "sonnet"] };
-  const flag = { enabled: true, changedBy: "ochre-fox" as string | null, changedAt: iso(300) as string | null };
+  const flag = { enabled: !MOCK_DRAIN, draining: MOCK_DRAIN, changedBy: "ochre-fox" as string | null, changedAt: iso(300) as string | null };
   const limits: StageLimit[] = [
     ["classify-new", "Classify new and changed items", 2000, 412], ["embed", "Embed items", null, 0], ["decide", "Ask decisions", 100, 100],
     ["checks", "Refresh CI and merge state", null, 38], ["opus-review", "Review pull requests", 40, 14], ["labels-apply", "Apply labels on GitHub", null, 0], ["merge", "Merge queued pull requests", 10, 2],
@@ -168,7 +175,8 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
       state: () => wait(state()),
       async setEnabled(enabled) {
         requireOperator();
-        Object.assign(flag, { enabled, changedBy: me.login, changedAt: new Date(NOW).toISOString() });
+        mockSwitch.draining = false;
+        Object.assign(flag, { enabled, draining: false, changedBy: me.login, changedAt: new Date(NOW).toISOString() });
         changed();
         return wait(state(), 30);
       },
@@ -197,6 +205,12 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
         }
         changed();
         return wait(state(), 30);
+      },
+      async ackDeadline(step) {
+        requireOperator();
+        ackedDeadlines.add(step);
+        changed();
+        return { ok: true as const };
       },
       async resumeTrip(stage) {
         requireOperator();

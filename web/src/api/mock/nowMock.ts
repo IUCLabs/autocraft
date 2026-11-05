@@ -2,6 +2,7 @@
 import type { Api } from "../client";
 import type { Now, NowEntry, NowFeed } from "../types";
 import { NOW } from "./fixtures";
+import { ackedDeadlines, mockSwitch } from "./pipelineMock";
 
 const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
 const item = (repo: string, number: number, title: string, kind: "pr" | "issue" = "pr") => ({ repo, number, kind, state: "open" as const, title });
@@ -17,8 +18,18 @@ const HEALTH: Now["health"] = {
     { id: "main-ci:designcraft", area: "main-ci", tone: "bad", text: "Main is red in designcraft: Tests, Clippy", to: "/main-ci", since: at(95) },
     { id: "account:c", area: "account", tone: "warn", text: "Account Team account C is paused: 5-hour use 92 % (pauses at 90 %)", to: "/accounts", since: null },
     { id: "jobs", area: "jobs", tone: "warn", text: "2 jobs failed in the last hour: Review pull requests", to: "/pipeline", since: null },
+    { id: "deadline:fixup", area: "jobs", tone: "warn", text: "Fix up pull requests was stopped (job 641: stopped: ran past 120 min)", to: "/pipeline/641", since: at(40), ackStep: "fixup" },
   ],
 };
+
+/** The header problems now: the static ones, minus acknowledged deadline stops, plus the Draining warning. */
+const healthNow = (): Now["health"] => ({
+  pipeline: { ...HEALTH.pipeline, enabled: !mockSwitch.draining },
+  problems: [
+    ...(mockSwitch.draining ? [{ id: "pipeline", area: "pipeline" as const, tone: "warn" as const, text: "Pipeline is draining, switched to drain by operator", to: "/pipeline", since: at(12) }] : []),
+    ...HEALTH.problems.filter((p) => !(p.ackStep && ackedDeadlines.has(p.ackStep))),
+  ],
+});
 
 const entry = (e: Partial<NowEntry> & Pick<NowEntry, "key" | "kind" | "state" | "at" | "title">): NowEntry => ({
   ids: [e.key], batchId: null, endedAt: null, repo: null, what: null, summary: null, progress: null, actor: "AutoCraft", item: null, items: [], itemCount: 0, more: 0, event: null, detail: null, writes: [], children: [], ...e,
@@ -76,7 +87,7 @@ export function createNowMock(changed: () => void): Pick<Api, "now" | "nowFeed">
     return { entries: shown, nextCursor: rest.length > PAGE ? shown[shown.length - 1]!.at : null };
   };
   return {
-    now: () => new Promise((r) => setTimeout(() => r(structuredClone({ health: HEALTH, alsoRunning: ["Rank open items", "Embed items"], ...page(null) })), 60)),
+    now: () => new Promise((r) => setTimeout(() => r(structuredClone({ health: healthNow(), alsoRunning: ["Rank open items", "Embed items"], ...page(null) })), 60)),
     nowFeed: (before) => new Promise((r) => setTimeout(() => r(structuredClone(page(before))), 300)),
   };
 }

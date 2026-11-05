@@ -271,6 +271,8 @@ export interface Api {
     resetLimit(step: string): Promise<PipelineState>;
     /** Clears a stage the circuit breaker paused. */
     resumeTrip(stage: string): Promise<PipelineState>;
+    /** Operator only: clears the warning about jobs of a step the runner stopped for running past their limit. */
+    ackDeadline(step: string): Promise<{ ok: true }>;
     /** Operator only: the model of the prepare step, one of `judgementModels`. */
     setJudgementModel(model: string): Promise<PipelineState>;
     /** Limits the whole pipeline to these items ("repo#number"); an empty list clears the pilot. */

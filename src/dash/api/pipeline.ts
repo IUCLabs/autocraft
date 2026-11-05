@@ -5,7 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobState, PipelineOverview, PipelineStage, PipelineState, PipelineStep, StepParam, SyncRun } from "../../../web/src/api/types.ts";
 import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, toJob, toJobs } from "../../runner/jobs.ts";
-import { LimitError, pipelineState as rawPipelineState, resetLimitCount, setEnabled, setLimit } from "../../runner/autopilot.ts";
+import { ackDeadline, LimitError, pipelineState as rawPipelineState, resetLimitCount, setEnabled, setLimit } from "../../runner/autopilot.ts";
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
 import { JUDGEMENT_MODELS, judgementModel, setJudgementModel } from "../../decide/judgement.ts";
@@ -226,4 +226,13 @@ export async function resetLimit(db: DatabaseSync, req: Req) {
     throw e;
   }
   return pipelineState(db, req);
+}
+
+/** An operator acknowledges the deadline stops of a step, which clears their warning in the header. */
+export async function ackStepDeadline(db: DatabaseSync, req: Req) {
+  requireOperator(req);
+  const step = req.params.step!;
+  if (!(await loadSteps()).has(step)) throw new HttpError(404, "no such step");
+  ackDeadline(db, step, req.user.login);
+  return { ok: true };
 }

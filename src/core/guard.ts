@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { decidePr } from "./decide.ts";
-import { verifyAllows } from "./rules.ts";
+import { pipelineWrites, verifyAllows } from "./rules.ts";
 import { loadPrFact } from "./facts.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
@@ -139,7 +139,7 @@ export async function guardItem(db: DatabaseSync, ref: Ref, action: ItemWant, by
 
 /** The approvals of a repo and the global switch, read now. */
 export function repoApprovals(db: DatabaseSync, repo: string): Parameters<typeof gateRepo>[0] {
-  const on = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
+  const on = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
   return {
     merge: !!mergeApprovalOf(db, repo), push: pushApprovalOf(db, repo) !== null, comment: commentApprovalOf(db, repo) !== null, ci: ciApprovalOf(db, repo) !== null,
     labels: labelsApprovalOf(db, repo) !== null, "fix-issue": fixIssueApprovalOf(db, repo) !== null, "main-fix": mainFixApprovalOf(db, repo) !== null, pipelineOn: on,

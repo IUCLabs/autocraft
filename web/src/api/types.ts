@@ -1095,7 +1095,7 @@ export type StageLimit = { step: string; title: string; perDay: number | null; u
   tripped?: string;
   /** What the stage is doing when nothing pauses it: "running", "queued", or why it is not starting ("nothing to do", "waiting for CI on 3 PRs in x"). */
   status?: string | null };
-export type PipelineState = { /** The model that prepares every question's options and recommendation (the prepare step), and the models an operator may pick ("opus", "sonnet"). */ judgementModel: string; judgementModels: string[]; enabled: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[] };
+export type PipelineState = { /** The model that prepares every question's options and recommendation (the prepare step), and the models an operator may pick ("opus", "sonnet"). */ judgementModel: string; judgementModels: string[]; enabled: boolean; /** Switched to drain: no new jobs, jobs already running keep their writes; shown as "Draining". Never true with enabled. */ draining: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[] };
 
 export interface PipelineStep {
   name: string;
@@ -2011,7 +2011,7 @@ export interface NextPage {
 // ---- Now page (GET /api/now) ---------------------------------------------------
 
 /** A thing that needs attention; `to` is the page where it is fixed. `info` problems do not break "all healthy". */
-export type NowProblem = { id: string; area: "pipeline" | "runner" | "breaker" | "limit" | "account" | "jev" | "main-ci" | "jobs" | "sync"; tone: "bad" | "warn"; text: string; to: string; since: string | null };
+export type NowProblem = { id: string; area: "pipeline" | "runner" | "breaker" | "limit" | "account" | "jev" | "main-ci" | "jobs" | "sync"; tone: "bad" | "warn"; text: string; to: string; since: string | null; /** Set on a job stopped for running past its step's limit: the step an operator acknowledges to clear the warning. */ ackStep?: string };
 export type NowHealth = {
   pipeline: { enabled: boolean; by: string | null; at: string | null };
   problems: NowProblem[];
