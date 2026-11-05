@@ -34,7 +34,7 @@ const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
  * names are renamed first so their cost stays on record.
  */
 function keepUsage(db: DatabaseSync, run: string, agents: string[]): void {
-  const q = db.prepare("UPDATE token_usage SET agent = agent || '@' || COALESCE(started_at, '') WHERE run_id = ? AND agent = ?");
+  const q = db.prepare("UPDATE main.token_usage SET agent = agent || '@' || COALESCE(started_at, '') WHERE run_id = ? AND agent = ?");
   for (const a of agents) q.run(run, a);
 }
 
@@ -46,7 +46,7 @@ const sentCounter = (ctx: StepContext) => {
 
 async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<string, string>, sent: (n: number) => void): Promise<Set<string>> {
   const { db } = ctx;
-  const setHash = db.prepare("UPDATE classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ? AND at >= ?");
+  const setHash = db.prepare("UPDATE main.classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ? AND at >= ?");
   const done = new Set<string>();
   for (let i = 0; i < todo.length && !ctx.cancelled() && jevAvailable(db); i += JEV_CHUNK) {
     const chunk = todo.slice(i, i + JEV_CHUNK);
@@ -90,9 +90,9 @@ async function haikuOnlyPass(ctx: StepContext, run: string, items: Item[], hashe
   const { db } = ctx;
   const t0 = new Date().toISOString();
   await haikuPass(ctx, run, items, sent);
-  const setHash = db.prepare("UPDATE classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'haiku' AND run_id = ? AND at >= ?");
+  const setHash = db.prepare("UPDATE main.classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'haiku' AND run_id = ? AND at >= ?");
   // A Jev row of the item's earlier text goes; one without a hash (older rows) is kept, it is current until the item changes.
-  const dropStale = db.prepare("DELETE FROM classifications WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ? AND input_hash IS NOT NULL AND input_hash <> ?");
+  const dropStale = db.prepare("DELETE FROM main.classifications WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ? AND input_hash IS NOT NULL AND input_hash <> ?");
   let n = 0;
   for (const x of items) {
     if (!setHash.run(hashes.get(refOf(x))!, x.repo, x.number, run, t0).changes) continue;

@@ -96,7 +96,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   const myBatches = (): BatchRow[] => activeBatches(db, repo).filter(mine);
   mkdirSync(d.root, { recursive: true });
   const git = new BatchGit(d.exec, d.root, repo);
-  const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
+  const stage = db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   let landed = 0;
   /** PRs this run may still start or land under the stage's daily limit. */
   const left = () => (params.limit === undefined ? Infinity : params.limit - landed);
@@ -276,7 +276,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       markMerged(db, repo, m.number, at());
       closeMergedQuestions(db, repo, m.number, at());
       audit(db, ACTOR, "merge", refOf(m.number), { run: runId, head: m.head_oid, method: "merge", batch: b.branch });
-      if (e?.path === "operator" && e.decisionId) db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
+      if (e?.path === "operator" && e.decisionId) db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
       s.merged.push(m.number);
     }
     growBatchSize(db, repo);

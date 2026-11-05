@@ -77,7 +77,7 @@ function record(db: DatabaseSync, at: string, c: ConflictCandidate, state: strin
     db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, toHead, base, state, reason, JSON.stringify(files), c.attempt, at);
   }
-  db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'take', ?, 'fixup', ?)")
+  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'take', ?, 'fixup', ?)")
     .run(c.repo, c.number, at, state === "merged" ? `merged ${c.base} at ${short(c.head)}: ${files.length ? files.join(", ") : "no conflicts"}` : state === "asked" ? `asked the contributor to merge ${c.base} at ${short(c.head)}` : `conflict merge ${state} at ${short(c.head)}: ${reason}`);
 }
 

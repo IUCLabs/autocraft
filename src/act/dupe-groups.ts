@@ -103,7 +103,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
             // Nothing stays held by a decision that can no longer close anything: the members are released and the next comparison asks again.
             const reason = `the kept item ${ref(k.number)} is gone or closed`;
             for (const c of closers) if (!posted.get(dec.id, c.number, "close")) skip(c.number, "close", reason, true);
-            db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(run.at(), dec.id);
+            db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(run.at(), dec.id);
             audit(db, ACTOR, "duplicate-group-ended", dec.id, { reason });
             run.log(`  ${dec.id}: ${reason}; group ended`);
             continue decisions;
@@ -151,7 +151,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         if (changed(c)) continue decisions;
         await run.io.close(live, { number: c.number, decision: dec.id });
         record(dec.id, c.number, "close", url);
-        db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(run.repo, c.number, run.at(), ACTOR, `closed after duplicate group decision ${dec.id}`);
+        db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(run.repo, c.number, run.at(), ACTOR, `closed after duplicate group decision ${dec.id}`);
         res.done.push(ref(c.number));
         run.handled();
         run.log(`  ${ref(c.number)}: commented and closed`);
@@ -172,7 +172,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
     }
     // Applied once every member to close has a close record and the details comment is settled.
     if (closers.every((c) => posted.get(dec.id, c.number, "close")) && (!details || posted.get(dec.id, details.number, "details"))) {
-      db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(run.at(), dec.id);
+      db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(run.at(), dec.id);
       audit(db, ACTOR, "act-group-applied", dec.id, { answer: dec.answer });
       queueCarry(db, run.repo, dec.id, items, run.at());
     }

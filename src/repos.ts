@@ -110,6 +110,8 @@ export function listAll(db: DatabaseSync): RepoRow[] {
 const SCOPED: [string, string][] = [
   ["repos", "name"], ["items", "repo"], ["comments", "repo"], ["stages", "repo"], ["classifications", "repo"],
 ];
+/** Every table name the scoped connection shadows with a view; writes to them go through `main.`. */
+export const SHADOWED_TABLES: readonly string[] = [...SCOPED.map(([t]) => t), "decisions", "token_usage"];
 export function scopeToTracked(db: DatabaseSync): void {
   const inList = "IN (SELECT name FROM main.tracked_repos)";
   for (const [t, col] of SCOPED) {

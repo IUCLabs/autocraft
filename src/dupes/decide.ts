@@ -105,7 +105,7 @@ function supersede(db: DatabaseSync, p: GroupPlan, id: string, at: string): void
   const items = db.prepare(`SELECT DISTINCT d.id FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id
     WHERE d.kind = 'duplicate' AND d.repo = ? AND d.answer IS NULL AND d.id <> ? AND gi.number IN (${ph})`).all(p.repo, id, ...p.group.members) as { id: string }[];
   for (const r of new Set([...rows, ...items].map((x) => x.id))) {
-    db.prepare("UPDATE decisions SET answer = 'superseded', answered_by = ?, answered_at = ?, applied_at = ? WHERE id = ? AND answer IS NULL").run(ACTOR, at, at, r);
+    db.prepare("UPDATE main.decisions SET answer = 'superseded', answered_by = ?, answered_at = ?, applied_at = ? WHERE id = ? AND answer IS NULL").run(ACTOR, at, at, r);
     audit(db, ACTOR, "duplicate-superseded", r, { by: id });
   }
 }
@@ -212,7 +212,7 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       }
       ask(db, [q], true);
       // ask() keeps the stored summary_by when the new one is empty; the author must follow the text.
-      db.prepare("UPDATE decisions SET summary_by = ? WHERE id = ?").run(t.by || null, id);
+      db.prepare("UPDATE main.decisions SET summary_by = ? WHERE id = ?").run(t.by || null, id);
       // A refresh restores the comparison's roles; an answer is applied to them again.
       db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES (?, ?, ?) ON CONFLICT(decision_id) DO UPDATE SET source = excluded.source, applied_answer = NULL").run(id, p.repo, p.source);
       db.prepare("DELETE FROM dupe_group_items WHERE decision_id = ?").run(id);
@@ -315,7 +315,7 @@ export function applyDuplicateAnswers(db: DatabaseSync, at: string, only?: Reado
       const kept = keptOf(a.answer);
       if (a.answer === "distinct") {
         markDistinct(db, a.repo, members, at);
-        db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
+        db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
       } else if (kept !== null) rekeep(db, a.id, kept, a.repo);
       db.prepare("UPDATE dupe_groups SET applied_answer = ? WHERE decision_id = ?").run(a.answer, a.id);
       audit(db, ACTOR, "duplicate-answer", `${a.repo}#${a.number}`, { decision: a.id, answer: a.answer });
@@ -327,7 +327,7 @@ export function applyDuplicateAnswers(db: DatabaseSync, at: string, only?: Reado
     const f = factsOf(d).find((x) => x.startsWith(DUP_FACT))?.slice(DUP_FACT.length);
     const m = f ? /^([\w.-]+)#(\d+)$/.exec(f) : null;
     if ((a.answer === "distinct" || a.answer === "keep") && m) markDistinct(db, a.repo, [a.number, Number(m[2])], at);
-    db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
+    db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
     audit(db, ACTOR, "duplicate-answer", `${a.repo}#${a.number}`, { decision: a.id, answer: a.answer });
     n++;
   }

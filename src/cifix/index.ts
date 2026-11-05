@@ -226,7 +226,7 @@ class Recorder {
     const note = state === "pushed" ? `CI fix pushed at ${short(c.head)}: ${(o.files ?? []).join(", ")}`
       : state === "skipped" ? `CI fix skipped at ${short(c.head)}: ${reason}`
       : state === "asked" ? `posted a CI fix at ${short(c.head)}: ${(o.files ?? []).join(", ")}` : `CI fix ${state} at ${short(c.head)}: ${reason}`;
-    this.db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(c.repo, c.number, "take", at, ACTOR, note);
+    this.db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(c.repo, c.number, "take", at, ACTOR, note);
     jobItem(this.db, c.repo, c.number, note, () => {});   // the callers log the outcome themselves
   }
 }

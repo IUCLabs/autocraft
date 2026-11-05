@@ -163,7 +163,7 @@ function update(db: DatabaseSync, d: FixIssueDeps, r: { repo: string; number: nu
 }
 
 function stage(db: DatabaseSync, d: FixIssueDeps, r: { repo: string; number: number }, kind: "hold" | "take", note: string): void {
-  db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(r.repo, r.number, kind, iso(d), ACTOR, note.slice(0, 300));
+  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(r.repo, r.number, kind, iso(d), ACTOR, note.slice(0, 300));
   jobItem(db, r.repo, r.number, note, () => {});   // the callers log the outcome themselves
 }
 

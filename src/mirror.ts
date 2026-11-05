@@ -270,11 +270,11 @@ function commentRows(repo: string, kind: Kind, n: Node, own: string[]): SQLInput
 
 function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[]): void {
   // Upserts keep each row's rowid, which the full-text index (schema.sql) is keyed on.
-  const insert = db.prepare(`INSERT INTO items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
+  const insert = db.prepare(`INSERT INTO main.items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
-  const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
-  const insComment = db.prepare(`INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+  const del = db.prepare("DELETE FROM main.comments WHERE repo=? AND number=?");
+  const insComment = db.prepare(`INSERT INTO main.comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
     body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association, mentions_pipeline=excluded.mentions_pipeline`);
   const live = appSlug();
@@ -348,7 +348,7 @@ async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: b
   const count = read.count;
   const newest = read.newest > (high ?? "") ? read.newest : (high ?? "");
   // max(): an incremental sync may have moved the high water further while a full pass ran.
-  db.prepare(`UPDATE repos SET synced_at=:at, high_water=CASE WHEN :hw IS NOT NULL AND (high_water IS NULL OR high_water < :hw) THEN :hw ELSE high_water END
+  db.prepare(`UPDATE main.repos SET synced_at=:at, high_water=CASE WHEN :hw IS NOT NULL AND (high_water IS NULL OR high_water < :hw) THEN :hw ELSE high_water END
     WHERE name=:name`).run({ at: startedAt, hw: newest || null, name });
   return count;
 }
@@ -427,7 +427,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
   const trackedSet = new Set(tracked);
   // Search covers the default org only; repos of other owners are read one by one after it.
   const scope = `org:${DEFAULT_OWNER}`;
-  const bump = db.prepare("UPDATE repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
+  const bump = db.prepare("UPDATE main.repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
   // Applied once every window has been read, so a failed run leaves the repos' high water alone.
   const repoNewest = new Map<string, string>();
   let size = SEARCH_PAGE;
@@ -642,7 +642,7 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
     }
   }
   // Names are unique across owners: a repo already known under another owner is left alone.
-  const upsert = db.prepare(`INSERT INTO repos (name, owner, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?,?)
+  const upsert = db.prepare(`INSERT INTO main.repos (name, owner, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?,?)
     ON CONFLICT(name) DO UPDATE SET visibility=excluded.visibility, default_branch=excluded.default_branch,
     open_prs=excluded.open_prs, open_issues=excluded.open_issues WHERE repos.owner = excluded.owner`);
   for (const r of repos) {
@@ -742,13 +742,13 @@ export async function reconcileRepo(db: DatabaseSync, client: Querier, name: str
       writePage(db, name, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n]);
       updated++;
     } else {
-      db.prepare("UPDATE items SET state = 'CLOSED', closed_at = COALESCE(closed_at, ?) WHERE repo = ? AND number = ? AND state = 'OPEN'")
+      db.prepare("UPDATE main.items SET state = 'CLOSED', closed_at = COALESCE(closed_at, ?) WHERE repo = ? AND number = ? AND state = 'OPEN'")
         .run(iso(now), name, r.number);
       audit(db, "sync", "item-gone", `${name}#${r.number}`, { reason: "not found or transferred on GitHub; marked CLOSED" });
       gone++;
     }
   }
-  db.prepare("UPDATE repos SET reconciled_at = ? WHERE name = ?").run(iso(now), name);
+  db.prepare("UPDATE main.repos SET reconciled_at = ? WHERE name = ?").run(iso(now), name);
   return { open: listed.size, updated, gone };
 }
 
@@ -793,7 +793,7 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       // The search read every default-org repo, so errors of earlier runs other than not-found are stale; a failure of this run (at >= started) stays.
       for (const n of tracked.filter((x) => ownerOf(x) === DEFAULT_OWNER)) db.prepare("DELETE FROM sync_repo_errors WHERE repo = ? AND kind IN ('transient', 'error') AND at < ?").run(n, started);
       // Not the repos that were never read in full (no high water) or that cannot be read.
-      const mark = db.prepare("UPDATE repos SET synced_at = ? WHERE name = ? AND high_water IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sync_repo_errors e WHERE e.repo = repos.name)");
+      const mark = db.prepare("UPDATE main.repos SET synced_at = ? WHERE name = ? AND high_water IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sync_repo_errors e WHERE e.repo = repos.name)");
       for (const n of tracked) mark.run(started, n);
       console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}${r.fallbacks ? `, ${r.fallbacks} listed per repo` : ""}`);
       const due = reconcileDue(db, tracked, now);
@@ -805,7 +805,7 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
         } catch (e) {
           failRepo(db, client, due, e);
           // The oldest reconcile is picked next run; a repo that fails must not keep that place.
-          db.prepare("UPDATE repos SET reconciled_at = ? WHERE name = ?").run(iso(now), due);
+          db.prepare("UPDATE main.repos SET reconciled_at = ? WHERE name = ?").run(iso(now), due);
         }
       }
       const at = getSetting(db, "repos_refreshed_at");
@@ -914,5 +914,5 @@ export const commands = {
 
 /** Marks a PR we just merged as merged in the mirror, so counts don't wait for the next sync; the sync later fills in what GitHub reports. */
 export function markMerged(db: DatabaseSync, repo: string, number: number, at: string): void {
-  db.prepare("UPDATE items SET state = 'MERGED', merged_at = COALESCE(merged_at, ?), closed_at = COALESCE(closed_at, ?) WHERE repo = ? AND number = ? AND state = 'OPEN'").run(at, at, repo, number);
+  db.prepare("UPDATE main.items SET state = 'MERGED', merged_at = COALESCE(merged_at, ?), closed_at = COALESCE(closed_at, ?) WHERE repo = ? AND number = ? AND state = 'OPEN'").run(at, at, repo, number);
 }

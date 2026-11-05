@@ -161,9 +161,9 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
   const checkouts = new Map<string, Promise<string | null>>();
   const select = db.prepare("SELECT * FROM decisions WHERE id = ? AND answer IS NULL");
   const itemOf = db.prepare("SELECT kind, state, head_oid, additions, deletions, changed_files FROM items WHERE repo = ? AND number = ?");
-  const failed = db.prepare(`UPDATE decisions SET recommend_failures = CASE WHEN prepare_failed_head IS ? THEN COALESCE(recommend_failures, 0) + 1 ELSE 1 END,
+  const failed = db.prepare(`UPDATE main.decisions SET recommend_failures = CASE WHEN prepare_failed_head IS ? THEN COALESCE(recommend_failures, 0) + 1 ELSE 1 END,
     recommend_failed_at = ?, prepare_failed_head = ? WHERE id = ?`);
-  const store = db.prepare(`UPDATE decisions SET recommended = ?, recommended_reason = ?, recommended_by = ?, summary = ?, summary_by = ?, summary_at = ?,
+  const store = db.prepare(`UPDATE main.decisions SET recommended = ?, recommended_reason = ?, recommended_by = ?, summary = ?, summary_by = ?, summary_at = ?,
     prepared_at = ?, prepared_head = ?, recommend_failures = NULL, recommend_failed_at = NULL, prepare_failed_head = NULL
     WHERE id = ? AND answer IS NULL AND question = ? AND options = ?`);
   const res: PrepareResult = { stored: 0, failed: 0 };

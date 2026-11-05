@@ -40,7 +40,7 @@ export function applyUsedAnswers(db: DatabaseSync, at: string = new Date().toISO
       return !!attempted.get(it.repo, it.number) || settledOf(db, it.repo, it.number).label !== "bugfix";
     });
     if (!used) continue;
-    db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
+    db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
     audit(db, ACTOR, "answer-used", a.id, { answer: a.answer });
     n++;
   }

@@ -30,10 +30,10 @@ export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: nu
   try {
     renameDecision(db, id, old);
     if (row.answer === null) {
-      db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ? WHERE id = ?").run(WITHDRAWN, at, at, why, old);
+      db.prepare("UPDATE main.decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ? WHERE id = ?").run(WITHDRAWN, at, at, why, old);
       audit(db, "pipeline", "merge-question-withdrawn", old, { repo, number, head });
     } else if (!row.applied_at) {
-      db.prepare("UPDATE decisions SET applied_at = ?, answer_note = COALESCE(answer_note || ' — ', '') || ? WHERE id = ?").run(at, `${why}; the answer was not applied`, old);
+      db.prepare("UPDATE main.decisions SET applied_at = ?, answer_note = COALESCE(answer_note || ' — ', '') || ? WHERE id = ?").run(at, `${why}; the answer was not applied`, old);
       audit(db, "pipeline", "merge-answer-superseded", old, { repo, number, head, answer: row.answer });
     }
     db.exec("COMMIT");
@@ -83,7 +83,7 @@ export function withdrawGroupedQuestions(db: DatabaseSync, at: string, repo?: st
 
 /** Closes the PR's open Merge? questions at every head once it merged, whatever path merged it. */
 export function closeMergedQuestions(db: DatabaseSync, repo: string, number: number, at: string): void {
-  db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = 'the PR merged' WHERE kind = 'merge' AND repo = ? AND number = ? AND answer IS NULL")
+  db.prepare("UPDATE main.decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = 'the PR merged' WHERE kind = 'merge' AND repo = ? AND number = ? AND answer IS NULL")
     .run(WITHDRAWN, at, at, repo, number);
 }
 
@@ -118,7 +118,7 @@ export function withdrawClosedQuestions(db: DatabaseSync, at: string): number {
       AND (SELECT COUNT(*) FROM dupe_group_items gi JOIN items i ON i.repo = gi.repo AND i.number = gi.number WHERE gi.decision_id = d.id AND i.state = 'OPEN') < 2`).all() as OpenRow[];
   if (!single.length && !groups.length) return 0;
   const clear = clearAskedStage(db);
-  const close = db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL");
+  const close = db.prepare("UPDATE main.decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL");
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const r of single) {

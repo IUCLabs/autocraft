@@ -87,7 +87,7 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
     db.prepare("INSERT INTO opus_carried_fixes (repo, number, head_oid, from_head, file, change, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head_oid, u.head, u.file, u.change, u.outcome, at);
   }
-  const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
+  const stage = db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   stage.run(c.repo, c.number, "reviewed", at, "opus-review", `${r.verdict}${r.sure ? "" : " (unsure)"} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
   stage.run(c.repo, c.number, r.verdict === "take-fix" ? "take" : r.verdict, at, "opus-review", r.reason);
 }

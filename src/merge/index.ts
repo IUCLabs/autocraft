@@ -289,7 +289,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
 
   // Every taken PR in the queue gets one `batched` stage row per head.
   const batched = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'batched' AND note LIKE ?");
-  const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
+  const stage = db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   for (const e of open) {
     if (!batched.get(e.repo, e.number, `queued at ${short(e.head)}%`)) stage.run(e.repo, e.number, "batched", at(), ACTOR, `queued at ${short(e.head)}: ${e.state}`);
   }
@@ -399,7 +399,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     closeMergedQuestions(db, e.repo, e.number, at());
     stage.run(e.repo, e.number, "merged", at(), ACTOR, `${method} at ${short(e.head)}${e.path === "operator" ? ", operator answered merge" : ""}`);
     jobItem(db, e.repo, e.number, `merged by ${method} at ${short(e.head)}`, log);
-    if (e.path === "operator") db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
+    if (e.path === "operator") db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
     summary.merged.push(refOf(e));
     params.onMerged?.(summary.merged.length);
     log(`  ${refOf(e)}: merged (${method})`);
