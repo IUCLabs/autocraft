@@ -128,7 +128,7 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
   }
   list(req, "flag").forEach((f) => {
     if (!FLAGS.includes(f)) throw new HttpError(400, "flag must be security or needs decision");
-    where.push(f === "security" ? "s.security = 1" : "s.needs_decision = 1");
+    where.push(f === "security" ? "s.security = 1 AND NOT EXISTS (SELECT 1 FROM main.security_findings q WHERE q.repo = i.repo AND q.fix_pr = i.number AND q.state = 'landing' AND q.fork IS NULL)" : "s.needs_decision = 1");
   });
   const author = q.get("author")?.trim();
   if (author) {

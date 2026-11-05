@@ -181,12 +181,17 @@ export const nameGiveaway = (s: string): string | null => giveaway(s.replace(/[_
  * names, for comments and for function (test) names, or null when there is none.
  */
 export function patchGiveaway(patch: string): string | null {
+  let prev = "";
   for (const line of patch.split("\n")) {
-    if (line.startsWith("diff --git ") || line.startsWith("+++ ") || line.startsWith("--- ")) {
-      const w = nameGiveaway(line.replace(/^(diff --git|\+\+\+|---) /, ""));
+    // Existing file names are public already; only the path of a file the patch adds is checked.
+    if (line.startsWith("+++ ")) {
+      const w = prev === "--- /dev/null" ? nameGiveaway(line.slice(4)) : null;
+      prev = "";
       if (w) return w;
       continue;
     }
+    if (line.startsWith("--- ")) { prev = line; continue; }
+    if (line.startsWith("diff --git ")) continue;
     if (!line.startsWith("+")) continue;
     const added = line.slice(1);
     const w = GIVEAWAY_CODE.exec(added)?.[0] ?? giveaway(commentText(added)) ?? nameGiveaway([...added.matchAll(/\bfn\s+(\w+)/g)].map((m) => m[1]).join(" "));
@@ -222,5 +227,4 @@ export function fixBranch(title: string, suffix: string): string {
 }
 
 /** The body of the quiet pull request: only the code change. */
-export const landBody = (summary: string, files: string[], testPath: string): string =>
-  `${summary}\n\nThe change is in ${files.map((f) => `\`${f}\``).join(", ")}. The test \`${testPath}\` fails without the change and passes with it.\n`;
+export const landBody = (summary: string): string => `${summary}\n\nThe regression test fails without the change and passes with it.\n`;

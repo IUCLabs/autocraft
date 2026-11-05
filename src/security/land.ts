@@ -12,7 +12,6 @@ import {
   ghAdvisoryCreate, ghAdvisoryCve, ghAdvisoryFork, ghAdvisoryPr, ghAdvisoryPublish, ghAdvisoryPush, ghLandPr, ghLandPush, httpStatus,
   type Writer,
 } from "../github/write.ts";
-import { regressionPath } from "../verify/plan.ts";
 import { findingKey, advance, rawFinding, type FindingRow } from "./store.ts";
 import { giveaway, landBody, nameGiveaway } from "./rules.ts";
 import type { ExecResult } from "../fixup/git.ts";
@@ -36,7 +35,7 @@ const prNumber = (url: string, slug: string): number | null => {
   const m = PR_URL.exec(url);
   return m && m[1]!.toLowerCase() === slug.toLowerCase() ? Number(m[2]) : null;
 };
-/** The giveaway word in text bound for GitHub: the title, the body and the file names. */
+/** The giveaway word in text bound for GitHub: the title, the body and the branch. */
 const wordedIn = (...texts: string[]): string | null => texts.map((t) => giveaway(t) ?? nameGiveaway(t)).find((w) => w) ?? null;
 
 /** Back to `ready` with the reason, after a failure that leaves the fix intact. */
@@ -68,11 +67,9 @@ export async function runLand(db: DatabaseSync, repo: string, n: number, by: By,
     if ("refused" in g) return back(db, repo, n, g.refused, d.log);
     const who = await d.who();
     const base = branchOf(db, repo);
-    const files = JSON.parse(row.fix_files ?? "[]") as string[];
-    const testPath = files.find((f) => f.endsWith("autocraft_regression.rs")) ?? regressionPath("");
-    const body = landBody(row.fix_summary, files.filter((f) => f !== testPath), testPath);
+    const body = landBody(row.fix_summary);
     // Nothing is pushed or opened before the whole public text has passed the wording guard.
-    const worded = wordedIn(row.fix_title, body, files.join(" "), row.fix_branch);
+    const worded = wordedIn(row.fix_title, body, row.fix_branch);
     if (worded) return back(db, repo, n, `the text for GitHub says "${worded}"; write the fix again`, d.log);
     const found = await d.exec("gh", ["pr", "list", "--repo", slugOf(repo), "--state", "open", "--head", row.fix_branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
@@ -169,8 +166,7 @@ export async function runAdvisory(db: DatabaseSync, repo: string, n: number, by:
     if (fixPr === null) {
       const push = await ghAdvisoryPush(w, g, git, { repo, fork, branch: row.fix_branch, sha: row.fix_commit, key });
       if (push.code !== 0) return failed(push, "push", set);
-      const files = JSON.parse(row.fix_files ?? "[]") as string[];
-      const pr = await ghAdvisoryPr(w, g, d.exec, { repo, key, fork, base: branchOf(db, repo), head: row.fix_branch, title: row.fix_title, body: landBody(row.fix_summary, files.filter((f) => !f.endsWith("autocraft_regression.rs")), files.find((f) => f.endsWith("autocraft_regression.rs")) ?? "") });
+      const pr = await ghAdvisoryPr(w, g, d.exec, { repo, key, fork, base: branchOf(db, repo), head: row.fix_branch, title: row.fix_title, body: landBody(row.fix_summary) });
       const made = prNumber(pr.stdout, fork);
       if (pr.code !== 0 || made === null) return failed(pr, "pr", set);
       set.fix_pr = made;

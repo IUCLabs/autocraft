@@ -73,7 +73,8 @@ describe("private fix and landing", () => {
     // Comments, test names and file names use the full list; other code tokens only the narrow one.
     assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n+    // reject path traversal\n"), "traversal");
     assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n+fn rejects_crafted_input() {}\n"), "crafted");
-    assert.equal(patchGiveaway("diff --git a/src/sanitize_names.rs b/src/sanitize_names.rs\n"), "sanitize");
+    assert.equal(patchGiveaway("diff --git a/src/sanitize_names.rs b/src/sanitize_names.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/sanitize_names.rs\n"), "sanitize", "a new file's name counts");
+    assert.equal(patchGiveaway("diff --git a/src/sanitize.rs b/src/sanitize.rs\n--- a/src/sanitize.rs\n+++ b/src/sanitize.rs\n"), null, "an existing file's name does not");
     // L1: the branch has the shape of the other pipeline branches and no finding number.
     assert.match(fixBranch("Check layer length", "a1b2c3"), /^autocraft\/fix-check-layer-length-a1b2c3$/);
   });
@@ -114,7 +115,7 @@ describe("private fix and landing", () => {
 
   test("no public branch exists unless every public text passed the wording guard", async () => {
     // Title, summary (body), file list and commit message are all checked before the first push.
-    for (const extra of [{ fix_title: "Fix path traversal in the importer" }, { fix_summary: "Stops a crafted file from escaping." }, { fix_files: JSON.stringify(["crates/psd/src/sanitize_path.rs", "crates/psd/tests/autocraft_regression.rs"]) }] as Record<string, string>[]) {
+    for (const extra of [{ fix_title: "Fix path traversal in the importer" }, { fix_summary: "Stops a crafted file from escaping." }] as Record<string, string>[]) {
       const f = fake();
       const n = finding("landing", extra);
       await runLand(db, "photocraft", n, BY, deps(f.exec));
