@@ -177,6 +177,8 @@ const SEEDS: Seed[] = [
     author: "rhea-m",
     size: [270412, 96, 41],
     cls: [["haiku", "missing feature", "yes"], ["jev", "missing feature", "yes"]],
+    comments: [["kiri-n", 150, "The pack is the better source; I checked that the patterns match."]],
+    opinions: [["saltmarsh-ink", "changes", "Ask them to load the pack. 270k lines of data is too much to carry.", 160]],
   },
   {
     kind: "scope",

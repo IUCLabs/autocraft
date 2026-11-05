@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckIcon, PaperPlaneRightIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { PaperPlaneRightIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { ConversationCard, ConversationTurn, RepoName } from "../../api/types";
 import { Avatar } from "../../ui/atoms/Avatar";
@@ -8,6 +8,7 @@ import { Markdown } from "../../ui/molecules/Markdown";
 import {  } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useNow } from "../../lib/useNow";
+import { OpusCard } from "../../ui/organisms/OpusCard";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -117,114 +118,24 @@ function Turn({ t, operator }: { t: ConversationTurn; operator: boolean }) {
   );
 }
 
-function ActionCard({ a, operator }: { a: ConversationCard; operator: boolean }) {
+export function ActionCard({ a, operator, className = "ml-7 mt-2" }: { a: ConversationCard; operator: boolean; className?: string }) {
   const api = useApi();
-  const [editing, setEditing] = useState(false);
-  const [text, setText] = useState(a.text ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  // An answer that writes to GitHub needs a second press, like the decision page.
-  const [armed, setArmed] = useState(false);
-  const proposed = a.state === "proposed";
-
-  const act = async (f: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(undefined);
-    try {
-      await f();
-      setEditing(false);
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const run = () => {
-    if (a.writes && !armed) return setArmed(true);
-    setArmed(false);
-    return act(async () => {
-      if (editing && text !== a.text) await api.conversations.editCard(a.id, text);
-      await api.conversations.doCard(a.id);
-    });
-  };
-
   return (
-    <div className={`ml-7 mt-2 rounded-md border border-line-strong px-3 py-2.5 ${a.state === "dismissed" ? "bg-transparent" : "bg-raised"}`}>
-      <div className="flex items-center gap-1.5 text-sm font-medium">
-        {a.state === "done" && <CheckIcon className="shrink-0 text-ok" />}
-        {a.state === "failed" && <WarningCircleIcon className="shrink-0 text-bad" />}
-        {a.state === "running" && <SpinnerIcon className="shrink-0 animate-spin text-ink/50" />}
-        <span className={`min-w-0 flex-1 ${a.state === "dismissed" ? "font-normal text-ink/45 line-through" : ""}`}>{a.title}</span>
-        {a.state === "done" && <span className="shrink-0 text-xs font-normal text-ok">Done</span>}
-        {a.state === "failed" && <span className="shrink-0 text-xs font-normal text-bad">Failed</span>}
-        {a.state === "running" && <span className="shrink-0 text-xs font-normal text-ink/55">Running…</span>}
-        {a.state === "dismissed" && <span className="shrink-0 text-xs font-normal text-ink/45">Dismissed</span>}
-      </div>
-      {a.text !== undefined && a.state !== "dismissed" &&
-        (editing ? (
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            rows={5}
-            aria-label="Comment text"
-            className="mt-2 block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60"
-          />
-        ) : (
-          <blockquote className="mt-2 whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-sm leading-5 text-ink/75">{a.text}</blockquote>
-        ))}
-      {a.state === "failed" && a.error && <p className="mt-2 text-xs text-bad">{a.error}</p>}
-      {a.state === "done" && a.done && (
-        <p className="mt-2 text-xs text-ink/55">
-          {a.done.link ? (
-            <a href={a.done.link} target="_blank" rel="noreferrer" className="text-accent-ink hover:underline">
-              {a.done.label}
-            </a>
-          ) : (
-            a.done.label
-          )}{" "}
-          · <TimeAgo iso={a.done.at} />
-          {a.by ? ` · ${a.by}` : ""}
-        </p>
-      )}
-      {error && <p className="mt-2 text-xs text-bad">{error}</p>}
-      {proposed && operator && (
-        <div className="mt-2.5 flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="primary"
-            className={`max-md:h-11 ${armed ? "border-bad bg-bad text-white hover:bg-bad/90" : ""}`}
-            disabled={busy}
-            onClick={() => void run()}
-          >
-            {armed ? `Confirm: ${a.writes}` : a.label}
-          </Button>
-          {armed && (
-            <Button size="sm" variant="ghost" className="max-md:h-11" disabled={busy} onClick={() => setArmed(false)}>
-              Cancel
-            </Button>
-          )}
-          {editing ? (
-            <Button size="sm" variant="ghost" className="max-md:h-11" disabled={busy} onClick={() => { setEditing(false); setText(a.text ?? ""); }}>
-              Cancel
-            </Button>
-          ) : (
-            a.text !== undefined && (
-              <Button size="sm" variant="secondary" className="max-md:h-11" disabled={busy} onClick={() => setEditing(true)}>
-                Edit
-              </Button>
-            )
-          )}
-          <Button size="sm" variant="ghost" className="max-md:h-11" disabled={busy} onClick={() => void act(() => api.conversations.dismissCard(a.id))}>
-            Dismiss
-          </Button>
-        </div>
-      )}
-    </div>
+    <OpusCard
+      card={a}
+      operator={operator}
+      className={className}
+      onRun={async (text) => {
+        if (text !== undefined) await api.conversations.editCard(a.id, text);
+        await api.conversations.doCard(a.id);
+      }}
+      onDismiss={() => api.conversations.dismissCard(a.id)}
+    />
   );
 }
 
 /** What Opus did last, in a quiet line; the few before it show on hover or focus. Plain text only: the lines come from model-written tool inputs. */
-function Progress({ lines }: { lines?: string[] }) {
+export function Progress({ lines }: { lines?: string[] }) {
   if (!lines?.length) return null;
   const last = lines[lines.length - 1]!;
   return (

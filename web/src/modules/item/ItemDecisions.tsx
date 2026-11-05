@@ -1,17 +1,14 @@
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRightIcon, ChatCircleIcon } from "@phosphor-icons/react";
-import { useApi, useQuery } from "../../api/client";
+import { useQuery } from "../../api/client";
 import type { Decision } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
-import { canComment } from "../../registry/permissions";
 import { KindTag } from "../decisions/parts";
 import { Refs } from "../decisions/Refs";
-import { FeedbackBox } from "../decisions/FeedbackBox";
-import { FeedbackList } from "../decisions/Thread";
 import { AnswerNotice } from "../decisions/AnswerNotice";
-import { canActOn } from "../decisions/DecisionDetail";
 import { WorkflowBox } from "../decisions/Workflow";
-import { localActions, useLocal } from "../decisions/state";
+import { useLocal } from "../decisions/state";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useIsPhone } from "../../shell/useMedia";
@@ -26,36 +23,31 @@ export function useItemDecisions(repo: string, number: number) {
   });
 }
 
-/** The item's open questions, answerable in place with the Decisions page's controls and permission rules. */
-export function ItemQuestions({ repo, number }: { repo: string; number: number }) {
+/**
+ * The item's open questions at the end of the thread: the question, Opus's proposed resolutions (`cards`, shown under the
+ * first question) and the decision's own options, answerable in place with the Decisions page's controls and permission rules.
+ */
+export function OpenQuestions({ repo, number, cards }: { repo: string; number: number; cards?: ReactNode }) {
   const { data: ds } = useItemDecisions(repo, number);
   const loc = useLocal();
   const open = ds?.filter((d) => !d.answer) ?? [];
   const notices = loc.justAnswered.filter((a) => ds?.some((d) => d.id === a.id));
   if (!open.length && !notices.length) return null;
   return (
-    <section className="mt-6" aria-label="Open questions">
-      <h2 className="mb-2 text-sm font-semibold">
-        {open.length === 1 ? "Open question" : "Open questions"}
-      </h2>
+    <section className="mt-6 space-y-3" aria-label="Open question">
       {notices.map((a) => (
-        <AnswerNotice key={a.id} entry={a} className="mb-2 rounded-md border border-line px-3" />
+        <AnswerNotice key={a.id} entry={a} className="rounded-md border border-line px-3" />
       ))}
-      <div className="space-y-3">
-        {open.map((d) => (
-          <Question key={d.id} d={d} siblings={ds ?? []} />
-        ))}
-      </div>
+      {open.map((d, i) => (
+        <Question key={d.id} d={d} siblings={ds ?? []} cards={i === 0 ? cards : undefined} />
+      ))}
     </section>
   );
 }
 
-function Question({ d, siblings }: { d: Decision; siblings: Decision[] }) {
+function Question({ d, siblings, cards }: { d: Decision; siblings: Decision[]; cards?: ReactNode }) {
   const user = useUser();
-  const api = useApi();
   const phone = useIsPhone();
-  const commenter = canComment(user);
-  const operator = canActOn(user, [d]);
   return (
     <article className="rounded-md border border-line-strong px-3 py-3 md:px-4">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/55">
@@ -73,14 +65,9 @@ function Question({ d, siblings }: { d: Decision; siblings: Decision[] }) {
       <p className="mt-2 text-pretty text-[15px] font-semibold leading-6">
         <Refs text={d.question} repo={d.repo} />
       </p>
-      {!operator && <div className="mt-2"><RecommendationLine d={d} /></div>}
-      <WorkflowBox ds={[d]} user={user} phone={phone} />
-      {(d.opinions.length > 0 || d.commentCount > 0) && (
-        <div className="mt-4">
-          <FeedbackList d={d} me={user.login} compact onUse={operator ? (o) => localActions.setPick(d.id, o) : undefined} onRetract={commenter ? () => void api.decisions.retract(d.id) : undefined} />
-        </div>
-      )}
-      {commenter && <FeedbackBox d={d} className="mt-3" />}
+      <div className="mt-2"><RecommendationLine d={d} /></div>
+      {cards && <div className="mt-3 space-y-2">{cards}</div>}
+      <WorkflowBox ds={[d]} user={user} phone={phone} compact />
     </article>
   );
 }
