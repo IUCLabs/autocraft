@@ -8,6 +8,8 @@ import type {
   ReleaseAction,
   DecisionKind,
   AccessOverview,
+  McpTokenCreated,
+  McpTokens,
   AccountInput,
   AgentRunDetail,
   ActivityPage,
@@ -192,6 +194,12 @@ export interface Api {
     setOptionalCheck(name: RepoName, check: string, on: boolean): Promise<TrackedRepo[]>;
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
     setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo[]>;
+  };
+  /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
+  mcp: {
+    tokens(): Promise<McpTokens>;
+    create(label: string): Promise<McpTokenCreated>;
+    revoke(id: number): Promise<McpTokens>;
   };
   /** Operator only. */
   access: {

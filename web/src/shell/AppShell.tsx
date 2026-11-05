@@ -30,7 +30,7 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 // The rail is laid out here by path, so a module only declares its own entry. A path no module
 // registers (a page the reader's role cannot open) is left out.
 const RAIL: { label: string; paths: string[] }[] = [
-  { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity"] },
+  { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity", "/connect"] },
   { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/audit", "/prompts"] },
   { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/classifiers", "/contributors", "/main-ci", "/about"] },
 ];

@@ -516,9 +516,10 @@ function limited(req: Req, limiter: RateLimiter): void {
 
 /**
  * One feedback box: an optional option pick and free text, at least one of them. A pick is the
- * login's live opinion (its text is the note); text alone is a comment in the thread.
+ * login's live opinion (its text is the note); text alone is a comment in the thread. `via` names
+ * the Inbox MCP server in the audit row when an agent sent it for its user.
  */
-export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
+export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter, via?: "mcp"): Promise<Decision> {
   requireWriter(req);
   const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
@@ -531,7 +532,7 @@ export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter)
   if (option === null) {
     const id = randomToken(12);
     db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES (?, ?, ?, ?, ?)").run(id, d.id, req.user.login, at, text);
-    audit(db, req.user.login, "comment", d.id, { comment: id, length: text!.length });
+    audit(db, req.user.login, "comment", d.id, { comment: id, length: text!.length, ...(via ? { via } : {}) });
     return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
   }
   if (d.answer) throw new HttpError(409, "the decision is answered; picks are closed");
@@ -547,7 +548,7 @@ export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter)
     db.prepare("UPDATE decision_opinions SET retracted_at = ? WHERE decision_id = ? AND login = ? AND retracted_at IS NULL").run(at, d.id, req.user.login);
     db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(randomToken(12), d.id, req.user.login, option, note, at, permission);
-    audit(db, req.user.login, "opinion", d.id, { option, note: note ? true : undefined });
+    audit(db, req.user.login, "opinion", d.id, { option, note: note ? true : undefined, ...(via ? { via } : {}) });
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

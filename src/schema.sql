@@ -212,6 +212,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_login ON sessions(login);
 
+-- Personal tokens for the Inbox MCP server (POST /mcp, src/dash/mcp/): a signed-in user's own agent reads the
+-- inbox and sends feedback as that user, with the user's current role from the access list. The token is shown once.
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  login TEXT NOT NULL COLLATE NOCASE,
+  token_hash TEXT NOT NULL UNIQUE,    -- sha256 of the token
+  label TEXT,
+  created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
+
 CREATE TABLE IF NOT EXISTS repo_permissions (
   login TEXT NOT NULL COLLATE NOCASE,
   repo TEXT NOT NULL,

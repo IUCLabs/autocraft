@@ -22,6 +22,7 @@ import * as agents from "./agents.ts";
 import * as build from "./build.ts";
 import * as dec from "./decisions.ts";
 import * as conv from "./conversations.ts";
+import * as mcp from "./mcp.ts";
 import * as areas from "./areas.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
@@ -370,6 +371,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/feedback", (db, req) => dec.feedback(db, req, limiter)),
     post("/api/decisions/:id/retract", (db, req) => dec.retract(db, req, limiter)),
     post("/api/decisions/:id/claim", dec.claim),
+    get("/api/mcp/tokens", mcp.tokens),
+    post("/api/mcp/tokens", mcp.create),
+    post("/api/mcp/tokens/revoke", mcp.revoke),
     get("/api/items/:repo/:n", item),
     get("/api/activity", activity),
     get("/api/items/:repo/:n/trace", itemTrace),

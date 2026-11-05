@@ -3,6 +3,7 @@ import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { canAct } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
+import { createMcpMock } from "./mcpMock";
 import { createAgentsMock } from "./agentsMock";
 import { createTraceMock } from "./traceMock";
 import { createNowMock } from "./nowMock";
@@ -205,6 +206,7 @@ export function createMockApi(): Api {
     }),
     ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),
+    ...createMcpMock(me, changed),
     classifiers: {
       report: (sel) => wait(classifierReport(sel), 80),
       disagreements: (f) => wait(disagreementList(f), 60),
