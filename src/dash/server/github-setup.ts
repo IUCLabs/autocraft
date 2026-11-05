@@ -249,7 +249,7 @@ export class OrgSetup {
 const CSS = `ol.steps{list-style:none;margin:16px 0 0;padding:0;display:grid;gap:10px}
 .steps li{display:flex;align-items:center;min-height:44px;color:var(--muted)}.steps li.done{color:var(--fg)}
 .steps li>form{width:100%}
-form{margin:0}.wide{width:100%;min-height:48px;justify-content:center;font-size:16px}
+form{margin:0}button.wide,a.button.wide{width:100%;min-height:48px;justify-content:center;font-size:16px}
 label.check{display:flex;gap:12px;align-items:center;min-height:48px;margin:0 0 12px}
 label.check input{width:22px;height:22px;min-height:0;margin:0;accent-color:var(--accent)}
 .done-text{font-size:18px;font-weight:600;margin:16px 0 0}`;
