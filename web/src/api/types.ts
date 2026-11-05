@@ -2011,7 +2011,7 @@ export interface NextPage {
 // ---- Now page (GET /api/now) ---------------------------------------------------
 
 /** A thing that needs attention; `to` is the page where it is fixed. `info` problems do not break "all healthy". */
-export type NowProblem = { id: string; area: "pipeline" | "runner" | "breaker" | "limit" | "account" | "jev" | "main-ci" | "jobs" | "sync"; tone: "bad" | "warn"; text: string; to: string; since: string | null };
+export type NowProblem = { id: string; area: "pipeline" | "runner" | "workers" | "breaker" | "limit" | "account" | "jev" | "main-ci" | "jobs" | "sync"; tone: "bad" | "warn"; text: string; to: string; since: string | null };
 export type NowHealth = {
   pipeline: { enabled: boolean; by: string | null; at: string | null };
   problems: NowProblem[];

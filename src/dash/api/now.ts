@@ -9,7 +9,7 @@ import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { mainCiRepos } from "../../mainci/index.ts";
 import { pipelineRepos } from "../../pilot.ts";
 import { pipelineState } from "../../runner/autopilot.ts";
-import { trackedNames } from "../../repos.ts";
+import { computeChecks } from "../../health-checks.ts";
 import type { Req } from "../types.ts";
 import { batchIdOf, clip, stepTitle, writeEvent } from "./trace.ts";
 import { shownLookup } from "./shown.ts";
@@ -19,9 +19,6 @@ import { blankIfHidden, hiddenRepos } from "./visible.ts";
 const RECENT = 15;
 type Feed = { entries: NowEntry[]; also: string[]; nextCursor: string | null };
 const PER_KIND = 5;
-const SYNC_FAILS = 3;
-const SYNC_STALE_MS = 15 * 60_000;
-const RUNNER_STALE_MS = 2 * 60_000;
 const HOUR_MS = 3_600_000;
 /** Jobs that never work on items; they show only in the "Also running" line. */
 const QUIET_STEPS = new Set(["rank", "embed", "checks", "main-ci", "labels-ensure", "review-carry", "verify-collect", "fixissue-collect"]);
@@ -48,23 +45,16 @@ const notHidden = (col: string, hidden: string[], nullOk = false): string =>
 
 // ---- health ------------------------------------------------------------------
 
-function syncProblem(db: DatabaseSync, nowMs: number): NowProblem | null {
-  const runs = all<{ started_at: string; ended_at: string | null; error: string | null }>(db, "SELECT started_at, ended_at, error FROM sync_runs ORDER BY started_at DESC LIMIT 20")
-    .filter((r) => r.ended_at !== null || r.error !== null);
-  const failing = runs.slice(0, SYNC_FAILS);
-  if (failing.length === SYNC_FAILS && failing.every((r) => r.error !== null)) {
-    const streak = runs.findIndex((r) => r.error === null);
-    const first = runs[(streak === -1 ? runs.length : streak) - 1]!;
-    return { id: "sync", area: "sync", tone: "bad", text: `Sync is failing: ${clip(failing[0]!.error, 140)}`, to: "/pipeline", since: first.started_at };
-  }
-  const ok = runs.find((r) => r.error === null);
-  const last = ok?.ended_at ? Date.parse(ok.ended_at) : NaN;
-  if (Number.isNaN(last)) return trackedNames(db).length ? { id: "sync", area: "sync", tone: "bad", text: "Sync has not succeeded yet", to: "/pipeline", since: null } : null;
-  if (nowMs - last > SYNC_STALE_MS) return { id: "sync", area: "sync", tone: "bad", text: `No successful sync in ${minutes(nowMs - last)}`, to: "/pipeline", since: ok!.ended_at };
-  return null;
+/** The health checks that are not ok, as the warnings list shows them; viewers get the short text and no checks of repos they cannot see. */
+function checkProblems(db: DatabaseSync, hidden: string[], internals: boolean, nowMs: number): NowProblem[] {
+  const area = (id: string): NowProblem["area"] =>
+    id === "runner" ? "runner" : id.startsWith("worker:") || id === "build-queue" ? "workers" : id === "accounts" ? "account" : "sync";
+  return computeChecks(db, nowMs)
+    .filter((c) => c.state !== "ok" && !(c.repo !== undefined && hidden.includes(c.repo)))
+    .map((c) => ({ id: c.id, area: area(c.id), tone: c.state === "fail" ? "bad" : "warn", text: internals ? c.text : c.brief, to: c.to, since: c.since }));
 }
 
-async function healthOf(db: DatabaseSync, hidden: string[], nowMs: number): Promise<NowHealth> {
+async function healthOf(db: DatabaseSync, hidden: string[], internals: boolean, nowMs: number): Promise<NowHealth> {
   const state = await pipelineState(db);
   const out: NowProblem[] = [];
   // Repos with the pipeline off are off by design; their red mains stay on the Main CI page.
@@ -72,12 +62,7 @@ async function healthOf(db: DatabaseSync, hidden: string[], nowMs: number): Prom
   const add = (p: NowProblem) => void out.push(p);
 
   if (!state.enabled) add({ id: "pipeline", area: "pipeline", tone: "warn", text: `Pipeline is off${state.changedBy ? `, switched off by ${state.changedBy}` : ""}`, to: "/pipeline", since: state.changedAt });
-  const beat = state.heartbeat ? Date.parse(state.heartbeat) : NaN;
-  if (Number.isNaN(beat) || nowMs - beat > RUNNER_STALE_MS) {
-    add({ id: "runner", area: "runner", tone: "bad", text: Number.isNaN(beat) ? "The runner has not reported" : `The runner has not reported for ${minutes(nowMs - beat)}`, to: "/pipeline", since: state.heartbeat });
-  }
-  const sync = syncProblem(db, nowMs);
-  if (sync) add(sync);
+  for (const p of checkProblems(db, hidden, internals, nowMs)) add(p);
 
   for (const t of all<{ stage: string; reason: string; tripped_at: string }>(db, "SELECT stage, reason, tripped_at FROM stage_trips WHERE active = 1 ORDER BY tripped_at")) {
     const why = blankIfHidden(t.reason, hidden);
@@ -359,5 +344,5 @@ export async function now(db: DatabaseSync, req: Req): Promise<Now> {
   const hidden = await hiddenRepos(db, req);
   const nowMs = Date.now();
   const f = feed(db, hidden, canSeeInternals(req), null, nowMs);
-  return { health: await healthOf(db, hidden, nowMs), alsoRunning: f.also, entries: f.entries, nextCursor: f.nextCursor };
+  return { health: await healthOf(db, hidden, canSeeInternals(req), nowMs), alsoRunning: f.also, entries: f.entries, nextCursor: f.nextCursor };
 }

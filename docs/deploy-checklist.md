@@ -65,6 +65,16 @@ Both are read-write: the dashboard rewrites `secrets.json` (a temporary file in 
 
 Both endpoints need no sign-in and return no data. `deploy/k8s/autocraft.yaml` probes the dashboard on 3005 and the runner on 8981. The periodic container has no endpoint; its output is on stdout.
 
+## Monitoring
+
+`GET /healthz/checks` on the dashboard port needs no sign-in. It answers 200 while every check is `ok` or `warn` and 503 when one is `fail`:
+
+```json
+{"status":"fail","checks":[{"id":"runner","state":"ok","since":null},{"id":"worker:sandbox","state":"fail","since":"2026-11-05T14:15:02Z"},{"id":"sync-repos","state":"warn","since":"2026-11-05T16:00:12Z","count":1}],"at":"2026-11-05T18:00:00Z"}
+```
+
+It lists check ids, states, the time a check turned bad (`since`) and counts. It carries no repo names, account names or error text. Point an external monitor at it and alert on a non-200 answer or on a `warn` that persists. The checks are described in `docs/operations.md` (Health checks).
+
 ## Runner security settings (bubblewrap)
 
 Tool-using Claude calls run in `bwrap`. Under default container settings it fails: the default seccomp profile blocks the user namespace and the masked `/proc` paths block the `/proc` mount. On the runner container only (the dashboard and periodic containers keep the defaults), set:

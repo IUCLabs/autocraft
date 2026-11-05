@@ -400,6 +400,15 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS sync_runs_started ON sync_runs(started_at);
+-- A tracked repo the last sync could not read: skipped for the run, retried by the next. Bookkeeping: no live topic.
+CREATE TABLE IF NOT EXISTS sync_repo_errors (
+  repo TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,                 -- not-found | forbidden | transient | error
+  message TEXT NOT NULL,
+  moved_to TEXT,                      -- owner/name GitHub's REST endpoint redirects to, for not-found
+  since TEXT NOT NULL,                -- first failure of the current streak
+  at TEXT NOT NULL                    -- latest failure
+);
 
 -- What the last live read of a PR's formal reviews found (changes-requested.ts); sync never touches it.
 CREATE TABLE IF NOT EXISTS review_gates (
