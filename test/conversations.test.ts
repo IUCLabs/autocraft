@@ -12,7 +12,7 @@ import { setApproval as setLabelApproval } from "../src/labels/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
 import { applicableSteps, cleanComment, parseReply } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
-import { ensureConversation, insertTurn } from "../src/conversations/store.ts";
+import { addOperatorMessage, ensureConversation, insertTurn, turnsOf } from "../src/conversations/store.ts";
 import { answerPending } from "../src/conversations/run.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
@@ -118,7 +118,7 @@ describe("new step kinds", () => {
   const issue = { kind: "open_issue", repo: "lib", title: "Follow up", body: "Check the edge case." };
   const run = (db: DatabaseSync, n: number, cards: unknown[]) => parseReply(db, "app", n, `Text.\n\`\`\`actions\n${JSON.stringify(cards)}\n\`\`\``)!;
 
-  test("transfer is for issues and last, an answer that writes takes open_issue but not a comment, fixup that merges needs a merge or scope decision", () => {
+  test("transfer is for issues and last, an answer that writes takes open_issue but not a comment, fixup that merges needs a merge or scope decision", async () => {
     const db = fresh();
     db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('lib', 'op', ?, 1)").run(T0);
     ask(db, [{ id: "app#2:merge", kind: "merge", repo: "app", number: 2, question: "Merge?", options: [{ key: "merge", label: "Merge" }, { key: "hold", label: "Hold" }] }]);
@@ -147,6 +147,10 @@ describe("new step kinds", () => {
     const st3 = applicableSteps(db, "app", 3), st2 = applicableSteps(db, "app", 2);
     assert.ok(st3.includes("transfer") && !st3.includes("fixup") && !st3.includes("request_reviewers"));
     assert.ok(st2.includes("fixup with merge") && !st2.includes("transfer") && !st3.includes("fixup with merge"));
+    await ensureConversation(db, "app", 3, "op");
+    db.prepare("UPDATE items SET state = 'CLOSED' WHERE repo = 'app' AND number = 3").run();
+    await addOperatorMessage(db, "app", 3, "op", "Reopen it?", undefined, false);
+    assert.ok(turnsOf(db, "app", 3).at(-1)!.block.includes("<steps>[") && applicableSteps(db, "app", 3).includes("reopen"));
     const none = run(db, 2, [R([{ kind: "fixup", instructions: "x", merge: true }, { kind: "request_reviewers", logins: ["someone"] }])]);
     assert.equal(none.cards.length, 0);
   });

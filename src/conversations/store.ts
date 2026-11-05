@@ -47,9 +47,20 @@ export type Included = { login: string; at: string; text: string };
 const attr = (v: string): string => v.replace(/[^\w.:-]/g, "");
 
 /** `included`: maintainers' posts the operator chose to share, carried in this turn once. */
-export function operatorBlock(login: string, text: string, included: Included[] = []): string {
+export function operatorBlock(login: string, text: string, included: Included[] = [], steps?: string[]): string {
   const extra = included.map((i) => `<included from="maintainer" login="${attr(i.login)}" at="${attr(i.at)}">\n${frameSafe(i.text)}\n</included>\n`).join("");
-  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}</turn>\n`;
+  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}${steps ? `<steps>${JSON.stringify(steps)}</steps>\n` : ""}</turn>\n`;
+}
+
+/** The steps list Opus last saw: the newest `<steps>` line of the stored turns, else the item block's. */
+function seenSteps(db: DatabaseSync, repo: string, n: number): string[] | null {
+  const parse = (j: string): string[] | null => { try { const v = JSON.parse(j) as unknown; return Array.isArray(v) ? v.map(String) : null; } catch { return null; } };
+  for (const t of [...turnsOf(db, repo, n)].reverse()) {
+    const m = /<steps>(.*)<\/steps>/.exec(t.block);
+    if (m) return parse(m[1]!);
+  }
+  const m = /"steps": (\[[^\]]*\])/.exec(conversationOf(db, repo, n)?.item_block ?? "");
+  return m ? parse(m[1]!) : null;
 }
 
 export function opusBlock(text: string, cards: NewCard[]): string {
@@ -262,7 +273,9 @@ export async function addOperatorMessage(db: DatabaseSync, repo: string, n: numb
   const shared = ask ? unsentIncludes(db, repo, n) : [];
   try {
     return inTx(db, () => {
-      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post)), ...(ask && { status: "pending" }) }, deps);
+      const now = applicableSteps(db, repo, n), seen = seenSteps(db, repo, n);
+      const steps = seen && JSON.stringify(seen) === JSON.stringify(now) ? undefined : now;
+      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post), steps), ...(ask && { status: "pending" }) }, deps);
       for (const x of shared) db.prepare("UPDATE conversation_includes SET sent_turn = ? WHERE repo = ? AND number = ? AND source = ? AND sent_turn IS NULL").run(id, repo, n, x.source);
       return id;
     });
