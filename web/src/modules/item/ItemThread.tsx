@@ -189,13 +189,9 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   }
   flush();
 
-  const cards = hoisted && (
-    <>
-      {[...hoisted.actions].sort((a, b) => Number(b.settles !== undefined) - Number(a.settles !== undefined)).map((a) => (
-        <ActionCard key={a.id} a={a} operator={operator} className="" />
-      ))}
-    </>
-  );
+  const resolutions = hoisted?.actions.filter((a) => a.settles !== undefined);
+  // A card that leaves the question open is a suggested reply, shown above the composer.
+  const suggestions = hoisted?.actions.filter((a) => a.settles === undefined && a.state !== "dismissed") ?? [];
   return (
     <>
       {!decision && first && <TraceHeader header={first!.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />}
@@ -224,7 +220,14 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
         {list.length === 0 && !it.body && <p className="text-sm text-ink/55">No events match.</p>}
         <ErrorLine error={q.error?.message} className="mt-2" />
       </section>
-      <OpenQuestions ds={ds ?? []} focus={decision} cards={cards} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
+      <OpenQuestions ds={ds ?? []} focus={decision} resolutions={resolutions} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
+      {operator && suggestions.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {suggestions.map((a) => (
+            <ActionCard key={a.id} a={a} operator={operator} className="" />
+          ))}
+        </div>
+      )}
       <Composer
         repo={it.repo}
         number={it.number}

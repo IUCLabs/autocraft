@@ -10,36 +10,15 @@ import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./st
 /** Key under which the picked option of one decision, or of a batch of checked decisions, is kept. */
 const pickKey = (ds: Decision[]) => ds.map((d) => d.id).join("+");
 
-/**
- * The operator's explicit decision for the next step, at the end of the decision content.
- * Like GitHub's "Finish your review": a radio list, a note and one submit button. Shown only
- * to people who can act. Selecting an option never submits.
- */
-export function WorkflowBox({
-  ds,
-  user,
-  phone,
-  onAnswered,
-  compact,
-}: {
-  ds: Decision[];
-  user: User;
-  phone?: boolean;
-  onAnswered?: () => void;
-  /** The item thread's "Answer directly" row: options as a wrapping row of buttons, same pick, note and confirmation. */
-  compact?: boolean;
-}) {
+/** The pick, its GitHub write effect, the second confirmation and the submit of the workflow, shared by every place that answers a decision. */
+export function useWorkflow(ds: Decision[], onAnswered?: () => void) {
   const answer = useAnswer();
   const loc = useLocal();
   const [armed, setArmed] = useArmed();
-  const noteRef = useRef<HTMLInputElement>(null);
   const d = ds[0];
-  const many = ds.length > 1;
-  const rec = ds.every((x) => x.recommended === d.recommended) ? d.recommended : "";
   const key = pickKey(ds);
   const picked = loc.picks[key] ?? "";
   const option = d.options.find((o) => o.key === picked);
-  const operator = canActOn(user, ds);
 
   // The GitHub write a pick causes: the option's own, or that of a per-item exception in a batch.
   const effect = (k: string): string | null =>
@@ -50,6 +29,10 @@ export function WorkflowBox({
     setArmed(null);
     localActions.setPick(key, k);
   };
+  const clear = () => {
+    setArmed(null);
+    localActions.setPick(key, null);
+  };
   const submit = async () => {
     if (!option) return;
     if (effect(option.key) && armed !== option.key) return setArmed(option.key);
@@ -58,6 +41,32 @@ export function WorkflowBox({
     localActions.setPick(key, null);
     onAnswered?.();
   };
+  return { key, picked, option, effect, choose, clear, submit, armed, setArmed, isArmed: !!option && armed === option.key, writes: option ? effect(option.key) : null, notes: loc.notes };
+}
+
+/**
+ * The operator's explicit decision for the next step, at the end of the decision content.
+ * Like GitHub's "Finish your review": a radio list, a note and one submit button. Shown only
+ * to people who can act. Selecting an option never submits.
+ */
+export function WorkflowBox({
+  ds,
+  user,
+  phone,
+  onAnswered,
+}: {
+  ds: Decision[];
+  user: User;
+  phone?: boolean;
+  onAnswered?: () => void;
+}) {
+  const loc = useLocal();
+  const { key, picked, option, choose, submit, armed, setArmed, isArmed, writes } = useWorkflow(ds, onAnswered);
+  const noteRef = useRef<HTMLInputElement>(null);
+  const d = ds[0];
+  const many = ds.length > 1;
+  const rec = ds.every((x) => x.recommended === d.recommended) ? d.recommended : "";
+  const operator = canActOn(user, ds);
 
   // Digits select an option on a decision the user opened themselves; they never submit.
   useEffect(() => {
@@ -81,37 +90,17 @@ export function WorkflowBox({
 
   if (!operator) return null;
   if (d.answer && !many) return null;
-  const title = compact ? "Answer directly" : "Workflow";
+  const title = "Workflow";
 
-  const isArmed = !!option && armed === option.key;
-  const writes = option ? effect(option.key) : null;
   const suffix = many ? ` for ${ds.length} decisions` : "";
   return (
-    <section className={cn("scroll-mt-3", compact ? "mt-3" : "mt-8 rounded-md border border-line-strong bg-raised")}>
-      <h2 className={cn("text-sm font-semibold", compact ? "mb-1.5 text-xs text-ink/60" : "border-b border-line px-3 py-2")}>{title}</h2>
-      <div className={compact ? undefined : "px-3 py-2.5"}>
-        {!many && !compact && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
-        <div role="radiogroup" aria-label={title} className={compact ? "flex flex-wrap gap-1.5" : "grid gap-0.5"}>
+    <section className="mt-8 scroll-mt-3 rounded-md border border-line-strong bg-raised">
+      <h2 className="border-b border-line px-3 py-2 text-sm font-semibold">{title}</h2>
+      <div className="px-3 py-2.5">
+        {!many && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
+        <div role="radiogroup" aria-label={title} className="grid gap-0.5">
           {d.options.map((o, i) => {
             const on = o.key === picked;
-            if (compact)
-              return (
-                <button
-                  key={o.key}
-                  type="button"
-                  role="radio"
-                  aria-checked={on}
-                  title={o.hint ?? (o.writes ? cap(o.writes) : undefined)}
-                  onClick={() => choose(o.key)}
-                  className={cn(
-                    "inline-flex min-h-8 items-center gap-1.5 rounded border px-2.5 py-1 text-left text-sm transition-colors duration-fast max-md:min-h-11",
-                    on ? "border-accent bg-accent/[0.1] text-ink" : "border-line-strong bg-raised text-ink/85 hover:bg-ink/[0.06]",
-                  )}
-                >
-                  {o.label}
-                  {o.key === rec && <span className="text-2xs font-normal text-accent-ink">Recommended</span>}
-                </button>
-              );
             return (
               <label
                 key={o.key}
@@ -143,7 +132,7 @@ export function WorkflowBox({
             );
           })}
         </div>
-        <label className={cn("mt-2 flex h-8 min-w-0 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11", compact && !option && "hidden")}>
+        <label className={cn("mt-2 flex h-8 min-w-0 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11")}>
           <input
             ref={noteRef}
             value={loc.notes[d.id] ?? ""}
@@ -159,7 +148,7 @@ export function WorkflowBox({
         </label>
         <Button
           variant="primary"
-          className={cn("mt-3 w-full max-md:h-11", compact && !option && "hidden", isArmed && "border-bad bg-bad text-white hover:bg-bad/90")}
+          className={cn("mt-3 w-full max-md:h-11", isArmed && "border-bad bg-bad text-white hover:bg-bad/90")}
           disabled={!option}
           onClick={() => void submit()}
         >
