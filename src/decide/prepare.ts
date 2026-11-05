@@ -12,7 +12,7 @@ import { referenceDir } from "../reference.ts";
 import { SUMMARY_MAX, SUMMARY_MIN, summaryInput } from "../classify/parse.ts";
 import { pool } from "../classify/run.ts";
 import { itemsOf, optionsOf, factsOf, type DecisionRow } from "../decisions.ts";
-import { commentTexts, parseReply, type NewCard } from "../conversations/cards.ts";
+import { commentTexts, openDecision, parseReply, type NewCard } from "../conversations/cards.ts";
 import { ensureConversation, insertTurn, opusBlock, refreshItem, turnsOf, type DiffSource } from "../conversations/store.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { codeDiff } from "../review/diff.ts";
@@ -30,27 +30,30 @@ export const PREPARE_PROMPT = CLAUDE_PROMPTS["decide.prepare"];
 /** The reply as our code reads it: the pick line, the summary and, for a single item, the checked cards. */
 export type Prepared = { summary: string; pick: string | null; reason: string; cards: NewCard[]; notes: string[]; /** The reply text without its pick line. */ text: string };
 
-const PICK_LINE = /^[ \t]*Pick:[ \t]*([^\s|]+)[ \t]*(?:\|[ \t]*(.*))?$/i;
+// "Pick: key | reason", also with markdown emphasis ("**Pick:** key") and a dash, em dash or colon before the reason.
+const PICK_LINE = /^[ \t]*[*_`]*[ \t]*Pick[*_`]*[ \t]*:[*_`]*[ \t]*([^\s|\u2014\u2013]+)[ \t]*(?:[|\u2014\u2013:-]+[ \t]*(.*))?$/i;
+const PICK_START = /^[ \t]*[*_`]*[ \t]*Pick[*_`]*[ \t]*:/i;
 const ACTIONS_TAIL = /```actions[\s\S]*$/;
 
-/** The pick line of a reply (its first non-empty line) and the text after it. The pick is a key of `keys`, else null ("none" or anything else). */
-export function splitPick(text: string, keys: string[]): { pick: string | null; reason: string; rest: string } {
+/** The pick line of a reply (its first non-empty line) and the text after it. The pick is a key of `keys`, else null ("none" or anything else). `matched`: the reply has a pick line at all. */
+export function splitPick(text: string, keys: string[]): { pick: string | null; reason: string; rest: string; matched: boolean } {
   const t = text.replace(/^\s+/, "");
   const nl = t.indexOf("\n");
   const first = nl < 0 ? t : t.slice(0, nl);
   const m = PICK_LINE.exec(first);
-  if (!m) return { pick: null, reason: "", rest: t };
+  const after = nl < 0 ? "" : t.slice(nl + 1);
+  if (!m) return PICK_START.test(first) ? { pick: null, reason: "", rest: after, matched: true } : { pick: null, reason: "", rest: t, matched: false };
   const key = m[1]!.replace(/^[`"'*]+|[`"'*.,;]+$/g, "");
-  return { pick: keys.includes(key) ? key : null, reason: (m[2] ?? "").replace(/\s+/g, " ").trim().slice(0, PREPARE_REASON_MAX), rest: nl < 0 ? "" : t.slice(nl + 1) };
+  return { pick: keys.includes(key) ? key : null, reason: (m[2] ?? "").replace(/\s+/g, " ").trim().slice(0, PREPARE_REASON_MAX), rest: after, matched: true };
 }
 
 /**
- * Reads a prepare reply. A single item (`item` given): the text and cards come from `parseReply`; with no pick line the first
- * card's answer is the pick. A group: the text is the summary and any actions block is dropped. Null: no valid summary
+ * Reads a prepare reply. A single item (`item` given): the text and cards come from `parseReply`; with no pick line at all the first
+ * card's answer is the pick ("Pick: none" stays no pick). A group: the text is the summary and any actions block is dropped. Null: no valid summary
  * (a summary needs SUMMARY_MIN to SUMMARY_MAX characters), so the call is repeated.
  */
 export function parsePrepareReply(db: DatabaseSync, item: { repo: string; n: number } | null, text: string, keys: string[], drop: ReadonlySet<string> = new Set()): Prepared | null {
-  const { pick, reason, rest } = splitPick(text, keys);
+  const { pick, reason, rest, matched } = splitPick(text, keys);
   let body: string, cards: NewCard[] = [], notes: string[] = [];
   if (item) {
     const r = parseReply(db, item.repo, item.n, rest, drop);
@@ -61,7 +64,7 @@ export function parsePrepareReply(db: DatabaseSync, item: { repo: string; n: num
   if (summary.length < SUMMARY_MIN || summary.length > SUMMARY_MAX) return null;
   const first = cards[0]?.params;
   const fromCard = first?.kind === "resolution" && first.settle?.kind === "answer" && keys.includes(first.settle.option) ? first.settle.option : null;
-  return { summary, pick: pick ?? (reason ? null : fromCard), reason: pick ? reason : "", cards, notes, text: body };
+  return { summary, pick: matched ? pick : fromCard, reason: pick ? reason : "", cards, notes, text: body };
 }
 
 type PrepareCtx = { db: DatabaseSync; item: { repo: string; n: number } | null; keys: string[]; dir: string | undefined; semantic: SemanticDeps | undefined };
@@ -70,23 +73,23 @@ type PrepareCtx = { db: DatabaseSync; item: { repo: string; n: number } | null; 
 export const PREPARE: ClaudeStep<PrepareInput, Prepared, PrepareCtx> = {
   provider: "claude", id: "decide.prepare",
   toPrompt: (x) => [x], size: () => 1,
-  lint: { fields: ["cards[].text"], make: (_x, c) => async (text, stage) => (parsePrepareReply(c.db, c.item, text, c.keys) ? referenceProblems(commentTexts(splitPick(text, c.keys).rest), c.dir, c.semantic, { stage }) : null) },
+  lint: { fields: ["cards[].text"], make: (_x, c) => async (text, stage) => (c.item && parsePrepareReply(c.db, c.item, text, c.keys) ? referenceProblems(commentTexts(splitPick(text, c.keys).rest), c.dir, c.semantic, { stage }) : null) },
   parse: (text, _x, ctx, c) => { const r = parsePrepareReply(c.db, c.item, text, c.keys, dropTexts(ctx.problems)); return r === null ? null : { value: r }; },
 };
 
 // ---- what is due ---------------------------------------------------------------
 
-type DueRow = PrepareColumns & { id: string; asked_at: string; number: number | null; kind: string | null; head_oid: string | null };
+type DueRow = PrepareColumns & { id: string; repo: string; asked_at: string; number: number | null; kind: string | null; head_oid: string | null };
 
 /** The head a decision is prepared for: a pull request's head commit, else null. */
 const headOf = (r: { kind: string | null; head_oid: string | null }): string | null => (r.kind === "pr" ? r.head_oid : null);
 
 /** Ids of the open decisions whose prepare is due (no prepare for the current state, tries left, backoff over), oldest decision first. The item's Plan says whether the decide step has work; this reads the decisions themselves. */
-export function prepareIds(db: DatabaseSync, nowMs: number = Date.now()): string[] {
-  const rows = db.prepare(`SELECT d.id, d.asked_at, d.number, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind, i.head_oid
+export function prepareIds(db: DatabaseSync, repos?: string[], nowMs: number = Date.now()): string[] {
+  const rows = db.prepare(`SELECT d.id, d.repo, d.asked_at, d.number, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind, i.head_oid
     FROM decisions d LEFT JOIN items i ON i.repo = d.repo AND i.number = d.number
     WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND i.state = 'OPEN' AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} ORDER BY d.asked_at, d.id`).all() as DueRow[];
-  return rows.filter((r) => prepareDue(r, headOf(r), nowMs)).map((r) => r.id);
+  return rows.filter((r) => !repos?.length || repos.includes(r.repo)).filter((r) => prepareDue(r, headOf(r), nowMs)).map((r) => r.id);
 }
 
 // ---- what stopped the pipeline -----------------------------------------------
@@ -171,6 +174,8 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     const isPr = it.kind === "pr";
     const head = isPr ? it.head_oid : null;
     const group = d.id.includes(":dupegroup:");
+    // Only the decision the conversation binds its cards to (the item's newest open one) gets a turn with cards; the item's other decisions get a summary and a pick, like groups.
+    const single = !group && openDecision(db, repo, n)?.id === d.id;
     const options = optionsOf(d);
     const keys = options.map((o) => o.key);
     const [item] = loadSummaryItems(db, [{ repo, number: n }]);
@@ -191,7 +196,7 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     if (!checkouts.has(ckey)) checkouts.set(ckey, p.checkout(repo, n, head).catch(() => null));
     const checkout = await checkouts.get(ckey)!;
     // The conversation (item block, updates) is brought up to date before the call: the drafts are stamped with what the call was told.
-    if (!group) {
+    if (single) {
       await ensureConversation(db, repo, n, "opus", { diff: p.diff }).catch((e) => p.log(`decide: no conversation for ${id}: ${(e as Error).message}`));
       await refreshItem(db, repo, n, { diff: p.diff }).catch(() => false);
     }
@@ -205,16 +210,17 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     const turns = group ? "" : operatorTurns(db, repo, n);
     if (turns) input.operator_turns = turns;
     if (checkout) input.repo_dir = REPO_PATH;
-    const dir = checkout ? referenceDir(repo) : undefined;
-    const semantic = dir ? p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`) : undefined;
+    const dir = referenceDir(repo);
+    const semantic = p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`);
     const r = await runModelStep(db, PREPARE, input, {
-      model, checkout: checkout ?? undefined, reference: dir,
-      ctx: { db, item: group ? null : { repo, n }, keys, dir, semantic },
+      model, checkout: checkout ?? undefined, reference: checkout ? dir : undefined,
+      ctx: { db, item: single ? { repo, n } : null, keys, dir, semantic },
       usage: { run: p.usageRun, agent: `prepare-${String(k).padStart(3, "0")}`, stage: "decide", model, items: () => 1 },
       onReply: (reply) => { if (reply.fixTurn) p.log(`decide: ${id}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`); },
       cancelled: p.cancelled,
     });
     if (!r.ok) {
+      if (p.cancelled?.()) return;
       failed.run(head, now(), head, d.id);
       res.failed++;
       p.log(`decide: no valid prepare for ${d.id}; retried in an hour, at most 3 tries`);
@@ -223,16 +229,17 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     const got = r.value;
     // The PR moved on while the call ran: the next pass prepares it for the new head.
     const after = itemOf.get(repo, n) as ItemRow | undefined;
-    if (!after || (isPr && after.head_oid !== head)) { p.log(`decide: ${d.id}: head moved on during the call; prepared again next pass`); return; }
+    if (!after || after.state !== "OPEN" || (isPr && after.head_oid !== head)) { p.log(`decide: ${d.id}: head moved on during the call; prepared again next pass`); return; }
     // The decision was answered or asked again while the call ran: nothing is stored, the next pass prepares what is still open.
     if (!db.prepare("SELECT 1 FROM decisions WHERE id = ? AND answer IS NULL AND question = ? AND options = ?").get(d.id, d.question, d.options)) return;
     const at = now();
     try {
-      if (!group) insertTurn(db, repo, n, { kind: "opus", login: "opus", body: got.text, block: opusBlock(got.text, got.cards), notes: got.notes, cards: got.cards }, { diff: p.diff });
+      if (single) insertTurn(db, repo, n, { kind: "opus", login: "opus", body: got.text, block: opusBlock(got.text, got.cards), notes: got.notes, cards: got.cards }, { diff: p.diff });
       store.run(got.pick, got.pick ? got.reason || null : null, model, got.summary, model, at, at, head, d.id, d.question, d.options);
       res.stored++;
     } catch (e) {
       p.log(`decide: could not store the prepare of ${d.id}: ${(e as Error).message}`);
+      try { failed.run(head, now(), head, d.id); } catch { /* the next pass tries again */ }
       res.failed++;
     }
   }), () => claudeRoom(db), { first: true });

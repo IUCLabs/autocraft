@@ -14,6 +14,7 @@ import type { Querier } from "../src/mirror.ts";
 import { storeArtifact, tempPath } from "../src/build/artifacts.ts";
 import { getTask } from "../src/build/tasks.ts";
 import { runDecide } from "../src/decide/index.ts";
+import { fillReviewSummaries } from "../src/review/summary.ts";
 import { prepareIds } from "../src/decide/prepare.ts";
 import { preparing } from "../src/decide/prepared.ts";
 import { getDecision } from "../src/decisions.ts";
@@ -385,6 +386,19 @@ describe("issue journey", () => {
     assert.match(String(p!.summary), /panic on an empty slice/);
     assert.ok(p!.prepared_at);
     assert.equal(w.rows("SELECT 1 FROM conversation_turns WHERE number = 5 AND kind = 'opus'").length, 1);
+    // The review-text refresh leaves a prepared decision alone.
+    w.db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, mode, verdict, sure, reason, summary, model, at) VALUES ('app', 5, 'h', 'final', 'take', 1, 'r', 'review text', 'opus', ?)").run(new Date().toISOString());
+    w.db.prepare("UPDATE decisions SET kind = 'merge', facts = ? WHERE kind = 'scope'").run(JSON.stringify(["head: h"]));
+    fillReviewSummaries(w.db, new Date().toISOString());
+    const [q] = w.rows("SELECT summary, recommended FROM decisions WHERE number = 5");
+    assert.match(String(q!.summary), /panic on an empty slice/);
+    assert.equal(q!.recommended, "take");
+    // An older open decision of the same item is prepared with summary and pick only: no second turn replaces the first one's cards.
+    w.db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, asked_by) SELECT 'older', 'other', repo, number, 'Older?', options, '2000-01-01T00:00:00Z', asked_by FROM decisions WHERE number = 5").run();
+    w.models(() => "Pick: take | still wanted.\nThe older question concerns the same panic on an empty slice and the answer is the same.\n```actions\n[]\n```");
+    assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
+    assert.equal(w.rows("SELECT 1 FROM conversation_turns WHERE number = 5 AND kind = 'opus'").length, 1);
+    assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = 'older' AND prepared_at IS NOT NULL AND recommended = 'take'").length, 1);
   });
 
   test("a classified issue gets a scope decision; once an operator says take, a fix is built, checked and opened as a PR", async () => {

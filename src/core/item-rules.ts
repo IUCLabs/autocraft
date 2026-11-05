@@ -12,7 +12,7 @@ export const sameLabel = (a: string, b: string): boolean => a.toLowerCase() === 
 /** The type label an operator's `plugin` scope answer asks for (labels/plan.ts). */
 export const PLUGIN_LABEL = "plugin candidate";
 
-/** Opus recommendation for a scope decision: tries and the wait after a failure (decide/recommend.ts). */
+/** Opus recommendation for a scope decision: tries and the wait after a failure (decide/prepare.ts). */
 export const RECOMMEND_MAX_FAILURES = 3;
 export const RECOMMEND_RETRY_MS = 60 * 60_000;
 

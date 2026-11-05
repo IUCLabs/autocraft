@@ -101,7 +101,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
     count(result.byRepo, c.repo).asked++;
     jobItem(db, c.repo, c.number, "asked a scope decision", log, q.id);
   }
-  const ids = prepareIds(db).slice(0, total);
+  const ids = prepareIds(db, params.repos).slice(0, total);
   if (ids.length) {
     result.usageRun = usageRun;
     const r = await prepare(db, ids, {

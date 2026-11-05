@@ -18,11 +18,20 @@ const fence = (o: unknown) => "Here is my answer.\n```json\n" + JSON.stringify(o
 
 describe("model replies", () => {
   test("prepare reply: the pick is a known option key, anything else is none", () => {
-    assert.deepEqual(splitPick("Pick: small | a  small\nchange\nSummary text", ["small", "plugin"]), { pick: "small", reason: "a small", rest: "change\nSummary text" });
+    assert.deepEqual(splitPick("Pick: small | a  small\nchange\nSummary text", ["small", "plugin"]), { pick: "small", reason: "a small", rest: "change\nSummary text", matched: true });
     assert.equal(splitPick("Pick: `plugin` | fits", ["small", "plugin"]).pick, "plugin");
     assert.equal(splitPick("Pick: huge | x\nSummary", ["small"]).pick, null);
     assert.equal(splitPick("Pick: none\nSummary", ["small"]).pick, null);
     assert.equal(splitPick("No pick line.\nSummary", ["small"]).rest, "No pick line.\nSummary");
+    assert.equal(splitPick("No pick line.\nSummary", ["small"]).matched, false);
+    // "none" is a pick line; the other spellings of the line are read too.
+    assert.equal(splitPick("Pick: none\nSummary", ["small"]).matched, true);
+    for (const line of ["**Pick:** small - fits", "**Pick: small** | fits", "_Pick_: small \u2014 fits", "* Pick: small: fits"]) {
+      const r = splitPick(`${line}\nSummary`, ["small", "need-info"]);
+      assert.deepEqual([r.pick, r.rest], ["small", "Summary"], line);
+    }
+    assert.equal(splitPick("Pick: need-info - unclear\nSummary", ["small", "need-info"]).pick, "need-info");
+    assert.equal(splitPick("Pick:\nSummary", ["small"]).rest, "Summary");
   });
 
   test("main-fix verdicts: a check the reply leaves out or mislabels is code; a reply without checks is no reply", () => {
