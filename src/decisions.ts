@@ -309,6 +309,46 @@ export async function retryAsSession(db: DatabaseSync, id: string, login: string
   audit(db, login, "retry", id, { answer: d.answer, source: "cli", via: "session" });
 }
 
+/** The repos a card writes to: its item's, and a resolution's transfer and new-issue targets. */
+function cardRepos(c: { repo: string; params: string }): string[] {
+  const p = JSON.parse(c.params) as { kind: string; steps?: { kind: string; to?: string; repo?: string }[] };
+  return [c.repo, ...(p.kind === "resolution" ? (p.steps ?? []).flatMap((x) => (x.kind === "transfer" && x.to ? [x.to] : x.kind === "open_issue" && x.repo ? [x.repo] : [])) : [])];
+}
+
+/** Runs a proposed card as `login` the way the dashboard's button does; test repos only, operator logins only. */
+export async function cardAsSession(db: DatabaseSync, id: number, login: string, opts: { note?: string; skip?: number[] } = {}): Promise<{ state: string; result: string | null; error: string | null }> {
+  const c = db.prepare("SELECT id, repo, number, params, state FROM main.conversation_cards WHERE id = ?").get(id) as { id: number; repo: string; number: number; params: string; state: string } | undefined;
+  if (!c) throw new Error(`no card ${id}`);
+  const outside = [...new Set(cardRepos(c))].filter((r) => !isTestRepo(db, r));
+  if (outside.length) throw new Error(`refused: ${outside.join(", ")} is not marked as a test repo (decisions test-repo REPO on)`);
+  if (!operators(db).has(login)) throw new Error(`refused: ${login} is not an operator`);
+  const { doCard } = await import("./conversations/act.ts");
+  const { card, ran } = await doCard(db, id, login, opts);
+  if (!ran) throw new Error(`card ${id} is ${card.state}, not proposed`);
+  audit(db, login, "card", `${c.repo}#${c.number}`, { card: id, source: "cli", via: "session" });
+  const after = db.prepare("SELECT state, result, error FROM main.conversation_cards WHERE id = ?").get(id) as { state: string; result: string | null; error: string | null };
+  return after;
+}
+
+function cardsCmd(args: string[]): void {
+  const m = /^(.+)#(\d+)$/.exec(args[0] ?? "");
+  if (!m) throw new Error("usage: decisions cards REPO#N");
+  const rows = connect().prepare("SELECT id, kind, state, description FROM main.conversation_cards WHERE repo = ? AND number = ? ORDER BY id").all(m[1]!, Number(m[2])) as { id: number; kind: string; state: string; description: string | null }[];
+  for (const r of rows) console.log(`${r.id}\t${r.kind}\t${r.state}\t${r.description ?? ""}`);
+}
+
+async function cardCmd(args: string[]): Promise<void> {
+  const id = Number(args[0]);
+  const ai = args.indexOf("--as");
+  const ni = args.indexOf("--note");
+  const si = args.indexOf("--skip");
+  const login = ai >= 0 ? args[ai + 1] : undefined;
+  if (!Number.isInteger(id) || !login || (ni >= 0 && args[ni + 1] === undefined) || (si >= 0 && !/^\d+(,\d+)*$/.test(args[si + 1] ?? "")))
+    throw new Error("usage: decisions card ID --as LOGIN [--skip N,N] [--note TEXT]");
+  const r = await cardAsSession(connect(), id, login, { note: ni >= 0 ? args[ni + 1] : undefined, skip: si >= 0 ? args[si + 1]!.split(",").map(Number) : undefined });
+  console.log(`card ${id}\t${r.state} as ${login} (source cli, via session)${r.result ? `: ${r.result}` : ""}${r.error ? `: ${r.error}` : ""}`);
+}
+
 async function retryCmd(args: string[]): Promise<void> {
   const [id] = args;
   const ai = args.indexOf("--as");
@@ -414,11 +454,11 @@ function askCmd(args: string[]): void {
   console.log(`${r.inserted} asked, ${r.updated} updated`);
 }
 
-const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, retry: retryCmd, "test-repo": testRepoCmd };
+const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, retry: retryCmd, cards: cardsCmd, card: cardCmd, "test-repo": testRepoCmd };
 
 export const commands = {
   decisions: {
-    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] | answer ID OPTION --as LOGIN [--note TEXT] | retry ID --as LOGIN | test-repo [REPO on|off] (answers come from the dashboard, or `answer` on test repos as an operator login; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
+    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] | answer ID OPTION --as LOGIN [--note TEXT] | retry ID --as LOGIN | cards REPO#N | card ID --as LOGIN [--skip N,N] [--note TEXT] | test-repo [REPO on|off] (answers come from the dashboard, or `answer`/`card` on test repos as an operator login; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
     run(args: string[]): void | Promise<void> {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
