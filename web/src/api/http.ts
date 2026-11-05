@@ -179,7 +179,7 @@ export function createHttpApi(): Api {
     },
     mcp: {
       tokens: () => get("/api/mcp/tokens"),
-      create: (label) => post("/api/mcp/tokens", { label }),
+      create: (label, answer = false) => post("/api/mcp/tokens", { label, answer }),
       revoke: (id) => post("/api/mcp/tokens/revoke", { id }),
     },
     access: {

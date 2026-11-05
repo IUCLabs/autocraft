@@ -434,7 +434,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return reply(400, rpcError(-32600, "send one JSON-RPC message as an object; batches are not supported"));
     const m = msg as McpMsg;
     const out = await handleMcp({
-      db, baseUrl: config.baseUrl, limiter: mcpFeedback,
+      db, baseUrl: config.baseUrl, limiter: mcpFeedback, canAnswer: caller.canAnswer && caller.role === "operator",
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
     }, m);
     if (mcpWrites(m)) live.poke();

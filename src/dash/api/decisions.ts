@@ -378,7 +378,8 @@ function inTransaction<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
-export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
+/** `via` names the Inbox MCP server in the audit row when an operator's agent answered with an answering token. */
+export async function answer(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
@@ -416,7 +417,7 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
     replaceProposedCards(db, d.repo, d.number);
   });
-  audit(db, req.user.login, "answer", d.id, { answer: ans, source: "dashboard", exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
+  audit(db, req.user.login, "answer", d.id, { answer: ans, source: "dashboard", ...(via ? { via } : {}), exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
   // The thread keeps the choice (and the note) when the item has a conversation.
   if (d.repo && d.number !== null && conversationOf(db, d.repo, d.number)) {
     const label = optionsOf(d).find((o) => o.key === ans)?.label ?? (handled ? HANDLED.label : ans);
@@ -439,7 +440,7 @@ export async function snooze(db: DatabaseSync, req: Req): Promise<Decision> {
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
-export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
+export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
@@ -452,7 +453,7 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
     if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
     resetGroupAnswer(db, d.id);
   });
-  audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined });
+  audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined, ...(via ? { via } : {}) });
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 

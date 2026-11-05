@@ -15,7 +15,7 @@ import { day } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
 
 const CAN: Record<Role, string> = {
-  operator: "Your agent can read the Inbox and send feedback (a pick and a note) as you. Answers stay on this dashboard.",
+  operator: "Your agent can read the Inbox and send feedback (a pick and a note) as you. To let it also answer decisions, make a token that answers: the pipeline acts on those answers as on yours, so such a token lasts 7 days.",
   maintainer: "Your agent can read the Inbox and send feedback (a pick and a note) as you. An operator answers; your pick is advice they can use.",
   viewer: "Your role is viewer, which writes nothing, so you cannot make a token. Ask an operator to make you a maintainer to connect your agent.",
 };
@@ -35,6 +35,7 @@ export function ConnectView({ user }: ViewProps) {
   const write = useWrite();
   const { data, error } = useQuery("mcp-tokens", (a) => a.mcp.tokens());
   const [label, setLabel] = useState("");
+  const [answer, setAnswer] = useState(false);
   const [made, setMade] = useState<{ id: number; token: string } | null>(null);
   const url = `${location.origin}${data?.path ?? "/mcp"}`;
   const full = !!data && data.tokens.length >= data.max;
@@ -42,9 +43,10 @@ export function ConnectView({ user }: ViewProps) {
 
   const create = () =>
     void write.run("create", async () => {
-      const r = await api.mcp.create(label);
+      const r = await api.mcp.create(label, user.role === "operator" && answer);
       setMade({ id: r.id, token: r.token });
       setLabel("");
+      setAnswer(false);
     });
 
   return (
@@ -69,6 +71,12 @@ export function ConnectView({ user }: ViewProps) {
           }}
         >
           <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} placeholder="Label, e.g. laptop" aria-label="Token label" className="min-w-[12rem] flex-1 sm:max-w-xs" />
+          {user.role === "operator" && (
+            <label className="flex items-center gap-2 text-sm text-ink/80" title="The agent can answer decisions and undo answers as you. The pipeline acts on its answers. The token lasts 7 days.">
+              <input type="checkbox" checked={answer} onChange={(e) => setAnswer(e.target.checked)} className="size-4" />
+              Can answer decisions
+            </label>
+          )}
           <Button type="submit" variant="primary" disabled={full} loading={write.busy === "create"} className="max-md:h-11">
             Make a token
           </Button>
@@ -122,6 +130,7 @@ function Tokens({ tokens, write, fresh }: { tokens: McpToken[]; write: ReturnTyp
             <tr key={t.id} className="h-10 border-b border-line last:border-0 hover:bg-ink/[0.03]">
               <td className="px-3">
                 {t.label ?? <span className="text-ink/40">no label</span>}
+                {t.canAnswer && <span className="ml-2 rounded border border-line px-1.5 py-0.5 text-2xs font-medium text-ink/70">answers decisions</span>}
                 {t.id === fresh && <span className="ml-2 text-xs text-accent-ink">new</span>}
               </td>
               <td className="num whitespace-nowrap px-3 text-ink/65">{day(t.createdAt)}</td>

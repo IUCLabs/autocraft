@@ -2014,8 +2014,8 @@ export type NowEntry = {
 export type NowFeed = { entries: NowEntry[]; nextCursor: string | null };
 export type Now = { health: NowHealth; /** Titles of housekeeping jobs that are running, shown as one line. */ alsoRunning: string[] } & NowFeed;
 
-/** One of the signed-in user's agent tokens for the Inbox MCP server; the token itself is shown only when made. */
-export type McpToken = { id: number; label: string | null; createdAt: string; lastUsedAt: string | null; expiresAt: string };
+/** One of the signed-in user's agent tokens for the Inbox MCP server; the token itself is shown only when made. `canAnswer`: an operator's token whose agent may answer decisions. */
+export type McpToken = { id: number; label: string | null; canAnswer: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
 /** The user's live tokens, the most they may hold, and the server's MCP path (on the dashboard's own origin). */
 export type McpTokens = { tokens: McpToken[]; max: number; path: string };
 /** After making a token: the list, the new token's id, and its value, shown this once. */
