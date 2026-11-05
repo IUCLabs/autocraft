@@ -59,10 +59,28 @@ export function carryAskText(sources: { number: number; points: string[] }[]): s
   return CARRY_ASK_TEMPLATE.replace("{{points}}", lines.join("\n"));
 }
 
-/** The one comment posted on the PR after the default branch was merged into it; `{{base}}` is the branch name. */
+/** The comment posted on the PR after the default branch was merged into it; `{{base}}` is the branch name. */
 export const CONFLICT_COMMENT_TEMPLATE = "Merged {{base}} into this branch to resolve the conflict.";
-export function conflictCommentText(base: string): string {
-  return CONFLICT_COMMENT_TEMPLATE.replace("{{base}}", base);
+/** The same comment edited after further merges; `{{count}}` is the number of merges, `{{time}}` the time of the last one (HH:MM). */
+export const CONFLICT_COMMENT_REPEAT_TEMPLATE = "Merged {{base}} into this branch to resolve conflicts ({{count}} times, last at {{time}} UTC).";
+/** `count` merges so far, the last at ISO time `at`. One merge gives the plain text. */
+export function conflictCommentText(base: string, count = 1, at = ""): string {
+  if (count < 2) return CONFLICT_COMMENT_TEMPLATE.replace("{{base}}", base);
+  return CONFLICT_COMMENT_REPEAT_TEMPLATE.replace("{{base}}", base).replace("{{count}}", String(count)).replace("{{time}}", at.slice(11, 16));
+}
+
+/**
+ * The number of merges a comment body reports, or null when the body (after its note line) is not our conflict comment for `base`.
+ * A repeat text whose count can't be read counts as 2.
+ */
+export function conflictCommentCount(body: string, base: string): number | null {
+  const text = body.replace(/^_[^\n]*_\n\n/, "");
+  if (text === conflictCommentText(base)) return 1;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = new RegExp(`^${esc(CONFLICT_COMMENT_REPEAT_TEMPLATE).replace(esc("{{base}}"), esc(base)).replace(esc("{{count}}"), "(\\d+)").replace(esc("{{time}}"), ".*")}$`).exec(text);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isInteger(n) && n >= 2 ? n : 2;
 }
 
 /** The one comment per head on a conflicted PR we can't resolve ourselves. */

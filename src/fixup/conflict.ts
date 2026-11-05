@@ -9,7 +9,8 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { audit } from "../dash/audit.ts";
 import type { By } from "../core/gates.ts";
 import { guard, liveOf } from "../core/guard.ts";
-import { ghAskComment, ghComment, pushBranch, type Writer } from "../github/write.ts";
+import type { Note } from "../github/note.ts";
+import { ghAskComment, ghComment, ghEditComment, pushBranch, type Writer } from "../github/write.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { cachedDiff } from "../review/diff.ts";
@@ -22,7 +23,7 @@ import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger 
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
 import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
 import { BASE_ORG, longLivedOf, pushable } from "./pushable.ts";
-import { conflictAskText, conflictCommentText, mergeMessage } from "./template.ts";
+import { conflictAskText, conflictCommentCount, conflictCommentText, mergeMessage } from "./template.ts";
 
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
 const CONFLICT = CLAUDE_PROMPTS["fixup.conflict"];
@@ -86,6 +87,35 @@ async function live(db: DatabaseSync, x: ConflictRun, c: ConflictCandidate): Pro
   if (!pr || pr.state !== "OPEN" || pr.isDraft) { x.log(`  ${refOf(c)}: skipped: no longer an open, non-draft PR`); return null; }
   if (pr.headRefOid !== c.head) { x.log(`  ${refOf(c)}: skipped: head moved to ${short(pr.headRefOid)} since the review`); return null; }
   return pr;
+}
+
+const NEWEST_QUERY = `query($name: String!, $n: Int!) {
+  repository(name: $name, owner: "${BASE_ORG}") { pullRequest(number: $n) {
+    comments(last: 1) { nodes { databaseId body createdAt author { login } } }
+    reviews(last: 1) { nodes { submittedAt } }
+  } }
+}`;
+
+/**
+ * Our own conflict note when it is the newest comment on the PR and no review came after it, read live in one call
+ * (the number of merges it reports and its comment id); null otherwise, and when the read fails.
+ */
+export async function newestConflictNote(x: ConflictRun, c: ConflictCandidate): Promise<{ id: string; count: number } | null> {
+  try {
+    const r = await x.d.querier.query(NEWEST_QUERY, { name: x.repo, n: c.number }) as { repository?: { pullRequest?: {
+      comments?: { nodes?: { databaseId: number; body: string; createdAt: string; author: { login: string } | null }[] };
+      reviews?: { nodes?: { submittedAt: string | null }[] };
+    } | null } };
+    const pr = r.repository?.pullRequest;
+    const last = pr?.comments?.nodes?.[0];
+    if (!pr || !last || last.author?.login !== (await x.who()).login) return null;
+    const count = conflictCommentCount(last.body, c.base);
+    if (count === null) return null;
+    const posted = last.createdAt;
+    const review = pr.reviews?.nodes?.[0]?.submittedAt;
+    if (review && (!posted || review > posted)) return null;
+    return { id: String(last.databaseId), count };
+  } catch { return null; }
 }
 
 /** One comment per head asking the contributor to bring the base branch in, for a branch we can't push to. */
@@ -288,7 +318,11 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     record(db, x.at(), c, "merged", null, files, baseSha, commit);
     x.summary.pushed.push(ref);
     x.log(`  ${ref}: merged ${c.base} into the branch: ${short(commit)} on ${short(head)}${files.length ? `, resolved ${files.join(", ")}` : ""}`);
-    const cm = await ghComment(x.gw, g, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, files.length ? { by: "model", kind: "comment", model: CONFLICT.models[0] } : { by: "fixed" }, conflictCommentText(c.base), { run: x.runId });
+    const note: Note = files.length ? { by: "model", kind: "comment", model: CONFLICT.models[0] } : { by: "fixed" };
+    const prev = await newestConflictNote(x, c);
+    const cm = prev
+      ? await ghEditComment(x.gw, g, x.d.exec, "conflict-comment-edit", { repo: x.repo, number: c.number, commentId: prev.id }, note, conflictCommentText(c.base, prev.count + 1, x.at()), { run: x.runId })
+      : await ghComment(x.gw, g, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, note, conflictCommentText(c.base), { run: x.runId });
     if (cm.code !== 0) x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   } catch (e) {
     fail("failed", oneLine(String((e as Error).message ?? e)));
