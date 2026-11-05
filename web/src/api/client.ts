@@ -99,6 +99,8 @@ export interface Api {
     undo(id: string): Promise<Decision>;
     /** Operator: clear a Backlog answer so the decision is open again. */
     reopen(id: string): Promise<Decision>;
+    /** Operator: snooze (`on`) or wake an open decision. */
+    snooze(id: string, on: boolean): Promise<Decision>;
     /** The feedback box: an optional pick (replaces the user's live one) and free text, at least one. Text alone joins the thread. */
     feedback(id: string, input: { option?: string | null; text?: string }): Promise<Decision>;
     retract(id: string): Promise<Decision>;
@@ -116,7 +118,8 @@ export interface Api {
     include(repo: RepoName, number: number, source: string, on: boolean): Promise<Conversation>;
     /** A proposed comment card's text. */
     editCard(id: number, text: string): Promise<ConversationCard>;
-    doCard(id: number): Promise<ConversationCard>;
+    /** `skip`: indexes into `steps` the operator removed; the rest run in order. */
+    doCard(id: number, opts?: { skip?: number[] }): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
   };
   /** A repo's area list. Reading is for everyone who sees the repo; every write is operator only. */

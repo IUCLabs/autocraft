@@ -121,6 +121,8 @@ export interface Decision {
   risks: string[];
   /** True while Undo still works: answered and not yet applied or posted. */
   undoable: boolean;
+  /** Open and snoozed: out of the inbox until new activity on the item (a GitHub comment or push, a feedback post, an operator message), which clears it. */
+  snoozed: { by: string; at: string } | null;
   publicText: string | null;
   /** Group decisions: per answer, the exact comments it posts and a hash of them that the answer sends back. */
   optionTexts: OptionTexts[];
@@ -643,7 +645,8 @@ export interface DecisionFilter {
   /** with exactly one `repo`: only decisions about this item (its own, or a group that lists it) */
   number?: number;
   /** "opinions": open decisions that have at least one opinion */
-  status?: "open" | "opinions" | "answered" | "backlog";
+  /** "open" leaves out snoozed decisions; "snoozed" lists only them. */
+  status?: "open" | "opinions" | "answered" | "backlog" | "snoozed";
   /** page size (server default 100, at most 500); `total` counts every match */
   limit?: number;
   /** the `next` of the previous page */
@@ -661,6 +664,7 @@ export interface DecisionList {
 }
 
 export interface AnswerInput {
+  /** An option key, or "handled" (operators; `note` required): closes the question with the note and writes nothing to GitHub. */
   answer: string;
   note?: string;
   exceptions?: (ItemRef & { answer: string })[];
@@ -1684,7 +1688,8 @@ export interface QueuePage {
 
 // ---- conversations with Opus (src/dash/api/conversations.ts) ----
 
-export type ConversationCardState = "proposed" | "running" | "done" | "failed" | "dismissed";
+/** "replaced": a later Opus reply proposed a new set; the card can no longer run. */
+export type ConversationCardState = "proposed" | "running" | "done" | "failed" | "dismissed" | "replaced";
 
 /**
  * An action Opus proposed. `title` is written by the server from the card's parameters; `text` is the card's editable comment.
@@ -1698,6 +1703,10 @@ export interface ConversationCard {
   title: string;
   /** What runs, in order, one plain line each (e.g. "Post the comment below", "Close the issue as completed"); empty for a card that only settles the question. */
   steps: string[];
+  /** The open decision's option this card settles with: the card is Opus's draft for that option's row. Absent: an outcome of its own (handled, a close, a step-only action). */
+  option?: string;
+  /** Why a proposed card may be out of date: "pr-changed" (a push since it was proposed; it refuses to run) or "new-comments" (GitHub comments since; it still runs). */
+  stale?: "pr-changed" | "new-comments";
   /** How the open question ends when the card runs, e.g. 'Answers the scope question with "Small extra"', "Closes the scope question as handled". Absent: the question stays open. */
   settles?: string;
   /** The primary button: the action in a few words, written by the server from the card's parameters. */
