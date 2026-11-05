@@ -71,6 +71,7 @@ const ADD_COMMENT = `mutation($id: ID!, $body: String!) {
   addComment(input: { subjectId: $id, body: $body }) { commentEdge { node { url } } }
 }`;
 const CLOSE_ISSUE = `mutation($id: ID!) { closeIssue(input: { issueId: $id }) { clientMutationId } }`;
+const CLOSE_ISSUE_AS = `mutation($id: ID!, $reason: IssueClosedStateReason!) { closeIssue(input: { issueId: $id, stateReason: $reason }) { clientMutationId } }`;
 const CLOSE_PR = `mutation($id: ID!) { closePullRequest(input: { pullRequestId: $id }) { clientMutationId } }`;
 const ASSIGN = `mutation($id: ID!, $user: ID!) {
   addAssigneesToAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
@@ -106,9 +107,11 @@ export async function commentOn(w: Writer, g: Grant, q: Querier, action: string,
   return r.addComment?.commentEdge?.node?.url ?? "";
 }
 
-export async function closeItem(w: Writer, g: Grant, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}): Promise<void> {
+export async function closeItem(w: Writer, g: Grant, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}, reason?: "COMPLETED" | "NOT_PLANNED"): Promise<void> {
   covers(g, item.repo, item.number);
-  await recorded(w, "act-close", refOf(item.repo, item.number), details, () => q.query(item.pr ? CLOSE_PR : CLOSE_ISSUE, { id: item.id }));
+  // GitHub has a state reason for issues only.
+  await recorded(w, "act-close", refOf(item.repo, item.number), reason && !item.pr ? { ...details, reason } : details,
+    () => (item.pr ? q.query(CLOSE_PR, { id: item.id }) : reason ? q.query(CLOSE_ISSUE_AS, { id: item.id, reason }) : q.query(CLOSE_ISSUE, { id: item.id })));
 }
 
 export async function assignTo(w: Writer, g: Grant, q: Querier, item: ItemRef, user: { id: string; login: string }, details: Details = {}): Promise<void> {

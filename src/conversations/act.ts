@@ -1,4 +1,4 @@
-// "Do it": runs one action card once through the existing write paths (src/github/write.ts, the decision answer,
+// Runs one action card once through the existing write paths (src/github/write.ts, the decision answer,
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
 import { guardRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -40,7 +40,7 @@ const ref = (repo: string, n: number) => `${repo}#${n}`;
 /** Replaces the text of a comment card that has not run. */
 export function editCard(db: DatabaseSync, id: number, by: string, text: string, deps?: StoreDeps): CardRow {
   const c = need(db, id);
-  if (c.kind !== "comment") throw new ConversationError(400, "only a comment card has text to edit");
+  if (c.kind !== "comment" && !(c.kind === "close" && c.text !== null)) throw new ConversationError(400, "only a comment card, or a close card with a comment, has text to edit");
   const t = text.trim();
   if (!t) throw new ConversationError(400, "the comment is empty");
   if (t.length > COMMENT_MAX) throw new ConversationError(400, `the comment is longer than ${COMMENT_MAX} characters`);
@@ -143,6 +143,24 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
       db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, ?, ?)").run(c.repo, c.number, at, by, `added: ${p.label}`);
       return { result: `Label "${p.label}" added`, url: null };
     }
+    case "close": {
+      const g = guardRepo(db, c.repo, "comment", { operator: by });
+      if ("refused" in g) throw new Error(g.refused);
+      const refusal = closeRefusal(db, c.repo, c.number);
+      if (refusal) throw new Error(refusal);
+      const live = await liveOpen(q, c.repo, c.number);
+      const item = { repo: c.repo, number: c.number, id: live.id };
+      const url = c.text ? await commentOn(w, g, q, "act-comment", item, CARD_NOTE, c.text, source) : "";
+      await closeItem(w, g, q, { ...item, pr: live.type === "PullRequest" }, { ...source, head: live.head }, p.reason === "completed" ? "COMPLETED" : "NOT_PLANNED");
+      const how = live.type === "PullRequest" ? "" : p.reason === "completed" ? " as completed" : " as not planned";
+      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed${how} from a conversation`);
+      // The item is closed: its open decisions are settled now, not at the next sync's withdrawal.
+      const open = db.prepare("SELECT id FROM decisions WHERE repo = ? AND number = ? AND answer IS NULL AND id NOT LIKE '%:dupegroup:%'").all(c.repo, c.number) as { id: string }[];
+      for (const d of open) {
+        try { resolveDecision(db, c, d.id, undefined, `Closed${how} in the conversation`, by, at); } catch { /* answered meanwhile; the next sync withdraws what is left */ }
+      }
+      return { result: `Closed${how}`, url: url || null };
+    }
     case "duplicate": {
       const g = guardRepo(db, c.repo, "comment", { operator: by });
       if ("refused" in g) throw new Error(g.refused);
@@ -187,7 +205,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const sentence = out ? `The operator ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The operator ${by} tried the proposed action: ${c.description}. It failed: ${error}.`;
   insertTurn(db, c.repo, c.number, {
     kind: "system", login: "system", body: out ? `${by} ran the card: ${c.description}. ${out.result}.` : `${by} tried the card: ${c.description}. It failed: ${error}.`,
-    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : undefined),
+    block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : params.kind === "close" && c.text ? { posted_text: c.text } : undefined),
   }, deps);
   return { card: need(db, id), ran: true };
 }

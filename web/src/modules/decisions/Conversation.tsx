@@ -196,7 +196,7 @@ function ActionCard({ a, operator }: { a: ConversationCard; operator: boolean })
             disabled={busy}
             onClick={() => void run()}
           >
-            {armed ? `Confirm: ${a.writes}` : "Do it"}
+            {armed ? `Confirm: ${a.writes}` : a.label}
           </Button>
           {armed && (
             <Button size="sm" variant="ghost" className="max-md:h-11" disabled={busy} onClick={() => setArmed(false)}>

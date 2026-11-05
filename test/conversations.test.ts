@@ -10,6 +10,7 @@ import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
 import { cleanComment, parseReply } from "../src/conversations/cards.ts";
+import { doCard } from "../src/conversations/act.ts";
 import { answerPending } from "../src/conversations/run.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
@@ -100,6 +101,22 @@ describe("cards", () => {
 
 
 describe("Do it", () => {
+  test("a close card comments, closes with the state reason and answers the item's open decision as handled", async () => {
+    const db = fresh();
+    const sent: { q: string; v: Record<string, unknown> }[] = [];
+    const querier = { query: async (q: string, v: Record<string, unknown> = {}) => {
+      sent.push({ q, v });
+      return q.includes("issueOrPullRequest") ? { repository: { issueOrPullRequest: { __typename: "Issue", id: "I_1", state: "OPEN" } } } : {};
+    } };
+    const params = JSON.stringify({ kind: "close", reason: "completed", pr: false });
+    const id = Number(db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (0, 'app', 1, 'close', ?, 'Done in an earlier PR.', 'x')").run(params).lastInsertRowid);
+    const { card } = await doCard(db, id, "op", { querier: querier as never });
+    assert.equal(card.state, "done", card.error ?? "");
+    assert.ok(sent.some((x) => x.q.includes("closeIssue") && x.v.reason === "COMPLETED"));
+    const d = db.prepare("SELECT answer, applied_at FROM decisions WHERE id = 'app#1:scope'").get() as { answer: string; applied_at: string | null };
+    assert.equal(d.answer, "handled");
+    assert.ok(d.applied_at);
+  });
 
 });
 

@@ -9,7 +9,8 @@ const REF = "designcraft#1484";
 const COMMENT =
   "Thanks for adding Hungarian. craft-i18n already ships a `hu` language pack that craft-proof reads, so the dictionary and pattern files don't need to be committed here. Could you load the pack instead?";
 
-const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => c;
+const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], ...c });
+const LABELS: Record<ConversationCard["kind"], string> = { comment: "Post comment", answer: "Answer", label: "Add label", backlog: "Move to Backlog", resolve: "Close decision", duplicate: "Close as duplicate", close: "Close issue" };
 
 function seed(): ConversationTurn[] {
   return [
@@ -46,6 +47,18 @@ function seed(): ConversationTurn[] {
       notes: [],
     },
     { id: 5, kind: "system", login: "system", at: at(18), body: "mosswood ran: Move designcraft#1484 to the Backlog. mosswood dismissed: Close designcraft#1484 as a duplicate of designcraft#1102.", actions: [], notes: [] },
+    {
+      id: 6,
+      kind: "opus",
+      login: "opus",
+      at: at(5),
+      body: "The `hu` pack was merged in designcraft#1301, so the data this PR adds is already covered. I would post a note and close it as completed.",
+      actions: [
+        card({ id: 6, kind: "comment", title: `Post the comment below on ${REF}`, text: "The Hungarian pack is already available through craft-i18n, so this PR is not needed.", state: "proposed" }),
+        card({ id: 7, kind: "close", label: "Close PR", title: `Post the comment below on ${REF}, then close ${REF}; its open decisions are closed as handled`, text: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work.", writes: "closes the PR on GitHub", state: "proposed" }),
+      ],
+      notes: [],
+    },
   ];
 }
 

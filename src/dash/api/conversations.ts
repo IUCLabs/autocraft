@@ -1,7 +1,7 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
 import type { Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
-import { cardEffect, type CardParams } from "../../conversations/cards.ts";
+import { buttonLabel, cardEffect, type CardParams } from "../../conversations/cards.ts";
 import { cardOf, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, pendingTurn, turnsOf, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
@@ -29,8 +29,10 @@ async function guardAsync<T>(f: () => Promise<T>): Promise<T> {
 }
 
 export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
-  const effect = c.kind === "answer" ? cardEffect(db, JSON.parse(c.params) as CardParams) : null;
+  const params = JSON.parse(c.params) as CardParams;
+  const effect = c.kind === "answer" || c.kind === "close" ? cardEffect(db, params) : null;
   return {
+    label: buttonLabel(db, params),
     id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"],
     ...(c.text !== null && { text: c.text }),
     ...(effect && { writes: effect }),
