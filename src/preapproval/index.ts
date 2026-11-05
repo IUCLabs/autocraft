@@ -424,7 +424,13 @@ export function advancePreapprovals(db: DatabaseSync, log: (line: string) => voi
       advance(db, p);
       if ((db.prepare("SELECT state FROM preapprovals WHERE id = ?").get(p.id) as { state: string }).state !== p.state) n++;
     } catch (e) {
-      log(`preapproval ${p.repo}#${p.number}: ${(e as Error).message}`);
+      const msg = oneLine(String((e as Error).message ?? e), 300);
+      log(`preapproval ${p.repo}#${p.number}: ${msg}`);
+      // Runs every tick: the item's trace gets the error once, not once per tick.
+      try {
+        const last = db.prepare("SELECT details FROM audit WHERE action = 'preapproval-error' AND target = ? ORDER BY rowid DESC LIMIT 1").get(`${p.repo}#${p.number}`) as { details: string } | undefined;
+        if (!last || (JSON.parse(last.details) as { error?: string }).error !== msg) audit(db, ACTOR, "preapproval-error", `${p.repo}#${p.number}`, { id: p.id, state: p.state, error: msg });
+      } catch { /* the log line above stands */ }
     }
   }
   return n;
