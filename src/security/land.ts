@@ -10,9 +10,12 @@ import { branchOf, forkOf } from "../fixissue/index.ts";
 import { slugOf, ownerOf } from "../owners.ts";
 import { repoIdentity } from "../github/identity.ts";
 import {
-  ghAdvisoryCreate, ghAdvisoryCve, ghAdvisoryFork, ghAdvisoryPr, ghAdvisoryPublish, ghAdvisoryPush, ghLandPr, ghLandPush, httpStatus,
+  ghAdvisoryCreate, ghAdvisoryCve, ghAdvisoryRange, ghAdvisoryFork, ghAdvisoryPr, ghAdvisoryPublish, ghAdvisoryPush, ghLandPr, ghLandPush, httpStatus,
   type Writer,
 } from "../github/write.ts";
+import { crateOf } from "./fix.ts";
+import { cachedCratesOf } from "../verify/crates.ts";
+import { scanRow } from "./store.ts";
 import { findingKey, advance, rawFinding, type FindingRow } from "./store.ts";
 import { rememberQuietPr } from "./quiet.ts";
 import { giveaway, landBody, nameGiveaway } from "./rules.ts";
@@ -97,6 +100,48 @@ export async function runLand(db: DatabaseSync, repo: string, n: number, by: By,
   }
 }
 
+/** The version in a Cargo.toml: `[package]` version, or the workspace's when the package inherits it. */
+function cargoVersion(toml: string, workspace: boolean): string | null {
+  let section = "";
+  for (const raw of toml.split("\n")) {
+    const line = raw.trim();
+    const h = /^\[([^\]]+)\]$/.exec(line);
+    if (h) { section = h[1]!.trim(); continue; }
+    if (section !== (workspace ? "workspace.package" : "package")) continue;
+    const v = /^version\s*=\s*"([^"]+)"/.exec(line);
+    if (v) return v[1]!;
+    if (!workspace && /^version\.workspace\s*=\s*true|^version\s*=\s*\{\s*workspace\s*=\s*true/.test(line)) return "workspace";
+  }
+  return null;
+}
+
+/**
+ * The affected-version range GitHub needs to publish an advisory: `<= <version>` of the crate holding the finding's
+ * sink at the scan's pinned commit, else `<= <short commit>`.
+ */
+async function advisoryRange(db: DatabaseSync, row: FindingRow, d: Pick<LandDeps, "exec" | "root">): Promise<string> {
+  const sha = scanRow(db, row.scan_id)?.commit_sha ?? "";
+  const fallback = `<= ${sha.slice(0, 12) || "unknown"}`;
+  try {
+    if (!/^[0-9a-f]{40}$/.test(sha)) return fallback;
+    const git = new Git(d.exec, d.root, row.repo);
+    const path = (JSON.parse(row.refs) as { path: string }[])[0]?.path ?? "";
+    const crates = cachedCratesOf(row.repo, sha);
+    const read = async (p: string): Promise<string | null> => { const f = await git.file(sha, p); return f.ok ? f.content : null; };
+    const known = crates ? crateOf(crates.crates, path)?.dir : null;
+    // Without a cached crate list, the nearest Cargo.toml above the file that declares a package.
+    let manifest: string | null = null;
+    for (let dir = known ?? path.split("/").slice(0, -1).join("/"); manifest === null; dir = dir.split("/").slice(0, -1).join("/")) {
+      const m = await read(dir && dir !== "." ? `${dir}/Cargo.toml` : "Cargo.toml");
+      if (m && (known !== undefined && known !== null || /^\[package\]/m.test(m))) manifest = m;
+      else if (!dir || known) break;
+    }
+    let v = manifest ? cargoVersion(manifest, false) : null;
+    if (v === "workspace") { const root = await read("Cargo.toml"); v = root ? cargoVersion(root, true) : null; }
+    return v ? `<= ${v}` : fallback;
+  } catch { return fallback; }
+}
+
 /** Advisory text: private until it is published. */
 function advisoryText(row: FindingRow): string {
   const refs = (JSON.parse(row.refs) as { path: string; line: number }[]).map((r) => `- \`${r.path}:${r.line}\``).join("\n");
@@ -140,7 +185,7 @@ export async function runAdvisory(db: DatabaseSync, repo: string, n: number, by:
     const set: Record<string, string | number | null> = {};
     let ghsa = row.ghsa_id;
     if (!ghsa) {
-      const a = await ghAdvisoryCreate(w, g, d.exec, { repo, key, summary: row.title, description: advisoryText(row), severity: row.severity });
+      const a = await ghAdvisoryCreate(w, g, d.exec, { repo, key, summary: row.title, description: advisoryText(row), severity: row.severity, range: await advisoryRange(db, row, d) });
       if (!a.ghsa) return failed(a.result, "advisory", set);
       ghsa = a.ghsa;
       set.ghsa_id = ghsa;
@@ -185,14 +230,14 @@ export async function runAdvisory(db: DatabaseSync, repo: string, n: number, by:
 }
 
 /** Creates the finding's draft advisory (private) and stores its id. A finding landed by a quiet pull request has none until its fix merges. */
-async function draftAdvisory(db: DatabaseSync, row: FindingRow, w: Writer, g: Parameters<typeof ghAdvisoryCreate>[1], d: Pick<LandDeps, "exec">): ReturnType<typeof ghAdvisoryCreate> {
+async function draftAdvisory(db: DatabaseSync, row: FindingRow, w: Writer, g: Parameters<typeof ghAdvisoryCreate>[1], d: Pick<LandDeps, "exec" | "root">): ReturnType<typeof ghAdvisoryCreate> {
   const key = findingKey(row.repo, row.number);
   // One draft per finding: the empty id claims the creation, so the merge poll and a Publish press never both create one. A claim older than ten minutes is a crashed attempt.
   const stale = new Date(Date.now() - 600_000).toISOString();
   const claimed = db.prepare("UPDATE security_findings SET ghsa_id = '', updated_at = ? WHERE repo = ? AND number = ? AND (ghsa_id IS NULL OR (ghsa_id = '' AND updated_at < ?))").run(new Date().toISOString(), row.repo, row.number, stale).changes;
   if (!claimed) return { ghsa: null, result: { code: 1, stdout: "", stderr: "the advisory is being created" } };
   const text = `${advisoryText(row)}${row.fix_pr ? `\n### Fix\n\nFixed in ${slugOf(row.repo)}#${row.fix_pr}.\n` : ""}`;
-  const a = await ghAdvisoryCreate(w, g, d.exec, { repo: row.repo, key, summary: row.title, description: text, severity: row.severity });
+  const a = await ghAdvisoryCreate(w, g, d.exec, { repo: row.repo, key, summary: row.title, description: text, severity: row.severity, range: await advisoryRange(db, row, d) });
   db.prepare("UPDATE security_findings SET ghsa_id = ? WHERE repo = ? AND number = ? AND ghsa_id = ''").run(a.ghsa, row.repo, row.number);
   return a;
 }
@@ -215,6 +260,8 @@ export async function runPublish(db: DatabaseSync, repo: string, n: number, by: 
     if (!a.ghsa) return note(`the advisory could not be created: ${oneLine(a.result.stderr || a.result.stdout)}`);
     ghsa = a.ghsa;
   }
+  const r = await ghAdvisoryRange(w, g, d.exec, { repo, key, ghsa, range: () => advisoryRange(db, row, d) });
+  if (r && r.code !== 0) return note(`the advisory was not published: ${oneLine(r.stderr || r.stdout)}`);
   const p = await ghAdvisoryPublish(w, g, d.exec, { repo, key, ghsa });
   if (p.code !== 0) return note(`the advisory was not published: ${oneLine(p.stderr || p.stdout)}`);
   let tail = "";

@@ -32,6 +32,8 @@ function fake(answers: { fork?: { code: number; stderr: string }; pr?: string } 
   const exec: Exec = async (cmd, args, opts) => {
     calls.push({ cmd, args, input: opts?.input });
     const a = args.join(" ");
+    if (cmd === "git" && a.includes("ls-tree")) return { code: 0, stdout: a.includes("crates/psd/Cargo.toml") ? "100644 blob abc123\tcrates/psd/Cargo.toml\n" : "", stderr: "" };
+    if (cmd === "git" && a.includes("cat-file blob") && a.includes("crates/psd/Cargo.toml")) return { code: 0, stdout: '[package]\nname = "psd"\nversion = "0.3.2"\n', stderr: "" };
     if (cmd === "git") return { code: 0, stdout: a.includes("rev-parse") ? `${SHA}\n` : "", stderr: "" };
     if (a.includes("--jq .parent.full_name")) return { code: 0, stdout: "storytold/photocraft\n", stderr: "" };
     if (a.startsWith("pr list")) return { code: 0, stdout: "", stderr: "" };
@@ -112,6 +114,8 @@ describe("private fix and landing", () => {
     await runPublish(db, "photocraft", n, BY, true, deps(f.exec));
     assert.equal(stateOf(n).state, "published");
     assert.equal(stateOf(n).ghsa_id, "GHSA-aaaa-bbbb-cccc", "a draft advisory is made first for a quiet landing");
+    const created = f.calls.find((c) => c.args.includes("POST") && c.args.some((x) => x.endsWith("/security-advisories")))!;
+    assert.equal(JSON.parse(created.input!).vulnerabilities[0].vulnerable_version_range, "<= 0.3.2", "the draft names the crate's version as affected");
     const wrote = f.calls.filter((c) => c.args.join(" ").includes("security-advisories")).map((c) => c.args.join(" "));
     assert.ok(wrote.some((w) => w.includes("PATCH")) && wrote.some((w) => w.endsWith("/cve")));
   });
