@@ -75,6 +75,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   actions: [{ table: "actions" }],
   // Which maintainer posts an operator shared with Opus; not planner input.
   "conversation-includes": [{ table: "conversation_includes" }],
+  // Decision answers' choices rows (bookkeeping, not planner input).
+  "decision-choices": [{ table: "decision_choices" }],
   conversations: [{ table: "conversations" }, { table: "conversation_turns" }, { table: "conversation_cards" }],
   fixes: [{ table: "fix_attempts" }, { table: "patch_checks" }, { table: "dupe_carries" }],
   verify: [{ table: "verifications" }, { table: "fixups" }, { table: "ci_fixes" }],

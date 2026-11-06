@@ -1,7 +1,10 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
-import type { CardEdit, Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
-import { buttonLabel, cardEffect, cardLines, headline, type CardParams } from "../../conversations/cards.ts";
+import type { CardEdit, Conversation, ConversationCard, ConversationTurn, DecisionChoices } from "../../../web/src/api/types.ts";
+import { buttonLabel, cardEffect, cardLines, decisionStamp, headline, openDecision, validateCard, type CardParams } from "../../conversations/cards.ts";
+import { applyDrafts, choicesById, compose, coresFor, currentChoices, seenJson, type ComposeExtra, type Core } from "../../decide/choices.ts";
+import { parseCoreKey, type ChoicesRow, type CoreKey } from "../../decide/choices-types.ts";
+import { getDecision } from "../../decisions.ts";
 import { cardOf, cardRepos, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, staleOf, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
@@ -71,6 +74,30 @@ export function cardView(db: DatabaseSync, c: CardRow, who?: { login: string; ro
     ...(c.acted_by && { by: c.acted_by }),
     ...(c.acted_at && { at: c.acted_at }),
     ...(c.edited_by && { edited: true, editedBy: c.edited_by }),
+    ...(c.choice_id && { fromChoice: true }),
+  };
+}
+
+/**
+ * The choices of the item's open decision (the one a conversation card would settle): the offered cores with Opus's drafts over them.
+ * Null when the item has no such decision or cores, or when the decision has no current choices row written for its present state
+ * (the web then offers the plain answer path and Re-prepare).
+ */
+export function choicesView(db: DatabaseSync, repo: string, n: number): DecisionChoices | null {
+  const d = openDecision(db, repo, n);
+  if (!d) return null;
+  const base = coresFor(db, d);
+  if (base.length === 0) return null;
+  const row = currentChoices(db, d.id);
+  if (!row || row.stamp !== decisionStamp(db, d)) return null;
+  const cores = applyDrafts(db, d, base, row);
+  const strip = ({ parsed: _p, decision: _d, allowed: _a, closing: _c, ...view }: Core) => view;
+  const run = (db.prepare("SELECT id, state, error FROM conversation_cards WHERE choice_id = ? ORDER BY id DESC LIMIT 1").get(row.id) as { id: number; state: string; error: string | null } | undefined);
+  const pick = row.pick.core && cores.some((c) => c.key === row.pick.core) ? { core: row.pick.core, reason: row.pick.reason ?? "" } : null;
+  return {
+    id: row.id, decisionId: d.id, pick, cores: cores.map(strip),
+    ...(run && { run: { cardId: run.id, state: run.state as NonNullable<DecisionChoices["run"]>["state"], ...(run.error && { error: run.error }) } }),
+    source: row.source, at: row.createdAt,
   };
 }
 
@@ -82,7 +109,8 @@ export function conversationView(db: DatabaseSync, repo: string, n: number, who?
   sweepRunningCards(db);
   const c = conversationOf(db, repo, n);
   const includes = includesOf(db, repo, n);
-  if (!c) return { repo, number: n, exists: false, pending: false, startedBy: null, turns: [], includes };
+  const choices = choicesView(db, repo, n);
+  if (!c) return { repo, number: n, exists: false, pending: false, startedBy: null, turns: [], includes, choices };
   const cards = db.prepare("SELECT * FROM conversation_cards WHERE repo = ? AND number = ? ORDER BY id").all(repo, n) as unknown as CardRow[];
   const turns: ConversationTurn[] = turnsOf(db, repo, n).map((t) => ({
     id: t.id, kind: t.kind, login: t.login, at: t.at, body: t.body,
@@ -93,7 +121,7 @@ export function conversationView(db: DatabaseSync, repo: string, n: number, who?
   }));
   const wait = pendingTurn(db, repo, n);
   const progress = wait?.status === "answering" && wait.progress ? (JSON.parse(wait.progress) as string[]) : [];
-  return { repo, number: n, exists: true, pending: !!wait, ...(progress.length > 0 && { progress }), startedBy: c.created_by, turns, includes };
+  return { repo, number: n, exists: true, pending: !!wait, ...(progress.length > 0 && { progress }), startedBy: c.created_by, turns, includes, choices };
 }
 
 function itemOf(req: Req): { repo: string; n: number } {
@@ -195,4 +223,114 @@ export async function doIt(db: DatabaseSync, req: Req, deps?: ActDeps): Promise<
   if (b?.skip !== undefined && (!Array.isArray(b.skip) || b.skip.some((k) => !Number.isInteger(k)))) throw new HttpError(400, "skip must be a list of step positions");
   const skip = (b?.skip as number[] | undefined) ?? [];
   return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, skip, note: b?.note as string | undefined, noteStaysOut: !isOperator(req), role: req.user.role, canWrite: (r) => req.user.canWrite(r) }))).card, req.user);
+}
+
+/** The request body of a choice run, checked for shape only. */
+function choiceBody(req: Req): { core: CoreKey; params: { reason?: string; instructions?: string }; extras: { id: string; text?: string; title?: string; body?: string }[]; note?: string } {
+  const b = req.json as Record<string, unknown> | null;
+  if (!b || typeof b !== "object" || Array.isArray(b)) throw new HttpError(400, "the body must be an object");
+  if (typeof b.core !== "string" || !parseCoreKey(b.core)) throw new HttpError(400, "core must be a choice key");
+  const str = (o: Record<string, unknown>, k: string, what: string): string | undefined => {
+    if (o[k] === undefined) return undefined;
+    if (typeof o[k] !== "string") throw new HttpError(400, `${what} must be a string`);
+    return o[k] as string;
+  };
+  const p = (b.params ?? {}) as Record<string, unknown>;
+  if (typeof p !== "object" || Array.isArray(p)) throw new HttpError(400, "params must be an object");
+  if (!Array.isArray(b.extras ?? [])) throw new HttpError(400, "extras must be a list");
+  const extras = ((b.extras ?? []) as unknown[]).map((x) => {
+    const e = x as Record<string, unknown> | null;
+    if (!e || typeof e !== "object" || typeof e.id !== "string") throw new HttpError(400, "each extra needs an id");
+    return { id: e.id, text: str(e, "text", "text"), title: str(e, "title", "title"), body: str(e, "body", "body") };
+  });
+  return { core: b.core, params: { reason: str(p, "reason", "reason"), instructions: str(p, "instructions", "instructions") }, extras, note: str(b, "note", "note") };
+}
+
+/**
+ * Runs a decision's chosen core with its ticked extras: composes one resolution card from them, stores it as an ordinary card
+ * (`choice_id` set) and runs it like Do it. The user's own edited texts go through the card edit, so they are not cleaned and
+ * show as edited; a maintainer may not edit fix-up instructions.
+ */
+export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Promise<ConversationCard> {
+  const row = choicesById(db, req.params.id!);
+  if (!row) throw new HttpError(404, `no choices ${req.params.id}`);
+  await needVisible(db, req, row.repo);
+  const body = choiceBody(req);
+  if (row.state !== "current") throw new HttpError(409, "replaced by newer choices");
+  const d = getDecision(db, row.decisionId);
+  if (!d || d.answer !== null) throw new HttpError(409, "the decision is already settled");
+  if (decisionStamp(db, d) !== row.stamp || openDecision(db, row.repo, row.number)?.id !== d.id) throw new HttpError(409, "the decision changed since these choices were written");
+  if (staleOf(db, row.repo, row.number, seenJson(row.seen)) === "pr-changed") throw new HttpError(409, "the PR changed since these choices were written");
+  const priorOf = (): CardRow | undefined => db.prepare("SELECT * FROM conversation_cards WHERE choice_id = ? ORDER BY id DESC LIMIT 1").get(row.id) as unknown as CardRow | undefined;
+  // A card for these choices that is already running or done is returned as it is (a second press).
+  const first = priorOf();
+  if (first && (first.state === "running" || first.state === "done")) return cardView(db, first, req.user);
+
+  const core = applyDrafts(db, d, coresFor(db, d), row).find((c) => c.key === body.core);
+  if (!core) throw new HttpError(400, `"${body.core}" is not one of the choices`);
+  const user = (id: string) => body.extras.find((x) => x.id === id);
+  const extras: ComposeExtra[] = body.extras.map((x) => {
+    const offered = core.extras.find((e) => e.id === x.id);
+    if (!offered) throw new HttpError(400, `the extra "${x.id}" is not offered with "${core.label}"`);
+    const { id, kind, label, login, logins, repo } = offered;
+    // The user's text is what runs; the card edit below keeps it as written.
+    return { id, kind, label, login, logins, repo, text: x.text ?? offered.text, title: x.title ?? offered.title, body: x.body ?? offered.body };
+  });
+  const drafted = core.params?.instructions ?? "";
+  const params = { reason: body.params.reason ?? core.params?.reason, instructions: body.params.instructions ?? core.params?.instructions };
+  if (body.params.instructions !== undefined && body.params.instructions.trim() !== drafted.trim() && !isOperator(req)) throw new HttpError(403, "only operators edit a fix-up's instructions");
+  const composed = compose(core, extras, params);
+  if ("note" in composed) throw new HttpError(400, composed.note);
+  const v = validateCard(db, row.repo, row.number, composed.card);
+  if (!("card" in v)) throw new HttpError(400, v.note);
+
+  const probe = { repo: row.repo } as CardRow;
+  if (isOperator(req)) {
+    if (!(await req.user.canWrite(row.repo).catch(() => false))) throw new HttpError(403, `no write access to ${slugOf(row.repo)}`);
+  } else if (!(await canSettle(db, req.user, cardRepos(probe, v.card.params)))) {
+    throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, runs choices");
+  }
+
+  // The press is claimed here, with no await between the check and the insert: a second press that got this far sees the first one's card.
+  let id = 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (choicesById(db, row.id)?.state !== "current") throw new HttpError(409, "replaced by newer choices");
+    const prior = priorOf();
+    if (prior && (prior.state === "running" || prior.state === "done")) { db.exec("COMMIT"); return cardView(db, prior, req.user); }
+    // A run that stopped after some steps would repeat them: the operator prepares again or says what else to do.
+    if (prior?.state === "failed" && /^(Already done:|outcome unknown)/.test(prior.error ?? "")) throw new HttpError(409, "the last run of these choices stopped after some of its steps; Re-prepare, or tell Opus what to do next");
+    db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE choice_id = ? AND state = 'proposed'").run(row.id);
+    id = Number(db.prepare("INSERT INTO main.conversation_cards (turn_id, repo, number, kind, params, text, description, seen, choice_id) VALUES (?, ?, ?, 'resolution', ?, ?, ?, ?, ?)")
+      .run(row.turnId ?? 0, row.repo, row.number, JSON.stringify(v.card.params), v.card.text, v.card.description, seenJson(row.seen), row.id).lastInsertRowid);
+    db.exec("COMMIT");
+  } catch (e) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw e;
+  }
+  try {
+    // Edits the user made to the drafted texts: the comment, the issue, the fix-up instructions.
+    const edit: CardEdit = {};
+    const steps = v.card.params.kind === "resolution" ? v.card.params.steps : [];
+    const typedComment = extras.find((e) => e.kind === "comment" && user(e.id)?.text !== undefined);
+    if (typedComment && typedComment.text!.trim() && typedComment.text!.trim() !== v.card.text) edit.text = typedComment.text!;
+    const issue = steps.find((x) => x.kind === "open_issue");
+    const typedIssue = extras.find((e) => e.kind === "open_issue" && (user(e.id)?.title !== undefined || user(e.id)?.body !== undefined));
+    if (issue?.kind === "open_issue" && typedIssue && (typedIssue.title!.trim() !== issue.title || typedIssue.body!.trim() !== issue.body)) edit.issue = { title: typedIssue.title!, body: typedIssue.body! };
+    const fix = steps.find((x) => x.kind === "fixup");
+    if (fix?.kind === "fixup" && body.params.instructions !== undefined && body.params.instructions.trim() !== fix.instructions) edit.instructions = body.params.instructions;
+    if (Object.keys(edit).length) guard(() => editCard(db, id, req.user.login, edit));
+  } catch (e) {
+    db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE id = ? AND state = 'proposed'").run(id);
+    throw e;
+  }
+  let ran;
+  try {
+    ran = await guardAsync(() => doCard(db, id, req.user.login, { ...deps, note: body.note, noteStaysOut: !isOperator(req), role: req.user.role, canWrite: (r) => req.user.canWrite(r) }));
+  } catch (e) {
+    // Refused before the claim (lane, approval): the card never ran and must not stay proposed.
+    db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE id = ? AND state = 'proposed'").run(id);
+    throw e;
+  }
+  return cardView(db, ran.card, req.user);
 }

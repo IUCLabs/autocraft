@@ -479,7 +479,7 @@ export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: 
     const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
       WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, login, at, handled ? at : null, d.id);
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
-    replaceProposedCards(db, d.repo, d.number);
+    replaceProposedCards(db, d.repo, d.number, d.id);
   });
   if (writeEffect(d.kind, ans)) initExecState(db, d.id);
   audit(db, login, "answer", d.id, { answer: ans, source, ...(via ? { via } : {}), exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
@@ -503,6 +503,21 @@ export async function snooze(db: DatabaseSync, req: Req): Promise<Decision> {
   const at = new Date().toISOString();
   db.prepare("UPDATE main.decisions SET snoozed_by = ?, snoozed_at = ? WHERE id = ? AND answer IS NULL").run(b.on ? req.user.login : null, b.on ? at : null, d.id);
   audit(db, req.user.login, b.on ? "snooze" : "unsnooze", d.id);
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+}
+
+/**
+ * Operator: prepare an open decision again. Clears what marks it prepared or failed, so the next pass runs the prepare step for
+ * it before the other due ones; its current choices stay until the new ones replace them.
+ */
+export async function reprepare(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireOperator(req, d);
+  if (d.answer) throw new HttpError(409, "only an open decision can be prepared again");
+  if (!d.repo || d.number === null || !db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ?").get(d.repo, d.number)) throw new HttpError(409, "the decision has no item to prepare it for");
+  db.prepare(`UPDATE main.decisions SET prepared_at = NULL, prepared_head = NULL, recommend_failures = NULL, recommend_failed_at = NULL, prepare_failed_head = NULL, prepare_requested_at = ?
+    WHERE id = ? AND answer IS NULL`).run(new Date().toISOString(), d.id);
+  audit(db, req.user.login, "reprepare", d.id);
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 

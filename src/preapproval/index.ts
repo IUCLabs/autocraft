@@ -232,7 +232,7 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
       db.prepare(`UPDATE main.decisions SET answer = 'merge', answer_note = NULL, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
         WHERE id = ? AND answer IS NULL`).run(p.by, at, id);
       db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(id);
-      replaceProposedCards(db, p.repo, p.number);
+      replaceProposedCards(db, p.repo, p.number, id);
       audit(db, p.by, "answer", id, { answer: "merge", source: "preapproval" });
     }
     db.exec("COMMIT");

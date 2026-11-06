@@ -262,10 +262,10 @@ export function otherTypeLabel(db: DatabaseSync, repo: string, n: number, label:
   return have.map(String).find((l) => isTypeLabel(l) && !sameLabel(l, label) && !removing.some((r) => sameLabel(r, l))) ?? null;
 }
 
-type Checked<T> = { value: T } | { note: string };
+export type Checked<T> = { value: T } | { note: string };
 
 /** Model text for a comment step, cleaned and checked. */
-function commentText(raw: unknown, drop: ReadonlySet<string>): Checked<string> {
+export function commentText(raw: unknown, drop: ReadonlySet<string>): Checked<string> {
   const text = typeof raw === "string" ? cleanComment(raw) : "";
   if (!text) return { note: "dropped a resolution whose comment step has no text" };
   if (REFERENCE_LEAK.test(text) || drop.has(text)) return { note: "dropped a resolution whose comment mentions the reference folder or its documentation" };
@@ -273,7 +273,7 @@ function commentText(raw: unknown, drop: ReadonlySet<string>): Checked<string> {
   return { value: text };
 }
 
-function labelStep(db: DatabaseSync, repo: string, n: number, raw: unknown, removing: readonly string[]): Checked<Step> {
+export function labelStep(db: DatabaseSync, repo: string, n: number, raw: unknown, removing: readonly string[]): Checked<Step> {
   const l = typeof raw === "string" ? ALL_LABELS.find((x) => sameLabel(x.name, raw)) : undefined;
   if (!l) return { note: `dropped a resolution: "${String(raw).slice(0, 40)}" is not a label the pipeline manages` };
   const other = otherTypeLabel(db, repo, n, l.name, removing);
@@ -281,7 +281,7 @@ function labelStep(db: DatabaseSync, repo: string, n: number, raw: unknown, remo
   return { value: { kind: "label", label: l.name } };
 }
 
-function closeStep(db: DatabaseSync, repo: string, n: number, reason: unknown): Checked<Step> {
+export function closeStep(db: DatabaseSync, repo: string, n: number, reason: unknown): Checked<Step> {
   if (!CLOSE_REASONS.includes(reason as CloseReason)) return { note: "dropped a resolution whose close step has no reason of completed or not_planned" };
   const why = closeRefusal(db, repo, n);
   if (why) return { note: `dropped a resolution: ${why}` };
@@ -290,7 +290,7 @@ function closeStep(db: DatabaseSync, repo: string, n: number, reason: unknown): 
   return { value: { kind: "close", reason: reason as CloseReason, pr: row.kind === "pr" } };
 }
 
-function duplicateStep(db: DatabaseSync, repo: string, n: number, of: unknown): Checked<Step> {
+export function duplicateStep(db: DatabaseSync, repo: string, n: number, of: unknown): Checked<Step> {
   if (!Number.isInteger(of) || of === n) return { note: "dropped a resolution whose duplicate step names no other item number" };
   if (!db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ?").get(repo, of as number)) return { note: `dropped a resolution: ${ref(repo, of as number)} is not in the mirror` };
   const why = closeRefusal(db, repo, n);
@@ -331,7 +331,7 @@ function issueText(raw: unknown, max: number, what: string, drop: ReadonlySet<st
   return { value: t };
 }
 
-function openIssueStep(db: DatabaseSync, st: Record<string, unknown>, drop: ReadonlySet<string>): Checked<Step> {
+export function openIssueStep(db: DatabaseSync, st: Record<string, unknown>, drop: ReadonlySet<string>): Checked<Step> {
   const repo = bareRepo(st.repo);
   if (!isTracked(db, repo)) return { note: `dropped a resolution: "${String(st.repo).slice(0, 40)}" is not a tracked repository` };
   const title = issueText(st.title, ISSUE_TITLE_MAX, "title", drop, true);
@@ -341,7 +341,7 @@ function openIssueStep(db: DatabaseSync, st: Record<string, unknown>, drop: Read
   return { value: { kind: "open_issue", repo, title: title.value, body: body.value } };
 }
 
-function transferStep(db: DatabaseSync, repo: string, n: number, toRaw: unknown): Checked<Step> {
+export function transferStep(db: DatabaseSync, repo: string, n: number, toRaw: unknown): Checked<Step> {
   const to = bareRepo(toRaw);
   const f = itemFacts(db, repo, n);
   if (pr(f)) return { note: "dropped a resolution: only an issue can be moved to another repository" };
@@ -353,13 +353,13 @@ function transferStep(db: DatabaseSync, repo: string, n: number, toRaw: unknown)
   return { value: { kind: "transfer", to } };
 }
 
-function assignStep(db: DatabaseSync, repo: string, n: number, login: unknown): Checked<Step> {
+export function assignStep(db: DatabaseSync, repo: string, n: number, login: unknown): Checked<Step> {
   if (typeof login !== "string" || !LOGIN.test(login)) return { note: "dropped a resolution whose assign step has no GitHub login" };
   if (!sameLogin(itemFacts(db, repo, n)?.author ?? null, login) && !mayWrite(db, repo, login)) return { note: `dropped a resolution: ${login} is neither the author nor known to have write access to ${repo}` };
   return { value: { kind: "assign", login } };
 }
 
-function reviewersStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
+export function reviewersStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
   const f = itemFacts(db, repo, n);
   if (!pr(f)) return { note: "dropped a resolution: reviewers can be requested on a PR only" };
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > 3 || raw.some((x) => typeof x !== "string" || !LOGIN.test(x))) return { note: "dropped a resolution whose request_reviewers step does not list one to three GitHub logins" };
@@ -370,7 +370,7 @@ function reviewersStep(db: DatabaseSync, repo: string, n: number, raw: unknown):
   return { value: { kind: "request_reviewers", logins } };
 }
 
-function unlabelStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
+export function unlabelStep(db: DatabaseSync, repo: string, n: number, raw: unknown): Checked<Step> {
   const l = typeof raw === "string" ? ALL_LABELS.find((x) => sameLabel(x.name, raw)) : undefined;
   if (!l) return { note: `dropped a resolution: "${String(raw).slice(0, 40)}" is not a label the pipeline manages` };
   const row = db.prepare("SELECT labels FROM items WHERE repo = ? AND number = ?").get(repo, n) as { labels: string | null } | undefined;
@@ -387,7 +387,7 @@ function reopenStep(db: DatabaseSync, repo: string, n: number): Checked<Step> {
   return why ? { note: `dropped a resolution: ${why}` } : { value: { kind: "reopen" } };
 }
 
-function pipelineStep(db: DatabaseSync, repo: string, n: number, st: Record<string, unknown>): Checked<Step> {
+export function pipelineStep(db: DatabaseSync, repo: string, n: number, st: Record<string, unknown>): Checked<Step> {
   const f = itemFacts(db, repo, n);
   if (!pr(f) || f?.state !== "OPEN") return { note: `dropped a resolution: a ${String(st.kind)} step needs an open PR` };
   if (st.kind === "review") return { value: { kind: "review" } };
@@ -434,6 +434,8 @@ function settleOf(db: DatabaseSync, d: DecisionRow, raw: unknown): Checked<Settl
       if (typeof s.reason !== "string") return { note: "dropped a resolution whose settle reason is not text" };
       // Only an option that closes with a comment takes a reason; for any other the field is ignored.
       if (!/\bcloses\b/.test(writeEffect(d.kind as Kind, s.option) ?? "")) return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
+      // The reason goes into the closing comment, which a quiet pull request never gets.
+      if (d.repo && d.number !== null && isQuiet(db, d.repo, d.number)) return { note: "dropped a resolution: a quiet pull request's closing comment takes no reason" };
       const reason = cleanReason(cleanComment(s.reason));
       if (!reason) return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
       if (REFERENCE_LEAK.test(reason)) return { note: "dropped a resolution whose settle reason mentions the reference folder or its documentation" };
@@ -469,7 +471,7 @@ function closeSettle(db: DatabaseSync, repo: string, d: DecisionRow, st: Settlin
  * One resolution as the model wrote it, checked against the item, or why it is dropped. Rules: at most one comment step and one
  * close or duplicate step, which comes last; with an open decision the card settles it (a lone comment step may leave it open: the
  * "ask" card); a close, duplicate, transfer, review or fixup step settles it as handled; an answer whose option already writes to GitHub
- * takes no comment, close, duplicate, transfer, reopen, reviewer, review or fixup step (an issue, label or assignee step is fine);
+ * takes no close, duplicate, transfer, reopen, reviewer, review or fixup step, and a comment only when the answer merges (an issue, label or assignee step is fine);
  * without an open decision there is no settlement. At most one step of each kind except label and unlabel; close, duplicate and
  * transfer end the item (at most one, last); reopen comes first and only on a closed item; a fixup that merges needs an open merge or scope decision on a PR.
  */
@@ -535,8 +537,13 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
     if (settle && settle.kind !== "handled") return { note: `dropped a resolution that has a ${settling.kind} step and settles the question another way than handled` };
     if (d && !settle) settle = closeSettle(db, repo, d, settling);
   }
-  if (settle?.kind === "answer" && steps.some((x) => ["comment", "close", "duplicate", "transfer", "reopen", "request_reviewers", "review", "fixup"].includes(x.kind)) && decisionWrite(db, settle.decision, settle.option)) {
-    return { note: "dropped a resolution: the answer already writes to GitHub, so it takes only label, assign and open_issue steps" };
+  if (settle?.kind === "answer") {
+    const effect = decisionWrite(db, settle.decision, settle.option);
+    // Merging takes a comment too (posted before the answer); closing options use their reason as the comment.
+    const merges = /\bmerges\b/.test(effect ?? "");
+    if (effect && steps.some((x) => ["close", "duplicate", "transfer", "reopen", "request_reviewers", "review", "fixup", ...(merges ? [] : ["comment"])].includes(x.kind))) {
+      return { note: `dropped a resolution: the answer already writes to GitHub, so it takes only ${merges ? "comment, " : ""}label, assign and open_issue steps` };
+    }
   }
   if (d && !settle && !(steps.length === 1 && steps[0]!.kind === "comment")) return { note: "dropped a resolution that leaves the open decision unsettled" };
   if (!settle && steps.length === 0) return { note: "dropped a resolution without steps or settlement" };

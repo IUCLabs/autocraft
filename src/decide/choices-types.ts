@@ -8,6 +8,9 @@ export type ActionTag = "merge" | "close" | "reopen" | "comment" | "open_issue" 
 
 export type ExtraKind = "comment" | "open_issue" | "label" | "unlabel" | "assign" | "request_reviewers";
 
+/** Most cores Opus may add on top of the offered ones. */
+export const MAX_ADDED_CORES = 3;
+
 export type CloseReason = "completed" | "not_planned";
 
 /**
@@ -113,7 +116,7 @@ export type ChoicesBlockExtra = Omit<StoredExtra, "id">;
 export interface ChoicesBlock {
   pick: { core: CoreKey; reason: string };
   cores: { core: CoreKey; reason?: string; instructions?: string; extras: ChoicesBlockExtra[] }[];
-  add?: { end: { close?: CloseReason; duplicate?: number; transfer?: string; fixup?: true; review?: true }; extras: ChoicesBlockExtra[] }[];
+  add?: { end: { close?: CloseReason; duplicate?: number; transfer?: string; fixup?: true; review?: true }; /** Fix-up instructions (an added fixup core). */ instructions?: string; extras: ChoicesBlockExtra[] }[];
   drop?: CoreKey[];
   ask?: { text: string };
 }
@@ -142,6 +145,8 @@ export interface ChoiceCore {
   params?: { reason?: string; instructions?: string; target?: string };
   /** GitHub writes the core itself performs; empty when it only records an answer in AutoCraft. */
   writes: ActionTag[];
+  /** What AutoCraft does after the answer: one short fixed phrase (lower case, no full stop), shown after "AutoCraft". */
+  autocraft: string;
   extras: ChoiceExtra[];
   /** Opus drafted this core's params and extras (beyond the offered list). */
   drafted: boolean;

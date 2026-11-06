@@ -191,9 +191,8 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   }
   flush();
 
-  const resolutions = openDecisions.length > 0 ? lastOpus?.actions.filter((a) => a.settles !== undefined) : undefined;
-  // A card that leaves the question open is a suggested reply, shown above the composer.
-  const suggestions = lastOpus?.actions.filter((a) => a.settles === undefined && ["proposed", "running", "failed"].includes(a.state)) ?? [];
+  // A card that leaves the question open is a suggested reply, shown above the composer. Cards run from choices are not.
+  const suggestions = lastOpus?.actions.filter((a) => a.settles === undefined && !a.fromChoice && ["proposed", "running", "failed"].includes(a.state)) ?? [];
   return (
     <>
       {!decision && first && <TraceHeader header={first!.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />}
@@ -220,7 +219,7 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
         <ErrorLine error={q.error?.message} className="mt-2" />
       </section>
       {it.preapproval && <PreapprovalPart it={it} operator={operator} />}
-      <OpenQuestions ds={ds ?? []} focus={decision} resolutions={resolutions} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
+      <OpenQuestions ds={ds ?? []} focus={decision} choices={conv?.choices} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
       {suggestions.some((a) => a.canSettle) && (
         <div className="mt-3 space-y-2">
           {suggestions.filter((a) => a.canSettle).map((a) => (

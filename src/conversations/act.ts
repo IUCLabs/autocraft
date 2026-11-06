@@ -24,6 +24,8 @@ import { ownerOf, slugOf } from "../owners.ts";
 
 export type CardRow = {
   seen: string | null;
+  /** The decision_choices row the card was run from. */
+  choice_id?: string | null;
   id: number; turn_id: number; repo: string; number: number; kind: string; params: string; text: string | null; description: string;
   state: string; result: string | null; result_url: string | null; error: string | null; acted_by: string | null; acted_at: string | null; edited_by: string | null; edited_at: string | null;
 };
@@ -120,7 +122,7 @@ async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string |
       WHERE id = ? AND answer IS NULL`).run(key, note ?? null, by, at, publicReason ?? null, d.id);
     if (r.changes !== 1) throw new Error("the decision changed");
     db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
-    replaceProposedCards(db, d.repo, d.number);
+    replaceProposedCards(db, d.repo, d.number, d.id);
     audit(db, by, "answer", d.id, { answer: key, source: "conversation" });
     db.exec("COMMIT");
     if (writeEffect(d.kind, key)) initExecState(db, d.id);
@@ -142,7 +144,7 @@ function resolveDecision(db: DatabaseSync, c: CardRow, decisionId: string | unde
       WHERE id = ? AND answer IS NULL`).run(HANDLED.key, summary, by, at, at, d.id);
     if (r.changes !== 1) throw new Error("the decision changed");
     db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
-    replaceProposedCards(db, d.repo, d.number);
+    replaceProposedCards(db, d.repo, d.number, d.id);
     audit(db, by, "answer", d.id, { answer: HANDLED.key, source: "conversation" });
     db.exec("COMMIT");
     return { result: "Decision closed as handled in the conversation", url: null };

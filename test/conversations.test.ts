@@ -338,7 +338,7 @@ function req(role: "operator" | "viewer", params: Record<string, string>, json?:
 describe("access", () => {
   test("a viewer reads the conversation and cannot write; chat routes are operator-only", async () => {
     const db = fresh();
-    const { restore } = fakeModel(["Reply.\n```actions\n[{\"kind\":\"resolution\",\"steps\":[],\"settle\":{\"kind\":\"backlog\"}}]\n```"]);
+    const { restore } = fakeModel(["Reply.\n```choices\n{\"pick\":{\"core\":null,\"reason\":null},\"ask\":{\"text\":\"Which version do you run?\"}}\n```"]);
     try {
       await conv.postMessage(db, req("operator", { repo: "app", n: "1" }, { text: "Hi" }));
       await answerAll(db);

@@ -1,12 +1,12 @@
 import { Link } from "react-router-dom";
 import { ArrowRightIcon, ChatCircleIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
-import type { ConversationCard, Decision } from "../../api/types";
+import type { Decision, DecisionChoices } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
 import { KindTag } from "../decisions/parts";
 import { Refs } from "../decisions/Refs";
 import { AnswerNotice } from "../decisions/AnswerNotice";
-import { AnswerGroup } from "./AnswerGroup";
+import { ChoiceGroup } from "./ChoiceGroup";
 import { canComment } from "../../registry/permissions";
 import { FeedbackBox } from "../decisions/FeedbackBox";
 import { useFolded, useLocal } from "../decisions/state";
@@ -33,11 +33,10 @@ export const THREAD_END_ID = "thread-end";
 export const scrollToThreadEnd = () => document.getElementById(THREAD_END_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
 /**
- * The item's open questions at the end of the thread: the question, Opus's proposed resolutions (`resolutions`, in the group of the
- * first question) and the decision's own options, answerable in place with the Decisions page's controls and permission rules.
+ * The item's open questions at the end of the thread: the question and its answer choices (`choices`, those of the first question), answerable in place with the Decisions page's controls and permission rules.
  * On a decision page, `focus` comes first, shows its answer with Undo once answered, and has no link to itself.
  */
-export function OpenQuestions({ ds, focus, resolutions, onAnswered, boxes }: { ds: Decision[]; focus?: Decision; resolutions?: ConversationCard[]; onAnswered?: () => void; boxes?: boolean }) {
+export function OpenQuestions({ ds, focus, choices, onAnswered, boxes }: { ds: Decision[]; focus?: Decision; choices?: DecisionChoices | null; onAnswered?: () => void; boxes?: boolean }) {
   const loc = useLocal();
   const user = useUser();
   const open = ds.filter((d) => !d.answer);
@@ -50,13 +49,13 @@ export function OpenQuestions({ ds, focus, resolutions, onAnswered, boxes }: { d
       ))}
       {focus?.answer && <AnsweredState d={focus} canUndo={canTakeBack(user, focus)} />}
       {open.map((d, i) => (
-        <Question key={d.id} d={d} siblings={ds} resolutions={i === 0 ? resolutions : undefined} here={d.id === focus?.id} onAnswered={onAnswered} feedback={!!boxes && d.id !== focus?.id} />
+        <Question key={d.id} d={d} siblings={ds} choices={i === 0 && choices?.decisionId === d.id ? choices : undefined} here={d.id === focus?.id} onAnswered={onAnswered} feedback={!!boxes && d.id !== focus?.id} />
       ))}
     </section>
   );
 }
 
-function Question({ d, siblings, resolutions, here, onAnswered, feedback }: { d: Decision; siblings: Decision[]; resolutions?: ConversationCard[]; here: boolean; onAnswered?: () => void; feedback: boolean }) {
+function Question({ d, siblings, choices, here, onAnswered, feedback }: { d: Decision; siblings: Decision[]; choices?: DecisionChoices | null; here: boolean; onAnswered?: () => void; feedback: boolean }) {
   const user = useUser();
   return (
     <article className="rounded-md border border-line-strong px-3 py-3 md:px-4">
@@ -78,8 +77,8 @@ function Question({ d, siblings, resolutions, here, onAnswered, feedback }: { d:
         <Refs text={d.question} repo={d.repo} />
       </p>
       {d.preparing && !d.answer && <OpusWorking text="Opus is preparing options…" className="mt-2" />}
-      <div className="mt-2"><RecommendationLine d={d} /></div>
-      <AnswerGroup d={d} user={user} resolutions={resolutions ?? []} onAnswered={onAnswered} />
+      {!choices && <div className="mt-2"><RecommendationLine d={d} /></div>}
+      <ChoiceGroup d={d} user={user} choices={choices} onAnswered={onAnswered} />
       {/* With several open questions the composer serves one; the others get their own box. */}
       {feedback && canComment(user) && !canActOn(user, [d]) && <FeedbackBox d={d} className="mt-3" />}
     </article>
