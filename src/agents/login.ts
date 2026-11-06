@@ -75,7 +75,7 @@ const LONG_RUN = /[A-Za-z0-9_-]{40,}/g;
 
 function keepFailedScreen(l: Live): void {
   try {
-    writeFileSync(join(l.configDir, "setup-token-failed.log"), `${new Date().toISOString()}\n${cutCode(l, l.screen).replace(/ +$/gm, "").replace(ANY_TOKEN, (m) => `${m.match(/^sk-ant-[a-z0-9]+-/)?.[0] ?? "sk-ant-"}[token]`).replace(LONG_RUN, "[token]").slice(-4000)}\n`, { mode: 0o600 });
+    writeFileSync(join(l.configDir, "setup-token-failed.log"), `${new Date().toISOString()} stream token: ${extractToken(fresh(l), true) ? "yes" : "no"}, screen token: ${extractScreenToken(cutCode(l, l.screen), true) ? "yes" : "no"}\n${cutCode(l, l.screen).replace(/ +$/gm, "").replace(ANY_TOKEN, (m) => `${m.match(/^sk-ant-[a-z0-9]+-/)?.[0] ?? "sk-ant-"}[token]`).replace(LONG_RUN, "[token]").slice(-4000)}\n`, { mode: 0o600 });
   } catch {
     // Diagnostics only.
   }
@@ -112,7 +112,9 @@ export function loginRunning(id: string): boolean {
  * hands it to `onToken`; true when the flow has ended with it.
  */
 async function takeToken(id: string, l: Live, final: boolean): Promise<boolean> {
-  if (l.kind !== "token" || !l.term || !extractToken(fresh(l), final)) return false;
+  // While the CLI runs, the stream must show the token before the screen is read (the screen may not be drawn yet). Once it
+  // has exited the screen is complete, and the stream may hold the token only in pieces (the CLI draws lines with cursor moves).
+  if (l.kind !== "token" || !l.term || (!final && !extractToken(fresh(l), false))) return false;
   const t = extractScreenToken(cutCode(l, l.screen), final);
   if (!t) return false;
   l.busy = true;
