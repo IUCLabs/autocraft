@@ -1,5 +1,6 @@
 // Conversation storage: the item block (written once), the turns in prompt order, and the cards of each Opus turn.
 // Every turn stores the exact text its prompt block carries, so later prompts repeat earlier ones byte for byte.
+import { isBotLogin } from "../review/bots.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { factsOf, getDecision, optionsOf, type DecisionRow } from "../decisions.ts";
@@ -121,8 +122,26 @@ export function staleOf(db: DatabaseSync, repo: string, n: number, seen: string 
   let was: { head: string | null; last_comment: string | null };
   try { was = JSON.parse(seen) as typeof was; } catch { return undefined; }
   if (i.kind === "pr" && (was.head ?? null) !== i.head_oid) return "pr-changed";
-  return was.last_comment !== snapshotOf(db, i).last_comment ? "new-comments" : undefined;
+  if (was.last_comment === snapshotOf(db, i).last_comment) return undefined;
+  return newerPersonComment(db, i.repo, i.number, was.last_comment) ? "new-comments" : undefined;
 }
+
+/**
+ * Whether a person commented after the comment a card was written against. Stricter than COMMENTS_WHERE, which also
+ * drives update turns and must not change: review bots and our own posts (made through an account a person also
+ * uses, so recognised by their note line, never by login) are news for Opus but do not make a decision card stale.
+ * When the seen comment is gone, any change in the newest counted comment counts, as before.
+ */
+function newerPersonComment(db: DatabaseSync, repo: string, n: number, seenId: string | null): boolean {
+  const at = seenId === null ? null : (db.prepare("SELECT created_at, id FROM comments WHERE repo = ? AND number = ? AND id = ?").get(repo, n, seenId) as { created_at: string; id: string } | undefined);
+  if (seenId !== null && !at) return true;
+  const rows = db.prepare(`SELECT author, body FROM comments WHERE ${COMMENTS_WHERE}${at ? " AND (created_at > ? OR (created_at = ? AND id > ?))" : ""}`)
+    .all(...[repo, n, ...(at ? [at.created_at, at.created_at, at.id] : [])]) as { author: string | null; body: string }[];
+  return rows.some((r) => !(r.author && isBotLogin(r.author)) && !OWN_NOTE_PREFIXES.some((p) => r.body.trimStart().startsWith(p)));
+}
+
+// Openings of the note lines in src/github/note.ts.
+const OWN_NOTE_PREFIXES = ["_AI-generated ", "_Automated "];
 
 const cut = (s: string | null, max: number): string => (s ?? "").slice(0, max);
 

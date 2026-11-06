@@ -12,7 +12,7 @@ import { setApproval as setLabelApproval } from "../src/labels/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
 import { applicableSteps, cleanComment, parseReply } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
-import { addOperatorMessage, ensureConversation, insertTurn, turnsOf } from "../src/conversations/store.ts";
+import { addOperatorMessage, ensureConversation, insertTurn, staleOf, turnsOf } from "../src/conversations/store.ts";
 import { answerPending } from "../src/conversations/run.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
@@ -353,4 +353,21 @@ describe("access", () => {
 });
 
 describe("Opus starts a conversation", () => {
+});
+
+describe("stale cards", () => {
+  test("review bots and our own note-line posts do not make a card stale; a person's comment does", () => {
+    const db = fresh();
+    const add = (id: string, at: string, author: string, body: string) =>
+      db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body) VALUES ('app', 1, ?, 'comment', ?, ?, ?)").run(id, author, at, body);
+    add("c1", "2026-01-02T00:00:00Z", "alice", "first");
+    const seen = JSON.stringify({ head: null, last_comment: "c1" });
+    assert.equal(staleOf(db, "app", 1, seen), undefined);
+    add("c2", "2026-01-02T01:00:00Z", "coderabbitai", "review summary");
+    add("c3", "2026-01-02T02:00:00Z", "alice", "_AI-generated review (Opus). Not a maintainer decision._\n\nLooks fine");
+    add("c4", "2026-01-02T03:00:00Z", "alice", "_Automated message. Not a maintainer decision._\n\nHello");
+    assert.equal(staleOf(db, "app", 1, seen), undefined);
+    add("c5", "2026-01-02T04:00:00Z", "bob", "what about X?");
+    assert.equal(staleOf(db, "app", 1, seen), "new-comments");
+  });
 });
