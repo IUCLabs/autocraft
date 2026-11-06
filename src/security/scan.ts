@@ -28,6 +28,8 @@ export type ScanDeps = {
   cancelled: () => boolean;
   log: (line: string) => void;
   progress?: (line: string) => void;
+  /** Called when verify confirms finding `n`, to start its private fix. */
+  confirmed?: (n: number) => Promise<unknown>;
 };
 
 /** What a call is expected to cost before any has run, in dollars. The area guess grows with the size of the area's files. */
@@ -285,6 +287,7 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
           const verdict = checked.value;
           const v: FindingVerification = { kind: "reasoning", result: verdict.result, notes: verdict.notes, score: verdict.score, proposedTest: verdict.proposedTest };
           db.prepare("UPDATE security_findings SET state = ?, verification = ?, updated_at = ? WHERE repo = ? AND number = ?").run(survives(verdict) ? "new" : "disproved", JSON.stringify(v), now(), repo, f.number);
+          if (survives(verdict)) await deps.confirmed?.(f.number);
         }
       }
       db.prepare("UPDATE security_areas SET state = CASE state WHEN 'failed' THEN 'failed' ELSE 'done' END WHERE scan_id = ? AND idx = ?").run(scanId, idx);

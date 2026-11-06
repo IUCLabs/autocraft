@@ -7,6 +7,7 @@ import { audit } from "../dash/audit.ts";
 import { scopeToTracked } from "../repos.ts";
 import { convertOpenDecisionsOnce } from "../decide/choices-convert.ts";
 import { linkRepeatedFindings } from "../security/scan.ts";
+import { autoFixConfirmed } from "../security/actions.ts";
 import { execJob } from "./exec.ts";
 import { isDraining, isEnabled, LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "./autopilot.ts";
 import { PilotError, pilotItems, setPilot } from "../pilot.ts";
@@ -39,6 +40,8 @@ async function serve(): Promise<void> {
   for (const note of conv?.notes ?? []) console.log(`runner: choices conversion: ${note}`);
   const linked = linkRepeatedFindings(db);
   if (linked) console.log(`runner: linked ${linked} security findings to the earlier findings they repeat`);
+  const fixes = await autoFixConfirmed(db);
+  if (fixes) console.log(`runner: started the private fix of ${fixes} confirmed security findings`);
   const runner = new Runner({ db, lockFile: lock, maxJobs: Number(envVar("RUNNER_JOBS")) || DEFAULT_MAX_JOBS });
   const ac = new AbortController();
   process.once("SIGTERM", () => ac.abort());

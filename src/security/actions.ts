@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { FindingAction, FindingState, FindingView, ScanView } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
-import { securityRepo, SECURITY_STEP, REASON_MAX } from "./rules.ts";
+import { securityRepo, SECURITY_STEP, REASON_MAX, MIN_VERIFY_SCORE } from "./rules.ts";
 import { activeScan, ACTIVE_STATES, advance, finishScan, findingKey, findingRow, moveFinding, reconcileScans, reopenUnchecked, scanRow, toFinding, toScan, UNCHECKED_RESULT } from "./store.ts";
 
 export class SecurityError extends Error {
@@ -107,6 +107,28 @@ export async function actOnFindingAs(db: DatabaseSync, repo: string, n: number, 
   if (!to) throw new SecurityError(409, `a finding that is ${row.state} cannot be ${action === "reopen" ? "reopened" : action === "dismiss" ? "dismissed" : "moved to the backlog"}`);
   audit(db, login, `security-finding-${action}`, findingKey(repo, n), { from: row.state, to, ...(reason && { reason }), ...extra });
   return toFinding(db, findingRow(db, repo, n)!);
+}
+
+/**
+ * Starts the private fix of each confirmed finding (of `repo`, or finding `n` of it) that has never had a fix job:
+ * verify held it up, so the fix is ready when an operator opens it, and Land stays the operator's. A fix that fails
+ * leaves the finding new with its note, for the operator's Fix. Returns how many fixes it queued.
+ */
+export async function autoFixConfirmed(db: DatabaseSync, repo?: string, n?: number): Promise<number> {
+  const rows = db.prepare(`SELECT repo, number FROM security_findings f WHERE state = 'new' AND json_extract(verification, '$.score') >= ?
+      AND (? IS NULL OR repo = ?) AND (? IS NULL OR number = ?)
+      AND NOT EXISTS (SELECT 1 FROM jobs WHERE step = 'security-fix' AND json_extract(params, '$.repo') = f.repo AND json_extract(params, '$.number') = f.number)
+      ORDER BY repo, number`).all(MIN_VERIFY_SCORE, repo ?? null, repo ?? null, n ?? null, n ?? null) as { repo: string; number: number }[];
+  let queued = 0;
+  for (const r of rows) {
+    try {
+      await startStep(db, r.repo, r.number, "pipeline", "fix", STEPS.fix!, {}, { auto: true });
+      queued++;
+    } catch (e) {
+      if (!(e instanceof SecurityError)) throw e;
+    }
+  }
+  return queued;
 }
 
 /** Moves the finding to the state the step works in, then queues the step; the state goes back when the queue refuses. */

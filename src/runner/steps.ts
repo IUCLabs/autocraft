@@ -510,13 +510,15 @@ export const STEPS: StepDef[] = [
       const { realDeps } = await import("../security/real.ts");
       const { usageRunId } = await import("../security/real.ts");
       ctx.usageRun(usageRunId(Number(ctx.params.scan)));
-      return runScan(ctx.db, Number(ctx.params.scan), realDeps(ctx.db, Number(ctx.params.scan), { cancelled: ctx.cancelled, log: ctx.log, progress: ctx.progress }));
+      const { autoFixConfirmed } = await import("../security/actions.ts");
+      const deps = realDeps(ctx.db, Number(ctx.params.scan), { cancelled: ctx.cancelled, log: ctx.log, progress: ctx.progress });
+      return runScan(ctx.db, Number(ctx.params.scan), { ...deps, confirmed: (n) => autoFixConfirmed(ctx.db, String(ctx.params.repo), n) });
     },
   },
   {
     name: "security-fix",
     title: "Security fix",
-    description: "Writes the private fix of one finding on the scan's pinned commit: Opus writes the patch and a regression test, the worker container builds and tests it, and Opus reviews the diff. The commit stays in the local cache and is never pushed. Started only by an operator on the finding page; nothing goes to GitHub.",
+    description: "Writes the private fix of one finding on the scan's pinned commit: Opus writes the patch and a regression test, the worker container builds and tests it, and Opus reviews the diff. The commit stays in the local cache and is never pushed. Starts on its own when verify confirms the finding, once per finding; after a failed fix an operator starts it again from the finding page. Nothing goes to GitHub.",
     stage: 9,
     requires: "operator",
     group: "security-work",
