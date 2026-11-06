@@ -127,10 +127,14 @@ export class WritePacedError extends Error {
   }
 }
 
-/** The audit target is `repo#number` or an org name; the key's owner is that repo's owner. */
-function paceOwner(target: string): string {
-  const name = target.split("#")[0]!;
-  return ownerOf(name) || name;
+/**
+ * The key's owner: the owner of the repo the audit target names (`repo#number`, `repo:branch`, or an org name). The
+ * box account (`legacy`) has one key for all owners, since GitHub limits a user token per account.
+ */
+function paceOwner(identity: string, target: string, owner?: string): string {
+  if (identity === "legacy") return "";
+  const name = target.split(/[#:]/)[0]!;
+  return owner ?? (ownerOf(name) || name);
 }
 
 /**
@@ -138,9 +142,9 @@ function paceOwner(target: string): string {
  * window's rows via the audit_at index: fine at this volume) and inserts when under budget. Returns the row id, or
  * how long to wait before the window frees.
  */
-function tryBegin(w: Writer, action: string, target: string, details: Details, now: number): { id: number } | { wait: number } {
+function tryBegin(w: Writer, action: string, target: string, details: Details, now: number, ownerArg?: string): { id: number } | { wait: number } {
   const identity = String(details.identity ?? "");
-  const owner = paceOwner(target);
+  const owner = paceOwner(identity, target, ownerArg);
   const insert = (d: Details): number => Number(w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, ?, ?, ?, ?)")
     .run(new Date(now).toISOString(), w.login, action, target, JSON.stringify(d)).lastInsertRowid);
   const started = { ...details, state: "started" };
@@ -169,15 +173,15 @@ function tryBegin(w: Writer, action: string, target: string, details: Details, n
 }
 
 /** Adds the row before the write, so a crash during the call leaves a "started" row: an unknown outcome. Paces the write; throws WritePacedError when the wait would pass the bound. */
-async function begin(w: Writer, action: string, target: string, details: Details): Promise<number> {
+async function begin(w: Writer, action: string, target: string, details: Details, owner?: string): Promise<number> {
   const clock = w.now ?? Date.now;
   const sleep = w.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const t0 = clock();
   for (;;) {
     const now = clock();
-    const r = tryBegin(w, action, target, details, now);
+    const r = tryBegin(w, action, target, details, now, owner);
     if ("id" in r) return r.id;
-    if (now - t0 + r.wait > PACE_MAX_WAIT_MS) throw new WritePacedError(`${String(details.identity)} on ${paceOwner(target)}`, r.wait);
+    if (now - t0 + r.wait > PACE_MAX_WAIT_MS) throw new WritePacedError(`${String(details.identity)} on ${paceOwner(String(details.identity), target, owner) || "all owners"}`, r.wait);
     await sleep(r.wait);
   }
 }
@@ -371,7 +375,13 @@ export async function addLabels(w: Writer, q: Querier, repo: string, items: Labe
   items.forEach((it, k) => { vars[`i${k}`] = it.id; vars[`l${k}`] = it.labelIds; });
   const det = (it: LabelWrite): Details => ({ ...details, labels: it.names, identity: idOf(w, it.g) });
   const ids: number[] = [];
-  for (const it of items) ids.push(await begin(w, "labels-apply", refOf(repo, it.number), det(it)));
+  try {
+    for (const it of items) ids.push(await begin(w, "labels-apply", refOf(repo, it.number), det(it)));
+  } catch (e) {
+    // Paced partway: the rows already added were never sent.
+    for (const id of ids) w.db.prepare("DELETE FROM audit WHERE rowid = ?").run(id);
+    throw e;
+  }
   let d: Record<string, unknown> | null;
   try {
     d = await retry(() => q.query(addLabelsMutation(items.length), vars));
@@ -710,7 +720,13 @@ export function cliMergeRecorder(repoSlug: string, pr: string, method: string, h
     const w: Writer = { db: connect(), login: "cli" };
     // The command line runs as the box account whatever the repo's setting.
     const details = { method: method.slice(2), head, identity: "legacy" };
-    const id = await begin(w, "merge", `${repoName(repoSlug)}#${Number(pr)}`, details);
+    let id: number;
+    try {
+      id = await begin(w, "merge", `${repoName(repoSlug)}#${Number(pr)}`, details, splitSlug(repoSlug).owner);
+    } catch (e) {
+      w.db.close();
+      throw e;
+    }
     return (error) => {
       try {
         finish(w, id, details, error);
