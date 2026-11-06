@@ -149,3 +149,20 @@ test("a deleted item reads as null; a missing repository still fails", async () 
   (c as unknown as { run: unknown }).run = answer({ repository: null });
   await assert.rejects(c.query("q", {}));
 });
+
+// ---- mergeable keeps its known value at one head ----
+import { tmpdir } from "node:os";
+import { saveChecks } from "../src/review/checks.ts";
+
+test("saveChecks keeps a known mergeable at the same head and replaces it at a new head", () => {
+  const db = connect(join(mkdtempSync(join(tmpdir(), "mergeable-")), "t.db"));
+  const save = (head: string, mergeable: string) => saveChecks(db, [{ repo: "app", number: 7, head_oid: head, state: "OPEN", is_draft: false, overall: "success", checks: [], mergeable, maintainer_can_modify: true }]);
+  const stored = () => (db.prepare("SELECT mergeable FROM pr_checks WHERE repo='app' AND number=7").get() as { mergeable: string }).mergeable;
+  save("h1", "CONFLICTING");
+  save("h1", "UNKNOWN");
+  assert.equal(stored(), "CONFLICTING");
+  save("h1", "MERGEABLE");
+  assert.equal(stored(), "MERGEABLE");
+  save("h2", "UNKNOWN");
+  assert.equal(stored(), "UNKNOWN");
+});
