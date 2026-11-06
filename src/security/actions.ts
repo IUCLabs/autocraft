@@ -1,0 +1,104 @@
+// The security deep scan's operator actions, shared by the dashboard API and the CLI. Callers check who may act; these
+// functions check the state of the scan or finding and throw a SecurityError that carries an HTTP-style status.
+import type { DatabaseSync } from "node:sqlite";
+import type { FindingAction, FindingState, FindingView, ScanView } from "../../web/src/api/types.ts";
+import { audit } from "../dash/audit.ts";
+import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
+import { securityRepo, SECURITY_STEP, REASON_MAX } from "./rules.ts";
+import { activeScan, ACTIVE_STATES, advance, finishScan, findingKey, findingRow, moveFinding, reconcileScans, scanRow, toFinding, toScan } from "./store.ts";
+
+export class SecurityError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const NOT_FOUND = "not found";
+/** The most a spend cap may be, in dollars. */
+const CAP_MAX = 100_000;
+/** Extra audit details, for example where the action came from. */
+export type AuditExtra = Record<string, unknown>;
+/** The actions that start a step: the states they start from, the state the finding takes at once, and the step. */
+const STEPS: Partial<Record<FindingAction, { from: FindingState[]; to: FindingState | null; step: string; busy: string }>> = {
+  fix: { from: ["new", "backlog"], to: "fixing", step: "security-fix", busy: "a fix" },
+  land: { from: ["ready", "awaiting-admin"], to: "landing", step: "security-land", busy: "a fix that is ready or waiting for an admin" },
+  advisory: { from: ["ready", "awaiting-admin"], to: "landing", step: "security-advisory", busy: "a fix that is ready or waiting for an admin" },
+  publish: { from: ["landed", "advisory"], to: null, step: "security-publish", busy: "a landed fix" },
+};
+
+export async function startScanAs(db: DatabaseSync, repo: string, login: string, capUsd: unknown, extra: AuditExtra = {}): Promise<ScanView> {
+  const cap = capUsd === undefined || capUsd === null ? null : capUsd;
+  if (cap !== null && (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0 || cap > CAP_MAX)) throw new SecurityError(400, `capUsd must be a dollar amount above 0 and up to ${CAP_MAX}, or null for no cap`);
+  reconcileScans(db, repo);
+  if (activeScan(db, repo)) throw new SecurityError(409, `${repo} already has a scan running`);
+  const at = new Date().toISOString();
+  const id = Number(db.prepare("INSERT INTO security_scans (repo, state, cap_usd, started_by, started_at) VALUES (?, 'modeling', ?, ?, ?)").run(repo, cap, login, at).lastInsertRowid);
+  try {
+    const job = await enqueue(db, SECURITY_STEP, { repo, scan: id }, login);
+    // The job is recorded under the scan's pseudo repo, so every job listing that leaves out hidden repos leaves it out for viewers.
+    db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(repo), job.id);
+    db.prepare("UPDATE security_scans SET job_id = ? WHERE id = ?").run(job.id, id);
+  } catch (e) {
+    db.prepare("DELETE FROM security_scans WHERE id = ?").run(id);
+    if (e instanceof JobError) throw new SecurityError(e.status, e.message);
+    throw e;
+  }
+  audit(db, login, "security-scan-start", `${repo}:scan:${id}`, { repo, capUsd: cap, ...extra });
+  return toScan(db, scanRow(db, id)!);
+}
+
+export function stopScanAs(db: DatabaseSync, id: number, login: string, extra: AuditExtra = {}): ScanView {
+  const scan = scanRow(db, id);
+  if (!scan) throw new SecurityError(404, NOT_FOUND);
+  if (!ACTIVE_STATES.includes(scan.state)) throw new SecurityError(409, `the scan already ended (${scan.state})`);
+  // A running job sees the state or the cancel flag before its next call and ends the scan itself.
+  if (scan.job_id !== null) {
+    try { requestCancel(db, scan.job_id, login); } catch (e) { if (!(e instanceof JobError)) throw e; }
+  }
+  finishScan(db, id, "stopped");
+  audit(db, login, "security-scan-stop", `${scan.repo}:scan:${id}`, { repo: scan.repo, was: scan.state, ...extra });
+  return toScan(db, scanRow(db, id)!);
+}
+
+export async function actOnFindingAs(db: DatabaseSync, repo: string, n: number, login: string, b: Record<string, unknown>, extra: AuditExtra = {}): Promise<FindingView> {
+  const action = b.action as FindingAction;
+  const start = STEPS[action];
+  if (start) return startStep(db, repo, n, login, action, start, b, extra);
+  if (action !== "dismiss" && action !== "backlog" && action !== "reopen") throw new SecurityError(400, "unknown action");
+  const row = findingRow(db, repo, n);
+  if (!row) throw new SecurityError(404, NOT_FOUND);
+  const reason = typeof b.reason === "string" ? b.reason.trim().slice(0, REASON_MAX) : "";
+  if (action === "dismiss" && !reason) throw new SecurityError(400, "dismissing needs a reason");
+  const to = moveFinding(db, repo, n, action, login, reason || null);
+  if (!to) throw new SecurityError(409, `a finding that is ${row.state} cannot be ${action === "reopen" ? "reopened" : action === "dismiss" ? "dismissed" : "moved to the backlog"}`);
+  audit(db, login, `security-finding-${action}`, findingKey(repo, n), { from: row.state, to, ...(reason && { reason }), ...extra });
+  return toFinding(db, findingRow(db, repo, n)!);
+}
+
+/** Moves the finding to the state the step works in, then queues the step; the state goes back when the queue refuses. */
+async function startStep(db: DatabaseSync, repo: string, n: number, login: string, action: FindingAction, s: NonNullable<(typeof STEPS)[FindingAction]>, b: Record<string, unknown>, extra: AuditExtra): Promise<FindingView> {
+  const row = findingRow(db, repo, n);
+  if (!row) throw new SecurityError(404, NOT_FOUND);
+  if (!s.from.includes(row.state)) throw new SecurityError(409, `a finding that is ${row.state} cannot be ${action === "fix" ? "fixed" : action === "land" ? "landed" : action === "advisory" ? "sent the advisory way" : "published"}; this needs ${s.busy}`);
+  if (action === "publish" && db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running') AND json_extract(params, '$.repo') = ? AND json_extract(params, '$.number') = ?").get(s.step, repo, n)) {
+    throw new SecurityError(409, "this finding is already being published");
+  }
+  if (action === "fix" && !row.verification) throw new SecurityError(409, "the finding has not been verified");
+  // Land after the advisory route starts over on the public fork: the advisory's private fork and its pull request are forgotten (ghsa_id stays).
+  const reset: Record<string, null> = action === "land" && row.state === "awaiting-admin" ? { fork: null, fix_pr: null } : {};
+  if (s.to && !advance(db, repo, n, s.from, s.to, { note: null, ...reset }, login)) throw new SecurityError(409, "the finding changed; reload and try again");
+  try {
+    const params: Record<string, string | number> = { repo, number: n, ...(action === "publish" && { cve: b.cve === true ? 1 : 0 }) };
+    const job = await enqueue(db, s.step, params, login);
+    // The job is recorded under the scan's pseudo repo, like the scan's own jobs, so job listings leave it out for viewers.
+    db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(repo), job.id);
+  } catch (e) {
+    if (s.to) advance(db, repo, n, [s.to], row.state, { fork: row.fork, fix_pr: row.fix_pr });
+    if (e instanceof JobError) throw new SecurityError(e.status, e.message);
+    throw e;
+  }
+  audit(db, login, `security-finding-${action}`, findingKey(repo, n), { from: row.state, ...(action === "publish" && { cve: b.cve === true }), ...extra });
+  return toFinding(db, findingRow(db, repo, n)!);
+}
