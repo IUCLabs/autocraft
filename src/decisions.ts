@@ -1,7 +1,7 @@
 // Decisions for people. The pipeline asks them with the CLI; only a signed-in
 // person on the dashboard answers them. The one command that sets answers is
 // the operator's bulk Backlog (`decisions backlog`), which only holds items.
-import { SETTLER_LOGINS_SQL, allAppIdentity, settlerLogins } from "./settlers.ts";
+import { settledBy, settledBySql } from "./settlers.ts";
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
@@ -166,10 +166,8 @@ export function operators(db: DatabaseSync): Set<string> {
 
 export function actionable(db: DatabaseSync): Actionable[] {
   const rows = db.prepare(`SELECT * FROM decisions WHERE answer IS NOT NULL AND answer <> '${BACKLOG.key}' AND applied_at IS NULL
-    AND answered_by IN ${SETTLER_LOGINS_SQL} ORDER BY answered_at`).all() as DecisionRow[];
-  // A maintainer's answer counts only while every repo it covers still has the app's identity (the write is then made as that person).
-  const asOperator = operators(db);
-  return rows.filter((d) => asOperator.has(d.answered_by!) || allAppIdentity(db, reposOf(d))).map((d) => ({
+    AND ${settledBySql("decisions")} ORDER BY answered_at`).all() as DecisionRow[];
+  return rows.map((d) => ({
     id: d.id, kind: d.kind, repo: d.repo, number: d.number, items: itemsOf(d), answer: d.answer!,
     exceptions: exceptionsOf(d).map((e) => ({ repo: e.repo, number: e.number, answer: e.answer })),
   }));
@@ -426,11 +424,10 @@ function list(args: string[]): void {
   const params: Record<string, string> = {};
   if (repo) Object.assign(params, { repo, like: `%"repo":"${repo}"%` });
   const db = connect();
-  const ops = settlerLogins(db);
   const rows = db.prepare(`SELECT * FROM decisions WHERE ${where.join(" AND ")} ORDER BY asked_at`).all(params) as DecisionRow[];
   for (const d of rows) {
     const target = isBatch(d) ? `batch of ${itemsOf(d).length}` : `${d.repo}#${d.number}`;
-    const by = isBacklog(d.answer) || (d.answered_by && ops.has(d.answered_by)) ? "" : " (not actionable: not answered by someone who settles)";
+    const by = isBacklog(d.answer) || settledBy(db, d) ? "" : " (not actionable: not answered by someone who settles)";
     const state = d.answer ? `answered ${d.answer}${d.applied_at ? ", applied" : ""}${by}` : "open";
     const keys = optionsOf(d).map((o) => o.key).join(",");
     console.log(`${d.id}\t${d.kind}\t${target}\t${state}\t${d.question}\toptions: ${keys}`);
@@ -446,7 +443,7 @@ function show(args: string[]): void {
   // Agents run this command: no free text from people (answer_note), and
   // adopted_opinion points at an opinion, which agents never see.
   const { adopted_opinion: _adopted, answer_note: _note, snoozed_by: _sb, snoozed_at: _sa, ...rest } = d;
-  const actionable = d.answer !== null && !isBacklog(d.answer) && d.answered_by !== null && settlerLogins(db).has(d.answered_by);
+  const actionable = d.answer !== null && !isBacklog(d.answer) && settledBy(db, d);
   const out = { ...rest, actionable, items: j(d.items, null), facts: factsOf(d), options: optionsOf(d), exceptions: j(d.exceptions, null) };
   console.log(JSON.stringify(out, null, 2));
 }

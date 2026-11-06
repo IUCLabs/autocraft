@@ -52,3 +52,25 @@ export function settlesNow(db: DatabaseSync, login: string | null, repos: string
   const row = db.prepare("SELECT role FROM main.access WHERE login = ?").get(login) as { role: string } | undefined;
   return !!row && canSettleCached(db, login, row.role, repos);
 }
+
+/**
+ * SQL condition on a decisions row (`a` is its table name or alias): its answer counts because its answerer is an operator, or a
+ * maintainer while `maintainer_writes` is on and every repo the decision covers (its own and its batch items') has the app's
+ * identity, so the write is made as that person. Checked wherever the pipeline reads answers.
+ */
+export const settledBySql = (a: string): string => `(${a}.answered_by IN (SELECT login FROM main.access WHERE role = 'operator')
+  OR (${a}.answered_by IN ${SETTLER_LOGINS_SQL}
+    AND NOT EXISTS (SELECT 1 WHERE ${a}.repo IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${a}.repo AND s.value = 'app'))
+    AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) j
+      WHERE json_extract(j.value, '$.repo') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || json_extract(j.value, '$.repo') AND s.value = 'app'))))`;
+
+/** The same check for one loaded decision row. */
+export function settledBy(db: DatabaseSync, d: { answered_by: string | null; repo: string | null; items: string | null }): boolean {
+  if (!d.answered_by) return false;
+  const row = db.prepare("SELECT role FROM main.access WHERE login = ?").get(d.answered_by) as { role: string } | undefined;
+  if (row?.role === "operator") return true;
+  if (row?.role !== "maintainer" || !maintainerWritesOn(db)) return false;
+  let items: { repo: string }[] = [];
+  try { items = JSON.parse(d.items ?? "[]"); } catch { /* none */ }
+  return allAppIdentity(db, [...new Set([...(d.repo ? [d.repo] : []), ...items.map((i) => i.repo)])]);
+}

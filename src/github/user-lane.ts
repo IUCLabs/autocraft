@@ -155,12 +155,18 @@ export async function resolveLane(deps: LaneDeps, login: string, repos: string[]
   }
 }
 
+const NOT_APP_REASON = "This answer was given by a maintainer and can only be carried out as that person: the repo does not use the app identity";
+const answeredByMaintainer = (db: DatabaseSync, decisionId: string): boolean =>
+  !!db.prepare("SELECT 1 FROM main.decisions d JOIN main.access a ON a.login = d.answered_by WHERE d.id = ? AND a.role = 'maintainer'").get(decisionId);
+
 /**
  * The lane for the operator who answered `decisionId`, or null when every repo is on the box account (`legacy`): the
  * caller then uses its own transports and nothing changes. Only the repos on `app` are checked.
  */
 export async function laneForDecision(db: DatabaseSync, deps: LaneDeps | undefined, decisionId: string, repos: string[]): Promise<LaneResult | null> {
   const app = repos.filter((r) => repoIdentity(db, r) === "app");
+  // A maintainer's answer is never carried out by the box account: a repo off the app identity refuses the write.
+  if (app.length < repos.length && answeredByMaintainer(db, decisionId)) return { state: "waiting-permission", reason: NOT_APP_REASON };
   if (!app.length) return null;
   // A decision that waits stays put until its operator signs in or someone retries it: no network call per run.
   const row = db.prepare("SELECT exec_state, exec_reason FROM main.decisions WHERE id = ?").get(decisionId) as { exec_state: string | null; exec_reason: string | null } | undefined;

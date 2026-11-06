@@ -1,6 +1,6 @@
 // GitHub side of the Label stage: ensure the label set exists, add labels to items.
 // Every call goes through the mirror's Querier (gh api graphql, rate-limit aware).
-import { SETTLER_LOGINS_SQL } from "../settlers.ts";
+import { settledBySql } from "../settlers.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import { setTimeout as sleepMs } from "node:timers/promises";
@@ -74,7 +74,7 @@ export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?:
 
 /** The scope decision an operator answered "plugin" for this item: its answer is what adds the plugin candidate label, so its operator writes it. */
 export function pluginDecisionOf(db: DatabaseSync, repo: string, number: number): string | undefined {
-  return (db.prepare(`SELECT id FROM main.decisions WHERE kind = 'scope' AND repo = ? AND number = ? AND answer = 'plugin' AND answered_by IN ${SETTLER_LOGINS_SQL}
+  return (db.prepare(`SELECT id FROM main.decisions WHERE kind = 'scope' AND repo = ? AND number = ? AND answer = 'plugin' AND ${settledBySql("decisions")}
     ORDER BY answered_at DESC LIMIT 1`).get(repo, number) as { id: string } | undefined)?.id;
 }
 

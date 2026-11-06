@@ -8,6 +8,7 @@ import { after, before, describe, test } from "node:test";
 import type { Decision, DecisionComment, DecisionList, Item, Progress, SearchHit, User } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
+import { settledBySql } from "../src/settlers.ts";
 import { actionable, ask } from "../src/decisions.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
@@ -270,8 +271,10 @@ describe("api", () => {
       assert.equal(d.answeredBy, "maint");
       assert.equal(auditCount("answer", "maint"), 1);
       assert.ok(actionableIds().includes(X1));
+      assert.ok(db.prepare(`SELECT 1 FROM decisions d WHERE d.id = ? AND ${settledBySql("d")}`).get(X1));
       identity(false);
       assert.ok(!actionableIds().includes(X1), "an answer on a repo that left the app identity stops counting");
+      assert.equal(db.prepare(`SELECT 1 FROM decisions d WHERE d.id = ? AND ${settledBySql("d")}`).get(X1), undefined, "nor at the SQL sites other than actionable()");
       identity(true);
       await boss.post(dpath(X2, "/answer"), { answer: "plugin" });
       await maint.post(dpath(X2, "/undo"), undefined, 403);

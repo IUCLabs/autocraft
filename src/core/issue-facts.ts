@@ -1,6 +1,6 @@
 // Facts of open items (issues and PRs) for the triage steps: classification, priority, embedding, duplicates, scope decision, labels.
 // Loaded in one pass for a whole database or a slice. Reads only: the old selectors fill missing text hashes in the database on the way; here a missing hash is computed.
-import { settlerLogins } from "../settlers.ts";
+import { settledBy } from "../settlers.ts";
 import { groupClosersPending } from "../act/dupe-groups.ts";
 import { pipelineWrites } from "./rules.ts";
 import { assignmentsOf, ownFixPrs } from "./facts.ts";
@@ -94,14 +94,13 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   }
   const answers = scopeAnswers(db);
   const operatorAnswers = scopeAnswers(db, true);
-  const operators = settlerLogins(db);
   const latestScope = new Map<string, { answer: string | null; byOperator: boolean }>(), securityIds = new Set<string>();
   const head = db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?");
   const openScope = new Set<string>(), covered = new Set<string>(), recommend = new Map<string, { failures: number; failedAt: string | null }>();
   for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, prepared_at, prepared_head, prepare_failed_head, recommend_failures, recommend_failed_at FROM decisions ORDER BY asked_at, id`).all() as
     (PrepareColumns & { id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null })[]) {
     const dupegroup = d.id.includes(":dupegroup:");
-    if (d.kind === "scope" && d.number !== null && !(d.answer === "withdrawn" && d.answered_by === "pipeline")) latestScope.set(`${d.repo}#${d.number}`, { answer: d.answer, byOperator: !!d.answered_by && operators.has(d.answered_by) });
+    if (d.kind === "scope" && d.number !== null && !(d.answer === "withdrawn" && d.answered_by === "pipeline")) latestScope.set(`${d.repo}#${d.number}`, { answer: d.answer, byOperator: settledBy(db, d) });
     if (d.asked_by === SECURITY_ASKER) securityIds.add(d.id);
     if (d.kind === "scope" && d.answer === null) {
       for (const r of refsOf(d)) openScope.add(r);
