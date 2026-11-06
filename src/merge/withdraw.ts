@@ -97,6 +97,43 @@ export function withdrawOtherHeadQuestions(db: DatabaseSync, repo: string, numbe
   }
 }
 
+/** Why a question is set aside for a newer one. */
+const NEWER_NOTE = "superseded by a newer question about the item";
+
+/**
+ * An item has at most one open single-item decision: of its open scope, merge and close questions the newest asked stays
+ * and the others are set aside (renamed like a superseded Merge? question, so an answer to them never counts). A set-aside
+ * scope question keeps its stages row, so Decide does not ask it again. Returns how many were set aside. Idempotent.
+ */
+export function setAsideSupersededQuestions(db: DatabaseSync, at: string, repo?: string): number {
+  const rows = db.prepare(`SELECT id, kind, repo, number FROM decisions WHERE answer IS NULL AND number IS NOT NULL
+    AND kind IN ('scope', 'merge', 'close') AND id NOT LIKE '%:dupegroup:%' AND id NOT LIKE '%~replaced-%' ${repo ? "AND repo = ?" : ""}
+    ORDER BY asked_at DESC, rowid DESC`).all(...(repo ? [repo] : [])) as { id: string; kind: string; repo: string; number: number }[];
+  const seen = new Set<string>();
+  const aside: { r: (typeof rows)[number]; why: string }[] = [];
+  for (const r of rows) {
+    const k = `${r.repo}#${r.number}`;
+    if (seen.has(k)) aside.push({ r, why: NEWER_NOTE });
+    else seen.add(k);
+  }
+  if (!aside.length) return 0;
+  const close = db.prepare("UPDATE main.decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const { r, why } of aside) {
+      const old = `${r.id}~replaced-${at}`;
+      renameDecision(db, r.id, old);
+      close.run(WITHDRAWN, at, at, why, old);
+      audit(db, "pipeline", "decision-withdrawn", old, { repo: r.repo, number: r.number, kind: r.kind, why });
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return aside.length;
+}
+
 type OpenRow = { id: string; kind: string; repo: string | null; number: number | null; state: string | null; itemKind: string | null };
 
 const closedWhy = (r: OpenRow): string => r.state === "MERGED" ? "the pull request was merged" : `the ${r.itemKind === "pr" ? "pull request" : "issue"} was closed on GitHub`;

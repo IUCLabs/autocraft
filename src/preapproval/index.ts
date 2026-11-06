@@ -23,7 +23,7 @@ import { longLivedOf, pushable } from "../fixup/pushable.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
-import { withdrawOtherHeadQuestions } from "../merge/withdraw.ts";
+import { setAsideSupersededQuestions, withdrawOtherHeadQuestions } from "../merge/withdraw.ts";
 import { findingsOf, premergeAt } from "../premerge/store.ts";
 import { releaseMerge, removeFromBatch } from "../merge/controls.ts";
 import type { Exec } from "../fixup/git.ts";
@@ -191,6 +191,7 @@ function askMerge(db: DatabaseSync, p: Row, head: string, why: string, facts: st
     facts: [...facts.slice(0, 4), `${HEAD_FACT}${head}`], options: Object.values(MERGE_OPTIONS).map((x) => ({ ...x })), asked_by: ACTOR, asked_at: at,
   }]);
   withdrawOtherHeadQuestions(db, p.repo, p.number, head, at);
+  setAsideSupersededQuestions(db, at, p.repo);
 }
 
 type Hand = { done: true } | { gone: true } | { stop: string };
