@@ -44,7 +44,7 @@ type Row = {
   embed_hash: string | null; class_hash: string | null; class_scheme: string | null; score: number | null;
   in_pilot: number; not_integration: number; held_backlog: number; held_dup: number;
   pr_hash: string | null; e_hash: string | null; scan_hash: string | null; stage: string | null; impact: string | null;
-  a_state: string | null; a_hash: string | null; a_head: string | null; a_base: string | null; h_state: string | null; b_state: string | null;
+  a_state: string | null; a_pr: string | null; a_hash: string | null; a_head: string | null; a_base: string | null; h_state: string | null; b_state: string | null;
 };
 
 const SELECT = `SELECT i.repo, i.number, i.kind, i.state, i.title, i.assignees, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
@@ -53,7 +53,7 @@ const SELECT = `SELECT i.repo, i.number, i.kind, i.state, i.title, i.assignees, 
     (EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
       OR ${groupHeldSql("i")}) AS held_dup,
     p.text_hash AS pr_hash, p.impact, e.hash AS e_hash, s.hash AS scan_hash, st.stage,
-    fa.state AS a_state, fa.text_hash AS a_hash, fa.head_task_id AS a_head, fa.base_task_id AS a_base, ht.state AS h_state, bt.state AS b_state
+    fa.state AS a_state, fa.pr_url AS a_pr, fa.text_hash AS a_hash, fa.head_task_id AS a_head, fa.base_task_id AS a_base, ht.state AS h_state, bt.state AS b_state
   FROM items i JOIN tracked_repos t ON t.name = i.repo
   LEFT JOIN item_rank r ON r.repo = i.repo AND r.number = i.number
   LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number
@@ -180,6 +180,12 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     return m;
   };
   const textOf = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?");
+  const mirrored = db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ? AND kind = 'pr'");
+  // The fix PR we just opened counts as open until a sync mirrors it: the mirror's open-PR list doesn't have it yet.
+  const ownPrUnmirrored = (state: string | null, url: string | null): boolean => {
+    const m = state === "pr-opened" ? /\/([^/]+)\/pull\/(\d+)$/.exec(url ?? "") : null;
+    return !!m && !mirrored.get(m[1]!, Number(m[2]));
+  };
   const body = db.prepare("SELECT repo, number, kind, title, body, additions, deletions, changed_files, author_association FROM items WHERE repo = ? AND number = ?");
 
   return rows.map((r): ItemFacts => {
@@ -241,7 +247,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
           headDone: r.h_state !== null && (TERMINAL as string[]).includes(r.h_state),
           baseDone: r.a_base === null || (r.b_state !== null && (TERMINAL as string[]).includes(r.b_state)),
         },
-        publicRepo: repoOf(r.repo).pub, notRust: repoOf(r.repo).notRust, openPr: r.kind === "issue" && repoOf(r.repo).openPrs.has(r.number), impact: r.impact,
+        publicRepo: repoOf(r.repo).pub, notRust: repoOf(r.repo).notRust, openPr: r.kind === "issue" && (repoOf(r.repo).openPrs.has(r.number) || ownPrUnmirrored(r.a_state, r.a_pr)), impact: r.impact,
         scopeDecision: latestScope.get(ref) ?? null,
       },
     };
