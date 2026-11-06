@@ -23,6 +23,8 @@ export type PrepareInput = {
   stopped: Record<string, unknown>;
   /** The operator messages of the item's conversation, newest last, as the conversation prompt shows them. */
   operator_turns?: string;
+  /** Second call only: why the cards of the first reply were dropped, so the model corrects them. */
+  previous?: string[];
 };
 
 export const PREPARE_REASON_MAX = 200;
