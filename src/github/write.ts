@@ -26,7 +26,7 @@ export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
 
 /** Who writes (the audit login: the stage name, or the operator for manual actions) and where the row goes. */
-export type Writer = { db: DatabaseSync; login: string; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
+export type Writer = { db: DatabaseSync; login: string; /** Replaces the clock (tests). */ now?: () => number; /** Replaces the pacing sleep (tests). */ sleep?: (ms: number) => Promise<void>; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
 type Details = Record<string, unknown>;
 type Retry = <T>(f: () => Promise<T>) => Promise<T>;
 
@@ -102,22 +102,97 @@ function laneQuery(w: Writer, g: Guarded | Grant, q: Querier): Querier {
   };
 }
 
-/** Adds the row before the write, so a crash during the call leaves a "started" row: an unknown outcome. */
-function begin(w: Writer, action: string, target: string, details: Details): number {
-  const r = w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, ?, ?, ?, ?)")
-    .run(new Date().toISOString(), w.login, action, target, JSON.stringify({ ...details, state: "started" }));
-  return Number(r.lastInsertRowid);
+// ---- write pacing -----------------------------------------------------------
+// GitHub limits content-creating requests per account (about 80 a minute, 500 an hour). Writes are paced per
+// (identity, repo owner) under a margin, inside begin(), so every write path is covered. Operator presses (`user:`
+// identities) are exempt.
+export const PACE_PER_MINUTE = 60;
+export const PACE_PER_HOUR = 400;
+/** The longest a write waits for the budget; past it the write is refused as paced and the caller retries later. */
+export const PACE_MAX_WAIT_MS = 15_000;
+/** After a secondary-limit failure the key pauses this long. */
+export const SECONDARY_PAUSE_MS = 60_000;
+const SECONDARY_LIMIT = /secondary rate limit|abuse/i;
+
+/** The write was held back by pacing for longer than the bound and nothing was written or recorded. Retry later. */
+export class WritePacedError extends Error {
+  readonly retryable = true;
+  readonly key: string;
+  readonly waitMs: number;
+  constructor(key: string, waitMs: number) {
+    super(`write paced: the GitHub write budget for ${key} is used up; retry in ${Math.ceil(waitMs / 1000)} s`);
+    this.name = "WritePacedError";
+    this.key = key;
+    this.waitMs = waitMs;
+  }
+}
+
+/** The audit target is `repo#number` or an org name; the key's owner is that repo's owner. */
+function paceOwner(target: string): string {
+  const name = target.split("#")[0]!;
+  return ownerOf(name) || name;
+}
+
+/**
+ * Tries to insert the row inside one BEGIN IMMEDIATE: counts the key's rows of the last hour (json_extract over the
+ * window's rows via the audit_at index: fine at this volume) and inserts when under budget. Returns the row id, or
+ * how long to wait before the window frees.
+ */
+function tryBegin(w: Writer, action: string, target: string, details: Details, now: number): { id: number } | { wait: number } {
+  const identity = String(details.identity ?? "");
+  const owner = paceOwner(target);
+  const insert = (d: Details): number => Number(w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, ?, ?, ?, ?)")
+    .run(new Date(now).toISOString(), w.login, action, target, JSON.stringify(d)).lastInsertRowid);
+  const started = { ...details, state: "started" };
+  if (identity.startsWith("user:")) return { id: insert(started) };
+  w.db.exec("BEGIN IMMEDIATE");
+  try {
+    const rows = w.db.prepare(
+      `SELECT at, json_extract(details, '$.state') AS state, json_extract(details, '$.error') AS error FROM audit
+       WHERE at >= ? AND json_extract(details, '$.identity') = ? AND json_extract(details, '$.paceOwner') = ? ORDER BY at`,
+    ).all(new Date(now - 3_600_000).toISOString(), identity, owner) as { at: string; state: string | null; error: string | null }[];
+    const times = rows.map((r) => Date.parse(r.at));
+    const inMinute = times.filter((t) => t > now - 60_000);
+    let wait = 0;
+    if (inMinute.length >= PACE_PER_MINUTE) wait = inMinute[inMinute.length - PACE_PER_MINUTE]! + 60_000 - now;
+    if (times.length >= PACE_PER_HOUR) wait = Math.max(wait, times[times.length - PACE_PER_HOUR]! + 3_600_000 - now);
+    const lastSecondary = rows.filter((r) => r.state === "failed" && SECONDARY_LIMIT.test(r.error ?? "")).map((r) => Date.parse(r.at)).at(-1);
+    if (lastSecondary !== undefined) wait = Math.max(wait, lastSecondary + SECONDARY_PAUSE_MS - now);
+    if (wait > 0) { w.db.exec("COMMIT"); return { wait: Math.max(wait, 1) }; }
+    const id = insert({ ...started, paceOwner: owner });
+    w.db.exec("COMMIT");
+    return { id };
+  } catch (e) {
+    try { w.db.exec("ROLLBACK"); } catch { /* already ended */ }
+    throw e;
+  }
+}
+
+/** Adds the row before the write, so a crash during the call leaves a "started" row: an unknown outcome. Paces the write; throws WritePacedError when the wait would pass the bound. */
+async function begin(w: Writer, action: string, target: string, details: Details): Promise<number> {
+  const clock = w.now ?? Date.now;
+  const sleep = w.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const t0 = clock();
+  for (;;) {
+    const now = clock();
+    const r = tryBegin(w, action, target, details, now);
+    if ("id" in r) return r.id;
+    if (now - t0 + r.wait > PACE_MAX_WAIT_MS) throw new WritePacedError(`${String(details.identity)} on ${paceOwner(target)}`, r.wait);
+    await sleep(r.wait);
+  }
 }
 
 function finish(w: Writer, id: number, details: Details, error?: string): void {
   const d = error === undefined ? { ...details, state: "done" } : { ...details, state: "failed", error };
-  w.db.prepare("UPDATE audit SET details = ? WHERE rowid = ?").run(JSON.stringify(d), id);
+  // The pacing key's owner, set by begin(), stays on the row.
+  w.db.prepare("UPDATE audit SET details = CASE WHEN json_extract(details, '$.paceOwner') IS NULL THEN ?1 ELSE json_set(?1, '$.paceOwner', json_extract(details, '$.paceOwner')) END WHERE rowid = ?2")
+    .run(JSON.stringify(d), id);
 }
 
 /** Records the row first, runs the write, then marks the row done with `view`'s extra details or failed with the error. */
 async function recorded<T>(w: Writer, identity: string, action: string, target: string, details0: Details, f: () => Promise<T>, view?: (r: T) => Details, failure?: (r: T) => string | null): Promise<T> {
   const details = { ...details0, identity };
-  const id = begin(w, action, target, details);
+  const id = await begin(w, action, target, details);
   let r: T;
   try {
     r = await f();
@@ -295,7 +370,8 @@ export async function addLabels(w: Writer, q: Querier, repo: string, items: Labe
   const vars: Record<string, unknown> = {};
   items.forEach((it, k) => { vars[`i${k}`] = it.id; vars[`l${k}`] = it.labelIds; });
   const det = (it: LabelWrite): Details => ({ ...details, labels: it.names, identity: idOf(w, it.g) });
-  const ids = items.map((it) => begin(w, "labels-apply", refOf(repo, it.number), det(it)));
+  const ids: number[] = [];
+  for (const it of items) ids.push(await begin(w, "labels-apply", refOf(repo, it.number), det(it)));
   let d: Record<string, unknown> | null;
   try {
     d = await retry(() => q.query(addLabelsMutation(items.length), vars));
@@ -592,7 +668,7 @@ export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string
   const method: string = o.method;
   const base = { ...details, method, identity: idOf(w, g) };
   const target = refOf(repo, g.number);
-  const id = begin(w, "merge", target, base);
+  const id = await begin(w, "merge", target, base);
   let r: CommandResult;
   try {
     if (inAppLane(w, g)) {
@@ -617,8 +693,8 @@ export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string
  * The merge itself: `gh pr merge` pinned to `head`. `record` starts the activity row and returns the function that
  * finishes it; it is absent when a parent process already records the merge.
  */
-export async function ghMergePr(gh: (args: string[]) => Promise<string>, repo: string, pr: string, method: "--squash" | "--merge", head: string, record?: () => (error?: string) => void): Promise<void> {
-  const end = record?.();
+export async function ghMergePr(gh: (args: string[]) => Promise<string>, repo: string, pr: string, method: "--squash" | "--merge", head: string, record?: () => Promise<(error?: string) => void>): Promise<void> {
+  const end = await record?.();
   try {
     await gh(["pr", "merge", pr, "-R", repo, method, "--match-head-commit", head]);
   } catch (e) {
@@ -629,12 +705,12 @@ export async function ghMergePr(gh: (args: string[]) => Promise<string>, repo: s
 }
 
 /** Records a merge made from the command line, in the database `connect()` opens, under the login `cli`. */
-export function cliMergeRecorder(repoSlug: string, pr: string, method: string, head: string): () => (error?: string) => void {
-  return () => {
+export function cliMergeRecorder(repoSlug: string, pr: string, method: string, head: string): () => Promise<(error?: string) => void> {
+  return async () => {
     const w: Writer = { db: connect(), login: "cli" };
     // The command line runs as the box account whatever the repo's setting.
     const details = { method: method.slice(2), head, identity: "legacy" };
-    const id = begin(w, "merge", `${repoName(repoSlug)}#${Number(pr)}`, details);
+    const id = await begin(w, "merge", `${repoName(repoSlug)}#${Number(pr)}`, details);
     return (error) => {
       try {
         finish(w, id, details, error);
