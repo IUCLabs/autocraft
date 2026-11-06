@@ -16,7 +16,7 @@ import { repoIdentity } from "../github/identity.ts";
 import { authFailure, isWaiting, laneForDecision, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps } from "../github/user-lane.ts";
 
 export const BATCH = 10;          // mutations per request
-export const WRITES_PER_MIN = 60; // GitHub asks integrators to stay near this for content-creating writes
+export const WRITES_PER_MIN = 40; // below GitHub's content-creating limit, leaving the write pacing budget room for other writes
 const NODE_LOOKUP = 25;
 
 export class LabelsError extends Error {}

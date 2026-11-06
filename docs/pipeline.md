@@ -713,11 +713,13 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Jev unavailable | Jev is switched off (`autocraft accounts jev off`), the `jev` command is missing, or its account fails: out of credit, or a missing or rejected key (status 401, 402, 403, or a message about credit, billing, quota or the key). Haiku does Jev's classify, priority and duplicate work through the Claude accounts. Off or not installed: no retry until it is switched on or the command exists (checked on each pass). Account failure: the first pass an hour after the last failure tries Jev again; no timer runs. Other Jev errors (timeouts, server errors, bad answers) are retried as before | 1 hour after an account failure | Accounts page and run logs |
 | Circuit breaker | A push stage (fix-up, CI fix, fix issue) stops when 2 of its last 10 pushes turned a required check red; the merge path stops when main CI turns red because of a merge of ours or a post-merge review finds a defect in it | Until an operator resumes the stage (`autocraft pipeline resume <stage>` or the Resume button on the Pipeline page); no timer | "tripped: ..." as the stage's pause reason |
 | Claude usage pause | Account headroom | Until usage reading recovers; re-read every minute | Claude pause reason |
-| Rate limits | GitHub | Per the API's reset | Job log |
+| Rate limits | GitHub. Writes are also paced under GitHub's limits: at most 60 a minute and 400 an hour per identity and repo owner (one key for the box account, which runs every legacy repo, operator presses on those included; only `user:` identities, an operator's own token, are exempt), and a key pauses 60 seconds after a secondary-limit failure. A write waits at most 15 seconds for its turn, then fails as paced and the planner retries it | Per the API's reset; write pacing frees as the minute and hour windows move | Job log |
 | Planner fallback | Safety net; the planner normally runs on a change | 5 minutes | none |
 | Flow summary and vector index | Display and search caches | 10 and 30 minutes at most; also rebuilt on change | none |
 | Retention | Pruning old rows and logs | Days to months | none |
 <!-- stages:end waits -->
+
+GitHub writes are paced inside the write module, so every write path is covered. Per identity and repo owner, at most 60 writes a minute and 400 an hour are started (GitHub's limits are about 80 and 500). The box account runs every repo on the legacy identity and is one key for all owners, operator presses on those repos included. Only `user:` identities (an operator's own token) are exempt. A write over budget waits until the window frees, for at most 15 seconds; past that it fails as paced without an audit row and the planner retries it. After a write on a key failed with a secondary rate limit or abuse error, that key pauses for 60 seconds.
 
 | Who | On the Pipeline page |
 |---|---|
