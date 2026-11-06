@@ -1826,7 +1826,7 @@ export interface ConversationCard {
 /** The GitHub write a core or an extra performs; one pill each in the UI. */
 export type ActionTag = "merge" | "close" | "reopen" | "comment" | "open_issue" | "label" | "unlabel" | "assign" | "request_review" | "push" | "move";
 export type ExtraKind = "comment" | "open_issue" | "label" | "unlabel" | "assign" | "request_reviewers";
-/** `o:<option>`, `fixup-merge`, `backlog`, `x:close:<completed|not_planned>`, `x:duplicate:<n>`, `x:transfer:<repo>`, `x:fixup`, `x:review`. */
+/** `o:<option>`, `fixup-merge`, `fixup-merge:<small-extra|take>` (scope decisions), `backlog`, `x:close:<completed|not_planned>`, `x:duplicate:<n>`, `x:transfer:<repo>`, `x:fixup`, `x:fixup:<small-extra|take>`, `x:review`. */
 export type CoreKey = string;
 
 export interface ChoiceExtra {

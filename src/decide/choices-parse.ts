@@ -126,12 +126,14 @@ function checkCore(db: DatabaseSync, repo: string, n: number, core: Core, raw: {
 }
 
 /** The key of an added core from the `end` of an `add` entry, or null. */
-function endKey(end: unknown): CoreKey | null {
+function endKey(end: unknown, scope: boolean): CoreKey | null {
   if (!isObj(end)) return null;
   if (end.close === "completed" || end.close === "not_planned") return coreKey.close(end.close);
   if (Number.isInteger(end.duplicate) && (end.duplicate as number) > 0) return coreKey.duplicate(end.duplicate as number);
   if (typeof end.transfer === "string" && end.transfer.trim()) return coreKey.transfer(end.transfer.trim().replace(/^[^/]*\//, ""));
-  if (end.fixup === true) return coreKey.fixup;
+  // A scope question's fix-up names the keep answer it records.
+  if (!scope && end.fixup === true) return coreKey.fixup();
+  if (scope && (end.fixup === "small-extra" || end.fixup === "take")) return coreKey.fixup(end.fixup);
   if (end.review === true) return coreKey.review;
   return null;
 }
@@ -194,7 +196,7 @@ export function parseChoices(db: DatabaseSync, repo: string, n: number, d: Decis
   let room = MAX_ADDED_CORES - existing.filter((c) => c.key.startsWith("x:")).length;
   for (const a of Array.isArray(raw.add) ? raw.add.slice(0, MAX_ADDED_CORES * 2) : []) {
     if (!isObj(a)) continue;
-    const key = endKey(a.end);
+    const key = endKey(a.end, d.kind === "scope");
     if (!key) { notes.push("dropped an added choice without a valid end (close, duplicate, transfer, fixup or review)"); continue; }
     const known = [...existing, ...newCores].find((c) => c.key === key);
     if (!known && room <= 0) { notes.push(`left out the added choice ${key}: at most ${MAX_ADDED_CORES} are kept`); capped.add(key); continue; }
