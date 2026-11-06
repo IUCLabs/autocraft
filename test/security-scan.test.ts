@@ -13,7 +13,7 @@ import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { insertRun } from "../src/agents/runs.ts";
-import { runScan, type Ask, type ScanDeps } from "../src/security/scan.ts";
+import { linkRepeatedFindings, runScan, type Ask, type ScanDeps } from "../src/security/scan.ts";
 import { securityRepo } from "../src/security/rules.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -232,7 +232,7 @@ describe("security deep scan", () => {
     assert.equal(s.cost_usd, 3);
   });
 
-  test("findings that share an entry point but not a sink are both kept; a repeat (same sink and category, or same title) is linked to the earlier finding", async () => {
+  test("findings that share an entry point but not a sink are both kept; a repeat (same sink and category, same title, or two more shared refs) is linked to the earlier finding", async () => {
     db.prepare("DELETE FROM security_findings").run();
     const model = fakeModel();
     const entry = ref("crates/psd/src/layer.rs", 10);
@@ -240,9 +240,10 @@ describe("security deep scan", () => {
       if (id !== "security.area") return (model.ask as (i: string, x: object) => Promise<unknown>)(id, input);
       if (!JSON.stringify(input).includes("PSD reader")) return { cost: 1, text: JSON.stringify({ findings: [] }) };
       return { cost: 1, text: JSON.stringify({ findings: [
-        found("Layer length trusted", [ref("crates/psd/src/layer.rs", 118), entry]),
+        found("Layer length trusted", [ref("crates/psd/src/layer.rs", 118), entry, ref("crates/psd/src/layer.rs", 60)]),
         found("Channel count trusted", [ref("crates/psd/src/layer.rs", 140), entry]),
         found("Crafted header escapes the output folder", [ref("crates/psd/src/layer.rs", 120), entry]),
+        found("Unchecked size copies heap bytes out", [ref("crates/psd/src/layer.rs", 118), entry, ref("crates/psd/src/layer.rs", 61)], { category: "memory_disclosure" }),
       ] }) };
     }) as Ask;
     const a = newScan(null);
@@ -253,10 +254,15 @@ describe("security deep scan", () => {
     await runScan(db, b, { ...model, ask });
     assert.equal(titles().length, 2, "the second scan adds nothing visible");
     const dupes = db.prepare("SELECT duplicate_of FROM security_findings WHERE state = 'duplicate' ORDER BY number").all() as { duplicate_of: number }[];
-    assert.equal(dupes.length, 4);
+    assert.equal(dupes.length, 6);
     const boss = await signedIn("boss");
     const first = await boss.get<FindingView>("/api/security/findings/photocraft/" + dupes[0]!.duplicate_of);
     assert.ok(first.timeline.some((c) => c.kind === "duplicate"));
+    // A repeat stored as its own finding (an older rule) is linked at runner start; a second pass changes nothing.
+    db.prepare("UPDATE security_findings SET state = 'new', duplicate_of = NULL WHERE state = 'duplicate' AND title = 'Unchecked size copies heap bytes out'").run();
+    assert.equal(linkRepeatedFindings(db), 2);
+    assert.equal(linkRepeatedFindings(db), 0);
+    assert.equal(titles().length, 2);
   });
 
   test("a capped scan continues with a higher cap: finished work is not redone, the next area runs", async () => {
