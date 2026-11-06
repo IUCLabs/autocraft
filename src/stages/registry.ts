@@ -239,6 +239,7 @@ export const STAGES: StageDef[] = [
     swimlane: [
       { id: "review", lane: "models", row: 12, lines: ["Opus review", "reads the repo"] },
       { id: "closeq", lane: "operator", row: 13, lines: ["Close this PR?", "close / hold / keep open"] },
+      { id: "postrev", lane: "writes", row: 12, lines: ["Post review", "one review per PR"], approval: "comment approval" },
     ],
     edges: [{ to: "fixup", branch: "take-fix", label: "take with fixes" }, { to: "verify", branch: "take", label: "taken" }],
   },
@@ -386,6 +387,7 @@ export const STAGES: StageDef[] = [
       { id: "hold2", lane: "operator", row: 14, lines: ["Hold", "waits for a person"] },
       { id: "mergeq", lane: "operator", row: 15, lines: ["Merge?", "merge / hold / close"] },
       { id: "batch", lane: "sandbox", row: 16, lines: ["Integration batch", "up to 50 PRs, upstream CI"] },
+      { id: "ciapprove", lane: "writes", row: 16, lines: ["Approve CI runs", "outside contributors' PRs"], approval: "CI approval" },
       { id: "merge", lane: "writes", row: 17, lines: ["Merge", "batch PR, safe-merge --merge"], approval: "merge approval" },
     ],
     edges: [{ to: "postmerge", branch: "merged", label: "merged PRs" }],

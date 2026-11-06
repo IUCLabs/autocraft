@@ -4,7 +4,7 @@ The pipeline sorts the craft apps' open issues and PRs (about 21,000), reviews a
 
 ## The flow
 
-Each column is an actor. Rows run top to bottom in pipeline order. The heavy line is the automatic path: nothing on it waits for a person. Thin lines are side branches, and dashed lines are branches that wait for the operator (Decide, Duplicate?, Close this PR?, Merge?, Hold) or are rare. Cards in the GitHub writes column name the approval they need for that repo (Repos page) and stay within their daily limit.
+Each column is an actor. Rows run top to bottom in pipeline order. The heavy line is the automatic path: nothing on it waits for a person. Thin lines are side branches, and dashed lines are branches that wait for the operator (Decide, Duplicate?, Close this PR?, Merge?, Hold) or are rare. Cards in the GitHub writes column name the approval they need for that repo (Repos page) and stay within their daily limit. The security deep scan is not drawn: an operator starts each scan, and it runs outside the daily pipeline (see Security deep scan).
 
 ```swimlane
 pipeline
@@ -17,7 +17,7 @@ The stages, in order:
 2. Duplicates: Finds items that describe the same bug or request as another open item, or one closed in the last year, and compares each group.
 3. Classify: Gives each open item one type label and two flags (security, needs decision). Jev goes first, Haiku gives a second opinion, and a referee settles disagreements outside the scope labels.
 4. Priority: Gives each open item a level from P0 to P4, then orders the candidates of later stages by a work rank.
-5. Decide: Asks an operator for scope calls, prepares every open decision with a summary, a pick and drafted core actions with extras, and answers questions about an item in its conversation.
+5. Decide: Asks an operator for scope calls, prepares every open decision with a summary, a pick and drafted answers, and answers questions about an item in its conversation.
 6. Label: Writes each settled type label and flag to GitHub. A label a person set is never changed.
 7. Review: Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted.
 8. Fix: Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.
@@ -25,7 +25,7 @@ The stages, in order:
 10. Verify: Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.
 11. Merge queue: Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Before a PR the rule would merge goes into a batch, and before a pre-approved merge is handed over to the queue, Opus reviews its head commit once more, adversarially and independently of the first review; a defect it verifies becomes a fix-up or a Merge? question (for a pre-approved merge, a Merge? question). Approves held CI runs of outside contributors where the repo allows it.
 12. Act: Makes the comments and closes that follow an operator's answer, from fixed templates.
-13. Post-merge review: Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown.
+13. Post-merge review: Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting, except on a security fix whose advisory is not published yet (its findings are only shown); minor findings are only shown.
 <!-- stages:end stage-list -->
 
 Sync, Embed, Duplicates, Classify, Priority and Decide cover the whole org. Label, Review, Fix, Fix-up, Verify, Merge, Post-merge review and Act go one or a few repos at a time. The work rank orders the candidates of Decide, Review, Verify and Fix-up, highest first.
@@ -531,6 +531,68 @@ Everything else waits for a decision on this dashboard.
 
 **Applied answers.** An answer that writes nothing counts as applied once the pipeline used it (scope take / small-extra when the item is reviewed or fixed, plugin when the label is on the item, need-info and Close? hold / keep at the next pass). From then the dashboard offers no Undo. A Backlog answer is never applied; Reopen takes its place.
 
+## Actions
+
+### Answering a question
+
+A decision offers one **core action** (pick exactly one) and **extras** (checkboxes that run with it). The Do it button names the GitHub writes of the chosen core and the ticked extras. Opus prepares the cores and drafts the extras (see Decide, Prepare); the maintainer can change every text and tick. Only the cores that apply to the item now are offered: a PR gets no transfer, an issue gets no fix-up.
+
+**Cores.** The writes column uses the action tags of the page.
+
+| Action | Writes on GitHub | What AutoCraft does |
+|---|---|---|
+| The question's own answers: Merge, Close, Out of scope, Hold, Keep open, Wanted in core, Small extra, Plug-in candidate, Check the reference app | Merge: merge. Close and Out of scope: comment, close. The rest write nothing at once | Merge queues the PR: it merges after CI and checks pass. Close records the answer and stops work on the item. Wanted in core and Small extra keep the item in core: PRs go to review, an issue may get a fix attempt. Plug-in candidate adds the plugin candidate label later (Label). Check the reference app and Hold keep the item out of later stages until asked again. Keep open does not ask again at this head |
+| Fix up first, then merge | push, merge | Pushes the fix-up, reviews the PR again and merges if the review and CI pass; otherwise a new question comes back (see Pre-approved merge). On a scope question it also keeps the PR in core: the answer is Small extra when the card adds the "small extra" label or the PR already has it, else Wanted in core |
+| Fix up the PR | push | Pushes the fix-up and reviews again. On a scope question it also keeps the PR in core, as above |
+| Review the PR again | none | Marks the head's review stale; Opus reviews it again and the pipeline decides again |
+| Close issue as completed, Close issue as not planned, Close PR | close | Records the answer and stops work on the item. A comment extra is offered |
+| Close as duplicate of #n | close | Comments "Duplicate of #n.", closes the item and stops work on it |
+| Move issue to another repo | move | Stops work on the issue here |
+| Later | none | Moves the decision to the Backlog (see Decide, Backlog) |
+
+Opus adds the cores from Fix up the PR to Move issue when no offered core covers the case, at most three per decision. Close and Out of scope as an answer of the question take a one-sentence reason instead of a comment: it is posted in the closing comment.
+
+**Extras.** An extra is offered only when the core takes it for this item. Comment and open issue are always offered, empty; the others appear when Opus drafts them. Opus's ticks are the defaults.
+
+| Extra | Writes on GitHub | What AutoCraft does |
+|---|---|---|
+| Comment | comment | Posts the text on the item before the core runs. The answers Close and Out of scope have no comment extra: their reason is the closing comment |
+| Label | label | Adds one of the managed labels (bugfix, performance, missing feature, small extra, plugin candidate, infra, security, needs decision) |
+| Remove label | unlabel | Removes a managed label the item has |
+| Open issue | open issue | Opens an issue in this or another tracked repo, for example a follow-up with Merge |
+| Assign | assign | Assigns the item's author or a person with write access |
+| Request reviewers | request review | PRs only: one to three people with write access, never the author |
+
+The steps run in this order: comment, labels, unlabels, assign, request reviewers, open issue, fix-up or review, and last the closing step (close, duplicate or transfer). Choices have no reopen extra: a card on a closed item (written in the item's conversation) starts with a reopen step, only on an issue or a closed, unmerged PR.
+
+**Who can press Do it.** Operators. Maintainers can too, on a repo that acts as the GitHub App, while the maintainer-writes setting is on and the maintainer has write, maintain or admin access to every repo the decision covers (`canSettle`, `src/settlers.ts`); the write then shows under their own GitHub name. Everyone else reads the decision.
+
+**More buttons.** These are for operators.
+
+- **Something else…** opens a box for an instruction to Opus. Opus answers in the item's conversation and may draft new choices: changed drafts, a new pick and up to three added cores.
+- **Re-prepare** clears the prepared summary and puts the decision first in line for a new Prepare call. The current choices stay until the new ones replace them.
+- **Snooze** hides the decision from the inbox until the item has new activity. The decision stays open and the pipeline keeps waiting.
+
+### What AutoCraft does on its own
+
+Each write needs the repo's approval (Repos page) and stays within the stage's daily limit (see Daily limits). The pipeline's on/off switch stops all of them except the security deep scan.
+
+| Action | Stage | Approval and limit |
+|---|---|---|
+| Type labels and flags | Label | Label approval. No limit |
+| Assign or release the pipeline's account | Fix, Fix-up, CI fix, Merge queue | The stage's own approval. Released when the work ends (see Merge queue, Assignment) |
+| Post or edit the final review | Review (`review-post`) | Comment approval. 40 posts a day |
+| Approve a contributor's held CI runs | Merge queue (`ci-approve`) | CI approval. 30 a day |
+| Push the review's small fixes, or comment them when the branch cannot be pushed to | Fix-up | Push approval for the push, comment approval for the comment. 20 PRs a day |
+| Format, rerun or patch a failing check | CI fix | Push approval for the push, comment approval for a patch comment, CI approval for the rerun. Two tries a head; reruns 30 a day |
+| Merge the base branch into a conflicting PR, and comment | Fix-up | Push approval, comment approval. Two tries a PR; counted with Fix-up |
+| Fix a red default branch: rerun, open a fix PR | CI fix (`main-fix`) | Fix red main approval, off by default. 20 a day |
+| Open a fix PR for a bugfix issue | Fix | Fix approval. 10 attempts a day |
+| Merge: singly, or in an integration batch of up to 50 PRs | Merge queue | Merge approval. The merge rule or an operator's Merge answer. 10 a day |
+| Comment, then close, after an answer | Act | Comment approval. 20 a day |
+| Open a follow-up issue for each defect of a post-merge review | Post-merge review | Comment approval. 20 a day |
+| Private fix of a confirmed security finding | Security deep scan | Starts when Verify confirms the finding. Writes nothing to GitHub: Land, Advisory and Publish are operator presses. Pipeline switch and daily limits do not apply |
+
 ## Trust boundary
 
 - Untrusted code never runs where GitHub or Claude credentials are (see Build environments).
@@ -631,6 +693,7 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Work rank recompute | Its input moves in bursts while a sync writes; nothing waits on it | at most once a minute | none |
 | Failed prepare | A prepare call that keeps failing must not re-run Decide | 1 hour between tries, at most 3 at one PR head; then the decision keeps what it has | none (the decision shows no pick or drafts) |
 | Checks before Review and Verify | CI data younger than 5 minutes is reused | 5 minutes | Job list |
+| Fix landing poll | A deep-scan fix that went out as a pull request waits for its merge, which the mirror reports; a fix that went the advisory way waits for a repository admin to merge it, which shows as the patch reaching the default branch | 2 minutes, read by the sync run, with the pipeline on or off | The finding's state: landing, awaiting admin, then landed or advisory |
 | Lint task | A model patch is stored while a build worker formats it and runs clippy on the patched tree; the result is collected when the task ends | Until the build task ends (minutes); a lost task is queued once more, then the patch is given up | Builds page; the PR's fix-up or CI fix row is linting |
 | Sandbox build | External | Until the task ends; a build-environment error queues it again once per head | Verification state `planned` or `running` |
 | Warm build of the default branch | Limits sandbox load; never blocks a PR | Once a day per repo | Sandbox tasks |
@@ -645,6 +708,7 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Failed post-merge review | The model gave no valid reply twice | 1 hour, three tries in all | Post-merge review on the item page: no review yet |
 | Failed post-merge filing | GitHub refused to create the issue | 1 hour, then 6 hours; stops after three attempts | Post-merge review on the item page: not filed, with the attempts |
 | Failed job | Retry a real failure without hammering | 1, 2, 4, 8, 16, then 30 minutes; ends on a release, and after a single failure also on a changed input | "failed N times in a row; retry at HH:MM UTC" |
+| Job past its deadline | The runner stopped a job for running past its step's deadline; running the same paid work again at once would stop it again | At least 1 hour (longer after more failures in a row); no timer runs, the planner reads the failure | "failed N times in a row; retry at HH:MM UTC" |
 | Daily limit | Cost control | Until 00:00 UTC | "daily limit of N items reached; resumes at 00:00 UTC" |
 | Jev unavailable | Jev is switched off (`autocraft accounts jev off`), the `jev` command is missing, or its account fails: out of credit, or a missing or rejected key (status 401, 402, 403, or a message about credit, billing, quota or the key). Haiku does Jev's classify, priority and duplicate work through the Claude accounts. Off or not installed: no retry until it is switched on or the command exists (checked on each pass). Account failure: the first pass an hour after the last failure tries Jev again; no timer runs. Other Jev errors (timeouts, server errors, bad answers) are retried as before | 1 hour after an account failure | Accounts page and run logs |
 | Circuit breaker | A push stage (fix-up, CI fix, fix issue) stops when 2 of its last 10 pushes turned a required check red; the merge path stops when main CI turns red because of a merge of ours or a post-merge review finds a defect in it | Until an operator resumes the stage (`autocraft pipeline resume <stage>` or the Resume button on the Pipeline page); no timer | "tripped: ..." as the stage's pause reason |
