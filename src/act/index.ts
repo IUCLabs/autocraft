@@ -37,6 +37,7 @@ import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
 import { cleanReason, duplicateComment, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { setAsideSupersededQuestions } from "../merge/withdraw.ts";
 import { ownerOf } from "../owners.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps, type Lane } from "../github/user-lane.ts";
 
@@ -129,7 +130,7 @@ export function closeQuestion(r: ReviewRow, why: string | null = null, quiet = f
 
 export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): string[] {
   const qs = closeRows(db, repo).map((r) => closeQuestion(r, reviewText(db, r.repo, r.number, r.head_oid)?.why ?? null, isQuiet(db, r.repo, r.number)));
-  if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
+  if (qs.length) { ask(db, qs.map((q) => ({ ...q, asked_at: at }))); setAsideSupersededQuestions(db, at, repo); }
   fillReviewSummaries(db, at, repo);
   return qs.map((q) => q.id);
 }

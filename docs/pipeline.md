@@ -164,6 +164,8 @@ Model: Opus. Daily limit 100.
 
 **Closed items.** After every sync, open scope, close, merge and single-item duplicate decisions of items that are closed or merged in the mirror, and open duplicate-group decisions with fewer than two open members, are answered `withdrawn` by the pipeline with the reason as the note ("the pull request was closed on GitHub", "the pull request was merged", "the duplicate group has one open item left") and audited as `decision-withdrawn`; the item's timeline shows it. The first run after deploy clears the existing ones. A single-item question is renamed (`~replaced-<time>`), so an item that reopens is asked again under the same id; a withdrawn scope decision does not cover its item. Nothing is written to GitHub.
 
+**One open question per item.** An item has at most one open single-item decision: when a newer Merge? or Close? question is asked, the item's older open ones (at another head, or the other kind at the same head) are set aside like a withdrawn question (renamed `~replaced-<time>`, answered `withdrawn` by the pipeline with a note, audited as `decision-withdrawn`), and while a scope question about a PR is open no Merge? or Close? question is asked and its open ones are set aside until the scope answer; every sync applies the same rule to existing rows.
+
 **Withdraw.** `autocraft decisions withdraw --outside-pilot` (or `--repo R`, dry run unless `--apply`) deletes open scope decisions with their opinions, comments and the stage row Decide wrote when asking, so the items count as never asked and Decide asks them again when they are in scope. Other kinds are not withdrawn. Each is audited as `withdraw`; nothing is written to GitHub.
 
 ## Label

@@ -97,6 +97,50 @@ export function withdrawOtherHeadQuestions(db: DatabaseSync, repo: string, numbe
   }
 }
 
+/** Why a merge or close question is set aside for a newer one. */
+const NEWER_NOTE = "superseded by a newer question about the item";
+const SCOPE_NOTE = "set aside while a scope question about the item is open";
+
+/**
+ * An item has at most one open single-item decision. Among its open merge and close questions the newest asked stays and
+ * the others are set aside (renamed like a superseded Merge? question, so an answer to them never counts); while a scope
+ * question about the item is open, its open merge and close questions are all set aside and asked again after the scope
+ * answer. Returns how many were set aside. Idempotent.
+ */
+export function setAsideSupersededQuestions(db: DatabaseSync, at: string, repo?: string): number {
+  const rows = db.prepare(`SELECT id, kind, repo, number FROM decisions WHERE answer IS NULL AND number IS NOT NULL
+    AND kind IN ('scope', 'merge', 'close') AND id NOT LIKE '%:dupegroup:%' AND id NOT LIKE '%~replaced-%' ${repo ? "AND repo = ?" : ""}
+    ORDER BY asked_at DESC, rowid DESC`).all(...(repo ? [repo] : [])) as { id: string; kind: string; repo: string; number: number }[];
+  const byItem = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const k = `${r.repo}#${r.number}`;
+    byItem.set(k, [...(byItem.get(k) ?? []), r]);
+  }
+  const aside: { r: (typeof rows)[number]; why: string }[] = [];
+  for (const list of byItem.values()) {
+    if (list.length < 2) continue;
+    const scoped = list.some((r) => r.kind === "scope");
+    const keep = scoped ? null : list[0]!.id;
+    for (const r of list) if (r.kind !== "scope" && r.id !== keep) aside.push({ r, why: scoped ? SCOPE_NOTE : NEWER_NOTE });
+  }
+  if (!aside.length) return 0;
+  const close = db.prepare("UPDATE main.decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const { r, why } of aside) {
+      const old = `${r.id}~replaced-${at}`;
+      renameDecision(db, r.id, old);
+      close.run(WITHDRAWN, at, at, why, old);
+      audit(db, "pipeline", "decision-withdrawn", old, { repo: r.repo, number: r.number, kind: r.kind, why });
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return aside.length;
+}
+
 type OpenRow = { id: string; kind: string; repo: string | null; number: number | null; state: string | null; itemKind: string | null };
 
 const closedWhy = (r: OpenRow): string => r.state === "MERGED" ? "the pull request was merged" : `the ${r.itemKind === "pr" ? "pull request" : "issue"} was closed on GitHub`;

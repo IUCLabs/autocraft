@@ -11,7 +11,7 @@ import { doCard } from "../src/conversations/act.ts";
 import { insertTurn } from "../src/conversations/store.ts";
 import { connect } from "../src/db.ts";
 import { ask, getDecision } from "../src/decisions.ts";
-import { withdrawClosedQuestions } from "../src/merge/withdraw.ts";
+import { setAsideSupersededQuestions, withdrawClosedQuestions } from "../src/merge/withdraw.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const T0 = "2026-01-01T00:00:00Z";
@@ -68,5 +68,19 @@ describe("resolve card", () => {
     assert.equal(r.card.state, "done", r.card.error ?? "");
     const d = getDecision(db, "app#1:scope")!;
     assert.deepEqual({ answer: d.answer, note: d.answer_note, by: d.answered_by, applied: !!d.applied_at }, { answer: "handled", note: "Asked for a use case.", by: "op", applied: true });
+  });
+});
+
+describe("one open question per item", () => {
+  test("a newer merge question replaces the older one, and an open scope question displaces merge and close questions", () => {
+    const db = fresh();
+    const q = (id: string, kind: string, n: number, at: string) => ({ id, kind, repo: "app", number: n, question: "Q?", options: OPTIONS, asked_at: at });
+    ask(db, [q("app#1:merge@aaa", "merge", 1, "2026-01-01T00:00:00Z"), q("app#1:merge@bbb", "merge", 1, "2026-01-01T01:00:00Z"), q("app#1:close@bbb", "close", 1, "2026-01-01T02:00:00Z"),
+      q("app#2:scope", "scope", 2, "2026-01-01T00:00:00Z"), q("app#2:merge@ccc", "merge", 2, "2026-01-01T01:00:00Z")]);
+    assert.equal(setAsideSupersededQuestions(db, T0), 3);
+    const open = (db.prepare("SELECT id FROM decisions WHERE answer IS NULL ORDER BY id").all() as { id: string }[]).map((r) => r.id);
+    assert.deepEqual(open, ["app#1:close@bbb", "app#2:scope"]);
+    assert.equal(getDecision(db, `app#1:merge@aaa~replaced-${T0}`)?.answer, "withdrawn");
+    assert.equal(setAsideSupersededQuestions(db, T0), 0);
   });
 });

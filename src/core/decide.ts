@@ -295,7 +295,7 @@ export function decidePr(f: PrFacts): Plan {
   const merged = f.ghState === "MERGED" || mergedByUs;
   // A review older than a comment or review by someone else, or at another head, leaves the PR out of the queue until it is reviewed again.
   const inQueue = takeReview && (merged || (open && !r.stale && r.head === f.head));
-  const reviewable = !f.draft && !!f.head && !!f.label && REVIEW_LABELS.includes(f.label)
+  const reviewable = !f.draft && !f.scopeOpen && !!f.head && !!f.label && REVIEW_LABELS.includes(f.label)
     && (f.scopeAnswer !== null ? KEEP_IN_CORE.includes(f.scopeAnswer) : !f.needsDecisionFlag);
 
   const actions: Action[] = [...extra];
@@ -373,7 +373,7 @@ export function decidePr(f: PrFacts): Plan {
 
   if (e) {
     if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && premergeRetryDue(f)) actions.push(act("premerge", r!.head));
-    if (e.state === "needs-decision" && !f.decision.asked && !f.decision.inOpenGroup) actions.push(act("ask-merge", r!.head));
+    if (e.state === "needs-decision" && !f.decision.asked && !f.decision.inOpenGroup && !f.scopeOpen) actions.push(act("ask-merge", r!.head));
     if (eligible(f, e) && !refusedAsBefore(f, e)) {
       const singleOnly = f.verification?.state === VERIFY_UNAVAILABLE || e.noCi || f.mainFix;
       actions.push(act("merge", r!.head, { singleOnly, batchable: !singleOnly }));

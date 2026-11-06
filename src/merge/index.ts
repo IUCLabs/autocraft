@@ -30,7 +30,7 @@ import { liveGateChecked } from "../review/discussion.ts";
 import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
-import { closeMergedQuestions, withdrawBlockedQuestions, withdrawGroupedQuestions, withdrawOtherHeadQuestions } from "./withdraw.ts";
+import { closeMergedQuestions, withdrawBlockedQuestions, setAsideSupersededQuestions, withdrawGroupedQuestions, withdrawOtherHeadQuestions } from "./withdraw.ts";
 import { buildQueue, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_UNSURE_REASON, PREMERGE_FAILED_REASON, ciAllows, countStates, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState } from "./queue.ts";
@@ -216,6 +216,7 @@ function askDue(db: DatabaseSync, due: QueueEntry[], at: string, log: (line: str
   ask(db, qs.map((q) => ({ ...q, asked_at: at })));
   due.forEach((e, i) => jobItem(db, e.repo, e.number, "asked Merge?", log, qs[i]!.id));
   for (const e of due) withdrawOtherHeadQuestions(db, e.repo, e.number, e.head, at);
+  setAsideSupersededQuestions(db, at);
   return qs.map((q) => q.id);
 }
 
