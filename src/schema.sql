@@ -1642,7 +1642,8 @@ CREATE TABLE IF NOT EXISTS security_calls (
   ended_at TEXT,
   ok INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL,
-  agent_run_id INTEGER                -- the agent run (/agents/:id) the call made; null for rows from before this column and for calls that made none
+  agent_run_id INTEGER,               -- the agent run (/agents/:id) the call made; null for rows from before this column and for calls that made none
+  resumed INTEGER NOT NULL DEFAULT 0  -- 1 when a fix call continued the session of the round before
 );
 CREATE INDEX IF NOT EXISTS security_calls_scan ON security_calls(scan_id, id);
 

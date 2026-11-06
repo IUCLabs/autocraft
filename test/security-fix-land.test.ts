@@ -1,7 +1,7 @@
 // The private fix, the quiet landing, the advisory route and publishing, with a fake gh and git: the states a finding moves
 // through, and that nothing a landing writes names the problem.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { before, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
@@ -91,6 +91,49 @@ describe("private fix and landing", () => {
     db.prepare("UPDATE security_scans SET commit_sha = ? WHERE id = 1").run(SHA);
     assert.equal(stateOf(n).state, "new");
     assert.match(stateOf(n).note ?? "", /no pinned commit/);
+  });
+
+  /** Runs a fix whose every reply is unusable, so each round fails before the build; `resumable` is whether the fake ask can continue a session. */
+  async function failingRounds(resumable: boolean) {
+    const n = finding("fixing");
+    const seen: { resume?: { id: string; message: string }; previous: unknown }[] = [];
+    const stores: string[] = [];
+    const deps: FixDeps = {
+      exec: fake().exec, root: SCRATCH, log: () => {}, cancelled: () => false,
+      fetchCrates: async () => ({ ok: true, rust: true, crates: [{ name: "psd", dir: "crates/psd" }] }) as never,
+      checkout: async () => "/checkout",
+      build: async () => { throw new Error("no round gets as far as the build"); },
+      who: async () => ({ login: "pipeline-bot", email: "bot@example.com" }),
+      ask: async (_id, input, o) => {
+        const r = o.session?.resume;
+        seen.push({ ...(r && { resume: { id: r.session.id, message: r.message } }), previous: (input as { previous?: unknown }).previous });
+        const dir = mkdtempSync(join(SCRATCH, "sess-"));
+        stores.push(dir);
+        return { text: "no diff here", cost: 1, resumed: r !== undefined && resumable, kept: { id: `s${seen.length}`, dir, account: "a", checkout: "/checkout" } };
+      },
+    };
+    await runFix(db, "photocraft", n, deps);
+    const flags = (db.prepare("SELECT resumed FROM security_calls WHERE kind = 'fix' AND finding_number = ? ORDER BY id").all(n) as { resumed: number }[]).map((r) => r.resumed);
+    return { seen, stores, flags };
+  }
+
+  test("a fix round after a failed round continues that round's session with the failure as the message", async () => {
+    const { seen, stores, flags } = await failingRounds(true);
+    assert.equal(seen.length, 3);
+    assert.equal(seen[0]!.resume, undefined);
+    assert.equal(seen[1]!.resume?.id, "s1");
+    assert.equal(seen[2]!.resume?.id, "s2");
+    assert.match(seen[1]!.resume!.message, /did not follow the form/);
+    assert.ok(seen[1]!.resume!.message.length < 600, "the message does not repeat the prompt");
+    assert.deepEqual(flags, [0, 1, 1]);
+    assert.ok(stores.every((d) => !existsSync(d)), "the kept sessions are deleted when the job ends");
+  });
+
+  test("a fix round that cannot continue the session is a new call that carries the earlier diff and the failure", async () => {
+    const { seen, flags } = await failingRounds(false);
+    assert.equal(seen.length, 3);
+    assert.ok(seen[1]!.previous && (seen[1]!.previous as { failure: string }).failure.includes("did not follow the form"));
+    assert.deepEqual(flags, [0, 0, 0]);
   });
 
   test("quiet landing: a plain pull request, then landed when it merges, then published", async () => {

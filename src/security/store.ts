@@ -152,8 +152,8 @@ export const rawFinding = (db: DatabaseSync, repo: string, n: number): FindingRo
   db.prepare("SELECT * FROM security_findings WHERE repo = ? AND number = ?").get(repo, n) as FindingRow | undefined;
 
 /** Records one model call of a finding's fix in its timeline and returns nothing; the cost may be unknown. */
-export function recordFixCall(db: DatabaseSync, scanId: number, n: number, kind: "fix" | "review", startedAt: string, ok: boolean, costUsd: number | null): void {
-  db.prepare("INSERT INTO security_calls (scan_id, kind, finding_number, started_at, ended_at, ok, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)").run(scanId, kind, n, startedAt, now(), ok ? 1 : 0, costUsd);
+export function recordFixCall(db: DatabaseSync, scanId: number, n: number, kind: "fix" | "review", startedAt: string, ok: boolean, costUsd: number | null, resumed = false): void {
+  db.prepare("INSERT INTO security_calls (scan_id, kind, finding_number, started_at, ended_at, ok, cost_usd, resumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(scanId, kind, n, startedAt, now(), ok ? 1 : 0, costUsd, resumed ? 1 : 0);
 }
 
 /** Scans of one repo or, with none given, of the repos in `repos`, newest first. */

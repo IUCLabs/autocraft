@@ -518,7 +518,7 @@ export const STEPS: StepDef[] = [
   {
     name: "security-fix",
     title: "Security fix",
-    description: "Writes the private fix of one finding on the scan's pinned commit: Opus writes the patch and a regression test, the worker container builds and tests it, and Opus reviews the diff. The commit stays in the local cache and is never pushed. Starts on its own when verify confirms the finding, once per finding; after a failed fix an operator starts it again from the finding page. Nothing goes to GitHub.",
+    description: "Writes the private fix of one finding on the scan's pinned commit: Opus writes the patch and a regression test, the worker container builds and tests it, and Opus reviews the diff. A failed round is repeated in the same model session while the prompt cache is warm. The commit stays in the local cache and is never pushed. Starts on its own when verify confirms the finding, once per finding; after a failed fix an operator starts it again from the finding page. Nothing goes to GitHub.",
     stage: 9,
     requires: "operator",
     group: "security-work",

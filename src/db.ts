@@ -29,6 +29,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["user_token_revocations", "attempts", "INTEGER NOT NULL DEFAULT 0"],
   ["repos", "owner", "TEXT NOT NULL DEFAULT 'storytold'"],
   ["security_calls", "agent_run_id", "INTEGER"],
+  ["security_calls", "resumed", "INTEGER NOT NULL DEFAULT 0"],
   ["security_findings", "fix_patch", "TEXT"],
   ["security_findings", "fix_title", "TEXT"],
   ["security_findings", "fix_summary", "TEXT"],
