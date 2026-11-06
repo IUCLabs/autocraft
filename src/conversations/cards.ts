@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { writeEffect } from "../act/index.ts";
 import { cleanReason } from "../act/templates.ts";
 import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decisions.ts";
+import { KEEP_IN_CORE } from "../core/rules.ts";
 import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
 import { pilotSql } from "../pilot.ts";
@@ -472,6 +473,7 @@ function closeSettle(db: DatabaseSync, repo: string, d: DecisionRow, st: Settlin
  * close or duplicate step, which comes last; with an open decision the card settles it (a lone comment step may leave it open: the
  * "ask" card); a close, duplicate, transfer, review or fixup step settles it as handled; an answer whose option already writes to GitHub
  * takes no close, duplicate, transfer, reopen, reviewer, review or fixup step, and a comment only when the answer merges (an issue, label or assignee step is fine);
+ * the one exception is a scope answer that keeps the PR in core (take, small-extra) with a fixup step: the answer is recorded before the fix-up runs, so the review and the merge see the PR in core;
  * without an open decision there is no settlement. At most one step of each kind except label and unlabel; close, duplicate and
  * transfer end the item (at most one, last); reopen comes first and only on a closed item; a fixup that merges needs an open merge or scope decision on a PR.
  */
@@ -534,7 +536,8 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
   if (fix?.kind === "fixup" && fix.merge && (!d || (d.kind !== "merge" && d.kind !== "scope"))) return { note: "dropped a resolution: a fixup that merges needs an open merge or scope decision on the PR" };
   const settling = steps.find(isSettling);
   if (settling) {
-    if (settle && settle.kind !== "handled") return { note: `dropped a resolution that has a ${settling.kind} step and settles the question another way than handled` };
+    const keeps = settling.kind === "fixup" && d?.kind === "scope" && settle?.kind === "answer" && KEEP_IN_CORE.includes(settle.option);
+    if (settle && settle.kind !== "handled" && !keeps) return { note: `dropped a resolution that has a ${settling.kind} step and settles the question another way than handled` };
     if (d && !settle) settle = closeSettle(db, repo, d, settling);
   }
   if (settle?.kind === "answer") {

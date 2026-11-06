@@ -9,7 +9,7 @@ import { getDecision, optionsOf, type DecisionRow, type Kind } from "../decision
 import {
   coreKey, MAX_ADDED_CORES, parseCoreKey,
   type ActionTag, type ChoiceCore, type ChoiceExtra, type ChoicesBlockExtra, type ChoicesRow, type ChoicesSource, type CoreKey, type ExtraKind,
-  type ParsedCoreKey, type StoredDraft, type StoredExtra,
+  scopeCoreKey, type KeepAnswer, type ParsedCoreKey, type StoredDraft, type StoredExtra,
 } from "./choices-types.ts";
 
 /** Most cores Opus may add on top of the offered ones. */
@@ -46,6 +46,10 @@ export const EXTRA_TAG: Record<ExtraKind, ActionTag> = {
 const NON_ENDING: ExtraKind[] = ["comment", "label", "unlabel", "assign", "request_reviewers", "open_issue"];
 /** Extra kinds always offered (with empty text) when the core takes them; the others only when Opus drafted them. */
 const ALWAYS: ExtraKind[] = ["comment", "open_issue"];
+/** The label a keep answer stands for; an extra that adds it is left out of the card, since the answer already sets it. */
+export const keepLabel = (keep: KeepAnswer): string => (keep === "small-extra" ? "small extra" : "missing feature");
+const KEEP_LABEL_NAME: Record<KeepAnswer, string> = { "small-extra": "Small extra", take: "Wanted in core" };
+const KEEPS: KeepAnswer[] = ["small-extra", "take"];
 const NO_ISSUE_OPTIONS = (key: string): boolean => key === "hold" || key === "need-info" || key.startsWith("keep");
 
 /** The id of an extra within its core: its kind, plus the label for label and unlabel. */
@@ -84,11 +88,15 @@ function optionWrites(kind: Kind, key: string): ActionTag[] {
 export function autocraftLine(p: ParsedCoreKey, kind: string, itemKind: string): string {
   switch (p.type) {
     case "backlog": return "moves it to the Backlog";
-    case "fixup-merge": return "pushes the fix-up, reviews again, merges if both pass";
+    case "fixup-merge": return p.keep
+      ? `keeps the PR in core as ${p.keep === "take" ? "wanted in core" : "a small extra"}, pushes the fix-up, reviews again and merges if both pass`
+      : "pushes the fix-up, reviews again, merges if both pass";
     case "close": return "records the answer and stops working on it";
     case "duplicate": return "records it as a duplicate and stops working on it";
     case "transfer": return "stops working on it here";
-    case "fixup": return "pushes the fix-up and reviews again";
+    case "fixup": return p.keep
+      ? `keeps the PR in core as ${p.keep === "take" ? "wanted in core" : "a small extra"}, pushes the fix-up and reviews again`
+      : "pushes the fix-up and reviews again";
     case "review": return "reviews the PR again, then asks again if needed";
     case "option": break;
   }
@@ -133,9 +141,13 @@ export function coresFor(db: DatabaseSync, d: DecisionRow): Core[] {
     out.push(mk(db, d, coreKey.option(o.key), o.label, { writes: optionWrites(d.kind, o.key).filter((t) => t !== "comment" || applicable.has("comment")), base, applicable, closing: /\bcloses\b/.test(effect ?? "") && applicable.has("comment") }));
   }
   if (applicable.has("fixup with merge")) {
-    const c = mk(db, d, coreKey.fixupMerge, "Fix up first, then merge", { writes: ["push", "merge"], base: NON_ENDING, applicable });
-    c.params = { instructions: "" };
-    out.push(c);
+    // On a scope question the fix-up core records the keep answer, so the PR is in core when it is reviewed and merged.
+    for (const keep of d.kind === "scope" ? KEEPS : [undefined]) {
+      const label = keep ? `${KEEP_LABEL_NAME[keep]}: fix up, then merge` : "Fix up first, then merge";
+      const c = mk(db, d, coreKey.fixupMerge(keep), label, { writes: keep ? ["label", "push", "merge"] : ["push", "merge"], base: NON_ENDING, applicable });
+      c.params = { instructions: "" };
+      out.push(c);
+    }
   }
   out.push(mk(db, d, coreKey.backlog, "Later", { writes: [], base: [], applicable }));
   return out;
@@ -157,7 +169,9 @@ export function addedCore(db: DatabaseSync, d: DecisionRow, key: CoreKey, applic
     case "close": return c(isPr ? "Close PR" : `Close issue as ${p.reason === "completed" ? "completed" : "not planned"}`, "close", ["close"], ["comment", "label", "unlabel", "open_issue"]);
     case "duplicate": return c(`Close as duplicate of #${p.of}`, "duplicate", ["close"], ["comment", "label", "unlabel"], { target: String(p.of) });
     case "transfer": return c(`Move issue to ${p.repo}`, "transfer", ["move"], ["comment", "label"], { target: p.repo });
-    case "fixup": return c("Fix up the PR", "fixup", ["push"], NON_ENDING, { instructions: "" });
+    case "fixup":
+      if ((d.kind === "scope") !== !!p.keep) return null;
+      return c(p.keep ? `${KEEP_LABEL_NAME[p.keep]}: fix up` : "Fix up the PR", "fixup", p.keep ? ["label", "push"] : ["push"], NON_ENDING, { instructions: "" });
     case "review": return c("Review the PR again", "review", [], ["comment", "label", "request_reviewers"]);
     default: return null;
   }
@@ -193,7 +207,8 @@ export function applyDrafts(db: DatabaseSync, d: DecisionRow, cores: Core[], row
   }
   return all.map((core) => {
     const draft: StoredDraft | undefined = row?.drafts[core.key];
-    const extras = (draft?.extras ?? []).filter((e) => core.allowed.includes(e.kind)).map((e) => viewExtra(e, core, d));
+    const keep = "keep" in core.parsed ? core.parsed.keep : undefined;
+    const extras = (draft?.extras ?? []).filter((e) => core.allowed.includes(e.kind) && !(keep && e.kind === "label" && e.label === keepLabel(keep))).map((e) => viewExtra(e, core, d));
     for (const kind of ALWAYS) {
       if (core.allowed.includes(kind) && !extras.some((e) => e.kind === kind)) {
         extras.push(viewExtra({ id: kind, kind, on: false, ...(kind === "comment" ? { text: "" } : { title: "", body: "" }) }, core, d));
@@ -221,7 +236,8 @@ export function compose(core: Core, extras: ComposeExtra[], params: { reason?: s
   const steps: Record<string, unknown>[] = [];
   let text: string | undefined;
   for (const e of of("comment")) { steps.push({ kind: "comment" }); text = e.text; }
-  for (const e of of("label")) steps.push({ kind: "label", label: e.label });
+  const keep = "keep" in core.parsed ? core.parsed.keep : undefined;
+  for (const e of of("label")) if (!(keep && e.label === keepLabel(keep))) steps.push({ kind: "label", label: e.label });
   for (const e of of("unlabel")) steps.push({ kind: "unlabel", label: e.label });
   for (const e of of("assign")) steps.push({ kind: "assign", login: e.login });
   for (const e of of("request_reviewers")) steps.push({ kind: "request_reviewers", logins: e.logins });
@@ -231,8 +247,8 @@ export function compose(core: Core, extras: ComposeExtra[], params: { reason?: s
   switch (p.type) {
     case "option": settle = { kind: "answer", option: p.option, ...(core.closing && params.reason?.trim() && { reason: params.reason }) }; break;
     case "backlog": settle = { kind: "backlog" }; break;
-    case "fixup-merge": steps.push({ kind: "fixup", instructions: params.instructions ?? "", merge: true }); break;
-    case "fixup": steps.push({ kind: "fixup", instructions: params.instructions ?? "", merge: false }); break;
+    case "fixup-merge": steps.push({ kind: "fixup", instructions: params.instructions ?? "", merge: true }); if (p.keep) settle = { kind: "answer", option: p.keep }; break;
+    case "fixup": steps.push({ kind: "fixup", instructions: params.instructions ?? "", merge: false }); if (p.keep) settle = { kind: "answer", option: p.keep }; break;
     case "review": steps.push({ kind: "review" }); break;
     case "close": steps.push({ kind: "close", reason: p.reason }); break;
     case "duplicate": steps.push({ kind: "duplicate", of: p.of }); break;
@@ -249,13 +265,18 @@ const json = <T>(s: string | null, fallback: T): T => {
   try { return s === null ? fallback : (JSON.parse(s) as T); } catch { return fallback; }
 };
 
-function rowOf(r: Raw): ChoicesRow {
+/** Rows written before the fix-up cores of a scope decision named their keep answer carry the old keys; they read as the new ones. */
+function rowOf(db: DatabaseSync, r: Raw): ChoicesRow {
+  const scope = (db.prepare("SELECT kind FROM main.decisions WHERE id = ?").get(r.decision_id) as { kind: string } | undefined)?.kind === "scope";
   const seen = json<{ head?: string | null; last_comment?: string | null }>(r.seen, {});
+  const raw = json<ChoicesRow["drafts"]>(r.drafts, {});
+  const keyOf = (k: CoreKey): CoreKey => scopeCoreKey(k, scope, raw[k]?.extras ?? []);
+  const pick = json<ChoicesRow["pick"]>(r.pick, { core: null, reason: null });
   return {
     id: r.id, decisionId: r.decision_id, repo: r.repo, number: r.number, turnId: r.turn_id, stamp: r.stamp,
     seen: { head: seen.head ?? null, lastComment: seen.last_comment ?? null },
-    source: r.source as ChoicesSource, drafts: json(r.drafts, {}), added: json(r.added, []),
-    pick: json(r.pick, { core: null, reason: null }), state: r.state as ChoicesRow["state"], createdAt: r.created_at,
+    source: r.source as ChoicesSource, drafts: Object.fromEntries(Object.entries(raw).map(([k, v]) => [keyOf(k), v])), added: json<CoreKey[]>(r.added, []).map(keyOf),
+    pick: pick.core ? { ...pick, core: keyOf(pick.core) } : pick, state: r.state as ChoicesRow["state"], createdAt: r.created_at,
   };
 }
 
@@ -265,12 +286,12 @@ export const seenJson = (s: ChoicesRow["seen"]): string => JSON.stringify({ head
 /** The decision's current choices, or undefined. */
 export function currentChoices(db: DatabaseSync, decisionId: string): ChoicesRow | undefined {
   const r = db.prepare("SELECT * FROM main.decision_choices WHERE decision_id = ? AND state = 'current' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(decisionId) as Raw | undefined;
-  return r && rowOf(r);
+  return r && rowOf(db, r);
 }
 
 export function choicesById(db: DatabaseSync, id: string): ChoicesRow | undefined {
   const r = db.prepare("SELECT * FROM main.decision_choices WHERE id = ?").get(id) as Raw | undefined;
-  return r && rowOf(r);
+  return r && rowOf(db, r);
 }
 
 /**

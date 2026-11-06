@@ -373,8 +373,17 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
   const results: string[] = [];
   let url: string | null = null;
   let closedHow: string | null = null;
+  // A keep answer with a fix-up is recorded after the other steps and before the fix-up, so the fix-up's plan check and the later review see the PR in core.
+  const early = p.settle?.kind === "answer" && p.steps.some((x) => x.kind === "fixup") ? p.settle : null;
+  let answered = false;
+  const answerNow = async (s: NonNullable<typeof early>): Promise<void> => {
+    results.push((await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note, s.reason)).result);
+    answered = true;
+    done.push(`Answer the question with "${s.option}"`);
+  };
   try {
     for (const st of p.steps) {
+      if (early && !answered && st.kind === "fixup") await answerNow(early);
       switch (st.kind) {
         case "comment": {
           const o = await postComment(ctx, c.text ?? "");
@@ -418,14 +427,14 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
       done.push(stepLine(st));
     }
     const s = p.settle;
-    if (s) {
+    if (s && !answered) {
       results.push((s.kind === "answer" ? await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note, s.reason)
         : s.kind === "backlog" ? await answerDecision(db, c, s.decision, s.stamp, BACKLOG.key, by, at, canWrite, ctx.note)
         : resolveDecision(db, c, s.decision, s.stamp, ctx.note ? `${s.summary}: ${ctx.note}` : s.summary, by, at)).result);
     }
   } catch (e) {
     const msg = String((e as Error).message ?? e);
-    throw new StepError(done.length ? `Already done: ${done.join("; ")}. ${msg}. The question stays open` : msg, done.includes(stepLine({ kind: "comment" })));
+    throw new StepError(done.length ? `Already done: ${done.join("; ")}. ${msg}${answered ? ". The question is answered" : ". The question stays open"}` : msg, done.includes(stepLine({ kind: "comment" })));
   }
   if (closedHow !== null) settleOthers(db, c, closedHow, by, at, p.settle?.decision);
   return { result: results.join("; "), url };

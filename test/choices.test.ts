@@ -24,6 +24,7 @@ import { ask, getDecision } from "../src/decisions.ts";
 import { choicesView, doChoice } from "../src/dash/api/conversations.ts";
 import { HttpError } from "../src/dash/server/util.ts";
 import type { Req } from "../src/dash/types.ts";
+import { OPERATOR, world } from "./world-db.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const T0 = "2026-01-01T00:00:00Z";
@@ -119,7 +120,7 @@ describe("decision choices", () => {
     mergeChoices(db, "app#2:merge", { ...base, cores: { "o:merge": { extras: [{ kind: "comment", on: true, text: "A" }] }, "o:hold": { extras: [{ kind: "label", on: false, label: "bugfix" }] } } });
     const { row, notes } = mergeChoices(db, "app#2:merge", {
       ...base, cores: { "o:merge": { extras: [{ kind: "comment", on: false, text: "B" }] } },
-      add: [coreKey.close("completed"), coreKey.close("not_planned"), coreKey.review, coreKey.fixup].map((key) => ({ key, draft: { extras: [] } })),
+      add: [coreKey.close("completed"), coreKey.close("not_planned"), coreKey.review, coreKey.fixup()].map((key) => ({ key, draft: { extras: [] } })),
     });
     assert.equal(row.drafts["o:merge"]!.extras[0]!.text, "B");
     assert.ok(row.drafts["o:hold"]);
@@ -203,5 +204,30 @@ describe("decision choices", () => {
     assert.equal(a.id, b.id);
     assert.equal(a.state, "done");
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_cards WHERE choice_id = ?").get(row.id)!.n, 1);
+  });
+
+  test("a scope question on a PR the classifier did not label for review: Fix up, then merge records the keep answer first and queues the fix-up", async () => {
+    const w = world().repo().pr(5, { label: "plugin candidate" });
+    try {
+      const db = w.db;
+      ask(db, [{ id: "app#5:scope", kind: "scope", repo: "app", number: 5, question: "Scope?", options: Object.values(SCOPE_OPTIONS).map((o) => ({ key: o.key, label: o.label })) }]);
+      const keys = coresFor(db, getDecision(db, "app#5:scope")!).map((c) => c.key);
+      assert.ok(keys.includes("fixup-merge:small-extra") && keys.includes("fixup-merge:take") && !keys.includes("fixup-merge"), keys.join());
+      // The "small extra" label is what the answer sets, so ticking it adds no step.
+      const { composed } = choose(db, "app#5:scope", "fixup-merge:small-extra", [{ id: "label:small extra", kind: "label", label: "small extra" }], { instructions: "Rename a to b." });
+      assert.ok("card" in composed);
+      const v = validateCard(db, "app", 5, composed.card);
+      assert.ok("card" in v, "note" in v ? v.note : "");
+      const params = v.card.params as { settle: { kind: string; option?: string }; steps: { kind: string; merge?: boolean }[] };
+      assert.deepEqual(params.settle && { kind: params.settle.kind, option: params.settle.option }, { kind: "answer", option: "small-extra" });
+      assert.deepEqual(params.steps.map((x) => x.kind), ["fixup"]);
+      const id = Number(db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (0, 'app', 5, 'resolution', ?, NULL, ?)")
+        .run(JSON.stringify(v.card.params), v.card.description).lastInsertRowid);
+      const { card } = await doCard(db, id, OPERATOR, { querier: { query: async () => ({}) } as never, exec: (async () => ({ code: 0, stdout: "", stderr: "" })) as never });
+      assert.equal(card.state, "done", card.error ?? "");
+      assert.equal(getDecision(db, "app#5:scope")!.answer, "small-extra");
+      assert.equal(w.rows("SELECT id FROM preapprovals WHERE number = 5").length, 1);
+      assert.equal(w.rows("SELECT instructions FROM operator_fixups WHERE number = 5").length, 1);
+    } finally { w.close(); }
   });
 });
