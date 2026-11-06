@@ -1,13 +1,13 @@
 // The security deep scan API. Operators and maintainers read; operators act. Everyone else gets 404, so the
 // endpoints do not show that findings exist.
 import type { DatabaseSync } from "node:sqlite";
-import type { FindingView, ScanView, SecurityOverview } from "../../../web/src/api/types.ts";
+import type { FindingView, ScanDetail, ScanView, SecurityOverview } from "../../../web/src/api/types.ts";
 import { actOnFindingAs, SecurityError, startScanAs, stopScanAs } from "../../security/actions.ts";
-import { overview, reconcileFindings, findingRow, toFinding, scanRow } from "../../security/store.ts";
+import { listScans, overview, reconcileFindings, findingRow, scanDetail, toFinding, scanRow } from "../../security/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { canSeeInternals } from "./staff.ts";
-import { needVisible } from "./visible.ts";
+import { needVisible, visibleRepos } from "./visible.ts";
 
 const NOT_FOUND = "not found";
 function needStaff(req: Req): void {
@@ -83,4 +83,18 @@ export async function actOnFinding(db: DatabaseSync, req: Req): Promise<FindingV
   const n = number(req.params.n, "finding");
   const b = body(req);
   return asHttp(() => actOnFindingAs(db, repo, n, req.user.login, b));
+}
+
+/** Scans of the repos the reader can see, newest first; `?repo=` narrows to one. */
+export async function scans(db: DatabaseSync, req: Req): Promise<ScanView[]> {
+  needStaff(req);
+  return listScans(db, await visibleRepos(db, req), req.query.get("repo") || undefined);
+}
+
+export async function scanOf(db: DatabaseSync, req: Req): Promise<ScanDetail> {
+  needStaff(req);
+  const scan = scanRow(db, number(req.params.id, "scan"));
+  if (!scan) throw new HttpError(404, NOT_FOUND);
+  await needVisible(db, req, scan.repo);
+  return scanDetail(db, scan);
 }

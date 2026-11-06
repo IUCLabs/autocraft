@@ -1,6 +1,6 @@
 // Mock security deep scan: a running, a capped and a done scan, and findings in several states.
 import type { Api } from "../client";
-import type { FindingAction, FindingCall, FindingState, FindingView, FindingSummary, ScanView, User } from "../types";
+import type { FindingAction, FindingCall, FindingState, FindingView, FindingSummary, ScanArea, ScanCall, ScanDetail, ScanView, User } from "../types";
 import { NOW } from "./fixtures";
 
 const iso = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -12,7 +12,7 @@ const call = (kind: FindingCall["kind"], minAgo: number, costUsd: number | null,
 function scans(): ScanView[] {
   const base = { startedBy: "kiri-n", error: null, endedAt: null };
   return [
-    { ...base, id: 3, repo: "designcraft", commit: "a41f9c02d7e8", findingCount: 0, state: "scanning", capUsd: 15, costUsd: 6.42, estimateUsd: 13.5, areasTotal: 9, areasDone: 4, startedAt: iso(38) },
+    { ...base, id: 3, repo: "designcraft", commit: "a41f9c02d7e8", findingCount: 1, state: "scanning", capUsd: 15, costUsd: 4.18, estimateUsd: 11.6, areasTotal: 6, areasDone: 2, startedAt: iso(38) },
     { ...base, id: 2, repo: "designcraft", commit: "9c7e41b0a3d5", findingCount: 2, state: "capped", capUsd: 5, costUsd: 5.03, estimateUsd: 13.2, areasTotal: 9, areasDone: 3, startedAt: iso(3 * 1440), endedAt: iso(3 * 1440 - 41) },
     { ...base, id: 1, repo: "designcraft", commit: SHA.slice(0, 12), findingCount: 8, state: "done", capUsd: null, costUsd: 11.87, estimateUsd: 12.4, areasTotal: 8, areasDone: 8, startedAt: iso(9 * 1440), endedAt: iso(9 * 1440 - 74) },
   ];
@@ -64,6 +64,44 @@ function findings(): FindingView[] {
   ];
 }
 
+const AREAS: [name: string, risk: number, why: string][] = [
+  ["doc-io", 5, "Parses document files from any source"],
+  ["plugins", 5, "Loads and runs scripts shipped inside documents"],
+  ["bundles", 4, "Unpacks archives into a target folder"],
+  ["fonts", 3, "Parses font tables from documents and the system"],
+  ["updater", 3, "Fetches and applies releases over the network"],
+  ["ipc", 2, "Handles deep links and local sockets"],
+];
+
+/** Threat model, calls and findings of a mock scan; scan 3 is mid-run with its third area running. */
+function detailOf(scan: ScanView, fs: FindingView[]): ScanDetail {
+  const running = ["modeling", "scanning", "verifying"].includes(scan.state);
+  const total = scan.areasTotal, done = scan.areasDone;
+  const areas: ScanArea[] = AREAS.slice(0, total).map(([name, risk, why], idx) => ({
+    idx, name, risk, why, paths: [`crates/${name}/src`],
+    state: idx < done ? "done" : running && idx === done ? "running" : scan.state === "capped" || scan.state === "stopped" ? "pending" : "pending", costUsd: idx < done ? 1.2 + idx * 0.3 : running && idx === done ? 0.4 : 0,
+  }));
+  const start = Date.parse(scan.startedAt);
+  const at = (min: number) => new Date(start + min * 60_000).toISOString();
+  const calls: ScanCall[] = [{ id: 1, kind: "model", areaName: null, findingNumber: null, state: "done", startedAt: at(0), endedAt: at(4), costUsd: 0.82, runId: 9001, progress: null }];
+  let id = 2, run = 9002, min = 4;
+  for (let i = 0; i < Math.min(done, total); i++) {
+    calls.push({ id: id++, kind: "area", areaName: areas[i]!.name, findingNumber: null, state: "done", startedAt: at(min), endedAt: at(min + 6), costUsd: areas[i]!.costUsd, runId: run++, progress: null });
+    min += 6;
+    if (i === 0) {
+      calls.push({ id: id++, kind: "verify", areaName: null, findingNumber: 1, state: "done", startedAt: at(min), endedAt: at(min + 3), costUsd: 0.61, runId: run++, progress: null });
+      min += 3;
+    }
+  }
+  if (running && done < total) calls.push({ id: id++, kind: "area", areaName: areas[done]!.name, findingNumber: null, state: "running", startedAt: at(min), endedAt: null, costUsd: null, runId: run++, progress: "Reading crates/bundles/src/unpack.rs" });
+  const mine = fs.filter((f) => f.scanId === scan.id).map((f): FindingSummary => ({ repo: f.repo, number: f.number, key: f.key, scanId: f.scanId, title: f.title, severity: f.severity, urgent: f.urgent, area: f.area, state: f.state, createdAt: f.createdAt, updatedAt: f.updatedAt }));
+  return {
+    scan, summary: "A desktop document editor that opens files from disk, downloads, plugins and deep links; most of the risk sits in the file readers and the plugin loader.",
+    entryPoints: [{ name: "Open document", kind: "file-open", where: "crates/doc-io/src/open.rs:40" }, { name: "Deep link", kind: "url-handler", where: "crates/ipc/src/deeplink.rs:12" }, { name: "Update check", kind: "network", where: "crates/updater/src/check.rs:20" }],
+    areas, calls, findings: scan.id === 3 ? [{ repo: scan.repo, number: 11, key: `${scan.repo}:finding:11`, scanId: 3, title: "Chunk length in document files is trusted when copying into the read buffer", severity: "high", urgent: false, area: "doc-io", state: "new", createdAt: at(14), updatedAt: at(14) }] : mine,
+  };
+}
+
 const NEXT: Record<FindingAction, FindingState | null> = { fix: "fixing", dismiss: "dismissed", backlog: "backlog", reopen: "new", land: "landing", advisory: "awaiting-admin", publish: "published" };
 
 export function createSecurityMock(me: User, changed: () => void): Pick<Api, "security"> {
@@ -86,6 +124,16 @@ export function createSecurityMock(me: User, changed: () => void): Pick<Api, "se
       overview: async (repo) => {
         forbidden();
         return wait({ scans: sc.filter((s) => s.repo === repo).sort((a, b) => b.id - a.id), findings: fs.filter((f) => f.repo === repo).map(summary) });
+      },
+      scans: async (repo) => {
+        forbidden();
+        return wait(sc.filter((s) => !repo || s.repo === repo).sort((a, b) => b.id - a.id));
+      },
+      scan: async (id) => {
+        forbidden();
+        const s = sc.find((x) => x.id === id);
+        if (!s) throw new Error("Not found");
+        return wait(detailOf(s, fs));
       },
       startScan: async (repo, capUsd) => {
         operator();

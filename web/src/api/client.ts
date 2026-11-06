@@ -69,6 +69,7 @@ import type {
   TrackedRepo,
   FindingAction,
   FindingView,
+  ScanDetail,
   ScanView,
   SecurityOverview,
   User,
@@ -188,6 +189,9 @@ export interface Api {
     overview(repo: RepoName): Promise<SecurityOverview>;
     startScan(repo: RepoName, capUsd: number | null): Promise<ScanView>;
     stopScan(id: number): Promise<ScanView>;
+    /** Scans newest first, of one repo or all the reader can see. */
+    scans(repo?: RepoName): Promise<ScanView[]>;
+    scan(id: number): Promise<ScanDetail>;
     finding(repo: RepoName, number: number): Promise<FindingView>;
     act(repo: RepoName, number: number, action: FindingAction, reason?: string): Promise<FindingView>;
   };

@@ -169,6 +169,8 @@ export function createHttpApi(): Api {
       overview: (repo) => get(`/api/repos/${encodeURIComponent(repo)}/security`),
       startScan: (repo, capUsd) => post(`/api/repos/${encodeURIComponent(repo)}/security/scans`, { capUsd }),
       stopScan: (id) => post(`/api/security/scans/${id}/stop`),
+      scans: (repo) => get(`/api/security/scans${qs({ repo })}`),
+      scan: (id) => get(`/api/security/scans/${id}`),
       finding: (repo, number) => get(`/api/security/findings/${encodeURIComponent(repo)}/${number}`),
       act: (repo, number, action, reason) => post(`/api/security/findings/${encodeURIComponent(repo)}/${number}`, { action, reason }),
     },

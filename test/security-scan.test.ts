@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { FindingView, ScanView, SecurityOverview } from "../web/src/api/types.ts";
+import type { FindingView, ScanDetail, ScanView, SecurityOverview } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import { scopeToTracked } from "../src/repos.ts";
@@ -202,6 +202,25 @@ describe("security deep scan", () => {
     const audits = (db.prepare("SELECT action FROM audit WHERE action LIKE 'security-%' ORDER BY rowid").all() as { action: string }[]).map((a) => a.action);
     assert.deepEqual(audits, ["security-scan-start", "security-finding-dismiss", "security-finding-reopen", "security-finding-backlog"]);
   });
+  test("the scan page lists every call with its agent run, and is 404 for viewers", async () => {
+    const boss = await signedIn("boss"), viewer = await signedIn("viewer1");
+    const id = newScan(null);
+    const model = fakeModel();
+    const ask = (async (kind: string, input: unknown) => {
+      const runId = insertRun(db, { jobId: null, step: "security-scan", stage: 9, promptId: kind, promptVersion: "1", provider: "claude", model: "opus", accountId: null, items: [{ repo: securityRepo("photocraft"), number: id }], prompt: `prompt of ${kind}` });
+      return { ...(await (model.ask as (k: string, i: unknown) => Promise<object>)(kind, input)), runId };
+    }) as Ask;
+    await runScan(db, id, { ...model, ask });
+    const d = await boss.get<ScanDetail>(`/api/security/scans/${id}`);
+    assert.equal(d.scan.state, "done");
+    assert.deepEqual(d.calls.map((c) => c.kind).slice(0, 2), ["model", "area"]);
+    assert.ok(d.calls.every((c) => c.runId !== null));
+    assert.ok(d.areas.some((a) => a.name === "PSD reader" && a.state === "done"));
+    assert.ok((await boss.get<ScanView[]>("/api/security/scans?repo=photocraft")).some((s) => s.id === id));
+    await viewer.get(`/api/security/scans/${id}`, 404);
+    await viewer.get("/api/security/scans", 404);
+  });
+
   test("a call that fails after spending still counts against the cap", async () => {
     db.prepare("DELETE FROM security_findings").run();
     const model = fakeModel();

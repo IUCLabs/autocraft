@@ -197,7 +197,7 @@ function Collapsible({ title, text, empty, open: initial = false }: { title: str
   );
 }
 
-function DetailBody({ id }: { id: number }) {
+export function RunDetailBody({ id }: { id: number }) {
   const q = useQuery<AgentRunDetail>(`agent-${id}`, (a) => a.agents.get(id));
   const r = q.data;
   useNow(r && !r.endedAt ? 1000 : undefined);
@@ -266,7 +266,7 @@ export function DetailPanel({ params }: ViewProps) {
           <XIcon />
         </button>
       </div>
-      <DetailBody id={id} />
+      <RunDetailBody id={id} />
     </div>
   );
 }
@@ -301,7 +301,7 @@ export function PhoneAgents(props: ViewProps) {
                 <XIcon />
               </Dialog.Close>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto">{id !== null && <DetailBody id={id} />}</div>
+            <div className="min-h-0 flex-1 overflow-y-auto">{id !== null && <RunDetailBody id={id} />}</div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

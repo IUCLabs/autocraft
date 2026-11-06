@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ShieldWarningIcon, StopIcon } from "@phosphor-icons/react";
+import { ListMagnifyingGlassIcon, ShieldWarningIcon, StopIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { FindingSummary, ScanView } from "../../api/types";
 import { useWrite } from "../../lib/hooks";
-import { findingPath } from "../../lib/links";
+import { findingPath, scanPath } from "../../lib/links";
 import { SCAN_STATE, SEVERITY, FINDING_STATE, scanActive, sortFindings } from "../../lib/security";
 import { formatCost } from "../../lib/trace";
 import { useUser } from "../../shell/UserContext";
@@ -57,7 +57,7 @@ function StartDialog({ repo, open, onClose }: { repo: string; open: boolean; onC
   );
 }
 
-function ScanRow({ s }: { s: ScanView }) {
+export function ScanRow({ s, link }: { s: ScanView; link?: boolean }) {
   const api = useApi();
   const write = useWrite();
   const active = scanActive(s.state);
@@ -67,6 +67,7 @@ function ScanRow({ s }: { s: ScanView }) {
     <div className="border-b border-line px-4 py-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Badge tone={st.tone}>{st.label}</Badge>
+        {link && <Link to={scanPath(s.id)} className="num text-sm text-accent-ink hover:underline max-md:flex max-md:min-h-11 max-md:items-center">Scan {s.id}</Link>}
         <span className="num text-sm">{s.areasTotal ? `${s.areasDone} of ${s.areasTotal} areas` : "No areas yet"}</span>
         {s.areasTotal > 0 && <RateBar frac={frac} className="w-24 max-md:flex-1" />}
         {active && (
@@ -121,15 +122,22 @@ export function SecuritySection({ repo }: { repo: string }) {
       className="mt-4"
       flush
       title="Security"
-      aside={operator && (
-        <Button icon={ShieldWarningIcon} disabled={running} onClick={() => setOpen(true)} className="max-md:h-11">
-          Deep scan
-        </Button>
+      aside={(
+        <div className="flex items-center gap-2">
+          <Link to={`${scanPath()}?repo=${encodeURIComponent(repo)}`} className="inline-flex min-h-8 items-center gap-1 rounded text-sm text-accent-ink hover:underline max-md:min-h-11">
+            <ListMagnifyingGlassIcon /> All scans
+          </Link>
+          {operator && (
+            <Button icon={ShieldWarningIcon} disabled={running} onClick={() => setOpen(true)} className="max-md:h-11">
+              Deep scan
+            </Button>
+          )}
+        </div>
       )}
     >
       {operator && <StartDialog repo={repo} open={open} onClose={() => setOpen(false)} />}
       <ErrorLine error={error?.message} className="px-4 py-3" />
-      {scan && <ScanRow s={scan} />}
+      {scan && <ScanRow s={scan} link />}
       {data && data.findings.length > 0 ? (
         <ul>{sortFindings(data.findings).map((f) => <FindingRow key={f.number} f={f} />)}</ul>
       ) : (

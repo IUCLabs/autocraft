@@ -43,7 +43,9 @@ export function realDeps(db: DatabaseSync, scanId: number, io: { cancelled: () =
         .get(input.repo, input.number, before) as { c: number | null }).c;
       const cost = spent ?? usage?.cost ?? null;
       saveUsage(db, usageRunId(scanId), `${id}#${++seq}`, "security", "opus", 1, usage ? { ...usage, cost } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost }, start, new Date().toISOString());
-      return { text, cost };
+      const runId = (db.prepare(`SELECT MIN(r.id) AS id FROM agent_runs r JOIN agent_run_items i ON i.run_id = r.id WHERE i.repo = ? AND i.number = ? AND r.id > ?`)
+        .get(input.repo, input.number, before) as { id: number | null }).id;
+      return { text, cost, runId };
     }) as ScanDeps["ask"],
   };
 }

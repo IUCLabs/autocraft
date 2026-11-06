@@ -32,7 +32,7 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 const RAIL: { label: string; paths: string[] }[] = [
   { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity"] },
   { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/admin/github-app", "/audit", "/prompts"] },
-  { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/classifiers", "/contributors", "/main-ci", "/about"] },
+  { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/security/scans", "/classifiers", "/contributors", "/main-ci", "/about"] },
 ];
 const PHONE_TABS = ["/", "/next", "/needs", "/items"];
 
