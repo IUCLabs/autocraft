@@ -163,6 +163,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
 // Covering indexes on the hash columns let the planner compare stored hashes without reading item rows.
 // The trigger clears the hashes of an item whose hashed fields were edited without bringing its own (sync does).
 const ADDED_INDEXES = [
+  // One live card per set of choices: a double press cannot run the same choice twice.
+  "CREATE UNIQUE INDEX IF NOT EXISTS main.conversation_cards_choice_live ON conversation_cards(choice_id) WHERE choice_id IS NOT NULL AND state IN ('proposed', 'running', 'done')",
   // Records the answerer's role when an answer is written (any writer); cleared with the answerer by an undo.
   "CREATE TRIGGER IF NOT EXISTS main.decisions_answered_role AFTER UPDATE OF answered_by ON decisions BEGIN UPDATE decisions SET answered_role = (SELECT role FROM access WHERE login = NEW.answered_by) WHERE id = NEW.id; END",
   "CREATE INDEX IF NOT EXISTS main.comments_mention ON comments(created_at) WHERE mentions_pipeline = 1",

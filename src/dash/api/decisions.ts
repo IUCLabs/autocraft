@@ -479,7 +479,7 @@ export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: 
     const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
       WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, login, at, handled ? at : null, d.id);
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
-    replaceProposedCards(db, d.repo, d.number);
+    replaceProposedCards(db, d.repo, d.number, d.id);
   });
   if (writeEffect(d.kind, ans)) initExecState(db, d.id);
   audit(db, login, "answer", d.id, { answer: ans, source, ...(via ? { via } : {}), exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });

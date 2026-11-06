@@ -49,6 +49,28 @@ function NoteField({ d, required }: { d: Decision; required?: boolean }) {
   );
 }
 
+/** Operators: run the prepare step for this question again (Opus drafts new choices). */
+function ReprepareButton({ d, user, busy, setBusy, setError }: { d: Decision; user: User; busy: boolean; setBusy: (b: boolean) => void; setError: (e?: string) => void }) {
+  const api = useApi();
+  if (user.role !== "operator" || d.number === null || d.group.length > 0) return null;
+  const run = async () => {
+    setError(undefined);
+    setBusy(true);
+    try {
+      await api.decisions.reprepare(d.id);
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button variant="secondary" icon={ArrowsClockwiseIcon} className="max-md:h-11" disabled={busy || d.preparing} onClick={() => void run()}>
+      Re-prepare
+    </Button>
+  );
+}
+
 function SnoozeButton({ d, user, busy, setBusy, setError }: { d: Decision; user: User; busy: boolean; setBusy: (b: boolean) => void; setError: (e?: string) => void }) {
   const api = useApi();
   if (user.role !== "operator") return null;
@@ -103,7 +125,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
   const api = useApi();
   const note = useLocal().notes[d.id] ?? "";
   const operator = user.role === "operator";
-  const [key, setKey] = useState(choices.pick?.core ?? choices.cores[0]?.key ?? "");
+  const [key, setKey] = useState(choices.pick?.core ?? "");
   const [state, setState] = useState<Record<string, CoreState>>({});
   // Drafts open for editing, as "<core>:<reason|instructions|extra id>".
   const [editing, setEditing] = useState<Set<string>>(new Set());
@@ -114,6 +136,8 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
   const [sending, setSending] = useState(false);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
 
+  // With no pick nothing is selected: the first core stands in for the hooks below, and the answer button waits for a choice.
+  const picked = key !== "";
   const core = choices.cores.find((c) => c.key === key) ?? choices.cores[0];
   if (!core) return null;
   const st = (k: string): CoreState => state[k] ?? { ticks: {}, edits: {} };
@@ -210,18 +234,6 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
       setSending(false);
     }
   };
-  const reprepare = async () => {
-    setError(undefined);
-    setBusy(true);
-    try {
-      await api.decisions.reprepare(d.id);
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const params = (c: ChoiceCore) => (
     <>
       {c.params?.reason !== undefined && (
@@ -303,15 +315,15 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
       <Heading>What happens to it</Heading>
       <div role="radiogroup" aria-label="What happens to it" onKeyDown={onKey} className="grid grid-cols-[minmax(0,1fr)] gap-0.5">
         {choices.cores.map((c, i) => {
-          const sel = c.key === core.key;
+          const sel = picked && c.key === core.key;
           return (
-            <RadioRow key={c.key} ref={(el) => void (refs.current[i] = el)} selected={sel} onSelect={() => select(c.key)} tabIndex={sel ? 0 : -1} disabled={busy || running} title={c.label} marks={<Marks core={c} />} tag={c.key === choices.pick?.core ? opusTag : undefined}>
+            <RadioRow key={c.key} ref={(el) => void (refs.current[i] = el)} selected={sel} onSelect={() => select(c.key)} tabIndex={sel || (!picked && i === 0) ? 0 : -1} disabled={busy || running} title={c.label} marks={<Marks core={c} />} tag={c.key === choices.pick?.core ? opusTag : undefined}>
               {sel && (c.params?.reason !== undefined || c.params?.instructions !== undefined) ? params(c) : undefined}
             </RadioRow>
           );
         })}
       </div>
-      {core.extras.length > 0 && (
+      {picked && core.extras.length > 0 && (
         <div className="mt-3">
           <Heading>Also</Heading>
           <div className="grid grid-cols-[minmax(0,1fr)] gap-0.5">{core.extras.map(extra)}</div>
@@ -338,7 +350,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
           variant="primary"
           className={cn("max-md:h-11", armed && "border-bad bg-bad text-white hover:bg-bad/90")}
           loading={busy || running}
-          disabled={blank}
+          disabled={blank || !picked}
           onClick={() => void run()}
         >
           {armed ? `Confirm: ${tagWords(writes)}` : label}
@@ -348,11 +360,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
             Cancel
           </Button>
         )}
-        {operator && (
-          <Button variant="secondary" icon={ArrowsClockwiseIcon} className="max-md:h-11" disabled={busy || d.preparing} onClick={() => void reprepare()}>
-            Re-prepare
-          </Button>
-        )}
+        <ReprepareButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} />
         <SnoozeButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} />
       </div>
       <ErrorLine error={error} className="mt-2" />
@@ -433,6 +441,7 @@ function PlainAnswer({ d, user, onAnswered }: { d: Decision; user: User; onAnswe
         </div>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2">
+        <ReprepareButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} />
         <SnoozeButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} />
       </div>
       <ErrorLine error={error} className="mt-2" />

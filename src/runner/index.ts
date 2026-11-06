@@ -34,7 +34,8 @@ async function serve(): Promise<void> {
   scopeToTracked(db);
   // Once per database: open decisions' proposed cards become choices. Here rather than in db.ts migrations, which cannot import the decision modules.
   const conv = convertOpenDecisionsOnce(db);
-  if (conv) console.log(`runner: converted ${conv.converted} open decisions to choices (${conv.skipped} skipped)`);
+  if (conv) console.log(`runner: converted ${conv.converted} open decisions to choices (${conv.skipped} skipped, ${conv.stale} stale cards, ${conv.unconverted} cards matching no choice)`);
+  for (const note of conv?.notes ?? []) console.log(`runner: choices conversion: ${note}`);
   const runner = new Runner({ db, lockFile: lock, maxJobs: Number(envVar("RUNNER_JOBS")) || DEFAULT_MAX_JOBS });
   const ac = new AbortController();
   process.once("SIGTERM", () => ac.abort());

@@ -190,13 +190,14 @@ export function parseChoices(db: DatabaseSync, repo: string, n: number, d: Decis
 
   // Added cores first, so a pick may name one.
   const newCores: Core[] = [];
+  const capped = new Set<CoreKey>();
   let room = MAX_ADDED_CORES - existing.filter((c) => c.key.startsWith("x:")).length;
   for (const a of Array.isArray(raw.add) ? raw.add.slice(0, MAX_ADDED_CORES * 2) : []) {
     if (!isObj(a)) continue;
     const key = endKey(a.end);
     if (!key) { notes.push("dropped an added choice without a valid end (close, duplicate, transfer, fixup or review)"); continue; }
     const known = [...existing, ...newCores].find((c) => c.key === key);
-    if (!known && room <= 0) { notes.push(`left out the added choice ${key}: at most ${MAX_ADDED_CORES} are kept`); continue; }
+    if (!known && room <= 0) { notes.push(`left out the added choice ${key}: at most ${MAX_ADDED_CORES} are kept`); capped.add(key); continue; }
     const core = known ?? addedCore(db, d, key, applicable);
     if (!core) { notes.push(`left out the added choice ${key}: it does not apply to this item now`); lost.add(key); continue; }
     const r = checkCore(db, repo, n, core, { instructions: a.instructions, extras: a.extras }, drop, notes);
@@ -218,7 +219,12 @@ export function parseChoices(db: DatabaseSync, repo: string, n: number, d: Decis
     out_.cores[core.key] = r.draft;
   }
 
-  if (pickRaw !== null) {
+  if (pickRaw !== null && capped.has(pickRaw)) {
+    // The pick's core was left out by the cap: the earlier pick stays.
+    const old = cur?.pick.core && [...existing].some((c) => c.key === cur.pick.core) && !drops.includes(cur.pick.core) ? cur.pick : { core: null, reason: null };
+    out_.pick = old;
+    notes.push(`kept the earlier pick: ${pickRaw} was left out`);
+  } else if (pickRaw !== null) {
     const live = [...existing, ...newCores].some((c) => c.key === pickRaw) && !lost.has(pickRaw);
     if (live) out_.pick = { core: pickRaw, reason };
     else {
@@ -303,10 +309,13 @@ export function parseTurn(db: DatabaseSync, repo: string, n: number, reply: stri
   if (!c) return null;
   const notes = [...c.notes];
   const cards: NewCard[] = c.ask ? [c.ask] : [];
+  // Without a choices block the actions fence is cut off the text by parseReply.
+  let text = c.text;
   let choices = c.choices ?? undefined;
   if (!c.hasBlock) {
     const r = parseReply(db, repo, n, reply, drop);
     if (r) {
+      text = r.text;
       notes.push(...r.notes);
       if (!cards.length) cards.push(...r.cards.filter(isAsk).slice(0, 1));
       const settling = r.cards.filter((x) => !isAsk(x));
@@ -317,14 +326,17 @@ export function parseTurn(db: DatabaseSync, repo: string, n: number, reply: stri
       }
     }
   }
-  return { text: c.text, cards, notes, ...(choices && { choices, decision: d }) };
+  return { text, cards, notes, ...(choices && { choices, decision: d }) };
 }
 
 /**
  * Stores validated choices for a decision: a prepare writes a whole new row, a conversation turn merges into the current one.
  * Call inside the transaction that inserts the turn (`turnId`); `seen` is the item snapshot JSON the turn was written against.
  */
-export function storeParsedChoices(db: DatabaseSync, d: DecisionRow, p: ParsedChoices, o: { turnId: number | null; seen: string | null; source: "prepare" | "conversation"; by?: string | null }): void {
+export function storeParsedChoices(db: DatabaseSync, d: DecisionRow, p: ParsedChoices, o: { turnId: number | null; seen: string | null; source: "prepare" | "conversation"; by?: string | null; /** The decision's stamp when the reply's prompt was built. */ stampThen?: string | null }): void {
+  // A late reply: the decision was answered, undone or asked again while the call ran.
+  const now = db.prepare("SELECT * FROM main.decisions WHERE id = ?").get(d.id) as unknown as DecisionRow | undefined;
+  if (!now || now.answer !== null || (o.stampThen != null && decisionStamp(db, now) !== o.stampThen)) return;
   let seen: ChoicesRow["seen"] = { head: null, lastComment: null };
   try { const v = JSON.parse(o.seen ?? "{}") as { head?: string | null; last_comment?: string | null }; seen = { head: v.head ?? null, lastComment: v.last_comment ?? null }; } catch { /* no snapshot */ }
   const stamp = decisionStamp(db, d);

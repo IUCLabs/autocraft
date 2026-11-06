@@ -203,7 +203,7 @@ export async function ensureConversation(db: DatabaseSync, repo: string, n: numb
 // ---- turns -------------------------------------------------------------------
 
 /** Validated choices an Opus turn carries; stored with the turn (a prepare replaces the decision's choices, a conversation turn merges into them). */
-export type TurnChoices = { decision: DecisionRow; parsed: ParsedChoices; source: "prepare" | "conversation"; by?: string };
+export type TurnChoices = { decision: DecisionRow; parsed: ParsedChoices; source: "prepare" | "conversation"; by?: string; stampThen?: string | null };
 
 type NewTurn = { kind: TurnKind; login: string; body: string; block: string; status?: string | null; notes?: string[]; cards?: NewCard[]; choices?: TurnChoices };
 
@@ -233,7 +233,7 @@ function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: n
     db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description, seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description, seen);
   }
-  if (t.choices) storeParsedChoices(db, t.choices.decision, t.choices.parsed, { turnId: id, seen, source: t.choices.source, by: t.choices.by });
+  if (t.choices) storeParsedChoices(db, t.choices.decision, t.choices.parsed, { turnId: id, seen, source: t.choices.source, by: t.choices.by, stampThen: t.choices.stampThen });
   return id;
 }
 

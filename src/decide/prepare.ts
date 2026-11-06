@@ -98,7 +98,7 @@ const headOf = (r: { kind: string | null; head_oid: string | null }): string | n
 export function prepareIds(db: DatabaseSync, repos?: string[], nowMs: number = Date.now()): string[] {
   const rows = db.prepare(`SELECT d.id, d.repo, d.asked_at, d.number, d.prepare_requested_at, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind, i.head_oid
     FROM decisions d LEFT JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} ORDER BY d.asked_at, d.id`).all() as DueRow[];
+    WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} ORDER BY d.prepare_requested_at IS NULL, d.prepare_requested_at, d.asked_at, d.id`).all() as DueRow[];
   return rows.filter((r) => !repos?.length || repos.includes(r.repo)).filter((r) => prepareDue(r, headOf(r), nowMs)).map((r) => r.id);
 }
 

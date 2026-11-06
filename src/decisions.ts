@@ -55,11 +55,12 @@ export const SNOOZED_SQL = (() => {
   OR EXISTS (SELECT 1 FROM conversation_turns st WHERE ${onItem("st")} AND st.kind = 'operator' AND st.at > decisions.snoozed_at)))`;
 })();
 
-/** A settled decision makes the drafts still proposed on its item obsolete (the ask card, the other options' drafts, its choices). */
-export function replaceProposedCards(db: DatabaseSync, repo: string | null, number: number | null): void {
+/** A settled decision makes the drafts still proposed on its item obsolete (the ask card, the other options' drafts) and replaces its own choices. */
+export function replaceProposedCards(db: DatabaseSync, repo: string | null, number: number | null, decisionId: string): void {
   if (repo && number !== null) {
     db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'proposed'").run(repo, number);
-    db.prepare("UPDATE main.decision_choices SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'current'").run(repo, number);
+    // Only the choices of the decision that settled: another open decision of the item keeps its own.
+    db.prepare("UPDATE main.decision_choices SET state = 'replaced' WHERE decision_id = ? AND state = 'current'").run(decisionId);
   }
 }
 
@@ -468,7 +469,8 @@ async function convertChoicesCmd(args: string[]): Promise<void> {
   const { convertOpenDecisions } = await import("./decide/choices-convert.ts");
   const dryRun = args.includes("--dry-run");
   const r = convertOpenDecisions(connect(), { dryRun });
-  console.log(`${dryRun ? "would convert" : "converted"} ${r.converted} open decisions to choices; skipped ${r.skipped}`);
+  console.log(`${dryRun ? "would convert" : "converted"} ${r.converted} open decisions to choices; skipped ${r.skipped}; ${r.stale} stale cards, ${r.unconverted} cards matching no choice`);
+  for (const note of r.notes) console.log(note);
 }
 
 const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, retry: retryCmd, cards: cardsCmd, card: cardCmd, "test-repo": testRepoCmd, "convert-choices": convertChoicesCmd };

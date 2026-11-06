@@ -12,6 +12,7 @@ import { PROGRESS_KEEP, coalesce } from "../classify/progress.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { sweepRunningCards } from "./act.ts";
+import { decisionStamp, openDecision } from "./cards.ts";
 import { claimPending, failTurn, pendingConversations, promptParts, refreshItem, setTurnProgress, storeReply, type DiffSource } from "./store.ts";
 
 export const CONVERSATION_PROMPT = CLAUDE_PROMPTS["conversation.turn"];
@@ -62,6 +63,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       recent = [...recent, line].slice(-PROGRESS_KEEP);
       shown.push(recent);
     };
+    const bound = openDecision(db, repo, n), stampThen = bound ? decisionStamp(db, bound) : null;
     const dir = referenceDir(repo);
     const semantic = dir ? p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`) : undefined;
     const r = await runModelStep(db, CONVERSATION, { ref: `${repo}#${n}`, item: parts.item, turns: parts.turns, ...(checkout && { repo_dir: REPO_PATH }) }, {
@@ -72,7 +74,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
     shown.flush();
     const parsed = r.ok ? r.value : null;
     if (parsed) {
-      if (storeReply(db, repo, n, claim, parsed.text, parsed.cards, parsed.notes, undefined, parts.seen, parsed.choices && parsed.decision ? { decision: parsed.decision, parsed: parsed.choices, source: "conversation", by: model } : undefined) !== null) { answered++; jobItem(db, repo, n, "answered a message", p.log); }
+      if (storeReply(db, repo, n, claim, parsed.text, parsed.cards, parsed.notes, undefined, parts.seen, parsed.choices && parsed.decision ? { decision: parsed.decision, parsed: parsed.choices, source: "conversation", by: model, stampThen } : undefined) !== null) { answered++; jobItem(db, repo, n, "answered a message", p.log); }
     } else {
       failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
       jobItem(db, repo, n, "no usable reply to a message", p.log);

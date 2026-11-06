@@ -80,7 +80,8 @@ export function cardView(db: DatabaseSync, c: CardRow, who?: { login: string; ro
 
 /**
  * The choices of the item's open decision (the one a conversation card would settle): the offered cores with Opus's drafts over them.
- * A decision with no current choices row gets option-only cores and the id "". Null when the item has no such decision or cores.
+ * Null when the item has no such decision or cores, or when the decision has no current choices row written for its present state
+ * (the web then offers the plain answer path and Re-prepare).
  */
 export function choicesView(db: DatabaseSync, repo: string, n: number): DecisionChoices | null {
   const d = openDecision(db, repo, n);
@@ -88,14 +89,15 @@ export function choicesView(db: DatabaseSync, repo: string, n: number): Decision
   const base = coresFor(db, d);
   if (base.length === 0) return null;
   const row = currentChoices(db, d.id);
+  if (!row || row.stamp !== decisionStamp(db, d)) return null;
   const cores = applyDrafts(db, d, base, row);
   const strip = ({ parsed: _p, decision: _d, allowed: _a, closing: _c, ...view }: Core) => view;
-  const run = row ? (db.prepare("SELECT id, state, error FROM conversation_cards WHERE choice_id = ? ORDER BY id DESC LIMIT 1").get(row.id) as { id: number; state: string; error: string | null } | undefined) : undefined;
-  const pick = row?.pick.core && cores.some((c) => c.key === row.pick.core) ? { core: row.pick.core, reason: row.pick.reason ?? "" } : null;
+  const run = (db.prepare("SELECT id, state, error FROM conversation_cards WHERE choice_id = ? ORDER BY id DESC LIMIT 1").get(row.id) as { id: number; state: string; error: string | null } | undefined);
+  const pick = row.pick.core && cores.some((c) => c.key === row.pick.core) ? { core: row.pick.core, reason: row.pick.reason ?? "" } : null;
   return {
-    id: row?.id ?? "", decisionId: d.id, pick, cores: cores.map(strip),
+    id: row.id, decisionId: d.id, pick, cores: cores.map(strip),
     ...(run && { run: { cardId: run.id, state: run.state as NonNullable<DecisionChoices["run"]>["state"], ...(run.error && { error: run.error }) } }),
-    source: row?.source ?? "prepare", at: row?.createdAt ?? d.asked_at,
+    source: row.source, at: row.createdAt,
   };
 }
 
@@ -259,9 +261,10 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
   if (!d || d.answer !== null) throw new HttpError(409, "the decision is already settled");
   if (decisionStamp(db, d) !== row.stamp || openDecision(db, row.repo, row.number)?.id !== d.id) throw new HttpError(409, "the decision changed since these choices were written");
   if (staleOf(db, row.repo, row.number, seenJson(row.seen)) === "pr-changed") throw new HttpError(409, "the PR changed since these choices were written");
+  const priorOf = (): CardRow | undefined => db.prepare("SELECT * FROM conversation_cards WHERE choice_id = ? ORDER BY id DESC LIMIT 1").get(row.id) as unknown as CardRow | undefined;
   // A card for these choices that is already running or done is returned as it is (a second press).
-  const prior = db.prepare("SELECT * FROM conversation_cards WHERE choice_id = ? ORDER BY id DESC LIMIT 1").get(row.id) as unknown as CardRow | undefined;
-  if (prior && (prior.state === "running" || prior.state === "done")) return cardView(db, prior, req.user);
+  const first = priorOf();
+  if (first && (first.state === "running" || first.state === "done")) return cardView(db, first, req.user);
 
   const core = applyDrafts(db, d, coresFor(db, d), row).find((c) => c.key === body.core);
   if (!core) throw new HttpError(400, `"${body.core}" is not one of the choices`);
@@ -288,8 +291,23 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
     throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, runs choices");
   }
 
-  const id = Number(db.prepare("INSERT INTO main.conversation_cards (turn_id, repo, number, kind, params, text, description, seen, choice_id) VALUES (?, ?, ?, 'resolution', ?, ?, ?, ?, ?)")
-    .run(row.turnId ?? 0, row.repo, row.number, JSON.stringify(v.card.params), v.card.text, v.card.description, seenJson(row.seen), row.id).lastInsertRowid);
+  // The press is claimed here, with no await between the check and the insert: a second press that got this far sees the first one's card.
+  let id = 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (choicesById(db, row.id)?.state !== "current") throw new HttpError(409, "replaced by newer choices");
+    const prior = priorOf();
+    if (prior && (prior.state === "running" || prior.state === "done")) { db.exec("COMMIT"); return cardView(db, prior, req.user); }
+    // A run that stopped after some steps would repeat them: the operator prepares again or says what else to do.
+    if (prior?.state === "failed" && /^(Already done:|outcome unknown)/.test(prior.error ?? "")) throw new HttpError(409, "the last run of these choices stopped after some of its steps; Re-prepare, or tell Opus what to do next");
+    db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE choice_id = ? AND state = 'proposed'").run(row.id);
+    id = Number(db.prepare("INSERT INTO main.conversation_cards (turn_id, repo, number, kind, params, text, description, seen, choice_id) VALUES (?, ?, ?, 'resolution', ?, ?, ?, ?, ?)")
+      .run(row.turnId ?? 0, row.repo, row.number, JSON.stringify(v.card.params), v.card.text, v.card.description, seenJson(row.seen), row.id).lastInsertRowid);
+    db.exec("COMMIT");
+  } catch (e) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw e;
+  }
   try {
     // Edits the user made to the drafted texts: the comment, the issue, the fix-up instructions.
     const edit: CardEdit = {};
@@ -306,6 +324,13 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
     db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE id = ? AND state = 'proposed'").run(id);
     throw e;
   }
-  const ran = await guardAsync(() => doCard(db, id, req.user.login, { ...deps, note: body.note, noteStaysOut: !isOperator(req), role: req.user.role, canWrite: (r) => req.user.canWrite(r) }));
+  let ran;
+  try {
+    ran = await guardAsync(() => doCard(db, id, req.user.login, { ...deps, note: body.note, noteStaysOut: !isOperator(req), role: req.user.role, canWrite: (r) => req.user.canWrite(r) }));
+  } catch (e) {
+    // Refused before the claim (lane, approval): the card never ran and must not stay proposed.
+    db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE id = ? AND state = 'proposed'").run(id);
+    throw e;
+  }
   return cardView(db, ran.card, req.user);
 }

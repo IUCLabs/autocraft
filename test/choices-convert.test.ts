@@ -9,7 +9,8 @@ import { SCRATCH } from "./scratch.ts";
 import { currentChoices } from "../src/decide/choices.ts";
 import { convertOpenDecisions } from "../src/decide/choices-convert.ts";
 import { connect } from "../src/db.ts";
-import { ask } from "../src/decisions.ts";
+import { ask, getDecision } from "../src/decisions.ts";
+import { decisionStamp } from "../src/conversations/cards.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const T0 = "2026-01-01T00:00:00Z";
@@ -24,13 +25,17 @@ test("open decisions' proposed cards convert to choices", () => {
   db.prepare("UPDATE decisions SET recommended = 'take', recommended_reason = 'fits' WHERE id = 'app#1:scope'").run();
   const turn = Number(db.prepare("INSERT INTO conversation_turns (repo, number, kind, login, at, body, block) VALUES ('app', 1, 'opus', 'opus', ?, '', '')").run(T0).lastInsertRowid);
   const card = db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (?, 'app', 1, 'resolution', ?, ?, '')");
-  const take = { kind: "resolution", settle: { kind: "answer", decision: "app#1:scope", option: "take", stamp: "x" }, steps: [{ kind: "comment" }, { kind: "label", label: "accepted" }, { kind: "open_issue", repo: "app", title: "T", body: "B" }] };
-  const close = { kind: "resolution", settle: { kind: "handled", decision: "app#1:scope", summary: "s", stamp: "x", fromClose: true }, steps: [{ kind: "comment" }, { kind: "close", reason: "not_planned", pr: false }] };
+  const stamp = decisionStamp(db, getDecision(db, "app#1:scope")!);
+  const take = { kind: "resolution", settle: { kind: "answer", decision: "app#1:scope", option: "take", stamp }, steps: [{ kind: "comment" }, { kind: "label", label: "accepted" }, { kind: "open_issue", repo: "app", title: "T", body: "B" }] };
+  const close = { kind: "resolution", settle: { kind: "handled", decision: "app#1:scope", summary: "s", stamp, fromClose: true }, steps: [{ kind: "comment" }, { kind: "close", reason: "not_planned", pr: false }] };
   card.run(turn, JSON.stringify(take), "Thanks");
   card.run(turn, JSON.stringify(close), "Closing");
   card.run(turn, JSON.stringify({ kind: "resolution", settle: null, steps: [{ kind: "comment" }] }), "Which area?");
 
-  assert.deepEqual(convertOpenDecisions(db), { converted: 1, skipped: 0 });
+  // A card written for an earlier state of the decision is not converted.
+  card.run(turn, JSON.stringify({ ...take, settle: { ...take.settle, stamp: "old|0" } }), "Stale");
+  const r = convertOpenDecisions(db);
+  assert.deepEqual([r.converted, r.skipped, r.stale, r.unconverted], [1, 0, 1, 0]);
   const row = currentChoices(db, "app#1:scope")!;
   assert.equal(row.source, "converted");
   assert.deepEqual(row.pick, { core: "o:take", reason: "fits" });
@@ -39,6 +44,6 @@ test("open decisions' proposed cards convert to choices", () => {
   assert.deepEqual(row.added, ["x:close:not_planned"]);
   assert.equal(row.drafts["x:close:not_planned"]!.extras[0]!.text, "Closing");
   const states = db.prepare("SELECT state FROM conversation_cards ORDER BY id").all().map((r) => (r as { state: string }).state);
-  assert.deepEqual(states, ["replaced", "replaced", "proposed"]);
-  assert.deepEqual(convertOpenDecisions(db), { converted: 0, skipped: 0 });
+  assert.deepEqual(states, ["replaced", "replaced", "proposed", "proposed"]);
+  assert.equal(convertOpenDecisions(db).converted, 0);
 });

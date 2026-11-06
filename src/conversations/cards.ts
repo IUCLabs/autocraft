@@ -434,6 +434,8 @@ function settleOf(db: DatabaseSync, d: DecisionRow, raw: unknown): Checked<Settl
       if (typeof s.reason !== "string") return { note: "dropped a resolution whose settle reason is not text" };
       // Only an option that closes with a comment takes a reason; for any other the field is ignored.
       if (!/\bcloses\b/.test(writeEffect(d.kind as Kind, s.option) ?? "")) return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
+      // The reason goes into the closing comment, which a quiet pull request never gets.
+      if (d.repo && d.number !== null && isQuiet(db, d.repo, d.number)) return { note: "dropped a resolution: a quiet pull request's closing comment takes no reason" };
       const reason = cleanReason(cleanComment(s.reason));
       if (!reason) return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
       if (REFERENCE_LEAK.test(reason)) return { note: "dropped a resolution whose settle reason mentions the reference folder or its documentation" };

@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { writeEffect } from "../act/index.ts";
 import { KEEP_IN_CORE } from "../core/rules.ts";
 import { applicableSteps } from "../conversations/cards.ts";
-import { optionsOf, type DecisionRow, type Kind } from "../decisions.ts";
+import { getDecision, optionsOf, type DecisionRow, type Kind } from "../decisions.ts";
 import {
   coreKey, MAX_ADDED_CORES, parseCoreKey,
   type ActionTag, type ChoiceCore, type ChoiceExtra, type ChoicesBlockExtra, type ChoicesRow, type ChoicesSource, type CoreKey, type ExtraKind,
@@ -76,15 +76,19 @@ function optionWrites(kind: Kind, key: string): ActionTag[] {
   return out;
 }
 
-/** Options after which the pipeline carries on: scope calls that keep the item in core, keeping a PR open, and "not duplicates". Everything else that writes nothing only waits. */
-const CONTINUES = new Set([...KEEP_IN_CORE, "keep", "distinct"]);
-const afterOf = (p: ParsedCoreKey): "autocraft" | "nothing" => ((p.type === "option" && CONTINUES.has(p.option)) || p.type === "review" ? "autocraft" : "nothing");
+/**
+ * Options after which the pipeline carries on: scope calls that keep the item in core or label it (the Label stage adds the plugin label),
+ * and keep or "not duplicates" on a duplicate decision. Everything else that writes nothing only waits (Later, Hold, keeping a PR open, need-info).
+ */
+const CONTINUES = new Set([...KEEP_IN_CORE, "plugin"]);
+const afterOf = (p: ParsedCoreKey, kind: string): "autocraft" | "nothing" =>
+  p.type === "review" || (p.type === "option" && (CONTINUES.has(p.option) || (kind === "duplicate" && (p.option === "keep" || p.option === "distinct")))) ? "autocraft" : "nothing";
 
 const mk = (db: DatabaseSync, d: DecisionRow, key: CoreKey, label: string, o: { writes: ActionTag[]; base: ExtraKind[]; applicable: Set<string>; closing?: boolean }): Core => {
   const parsed = parseCoreKey(key)!;
   const allowed = o.base.filter((k) => o.applicable.has(k));
   return {
-    key, label, writes: o.writes, ...(o.writes.length === 0 && { after: afterOf(parsed) }), extras: [], drafted: false, parsed, decision: d.id, allowed, closing: !!o.closing,
+    key, label, writes: o.writes, ...(o.writes.length === 0 && { after: afterOf(parsed, d.kind) }), extras: [], drafted: false, parsed, decision: d.id, allowed, closing: !!o.closing,
     ...(o.closing && { params: { reason: "" } }),
   };
 };
@@ -103,7 +107,7 @@ export function coresFor(db: DatabaseSync, d: DecisionRow): Core[] {
     const base: ExtraKind[] = effect
       ? ["label", "unlabel", "assign", "open_issue", ...(/\bmerges\b/.test(effect) ? ["comment" as const] : [])]
       : ["comment", "label", "unlabel", "assign", "request_reviewers", ...(NO_ISSUE_OPTIONS(o.key) ? [] : ["open_issue" as const])];
-    out.push(mk(db, d, coreKey.option(o.key), o.label, { writes: optionWrites(d.kind, o.key), base, applicable, closing: /\bcloses\b/.test(effect ?? "") }));
+    out.push(mk(db, d, coreKey.option(o.key), o.label, { writes: optionWrites(d.kind, o.key).filter((t) => t !== "comment" || applicable.has("comment")), base, applicable, closing: /\bcloses\b/.test(effect ?? "") && applicable.has("comment") }));
   }
   if (applicable.has("fixup with merge")) {
     const c = mk(db, d, coreKey.fixupMerge, "Fix up first, then merge", { writes: ["push", "merge"], base: NON_ENDING, applicable });
@@ -260,9 +264,11 @@ export function writeChoices(db: DatabaseSync, row: Omit<ChoicesRow, "id" | "sta
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'current', ?)`)
       .run(id, row.decisionId, row.repo, row.number, row.turnId, row.stamp, seenJson(row.seen), row.source, JSON.stringify(row.drafts), JSON.stringify(row.added), JSON.stringify(row.pick), at);
     const opt = row.pick.core ? parseCoreKey(row.pick.core) : null;
-    if (opt?.type === "option") {
+    // Backlog is an option of every decision, so a Later pick is the recommendation "backlog".
+    const recommended = opt?.type === "option" ? opt.option : opt?.type === "backlog" ? "backlog" : null;
+    if (recommended !== null) {
       db.prepare(`UPDATE main.decisions SET recommended = ?, recommended_reason = ?${o.by !== undefined ? ", recommended_by = ?" : ""} WHERE id = ? AND answer IS NULL`)
-        .run(...[opt.option, row.pick.reason, ...(o.by !== undefined ? [o.by] : []), row.decisionId] as (string | null)[]);
+        .run(...[recommended, row.pick.reason, ...(o.by !== undefined ? [o.by] : []), row.decisionId] as (string | null)[]);
     } else {
       db.prepare(`UPDATE main.decisions SET recommended = NULL, recommended_reason = NULL${o.by !== undefined ? ", recommended_by = ?" : ""} WHERE id = ? AND answer IS NULL`)
         .run(...[...(o.by !== undefined ? [o.by] : []), row.decisionId] as (string | null)[]);
@@ -298,6 +304,10 @@ export function mergeChoices(db: DatabaseSync, decisionId: string, u: ChoicesUpd
   if (!d) throw new Error(`no decision ${decisionId}`);
   const drafts: ChoicesRow["drafts"] = { ...(cur?.drafts ?? {}) };
   let added = [...(cur?.added ?? [])];
+  // The cap counts the stored added cores that still apply to the item, as the parser does.
+  const dec = getDecision(db, decisionId);
+  const applicable = dec ? new Set(applicableSteps(db, d.repo, d.number)) : null;
+  const live = (ks: CoreKey[]): number => (dec && applicable ? ks.filter((k) => addedCore(db, dec, k, applicable)).length : ks.length);
   const notes: string[] = [];
   for (const k of u.drop ?? []) {
     if (added.includes(k)) { added = added.filter((x) => x !== k); delete drafts[k]; }
@@ -305,7 +315,8 @@ export function mergeChoices(db: DatabaseSync, decisionId: string, u: ChoicesUpd
   for (const [k, v] of Object.entries(u.cores)) drafts[k] = { ...(v.params && { params: v.params }), extras: withIds(v.extras) };
   for (const a of u.add ?? []) {
     if (!added.includes(a.key)) {
-      if (added.length >= MAX_ADDED_CORES) { notes.push(`left out the added choice ${a.key}: at most ${MAX_ADDED_CORES} are kept`); continue; }
+      if (dec && applicable && !addedCore(db, dec, a.key, applicable)) { notes.push(`left out the added choice ${a.key}: it does not apply to this item now`); continue; }
+      if (live(added) >= MAX_ADDED_CORES) { notes.push(`left out the added choice ${a.key}: at most ${MAX_ADDED_CORES} are kept`); continue; }
       added.push(a.key);
     }
     drafts[a.key] = { ...(a.draft.params && { params: a.draft.params }), extras: withIds(a.draft.extras) };

@@ -8,7 +8,7 @@ import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
-import { validateCard } from "../src/conversations/cards.ts";
+import { decisionStamp, validateCard } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
 import { applyDrafts, compose, coresFor, currentChoices, mergeChoices, writeChoices } from "../src/decide/choices.ts";
 import { coreKey } from "../src/decide/choices-types.ts";
@@ -17,7 +17,9 @@ import { parsePrepareReply } from "../src/decide/prepare.ts";
 import { insertTurn, opusBlock } from "../src/conversations/store.ts";
 import { connect } from "../src/db.ts";
 import { ask, getDecision } from "../src/decisions.ts";
-import { choicesView } from "../src/dash/api/conversations.ts";
+import { choicesView, doChoice } from "../src/dash/api/conversations.ts";
+import { HttpError } from "../src/dash/server/util.ts";
+import type { Req } from "../src/dash/types.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const T0 = "2026-01-01T00:00:00Z";
@@ -49,7 +51,7 @@ describe("decision choices", () => {
     const db = fresh();
     const d = getDecision(db, "app#2:merge")!;
     writeChoices(db, {
-      decisionId: d.id, repo: "app", number: 2, turnId: null, stamp: "x", seen: { head: "sha2", lastComment: null }, source: "prepare",
+      decisionId: d.id, repo: "app", number: 2, turnId: null, stamp: decisionStamp(db, d), seen: { head: "sha2", lastComment: null }, source: "prepare",
       drafts: { [coreKey.option("merge")]: { extras: [{ id: "open_issue", kind: "open_issue", on: true, repo: "app", title: "Follow up", body: "Check the edge case." }] } },
       added: [], pick: { core: coreKey.option("merge"), reason: "Looks right." },
     });
@@ -104,14 +106,14 @@ describe("decision choices", () => {
 
   test("merging a turn's block replaces the listed cores whole, keeps the rest and caps the added cores", () => {
     const db = fresh();
-    const base = { turnId: 5, stamp: "s", seen: { head: null, lastComment: null }, pick: { core: coreKey.option("take"), reason: "r" } };
-    mergeChoices(db, "app#1:scope", { ...base, cores: { "o:take": { extras: [{ kind: "comment", on: true, text: "A" }] }, "o:close": { extras: [{ kind: "label", on: false, label: "bugfix" }] } } });
-    const { row, notes } = mergeChoices(db, "app#1:scope", {
-      ...base, cores: { "o:take": { extras: [{ kind: "comment", on: false, text: "B" }] } },
+    const base = { turnId: 5, stamp: "s", seen: { head: null, lastComment: null }, pick: { core: coreKey.option("merge"), reason: "r" } };
+    mergeChoices(db, "app#2:merge", { ...base, cores: { "o:merge": { extras: [{ kind: "comment", on: true, text: "A" }] }, "o:hold": { extras: [{ kind: "label", on: false, label: "bugfix" }] } } });
+    const { row, notes } = mergeChoices(db, "app#2:merge", {
+      ...base, cores: { "o:merge": { extras: [{ kind: "comment", on: false, text: "B" }] } },
       add: [coreKey.close("completed"), coreKey.close("not_planned"), coreKey.review, coreKey.fixup].map((key) => ({ key, draft: { extras: [] } })),
     });
-    assert.equal(row.drafts["o:take"]!.extras[0]!.text, "B");
-    assert.ok(row.drafts["o:close"]);
+    assert.equal(row.drafts["o:merge"]!.extras[0]!.text, "B");
+    assert.ok(row.drafts["o:hold"]);
     assert.equal(row.added.length, 3);
     assert.equal(notes.length, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM decision_choices WHERE state = 'current'").get()!.n, 1);
@@ -163,5 +165,34 @@ describe("decision choices", () => {
     // A single decision without a block is no valid reply; one that only takes a pick may come without.
     assert.equal(parsePrepareReply(db, { repo: "app", n: 2, d, single: true }, text), null);
     assert.equal(parsePrepareReply(db, { repo: "app", n: 2, d, single: false }, text)!.pick, null);
+  });
+
+  const who = (role: "operator" | "maintainer" | "viewer", id: string, json: unknown): Req => ({
+    method: "POST", path: "", params: { id }, query: new URLSearchParams(), form: new URLSearchParams(), json, csrf: "", nonce: "",
+    user: { login: role, role, canWrite: async () => role === "operator", canRead: async () => true },
+  } as unknown as Req);
+  const prepared = (db: DatabaseSync, stamp?: string) => {
+    const d = getDecision(db, "app#2:merge")!;
+    return writeChoices(db, {
+      decisionId: d.id, repo: "app", number: 2, turnId: null, stamp: stamp ?? decisionStamp(db, d), seen: { head: "sha2", lastComment: null }, source: "prepare",
+      drafts: { "fixup-merge": { params: { instructions: "Drop the data files." }, extras: [] } }, added: [], pick: { core: "o:hold", reason: "Wait." },
+    });
+  };
+  const deps = { querier: { query: async () => ({}) } as never, exec: (async () => ({ code: 0, stdout: "", stderr: "" })) as never };
+
+  test("doChoice: viewers and stale choices are refused, a maintainer cannot edit instructions, a double press runs once", async () => {
+    const db = fresh();
+    assert.equal(choicesView(db, "app", 2), null, "no choices written for the decision: the plain answer path");
+    const row = prepared(db);
+    const hold = { core: "o:hold", extras: [] };
+    await assert.rejects(() => doChoice(db, who("viewer", row.id, hold), deps), (e) => e instanceof HttpError && e.status === 403);
+    await assert.rejects(() => doChoice(db, who("maintainer", row.id, { core: "fixup-merge", params: { instructions: "Something else" }, extras: [] }), deps), (e) => e instanceof HttpError && e.status === 403);
+    const other = fresh();
+    const bad = prepared(other, "old|0");
+    await assert.rejects(() => doChoice(other, who("operator", bad.id, hold), deps), (e) => e instanceof HttpError && e.status === 409);
+    const [a, b] = await Promise.all([doChoice(db, who("operator", row.id, hold), deps), doChoice(db, who("operator", row.id, hold), deps)]);
+    assert.equal(a.id, b.id);
+    assert.equal(a.state, "done");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_cards WHERE choice_id = ?").get(row.id)!.n, 1);
   });
 });
