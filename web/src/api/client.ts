@@ -189,6 +189,8 @@ export interface Api {
     overview(repo: RepoName): Promise<SecurityOverview>;
     startScan(repo: RepoName, capUsd: number | null): Promise<ScanView>;
     stopScan(id: number): Promise<ScanView>;
+    /** Continues a scan that stopped at its cap, with a new cap (null = none) above what it has spent. */
+    continueScan(id: number, capUsd: number | null): Promise<ScanView>;
     /** Scans newest first, of one repo or all the reader can see. */
     scans(repo?: RepoName): Promise<ScanView[]>;
     scan(id: number): Promise<ScanDetail>;

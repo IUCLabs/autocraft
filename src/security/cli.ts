@@ -5,10 +5,11 @@ import type { FindingAction } from "../../web/src/api/types.ts";
 import { connect } from "../db.ts";
 import { isTestRepo, operators } from "../decisions.ts";
 import { scopeToTracked } from "../repos.ts";
-import { actOnFindingAs, SecurityError, startScanAs, stopScanAs, type AuditExtra } from "./actions.ts";
+import { actOnFindingAs, continueScanAs, SecurityError, startScanAs, stopScanAs, type AuditExtra } from "./actions.ts";
 import { activeScan, findingRow, overview, reconcileFindings, reconcileScans, scanRow, toFinding } from "./store.ts";
 
 const USAGE = `usage: autocraft security scan REPO --as LOGIN (--cap USD | --no-cap)
+       autocraft security continue REPO SCAN_ID --as LOGIN (--cap USD | --no-cap)
        autocraft security stop SCAN_ID --as LOGIN
        autocraft security list REPO
        autocraft security show REPO N
@@ -81,6 +82,20 @@ async function scan(args: string[]): Promise<void> {
   console.log(`scan ${s.id} started on ${repo} (${s.state}, cap ${money(s.capUsd)})`);
 }
 
+async function proceed(args: string[]): Promise<void> {
+  const { pos, opt } = parse(args, ["as", "cap"], ["no-cap"]);
+  const repo = pos[0] ?? fail(USAGE);
+  const id = posInt(pos[1], "scan");
+  if (opt.has("cap") === opt.has("no-cap")) fail(`give exactly one of --cap USD or --no-cap\n${USAGE}`);
+  const cap = opt.has("cap") ? Number(opt.get("cap")) : null;
+  if (cap !== null && !Number.isFinite(cap)) fail(`not a dollar amount: ${opt.get("cap")}`);
+  const db = open();
+  const login = requireSessionOperator(db, repo, opt.get("as"));
+  if (scanRow(db, id)?.repo !== repo) fail(`no scan ${id} in ${repo}`);
+  const s = await run(() => continueScanAs(db, id, login, cap, FROM_SESSION));
+  console.log(`scan ${s.id} continues on ${repo} (${s.state}, cap ${money(s.capUsd)}, spent ${money(s.costUsd)})`);
+}
+
 async function stop(args: string[]): Promise<void> {
   const { pos, opt } = parse(args, ["as"], []);
   const id = posInt(pos[0], "scan");
@@ -130,11 +145,11 @@ async function act(args: string[]): Promise<void> {
   console.log(`finding ${repo}#${f.number} is ${f.state}`);
 }
 
-const SUB: Record<string, (args: string[]) => void | Promise<void>> = { scan, stop, list, show, act };
+const SUB: Record<string, (args: string[]) => void | Promise<void>> = { scan, continue: proceed, stop, list, show, act };
 
 export const commands = {
   security: {
-    summary: "security deep scan: scan REPO --as LOGIN (--cap USD | --no-cap) | stop SCAN_ID --as LOGIN | list REPO | show REPO N | act REPO N fix|dismiss|backlog|reopen|land|advisory|publish --as LOGIN [--reason TEXT] [--cve] (scan, stop and act: test repos and operator logins only; list and show read any repo)",
+    summary: "security deep scan: scan REPO --as LOGIN (--cap USD | --no-cap) | continue REPO SCAN_ID --as LOGIN (--cap USD | --no-cap) | stop SCAN_ID --as LOGIN | list REPO | show REPO N | act REPO N fix|dismiss|backlog|reopen|land|advisory|publish --as LOGIN [--reason TEXT] [--cve] (scan, continue, stop and act: test repos and operator logins only; list and show read any repo)",
     run(args: string[]): void | Promise<void> {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;

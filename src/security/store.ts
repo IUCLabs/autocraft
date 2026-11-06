@@ -44,10 +44,17 @@ export function reconcileScans(db: DatabaseSync, repo?: string): void {
   }
 }
 
+export const UNCHECKED_RESULT = "Not verified: the scan ended before this finding was checked.";
+
+/** Findings a capped scan left unchecked, and that nobody has acted on since, go back to the scan's own bookkeeping so a continued scan verifies them. Returns how many. */
+export function reopenUnchecked(db: DatabaseSync, scanId: number): number {
+  return Number(db.prepare("UPDATE security_findings SET state = 'unverified', verification = NULL, updated_at = ? WHERE scan_id = ? AND state = 'new' AND json_extract(verification, '$.result') = ?").run(now(), scanId, UNCHECKED_RESULT).changes);
+}
+
 /** Ends an active scan; a scan that already ended keeps its state. Leftover unverified findings become listed findings that say so. */
 export function finishScan(db: DatabaseSync, id: number, state: ScanState, error: string | null = null): void {
   db.prepare(`UPDATE security_scans SET state = ?, ended_at = ?, error = ? WHERE id = ? AND state IN (${ACTIVE_STATES.map((s) => `'${s}'`).join(", ")})`).run(state, now(), error, id);
-  const unchecked = JSON.stringify({ kind: "reasoning", result: "Not verified: the scan ended before this finding was checked.", notes: "", score: null, proposedTest: null } satisfies FindingVerification);
+  const unchecked = JSON.stringify({ kind: "reasoning", result: UNCHECKED_RESULT, notes: "", score: null, proposedTest: null } satisfies FindingVerification);
   db.prepare("UPDATE security_findings SET state = 'new', verification = ?, updated_at = ? WHERE scan_id = ? AND state = 'unverified'").run(unchecked, now(), id);
 }
 

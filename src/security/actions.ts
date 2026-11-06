@@ -5,7 +5,7 @@ import type { FindingAction, FindingState, FindingView, ScanView } from "../../w
 import { audit } from "../dash/audit.ts";
 import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
 import { securityRepo, SECURITY_STEP, REASON_MAX } from "./rules.ts";
-import { activeScan, ACTIVE_STATES, advance, finishScan, findingKey, findingRow, moveFinding, reconcileScans, scanRow, toFinding, toScan } from "./store.ts";
+import { activeScan, ACTIVE_STATES, advance, finishScan, findingKey, findingRow, moveFinding, reconcileScans, reopenUnchecked, scanRow, toFinding, toScan, UNCHECKED_RESULT } from "./store.ts";
 
 export class SecurityError extends Error {
   readonly status: number;
@@ -46,6 +46,38 @@ export async function startScanAs(db: DatabaseSync, repo: string, login: string,
     throw e;
   }
   audit(db, login, "security-scan-start", `${repo}:scan:${id}`, { repo, capUsd: cap, ...extra });
+  return toScan(db, scanRow(db, id)!);
+}
+
+/**
+ * Continues a scan that stopped at its spend cap with a new cap (null = none) that is above what it has spent. It takes the
+ * repo's one active-scan slot, keeps its pinned commit, threat model, areas and findings, and queues its job again. A
+ * stopped scan is not continued: an operator ended it, and it may have no threat model.
+ */
+export async function continueScanAs(db: DatabaseSync, id: number, login: string, capUsd: unknown, extra: AuditExtra = {}): Promise<ScanView> {
+  const scan = scanRow(db, id);
+  if (!scan) throw new SecurityError(404, NOT_FOUND);
+  if (scan.state !== "capped") throw new SecurityError(409, `only a scan that stopped at its cap can be continued (this one is ${scan.state})`);
+  const cap = capUsd === undefined || capUsd === null ? null : capUsd;
+  if (cap !== null && (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0 || cap > CAP_MAX)) throw new SecurityError(400, `capUsd must be a dollar amount above 0 and up to ${CAP_MAX}, or null for no cap`);
+  if (cap !== null && cap <= scan.cost_usd) throw new SecurityError(400, `the new cap must be above the $${scan.cost_usd.toFixed(2)} the scan has spent`);
+  reconcileScans(db, scan.repo);
+  if (activeScan(db, scan.repo)) throw new SecurityError(409, `${scan.repo} already has a scan running`);
+  const state = !scan.threat_model ? "modeling" : db.prepare("SELECT 1 FROM security_findings WHERE scan_id = ? AND state = 'new' AND json_extract(verification, '$.result') = ?").get(id, UNCHECKED_RESULT) ? "verifying" : "scanning";
+  const moved = db.prepare("UPDATE security_scans SET state = ?, cap_usd = ?, ended_at = NULL, error = NULL, job_id = NULL WHERE id = ? AND state = 'capped'").run(state, cap, id).changes;
+  if (!moved) throw new SecurityError(409, "the scan changed; reload and try again");
+  reopenUnchecked(db, id);
+  try {
+    const job = await enqueue(db, SECURITY_STEP, { repo: scan.repo, scan: id }, login);
+    db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(scan.repo), job.id);
+    db.prepare("UPDATE security_scans SET job_id = ? WHERE id = ?").run(job.id, id);
+  } catch (e) {
+    finishScan(db, id, "capped");
+    db.prepare("UPDATE security_scans SET cap_usd = ?, job_id = ? WHERE id = ?").run(scan.cap_usd, scan.job_id, id);
+    if (e instanceof JobError) throw new SecurityError(e.status, e.message);
+    throw e;
+  }
+  audit(db, login, "security-scan-continue", `${scan.repo}:scan:${id}`, { repo: scan.repo, capUsd: cap, spentUsd: scan.cost_usd, ...extra });
   return toScan(db, scanRow(db, id)!);
 }
 
