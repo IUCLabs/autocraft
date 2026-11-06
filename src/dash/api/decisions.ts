@@ -206,6 +206,14 @@ function snoozedOf(db: DatabaseSync, d: DecisionRow): { by: string; at: string }
   return row?.s ? { by: d.snoozed_by ?? "", at: d.snoozed_at } : null;
 }
 
+/** True when any item the decision concerns (its own, a batch member or a duplicate-group member) is a quiet pull request. */
+function touchesQuiet(db: DatabaseSync, d: DecisionRow): boolean {
+  if (d.repo !== null && d.number !== null && isQuiet(db, d.repo, d.number)) return true;
+  if (itemsOf(d).some((r) => isQuiet(db, r.repo, r.number))) return true;
+  const members = db.prepare("SELECT repo, number FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { repo: string; number: number }[];
+  return members.some((m) => isQuiet(db, m.repo, m.number));
+}
+
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
   const batch = isBatch(d);
   const refs = itemsOf(d);
@@ -220,7 +228,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     .get(d.id, new Date(Date.now() - CLAIM_TTL).toISOString(), viewer.login) as Claim | undefined;
   const commentCount = (db.prepare("SELECT COUNT(*) AS n FROM decision_comments WHERE decision_id = ?").get(d.id) as { n: number }).n;
   // Viewers get none of the model text of a decision about a quiet pull request.
-  const veil = !viewer.staff && !batch && d.repo !== null && d.number !== null && isQuiet(db, d.repo, d.number);
+  const veil = !viewer.staff && touchesQuiet(db, d);
   const out: Decision = {
     id: d.id, kind: d.kind as DecisionKind,
     repo: d.repo ?? refs[0]?.repo ?? "",
@@ -262,6 +270,8 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
   if (!veil) return out;
   return {
     ...out, question: "", summary: "", context: [], facts: [], recommendedReason: "", risks: [], publicText: null, optionTexts: [],
+    group: out.group.map((m) => ({ ...m, better: [], carry: [], adds: [] })),
+    opinions: out.opinions.map((o) => ({ ...o, note: "" })), adoptedOpinion: out.adoptedOpinion && { ...out.adoptedOpinion, note: "" },
     classifications: out.classifications.map((c) => ({ ...c, reason: "" })), priority: out.priority && { ...out.priority, reason: null },
   };
 }
@@ -385,9 +395,10 @@ export async function forItem(db: DatabaseSync, req: Req): Promise<Decision | nu
 }
 
 export async function thread(db: DatabaseSync, req: Req): Promise<DecisionComment[]> {
-  await needDecision(db, req, req.params.id!);
+  const d = await needDecision(db, req, req.params.id!);
+  const veil = !canSeeInternals(req) && touchesQuiet(db, d);
   return (db.prepare("SELECT id, login, at, body, via FROM decision_comments WHERE decision_id = ? ORDER BY at, rowid").all(req.params.id!) as { id: string; login: string; at: string; body: string; via: string | null }[])
-    .map(({ via, ...c }): DecisionComment => (via === "mcp" ? { ...c, via: "mcp" } : c));
+    .map(({ via, ...c }): DecisionComment => ({ ...c, ...(veil ? { body: "" } : {}), ...(via === "mcp" ? { via: "mcp" as const } : {}) }));
 }
 
 // ---- operator writes -----------------------------------------------------
