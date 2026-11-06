@@ -120,7 +120,7 @@ describe("decision choices", () => {
     mergeChoices(db, "app#2:merge", { ...base, cores: { "o:merge": { extras: [{ kind: "comment", on: true, text: "A" }] }, "o:hold": { extras: [{ kind: "label", on: false, label: "bugfix" }] } } });
     const { row, notes } = mergeChoices(db, "app#2:merge", {
       ...base, cores: { "o:merge": { extras: [{ kind: "comment", on: false, text: "B" }] } },
-      add: [coreKey.close("completed"), coreKey.close("not_planned"), coreKey.review, coreKey.fixup()].map((key) => ({ key, draft: { extras: [] } })),
+      add: [coreKey.close("completed"), coreKey.close("not_planned"), coreKey.review, coreKey.fixup].map((key) => ({ key, draft: { extras: [] } })),
     });
     assert.equal(row.drafts["o:merge"]!.extras[0]!.text, "B");
     assert.ok(row.drafts["o:hold"]);
@@ -206,28 +206,30 @@ describe("decision choices", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM conversation_cards WHERE choice_id = ?").get(row.id)!.n, 1);
   });
 
-  test("a scope question on a PR the classifier did not label for review: Fix up, then merge records the keep answer first and queues the fix-up", async () => {
+  test("a scope question on a PR the classifier did not label for review: Fix up, then merge keeps the PR in core first and queues the fix-up", async () => {
     const w = world().repo().pr(5, { label: "plugin candidate" });
     try {
       const db = w.db;
       ask(db, [{ id: "app#5:scope", kind: "scope", repo: "app", number: 5, question: "Scope?", options: Object.values(SCOPE_OPTIONS).map((o) => ({ key: o.key, label: o.label })) }]);
       const keys = coresFor(db, getDecision(db, "app#5:scope")!).map((c) => c.key);
-      assert.ok(keys.includes("fixup-merge:small-extra") && keys.includes("fixup-merge:take") && !keys.includes("fixup-merge"), keys.join());
-      // The answer writes nothing to GitHub, so a ticked label stays a step.
-      const withLabel = choose(db, "app#5:scope", "fixup-merge:small-extra", [{ id: "label:small extra", kind: "label", label: "small extra" }], { instructions: "Rename a to b." }).composed;
-      assert.ok("card" in withLabel && (withLabel.card.steps as { kind: string }[]).map((x) => x.kind).join() === "label,fixup");
-      const { composed } = choose(db, "app#5:scope", "fixup-merge:small-extra", [], { instructions: "Rename a to b." });
-      assert.ok("card" in composed);
-      const v = validateCard(db, "app", 5, composed.card);
-      assert.ok("card" in v, "note" in v ? v.note : "");
-      const params = v.card.params as { settle: { kind: string; option?: string }; steps: { kind: string; merge?: boolean }[] };
-      assert.deepEqual(params.settle && { kind: params.settle.kind, option: params.settle.option }, { kind: "answer", option: "small-extra" });
-      assert.deepEqual(params.steps.map((x) => x.kind), ["fixup"]);
+      assert.ok(keys.includes("fixup-merge"), keys.join());
+      const settleOf = (extras: Parameters<typeof compose>[1]) => {
+        const { composed } = choose(db, "app#5:scope", "fixup-merge", extras, { instructions: "Rename a to b." });
+        assert.ok("card" in composed);
+        const v = validateCard(db, "app", 5, composed.card);
+        assert.ok("card" in v, "note" in v ? v.note : "");
+        const p = v.card.params as { settle: { kind: string; option?: string }; steps: { kind: string; merge?: boolean }[] };
+        return { v, kind: p.settle.kind, option: p.settle.option, steps: p.steps.map((x) => x.kind).join() };
+      };
+      // The "small extra" label extra makes the answer small-extra; the label step needs a live item, so only the plain run goes through doCard.
+      assert.deepEqual({ ...settleOf([{ id: "label:small extra", kind: "label", label: "small extra" }]), v: 0 }, { v: 0, kind: "answer", option: "small-extra", steps: "label,fixup" });
+      const plain = settleOf([]);
+      assert.deepEqual([plain.kind, plain.option, plain.steps], ["answer", "take", "fixup"]);
       const id = Number(db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (0, 'app', 5, 'resolution', ?, NULL, ?)")
-        .run(JSON.stringify(v.card.params), v.card.description).lastInsertRowid);
+        .run(JSON.stringify(plain.v.card.params), plain.v.card.description).lastInsertRowid);
       const { card } = await doCard(db, id, OPERATOR, { querier: { query: async () => ({}) } as never, exec: (async () => ({ code: 0, stdout: "", stderr: "" })) as never });
       assert.equal(card.state, "done", card.error ?? "");
-      assert.equal(getDecision(db, "app#5:scope")!.answer, "small-extra");
+      assert.equal(getDecision(db, "app#5:scope")!.answer, "take");
       assert.equal(w.rows("SELECT id FROM preapprovals WHERE number = 5").length, 1);
       assert.equal(w.rows("SELECT instructions FROM operator_fixups WHERE number = 5").length, 1);
     } finally { w.close(); }
