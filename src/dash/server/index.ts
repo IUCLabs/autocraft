@@ -1,5 +1,6 @@
 // HTTP server: sign-in, sessions, CSRF, rate limits, security headers and
 // routing for the dashboard. Handlers only ever see authenticated requests.
+import { maintainerWritesOn } from "../../settlers.ts";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -519,7 +520,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (!msg || typeof msg !== "object" || Array.isArray(msg)) return reply(400, rpcError(-32600, "send one JSON-RPC message as an object; batches are not supported"));
     const m = msg as McpMsg;
     const out = await handleMcp({
-      db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && caller.role === "operator",
+      db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && (caller.role === "operator" || (caller.role === "maintainer" && maintainerWritesOn(db))),
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
     }, m);
     if (mcpWrites(m)) live.poke();

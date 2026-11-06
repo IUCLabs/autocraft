@@ -19,7 +19,7 @@ test("an answered decision whose act a gate refuses shows the reason, with the r
   db.prepare("INSERT INTO lane_next (lane, total, items, at) VALUES ('act', 1, ?, 't')").run(JSON.stringify(items));
   db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at, exec_state) VALUES ('sandbox#1:scope', 'scope', 'sandbox', 1, 'q', '[]', 't', 'close', 'op', 't', 'pending')").run();
   const d = getDecision(db, "sandbox#1:scope")!;
-  const viewer = (operator: boolean) => ({ login: "x", operator, staff: operator });
+  const viewer = (operator: boolean) => ({ login: "x", role: operator ? "operator" : "viewer", operator, staff: operator });
   assert.deepEqual(execOf(db, d, "sandbox", viewer(true)), { state: "pending", reason: "Comments in sandbox are not approved", approvalsRepo: "sandbox" });
   assert.deepEqual(execOf(db, d, "sandbox", viewer(false)), { state: "pending", reason: "Comments in sandbox are not approved" });
 });

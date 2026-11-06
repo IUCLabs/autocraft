@@ -5,6 +5,7 @@
 // which the later stages read to hold the items to close. Per-pair decisions from
 // before groups exist stay until answered; an open one of a group is superseded
 // by the group decision.
+import { settledBySql } from "../settlers.ts";
 import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
@@ -245,7 +246,7 @@ export function groupsToAsk(db: DatabaseSync, repo?: string): GroupPlan[] {
  */
 export function answersToApply(db: DatabaseSync): { id: string; refs: string[] }[] {
   const rows = db.prepare(`SELECT d.id, d.repo, d.number FROM decisions d WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer <> 'backlog' AND d.applied_at IS NULL
-    AND d.answered_by IN (SELECT login FROM access WHERE role = 'operator')
+    AND ${settledBySql("d")}
     AND ((d.id NOT LIKE '%:dupegroup:%' AND d.answer <> 'close' AND ${pilotSqlFor("d.repo", "d.number")})
       OR (d.id LIKE '%:dupegroup:%' AND EXISTS (SELECT 1 FROM dupe_group_items gi WHERE gi.decision_id = d.id AND ${pilotSqlFor("gi.repo", "gi.number")}) AND COALESCE((SELECT g.applied_answer FROM dupe_groups g WHERE g.decision_id = d.id), '') <> d.answer))`).all() as
     { id: string; repo: string | null; number: number | null }[];

@@ -1,7 +1,8 @@
 // The signed-in user's own agent tokens for the Inbox MCP server (src/dash/mcp/). Maintainers and operators make
 // them (a viewer writes nothing, this included). A token acts with its login's current role, read on every call, so
-// a token whose login became a viewer only reads; anyone may list and revoke their own. Only an operator makes an
+// a token whose login became a viewer only reads; anyone may list and revoke their own. Only an operator, or a maintainer while `maintainer_writes` is on, makes an
 // answering token (`answer: true`): its agent may also answer decisions and undo answers, and it lasts 7 days.
+import { maintainerWritesOn } from "../../settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { McpTokenCreated, McpTokens } from "../../../web/src/api/types.ts";
 import { audit } from "../audit.ts";
@@ -24,7 +25,7 @@ export function create(db: DatabaseSync, req: Req): McpTokenCreated {
   const b = body(req);
   if (b.answer !== undefined && typeof b.answer !== "boolean") throw new HttpError(400, "answer must be true or false");
   if (b.answer === true && !answering.enabled) throw new HttpError(403, "answering from an agent is not available yet");
-  if (b.answer === true && req.user.role !== "operator") throw new HttpError(403, "only operators make tokens that answer decisions");
+  if (b.answer === true && req.user.role !== "operator" && !(req.user.role === "maintainer" && maintainerWritesOn(db))) throw new HttpError(403, "only operators, and maintainers where they may settle decisions, make tokens that answer decisions");
   const { token, row } = createToken(db, req.user.login, b.label, b.answer === true);
   audit(db, req.user.login, "mcp-token-create", req.user.login, { id: row.id, label: row.label ?? undefined, ...(row.canAnswer ? { canAnswer: true } : {}) });
   return { ...tokens(db, req), token, id: row.id };

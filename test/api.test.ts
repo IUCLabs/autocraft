@@ -8,7 +8,11 @@ import { after, before, describe, test } from "node:test";
 import type { Decision, DecisionComment, DecisionList, Item, Progress, SearchHit, User } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
-import { ask } from "../src/decisions.ts";
+import { laneForDecision } from "../src/github/user-lane.ts";
+import { queuedOperatorFix, operatorWork } from "../src/preapproval/state.ts";
+import { scopeAnswers, unsettledScope } from "../src/review/candidates.ts";
+import { settledBySql } from "../src/settlers.ts";
+import { actionable, ask } from "../src/decisions.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
@@ -110,6 +114,8 @@ async function signedIn(login: string): Promise<Client> {
   assert.ok(c.csrf);
   return c;
 }
+
+const actionableIds = () => actionable(db).map((d) => d.id);
 
 const auditCount = (action: string, login: string) =>
   (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = ? AND login = ?").get(action, login) as { n: number }).n;
@@ -246,6 +252,55 @@ describe("api", () => {
     const u = await boss.post<Decision>(dpath(P2, "/undo"));
     assert.equal(u.answer, null);
     assert.equal(auditCount("undo", "boss"), 1);
+  });
+
+  test("a maintainer settles only with maintainer_writes on, the app identity on the repo and write access; undo only their own", async () => {
+    const setting = (on: boolean) => on ? db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1')").run() : db.prepare("DELETE FROM settings WHERE key = 'maintainer_writes'").run();
+    const identity = (app: boolean) => app ? db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('repo_identity:photocraft', 'app')").run() : db.prepare("DELETE FROM settings WHERE key = 'repo_identity:photocraft'").run();
+    const X1 = "photocraft#7:scope", X2 = "photocraft#8:scope";
+    ask(db, [X1, X2].map((id) => ({ id, kind: "scope" as const, repo: "photocraft", number: Number(id.split("#")[1]!.split(":")[0]), question: "Small extra or plugin?", options: OPTS, recommended: "small", summary: "s" })));
+    const maint = await signedIn("maint"), pal = await signedIn("pal"), boss = await signedIn("boss");
+    try {
+      identity(true);
+      await maint.post(dpath(X1, "/answer"), { answer: "small" }, 403);
+      setting(true);
+      assert.equal((await maint.get<Decision>(dpath(X1))).canSettle, true);
+      identity(false);
+      assert.equal((await maint.get<Decision>(dpath(X1))).canSettle, false);
+      await maint.post(dpath(X1, "/answer"), { answer: "small" }, 403);
+      identity(true);
+      await pal.post(dpath(X1, "/answer"), { answer: "small" }, 403);
+      const d = await maint.post<Decision>(dpath(X1, "/answer"), { answer: "small", note: "mine" });
+      assert.equal(d.answeredBy, "maint");
+      assert.equal(auditCount("answer", "maint"), 1);
+      assert.ok(actionableIds().includes(X1));
+      assert.ok(db.prepare(`SELECT 1 FROM decisions d WHERE d.id = ? AND ${settledBySql("d")}`).get(X1));
+      identity(false);
+      assert.ok(!actionableIds().includes(X1), "an answer on a repo that left the app identity stops counting");
+      assert.equal(db.prepare(`SELECT 1 FROM decisions d WHERE d.id = ? AND ${settledBySql("d")}`).get(X1), undefined, "nor at the SQL sites other than actionable()");
+      // Work and answers the maintainer started count only while the conditions hold; a flip to legacy stops them everywhere.
+      db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES ('maint', 'photocraft', 'write', ?)").run(new Date().toISOString());
+      db.prepare("INSERT INTO operator_fixups (repo, number, from_head, instructions, by, at) VALUES ('photocraft', 7, 'h1', 'fix it', 'maint', ?)").run(new Date().toISOString());
+      identity(true);
+      assert.ok(queuedOperatorFix(db, "photocraft", 7, "h1"));
+      assert.equal(scopeAnswers(db).get("photocraft#7"), "small");
+      identity(false);
+      assert.equal(queuedOperatorFix(db, "photocraft", 7, "h1"), null);
+      assert.equal(operatorWork(db).get("photocraft#7")?.fixHeads.size ?? 0, 0);
+      assert.equal(scopeAnswers(db).get("photocraft#7"), undefined);
+      assert.ok(unsettledScope(db).has("photocraft#7"));
+      const lane = await laneForDecision(db, undefined, X1, ["photocraft"]);
+      assert.ok(lane && "state" in lane && lane.state === "waiting-permission");
+      identity(true);
+      identity(true);
+      await boss.post(dpath(X2, "/answer"), { answer: "plugin" });
+      await maint.post(dpath(X2, "/undo"), undefined, 403);
+      assert.equal((await maint.post<Decision>(dpath(X1, "/undo"))).answer, null);
+      await boss.post(dpath(X2, "/undo"));
+    } finally {
+      setting(false);
+      identity(false);
+    }
   });
 
   test("an operator can close a question as handled with a note (and undo it), and snooze hides it until new activity", async () => {

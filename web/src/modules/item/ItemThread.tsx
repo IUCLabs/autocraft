@@ -17,6 +17,7 @@ import { TraceFilters } from "../../ui/molecules/TraceFilters";
 import { TraceHeader } from "../../ui/organisms/TraceHeader";
 import { useUser } from "../../shell/UserContext";
 import { canAct, canComment } from "../../registry/permissions";
+import { canActOn } from "../decisions/DecisionDetail";
 import { useNow } from "../../lib/useNow";
 import { localActions } from "../decisions/state";
 import { ActionCard, Progress } from "./OpusCards";
@@ -115,7 +116,7 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   if (!it) return null;
   if (!first && !q.error) return <div className="mt-4 h-24" aria-hidden />;
 
-  const operator = canAct(user, [it.repo]);
+  const operator = user.role === "operator" && canAct(user, [it.repo]);
   const openDecisions = ds?.filter((d) => !d.answer) ?? [];
   const turns = conv?.turns ?? [];
   // Only the newest Opus turn's cards are live: resolutions in the end block, other proposals above the composer.
@@ -176,7 +177,7 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
           </Button>
         </li>,
       );
-    else if (en.t === "feedback") list.push(<FeedbackPost key={en.f.id} f={en.f} repo={it.repo} number={it.number} include={conv?.includes.find((x) => x.source === en.f.source)} operator={operator} me={user.login} commenter={canComment(user)} />);
+    else if (en.t === "feedback") list.push(<FeedbackPost key={en.f.id} f={en.f} repo={it.repo} number={it.number} include={conv?.includes.find((x) => x.source === en.f.source)} operator={operator} settle={canActOn(user, [en.f.d])} me={user.login} commenter={canComment(user)} />);
     else if (en.t === "event")
       list.push(
         <ChatEntry key={en.e.id} id={en.e.id} author={en.e.actor.name} at={en.e.at} tag={en.e.kind === "github" && /review/i.test(en.e.summary) ? "Review" : undefined}>
@@ -220,10 +221,10 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
       </section>
       {it.preapproval && <PreapprovalPart it={it} operator={operator} />}
       <OpenQuestions ds={ds ?? []} focus={decision} resolutions={resolutions} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
-      {operator && suggestions.length > 0 && (
+      {suggestions.some((a) => a.canSettle) && (
         <div className="mt-3 space-y-2">
-          {suggestions.map((a) => (
-            <ActionCard key={a.id} a={a} operator={operator} className="" />
+          {suggestions.filter((a) => a.canSettle).map((a) => (
+            <ActionCard key={a.id} a={a} operator={canAct(user, [it.repo])} editInstructions={user.role === "operator"} className="" />
           ))}
         </div>
       )}
@@ -292,7 +293,7 @@ function Turn({ t }: { t: ConversationTurn }) {
   );
 }
 
-function FeedbackPost({ f, repo, number, include, operator, me, commenter }: { f: Feedback; repo: string; number: number; include?: { sent: boolean }; operator: boolean; me: string; commenter: boolean }) {
+function FeedbackPost({ f, repo, number, include, operator, settle, me, commenter }: { f: Feedback; repo: string; number: number; include?: { sent: boolean }; operator: boolean; settle: boolean; me: string; commenter: boolean }) {
   const api = useApi();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -337,14 +338,14 @@ function FeedbackPost({ f, repo, number, include, operator, me, commenter }: { f
         </button>
       )}
       <ErrorLine error={error} className="mt-1 text-xs" />
-      {open && ((f.pick && f.login === me && commenter) || (operator && f.pick && f.write)) && (
+      {open && ((f.pick && f.login === me && commenter) || (settle && f.pick && f.write)) && (
         <div className="mt-2 flex flex-wrap gap-3">
           {f.pick && f.login === me && commenter && (
             <button onClick={() => void retract()} className="text-xs text-accent-ink hover:underline max-md:min-h-11">
               Retract
             </button>
           )}
-          {operator && f.pick && f.write && (
+          {settle && f.pick && f.write && (
             <button onClick={() => localActions.setPick(f.d.id, f.pick!)} className="rounded border border-line-strong px-2 py-0.5 text-xs font-medium hover:border-accent/60 hover:text-accent-ink max-md:min-h-11">
               Use this answer
             </button>

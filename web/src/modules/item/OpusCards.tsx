@@ -2,12 +2,13 @@ import { useApi } from "../../api/client";
 import type { ConversationCard } from "../../api/types";
 import { OpusCard } from "../../ui/organisms/OpusCard";
 
-export function ActionCard({ a, operator, className = "ml-7 mt-2" }: { a: ConversationCard; operator: boolean; className?: string }) {
+export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt-2" }: { a: ConversationCard; operator: boolean; editInstructions?: boolean; className?: string }) {
   const api = useApi();
   return (
     <OpusCard
       card={a}
       operator={operator}
+      editInstructions={editInstructions}
       className={className}
       onRun={async (edit) => {
         if (edit) await api.conversations.editCard(a.id, edit);

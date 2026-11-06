@@ -25,6 +25,7 @@ import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
+import { canSettle, canSettleCached, settleMemo, type SettleMemo } from "../../settlers.ts";
 import { isQuiet } from "../../security/quiet.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
@@ -76,6 +77,17 @@ async function blockedRepos(req: Req, d: DecisionRow): Promise<string[]> {
   const repos = reposOf(d);
   const ok = await Promise.all(repos.map((r) => req.user.canWrite(r).catch(() => false)));
   return repos.filter((_, i) => !ok[i]);
+}
+
+/** An operator settles with write access on every repo; a maintainer only under the rule of src/settlers.ts. `own`: the decision's answer must be this login's (undo, retry, reopen), unless an operator asks. */
+async function requireSettler(db: DatabaseSync, req: Req, d: DecisionRow, own = false): Promise<void> {
+  if (!isOperator(req)) {
+    if (!(await canSettle(db, req.user, reposOf(d)))) throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, settles decisions");
+    if (own && d.answered_by?.toLowerCase() !== req.user.login.toLowerCase()) throw new HttpError(403, "only an operator takes back someone else's answer");
+    return;
+  }
+  const blocked = await blockedRepos(req, d);
+  if (blocked.length) throw new HttpError(403, `no write access to ${blocked.map((r) => slugOf(r)).join(", ")}`);
 }
 
 async function requireOperator(req: Req, d: DecisionRow): Promise<void> {
@@ -144,7 +156,7 @@ function contextOf(c: string | null): string[] {
   return c.split(/\n+/).map((s) => s.trim()).filter(Boolean);
 }
 
-export type Viewer = { login: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null };
+export type Viewer = { login: string; role: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null; memo?: SettleMemo };
 /** The reason a write waits or failed: the stored text (it may carry GitHub's error text) only for operators and maintainers, one fixed sentence per state for everyone else. */
 export function execReasonFor(state: ExecState, stored: string | null, repo: string | null, staff: boolean): string | null {
   if (staff) return stored;
@@ -164,9 +176,9 @@ export function execOf(db: DatabaseSync, d: DecisionRow, repo: string | null, vi
   if (!held) return d.exec_state ? { state, reason: null } : null;
   return { state, reason: held.reason, ...(held.approval && viewer.operator ? { approvalsRepo: d.repo! } : {}) };
 }
-export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator: isOperator(req), staff: canSeeInternals(req) });
+export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, role: req.user.role, operator: isOperator(req), staff: canSeeInternals(req) });
 /** The viewer with the queue places of the items they may see, computed once for the response. */
-const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db) });
+const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db), memo: settleMemo() });
 
 /** Whether Undo would succeed: answered, not acted on, and nothing written to GitHub for a group answer. */
 export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
@@ -246,6 +258,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     recommended: d.recommended ?? "",
     recommendedReason: d.recommended ? (d.recommended_reason ?? "") : "",
     group: groupOf(db, d), risks: risksOf(db, d), undoable: canUndo(db, d),
+    canSettle: canSettleCached(db, viewer.login, viewer.role, reposOf(d), viewer.memo),
     publicText: commentPreview(d),
     optionTexts: d.kind === "duplicate" && d.id.includes(":dupegroup:") ? optionTextsOf(db, d.id) : [],
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
@@ -424,7 +437,7 @@ function inTransaction<T>(db: DatabaseSync, fn: () => T): T {
 /** `via` names the Inbox MCP server in the audit row when an operator's agent answered with an answering token. */
 export async function answer(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
-  await requireOperator(req, d);
+  await requireSettler(db, req, d);
   applyAnswer(db, d, req.user.login, body(req), "dashboard", via);
   return await settled(db, req, d.id);
 }
@@ -474,7 +487,9 @@ export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: 
   if (d.repo && d.number !== null && conversationOf(db, d.repo, d.number)) {
     const label = optionsOf(d).find((o) => o.key === ans)?.label ?? (handled ? HANDLED.label : ans);
     const said = `${login} answered "${d.question}" with "${label}"`;
-    insertTurn(db, d.repo, d.number, { kind: "system", login: "system", body: note ? `${said}: ${note}` : said, block: systemBlock(`The operator ${login} answered the open question "${d.question.replace(/[\r\n<]+/g, " ")}" with "${label.replace(/[\r\n<]+/g, " ")}".`, note ? { operator_note: note } : undefined) });
+    // A maintainer's note is stored and shown but never reaches the model: only an operator's words may.
+    const operator = !!db.prepare("SELECT 1 FROM access WHERE login = ? AND role = 'operator'").get(login);
+    insertTurn(db, d.repo, d.number, { kind: "system", login: "system", body: note ? `${said}: ${note}` : said, block: systemBlock(`The ${operator ? "operator" : "maintainer"} ${login} answered the open question "${d.question.replace(/[\r\n<]+/g, " ")}" with "${label.replace(/[\r\n<]+/g, " ")}".`, note && operator ? { operator_note: note } : undefined) });
   }
 }
 
@@ -493,7 +508,7 @@ export async function snooze(db: DatabaseSync, req: Req): Promise<Decision> {
 
 export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
-  await requireOperator(req, d);
+  await requireSettler(db, req, d, true);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
   if (d.id.includes("~replaced-")) throw new HttpError(409, "a withdrawn question stays closed");
   if (d.applied_at && !directHandled(db, d)) throw new HttpError(409, "the pipeline already acted on this answer");
@@ -511,7 +526,7 @@ export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Dec
 /** Operator: tries the GitHub write of a waiting or failed answer again. It is still made as the operator who answered. */
 export async function retry(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
-  await requireOperator(req, d);
+  await requireSettler(db, req, d, true);
   if (!d.answer || d.applied_at) throw new HttpError(409, "that decision has nothing waiting to run");
   if (!retryDecision(db, d.id)) throw new HttpError(409, "that decision is not waiting or failed");
   audit(db, req.user.login, "retry", d.id, { answer: d.answer });
@@ -520,7 +535,7 @@ export async function retry(db: DatabaseSync, req: Req): Promise<Decision> {
 
 export async function reopen(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
-  await requireOperator(req, d);
+  await requireSettler(db, req, d, true);
   if (d.answer !== BACKLOG.key) throw new HttpError(409, "that decision is not in the Backlog");
   const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
     WHERE id = ? AND answer = ?`).run(d.id, BACKLOG.key);
@@ -544,7 +559,7 @@ export async function backlogBulk(db: DatabaseSync, req: Req): Promise<{ applied
 
 export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
-  await requireOperator(req, d);
+  await requireSettler(db, req, d);
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
   const oid = body(req).opinionId;
   if (typeof oid !== "string") throw new HttpError(400, "opinionId is required");
