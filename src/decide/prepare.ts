@@ -77,7 +77,13 @@ export const PREPARE: ClaudeStep<PrepareInput, Prepared, PrepareCtx> = {
   provider: "claude", id: "decide.prepare",
   toPrompt: (x) => [x], size: () => 1,
   lint: { fields: ["cards[].text"], make: (_x, c) => async (text, stage) => (c.item && parsePrepareReply(c.db, c.item, text, c.keys) ? referenceProblems(commentTexts(splitPick(text, c.keys).rest), c.dir, c.semantic, { stage }) : null) },
-  parse: (text, _x, ctx, c) => { const r = parsePrepareReply(c.db, c.item, text, c.keys, dropTexts(ctx.problems)); return r === null ? null : { value: r }; },
+  // A single item whose cards were all dropped is asked once more with the drop notes; the repeat's value replaces the first.
+  parse: (text, x, ctx, c) => {
+    const r = parsePrepareReply(c.db, c.item, text, c.keys, dropTexts(ctx.problems));
+    if (r === null) return null;
+    if (c.item && ctx.attempt === 0 && !ctx.last && !r.cards.length && r.notes.length) return { value: r, rest: { ...x, previous: r.notes } };
+    return { value: r };
+  },
 };
 
 // ---- what is due ---------------------------------------------------------------

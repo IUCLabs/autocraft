@@ -359,6 +359,19 @@ describe("close journey", () => {
 });
 
 describe("issue journey", () => {
+  test("a prepare reply whose cards were all dropped is asked again with the reasons, and the repeat's cards are kept", async () => {
+    const w = fresh().issue(7);
+    ask(w.db, [{ id: "app:scope:7", kind: "scope", repo: "app", number: 7, question: "Take #7?", options: [{ key: "take", label: "Take" }, { key: "close", label: "Close" }] }]);
+    const summary = "The issue asks for a small export option, which the reference app has, so it fits the project and can be taken as it is.";
+    const card = (option: string) => `\n\`\`\`actions\n[{"kind":"resolution","steps":[],"settle":{"kind":"answer","option":"${option}"},"text":null}]\n\`\`\``;
+    const inputs: string[] = [];
+    w.models((input) => { inputs.push(input); return `Pick: take | fits.\n${summary}${card(inputs.length === 1 ? "bogus" : "take")}`; });
+    assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
+    assert.equal(inputs.length, 2);
+    assert.ok(!inputs[0]!.includes("<previous>") && inputs[1]!.includes("<previous>") && inputs[1]!.includes("is not an option of the open decision"));
+    assert.equal(w.rows("SELECT 1 FROM conversation_cards WHERE state = 'proposed'").length, 1);
+  });
+
   test("a duplicate group whose kept item is closed is prepared while a member it would close is open", async () => {
     const w = fresh().issue(7).issue(8);
     ask(w.db, [{ id: "app:dupegroup:7", kind: "duplicate", repo: "app", number: 7, question: "Keep #7 and close #8?", options: [{ key: "accept", label: "Use this answer" }, { key: "distinct", label: "Not duplicates" }] }]);
