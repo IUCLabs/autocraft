@@ -76,9 +76,15 @@ function Question({ d, siblings, choices, here, onAnswered, feedback }: { d: Dec
       <p className="mt-2 text-pretty text-[15px] font-semibold leading-6">
         <Refs text={d.question} repo={d.repo} />
       </p>
-      {d.preparing && !d.answer && <OpusWorking text="Opus is preparing options…" className="mt-2" />}
-      {!choices && <div className="mt-2"><RecommendationLine d={d} /></div>}
-      <ChoiceGroup d={d} user={user} choices={choices} onAnswered={onAnswered} />
+      {/* While Opus prepares, the earlier answers are about to be replaced, so only the progress line shows. */}
+      {d.preparing && !d.answer ? (
+        <OpusWorking text="Opus is preparing options…" className="mt-2" />
+      ) : (
+        <>
+          {!choices && <div className="mt-2"><RecommendationLine d={d} /></div>}
+          <ChoiceGroup d={d} user={user} choices={choices} onAnswered={onAnswered} />
+        </>
+      )}
       {/* With several open questions the composer serves one; the others get their own box. */}
       {feedback && canComment(user) && !canActOn(user, [d]) && <FeedbackBox d={d} className="mt-3" />}
     </article>
