@@ -12,6 +12,7 @@ export type QueueState = (typeof QUEUE_STATES)[number];
 export const OTHER_PR_STATES = [
   "out-of-scope", // repo pipeline off or not a pilot item, and not fast-tracked
   "integration", // an integration batch PR the pipeline opened itself
+  "pushed", // our push moved the PR off the head the mirror still shows: nothing is planned until a sync shows the new head
   "backlog", // a Backlog answer holds it (no take review at its head)
   "duplicate", // a duplicate decision holds it (no take review at its head)
   "draft", // a draft, or closed on GitHub, with no take review
@@ -99,6 +100,8 @@ export type PrFacts = {
   carriable?: boolean;
   /** AutoCraft has its own work on this PR: one of its pushes (fix-up, CI fix, base merge) at or since the reviewed head, a stored lint patch, or the PR is our own fix PR. It ends when the PR is closed; selection also drops it while the plan waits on a person (see inFlightNow). */
   inFlight?: boolean;
+  /** Our push moved this open PR off its mirrored head and no sync has run since (the mirror's updatedAt is not after the push). */
+  pushedOff?: boolean;
   assignment: AssignFacts;
   /** GitHub state as mirrored. */
   ghState: "OPEN" | "MERGED" | "CLOSED";

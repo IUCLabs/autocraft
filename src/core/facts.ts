@@ -143,6 +143,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const ourFixupHead = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' AND source IS NULL LIMIT 1");
   // A head we pushed, or the head our push moved off (the mirror may still show it, and our own comment makes its review stale).
   const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND (to_oid = ?3 OR from_oid = ?3)");
+  const pushedOffRows = db.prepare("SELECT at FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND from_oid = ?3 AND to_oid <> ?3");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
   const posts = new Map((db.prepare("SELECT repo, number, review_id, head_oid, posted_at, opus_at FROM review_posts").all() as { repo: string; number: number; review_id: string; head_oid: string | null; posted_at: string | null; opus_at: string | null }[])
@@ -230,9 +231,10 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const batchRow = integration ? (batchOf.get(r.repo, r.number) as { id: number; commit_sha: string } | undefined) : undefined;
     const inScope = integration ? pipelineOn_.has(r.repo) || (!!batchRow && (members => members.length > 0 && members.every((m) => inPilot(db, r.repo, m.number)))(membersOf(db, batchRow.id))) : !!r.in_pilot;
     const head = batchRow?.commit_sha ?? headOf(r);
+    const pushedOff = r.state === "OPEN" && !integration && !!head && (pushedOffRows.all(r.repo, r.number, head) as { at: string }[]).some((p) => !r.updated_at || Date.parse(r.updated_at) < Date.parse(p.at));
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
-      repo: r.repo, number: r.number, assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
+      repo: r.repo, number: r.number, ...(pushedOff ? { pushedOff } : {}), assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
       author: r.author, authorIsPipeline: r.author !== null && own.isOwn(r.repo, r.author), tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, quiet: own.quiet.has(ref), mergeHeld: holds.has(ref),

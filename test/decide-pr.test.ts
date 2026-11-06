@@ -358,8 +358,17 @@ test("a PR in needs-fix-up with no action due names who it waits on", () => {
   }
 });
 
+test("a PR our push moved off its mirrored head is left alone and stays assigned", () => {
+  const stale = { ...TAKE_FIX, pushedOff: true } as const;
+  const p = decidePr(prFacts(stale));
+  assert.equal(p.state, "pushed");
+  assert.deepEqual(p.actions, []);
+  assert.ok(p.wait);
+  assert.equal(decidePr(prFacts({ ...stale, pushedOff: false })).state, "needs-fix-up");
+});
+
 test("every plan state is one of the declared states", () => {
-  const all = new Set<string>([...QUEUE_STATES, "out-of-scope", "integration", "backlog", "duplicate", "draft", "opus-hold", "opus-close", "review-stale", "label-not-reviewed", "scope", "not-reviewed", "closed"]);
+  const all = new Set<string>([...QUEUE_STATES, "out-of-scope", "integration", "pushed", "backlog", "duplicate", "draft", "opus-hold", "opus-close", "review-stale", "label-not-reviewed", "scope", "not-reviewed", "closed"]);
   for (const row of rows) assert.ok(all.has(decidePr(prFacts(row.facts)).state), row.name);
   assert.equal(REVIEW_AT.length > 0, true);
 });
