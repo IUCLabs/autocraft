@@ -5,7 +5,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { FindingVerification } from "../../web/src/api/types.ts";
-import { ACTIVE_STATES, finishScan, scanRow } from "./store.ts";
+import { audit } from "../dash/audit.ts";
+import { ACTIVE_STATES, findingKey, finishScan, scanRow } from "./store.ts";
 import {
   securityRepo, parseCandidates, parseThreatModel, parseVerdict, survives, titleKey,
   type Candidate, type SecurityAreaInput, type SecurityModelInput, type SecurityVerifyInput, type ThreatArea, type ThreatModel,
@@ -74,7 +75,13 @@ function realRefs(dir: string, refs: Candidate["refs"]): Candidate["refs"] {
   });
 }
 
-type Known = { number: number; state: string; fingerprint: string; sink: { path: string; line: number } | null; title: string; category: string | null };
+type Ref = { path: string; line: number };
+type Known = { number: number; state: string; fingerprint: string; sink: Ref | null; refs: Ref[]; title: string; category: string | null };
+type KnownRow = { number: number; state: string; fingerprint: string; title: string; refs: string; category: string | null };
+const knownOf = (r: KnownRow): Known => {
+  const refs = JSON.parse(r.refs) as Ref[];
+  return { number: r.number, state: r.state, fingerprint: r.fingerprint, title: r.title, category: r.category, sink: refs[0] ?? null, refs };
+};
 
 /** The primary location of a finding is its first ref: the line where the unsafe operation is (the prompt asks for it first). Other refs are entry points and checks that findings may share. */
 const fingerprintOf = (c: Candidate): string => `${c.refs[0]!.path}:${c.refs[0]!.line}|${titleKey(c.title)}`;
@@ -86,12 +93,45 @@ const similar = (a: string, b: string): boolean => {
   return common > 0 && common / (x.size + y.size - common) >= 0.5;
 };
 
-/** The earlier finding of the repository that `c` repeats: its exact fingerprint (a disproved finding suppresses only that), or the same sink file within a few lines and the same category or a similar title. */
-export const earlierFinding = (known: Known[], c: Candidate): Known | undefined => {
-  const fp = fingerprintOf(c), sink = c.refs[0]!;
+const near = (a: Ref, b: Ref): boolean => a.path === b.path && Math.abs(a.line - b.line) <= 3;
+/** The refs after the sink that `a` and `b` both cite. */
+const sharedRefs = (a: Ref[], b: Ref[]): number => a.slice(1).filter((x) => b.slice(1).some((y) => near(x, y))).length;
+
+/**
+ * The earlier finding of the repository that `c` repeats: its exact fingerprint (a disproved finding suppresses only that),
+ * or a sink in the same file within a few lines plus one of: the same category, a similar title, or two more shared refs.
+ * Category and title are the model's words and vary between areas; the cited lines do not. One shared entry point is not
+ * enough, since distinct bugs often start from the same entry.
+ */
+export const earlierFinding = (known: Known[], c: Pick<Candidate, "title" | "category" | "refs">): Known | undefined => {
+  const fp = fingerprintOf(c as Candidate), sink = c.refs[0]!;
   return known.find((k) => k.fingerprint === fp)
-    ?? known.find((k) => k.state !== "disproved" && k.state !== "duplicate" && k.sink?.path === sink.path && Math.abs(k.sink.line - sink.line) <= 3 && ((!!c.category && k.category === c.category) || similar(k.title, c.title)));
+    ?? known.find((k) => k.state !== "disproved" && k.state !== "duplicate" && !!k.sink && near(k.sink, sink)
+      && ((!!c.category && k.category === c.category) || similar(k.title, c.title) || sharedRefs(k.refs, c.refs) >= 2));
 };
+
+/**
+ * Links each listed finding that repeats an earlier one of its repository by the rule above, oldest first, and
+ * returns how many it linked. A finding someone has acted on keeps its state. Runs at runner start, so findings
+ * stored under an older rule are linked too.
+ */
+export function linkRepeatedFindings(db: DatabaseSync): number {
+  const rows = db.prepare("SELECT repo, number, state, fingerprint, title, refs, category FROM security_findings ORDER BY repo, number").all() as (KnownRow & { repo: string })[];
+  const link = db.prepare("UPDATE security_findings SET state = 'duplicate', duplicate_of = ?, updated_at = ? WHERE repo = ? AND number = ? AND state = 'new'");
+  let linked = 0, repo = "", known: Known[] = [];
+  for (const r of rows) {
+    if (r.repo !== repo) { repo = r.repo; known = []; }
+    const k = knownOf(r);
+    const earlier = r.state === "new" && k.sink ? earlierFinding(known, { title: r.title, category: r.category ?? "", refs: k.refs as Candidate["refs"] }) : undefined;
+    if (earlier && link.run(earlier.number, now(), r.repo, r.number).changes) {
+      audit(db, "pipeline", "security-finding-duplicate", findingKey(r.repo, r.number), { duplicateOf: earlier.number });
+      k.state = "duplicate";
+      linked++;
+    }
+    known.push(k);
+  }
+  return linked;
+}
 
 const parse = <T>(s: string): T => JSON.parse(s) as T;
 
@@ -190,8 +230,7 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
     }
     const guesses = sizes.map(areaGuessUsd);
 
-    const known: Known[] = (db.prepare("SELECT number, state, fingerprint, title, refs, category FROM security_findings WHERE repo = ?").all(repo) as { number: number; state: string; fingerprint: string; title: string; refs: string; category: string | null }[])
-      .map((r) => ({ number: r.number, state: r.state, fingerprint: r.fingerprint, title: r.title, category: r.category, sink: (JSON.parse(r.refs) as { path: string; line: number }[])[0] ?? null }));
+    const known: Known[] = (db.prepare("SELECT number, state, fingerprint, title, refs, category FROM security_findings WHERE repo = ?").all(repo) as KnownRow[]).map(knownOf);
     const insFinding = db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, category, reach, impact, fingerprint, created_at, updated_at, duplicate_of)
       VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM security_findings WHERE repo = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING number`);
 
@@ -228,7 +267,7 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
           const at = now();
           // A repeat is kept as a hidden row that points at the earlier finding, which shows it in its timeline.
           const row = insFinding.get(repo, repo, scanId, area.name, cand.title, cand.severity, cand.urgent ? 1 : 0, earlier ? "duplicate" : "unverified", JSON.stringify(cand.refs), cand.category, cand.reach, cand.impact, fingerprintOf(cand), at, at, earlier?.number ?? null) as { number: number };
-          known.push({ number: row.number, state: earlier ? "duplicate" : "unverified", fingerprint: fingerprintOf(cand), sink: cand.refs[0]!, title: cand.title, category: cand.category ?? null });
+          known.push({ number: row.number, state: earlier ? "duplicate" : "unverified", fingerprint: fingerprintOf(cand), sink: cand.refs[0]!, refs: cand.refs, title: cand.title, category: cand.category ?? null });
           if (!earlier) fresh.push({ number: row.number, c: cand });
         }
         // ---- verify ----
