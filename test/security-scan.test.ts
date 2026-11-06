@@ -213,7 +213,7 @@ describe("security deep scan", () => {
     assert.equal(s.cost_usd, 3);
   });
 
-  test("findings that share an entry point but not a sink are both kept; a repeat is linked to the earlier finding", async () => {
+  test("findings that share an entry point but not a sink are both kept; a repeat (same sink and category, or same title) is linked to the earlier finding", async () => {
     db.prepare("DELETE FROM security_findings").run();
     const model = fakeModel();
     const entry = ref("crates/psd/src/layer.rs", 10);
@@ -223,6 +223,7 @@ describe("security deep scan", () => {
       return { cost: 1, text: JSON.stringify({ findings: [
         found("Layer length trusted", [ref("crates/psd/src/layer.rs", 118), entry]),
         found("Channel count trusted", [ref("crates/psd/src/layer.rs", 140), entry]),
+        found("Crafted header escapes the output folder", [ref("crates/psd/src/layer.rs", 120), entry]),
       ] }) };
     }) as Ask;
     const a = newScan(null);
@@ -233,7 +234,7 @@ describe("security deep scan", () => {
     await runScan(db, b, { ...model, ask });
     assert.equal(titles().length, 2, "the second scan adds nothing visible");
     const dupes = db.prepare("SELECT duplicate_of FROM security_findings WHERE state = 'duplicate' ORDER BY number").all() as { duplicate_of: number }[];
-    assert.equal(dupes.length, 2);
+    assert.equal(dupes.length, 4);
     const boss = await signedIn("boss");
     const first = await boss.get<FindingView>("/api/security/findings/photocraft/" + dupes[0]!.duplicate_of);
     assert.ok(first.timeline.some((c) => c.kind === "duplicate"));

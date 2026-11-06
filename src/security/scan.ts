@@ -72,7 +72,7 @@ function realRefs(dir: string, refs: Candidate["refs"]): Candidate["refs"] {
   });
 }
 
-type Known = { number: number; state: string; fingerprint: string; sink: { path: string; line: number } | null; title: string };
+type Known = { number: number; state: string; fingerprint: string; sink: { path: string; line: number } | null; title: string; category: string | null };
 
 /** The primary location of a finding is its first ref: the line where the unsafe operation is (the prompt asks for it first). Other refs are entry points and checks that findings may share. */
 const fingerprintOf = (c: Candidate): string => `${c.refs[0]!.path}:${c.refs[0]!.line}|${titleKey(c.title)}`;
@@ -84,11 +84,11 @@ const similar = (a: string, b: string): boolean => {
   return common > 0 && common / (x.size + y.size - common) >= 0.5;
 };
 
-/** The earlier finding of the repository that `c` repeats: its exact fingerprint (a disproved finding suppresses only that), or the same sink file within a few lines and a similar title. */
+/** The earlier finding of the repository that `c` repeats: its exact fingerprint (a disproved finding suppresses only that), or the same sink file within a few lines and the same category or a similar title. */
 export const earlierFinding = (known: Known[], c: Candidate): Known | undefined => {
   const fp = fingerprintOf(c), sink = c.refs[0]!;
   return known.find((k) => k.fingerprint === fp)
-    ?? known.find((k) => k.state !== "disproved" && k.state !== "duplicate" && k.sink?.path === sink.path && Math.abs(k.sink.line - sink.line) <= 3 && similar(k.title, c.title));
+    ?? known.find((k) => k.state !== "disproved" && k.state !== "duplicate" && k.sink?.path === sink.path && Math.abs(k.sink.line - sink.line) <= 3 && ((!!c.category && k.category === c.category) || similar(k.title, c.title)));
 };
 
 class Capped extends Error {}
@@ -163,8 +163,8 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
     db.prepare("UPDATE security_scans SET areas_total = ?, estimate_usd = ?, threat_model = ? WHERE id = ?")
       .run(areas.length, cost() + guesses.reduce((x, y) => x + y, 0), JSON.stringify({ summary: modeled.value.summary, entryPoints: modeled.value.entryPoints }), scanId);
 
-    const known: Known[] = (db.prepare("SELECT number, state, fingerprint, title, refs FROM security_findings WHERE repo = ?").all(repo) as { number: number; state: string; fingerprint: string; title: string; refs: string }[])
-      .map((r) => ({ number: r.number, state: r.state, fingerprint: r.fingerprint, title: r.title, sink: (JSON.parse(r.refs) as { path: string; line: number }[])[0] ?? null }));
+    const known: Known[] = (db.prepare("SELECT number, state, fingerprint, title, refs, category FROM security_findings WHERE repo = ?").all(repo) as { number: number; state: string; fingerprint: string; title: string; refs: string; category: string | null }[])
+      .map((r) => ({ number: r.number, state: r.state, fingerprint: r.fingerprint, title: r.title, category: r.category, sink: (JSON.parse(r.refs) as { path: string; line: number }[])[0] ?? null }));
     const insFinding = db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, category, reach, impact, fingerprint, created_at, updated_at, duplicate_of)
       VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM security_findings WHERE repo = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING number`);
 
@@ -193,7 +193,7 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
           const at = now();
           // A repeat is kept as a hidden row that points at the earlier finding, which shows it in its timeline.
           const row = insFinding.get(repo, repo, scanId, area.name, cand.title, cand.severity, cand.urgent ? 1 : 0, earlier ? "duplicate" : "unverified", JSON.stringify(cand.refs), cand.category, cand.reach, cand.impact, fingerprintOf(cand), at, at, earlier?.number ?? null) as { number: number };
-          known.push({ number: row.number, state: earlier ? "duplicate" : "unverified", fingerprint: fingerprintOf(cand), sink: cand.refs[0]!, title: cand.title });
+          known.push({ number: row.number, state: earlier ? "duplicate" : "unverified", fingerprint: fingerprintOf(cand), sink: cand.refs[0]!, title: cand.title, category: cand.category ?? null });
           if (!earlier) fresh.push({ number: row.number, c: cand });
         }
         // ---- verify ----
