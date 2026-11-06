@@ -61,7 +61,7 @@ export function finishRun(db: DatabaseSync, id: number, e: RunEnd): void {
     WHERE id = ? AND state = 'running'`)
     .run(e.state, now(), t?.input ?? null, t?.output ?? null, t?.cacheRead ?? null, t?.cacheWrite ?? null, e.costUsd ?? null, e.summary ?? null, e.error ? e.error.slice(0, ERROR_MAX) : null, id);
   if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(packText(scrub(e.output.slice(0, TEXT_MAX))), id);
-  runEnded();
+  setImmediate(runEnded); // after the caller's own follow-up claim, which gets the freed slot first
 }
 
 /** The latest progress line of a running call (src/classify/progress.ts). */

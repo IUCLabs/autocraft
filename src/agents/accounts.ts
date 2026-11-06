@@ -215,7 +215,7 @@ export const JEV_PARALLEL_KEY = "jev_parallel";
 export { JEV_PARALLEL_DEFAULT };
 export const JEV_PARALLEL_MAX = 100;
 
-/** The most Jev calls running at once, all jobs together (Jev has no accounts, so no slots limit it). */
+/** Jev calls at once (Jev has no accounts, so no slots limit it). */
 export function jevParallel(db: DatabaseSync): number {
   const v = Number((db.prepare("SELECT value FROM settings WHERE key = ?").get(JEV_PARALLEL_KEY) as { value: string } | undefined)?.value);
   return Number.isInteger(v) && v >= 1 && v <= JEV_PARALLEL_MAX ? v : JEV_PARALLEL_DEFAULT;

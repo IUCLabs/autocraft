@@ -624,7 +624,7 @@ CREATE TABLE IF NOT EXISTS model_waits (
   seen_at INTEGER NOT NULL,           -- ms since epoch, last poll
   eligible INTEGER NOT NULL DEFAULT 0 -- 1 when an account could take the call at the last poll
 );
-CREATE INDEX IF NOT EXISTS model_waits_provider ON model_waits(provider, class);
+CREATE INDEX IF NOT EXISTS model_waits_seen ON model_waits(seen_at);
 
 CREATE TABLE IF NOT EXISTS agent_run_items (
   run_id INTEGER NOT NULL,

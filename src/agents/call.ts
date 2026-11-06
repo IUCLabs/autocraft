@@ -2,8 +2,7 @@
 // in one transaction so two job processes cannot both take the last slot.
 import type { DatabaseSync } from "node:sqlite";
 import { boxAccounts } from "./box.ts";
-import { accountHasRoom, chooseAccount, freeSlots, jevParallel, RUN_SLOT_MS, type Choice } from "./accounts.ts";
-import { JEV_PROMPTS } from "../prompts/index.ts";
+import { accountHasRoom, chooseAccount, freeSlots, RUN_SLOT_MS, type Choice } from "./accounts.ts";
 import { insertRun, onRunEnd, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 
@@ -36,7 +35,7 @@ export function stepOf(promptId: string): { jobId: number | null; step: string; 
   return { jobId: null, ...(PROMPT_STEP[promptId] ?? { step: "unknown", stage: 0 }) };
 }
 
-export const allocation = { pollMs: 3000, jevPollMs: 150, logEveryMs: 5 * 60_000, staleMs: 30_000 };
+export const allocation = { pollMs: 3000, logEveryMs: 5 * 60_000, staleMs: 30_000 };
 
 export class NoAccountError extends Error {}
 export class CancelledError extends Error {}
@@ -61,19 +60,15 @@ function sleepOrWake(ms: number): Promise<void> {
 
 type Waiter = { id: number; cls: number; step: string; repo: string | null; since: number };
 
-const runningWhere = (db: DatabaseSync, nowMs: number, where: string, arg: string): number =>
-  Number((db.prepare(`SELECT COUNT(*) AS n FROM agent_runs r LEFT JOIN jobs j ON j.id = r.job_id WHERE r.state = 'running' AND r.provider = 'claude' AND r.started_at >= ? AND ${where}`)
-    .get(new Date(nowMs - RUN_SLOT_MS).toISOString(), arg) as { n: number }).n);
+const runningBy = (db: DatabaseSync, nowMs: number, col: "j.repo" | "r.step"): Map<string, number> =>
+  new Map((db.prepare(`SELECT ${col} AS k, COUNT(*) AS n FROM agent_runs r LEFT JOIN jobs j ON j.id = r.job_id WHERE r.state = 'running' AND r.provider = 'claude' AND r.started_at >= ? AND ${col} IS NOT NULL GROUP BY ${col}`)
+    .all(new Date(nowMs - RUN_SLOT_MS).toISOString()) as { k: string; n: number }[]).map((r) => [r.k, Number(r.n)]));
 
 /** Fresh, eligible waiters in claim order: class, then fewest running calls of the waiter's repo, then of its step, then oldest. */
 function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
   const rows = db.prepare("SELECT id, class AS cls, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[];
-  const repoN = new Map<string, number>(), stepN = new Map<string, number>();
-  for (const w of rows) {
-    if (w.repo !== null && !repoN.has(w.repo)) repoN.set(w.repo, runningWhere(db, nowMs, "j.repo = ?", w.repo));
-    if (!stepN.has(w.step)) stepN.set(w.step, runningWhere(db, nowMs, "r.step = ?", w.step));
-  }
-  return rows.sort((x, y) => y.cls - x.cls || (repoN.get(x.repo ?? "") ?? 0) - (repoN.get(y.repo ?? "") ?? 0) || stepN.get(x.step)! - stepN.get(y.step)! || x.since - y.since || x.id - y.id);
+  const repoN = runningBy(db, nowMs, "j.repo"), stepN = runningBy(db, nowMs, "r.step");
+  return rows.sort((x, y) => y.cls - x.cls || (repoN.get(x.repo ?? "") ?? 0) - (repoN.get(y.repo ?? "") ?? 0) || (stepN.get(x.step) ?? 0) - (stepN.get(y.step) ?? 0) || x.since - y.since || x.id - y.id);
 }
 
 /** How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter of the current call's class. */
@@ -151,10 +146,14 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
   const w: Waiter = { id: 0, cls: currentClass(s.promptId), step: stepOf(s.promptId).step, repo: context?.repo ?? null, since: began };
   // The row exists before the first poll returns, so queueRoom() is exact right after a call is made.
   w.id = Number(db.prepare("INSERT INTO model_waits (provider, class, job_id, step, repo, since, seen_at, eligible) VALUES ('claude', ?, ?, ?, ?, ?, ?, 0)").run(w.cls, context?.jobId ?? null, w.step, w.repo, began, began).lastInsertRowid);
+  let claimed = false;
   try {
     for (;;) {
       const r = pollClaude(db, w, s, minTokenMs);
-      if ("started" in r) return r.started;
+      if ("started" in r) {
+        claimed = true; // the claim transaction deleted the row
+        return r.started;
+      }
       const c = r.wait;
       if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `autocraft accounts set <id> --enabled yes`");
       if (maxWaitMs !== undefined && Date.now() - began >= maxWaitMs) throw new WaitLimitError("no Claude account slot became free in time");
@@ -167,32 +166,13 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
       if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
     }
   } finally {
-    db.prepare("DELETE FROM model_waits WHERE id = ?").run(w.id);
+    if (!claimed) db.prepare("DELETE FROM model_waits WHERE id = ?").run(w.id);
   }
 }
 
-/** A Jev call counts against the cap while its row runs, for at most the longest Jev timeout (a row left running by a lost process stops counting). */
-const JEV_SLOT_MS = (Math.max(...Object.values(JEV_PROMPTS).map((p) => p.limits.timeoutSeconds)) + 60) * 1000;
-
-/** Waits until fewer than `jev_parallel` Jev calls are running (all processes together), then records the call. No ranking. */
-export async function startJevRun(db: DatabaseSync, s: Omit<RunStart, "accountId" | "jobId" | "step" | "stage">): Promise<number> {
-  for (;;) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const running = Number((db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE state = 'running' AND provider = 'jev' AND started_at >= ?").get(new Date(Date.now() - JEV_SLOT_MS).toISOString()) as { n: number }).n);
-      if (running < jevParallel(db)) {
-        const id = insertRun(db, { ...s, ...stepOf(s.promptId), accountId: null });
-        db.exec("COMMIT");
-        return id;
-      }
-      db.exec("COMMIT");
-    } catch (e) {
-      try { db.exec("ROLLBACK"); } catch { /* already committed */ }
-      throw e;
-    }
-    if (context?.cancelled()) throw new CancelledError("cancelled while waiting for Jev capacity");
-    await sleepOrWake(allocation.jevPollMs);
-  }
+/** Records a Jev call (no account, no slot). */
+export function startJevRun(db: DatabaseSync, s: Omit<RunStart, "accountId" | "jobId" | "step" | "stage">): number {
+  return insertRun(db, { ...s, ...stepOf(s.promptId), accountId: null });
 }
 
 /** Records a follow-up run on the account of an earlier call (its session lives there), or returns null when that account is no longer enabled, has no headroom or no free slot. Same transaction rule as `tryStartClaudeRun`. */

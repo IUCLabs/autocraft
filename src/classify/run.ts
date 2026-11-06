@@ -565,7 +565,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
 
 /** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. Recorded as an agent run without an account. */
 export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: string }, db: DatabaseSync, body: string = renderJev(id, item as Item | DupePair), perCallUsage = true): Promise<Proc> {
-  const runId = await startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
+  const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
   const start = now();
   try {
     const r = await runner("jev", JEV_ARGS, body, undefined, JEV_PROMPTS[id].limits.timeoutSeconds * 1000);
