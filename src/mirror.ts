@@ -268,10 +268,14 @@ function commentRows(repo: string, kind: Kind, n: Node, own: string[]): SQLInput
   return rows;
 }
 
+/** SQL for an upsert's mergeable value: GitHub reports UNKNOWN while it recomputes, which must not replace a known value at the same head. */
+export const KEEP_KNOWN_MERGEABLE = (table: string): string =>
+  `CASE WHEN ${table}.head_oid IS excluded.head_oid AND ${table}.mergeable IN ('CONFLICTING','MERGEABLE') AND excluded.mergeable IS NOT 'CONFLICTING' AND excluded.mergeable IS NOT 'MERGEABLE' THEN ${table}.mergeable ELSE excluded.mergeable END`;
+
 function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[]): void {
   // Upserts keep each row's rowid, which the full-text index (schema.sql) is keyed on.
   const insert = db.prepare(`INSERT INTO main.items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
-    ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
+    ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => c === "mergeable" ? `mergeable=${KEEP_KNOWN_MERGEABLE("items")}` : `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
   const del = db.prepare("DELETE FROM main.comments WHERE repo=? AND number=?");
   const insComment = db.prepare(`INSERT INTO main.comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET

@@ -137,6 +137,11 @@ export type PrNode = {
  * Writes what the live read found into pr_checks, as the checks sync would, so a PR the live read shows is no candidate
  * (conflicting, closed, a draft, head moved) is not selected again until the checks data changes.
  */
+function storedMergeable(db: DatabaseSync, repo: string, number: number, head: string): string | null {
+  const r = db.prepare("SELECT (SELECT mergeable FROM pr_checks WHERE repo = ?1 AND number = ?2 AND head_oid = ?3) AS c, (SELECT mergeable FROM main.items WHERE repo = ?1 AND number = ?2 AND head_oid = ?3) AS i").get(repo, number, head) as { c: string | null; i: string | null };
+  return r.c === "CONFLICTING" || r.i === "CONFLICTING" ? "CONFLICTING" : r.c ?? r.i;
+}
+
 export function noteLive(db: DatabaseSync, repo: string, number: number, pr: PrNode | null | undefined, at: string): void {
   if (!pr) return;
   // The planner reads the mirrored value when the checks row is missing or at another head: a conflict seen live must reach it, or the PR keeps planning as a fix-up.
@@ -144,8 +149,8 @@ export function noteLive(db: DatabaseSync, repo: string, number: number, pr: PrN
   const row = db.prepare("SELECT head_oid FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as { head_oid: string } | undefined;
   if (!row) return;
   if (row.head_oid === pr.headRefOid) {
-    db.prepare("UPDATE pr_checks SET state = ?, is_draft = ?, mergeable = ?, maintainer_can_modify = ?, fetched_at = ? WHERE repo = ? AND number = ?")
-      .run(pr.state, pr.isDraft ? 1 : 0, pr.mergeable, pr.maintainerCanModify ? 1 : 0, at, repo, number);
+    db.prepare("UPDATE pr_checks SET state = ?, is_draft = ?, mergeable = CASE WHEN ? IN ('CONFLICTING','MERGEABLE') THEN ? ELSE coalesce(nullif(mergeable, 'UNKNOWN'), ?) END, maintainer_can_modify = ?, fetched_at = ? WHERE repo = ? AND number = ?")
+      .run(pr.state, pr.isDraft ? 1 : 0, pr.mergeable, pr.mergeable, pr.mergeable, pr.maintainerCanModify ? 1 : 0, at, repo, number);
   } else {
     // The old head's checks say nothing about the new one: pending until the checks sync reads them.
     db.prepare("UPDATE pr_checks SET head_oid = ?, state = ?, is_draft = ?, overall = 'pending', checks = '[]', mergeable = ?, maintainer_can_modify = ?, fetched_at = ? WHERE repo = ? AND number = ?")
@@ -374,7 +379,8 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       noteLive(db, repo, c.number, pr, at());
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
-      if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
+      // GitHub says UNKNOWN while it recomputes: the value stored at this head (kept by the mirror) decides.
+      if (pr.mergeable === "CONFLICTING" || (pr.mergeable !== "MERGEABLE" && storedMergeable(db, repo, c.number, c.head) === "CONFLICTING")) { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
       worked++;
       params.onHandled?.(++handled.n);
       if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule)) {

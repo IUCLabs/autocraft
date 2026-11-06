@@ -1,7 +1,7 @@
 // CI and merge state of PR heads: one GraphQL query per chunk of PRs, stored in pr_checks.
 import type { DatabaseSync } from "node:sqlite";
 import { ownerOf } from "../owners.ts";
-import type { Querier } from "../mirror.ts";
+import { KEEP_KNOWN_MERGEABLE, type Querier } from "../mirror.ts";
 import { pilotSql } from "../pilot.ts";
 import { resolvePushes } from "../push-outcomes.ts";
 import { overallAt, recordRuns, type Suite } from "../merge/ci-approval.ts";
@@ -96,7 +96,7 @@ export function saveChecks(db: DatabaseSync, rows: PrChecks[], at = new Date().t
   const ins = db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET head_oid = excluded.head_oid, state = excluded.state, is_draft = excluded.is_draft, overall = excluded.overall,
-      checks = excluded.checks, mergeable = excluded.mergeable, maintainer_can_modify = excluded.maintainer_can_modify, fetched_at = excluded.fetched_at`);
+      checks = excluded.checks, mergeable = ${KEEP_KNOWN_MERGEABLE("pr_checks")}, maintainer_can_modify = excluded.maintainer_can_modify, fetched_at = excluded.fetched_at`);
   for (const r of rows)
     ins.run(r.repo, r.number, r.head_oid, r.state, r.is_draft ? 1 : 0, r.overall, JSON.stringify(r.checks), r.mergeable, r.maintainer_can_modify ? 1 : 0, at);
   for (const r of rows) recordRuns(db, r, at);
