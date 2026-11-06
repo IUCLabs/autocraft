@@ -4,7 +4,7 @@ import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { claudeRoom } from "../agents/call.ts";
+import { queueRoom } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { CONVERSATION } from "../agents/steps.ts";
@@ -79,7 +79,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
       jobItem(db, repo, n, "no usable reply to a message", p.log);
     }
-  }), () => claudeRoom(db), { first: true });
+  }), () => queueRoom(db), { first: true });
   return answered;
 }
 

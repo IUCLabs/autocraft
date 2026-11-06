@@ -35,6 +35,14 @@ import { scrub } from "../runner/scrub.ts";
 
 const now = (): string => new Date().toISOString();
 
+const endWakers = new Set<() => void>();
+/** Calls `f` when a run of this process ends (a slot may be free); returns the way to stop listening. */
+export function onRunEnd(f: () => void): () => void {
+  endWakers.add(f);
+  return () => void endWakers.delete(f);
+}
+const runEnded = (): void => { for (const f of [...endWakers]) f(); };
+
 /** Inserts the running row, its item refs and its prompt text. Does not open a transaction. */
 export function insertRun(db: DatabaseSync, s: RunStart): number {
   const refs = s.items.slice(0, MAX_ITEM_REFS);
@@ -53,6 +61,7 @@ export function finishRun(db: DatabaseSync, id: number, e: RunEnd): void {
     WHERE id = ? AND state = 'running'`)
     .run(e.state, now(), t?.input ?? null, t?.output ?? null, t?.cacheRead ?? null, t?.cacheWrite ?? null, e.costUsd ?? null, e.summary ?? null, e.error ? e.error.slice(0, ERROR_MAX) : null, id);
   if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(packText(scrub(e.output.slice(0, TEXT_MAX))), id);
+  setImmediate(runEnded); // after the caller's own follow-up claim, which gets the freed slot first
 }
 
 /** The latest progress line of a running call (src/classify/progress.ts). */

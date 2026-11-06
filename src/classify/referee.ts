@@ -1,7 +1,7 @@
 // Referee: Sonnet decides disagreements between Jev and Haiku under the written rules.
 import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { claudeRoom } from "../agents/call.ts";
+import { queueRoom } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { type Item } from "./parse.ts";
 import { type Pair, ref } from "./report.ts";
@@ -79,7 +79,7 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
       }
     }
     total += got;
-  }), () => claudeRoom(db), { first: true });
+  }), () => queueRoom(db), { first: true });
   return total;
 }
 

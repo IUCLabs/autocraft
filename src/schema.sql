@@ -611,6 +611,21 @@ CREATE INDEX IF NOT EXISTS agent_runs_account ON agent_runs(account_id, id);
 CREATE INDEX IF NOT EXISTS agent_runs_job ON agent_runs(job_id, id);
 CREATE INDEX IF NOT EXISTS agent_runs_started ON agent_runs(started_at);
 
+-- Model calls waiting for a slot (Claude) or Jev capacity: bookkeeping for the call queue in src/agents/call.ts.
+-- Written by the calling process every poll; rows not seen for 30 s are ignored, runner start deletes all.
+CREATE TABLE IF NOT EXISTS model_waits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,             -- claude | jev
+  class INTEGER NOT NULL,             -- 0 | 1 | 2
+  job_id INTEGER,
+  step TEXT NOT NULL,
+  repo TEXT,
+  since INTEGER NOT NULL,             -- ms since epoch, when the call began to wait
+  seen_at INTEGER NOT NULL,           -- ms since epoch, last poll
+  eligible INTEGER NOT NULL DEFAULT 0 -- 1 when an account could take the call at the last poll
+);
+CREATE INDEX IF NOT EXISTS model_waits_seen ON model_waits(seen_at);
+
 CREATE TABLE IF NOT EXISTS agent_run_items (
   run_id INTEGER NOT NULL,
   repo TEXT NOT NULL,

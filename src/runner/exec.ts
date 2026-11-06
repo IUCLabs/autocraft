@@ -78,7 +78,7 @@ export async function execJob(id: number): Promise<number> {
       return !!r.cancel_requested_at || DEADLINE_ERROR.test(r.error ?? "");
     },
   };
-  setCallContext({ jobId: id, step: step.name, stage: step.stage, cancelled: ctx.cancelled });
+  setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled });
   try {
     const summary = await step.run(ctx);
     saveUsage();

@@ -5,7 +5,7 @@
 // core) stored as the decision's current version; a group decision gets a summary and a pick only. Our code accepts only a
 // pick that is one of the decision's cores or options.
 import type { DatabaseSync } from "node:sqlite";
-import { claudeRoom } from "../agents/call.ts";
+import { queueRoom } from "../agents/call.ts";
 import { runModelStep, type ClaudeStep } from "../agents/step.ts";
 import { referenceProblems, defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
@@ -267,6 +267,6 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
       try { failed.run(head, now(), head, d.id); } catch { /* the next pass tries again */ }
       res.failed++;
     }
-  }), () => claudeRoom(db), { first: true });
+  }), () => queueRoom(db), { first: true });
   return res;
 }

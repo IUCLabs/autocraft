@@ -2,7 +2,7 @@
 // lists defects and minor findings. One review per merged PR. Reads GitHub (the merged diff); writes only to the local
 // database. Filing the defects is src/postmerge/file.ts.
 import type { DatabaseSync } from "node:sqlite";
-import { claudeRoom } from "../agents/call.ts";
+import { queueRoom } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { POSTMERGE_OPUS } from "../agents/steps.ts";
@@ -154,7 +154,7 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
       s.failed.push(refOf(c));
     }
     params.onHandled?.(++handled);
-  }), () => claudeRoom(db));
+  }), () => queueRoom(db));
   log(`postmerge ${repo}: ${s.reviewed} reviewed, ${s.findings} findings (${s.defects} defects), ${s.failed.length} without an answer`);
   return s;
 }

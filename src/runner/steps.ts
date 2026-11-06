@@ -43,6 +43,8 @@ export type StepContext = {
 
 export type StepDef = {
   name: string;
+  /** Model-call queue class: 2 security, 1 path to merge, 0 (default) triage and after merge. A higher class takes a freed account slot first. */
+  priority?: 0 | 1 | 2;
   title: string;
   /** One or two plain sentences for the Pipeline page. */
   description: string;
@@ -233,6 +235,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "decide",
+    priority: 1,
     title: "Ask decisions",
     description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, then prepares every open decision: one call of the judgement model writes the summary, the pick and drafted answers from what stopped the pipeline. Each prepare call counts as an item.",
     stage: runStage("decide"),
@@ -360,6 +363,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "fixup",
+    priority: 1,
     title: "Fix up take-fix pull requests",
     description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, checked by Opus, pushed to the contributor's branch and noted with one short comment. For a pull request it cannot push to, in a repo approved for comments, it posts the fixes as one comment instead. The new head is reviewed again.",
     stage: runStage("fixup"),
@@ -382,6 +386,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "verify",
+    priority: 1,
     title: "Plan verification of taken pull requests",
     description: "Sonnet decides per taken pull request of one repo whether CI is enough, or which crates and tests a build machine should run, or (bug fixes) a regression test that fails before the change. Queues the build tasks; reads GitHub, writes nothing to it.",
     stage: runStage("verify"),
@@ -402,6 +407,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "verify-collect",
+    priority: 1,
     title: "Collect verification results",
     description: "Reads the finished build tasks of each pending verification and sets passed, failed or error from their exit codes. For a failure, Haiku summarises the log; the failure becomes a hold. Cancels the tasks of a PR whose head moved on, and queued warm builds of a branch that moved on.",
     stage: runStage("verify-collect"),
@@ -451,6 +457,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "fixissue",
+    priority: 1,
     title: "Fix issues",
     description: "The issue path of the pipeline. For open bugfix issues with a clear fix, Sonnet triages the issue, then writes a fix and a regression test as a diff that is checked and queued as build tasks: the test must fail on main and everything must pass with the fix. Rounds that fail are tried again, three at most.",
     stage: runStage("fixissue"),
@@ -473,6 +480,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "fixissue-collect",
+    priority: 1,
     title: "Collect fix results",
     description: "Reads the finished build tasks of each fix attempt. A fix passes when its tests pass and the regression test fails without it; Opus then checks the patch; on a reject the round fails and Opus's reasons go into the next round. Then the commit is pushed to the pipeline's fork, the pull request is opened and the issue gets one comment. For a failed round, Haiku summarises the log for the next round.",
     stage: runStage("fixissue-collect"),
@@ -490,6 +498,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "security-scan",
+    priority: 2,
     title: "Security deep scan",
     description: "Audits the default branch of a repo for vulnerabilities: Opus builds a threat model and splits the code into areas, scans each area read-only, then tries to disprove every finding. Started only by an operator on the repo page, with an optional spend cap; findings are visible to operators and maintainers only and nothing goes to GitHub.",
     stage: 9,
@@ -517,6 +526,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "security-fix",
+    priority: 2,
     title: "Security fix",
     description: "Writes the private fix of one finding on the scan's pinned commit: Opus writes the patch and a regression test, the worker container builds and tests it, and Opus reviews the diff. A failed round is repeated in the same model session while the prompt cache is warm. The commit stays in the local cache and is never pushed. Starts on its own when verify confirms the finding, once per finding; after a failed fix an operator starts it again from the finding page. Nothing goes to GitHub.",
     stage: 9,
@@ -537,6 +547,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "security-land",
+    priority: 2,
     title: "Land a security fix",
     description: "Opens the finding's fix as a plain pull request from the pipeline's fork, with a neutral branch, title and description. The normal Verify and merge path takes it from there. Started only by an operator.",
     stage: 9,
@@ -551,6 +562,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "security-advisory",
+    priority: 2,
     title: "Security advisory route",
     description: "For an urgent finding: creates the draft advisory and its private fork, pushes the fix there with the box account's token and opens the pull request inside the fork. A repository admin merges it on the advisory page. Started only by an operator.",
     stage: 9,
@@ -565,6 +577,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "security-publish",
+    priority: 2,
     title: "Publish a security advisory",
     description: "Publishes the finding's advisory after a release, and requests a CVE when asked (public repositories only). Started only by an operator.",
     stage: 9,
@@ -623,6 +636,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "opus-review",
+    priority: 1,
     title: "Review pull requests",
     description: "Opus reviews, one pull request per call, the pull requests we want from one repo: take, take with fixes, hold or close. After a new push it reads only the changes since the head it reviewed before. Its verdict and fix list are the ones every later stage reads.",
     stage: runStage("opus-review"),
@@ -677,6 +691,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "premerge",
+    priority: 1,
     title: "Pre-merge review",
     description: "Opus reads, one pull request head per call, the diff of each PR the merge rule would merge without a person, independently of the first review, and lists defects and minor findings. The merge queue holds those PRs until the review is stored. Reads GitHub; writes only to the local database.",
     stage: runStage("premerge"),
@@ -751,6 +766,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "conversation",
+    priority: 1,
     title: "Answer conversations",
     description: "Answers each operator message in an item's conversation with one Opus call, with read-only tools on the item's repository, the workspace and the item tools. The reply may propose action cards that an operator runs with a button; nothing runs by itself. Messages are answered even for a repo whose pipeline is off. Each answered message counts as one item.",
     stage: runStage("conversation"),
@@ -866,6 +882,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "cifix",
+    priority: 1,
     title: "Fix failing CI on wanted pull requests",
     description: "For a take or take-fix pull request whose gate check fails at its reviewed head, reads the failed jobs' logs and sorts the failure. A formatter-only failure is fixed by running the formatter in a build environment. A code failure gets a Sonnet patch, checked by Opus, pushed to the contributor's branch or posted as a comment where the branch is closed to us. An infrastructure failure is left to the cifix-rerun step. At most two tries per head.",
     stage: runStage("cifix"),
@@ -908,6 +925,7 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "main-fix",
+    priority: 1,
     title: "Handle a red default branch",
     description: "For a repo approved for it whose default branch is red, reads the failed gate checks' logs and has Haiku sort each: a flaky failure gets its failed jobs rerun once, an infrastructure failure becomes an operator decision about opening an upstream issue, and a code failure is recorded as needing a fix and gets a fix PR (the CI fix patch path against the default branch head: Sonnet patch, Opus check, pushed to the pipeline account's fork) unless main is green again or an open PR already covers it. Opens the issue only on an operator's answer.",
     stage: runStage("main-fix"),
