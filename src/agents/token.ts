@@ -21,8 +21,10 @@ export const TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 export const TOKEN_LIFE_MS = 365 * 86_400_000;
 const TOKEN_CHARS = "[A-Za-z0-9_-]";
 /** A complete token: the match ends before a character that cannot belong to it, or at `end`. */
-const TOKEN = new RegExp(`sk-ant-oat01-${TOKEN_CHARS}{20,}(?=[^A-Za-z0-9_-])`);
-const TOKEN_AT_END = new RegExp(`sk-ant-oat01-${TOKEN_CHARS}{20,}$`);
+// The prefix names the token kind and version (sk-ant-oat01-…); a newer version must still be found.
+const PREFIX = "sk-ant-[a-z]{2,5}\\d{2}-";
+const TOKEN = new RegExp(`${PREFIX}${TOKEN_CHARS}{20,}(?=[^A-Za-z0-9_-])`);
+const TOKEN_AT_END = new RegExp(`${PREFIX}${TOKEN_CHARS}{20,}$`);
 /** What the CLI prints when the credential it was given does not work. */
 const AUTH_FAILURE = /authentication_error|\b401\b|invalid (?:api key|bearer token|x-api-key)|oauth token (?:has )?(?:expired|revoked|invalid)|token (?:has been )?revoked|please run \/login|not logged in/i;
 
@@ -56,7 +58,7 @@ export async function checkToken(configDir: string, token: string, signal?: Abor
 
 /** The token on a rendered screen (blank-padded rows), or null; a token ending at a row break counts only with `final`. */
 export function extractScreenToken(screen: string, final = false): string | null {
-  return screen.match(new RegExp(`sk-ant-oat01-${TOKEN_CHARS}{20,}(?=[^A-Za-z0-9_\\n-])`))?.[0] ?? (final ? screen.match(new RegExp(`sk-ant-oat01-${TOKEN_CHARS}{20,}(?=\\n|$)`))?.[0] ?? null : null);
+  return screen.match(new RegExp(`${PREFIX}${TOKEN_CHARS}{20,}(?=[^A-Za-z0-9_\\n-])`))?.[0] ?? (final ? screen.match(new RegExp(`${PREFIX}${TOKEN_CHARS}{20,}(?=\\n|$)`))?.[0] ?? null : null);
 }
 
 /** The CLI's own error text in its output events: error results and error system events, never assistant or tool content. */

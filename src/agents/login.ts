@@ -75,7 +75,7 @@ const LONG_RUN = /[A-Za-z0-9_-]{40,}/g;
 
 function keepFailedScreen(l: Live): void {
   try {
-    writeFileSync(join(l.configDir, "setup-token-failed.log"), `${new Date().toISOString()}\n${cutCode(l, l.screen).replace(/ +$/gm, "").replace(ANY_TOKEN, "[token]").replace(LONG_RUN, "[token]").slice(-4000)}\n`, { mode: 0o600 });
+    writeFileSync(join(l.configDir, "setup-token-failed.log"), `${new Date().toISOString()}\n${cutCode(l, l.screen).replace(/ +$/gm, "").replace(ANY_TOKEN, (m) => `${m.match(/^sk-ant-[a-z0-9]+-/)?.[0] ?? "sk-ant-"}[token]`).replace(LONG_RUN, "[token]").slice(-4000)}\n`, { mode: 0o600 });
   } catch {
     // Diagnostics only.
   }

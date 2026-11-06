@@ -8,7 +8,7 @@ import { describe, test } from "node:test";
 import { listAccounts } from "../src/agents/accounts.ts";
 import { addAccount, beginToken, removeToken, sendTokenCode, stopToken } from "../src/agents/manage.ts";
 import { childEnv } from "../src/agents/status.ts";
-import { cliErrorText, credentialsNearExpiry, isAuthFailure, markTokenRejected, tokenEnv, tokenFile, usesToken } from "../src/agents/token.ts";
+import { cliErrorText, credentialsNearExpiry, extractScreenToken, extractToken, isAuthFailure, markTokenRejected, tokenEnv, tokenFile, usesToken } from "../src/agents/token.ts";
 import { connect } from "../src/db.ts";
 import { sandboxCommand } from "../src/sandbox/command.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -134,6 +134,12 @@ describe("long-lived token", () => {
     assert.ok(!existsSync(tokenFile(dirC)));
     const actions = db.prepare("SELECT action FROM audit WHERE target = ?").all(`account:${a.id}`).map((r) => (r as { action: string }).action);
     assert.ok(!actions.includes("account-token-set"));
+  });
+
+  test("a token of a newer version is found on the setup-token screen", () => {
+    const t = "sk-ant-oat02-" + "Ab0_-".repeat(20);
+    assert.equal(extractScreenToken(` Your OAuth token (valid for 1 year):\n ${t}\n Store this token securely.`, true), t);
+    assert.equal(extractToken(`${t}\n`), t);
   });
 
   test("only the CLI's own error text counts as an authentication failure", () => {
