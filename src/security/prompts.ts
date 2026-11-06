@@ -105,7 +105,7 @@ Reply with ONLY a JSON object, with no text before or after it:
 {{finding}}
 </finding>`;
 
-const QUIET = `The change will be reviewed and merged in public before it is released, so nothing in it may reveal what it protects against. Describe only what the code does now. In the title, the summary, comments, test names and identifiers you add, never use words such as security, vulnerability, exploit, attack, malicious, CVE, advisory, injection, traversal, overflow or untrusted. Name a check for what it checks ("reject chunk lengths larger than the remaining data"), not for what it prevents.`;
+export const QUIET = `The change will be reviewed and merged in public before it is released, so nothing in it may reveal what it protects against. Describe only what the code does now. In the title, the summary, comments, test names and identifiers you add, never use words such as security, vulnerability, exploit, attack, malicious, CVE, advisory, injection, traversal, overflow or untrusted. Name a check for what it checks ("reject chunk lengths larger than the remaining data"), not for what it prevents.`;
 
 export const SECURITY_FIX_TEMPLATE = `You fix one defect in a Rust project and add a regression test for it. A build machine applies your diff to the pinned commit, builds it and runs the crate's tests. The test must fail on the code without your fix and pass with it.
 

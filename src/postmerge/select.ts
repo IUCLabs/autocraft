@@ -1,4 +1,5 @@
 // Which merged PRs still need a post-merge review and which defects still need an issue, from the local tables only.
+import { quietFixPrs } from "../security/quiet.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { pilotSqlFor } from "../pilot.ts";
 import { planned } from "../core/select.ts";
@@ -86,13 +87,16 @@ export type PendingDefect = { repo: string; number: number; review_at: string; f
 
 /**
  * Defects of the latest review of each PR that the filing step may still try, oldest review first: no row yet, a
- * skipped-limit row, or a failed row whose backoff has passed. A review held by `heldReason` has none.
+ * skipped-limit row, or a failed row whose backoff has passed. A review held by `heldReason`, and the review of a quiet pull request, has none.
  */
 export function pendingDefects(db: DatabaseSync, repo: string, now = Date.now()): PendingDefect[] {
   const rows = db.prepare(`SELECT r.repo, r.number, r.at, r.model, r.findings FROM postmerge_reviews r
     WHERE r.repo = ? AND r.error IS NULL AND ${pilotSqlFor("r.repo", "r.number")} ORDER BY r.at, r.number`).all(repo) as { repo: string; number: number; at: string; model: string | null; findings: string | null }[];
   const out: PendingDefect[] = [];
+  const quiet = quietFixPrs(db, repo);
   for (const r of rows) {
+    // A security fix gets no public text until its advisory is published: its findings stay on the dashboard.
+    if (quiet.has(`${r.repo}#${r.number}`)) continue;
     if (heldReason(db, r.repo, r.number, r.at)) continue;
     const have = followupsOf(db, r.repo, r.number).filter((x) => x.review_at === r.at);
     parseStored(r.findings).forEach((f, i) => {
