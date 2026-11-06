@@ -219,7 +219,7 @@ const countsCache = new WeakMap<DatabaseSync, { sig: string; at: number; byKey: 
 
 function statusCounts(db: DatabaseSync, b: Built & { run: string | null }, sql: string, flow: string | null): Record<SettledStatus, number> {
   const sig = JSON.stringify(db.prepare(`SELECT (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
-      (SELECT MAX(rowid) FROM main.classifications) AS cl, (SELECT group_concat(name) FROM main.tracked_repos) AS tr, (SELECT COUNT(*) FROM main.discord_mentions) AS dm`).get());
+      (SELECT MAX(rowid) FROM main.classifications) AS cl, (SELECT group_concat(name) FROM main.tracked_repos) AS tr, (SELECT seq FROM main.change_seq WHERE topic = 'discord') AS dm`).get());
   const now = Date.now();
   let c = countsCache.get(db);
   if (!c || c.sig !== sig || now - c.at >= COUNTS_TTL) {

@@ -291,7 +291,9 @@ function RedirectTo({ to, from, search }: { to: string; from?: string; search?: 
 function Breadcrumb({ routes }: { routes: RouteDef[] }) {
   const loc = useLocation();
   const first = loc.pathname.split("/")[1] ?? "";
-  const r = routes.find((x) => x.path.split("/")[0] === first);
+  // Pages that share a first segment (/admin/...) are told apart by the whole path.
+  const whole = loc.pathname.replace(/^\/|\/$/g, "");
+  const r = routes.find((x) => x.path === whole) ?? routes.find((x) => x.path.split("/")[0] === first);
   const rest = decodeURIComponent(loc.pathname.split("/").slice(2).join("/"));
   const isItem = (first === "item" || first === "items") && rest.includes("/");
   return (

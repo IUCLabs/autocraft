@@ -8,19 +8,28 @@ import { Gateway } from "./gateway.ts";
 import { DiscordConfigError, readKeyFile, readTokenFile, type DiscordKeys } from "./keys.ts";
 import { forgetAuthor, forgetMessages, handleDispatch, setStatus, upsertChannel } from "./store.ts";
 
-type Channel = { id: string; name?: string; type?: number };
-const TEXT_CHANNEL = new Set([0, 5]);
+type Channel = { id: string; name?: string; type?: number; parent_id?: string | null };
+// Text, announcement and forum channels can be watched; their threads and forum posts count under them.
+const LISTED = new Set([0, 5, 15]);
 
-/** Keeps the channel list the admin page shows; no message is involved. */
+/** Keeps the channel list the admin page shows; no message is involved. Rows of deleted channels are removed by handleDispatch, which runs first. */
 export function handleMeta(db: DatabaseSync, type: string, d: unknown): void {
-  const x = d as { id?: string; name?: string; guild_id?: string; type?: number; channels?: Channel[] };
+  const x = d as { id?: string; name?: string; guild_id?: string; type?: number; parent_id?: string | null; unavailable?: boolean; channels?: Channel[]; threads?: Channel[] };
+  const thread = (guildId: string, t: Channel): void => {
+    if (t.parent_id) upsertChannel(db, { channelId: t.id, guildId, guildName: null, name: t.name ?? null, parentId: t.parent_id });
+  };
   if (type === "GUILD_CREATE" && x.id) {
-    for (const c of x.channels ?? []) if (c.type === undefined || TEXT_CHANNEL.has(c.type)) upsertChannel(db, { channelId: c.id, guildId: x.id, guildName: x.name ?? null, name: c.name ?? null });
-  } else if ((type === "CHANNEL_CREATE" || type === "CHANNEL_UPDATE") && x.id && x.guild_id && (x.type === undefined || TEXT_CHANNEL.has(x.type))) {
+    for (const c of x.channels ?? []) if (c.type === undefined || LISTED.has(c.type)) upsertChannel(db, { channelId: c.id, guildId: x.id, guildName: x.name ?? null, name: c.name ?? null });
+    for (const t of x.threads ?? []) thread(x.id, t);
+  } else if ((type === "CHANNEL_CREATE" || type === "CHANNEL_UPDATE") && x.id && x.guild_id && (x.type === undefined || LISTED.has(x.type))) {
     upsertChannel(db, { channelId: x.id, guildId: x.guild_id, guildName: null, name: x.name ?? null });
-  } else if (type === "CHANNEL_DELETE" && x.id) {
-    db.prepare("DELETE FROM discord_channels WHERE channel_id = ?").run(x.id);
-  } else if (type === "GUILD_DELETE" && x.id && !(d as { unavailable?: boolean }).unavailable) {
+  } else if ((type === "THREAD_CREATE" || type === "THREAD_UPDATE") && x.id && x.guild_id) {
+    thread(x.guild_id, x as Channel);
+  } else if (type === "THREAD_LIST_SYNC" && x.guild_id) {
+    for (const t of x.threads ?? []) thread(x.guild_id, t);
+  } else if ((type === "CHANNEL_DELETE" || type === "THREAD_DELETE") && x.id) {
+    db.prepare("DELETE FROM discord_channels WHERE channel_id = ? OR parent_id = ?").run(x.id, x.id);
+  } else if (type === "GUILD_DELETE" && x.id && !x.unavailable) {
     db.prepare("DELETE FROM discord_channels WHERE guild_id = ?").run(x.id);
   }
 }
@@ -45,8 +54,8 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
     log,
     onState: (state, detail) => setStatus(db, state, detail),
     onDispatch: (type, d) => {
-      handleMeta(db, type, d);
       handleDispatch(db, keys, type, d);
+      handleMeta(db, type, d);
     },
   });
   log("runner: Discord mention counting started");

@@ -439,7 +439,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/ci-approve", (db, req) => adm.ciApproval(db, req, true)),
     post("/api/repos/ci-revoke", (db, req) => adm.ciApproval(db, req, false)),
     get("/api/sandbox/workspace", adm.workspaceInfo),
-    get("/api/admin/discord", discord.setup),
+    { method: "GET", pattern: "/api/admin/discord", operator: true, handler: ok(discord.setup) },
     { method: "PUT", pattern: "/api/admin/discord/channel", operator: true, handler: ok(discord.putChannel) },
     { method: "PUT", pattern: "/api/admin/discord/contact", operator: true, handler: ok(discord.putContact) },
     { method: "PUT", pattern: "/api/sandbox/workspace", operator: true, handler: ok(adm.setWorkspaceInfo) },

@@ -3,7 +3,8 @@
 import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 
-export type MessageRef = { guildId: string; channelId: string; messageId: string; at: string };
+/** `author` is a keyed hash of the author id, kept only to answer a deletion request by user id. */
+export type MessageRef = { guildId: string; channelId: string; messageId: string; at: string; author?: string };
 
 export class DiscordKeys {
   #enc: Buffer;
@@ -13,7 +14,7 @@ export class DiscordKeys {
     this.#mac = Buffer.from(hkdfSync("sha256", secret, "autocraft-discord", "mention-hash", 32));
   }
   /** Keyed hash for finding a row again without storing the id. `kind` keeps message and author hashes apart. */
-  hash(kind: "message" | "author", id: string): string {
+  hash(kind: "message" | "author" | "channel", id: string): string {
     return createHmac("sha256", this.#mac).update(`${kind}:${id}`).digest("base64url");
   }
   seal(ref: MessageRef, aad: string): string {

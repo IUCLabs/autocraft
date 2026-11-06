@@ -130,7 +130,7 @@ Access list with add, remove and role change; active sessions with revoke.
 
 ### Discord (operators)
 
-Shown as a setting; the pipeline does not depend on it. The bot's connection state, the servers and text channels it reports (names and IDs) with a switch per channel for watching, the contact text for deletion requests, and a link to the public privacy page. Only operators change anything; the writes are audited (`discord-watch`, `discord-unwatch`, `discord-contact`).
+A setting; the pipeline does not depend on it. The bot's connection state, the servers and text channels it reports (names and IDs) with a switch per channel for watching (threads and forum posts follow their parent channel), the contact text for deletion requests, and a link to the public privacy page. Only operators can open the page or change anything; the writes are audited (`discord-watch`, `discord-unwatch`, `discord-contact`).
 
 The item page shows a "Discord N" badge in its header and, in the details, a list of message links (`discord.com/channels/<server>/<channel>/<message>` with the time). Counts are visible to everyone who sees the item; the links are decrypted on the server and need the key file in the dashboard's environment, otherwise only the count shows. The Items page has a Discord column (a badge on phones), the sort "Discord mentions" and the filter "Mentioned on Discord".
 

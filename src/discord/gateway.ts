@@ -51,11 +51,20 @@ export class Gateway {
     this.#d = deps;
   }
 
+  /** The callbacks write to the database; a failure there is logged and must never escape into a socket listener, which would end the process. */
+  #state(state: Parameters<GatewayDeps["onState"]>[0], detail: string | null): void {
+    try {
+      this.#d.onState(state, detail);
+    } catch (e) {
+      this.#d.log(`discord: recording state failed: ${(e as Error).message}`);
+    }
+  }
+
   /** Runs until `signal` aborts or Discord refuses the connection for good. Never throws. */
   async run(signal: AbortSignal): Promise<void> {
     let failures = 0;
     while (!signal.aborted) {
-      this.#d.onState(failures ? "reconnecting" : "connecting", null);
+      this.#state(failures ? "reconnecting" : "connecting", null);
       let fatal = false;
       try {
         const connectedFor = await this.#connectOnce(signal);
@@ -95,7 +104,7 @@ export class Gateway {
       url = await this.#gatewayUrl(signal);
     } catch (e) {
       if (e instanceof FatalError) {
-        this.#d.onState("failed", e.message);
+        this.#state("failed", e.message);
         this.#d.log(`discord: ${e.message}; not reconnecting`);
         return { ok: false, fatal: true };
       }
@@ -106,29 +115,44 @@ export class Gateway {
     return new Promise((resolve) => {
       let hb: ReturnType<typeof setInterval> | undefined;
       let first: ReturnType<typeof setTimeout> | undefined;
+      let hello: ReturnType<typeof setTimeout> | undefined;
+      let force: ReturnType<typeof setTimeout> | undefined;
       let acked = true;
       let ready = false;
-      const stop = (): void => {
+      let done = false;
+      // Settles the attempt once. The listeners are detached, so a socket that never reports its close cannot hold the reconnect up or call back later.
+      const finish = (r: { ok: boolean; fatal: boolean }): void => {
+        if (done) return;
+        done = true;
         clearInterval(hb);
         clearTimeout(first);
+        clearTimeout(hello);
+        clearTimeout(force);
         signal.removeEventListener("abort", onAbort);
+        sock.onmessage = sock.onclose = sock.onerror = null;
+        resolve(r);
       };
-      const onAbort = (): void => {
-        try { sock.close(1000); } catch { /* already closed */ }
+      // Asks the socket to close, and gives up on it after a short wait if the close is never reported (a dead TCP connection).
+      const drop = (code: number): void => {
+        try { sock.close(code); } catch { /* already closed */ }
+        force ??= setTimeout(() => finish({ ok: ready, fatal: false }), 5000);
       };
+      const onAbort = (): void => drop(1000);
       signal.addEventListener("abort", onAbort, { once: true });
+      // Discord sends HELLO at once; without it the connection is not usable.
+      hello = setTimeout(() => { this.#d.log("discord: no HELLO; reconnecting"); drop(4000); }, 20_000);
       const send = (op: number, d: unknown): void => sock.send(JSON.stringify({ op, d }));
       const beat = (): void => {
         if (!acked) {
           // No acknowledgement for the last heartbeat: the connection is dead. 4000 keeps the session resumable.
           this.#d.log("discord: heartbeat not acknowledged; reconnecting");
-          try { sock.close(4000); } catch { /* ignore */ }
+          drop(4000);
           return;
         }
         acked = false;
-        send(1, this.#seq);
+        try { send(1, this.#seq); } catch { drop(4000); }
       };
-      sock.onmessage = (e) => {
+      const onMessage = (e: { data: unknown }): void => {
         let p: { op: number; d: unknown; s: number | null; t: string | null };
         try {
           p = JSON.parse(String(e.data));
@@ -137,29 +161,30 @@ export class Gateway {
         }
         if (p.s !== null && p.s !== undefined) this.#seq = p.s;
         if (p.op === 10) {
+          clearTimeout(hello);
           const every = (p.d as { heartbeat_interval: number }).heartbeat_interval;
           first = setTimeout(() => { beat(); hb = setInterval(beat, every); }, every * (this.#d.random ?? Math.random)());
-          void this.#identify(send, signal);
+          this.#identify(send, signal).catch((err: Error) => { this.#d.log(`discord: identify failed: ${err.message}`); drop(4000); });
         } else if (p.op === 11) {
           acked = true;
         } else if (p.op === 1) {
           send(1, this.#seq);
         } else if (p.op === 7) {
-          try { sock.close(4000); } catch { /* ignore */ }
+          drop(4000);
         } else if (p.op === 9) {
           // Invalid session: d tells whether it can be resumed.
           if (p.d !== true) { this.#session = null; this.#resumeUrl = null; this.#seq = null; }
-          try { sock.close(4000); } catch { /* ignore */ }
+          drop(4000);
         } else if (p.op === 0 && p.t) {
           if (p.t === "READY") {
             const r = p.d as { session_id: string; resume_gateway_url: string };
             this.#session = r.session_id;
             this.#resumeUrl = `${r.resume_gateway_url}/?v=10&encoding=json`;
             ready = true;
-            this.#d.onState("connected", null);
+            this.#state("connected", null);
           } else if (p.t === "RESUMED") {
             ready = true;
-            this.#d.onState("connected", null);
+            this.#state("connected", null);
           }
           try {
             this.#d.onDispatch(p.t, p.d);
@@ -168,17 +193,24 @@ export class Gateway {
           }
         }
       };
+      // An exception in a socket listener ends the process, so nothing may escape from here.
+      sock.onmessage = (e) => {
+        try {
+          onMessage(e);
+        } catch (err) {
+          this.#d.log(`discord: socket message failed: ${(err as Error).message}`);
+        }
+      };
       sock.onerror = () => this.#d.log("discord: socket error");
       sock.onclose = (e) => {
-        stop();
         if (FATAL.has(e.code)) {
-          this.#d.onState("failed", `Discord closed the connection with code ${e.code}${e.code === 4014 ? " (enable the Message Content intent for the bot)" : ""}`);
+          this.#state("failed", `Discord closed the connection with code ${e.code}${e.code === 4014 ? " (enable the Message Content intent for the bot)" : ""}`);
           this.#d.log(`discord: closed with code ${e.code}; not reconnecting`);
-          return resolve({ ok: false, fatal: true });
+          return finish({ ok: false, fatal: true });
         }
         // 4007 (bad sequence) and 4009 (session timed out) mean the session is gone.
         if (e.code === 4007 || e.code === 4009) { this.#session = null; this.#resumeUrl = null; this.#seq = null; }
-        resolve({ ok: ready, fatal: false });
+        finish({ ok: ready, fatal: false });
       };
     });
   }

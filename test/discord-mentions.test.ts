@@ -9,6 +9,7 @@ import { defaultRoutes, startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { DiscordKeys } from "../src/discord/keys.ts";
 import { parseRefs } from "../src/discord/refs.ts";
+import { handleMeta } from "../src/discord/index.ts";
 import { countOf, forgetAuthor, handleDispatch, linksOf } from "../src/discord/store.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -64,11 +65,44 @@ describe("event handler", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM discord_mentions").get()!.n, 0);
   });
 
-  test("a deletion request by user id removes that author's rows", () => {
+  test("a deletion request by user id removes that author's rows, also after an edit without an author", () => {
+    const columns = (db.prepare("PRAGMA table_info(discord_mentions)").all() as { name: string }[]).map((c) => c.name);
+    assert.ok(!columns.some((c) => /author|user/.test(c)), "no per-person plain column");
     handleDispatch(db, keys, "MESSAGE_CREATE", msg("m4", "photocraft#5"));
     handleDispatch(db, keys, "MESSAGE_CREATE", { ...msg("m5", "photocraft#5"), author: { id: "u2" } });
+    handleDispatch(db, keys, "MESSAGE_UPDATE", { id: "m4", channel_id: "c1", guild_id: "g1", content: "photocraft#5 edited" });
     assert.equal(forgetAuthor(db, keys, "u1"), 1);
     assert.equal(countOf(db, "photocraft", 5), 1);
+  });
+
+  test("a delete applies in an unwatched channel, and a deleted channel takes its rows", () => {
+    handleDispatch(db, keys, "MESSAGE_CREATE", msg("m6", "photocraft#6"));
+    handleDispatch(db, keys, "MESSAGE_CREATE", msg("m7", "photocraft#6"));
+    db.prepare("UPDATE discord_channels SET watched = 0 WHERE channel_id = 'c1'").run();
+    handleDispatch(db, keys, "MESSAGE_DELETE", { id: "m6", channel_id: "c1" });
+    assert.equal(countOf(db, "photocraft", 6), 1);
+    handleDispatch(db, keys, "CHANNEL_DELETE", { id: "c1" });
+    assert.equal(countOf(db, "photocraft", 6), 0);
+    db.prepare("UPDATE discord_channels SET watched = 1 WHERE channel_id = 'c1'").run();
+  });
+
+  test("a thread message counts under its watched parent", () => {
+    handleMeta(db, "THREAD_CREATE", { id: "t1", guild_id: "g1", parent_id: "c1", name: "topic" });
+    handleDispatch(db, keys, "MESSAGE_CREATE", msg("m8", "photocraft#8", "t1"));
+    assert.equal(countOf(db, "photocraft", 8), 1);
+    handleMeta(db, "THREAD_CREATE", { id: "t2", guild_id: "g1", parent_id: "c2", name: "other" });
+    handleDispatch(db, keys, "MESSAGE_CREATE", msg("m9", "photocraft#9", "t2"));
+    assert.equal(countOf(db, "photocraft", 9), 0);
+  });
+});
+
+describe("admin API", () => {
+  test("the Discord page's data is for operators only", async () => {
+    const route = (await defaultRoutes()).find((r) => r.method === "GET" && r.pattern === "/api/admin/discord");
+    assert.equal(route?.operator, true);
+    const viewer = { user: { login: "v", role: "viewer" } } as never;
+    const res = await route!.handler(db, viewer);
+    assert.equal(res.status, 403);
   });
 });
 

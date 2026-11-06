@@ -12,18 +12,19 @@ import type { Req } from "../types.ts";
 
 const PRIVACY_PATH = DISCORD_PRIVACY_PATH;
 
-let cached: { file: string; keys: DiscordKeys | null } | null = null;
+let cached: { file: string; keys: DiscordKeys } | null = null;
 /** The key file's keys, when this process has AUTOCRAFT_DISCORD_KEY_FILE and the file is sound; message links need them. */
 export function discordKeys(): DiscordKeys | null {
   const file = envVar("DISCORD_KEY_FILE");
   if (!file) return null;
   if (cached?.file === file) return cached.keys;
-  let keys: DiscordKeys | null = null;
   try {
-    keys = readKeyFile(file);
-  } catch { /* the page shows counts without links */ }
-  cached = { file, keys };
-  return keys;
+    cached = { file, keys: readKeyFile(file) };
+    return cached.keys;
+  } catch {
+    // Not cached: a file that is fixed later works at the next request. The page shows counts without links meanwhile.
+    return null;
+  }
 }
 
 export const contactOf = (db: DatabaseSync): string =>
@@ -35,19 +36,24 @@ export function discordOf(db: DatabaseSync, repo: string, n: number): DiscordInf
 }
 
 const operator = (req: Req): void => {
-  if (req.user.role !== "operator") throw new HttpError(403, "only operators change the Discord settings");
+  if (req.user.role !== "operator") throw new HttpError(403, "only operators use the Discord settings");
 };
 const body = (req: Req): Record<string, unknown> => (req.json && typeof req.json === "object" ? (req.json as Record<string, unknown>) : {});
 
-export function setup(db: DatabaseSync, _req: Req): DiscordSetup {
+function setupOf(db: DatabaseSync): DiscordSetup {
   const st = db.prepare("SELECT state, detail, at FROM discord_status WHERE id = 1").get() as { state: DiscordSetup["state"]; detail: string | null; at: string } | undefined;
-  const channels = db.prepare("SELECT channel_id AS channelId, guild_id AS guildId, guild_name AS guildName, name, watched FROM discord_channels ORDER BY guild_name, name, channel_id").all() as
+  const channels = db.prepare("SELECT channel_id AS channelId, guild_id AS guildId, guild_name AS guildName, name, watched FROM discord_channels WHERE parent_id IS NULL ORDER BY guild_name, name, channel_id").all() as
     { channelId: string; guildId: string; guildName: string | null; name: string | null; watched: number }[];
   return {
     state: st?.state ?? "off", detail: st?.detail ?? null, at: st?.at ?? null,
     channels: channels.map((c) => ({ ...c, watched: !!c.watched })),
     contact: contactOf(db), privacyPath: PRIVACY_PATH,
   };
+}
+
+export function setup(db: DatabaseSync, req: Req): DiscordSetup {
+  operator(req);
+  return setupOf(db);
 }
 
 export function putChannel(db: DatabaseSync, req: Req): DiscordSetup {
@@ -57,7 +63,7 @@ export function putChannel(db: DatabaseSync, req: Req): DiscordSetup {
   const r = db.prepare("UPDATE discord_channels SET watched = ? WHERE channel_id = ?").run(watched ? 1 : 0, id);
   if (!r.changes) throw new HttpError(404, "the bot has not reported that channel");
   audit(db, req.user.login, watched ? "discord-watch" : "discord-unwatch", id);
-  return setup(db, req);
+  return setupOf(db);
 }
 
 export function putContact(db: DatabaseSync, req: Req): DiscordSetup {
@@ -66,5 +72,5 @@ export function putContact(db: DatabaseSync, req: Req): DiscordSetup {
   if (typeof c !== "string" || c.length > 300) throw new HttpError(400, "contact must be text of at most 300 characters");
   db.prepare("INSERT INTO settings (key, value) VALUES ('discord_contact', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(c.trim());
   audit(db, req.user.login, "discord-contact", null);
-  return setup(db, req);
+  return setupOf(db);
 }

@@ -3,6 +3,7 @@
 // kept only as a keyed hash that serves a deletion request.
 import type { DatabaseSync } from "node:sqlite";
 import type { DiscordKeys } from "./keys.ts";
+import { DEFAULT_OWNER } from "../owners.ts";
 import { parseRefs, type TrackedRepo } from "./refs.ts";
 
 export type DiscordMessage = {
@@ -11,26 +12,29 @@ export type DiscordMessage = {
 };
 
 export const trackedRepos = (db: DatabaseSync): TrackedRepo[] =>
-  db.prepare(`SELECT t.name AS name, COALESCE(r.owner, 'storytold') AS owner FROM main.tracked_repos t LEFT JOIN main.repos r ON r.name = t.name`).all() as TrackedRepo[];
+  db.prepare(`SELECT t.name AS name, COALESCE(r.owner, '${DEFAULT_OWNER}') AS owner FROM main.tracked_repos t LEFT JOIN main.repos r ON r.name = t.name`).all() as TrackedRepo[];
 
+/** A channel is watched when the operators chose it, or it is a thread or forum post of a watched channel. */
 export const isWatched = (db: DatabaseSync, channelId: string): boolean =>
-  !!db.prepare("SELECT 1 FROM discord_channels WHERE channel_id = ? AND watched = 1").get(channelId);
+  !!db.prepare(`SELECT 1 FROM discord_channels c WHERE c.channel_id = ? AND (c.watched = 1
+    OR EXISTS (SELECT 1 FROM discord_channels p WHERE p.channel_id = c.parent_id AND p.watched = 1))`).get(channelId);
 
 /** Sets a message's rows to exactly the items its text names. Returns the number of items it now counts for. */
 export function recordMessage(db: DatabaseSync, keys: DiscordKeys, m: DiscordMessage, guildId: string | undefined): number {
   if (m.content === undefined || !guildId) return -1;
   const msgHash = keys.hash("message", m.id);
   const refs = m.author?.bot ? [] : parseRefs(m.content, trackedRepos(db));
-  const have = (db.prepare("SELECT repo, number FROM discord_mentions WHERE msg_hash = ?").all(msgHash) as { repo: string; number: number }[]);
+  const have = db.prepare("SELECT repo, number, sealed FROM discord_mentions WHERE msg_hash = ?").all(msgHash) as { repo: string; number: number; sealed: string }[];
   const want = new Set(refs.map((r) => `${r.repo}#${r.number}`));
+  // An edit event may carry no author: keep the one sealed with the existing rows.
+  const author = m.author?.id ? keys.hash("author", m.author.id) : have.map((h) => keys.open(h.sealed, msgHash)?.author).find((a) => a);
+  const sealed = keys.seal({ guildId, channelId: m.channel_id, messageId: m.id, at: m.timestamp ?? new Date().toISOString(), ...(author && { author }) }, msgHash);
   const del = db.prepare("DELETE FROM discord_mentions WHERE msg_hash = ? AND repo = ? AND number = ?");
-  const ins = db.prepare("INSERT OR IGNORE INTO discord_mentions (msg_hash, repo, number, author_hash, sealed) VALUES (?, ?, ?, ?, ?)");
-  const sealed = keys.seal({ guildId, channelId: m.channel_id, messageId: m.id, at: m.timestamp ?? new Date().toISOString() }, msgHash);
-  const author = m.author?.id ? keys.hash("author", m.author.id) : null;
+  const ins = db.prepare("INSERT OR IGNORE INTO discord_mentions (msg_hash, channel_hash, repo, number, sealed) VALUES (?, ?, ?, ?, ?)");
   db.exec("BEGIN");
   try {
     for (const h of have) if (!want.has(`${h.repo}#${h.number}`)) del.run(msgHash, h.repo, h.number);
-    for (const r of refs) ins.run(msgHash, r.repo, r.number, author, sealed);
+    for (const r of refs) ins.run(msgHash, keys.hash("channel", m.channel_id), r.repo, r.number, sealed);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -46,21 +50,35 @@ export function forgetMessages(db: DatabaseSync, keys: DiscordKeys, ids: string[
   return n;
 }
 
-export function forgetAuthor(db: DatabaseSync, keys: DiscordKeys, userId: string): number {
-  return Number(db.prepare("DELETE FROM discord_mentions WHERE author_hash = ?").run(keys.hash("author", userId)).changes);
+export function forgetChannel(db: DatabaseSync, keys: DiscordKeys, channelId: string): number {
+  return Number(db.prepare("DELETE FROM discord_mentions WHERE channel_hash = ?").run(keys.hash("channel", channelId)).changes);
 }
 
-/** Gateway events that change mention rows. Only watched channels are looked at; anything else is dropped unread. */
+/** Opens every row to find the author's: slow, and rare enough (a deletion request) not to need a column that would name a person. */
+export function forgetAuthor(db: DatabaseSync, keys: DiscordKeys, userId: string): number {
+  const want = keys.hash("author", userId);
+  const del = db.prepare("DELETE FROM discord_mentions WHERE msg_hash = ? AND repo = ? AND number = ?");
+  let n = 0;
+  for (const r of db.prepare("SELECT msg_hash, repo, number, sealed FROM discord_mentions").all() as { msg_hash: string; repo: string; number: number; sealed: string }[])
+    if (keys.open(r.sealed, r.msg_hash)?.author === want) n += Number(del.run(r.msg_hash, r.repo, r.number).changes);
+  return n;
+}
+
+/** Gateway events that change mention rows. Reads and edits happen in watched channels only; a delete always applies. */
 export function handleDispatch(db: DatabaseSync, keys: DiscordKeys, type: string, d: unknown): void {
-  const x = d as Record<string, unknown> & Partial<DiscordMessage>;
+  const x = d as Record<string, unknown> & Partial<DiscordMessage> & { ids?: unknown; unavailable?: boolean };
   if (type === "MESSAGE_CREATE" || type === "MESSAGE_UPDATE") {
     if (typeof x.id !== "string" || typeof x.channel_id !== "string" || !isWatched(db, x.channel_id)) return;
     recordMessage(db, keys, x as DiscordMessage, typeof x.guild_id === "string" ? x.guild_id : channelGuild(db, x.channel_id));
   } else if (type === "MESSAGE_DELETE") {
-    if (typeof x.id === "string" && typeof x.channel_id === "string" && isWatched(db, x.channel_id)) forgetMessages(db, keys, [x.id]);
+    if (typeof x.id === "string") forgetMessages(db, keys, [x.id]);
   } else if (type === "MESSAGE_DELETE_BULK") {
-    const ids = x.ids;
-    if (typeof x.channel_id === "string" && Array.isArray(ids) && isWatched(db, x.channel_id)) forgetMessages(db, keys, ids.filter((i): i is string => typeof i === "string"));
+    if (Array.isArray(x.ids)) forgetMessages(db, keys, x.ids.filter((i): i is string => typeof i === "string"));
+  } else if ((type === "CHANNEL_DELETE" || type === "THREAD_DELETE") && typeof x.id === "string") {
+    forgetChannel(db, keys, x.id);
+    for (const c of db.prepare("SELECT channel_id FROM discord_channels WHERE parent_id = ?").all(x.id) as { channel_id: string }[]) forgetChannel(db, keys, c.channel_id);
+  } else if (type === "GUILD_DELETE" && typeof x.id === "string" && !x.unavailable) {
+    for (const c of db.prepare("SELECT channel_id FROM discord_channels WHERE guild_id = ?").all(x.id) as { channel_id: string }[]) forgetChannel(db, keys, c.channel_id);
   }
 }
 
@@ -82,11 +100,11 @@ export function linksOf(db: DatabaseSync, keys: DiscordKeys | null, repo: string
 export const countOf = (db: DatabaseSync, repo: string, number: number): number =>
   (db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE repo = ? AND number = ?").get(repo, number) as { n: number }).n;
 
-/** What the bot reports about a guild and its text channels, for the admin page. The watched flag is kept across updates. */
-export function upsertChannel(db: DatabaseSync, c: { channelId: string; guildId: string; guildName: string | null; name: string | null }): void {
-  db.prepare(`INSERT INTO discord_channels (channel_id, guild_id, guild_name, name) VALUES (?, ?, ?, ?)
-    ON CONFLICT(channel_id) DO UPDATE SET guild_id = excluded.guild_id, guild_name = COALESCE(excluded.guild_name, guild_name), name = COALESCE(excluded.name, name)`)
-    .run(c.channelId, c.guildId, c.guildName, c.name);
+/** What the bot reports about a guild and its channels, for the admin page. The watched flag is kept across updates. */
+export function upsertChannel(db: DatabaseSync, c: { channelId: string; guildId: string; guildName: string | null; name: string | null; parentId?: string | null }): void {
+  db.prepare(`INSERT INTO discord_channels (channel_id, guild_id, guild_name, name, parent_id) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET guild_id = excluded.guild_id, guild_name = COALESCE(excluded.guild_name, guild_name), name = COALESCE(excluded.name, name), parent_id = excluded.parent_id`)
+    .run(c.channelId, c.guildId, c.guildName, c.name, c.parentId ?? null);
 }
 
 export function setStatus(db: DatabaseSync, state: string, detail: string | null): void {

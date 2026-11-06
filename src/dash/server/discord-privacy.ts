@@ -19,6 +19,6 @@ export function discordPrivacyPage(nonce: string, contact: string): string {
 <ul><li>Message text.</li><li>Names, avatars or profiles of people.</li><li>Counts or lists per person.</li></ul>
 <p>It never posts in Discord.</p>
 <h2>Deleting a record</h2>
-<p>Deleting a message in Discord removes its record. Editing a message so it no longer names the item removes it too.</p>
+<p>Deleting a message in Discord removes its record, and so does deleting its channel. Editing a message so it no longer names the item removes it too. If a message is deleted while the bot is offline, its record can remain until a deletion request removes it.</p>
 ${who}`);
 }

@@ -1647,12 +1647,14 @@ CREATE TABLE IF NOT EXISTS security_calls (
 CREATE INDEX IF NOT EXISTS security_calls_scan ON security_calls(scan_id, id);
 
 -- Discord mentions (optional feature, see docs/pipeline.md). Channels are what the bot reports; `watched` is the operators' choice.
+-- A thread or forum post has `parent_id` set and counts under its parent's `watched`; the admin page lists parents only.
 CREATE TABLE IF NOT EXISTS discord_channels (
   channel_id TEXT PRIMARY KEY,
   guild_id TEXT NOT NULL,
   guild_name TEXT,
   name TEXT,
-  watched INTEGER NOT NULL DEFAULT 0
+  watched INTEGER NOT NULL DEFAULT 0,
+  parent_id TEXT
 );
 -- Gateway connection state, one row.
 CREATE TABLE IF NOT EXISTS discord_status (
@@ -1661,15 +1663,15 @@ CREATE TABLE IF NOT EXISTS discord_status (
   detail TEXT,
   at TEXT NOT NULL
 );
--- One row per (message, item). `sealed` is AES-256-GCM of guild, channel, message id and time; `msg_hash` and `author_hash`
--- are keyed hashes that only serve deletion. No message text and no author id.
+-- One row per (message, item). `sealed` is AES-256-GCM of guild, channel, message id, time and a keyed hash of the author;
+-- `msg_hash` and `channel_hash` are keyed hashes that only serve deletion. No message text and no per-person plain column.
 CREATE TABLE IF NOT EXISTS discord_mentions (
   msg_hash TEXT NOT NULL,
+  channel_hash TEXT NOT NULL,
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,
-  author_hash TEXT,
   sealed TEXT NOT NULL,
   PRIMARY KEY (msg_hash, repo, number)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS discord_mentions_item ON discord_mentions (repo, number);
-CREATE INDEX IF NOT EXISTS discord_mentions_author ON discord_mentions (author_hash);
+CREATE INDEX IF NOT EXISTS discord_mentions_channel ON discord_mentions (channel_hash);
