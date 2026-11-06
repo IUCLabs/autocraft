@@ -120,6 +120,7 @@ export function createHttpApi(): Api {
       reopen: (id) => post(dec(id, "/reopen")),
       feedback: (id, input) => post(dec(id, "/feedback"), input),
       retract: (id) => post(dec(id, "/retract")),
+      reprepare: (id) => post(dec(id, "/reprepare")),
       adopt: (id, opinionId, textsHash) => post(dec(id, "/adopt"), { opinionId, textsHash }),
       // A claim changes nothing anyone is looking at, so open views don't refetch.
       claim: (id) => call("POST", dec(id, "/claim")),
@@ -136,6 +137,7 @@ export function createHttpApi(): Api {
       cancelPreapproval: (repo, n) => post(`/api/items/${repo}/${n}/preapproval/cancel`),
       doCard: (id, opts) => post(`/api/conversation-cards/${id}/do`, opts?.skip?.length || opts?.note ? { ...(opts.skip?.length && { skip: opts.skip }), ...(opts.note && { note: opts.note }) } : undefined),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
+      doChoice: (choiceId, body) => post(`/api/decision-choices/${encodeURIComponent(choiceId)}/do`, body),
     },
     areas: {
       get: (repo) => get(`/api/areas/${encodeURIComponent(repo)}`),

@@ -277,6 +277,9 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         }
         return snap(k);
       },
+      async doChoice() {
+        throw new Error("not implemented");
+      },
       async dismissCard(id) {
         const k = find(id);
         needCard(k);

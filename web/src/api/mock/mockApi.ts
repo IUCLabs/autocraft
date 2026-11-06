@@ -171,6 +171,9 @@ export function createMockApi(): Api {
         changed();
         return wait(d, 30);
       },
+      async reprepare() {
+        throw new Error("not implemented");
+      },
       async retract(id) {
         const d = find(id);
         d.opinions = d.opinions.filter((o) => o.login !== me.login);
