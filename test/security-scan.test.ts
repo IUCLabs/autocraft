@@ -15,6 +15,7 @@ import { FakeProvider } from "../src/dash/server/provider.ts";
 import { insertRun } from "../src/agents/runs.ts";
 import { linkRepeatedFindings, runScan, type Ask, type ScanDeps } from "../src/security/scan.ts";
 import { securityRepo } from "../src/security/rules.ts";
+import { autoFixConfirmed } from "../src/security/actions.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -122,10 +123,10 @@ const newScan = (cap: number | null): number => Number(db.prepare("INSERT INTO s
 const scanOf = (id: number) => db.prepare("SELECT * FROM security_scans WHERE id = ?").get(id) as { state: string; cost_usd: number; areas_done: number; areas_total: number; estimate_usd: number | null; commit_sha: string };
 
 describe("security deep scan", () => {
-  test("areas become findings and verify drops the disproved one", async () => {
+  test("areas become findings and verify drops the disproved one; a confirmed finding's fix starts once", async () => {
     const calls: string[] = [];
     const id = newScan(null);
-    await runScan(db, id, fakeModel(undefined, calls));
+    await runScan(db, id, { ...fakeModel(undefined, calls), confirmed: (n) => autoFixConfirmed(db, "photocraft", n) });
     const s = scanOf(id);
     assert.equal(s.state, "done");
     assert.equal(s.areas_total, 2, "the area that is not in the checkout is dropped");
@@ -134,8 +135,16 @@ describe("security deep scan", () => {
     assert.deepEqual(calls, ["security.model", "security.area", "security.verify", "security.verify", "security.area"], "riskiest area first; one verify per finding");
     assert.equal(s.cost_usd, 1 + 2 + 0.5 * 2 + 2);
     const rows = db.prepare("SELECT title, state, verification FROM security_findings WHERE scan_id = ? ORDER BY number").all(id) as { title: string; state: string; verification: string }[];
-    assert.deepEqual(rows.map((r) => [r.title, r.state]), [["Layer length trusted", "new"], ["Name read unchecked", "disproved"]]);
+    assert.deepEqual(rows.map((r) => [r.title, r.state]), [["Layer length trusted", "fixing"], ["Name read unchecked", "disproved"]]);
     assert.equal(JSON.parse(rows[0]!.verification).proposedTest, "parse a layer with len = u32::MAX");
+    const fixes = () => db.prepare("SELECT requested_by, json_extract(params, '$.number') AS n FROM jobs WHERE step = 'security-fix'").all() as { requested_by: string; n: number }[];
+    const confirmed = (db.prepare("SELECT number FROM security_findings WHERE scan_id = ? AND title = 'Layer length trusted'").get(id) as { number: number }).number;
+    assert.deepEqual(fixes().map((j) => [j.requested_by, j.n]), [["pipeline", confirmed]]);
+    // Back to new as after a failed fix: the finding is left for the operator, not started again.
+    db.prepare("UPDATE security_findings SET state = 'new' WHERE scan_id = ?").run(id);
+    assert.equal(await autoFixConfirmed(db), 0);
+    db.prepare("DELETE FROM jobs WHERE step = 'security-fix'").run();
+    db.prepare("DELETE FROM audit WHERE action = 'security-finding-fix'").run();
     // A second scan does not raise the same findings again, nor ask to verify them.
     const again = newScan(null);
     const calls2: string[] = [];
