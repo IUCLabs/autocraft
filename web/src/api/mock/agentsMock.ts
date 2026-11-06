@@ -237,6 +237,17 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
         return wait({ runs, nextCursor: rows.length > limit ? String(runs[runs.length - 1]!.id) : null }, 80);
       },
       get(id) {
+        if (id >= 9001 && id < 9100) {
+          const running = id === 9005;
+          const d: AgentRunDetail = {
+            ...RECENT[0]!, id, step: "security-scan", promptId: id === 9001 ? "security.model" : id === 9003 ? "security.verify" : "security.area", model: "opus", jobId: 12040, items: [], itemCount: 0,
+            state: running ? "running" : "done", endedAt: running ? null : RECENT[0]!.endedAt, summary: null, error: null,
+            prompt: "You are a senior application security engineer auditing one area of a desktop application, working from a read-only checkout.\n\nArea: doc-io\nPaths: crates/doc-io/src\n\nList findings with file and line for every claim.",
+            output: running ? null : "Read crates/doc-io/src/open.rs and chunk.rs.\n\n{\"findings\": [{\"title\": \"Chunk length in document files is trusted when copying into the read buffer\", \"severity\": \"high\", \"refs\": [{\"path\": \"crates/doc-io/src/open.rs\", \"line\": 212}]}]}",
+            tools: [],
+          };
+          return wait(d);
+        }
         const r = [...RUNNING, ...RECENT].find((x) => x.id === id);
         const traced = r ? null : traceRunDetail(id);
         if (traced) return wait(traced);

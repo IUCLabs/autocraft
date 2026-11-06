@@ -1,7 +1,8 @@
 // Rows of the security deep scan and their views for the API (web/src/api/types.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { slugOf } from "../owners.ts";
-import type { FindingCall, FindingRef, FindingSeverity, FindingState, FindingSummary, FindingVerification, FindingView, ScanState, ScanView, SecurityOverview } from "../../web/src/api/types.ts";
+import { securityRepo } from "./rules.ts";
+import type { FindingCall, FindingRef, FindingSeverity, FindingState, FindingSummary, FindingVerification, FindingView, ScanArea, ScanCall, ScanDetail, ScanEntryPoint, ScanState, ScanView, SecurityOverview } from "../../web/src/api/types.ts";
 
 export const ACTIVE_STATES: ScanState[] = ["modeling", "scanning", "verifying"];
 /** Findings in these states are the scan's own bookkeeping, never listed. */
@@ -146,4 +147,47 @@ export const rawFinding = (db: DatabaseSync, repo: string, n: number): FindingRo
 /** Records one model call of a finding's fix in its timeline and returns nothing; the cost may be unknown. */
 export function recordFixCall(db: DatabaseSync, scanId: number, n: number, kind: "fix" | "review", startedAt: string, ok: boolean, costUsd: number | null): void {
   db.prepare("INSERT INTO security_calls (scan_id, kind, finding_number, started_at, ended_at, ok, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)").run(scanId, kind, n, startedAt, now(), ok ? 1 : 0, costUsd);
+}
+
+/** Scans of one repo or, with none given, of the repos in `repos`, newest first. */
+export function listScans(db: DatabaseSync, repos: string[], repo?: string): ScanView[] {
+  const want = repo ? repos.filter((r) => r === repo) : repos;
+  if (!want.length) return [];
+  reconcileScans(db, repo);
+  const rows = db.prepare(`SELECT * FROM security_scans WHERE repo IN (${want.map(() => "?").join(", ")}) ORDER BY id DESC LIMIT 200`).all(...want) as ScanRow[];
+  return rows.map((r) => toScan(db, r));
+}
+
+/**
+ * The scan with its threat model, calls and findings. A call keeps the agent run it recorded; a call without one (rows from before
+ * the link, and a call still running) takes the first run of the scan that started within its time window.
+ */
+export function scanDetail(db: DatabaseSync, r: ScanRow): ScanDetail {
+  reconcileScans(db, r.repo);
+  r = scanRow(db, r.id)!;
+  const model = parse<{ summary?: string; entryPoints?: ScanEntryPoint[] }>(r.threat_model, {});
+  const callRows = db.prepare("SELECT * FROM security_calls WHERE scan_id = ? ORDER BY id").all(r.id) as
+    { id: number; kind: FindingCall["kind"]; area_idx: number | null; finding_number: number | null; started_at: string; ended_at: string | null; ok: number; cost_usd: number | null; agent_run_id: number | null }[];
+  const runFor = db.prepare(`SELECT ar.id, ar.state, ar.progress FROM agent_runs ar JOIN agent_run_items i ON i.run_id = ar.id
+    WHERE i.repo = ? AND i.number = ? AND ar.started_at >= ? AND (? IS NULL OR ar.started_at <= ?) ORDER BY ar.id LIMIT 1`);
+  const runById = db.prepare("SELECT id, state, progress FROM agent_runs WHERE id = ?");
+  type Run = { id: number; state: string; progress: string | null };
+  const pseudo = securityRepo(r.repo);
+  const areaName = (idx: number | null): string | null => idx === null ? null : (db.prepare("SELECT name FROM security_areas WHERE scan_id = ? AND idx = ?").get(r.id, idx) as { name: string } | undefined)?.name ?? null;
+  const live = ACTIVE_STATES.includes(r.state);
+  const calls: ScanCall[] = callRows.map((c) => {
+    const run = (c.agent_run_id !== null ? runById.get(c.agent_run_id) : runFor.get(pseudo, r.id, c.started_at, c.ended_at, c.ended_at)) as Run | undefined;
+    const running = c.ended_at === null && live;
+    return {
+      id: c.id, kind: c.kind, areaName: areaName(c.area_idx), findingNumber: c.finding_number,
+      state: running ? "running" : c.ok === 1 ? "done" : "failed", startedAt: c.started_at, endedAt: c.ended_at, costUsd: c.cost_usd,
+      runId: run?.id ?? null, progress: running ? run?.progress ?? null : null,
+    };
+  });
+  const runningAreas = new Set(callRows.filter((c) => c.kind === "area" && c.ended_at === null && live).map((c) => c.area_idx));
+  const areas = (db.prepare("SELECT idx, name, paths, risk, why, state, cost_usd FROM security_areas WHERE scan_id = ? ORDER BY idx").all(r.id) as
+    { idx: number; name: string; paths: string; risk: number; why: string | null; state: string; cost_usd: number }[])
+    .map((a): ScanArea => ({ idx: a.idx, name: a.name, risk: a.risk, why: a.why, paths: parse<string[]>(a.paths, []), state: a.state === "done" || a.state === "failed" ? a.state : runningAreas.has(a.idx) ? "running" : "pending", costUsd: a.cost_usd }));
+  const findings = (db.prepare(`SELECT * FROM security_findings WHERE scan_id = ? AND state NOT IN (${HIDDEN}) ORDER BY ${SEVERITY_ORDER}, number`).all(r.id) as FindingRow[]).map(summary);
+  return { scan: toScan(db, r), summary: model.summary ?? null, entryPoints: model.entryPoints ?? [], areas, calls, findings };
 }

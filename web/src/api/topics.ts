@@ -44,6 +44,8 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["decision:", withSlot("decisions", "decision-snooze", "plans", "settings", "limits")],
   ["thread:", ["decisions"]],
   ["conversation:", ["conversations", "conversation-includes", "decision-choices"]],
+  // A scan page also shows each running call's progress line, which arrives through `agents`.
+  ["security:scan:", ["security", "agents"]],
   ["security", ["security"]],
   ["repos", ["repos"]],
   ["repo-admin", ["repos", "sync", "settings"]],

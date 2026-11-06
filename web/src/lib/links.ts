@@ -75,5 +75,8 @@ export const githubCommitUrl = (repo: string, number: number, sha: string): stri
 export const githubBlobUrl = (repo: string, sha: string, path: string, line?: number): string =>
   `https://github.com/${encodeURIComponent(ownerOfRepo(repo))}/${encodeURIComponent(shortRepo(repo))}/blob/${encodeURIComponent(sha)}/${path.split("/").map(encodeURIComponent).join("/")}${line ? `#L${line}` : ""}`;
 
+/** `/security/scans` or `/security/scans/<id>`: the deep scan list and one scan. */
+export const scanPath = (id?: number): string => (id === undefined ? "/security/scans" : `/security/scans/${id}`);
+
 /** `/security/<repo>/<n>`: the page of one security finding. */
 export const findingPath = (repo: string, number: number): string => `/security/${encodeURIComponent(shortRepo(repo))}/${number}`;

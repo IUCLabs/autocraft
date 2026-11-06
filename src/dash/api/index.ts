@@ -525,6 +525,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/queue/batches/:id/stop", operator: true, handler: ok((db, req) => batchStop(db, req, opts.exec)) },
     get("/api/repos/:repo/security", security.security),
     post("/api/repos/:repo/security/scans", security.startScan),
+    get("/api/security/scans", security.scans),
+    get("/api/security/scans/:id", security.scanOf),
     post("/api/security/scans/:id/stop", security.stopScan),
     get("/api/security/findings/:repo/:n", security.finding),
     post("/api/security/findings/:repo/:n", security.actOnFinding),

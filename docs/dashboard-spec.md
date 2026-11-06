@@ -142,6 +142,10 @@ The stages of the pipeline with each one's state; the On/Off switch and the dail
 
 The Pipeline page also shows the Claude accounts panel (see Agents).
 
+### Deep scans (`/security/scans`, `/security/scans/<id>`)
+
+Operators and maintainers only (other readers get 404). The list shows every scan of the repos the reader can see, newest first, filterable by repo (`?repo=`): state badge, repo, spent of cap, areas done, findings, who started it and when. A scan page shows the scan header (state, progress bar, spent, estimate, cap; Stop for operators while the scan is active), the threat model (summary, entry points, areas with risk, state and cost), the model calls in order (kind, area or finding, state, time, cost, a progress line for the running one; each opens to the run's prompt and output and links to its Agents page) and the findings, each linking to its finding page. Both follow the live topics, with no refresh. The nav lists "Deep scans" under Insight for staff; the repo page's Security part links to the list for its repo.
+
 ### Agents (`/agents`, `/agents/<run>`)
 
 An agent run is one model call: one `claude -p` call or one Jev batch request, made through the prompt registry. The page has three parts.

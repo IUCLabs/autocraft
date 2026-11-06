@@ -12,7 +12,8 @@ import {
 } from "./rules.ts";
 
 /** One model call. `text` is null when the call gave no answer; `cost` is what it cost whatever the outcome, null when unknown. */
-export type Reply = { text: string | null; cost: number | null };
+/** `runId` is the first agent run the call made (shown on the scan page); absent when it made none. */
+export type Reply = { text: string | null; cost: number | null; runId?: number | null };
 export type Ask = {
   (id: "security.model", input: SecurityModelInput): Promise<Reply | null>;
   (id: "security.area", input: SecurityAreaInput): Promise<Reply | null>;
@@ -122,7 +123,7 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
       // A call that answered without a reported cost counts as the expected cost; one that failed counts what it reported.
       const c = reply ? reply.cost ?? (reply.text !== null ? expected : 0) : 0;
       const value = reply?.text != null ? readReply(reply.text) : null;
-      db.prepare("UPDATE security_calls SET ended_at = ?, ok = ?, cost_usd = ? WHERE id = ?").run(now(), value === null ? 0 : 1, reply ? c : null, id);
+      db.prepare("UPDATE security_calls SET ended_at = ?, ok = ?, cost_usd = ?, agent_run_id = ? WHERE id = ?").run(now(), value === null ? 0 : 1, reply ? c : null, reply?.runId ?? null, id);
       db.prepare("UPDATE security_scans SET cost_usd = cost_usd + ? WHERE id = ?").run(c, scanId);
       if (meta.bill !== undefined) db.prepare("UPDATE security_areas SET cost_usd = cost_usd + ? WHERE scan_id = ? AND idx = ?").run(c, scanId, meta.bill);
       spent += c;

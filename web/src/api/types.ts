@@ -2205,6 +2205,33 @@ export interface FindingView extends FindingSummary {
 
 export interface SecurityOverview { scans: ScanView[]; findings: FindingSummary[] }
 
+export type ScanAreaState = "pending" | "running" | "done" | "failed";
+export interface ScanArea { idx: number; name: string; risk: number; why: string | null; paths: string[]; state: ScanAreaState; costUsd: number }
+export interface ScanEntryPoint { name: string; kind: string; where: string }
+export type ScanCallState = "running" | "done" | "failed";
+/** One model call of a scan, in order. `runId` links the agent run holding its prompt and output (null for a call that made none). */
+export interface ScanCall {
+  id: number;
+  kind: FindingCall["kind"];
+  areaName: string | null;
+  findingNumber: number | null;
+  state: ScanCallState;
+  startedAt: string;
+  endedAt: string | null;
+  costUsd: number | null;
+  runId: number | null;
+  /** The latest line of what a running call is doing. */
+  progress: string | null;
+}
+export interface ScanDetail {
+  scan: ScanView;
+  summary: string | null;
+  entryPoints: ScanEntryPoint[];
+  areas: ScanArea[];
+  calls: ScanCall[];
+  findings: FindingSummary[];
+}
+
 /** One of the signed-in user's agent tokens for the Inbox MCP server; the token itself is shown only when made. `canAnswer`: an operator's token whose agent may answer decisions. */
 export type McpToken = { id: number; label: string | null; canAnswer: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
 /** The user's live tokens, the most they may hold, and the server's MCP path (on the dashboard's own origin). */
