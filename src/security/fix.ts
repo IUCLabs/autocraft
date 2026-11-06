@@ -18,6 +18,7 @@ import { editable, validateFixPatch } from "../fixissue/parse.ts";
 import { parseCheck } from "../patchcheck/index.ts";
 import { CHECK_PATCH_CAP } from "../patchcheck/types.ts";
 import { foldFormat, readLint } from "../prepush/index.ts";
+import { RESUME_WINDOW_MS, SessionLedger, touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
 import { ownerOf } from "../owners.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit } from "../sandbox/index.ts";
@@ -52,8 +53,11 @@ export type FixDeps = {
   fetchCrates: CratesFetcher;
   /** A read-only checkout of the commit for the sandboxed model calls, or null when none can be made. */
   checkout: (repo: string, branch: string, sha: string) => Promise<string | null>;
-  /** One model call; `tool` is the build tool of the fix call. The reply text is null when the call gave none. */
-  ask: (id: "security.fix" | "security.fixcheck", input: SecurityFixInput | SecurityFixCheckInput, o: { checkout?: string; tool?: CheckTool; agent: string; run: string }) => Promise<{ text: string | null; cost: number | null }>;
+  /**
+   * One model call; `tool` is the build tool of the fix call. The reply text is null when the call gave none.
+   * `session` (fix calls): with `resume` the call continues that kept session with the message, and falls back to a new call on `input` when it cannot; the reply's `kept` is the session the call ends with and `resumed` tells whether the call continued one.
+   */
+  ask: (id: "security.fix" | "security.fixcheck", input: SecurityFixInput | SecurityFixCheckInput, o: { checkout?: string; tool?: CheckTool; agent: string; run: string; session?: SessionAsk }) => Promise<{ text: string | null; cost: number | null; resumed?: boolean; kept?: KeptSession }>;
   /** Builds and tests the patch in the worker container, and the regression test alone on the pinned commit. */
   build: (db: DatabaseSync, r: BuildRequest, cancelled: () => boolean, log: (l: string) => void) => Promise<BuildVerdict>;
   who: (repo: string) => Promise<{ login: string; email: string }>;
@@ -116,9 +120,9 @@ export function defaultFixDeps(db: DatabaseSync, scanId: number, io: { cancelled
     who: (repo) => commitIdentity(db, repo, () => whoAmI(realExec)),
     ask: async (id, input, o) => {
       const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM agent_runs").get() as { n: number }).n;
-      const r = await runModelStep(db, textStep<typeof input>(id), input, { checkout: o.checkout, check: o.tool, cancelled: io.cancelled, usage: { run: o.run, agent: o.agent, stage: "security", items: (ok) => (ok ? 1 : 0) } });
+      const r = await runModelStep(db, textStep<typeof input>(id), input, { checkout: o.checkout, check: o.tool, ...(o.session && { session: o.session }), cancelled: io.cancelled, usage: { run: o.run, agent: o.agent, stage: "security", items: (ok) => (ok ? 1 : 0) } });
       const spent = (db.prepare(`SELECT SUM(r.cost_usd) AS c FROM agent_runs r JOIN agent_run_items i ON i.run_id = r.id WHERE i.repo = ? AND i.number = ? AND r.id > ?`).get(input.repo, input.number, before) as { c: number | null }).c;
-      return { text: r.ok ? r.value : null, cost: spent ?? r.usage.cost };
+      return { text: r.ok ? r.value : null, cost: spent ?? r.usage.cost, resumed: o.session?.resume !== undefined, ...(o.session?.kept && { kept: o.session.kept }) };
     },
   };
 }
@@ -131,6 +135,11 @@ export function crateOf(crates: Crate[], path: string): Crate | null {
     if (inside && (!best || c.dir.length > best.dir.length)) best = c;
   }
   return best;
+}
+
+/** The message that continues the fix session after a failed round: only what the harness found, since the session holds the prompt and the repository reading. */
+export function resumeFixMessage(failure: string): string {
+  return `The harness checked your diff and the round failed:\n\n${failure.trim()}\n\nFix it. Reply in the same format as before (TITLE line, SUMMARY line, the marker line, then the complete diff): the whole corrected diff, not a change to your earlier diff.`;
 }
 
 /** Puts the finding back where an operator can decide again, with the reason on it. */
@@ -149,6 +158,8 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
   const row = rawFinding(db, repo, n);
   if (!row || row.state !== "fixing") return `finding ${n}: not fixing`;
   const { log } = d;
+  // The model session of the last fix call, continued by the next round while the prompt cache is warm; its store is deleted when the job ends.
+  const ledger = new SessionLedger();
   try {
     const scan = scanRow(db, row.scan_id);
     const sha = scan?.commit_sha ?? "";
@@ -172,6 +183,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     const finding = { title: row.title, severity: row.severity, refs, reach: row.reach, impact: row.impact, area: row.area };
     const run = usageRunId(row.scan_id);
     let previous: SecurityFixInput["previous"];
+    let kept: { session: KeptSession; at: number } | undefined;
     let lastWhy = "no round ran";
     for (let round = 1; round <= FIX_ROUNDS; round++) {
       if (d.cancelled()) return giveUp(db, repo, n, "the fix was cancelled", log);
@@ -183,9 +195,17 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       const input: SecurityFixInput = { ...base, finding, crate: { name: crate.name, dir: crate.dir }, test_path: testPath, proposed_test: verification?.proposedTest ?? null, ...(previous && { previous }) };
       const tool = new CheckTool({ db, step: "fix-check", repo, number: null, recordRepo: securityRepo(repo), head: sha, base: sha, applies: applyCheck(git, d.root, sha, (p) => refusal(validateFixPatch(p, allowed, testPath, crate.dir, testName))) });
       const started = new Date().toISOString();
+      // A later round continues the earlier session within the window; `input` (with `previous`) is the new call it falls back to.
+      const ses: SessionAsk = kept && previous && Date.now() - kept.at <= RESUME_WINDOW_MS ? { resume: { session: kept.session, message: resumeFixMessage(previous.failure) } } : {};
+      const tried = ses.resume !== undefined;
       let reply: Awaited<ReturnType<FixDeps["ask"]>>;
-      try { reply = await d.ask(ASK_STEPS.fix, input, { checkout, tool, agent: `security-fix-${n}`, run }); } finally { tool.close(); }
-      recordFixCall(db, row.scan_id, n, "fix", started, reply.text !== null, reply.cost);
+      try { reply = await d.ask(ASK_STEPS.fix, input, { checkout, tool, agent: `security-fix-${n}`, run, session: ses }); } finally { tool.close(); }
+      const resumed = tried && reply.resumed === true;
+      ledger.hold(reply.kept);
+      kept = reply.kept ? { session: reply.kept, at: Date.now() } : undefined;
+      if (kept) touchStore(kept.session.dir);
+      recordFixCall(db, row.scan_id, n, "fix", started, reply.text !== null, reply.cost, resumed);
+      log(`${repo} finding ${n}: round ${round} ${resumed ? "continued the earlier session" : tried ? "started a new session (the earlier one could not be continued)" : "started a new session"}${reply.cost !== null ? `, cost $${reply.cost.toFixed(2)}` : ""}`);
       if (reply.text === null) { failRound("the model gave no answer"); continue; }
       const parsed = parseFixReply(reply.text);
       if (!parsed) { failRound("the reply did not follow the form: TITLE line, SUMMARY line, the marker line and the diff"); continue; }
@@ -233,6 +253,8 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
   } catch (e) {
     giveUp(db, repo, n, `the fix failed: ${(e as Error).message}`, log);
     throw e;
+  } finally {
+    ledger.release();
   }
 }
 
