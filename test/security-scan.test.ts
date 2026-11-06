@@ -259,6 +259,41 @@ describe("security deep scan", () => {
     assert.ok(first.timeline.some((c) => c.kind === "duplicate"));
   });
 
+  test("a capped scan continues with a higher cap: finished work is not redone, the next area runs", async () => {
+    db.prepare("DELETE FROM security_findings").run();
+    const boss = await signedIn("boss"), maint = await signedIn("maint");
+    // $1 model, $2 PSD area (two findings to verify), then a verify would pass $3.5.
+    const id = newScan(3.5);
+    await runScan(db, id, fakeModel());
+    assert.equal(scanOf(id).state, "capped");
+    const before = scanOf(id);
+
+    await maint.post(`/api/security/scans/${id}/continue`, { cap: 50 }, 403);
+    await boss.post(`/api/security/scans/${id}/continue`, { cap: 3 }, 400);
+    const other = await boss.post<ScanView>("/api/repos/photocraft/security/scans", { capUsd: 5 });
+    await boss.post(`/api/security/scans/${id}/continue`, { cap: 50 }, 409);
+    db.prepare("UPDATE security_scans SET state = 'done' WHERE id = ?").run(other.id);
+
+    const resumed = await boss.post<ScanView>(`/api/security/scans/${id}/continue`, { cap: 50 });
+    assert.equal(resumed.state, "verifying", "findings the cap left unchecked are verified first");
+    assert.equal(resumed.capUsd, 50);
+    await boss.post(`/api/security/scans/${id}/continue`, { cap: 50 }, 409);
+
+    const calls: string[] = [];
+    await runScan(db, id, fakeModel(undefined, calls));
+    assert.deepEqual(calls, ["security.verify", "security.verify", "security.area"], "no threat model, no second call for the finished PSD area");
+    const s = scanOf(id);
+    assert.equal(s.state, "done");
+    assert.equal(s.commit_sha, before.commit_sha);
+    assert.equal(s.areas_done, 2);
+    assert.equal(s.cost_usd, before.cost_usd + 0.5 * 2 + 2);
+    const rows = db.prepare("SELECT state FROM security_findings WHERE scan_id = ? ORDER BY number").all(id) as { state: string }[];
+    assert.deepEqual(rows.map((r) => r.state), ["new", "disproved"]);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM security_areas WHERE scan_id = ?").get(id) as { n: number }).n, 2);
+    assert.ok((db.prepare("SELECT 1 FROM audit WHERE action = 'security-scan-continue'").get()));
+    await boss.post(`/api/security/scans/${id}/continue`, { cap: 90 }, 409);
+  });
+
   test("a maintainer who cannot see the repo sees none of its scan jobs", async () => {
     const boss = await signedIn("boss"), maint = await signedIn("maint");
     const started = await boss.post<ScanView>("/api/repos/secret/security/scans", { capUsd: 1 });

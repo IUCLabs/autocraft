@@ -15,13 +15,13 @@ export function realDeps(db: DatabaseSync, scanId: number, io: { cancelled: () =
   let seq = 0;
   return {
     ...io,
-    checkout: async (repo) => {
+    checkout: async (repo, pin) => {
       if (!sandboxAvailable()) {
         io.log("the sandbox is not available on this machine");
         return null;
       }
       const branch = (db.prepare("SELECT default_branch FROM main.repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch ?? "main";
-      const sha = await new Git(exec, fixupDir(), repo).fetchBase(ownerOf(repo), repo, branch);
+      const sha = pin ?? await new Git(exec, fixupDir(), repo).fetchBase(ownerOf(repo), repo, branch);
       const d = await checkoutForCommit(repo, branch, sha, io.log);
       if (!d) return null;
       dir = d;

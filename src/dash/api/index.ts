@@ -528,6 +528,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/security/scans", security.scans),
     get("/api/security/scans/:id", security.scanOf),
     post("/api/security/scans/:id/stop", security.stopScan),
+    post("/api/security/scans/:id/continue", security.continueScan),
     get("/api/security/findings/:repo/:n", security.finding),
     post("/api/security/findings/:repo/:n", security.actOnFinding),
     get("/api/needs", needs),

@@ -2,7 +2,7 @@
 // endpoints do not show that findings exist.
 import type { DatabaseSync } from "node:sqlite";
 import type { FindingView, ScanDetail, ScanView, SecurityOverview } from "../../../web/src/api/types.ts";
-import { actOnFindingAs, SecurityError, startScanAs, stopScanAs } from "../../security/actions.ts";
+import { actOnFindingAs, continueScanAs, SecurityError, startScanAs, stopScanAs } from "../../security/actions.ts";
 import { listScans, overview, reconcileFindings, findingRow, scanDetail, toFinding, scanRow } from "../../security/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -64,6 +64,15 @@ export async function stopScan(db: DatabaseSync, req: Req): Promise<ScanView> {
   if (!scan) throw new HttpError(404, NOT_FOUND);
   await needVisible(db, req, scan.repo);
   return asHttp(() => stopScanAs(db, id, req.user.login));
+}
+
+export async function continueScan(db: DatabaseSync, req: Req): Promise<ScanView> {
+  needOperator(req);
+  const id = number(req.params.id, "scan");
+  const scan = scanRow(db, id);
+  if (!scan) throw new HttpError(404, NOT_FOUND);
+  await needVisible(db, req, scan.repo);
+  return asHttp(() => continueScanAs(db, id, req.user.login, body(req).cap));
 }
 
 export async function finding(db: DatabaseSync, req: Req): Promise<FindingView> {

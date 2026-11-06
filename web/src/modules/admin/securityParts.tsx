@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ListMagnifyingGlassIcon, ShieldWarningIcon, StopIcon } from "@phosphor-icons/react";
+import { ListMagnifyingGlassIcon, PlayIcon, ShieldWarningIcon, StopIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { FindingSummary, ScanView } from "../../api/types";
 import { useWrite } from "../../lib/hooks";
@@ -21,20 +21,20 @@ import { Segmented } from "../../ui/molecules/Segmented";
 
 const usd = (v: number) => formatCost(v) ?? "$0.00";
 
-function StartDialog({ repo, open, onClose }: { repo: string; open: boolean; onClose: () => void }) {
-  const api = useApi();
+/** The spend-cap form of starting and continuing a scan. */
+function CapDialog({ title, submit, initial, above, open, onClose, send }: { title: string; submit: string; initial: number; above: number; open: boolean; onClose: () => void; send: (cap: number | null) => Promise<unknown> }) {
   const write = useWrite();
   const [mode, setMode] = useState<"amount" | "none">("amount");
-  const [amount, setAmount] = useState("20");
+  const [amount, setAmount] = useState(String(initial));
   const cap = mode === "none" ? null : Number(amount);
-  const valid = cap === null || (Number.isFinite(cap) && cap > 0);
+  const valid = cap === null || (Number.isFinite(cap) && cap > above);
   return (
-    <Dialog open={open} onClose={onClose} title="Deep scan">
+    <Dialog open={open} onClose={onClose} title={title}>
       <form
         className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
-          void write.run("start", () => api.security.startScan(repo, cap)).then((ok) => ok && onClose());
+          void write.run("start", () => send(cap)).then((ok) => ok && onClose());
         }}
       >
         <div className="flex flex-col gap-2">
@@ -43,23 +43,37 @@ function StartDialog({ repo, open, onClose }: { repo: string; open: boolean; onC
           {mode === "amount" && (
             <label className="flex items-center gap-2 text-sm">
               <span className="text-ink/60">$</span>
-              <Input aria-labelledby="cap-label" type="number" inputMode="decimal" min="1" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} invalid={!valid} className="w-28" />
+              <Input aria-labelledby="cap-label" type="number" inputMode="decimal" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} invalid={!valid} className="w-28" />
             </label>
           )}
         </div>
         <ErrorLine error={write.error} />
         <div className="flex justify-end gap-2">
           <Button type="button" onClick={onClose} className="max-md:h-11">Cancel</Button>
-          <Button type="submit" variant="primary" loading={write.busy === "start"} disabled={!valid} className="max-md:h-11">Start scan</Button>
+          <Button type="submit" variant="primary" loading={write.busy === "start"} disabled={!valid} className="max-md:h-11">{submit}</Button>
         </div>
       </form>
     </Dialog>
   );
 }
 
+function StartDialog({ repo, open, onClose }: { repo: string; open: boolean; onClose: () => void }) {
+  const api = useApi();
+  return <CapDialog title="Deep scan" submit="Start scan" initial={20} above={0} open={open} onClose={onClose} send={(cap) => api.security.startScan(repo, cap)} />;
+}
+
+/** Continue a scan that stopped at its cap: prefilled with the estimate of the whole scan, rounded up. */
+function ContinueDialog({ s, open, onClose }: { s: ScanView; open: boolean; onClose: () => void }) {
+  const api = useApi();
+  const initial = Math.ceil(Math.max(s.estimateUsd ?? 0, s.costUsd + 1));
+  return <CapDialog title="Continue scan" submit="Continue scan" initial={initial} above={s.costUsd} open={open} onClose={onClose} send={(cap) => api.security.continueScan(s.id, cap)} />;
+}
+
 export function ScanRow({ s, link }: { s: ScanView; link?: boolean }) {
   const api = useApi();
   const write = useWrite();
+  const operator = useUser().role === "operator";
+  const [resume, setResume] = useState(false);
   const active = scanActive(s.state);
   const st = SCAN_STATE[s.state];
   const frac = s.areasTotal ? s.areasDone / s.areasTotal : 0;
@@ -74,6 +88,12 @@ export function ScanRow({ s, link }: { s: ScanView; link?: boolean }) {
           <Button size="md" icon={StopIcon} loading={write.busy === "stop"} onClick={() => void write.run("stop", () => api.security.stopScan(s.id))} className="ml-auto max-md:h-11">
             Stop
           </Button>
+        )}
+        {operator && s.state === "capped" && (
+          <>
+            <Button size="md" icon={PlayIcon} onClick={() => setResume(true)} className="ml-auto max-md:h-11">Continue</Button>
+            <ContinueDialog key={s.costUsd} s={s} open={resume} onClose={() => setResume(false)} />
+          </>
         )}
       </div>
       <div className="num mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-ink/60">

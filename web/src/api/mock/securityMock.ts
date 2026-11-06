@@ -15,6 +15,7 @@ function scans(): ScanView[] {
     { ...base, id: 3, repo: "designcraft", commit: "a41f9c02d7e8", findingCount: 1, state: "scanning", capUsd: 15, costUsd: 4.18, estimateUsd: 11.6, areasTotal: 6, areasDone: 2, startedAt: iso(38) },
     { ...base, id: 2, repo: "designcraft", commit: "9c7e41b0a3d5", findingCount: 2, state: "capped", capUsd: 5, costUsd: 5.03, estimateUsd: 13.2, areasTotal: 9, areasDone: 3, startedAt: iso(3 * 1440), endedAt: iso(3 * 1440 - 41) },
     { ...base, id: 1, repo: "designcraft", commit: SHA.slice(0, 12), findingCount: 8, state: "done", capUsd: null, costUsd: 11.87, estimateUsd: 12.4, areasTotal: 8, areasDone: 8, startedAt: iso(9 * 1440), endedAt: iso(9 * 1440 - 74) },
+    { ...base, id: 4, repo: "pdfcraft", commit: "5be20d41c9a7", findingCount: 1, state: "capped", capUsd: 6, costUsd: 5.41, estimateUsd: 12.8, areasTotal: 6, areasDone: 2, startedAt: iso(26 * 60), endedAt: iso(25 * 60) },
   ];
 }
 
@@ -148,6 +149,16 @@ export function createSecurityMock(me: User, changed: () => void): Pick<Api, "se
         const s = sc.find((x) => x.id === id);
         if (!s) throw new Error("Not found");
         Object.assign(s, { state: "stopped", endedAt: new Date(NOW).toISOString() });
+        changed();
+        return wait(s);
+      },
+      continueScan: async (id, capUsd) => {
+        operator();
+        const s = sc.find((x) => x.id === id);
+        if (!s) throw new Error("Not found");
+        if (s.state !== "capped") throw new Error("only a scan that stopped at its cap can be continued");
+        if (capUsd !== null && capUsd <= s.costUsd) throw new Error("the new cap must be above what the scan has spent");
+        Object.assign(s, { state: "scanning", capUsd, endedAt: null });
         changed();
         return wait(s);
       },

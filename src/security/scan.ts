@@ -22,7 +22,8 @@ export type Ask = {
 export type ScanDeps = {
   ask: Ask;
   /** The pinned commit of the default branch and a read-only directory of its files, or null when none can be made. */
-  checkout: (repo: string) => Promise<{ dir: string; sha: string } | null>;
+  /** With `pin`, the checkout of exactly that commit (a continued scan), else the current head of the default branch. */
+  checkout: (repo: string, pin?: string) => Promise<{ dir: string; sha: string } | null>;
   cancelled: () => boolean;
   log: (line: string) => void;
   progress?: (line: string) => void;
@@ -92,6 +93,8 @@ export const earlierFinding = (known: Known[], c: Candidate): Known | undefined 
     ?? known.find((k) => k.state !== "disproved" && k.state !== "duplicate" && k.sink?.path === sink.path && Math.abs(k.sink.line - sink.line) <= 3 && ((!!c.category && k.category === c.category) || similar(k.title, c.title)));
 };
 
+const parse = <T>(s: string): T => JSON.parse(s) as T;
+
 class Capped extends Error {}
 class Stopped extends Error {}
 
@@ -108,7 +111,9 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
   const setState = (state: "modeling" | "scanning" | "verifying"): void => void db.prepare(`UPDATE security_scans SET state = ? WHERE id = ? AND state IN (${ACTIVE_STATES.map((s) => `'${s}'`).join(", ")})`).run(state, scanId);
   const progress = (line: string): void => { deps.progress?.(line); deps.log(line); };
   const cost = (): number => scanRow(db, scanId)!.cost_usd;
-  const areaCalls: number[] = [], verifyCalls: number[] = [];
+  // The calls of an earlier run of this scan (a continued scan) feed the estimates like the calls of this run.
+  const earlier = (kind: string): number[] => (db.prepare("SELECT cost_usd FROM security_calls WHERE scan_id = ? AND kind = ? AND ok = 1 AND cost_usd IS NOT NULL ORDER BY id").all(scanId, kind) as { cost_usd: number }[]).map((r) => r.cost_usd);
+  const areaCalls: number[] = earlier("area"), verifyCalls: number[] = earlier("verify");
   let areaGuess = areaGuessUsd(0);
 
   /** One call with the cap and stop checks before it; the call's cost goes to the scan and, for area work, to the area. */
@@ -139,52 +144,81 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
   };
 
   try {
-    const co = await deps.checkout(repo);
+    const co = await deps.checkout(repo, scan.commit_sha ?? undefined);
     if (!co) return fail("The repository could not be checked out for a read-only scan.");
+    if (scan.commit_sha && co.sha !== scan.commit_sha) return fail(`The checkout is at ${co.sha.slice(0, 7)}, not the scan's pinned commit ${scan.commit_sha.slice(0, 7)}.`);
     db.prepare("UPDATE security_scans SET commit_sha = ? WHERE id = ?").run(co.sha, scanId);
     const base = { repo: securityRepo(repo), number: scanId, project: repo, commit: co.sha } as const;
 
-    // ---- threat model ----
-    setState("modeling");
-    progress(`${repo}: threat model`);
-    const modeled = await call<ThreatModel>("model", MODEL_GUESS_USD, {}, () => deps.ask("security.model", { ...base }), parseThreatModel);
-    if (!modeled) return fail("The threat model could not be read.");
+    // A continued scan keeps its threat model and areas; only the areas still pending are scanned.
+    const kept = scan.threat_model ? parse<{ summary: string; entryPoints: ThreatModel["entryPoints"] }>(scan.threat_model) : null;
+    const keptAreas = kept ? (db.prepare("SELECT idx, name, paths, entry_points, risk, why, state FROM security_areas WHERE scan_id = ? ORDER BY idx").all(scanId) as { idx: number; name: string; paths: string; entry_points: string; risk: number; why: string; state: string }[]) : [];
+    const resumed = !!kept && keptAreas.length > 0;
+    let summaryText: string, entryPoints: ThreatModel["entryPoints"];
     const areas: ThreatArea[] = [];
     const sizes: number[] = [];
-    for (const a of modeled.value.areas) {
-      const bytes = pathsBytes(co.dir, a.paths);
-      if (bytes === null) continue;
-      areas.push(a);
-      sizes.push(bytes);
+    const doneIdx = new Set<number>();
+    if (resumed) {
+      summaryText = kept!.summary;
+      entryPoints = kept!.entryPoints;
+      for (const a of keptAreas) {
+        areas.push({ name: a.name, paths: parse<string[]>(a.paths), entryPoints: parse<string[]>(a.entry_points), risk: a.risk, why: a.why });
+        sizes.push(pathsBytes(co.dir, parse<string[]>(a.paths)) ?? 0);
+        if (a.state !== "pending") doneIdx.add(a.idx);
+      }
+      progress(`${repo}: continuing at area ${doneIdx.size + 1} of ${areas.length}`);
+    } else {
+      // ---- threat model ----
+      setState("modeling");
+      progress(`${repo}: threat model`);
+      const modeled = await call<ThreatModel>("model", MODEL_GUESS_USD, {}, () => deps.ask("security.model", { ...base }), parseThreatModel);
+      if (!modeled) return fail("The threat model could not be read.");
+      summaryText = modeled.value.summary;
+      entryPoints = modeled.value.entryPoints;
+      for (const a of modeled.value.areas) {
+        const bytes = pathsBytes(co.dir, a.paths);
+        if (bytes === null) continue;
+        areas.push(a);
+        sizes.push(bytes);
+      }
+      if (!areas.length) return fail("The threat model named no area that exists in the checkout.");
+      const insArea = db.prepare("INSERT INTO security_areas (scan_id, idx, name, paths, entry_points, risk, why) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      areas.forEach((a, i) => insArea.run(scanId, i, a.name, JSON.stringify(a.paths), JSON.stringify(a.entryPoints), a.risk, a.why));
+      const total = sizes.map(areaGuessUsd).reduce((x, y) => x + y, 0);
+      db.prepare("UPDATE security_scans SET areas_total = ?, estimate_usd = ?, threat_model = ? WHERE id = ?")
+        .run(areas.length, cost() + total, JSON.stringify({ summary: summaryText, entryPoints }), scanId);
     }
-    if (!areas.length) return fail("The threat model named no area that exists in the checkout.");
-    const insArea = db.prepare("INSERT INTO security_areas (scan_id, idx, name, paths, entry_points, risk, why) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    areas.forEach((a, i) => insArea.run(scanId, i, a.name, JSON.stringify(a.paths), JSON.stringify(a.entryPoints), a.risk, a.why));
     const guesses = sizes.map(areaGuessUsd);
-    db.prepare("UPDATE security_scans SET areas_total = ?, estimate_usd = ?, threat_model = ? WHERE id = ?")
-      .run(areas.length, cost() + guesses.reduce((x, y) => x + y, 0), JSON.stringify({ summary: modeled.value.summary, entryPoints: modeled.value.entryPoints }), scanId);
 
     const known: Known[] = (db.prepare("SELECT number, state, fingerprint, title, refs, category FROM security_findings WHERE repo = ?").all(repo) as { number: number; state: string; fingerprint: string; title: string; refs: string; category: string | null }[])
       .map((r) => ({ number: r.number, state: r.state, fingerprint: r.fingerprint, title: r.title, category: r.category, sink: (JSON.parse(r.refs) as { path: string; line: number }[])[0] ?? null }));
     const insFinding = db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, category, reach, impact, fingerprint, created_at, updated_at, duplicate_of)
       VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM security_findings WHERE repo = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING number`);
 
+    const unverifiedOf = (area: string): { number: number; c: Candidate }[] =>
+      (db.prepare("SELECT * FROM security_findings WHERE scan_id = ? AND area = ? AND state = 'unverified' ORDER BY number").all(scanId, area) as { number: number; title: string; severity: Candidate["severity"]; urgent: number; category: string | null; refs: string; reach: string; impact: string }[])
+        .map((r) => ({ number: r.number, c: { title: r.title, severity: r.severity, urgent: r.urgent === 1, category: r.category ?? "", refs: parse<Candidate["refs"]>(r.refs), reach: r.reach, impact: r.impact } }));
+
     // ---- areas ----
     for (const [idx, area] of areas.entries()) {
+      if (doneIdx.has(idx)) continue;
       areaGuess = mean(areaCalls) ?? guesses[idx]!;
       setState("scanning");
       progress(`${repo}: area ${idx + 1} of ${areas.length}: ${area.name}`);
       const input: SecurityAreaInput = {
-        ...base, summary: modeled.value.summary, area: { name: area.name, paths: area.paths, why: area.why },
-        entry_points: modeled.value.entryPoints.filter((e) => area.entryPoints.includes(e.name)),
+        ...base, summary: summaryText, area: { name: area.name, paths: area.paths, why: area.why },
+        entry_points: entryPoints.filter((e) => area.entryPoints.includes(e.name)),
       };
-      const found = await call<Candidate[]>("area", areaGuess, { area: idx, bill: idx }, () => deps.ask("security.area", input), parseCandidates);
+      // An area the cap stopped during verification has its findings already; only the unchecked ones are verified.
+      const leftover = resumed ? unverifiedOf(area.name) : [];
+      const hasFindings = resumed && !!db.prepare("SELECT 1 FROM security_findings WHERE scan_id = ? AND area = ?").get(scanId, area.name);
+      const found = hasFindings ? { value: [] as Candidate[], cost: 0 } : await call<Candidate[]>("area", areaGuess, { area: idx, bill: idx }, () => deps.ask("security.area", input), parseCandidates);
       if (!found) {
         db.prepare("UPDATE security_areas SET state = 'failed' WHERE scan_id = ? AND idx = ?").run(scanId, idx);
         deps.log(`area ${area.name}: no readable answer`);
       } else {
-        areaCalls.push(found.cost);
-        const fresh: { number: number; c: Candidate }[] = [];
+        if (!hasFindings) areaCalls.push(found.cost);
+        const fresh: { number: number; c: Candidate }[] = [...leftover];
         for (const c of found.value) {
           const refs = realRefs(co.dir, c.refs);
           // The first ref is the sink: a finding whose sink is not a real line is dropped.
