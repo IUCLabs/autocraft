@@ -49,6 +49,12 @@ const shq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 // The terminal echoes the typed code; it is cut out before any pattern looks at the output.
 const fresh = (l: Live) => (l.code ? l.out.replaceAll(l.code, "") : l.out);
 const clean = (s: string) => s.replace(ANSI, "");
+/** "the code was not accepted", with the CLI's own line that said so; anything token-like is masked. */
+const notAccepted = (text: string): string => {
+  const line = text.split(/\r?\n/).map((x) => x.trim()).find((x) => LOGIN_FAILED.test(x));
+  const why = line?.replace(/sk-ant-[\w-]+/g, "…").replace(/[A-Za-z0-9_\-+/=]{24,}/g, "…").slice(0, 160);
+  return why ? `the code was not accepted: ${why}` : "the code was not accepted";
+};
 const cutCode = (l: Live, s: string) => (l.code ? s.replaceAll(l.code, "") : s);
 
 /** The text on the emulated screen (and its scrollback): wrapped lines joined, others split by a newline. */
@@ -178,9 +184,9 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
       if (live.get(id) !== l) return;
       const f = fresh(l);
       if (kind === "token") {
-        if (LOGIN_FAILED.test(f)) finish(id, l, "failed", "the code was not accepted");
+        if (LOGIN_FAILED.test(f)) finish(id, l, "failed", notAccepted(f));
       } else if (LOGIN_OK.test(f)) finish(id, l, "done", "signed in");
-      else if (LOGIN_FAILED.test(f)) finish(id, l, "failed", "the code was not accepted");
+      else if (LOGIN_FAILED.test(f)) finish(id, l, "failed", notAccepted(f));
     }
   };
   child.on("error", () => finish(id, l, "failed", "the claude command could not be started"));
@@ -193,7 +199,7 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
     if (l.info.state === "checking" && (await takeToken(id, l, true))) return;
     if (live.get(id) !== l) return;
     if (l.info.state === "checking" && kind === "login" && (code === 0 || LOGIN_OK.test(fresh(l)))) finish(id, l, "done", "signed in");
-    else finish(id, l, "failed", l.info.state === "checking" ? "the code was not accepted" : "the sign-in ended without a result");
+    else finish(id, l, "failed", l.info.state === "checking" ? notAccepted(fresh(l)) : "the sign-in ended without a result");
   };
   const until = Date.now() + timing.urlMs;
   while (live.get(id) === l && l.info.state === "starting" && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
