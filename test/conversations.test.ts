@@ -336,7 +336,7 @@ function req(role: "operator" | "viewer", params: Record<string, string>, json?:
 }
 
 describe("access", () => {
-  test("a viewer reads the conversation and cannot write; the write routes are operator-only", async () => {
+  test("a viewer reads the conversation and cannot write; chat routes are operator-only", async () => {
     const db = fresh();
     const { restore } = fakeModel(["Reply.\n```actions\n[{\"kind\":\"resolution\",\"steps\":[],\"settle\":{\"kind\":\"backlog\"}}]\n```"]);
     try {
@@ -359,7 +359,8 @@ describe("access", () => {
     assert.equal(db.prepare("SELECT state FROM conversation_cards").get()!.state, "proposed");
     const writes = apiRoutes().filter((r) => r.method === "POST" && /conversation/.test(r.pattern));
     assert.equal(writes.length, 5);
-    assert.ok(writes.every((r) => r.operator === true));
+    // Chat is operator-only; the card routes check who may settle in the handler (refused for the viewer above).
+    assert.deepEqual(writes.filter((r) => r.operator === true).map((r) => r.pattern).sort(), ["/api/conversations/:repo/:n/includes", "/api/conversations/:repo/:n/messages"]);
     // A second message while Opus has not answered the first is refused.
     await conv.postMessage(db, req("operator", { repo: "app", n: "1" }, { text: "More" }));
     await assert.rejects(() => conv.postMessage(db, req("operator", { repo: "app", n: "1" }, { text: "Again" })), (e) => e instanceof HttpError && e.status === 409);
