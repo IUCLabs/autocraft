@@ -58,7 +58,7 @@ export function cardView(db: DatabaseSync, c: CardRow, who?: { login: string; ro
     ...(c.state === "failed" && c.error && { error: c.error }),
     ...(c.acted_by && { by: c.acted_by }),
     ...(c.acted_at && { at: c.acted_at }),
-    ...(c.edited_by && { edited: true }),
+    ...(c.edited_by && { edited: true, editedBy: c.edited_by }),
   };
 }
 
@@ -172,7 +172,7 @@ export async function editCardText(db: DatabaseSync, req: Req): Promise<Conversa
 
 export async function dismiss(db: DatabaseSync, req: Req): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView(db, guard(() => dismissCard(db, c.id, req.user.login)), req.user);
+  return cardView(db, guard(() => dismissCard(db, c.id, req.user.login, { role: req.user.role })), req.user);
 }
 
 /** Runs the card once; a second press returns the card as it is. */
@@ -182,5 +182,5 @@ export async function doIt(db: DatabaseSync, req: Req, deps?: ActDeps): Promise<
   if (b?.note !== undefined && typeof b.note !== "string") throw new HttpError(400, "note must be a string");
   if (b?.skip !== undefined && (!Array.isArray(b.skip) || b.skip.some((k) => !Number.isInteger(k)))) throw new HttpError(400, "skip must be a list of step positions");
   const skip = (b?.skip as number[] | undefined) ?? [];
-  return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, skip, note: b?.note as string | undefined, noteStaysOut: !isOperator(req), canWrite: (r) => req.user.canWrite(r) }))).card, req.user);
+  return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, skip, note: b?.note as string | undefined, noteStaysOut: !isOperator(req), role: req.user.role, canWrite: (r) => req.user.canWrite(r) }))).card, req.user);
 }

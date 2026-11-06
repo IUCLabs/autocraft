@@ -29,7 +29,7 @@ export type CardRow = {
 };
 
 /** `canWrite` is the signed-in operator's write access to a repo; the shell has none to check. */
-export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** The note with the choice. */ note?: string; /** The presser is not an operator: the note is stored and shown but never put in the model's block. */ noteStaysOut?: boolean };
+export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** The note with the choice. */ note?: string; /** The presser's role, named in the conversation block (default operator). */ role?: string; /** The presser is not an operator: the note is stored and shown but never put in the model's block. */ noteStaysOut?: boolean };
 
 export const cardOf = (db: DatabaseSync, id: number): CardRow | undefined =>
   db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(id) as CardRow | undefined;
@@ -91,13 +91,13 @@ export function editCard(db: DatabaseSync, id: number, by: string, edit: CardEdi
   return need(db, id);
 }
 
-export function dismissCard(db: DatabaseSync, id: number, by: string, deps?: StoreDeps): CardRow {
+export function dismissCard(db: DatabaseSync, id: number, by: string, deps?: StoreDeps & { role?: string }): CardRow {
   const c = need(db, id);
   const at = (deps?.now?.() ?? new Date()).toISOString();
   const r = db.prepare("UPDATE conversation_cards SET state = 'dismissed', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
   if (r.changes !== 1) throw new ConversationError(409, `the card is already ${c.state}`);
   audit(db, by, "conversation-card-dismiss", ref(c.repo, c.number), { card: id });
-  insertTurn(db, c.repo, c.number, { kind: "system", login: "system", body: `${by} dismissed the card: ${c.description}.`, block: systemBlock(`The operator ${by} dismissed the proposed action: ${c.description}.`) }, deps);
+  insertTurn(db, c.repo, c.number, { kind: "system", login: "system", body: `${by} dismissed the card: ${c.description}.`, block: systemBlock(`The ${deps?.role ?? "operator"} ${by} dismissed the proposed action: ${c.description}.`) }, deps);
   return need(db, id);
 }
 
@@ -506,9 +506,11 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   db.prepare("UPDATE conversation_cards SET state = ?, result = ?, result_url = ?, error = ?, acted_at = ? WHERE id = ?")
     .run(out ? "done" : "failed", out?.result ?? null, out?.url ?? null, error, end, id);
   audit(db, by, "conversation-card", ref(c.repo, c.number), { card: id, kind: c.kind, state: out ? "done" : "failed", error: error ?? undefined, ...(skipped.length && { skipped }), ...(note && { note: true }) });
-  const who = deps.noteStaysOut ? "maintainer" : "operator";
+  const who = deps.role ?? "operator";
   const sentence = out ? `The ${who} ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The ${who} ${by} tried the proposed action: ${c.description}${skipped.length ? ` (without: ${skipped.join("; ")})` : ""}. It failed: ${error}.`;
-  const posted_text = params.kind === "comment" ? c.text ?? params.text : (params.kind === "close" || (params.kind === "resolution" && params.steps.some((x) => x.kind === "comment") && (out || posted))) && c.text ? c.text : undefined;
+  // Only text that was posted, and only text no non-operator wrote, goes into the model's block.
+  const editedByOperator = !c.edited_by || !!db.prepare("SELECT 1 FROM access WHERE login = ? AND role = 'operator'").get(c.edited_by);
+  const posted_text = !(out || posted) || !editedByOperator ? undefined : params.kind === "comment" ? c.text ?? params.text : (params.kind === "close" || (params.kind === "resolution" && params.steps.some((x) => x.kind === "comment") && (out || posted))) && c.text ? c.text : undefined;
   const modelNote = deps.noteStaysOut ? undefined : note;
   const data = posted_text !== undefined || modelNote ? { ...(posted_text !== undefined && { posted_text }), ...(modelNote && { operator_note: modelNote }) } : undefined;
   insertTurn(db, c.repo, c.number, {

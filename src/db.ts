@@ -64,6 +64,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // Where the GitHub write of an answer stands under repo_identity=app (src/github/user-lane.ts): pending | waiting-token | waiting-permission | done | failed; null before any attempt.
   ["decisions", "exec_state", "TEXT"],
   ["decisions", "exec_reason", "TEXT"],
+  // The answerer's role when they answered (null: an operator's or older answer): memory of operator statements reads only operators' words.
+  ["decisions", "answered_role", "TEXT"],
   ["classifications", "probs", "TEXT"],
   ["token_usage", "cost_usd", "REAL"],
   ["classifications", "input_hash", "TEXT"],
@@ -159,6 +161,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
 // Covering indexes on the hash columns let the planner compare stored hashes without reading item rows.
 // The trigger clears the hashes of an item whose hashed fields were edited without bringing its own (sync does).
 const ADDED_INDEXES = [
+  // Records the answerer's role when an answer is written (any writer); cleared with the answerer by an undo.
+  "CREATE TRIGGER IF NOT EXISTS main.decisions_answered_role AFTER UPDATE OF answered_by ON decisions BEGIN UPDATE decisions SET answered_role = (SELECT role FROM access WHERE login = NEW.answered_by) WHERE id = NEW.id; END",
   "CREATE INDEX IF NOT EXISTS main.comments_mention ON comments(created_at) WHERE mentions_pipeline = 1",
   "CREATE INDEX IF NOT EXISTS main.comments_author_item ON comments(author, repo, number)",
   "CREATE INDEX IF NOT EXISTS main.dupe_carries_item ON dupe_carries(repo, number)",

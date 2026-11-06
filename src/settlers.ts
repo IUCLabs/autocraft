@@ -4,6 +4,7 @@
 // permission on every one of those repos.
 import type { DatabaseSync } from "node:sqlite";
 import { repoIdentity } from "./github/identity.ts";
+import { PERM_READ_TTL } from "./dash/server/sessions.ts";
 
 export const MAINTAINER_WRITES_KEY = "maintainer_writes";
 
@@ -25,17 +26,46 @@ export function settlerLogins(db: DatabaseSync): Set<string> {
   return new Set((db.prepare(`SELECT login FROM ${SETTLER_LOGINS_SQL}`).all() as { login: string }[]).map((r) => r.login));
 }
 
-/** Every repo has the app's identity, so a maintainer's GitHub writes run as that maintainer. */
-export const allAppIdentity = (db: DatabaseSync, repos: string[]): boolean => repos.every((r) => repoIdentity(db, r) === "app");
+/** Values read once per planner pass or response, so a loop over decisions does not query per decision. */
+export type SettleMemo = { operators?: Set<string>; maintainers?: Set<string>; on?: boolean; app: Map<string, boolean>; write: Map<string, boolean> };
+export const settleMemo = (): SettleMemo => ({ app: new Map(), write: new Map() });
+
+const roles = (db: DatabaseSync, m: SettleMemo): void => {
+  if (m.operators) return;
+  const rows = db.prepare("SELECT login, role FROM main.access WHERE role IN ('operator', 'maintainer')").all() as { login: string; role: string }[];
+  m.operators = new Set(rows.filter((r) => r.role === "operator").map((r) => r.login));
+  m.maintainers = new Set(rows.filter((r) => r.role === "maintainer").map((r) => r.login));
+  m.on = maintainerWritesOn(db);
+};
+
+/** At least one repo, and every repo has the app's identity, so a maintainer's GitHub writes run as that maintainer. */
+export function allAppIdentity(db: DatabaseSync, repos: string[], m: SettleMemo = settleMemo()): boolean {
+  return repos.length > 0 && repos.every((r) => {
+    let v = m.app.get(r);
+    if (v === undefined) m.app.set(r, (v = repoIdentity(db, r) === "app"));
+    return v;
+  });
+}
 
 const WRITE = "('write', 'maintain', 'admin')";
 
+/** A cached write permission younger than PERM_READ_TTL: the pipeline never asks GitHub; the write itself reads the live permission again. */
+function cachedWrite(db: DatabaseSync, login: string, repo: string, m: SettleMemo): boolean {
+  const k = `${login}\n${repo}`;
+  let v = m.write.get(k);
+  if (v === undefined) {
+    const row = db.prepare(`SELECT checked_at FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ${WRITE}`).get(login, repo) as { checked_at: string } | undefined;
+    m.write.set(k, (v = !!row && Date.now() - Date.parse(row.checked_at) < PERM_READ_TTL));
+  }
+  return v;
+}
+
 /** The sync form for views and the planner: write permission from the cached `repo_permissions` value. */
-export function canSettleCached(db: DatabaseSync, login: string, role: string, repos: string[]): boolean {
+export function canSettleCached(db: DatabaseSync, login: string, role: string, repos: string[], m: SettleMemo = settleMemo()): boolean {
   if (role === "operator") return true;
-  if (role !== "maintainer" || !maintainerWritesOn(db) || !allAppIdentity(db, repos)) return false;
-  const has = db.prepare(`SELECT 1 FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ${WRITE}`);
-  return repos.every((r) => !!has.get(login, r));
+  roles(db, m);
+  if (role !== "maintainer" || !m.on || !allAppIdentity(db, repos, m)) return false;
+  return repos.every((r) => cachedWrite(db, login, r, m));
 }
 
 /** The request form: write permission is read live (the session's `canWrite`). An operator's write access is checked by the caller. */
@@ -47,11 +77,18 @@ export async function canSettle(db: DatabaseSync, user: { login: string; role: s
 }
 
 /** The DB-side form for the pipeline: the login's current role, and the cached write permission for a maintainer. Write access is read live again when the write is made. */
-export function settlesNow(db: DatabaseSync, login: string | null, repos: string[]): boolean {
+export function settlesNow(db: DatabaseSync, login: string | null, repos: string[], m: SettleMemo = settleMemo()): boolean {
   if (!login) return false;
-  const row = db.prepare("SELECT role FROM main.access WHERE login = ?").get(login) as { role: string } | undefined;
-  return !!row && canSettleCached(db, login, row.role, repos);
+  roles(db, m);
+  return m.operators!.has(login) || (m.maintainers!.has(login) && canSettleCached(db, login, "maintainer", repos, m));
 }
+
+/** SQL: `login` (an expression) is an operator, or a maintainer who settles on the repo expression (setting on, app identity, fresh cached write). */
+export const settlesLoginSql = (login: string, repo: string): string => `(${login} IN (SELECT login FROM main.access WHERE role = 'operator')
+  OR (${login} IN ${SETTLER_LOGINS_SQL}
+    AND EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${repo} AND s.value = 'app')
+    AND EXISTS (SELECT 1 FROM main.repo_permissions rp WHERE rp.login = ${login} AND rp.repo = ${repo} AND rp.permission IN ${WRITE}
+      AND rp.checked_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${PERM_READ_TTL / 1000} seconds'))))`;
 
 /**
  * SQL condition on a decisions row (`a` is its table name or alias): its answer counts because its answerer is an operator, or a
@@ -60,17 +97,18 @@ export function settlesNow(db: DatabaseSync, login: string | null, repos: string
  */
 export const settledBySql = (a: string): string => `(${a}.answered_by IN (SELECT login FROM main.access WHERE role = 'operator')
   OR (${a}.answered_by IN ${SETTLER_LOGINS_SQL}
+    AND (${a}.repo IS NOT NULL OR json_array_length(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) > 0)
     AND NOT EXISTS (SELECT 1 WHERE ${a}.repo IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${a}.repo AND s.value = 'app'))
     AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) j
       WHERE json_extract(j.value, '$.repo') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || json_extract(j.value, '$.repo') AND s.value = 'app'))))`;
 
 /** The same check for one loaded decision row. */
-export function settledBy(db: DatabaseSync, d: { answered_by: string | null; repo: string | null; items: string | null }): boolean {
+export function settledBy(db: DatabaseSync, d: { answered_by: string | null; repo: string | null; items: string | null }, m: SettleMemo = settleMemo()): boolean {
   if (!d.answered_by) return false;
-  const row = db.prepare("SELECT role FROM main.access WHERE login = ?").get(d.answered_by) as { role: string } | undefined;
-  if (row?.role === "operator") return true;
-  if (row?.role !== "maintainer" || !maintainerWritesOn(db)) return false;
+  roles(db, m);
+  if (m.operators!.has(d.answered_by)) return true;
+  if (!m.maintainers!.has(d.answered_by) || !m.on) return false;
   let items: { repo: string }[] = [];
   try { items = JSON.parse(d.items ?? "[]"); } catch { /* none */ }
-  return allAppIdentity(db, [...new Set([...(d.repo ? [d.repo] : []), ...items.map((i) => i.repo)])]);
+  return allAppIdentity(db, [...new Set([...(d.repo ? [d.repo] : []), ...items.map((i) => i.repo)])], m);
 }

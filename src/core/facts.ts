@@ -40,7 +40,7 @@ import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
 import { postSource } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
-import { scopeAnswers } from "../review/candidates.ts";
+import { scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
 import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf } from "./rules.ts";
 import type { AssignFacts, PrFacts, PrTier } from "./plan.ts";
@@ -132,6 +132,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const stale = staleReviews(db, opts.repo);
   const staleActionable = staleReviews(db, opts.repo, true);
   const scope = scopeAnswers(db);
+  const unsettled = unsettledScope(db);
   const gates = gatesOf(db, opts.repo);
   const holds = mergeHolds(db, opts.repo);
   const inBatch = batchStates(db, opts.repo);
@@ -264,7 +265,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
 
     const s = settled(r.repo, r.number);
     base.label = labelWithScopeAnswer(s.label ?? null, base.scopeAnswer);
-    base.needsDecisionFlag = s.flags.includes("needs decision");
+    base.needsDecisionFlag = s.flags.includes("needs decision") || (unsettled.has(ref) && !scope.has(ref));
     base.labelUnsure = s.status === "settled" && !!s.referee && !s.referee.sure && refereeClosed(s.referee);
     const pm = mergedByPipeline.get(ref);
     if (pm) base.postmerge = { mergedAt: pm.merged_at, head: pm.head, since, review: pmReviews.get(ref) ?? null };

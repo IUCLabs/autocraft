@@ -141,6 +141,7 @@ export function OpusCard({ card: a, operator, editInstructions = true, onRun, on
         ) : (
           <blockquote className={cn("mt-2 whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75", resolution ? "text-sm" : "text-xs")}>{text}</blockquote>
         ))}
+      {a.editedBy && a.state !== "dismissed" && <p className="mt-1 text-xs text-ink/55">Edited by {a.editedBy}</p>}
       {a.state === "failed" && a.error && <p className="mt-2 text-xs text-bad">{a.error}</p>}
       {a.state === "done" && a.done && (
         <p className="mt-2 text-xs text-ink/55">

@@ -213,7 +213,12 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                       toggleEdit(c, "text");
                     }}
                     disabled={busy || c.state === "running"}
-                    preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{text}</blockquote>}
+                    preview={
+                      <>
+                        <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{text}</blockquote>
+                        {c.editedBy && <p className="mt-1 text-xs text-ink/55">Edited by {c.editedBy}</p>}
+                      </>
+                    }
                     editor={<textarea value={text} onChange={(e) => setTexts((t) => ({ ...t, [c.id]: e.target.value }))} rows={5} aria-label="Comment text" disabled={locked(c)} className={area} />}
                   />
                 )}

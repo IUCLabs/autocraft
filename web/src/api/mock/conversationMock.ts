@@ -227,6 +227,7 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         if (edit.issue && k.issue) Object.assign(k.issue, edit.issue);
         if (edit.instructions !== undefined && k.fixup) k.fixup.instructions = edit.instructions;
         k.edited = true;
+        k.editedBy = me.login;
         changed();
         return snap(k);
       },

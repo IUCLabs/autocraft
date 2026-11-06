@@ -1811,6 +1811,8 @@ export interface ConversationCard {
   at?: string;
   /** The text was edited by an operator before it ran. */
   edited?: boolean;
+  /** Who edited the text, when `edited`. */
+  editedBy?: string;
 }
 
 export interface ConversationTurn {

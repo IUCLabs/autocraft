@@ -298,6 +298,9 @@ function advance(db: DatabaseSync, p: Row): void {
   if (it.state === "MERGED") return cancel("the PR was merged before the fix-up finished");
   if (it.state !== "OPEN") return cancel("the PR was closed");
 
+  // The fix-up and the review that follows run on the maker's authority; the queued state re-checks the Merge answer below.
+  if (p.state !== "queued" && !isOperator(db, p.by, p.repo)) return cancel(`${p.by} no longer settles decisions on ${p.repo}`);
+
   if (p.state === "fixup") {
     const fx = db.prepare("SELECT state, to_head, reason FROM fixups WHERE operator_fix = ? AND source = 'operator' ORDER BY rowid DESC LIMIT 1").get(p.fix_id) as { state: string; to_head: string | null; reason: string | null } | undefined;
     if (fx?.state === "pushed" && fx.to_head) return void move(db, p, "review", { head: fx.to_head, line: `The fix-up pushed ${short(fx.to_head)}; Opus reviews it next.` });
@@ -392,6 +395,13 @@ function advance(db: DatabaseSync, p: Row): void {
 
 /** Ends fix-up requests the planner can no longer work (the PR's head moved, it closed, the push is not possible), with the reason in the thread. Requests of a pre-approved merge end with it. */
 function endStaleRequests(db: DatabaseSync): void {
+  // A request whose maker stopped settling (a maintainer after the setting went off, the repo left the app identity, a demotion) is dropped before the planner can push it.
+  for (const o of db.prepare("SELECT id, repo, number, from_head, by, preapproval_id FROM operator_fixups WHERE state = 'queued'").all() as { id: number; repo: string; number: number; from_head: string; by: string; preapproval_id: number | null }[]) {
+    if (o.preapproval_id !== null || settlesNow(db, o.by, [o.repo])) continue;
+    if (db.prepare("UPDATE operator_fixups SET state = 'ended' WHERE id = ? AND state = 'queued'").run(o.id).changes !== 1) continue;
+    audit(db, ACTOR, "operator-fixup", `${o.repo}#${o.number}`, { id: o.id, ended: true, reason: "the requester no longer settles here" });
+    say(db, o.repo, o.number, `The queued fix-up of ${short(o.from_head)} was dropped: ${o.by} no longer settles decisions on ${o.repo}.`);
+  }
   for (const o of openOperatorFixups(db)) {
     if (o.preapprovalId !== null) continue;
     const f = loadPrFact(db, o.repo, o.number);

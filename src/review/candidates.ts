@@ -21,14 +21,12 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
   return r.head_oid ?? r.c_head;
 }
 
-/**
- * The answer of the latest answered scope decision per item ("repo#n"), for
- * every item at once: one query.
- */
-export function scopeAnswers(db: DatabaseSync, operatorsOnly = false): Map<string, string> {
+const MAINTAINER_ANSWER = "answered_by IN (SELECT login FROM main.access WHERE role = 'maintainer')";
+
+function scopeRows(db: DatabaseSync, extra: string): Map<string, string> {
   const out = new Map<string, string>();
   const rows = db.prepare(`SELECT repo, number, items, answer, exceptions FROM decisions
-    WHERE kind = 'scope' AND answer IS NOT NULL AND NOT (answer = 'withdrawn' AND answered_by = 'pipeline') ${operatorsOnly ? `AND ${settledBySql("decisions")}` : ""} ORDER BY answered_at DESC`).all() as
+    WHERE kind = 'scope' AND answer IS NOT NULL AND NOT (answer = 'withdrawn' AND answered_by = 'pipeline') ${extra} ORDER BY answered_at DESC`).all() as
     { repo: string | null; number: number | null; items: string | null; answer: string; exceptions: string | null }[];
   for (const r of rows) {
     if (r.number !== null) {
@@ -43,4 +41,17 @@ export function scopeAnswers(db: DatabaseSync, operatorsOnly = false): Map<strin
     }
   }
   return out;
+}
+
+/**
+ * The answer of the latest answered scope decision per item ("repo#n"), for every item at once. A maintainer's answer
+ * counts only while it is settled (src/settlers.ts); `operatorsOnly` keeps only answers whose answerer settles.
+ */
+export function scopeAnswers(db: DatabaseSync, operatorsOnly = false): Map<string, string> {
+  return scopeRows(db, operatorsOnly ? `AND ${settledBySql("decisions")}` : `AND NOT (${MAINTAINER_ANSWER} AND NOT ${settledBySql("decisions")})`);
+}
+
+/** Items whose latest scope answer is a maintainer's that no longer counts: the item waits for a decision again instead of being reviewed on it. */
+export function unsettledScope(db: DatabaseSync): Set<string> {
+  return new Set(scopeRows(db, `AND ${MAINTAINER_ANSWER} AND NOT ${settledBySql("decisions")}`).keys());
 }

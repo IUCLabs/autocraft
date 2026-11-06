@@ -19,7 +19,7 @@ const OWN_POST = "(c.body LIKE '\\_AI-generated%' ESCAPE '\\' OR c.body LIKE '\\
 
 const NEW_SOURCES = `
   SELECT 'decision-note' AS kind, d.id AS sid, d.repo, d.number, trim(d.answer_note) AS text, d.answered_by AS author, d.answered_at AS at
-  FROM decisions d JOIN access a ON a.login = d.answered_by AND a.role = 'operator'
+  FROM decisions d JOIN access a ON a.login = d.answered_by AND a.role = 'operator' AND COALESCE(d.answered_role, 'operator') = 'operator'
   WHERE d.repo IS NOT NULL AND d.answer_note IS NOT NULL AND length(trim(d.answer_note)) >= :min AND d.answer NOT IN ('withdrawn', 'superseded', 'handled')
   UNION ALL
   SELECT 'comment', c.id, c.repo, c.number, trim(c.body), c.author, c.created_at

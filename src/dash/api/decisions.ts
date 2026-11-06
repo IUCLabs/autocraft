@@ -25,7 +25,7 @@ import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
-import { canSettle, canSettleCached } from "../../settlers.ts";
+import { canSettle, canSettleCached, settleMemo, type SettleMemo } from "../../settlers.ts";
 import { isQuiet } from "../../security/quiet.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
@@ -156,7 +156,7 @@ function contextOf(c: string | null): string[] {
   return c.split(/\n+/).map((s) => s.trim()).filter(Boolean);
 }
 
-export type Viewer = { login: string; role: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null };
+export type Viewer = { login: string; role: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null; memo?: SettleMemo };
 /** The reason a write waits or failed: the stored text (it may carry GitHub's error text) only for operators and maintainers, one fixed sentence per state for everyone else. */
 export function execReasonFor(state: ExecState, stored: string | null, repo: string | null, staff: boolean): string | null {
   if (staff) return stored;
@@ -178,7 +178,7 @@ export function execOf(db: DatabaseSync, d: DecisionRow, repo: string | null, vi
 }
 export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, role: req.user.role, operator: isOperator(req), staff: canSeeInternals(req) });
 /** The viewer with the queue places of the items they may see, computed once for the response. */
-const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db) });
+const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db), memo: settleMemo() });
 
 /** Whether Undo would succeed: answered, not acted on, and nothing written to GitHub for a group answer. */
 export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
@@ -258,7 +258,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     recommended: d.recommended ?? "",
     recommendedReason: d.recommended ? (d.recommended_reason ?? "") : "",
     group: groupOf(db, d), risks: risksOf(db, d), undoable: canUndo(db, d),
-    canSettle: canSettleCached(db, viewer.login, viewer.role, reposOf(d)),
+    canSettle: canSettleCached(db, viewer.login, viewer.role, reposOf(d), viewer.memo),
     publicText: commentPreview(d),
     optionTexts: d.kind === "duplicate" && d.id.includes(":dupegroup:") ? optionTextsOf(db, d.id) : [],
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
