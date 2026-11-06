@@ -28,7 +28,7 @@ import { PREPARE_DIFF_LIMIT, PREPARE_MEMBERS, PREPARE_REASON_MAX, PREPARE_STOPPE
 export const PREPARE_PROMPT = CLAUDE_PROMPTS["decide.prepare"];
 
 /** The reply as our code reads it: the pick line, the summary and, for a single item, the checked cards. */
-export type Prepared = { summary: string; pick: string | null; reason: string; cards: NewCard[]; notes: string[]; /** The reply text without its pick line. */ text: string };
+export type Prepared = { summary: string; pick: string | null; reason: string; cards: NewCard[]; notes: string[]; /** The pick the validation removed because no surviving card settles it although cards were dropped; asks for the repeat. */ pickLost: string | null; /** The reply text without its pick line. */ text: string };
 
 // "Pick: key | reason", also with markdown emphasis ("**Pick:** key") and a dash, em dash or colon before the reason.
 const PICK_LINE = /^[ \t]*[*_`]*[ \t]*Pick[*_`]*[ \t]*:[*_`]*[ \t]*([^\s|\u2014\u2013]+)[ \t]*(?:[|\u2014\u2013:-]+[ \t]*(.*))?$/i;
@@ -65,9 +65,17 @@ export function parsePrepareReply(db: DatabaseSync, item: { repo: string; n: num
   } else body = rest.replace(ACTIONS_TAIL, "").trim();
   const summary = body.replace(/\s+/g, " ").trim();
   if (summary.length < SUMMARY_MIN || summary.length > PREPARE_SUMMARY_MAX) return null;
-  const first = cards[0]?.params;
-  const fromCard = first?.kind === "resolution" && first.settle?.kind === "answer" && keys.includes(first.settle.option) ? first.settle.option : null;
-  return { summary, pick: matched ? pick : fromCard, reason: pick ? reason : "", cards, notes, text: body };
+  const answers = (c: NewCard | undefined): string | null => { const p = c?.params; return p?.kind === "resolution" && p.settle?.kind === "answer" && keys.includes(p.settle.option) ? p.settle.option : null; };
+  let pickOut = matched ? pick : answers(cards[0]), pickLost: string | null = null;
+  if (item && pickOut) {
+    const at = cards.findIndex((c) => answers(c) === pickOut);
+    const lead = cards[0]?.params;
+    // The model's first card is its preferred resolution: a fix-up that merges is no plain option, so the pick is none.
+    if (lead?.kind === "resolution" && at !== 0 && lead.steps.some((x) => x.kind === "fixup" && x.merge)) pickOut = null;
+    else if (at > 0) cards = [cards[at]!, ...cards.slice(0, at), ...cards.slice(at + 1)];
+    else if (at < 0 && notes.length) { pickLost = pickOut; pickOut = null; }
+  }
+  return { summary, pick: pickOut, reason: pickOut ? reason : "", cards, notes, pickLost, text: body };
 }
 
 type PrepareCtx = { db: DatabaseSync; item: { repo: string; n: number } | null; keys: string[]; dir: string | undefined; semantic: SemanticDeps | undefined };
@@ -77,11 +85,13 @@ export const PREPARE: ClaudeStep<PrepareInput, Prepared, PrepareCtx> = {
   provider: "claude", id: "decide.prepare",
   toPrompt: (x) => [x], size: () => 1,
   lint: { fields: ["cards[].text"], make: (_x, c) => async (text, stage) => (c.item && parsePrepareReply(c.db, c.item, text, c.keys) ? referenceProblems(commentTexts(splitPick(text, c.keys).rest), c.dir, c.semantic, { stage }) : null) },
-  // A single item whose cards were all dropped is asked once more with the drop notes; the repeat's value replaces the first.
+  // A single item whose cards were all dropped, or whose pick lost its card, is asked once more with the drop notes; the repeat's value replaces the first.
   parse: (text, x, ctx, c) => {
     const r = parsePrepareReply(c.db, c.item, text, c.keys, dropTexts(ctx.problems));
     if (r === null) return null;
-    if (c.item && ctx.attempt === 0 && !ctx.last && !r.cards.length && r.notes.length) return { value: r, rest: { ...x, previous: r.notes } };
+    if (c.item && ctx.attempt === 0 && !ctx.last && ((!r.cards.length && r.notes.length) || r.pickLost)) {
+      return { value: r, rest: { ...x, previous: [...r.notes, ...(r.pickLost ? [`your pick "${r.pickLost}" has no card that passed validation; draft a valid card that answers it, or pick none`] : [])] } };
+    }
     return { value: r };
   },
 };
@@ -157,16 +167,23 @@ export type PrepareParams = {
 export type PrepareResult = { /** Decisions prepared and stored. */ stored: number; failed: number };
 
 type Row = DecisionRow & PrepareColumns;
-type ItemRow = { kind: string; state: string; head_oid: string | null; additions: number | null; deletions: number | null; changed_files: number | null };
+type ItemRow = { kind: string; state: string; mergeable: string | null; head_oid: string | null; additions: number | null; deletions: number | null; changed_files: number | null };
 
 const now = () => new Date().toISOString();
+
+/** The PR's CI and mergeable state as the mirror holds them now; checks count only when fetched for the current head (as in core/facts). */
+function liveState(it: ItemRow, c: { head_oid: string | null; overall: string | null; mergeable: string | null } | undefined): { ci: string | null; mergeable: string } {
+  const atHead = !!c && c.head_oid === it.head_oid;
+  return { ci: atHead ? c!.overall ?? null : null, mergeable: (atHead ? c!.mergeable : it.mergeable) ?? "UNKNOWN" };
+}
 
 /** One call per decision id, concurrently as the Claude room allows. */
 export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams): Promise<PrepareResult> {
   const model = p.model ?? judgementModel(db);
   const checkouts = new Map<string, Promise<string | null>>();
   const select = db.prepare("SELECT * FROM decisions WHERE id = ? AND answer IS NULL");
-  const itemOf = db.prepare("SELECT kind, state, head_oid, additions, deletions, changed_files FROM items WHERE repo = ? AND number = ?");
+  const itemOf = db.prepare("SELECT kind, state, mergeable, head_oid, additions, deletions, changed_files FROM items WHERE repo = ? AND number = ?");
+  const checksOf = db.prepare("SELECT head_oid, overall, mergeable FROM pr_checks WHERE repo = ? AND number = ?");
   const failed = db.prepare(`UPDATE main.decisions SET recommend_failures = CASE WHEN prepare_failed_head IS ? THEN COALESCE(recommend_failures, 0) + 1 ELSE 1 END,
     recommend_failed_at = ?, prepare_failed_head = ? WHERE id = ?`);
   const store = db.prepare(`UPDATE main.decisions SET recommended = ?, recommended_reason = ?, recommended_by = ?, summary = ?, summary_by = ?, summary_at = ?,
@@ -214,7 +231,7 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
       options: options.map((o) => ({ key: o.key, label: o.label, hint: o.hint ?? "" })),
       stopped: stoppedBy(db, d, head),
       ...(group && { group: true, members: members.map(summaryInput) }),
-      ...(isPr && { pr: { head, lines: { additions: it.additions, deletions: it.deletions, files: it.changed_files }, diff: prDiff } }),
+      ...(isPr && { pr: { head, lines: { additions: it.additions, deletions: it.deletions, files: it.changed_files }, diff: prDiff, live: liveState(it, checksOf.get(repo, n) as { head_oid: string | null; overall: string | null; mergeable: string | null } | undefined) } }),
     };
     const turns = group ? "" : operatorTurns(db, repo, n);
     if (turns) input.operator_turns = turns;

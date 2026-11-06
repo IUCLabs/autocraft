@@ -15,7 +15,7 @@ export type PrepareInput = {
   /** A group decision's members, same shape as `item`. */
   members?: Record<string, unknown>[];
   /** A pull request's head commit, size and diff (the code files; null when it is too large or unavailable). */
-  pr?: { head: string | null; lines: { additions: number | null; deletions: number | null; files: number | null }; diff: string | null };
+  pr?: { head: string | null; lines: { additions: number | null; deletions: number | null; files: number | null }; diff: string | null; /** Current CI overall state (null: unknown) and mergeable state; the decision's facts are from ask time. */ live?: { ci: string | null; mergeable: string } };
   question: string;
   facts: string[];
   options: { key: string; label: string; hint: string }[];

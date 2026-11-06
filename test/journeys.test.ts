@@ -372,6 +372,20 @@ describe("issue journey", () => {
     assert.equal(w.rows("SELECT 1 FROM conversation_cards WHERE state = 'proposed'").length, 1);
   });
 
+  test("a pick whose card was dropped is asked again once; a pick still without a card is stored as no pick", async () => {
+    const w = fresh().issue(7);
+    ask(w.db, [{ id: "app:scope:7", kind: "scope", repo: "app", number: 7, question: "Take #7?", options: [{ key: "take", label: "Take" }, { key: "close", label: "Close" }] }]);
+    const summary = "The issue asks for a small export option, which the reference app has, so it fits the project and can be taken as it is.";
+    const card = (option: string) => `{"kind":"resolution","steps":[],"settle":{"kind":"answer","option":"${option}"},"text":null}`;
+    const inputs: string[] = [];
+    // The pick's card is invalid both times; the card for the other option survives.
+    w.models((input) => { inputs.push(input); return `Pick: take | fits.\n${summary}\n\`\`\`actions\n[${card("bogus")},${card("close")}]\n\`\`\``; });
+    assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
+    assert.equal(inputs.length, 2);
+    assert.ok(inputs[1]!.includes('your pick "take" has no card'));
+    assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = 'app:scope:7' AND recommended IS NULL").length, 1);
+  });
+
   test("a duplicate group whose kept item is closed is prepared while a member it would close is open", async () => {
     const w = fresh().issue(7).issue(8);
     ask(w.db, [{ id: "app:dupegroup:7", kind: "duplicate", repo: "app", number: 7, question: "Keep #7 and close #8?", options: [{ key: "accept", label: "Use this answer" }, { key: "distinct", label: "Not duplicates" }] }]);
