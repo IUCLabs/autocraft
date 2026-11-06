@@ -21,7 +21,7 @@ import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/atoms/Avatar";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { ItemIcon } from "../../ui/atoms/ItemIcon";
-import { GithubLogoIcon } from "@phosphor-icons/react";
+import { ChatsCircleIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { PriorityBadge } from "../../ui/atoms/PriorityBadge";
@@ -112,6 +112,21 @@ function Details({ it }: { it: Item }) {
     <>
       <ItemPath it={it} />
       <Properties it={it} />
+      {!!it.discord?.count && (
+        <Section title="Discord" aside={`${it.discord.count} ${it.discord.count === 1 ? "message" : "messages"}`}>
+          <ul className="space-y-1">
+            {it.discord.links.map((l) => (
+              <li key={l.url} className="flex items-center gap-2 text-sm">
+                <ChatsCircleIcon className="shrink-0 text-ink/45" aria-hidden />
+                <a href={l.url} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-6 items-center text-accent-ink hover:underline max-md:min-h-11">
+                  Message
+                </a>
+                <TimeAgo iso={l.at} className="text-xs text-ink/50" />
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
       <Section title="Classifier verdicts" aside={agreement(it.classifications)}>
         <Verdicts cls={it.classifications} stacked />
       </Section>
@@ -148,6 +163,7 @@ function Header({ it }: { it: Item }) {
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm text-ink/60">
         <StatePill it={it} />
         {it.pipelineOn === false && <Badge>Pipeline off</Badge>}
+        {!!it.discord?.count && <Badge icon={<ChatsCircleIcon className="text-[12px]" />}>Discord {it.discord.count}</Badge>}
         <span className="inline-flex items-center gap-1.5">
           <Avatar login={it.author} size={18} />
           <span>

@@ -31,7 +31,7 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 // registers (a page the reader's role cannot open) is left out.
 const RAIL: { label: string; paths: string[] }[] = [
   { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity"] },
-  { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/admin/github-app", "/audit", "/prompts"] },
+  { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/admin/github-app", "/admin/discord", "/audit", "/prompts"] },
   { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/security/scans", "/classifiers", "/contributors", "/main-ci", "/about"] },
 ];
 const PHONE_TABS = ["/", "/next", "/needs", "/items"];
@@ -291,7 +291,9 @@ function RedirectTo({ to, from, search }: { to: string; from?: string; search?: 
 function Breadcrumb({ routes }: { routes: RouteDef[] }) {
   const loc = useLocation();
   const first = loc.pathname.split("/")[1] ?? "";
-  const r = routes.find((x) => x.path.split("/")[0] === first);
+  // Pages that share a first segment (/admin/...) are told apart by the whole path.
+  const whole = loc.pathname.replace(/^\/|\/$/g, "");
+  const r = routes.find((x) => x.path === whole) ?? routes.find((x) => x.path.split("/")[0] === first);
   const rest = decodeURIComponent(loc.pathname.split("/").slice(2).join("/"));
   const isItem = (first === "item" || first === "items") && rest.includes("/");
   return (

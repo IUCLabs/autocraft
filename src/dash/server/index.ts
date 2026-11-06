@@ -17,6 +17,8 @@ import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "
 import { TokenBucket } from "./limits.ts";
 import { dbReady, serveHealth } from "../../health.ts";
 import { serveChecks } from "../../health-checks.ts";
+import { discordPrivacyPage, DISCORD_PRIVACY_PATH } from "./discord-privacy.ts";
+import { contactOf } from "../api/discord.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
 import { OrgSetup } from "./github-setup.ts";
@@ -472,6 +474,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       if (url.pathname === "/mcp") return await handleMcpHttp(req, res);
       const method = req.method;
+      // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
+      if (method === "GET" && url.pathname === DISCORD_PRIVACY_PATH) return send(res, nonce, { html: discordPrivacyPage(nonce, contactOf(db)) });
       const session = loadSession(db, cookies.get(SESSION_COOKIE));
       if (!session) {
         const wantsPage = method === "GET" && /text\/html/.test(String(req.headers.accept ?? ""));

@@ -726,6 +726,18 @@ Automated work waits only for the reasons below. A stage that is not running sho
 
 Logs hold no secrets; anything that looks like a token is hidden.
 
+## Discord mentions
+
+Optional and off by default. It counts explicit mentions of tracked items in Discord channels the operators choose. Nothing else in the pipeline reads the counts, and the planner ignores the tables (the `discord` topic is not in `INPUT_TOPICS`).
+
+- **Switch.** The runner starts a gateway client only when `AUTOCRAFT_DISCORD_TOKEN_FILE` and `AUTOCRAFT_DISCORD_KEY_FILE` name files (mode 600). The token is read from the file and is never logged or stored in the database. A failed connection or a bad configuration is logged and shown on the Discord page; the pipeline keeps running.
+- **Gateway.** Node's built-in WebSocket and `fetch`, with the GUILDS, GUILD_MESSAGES and MESSAGE_CONTENT intents, heartbeats, resume or reconnect with backoff, and a pause on rate limits. A refusal that cannot be fixed by retrying (bad token, intents not allowed) stops reconnecting. The client reads only MESSAGE_CREATE, MESSAGE_UPDATE, MESSAGE_DELETE and MESSAGE_DELETE_BULK of watched channels, never message history, and never posts. Messages by bots are not counted.
+- **Matching.** An item counts when the message holds a GitHub issue or PR URL of a tracked repo, `repo#123` or `owner/repo#123` for a tracked repo. Code blocks count. A message counts once per item. An edit replaces the message's references.
+- **Storage.** `discord_mentions` has one row per message and item: repo and number in the clear for counting, and the guild, channel, message ID and message time sealed with AES-256-GCM under a key derived from the key file. A keyed hash of the message ID and one of the channel ID are kept in plain columns only to find rows for deletion; a keyed hash of the author ID is sealed with the row, so no per-person value sits in a plain column. No message text, no author ID and no per-person data is kept. A deleted message (watched channel or not), a deleted channel or thread, a guild the bot is removed from, or an edit that drops the reference deletes its rows. A message deleted while the bot is offline keeps its row until a deletion request; unwatching a channel keeps its rows.
+- **Deletion requests.** `autocraft discord forget --message <link or id>` and `autocraft discord forget --user <user id>` delete rows (the second opens every row to find the author, and only matches messages seen after this feature started). Each is audited.
+- **Channels.** The bot reports its servers and its text, announcement and forum channels into `discord_channels`; `watched` is the operators' choice (Discord page, or `autocraft discord watch|unwatch <channel id>`). Nothing in an unwatched channel is read. Threads and forum posts count under their parent channel: watching the parent watches them.
+- **Privacy page.** `/discord-privacy` is public and needs no session. Its contact line is the `discord_contact` setting.
+
 ## Commands
 
 Dry run is the default for every writing command; `--apply` writes (and still refuses unapproved repos).
@@ -735,6 +747,7 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | `autocraft sync`, `embed`, `dupes`, `classify`, `prioritize` | Sync to Priority |
 | `autocraft areas list\|propose\|accept\|edit\|rescan\|suggest --repo R` | Classify (areas) |
 | `autocraft rank`, `rank show <repo> <n>` | Work rank |
+| `autocraft discord forget --message <link\|id>\|--user <id>`, `discord channels\|watch\|unwatch` | Discord mentions |
 | `autocraft decide [--repo R]` | Decide |
 | `autocraft labels ensure\|plan\|apply --repo R` | Label |
 | `autocraft checks --repo R`, `review --repo R`, `opus-review --repo R`, `review-post --repo R [--apply]` | Review |

@@ -212,6 +212,11 @@ export function createHttpApi(): Api {
       revokeLink: (id) => post("/api/admin/github-app/links/revoke", { id }),
       remove: () => post("/api/admin/github-app/remove", {}),
     },
+    discord: {
+      setup: () => get("/api/admin/discord"),
+      setChannel: (channelId, watched) => put("/api/admin/discord/channel", { channelId, watched }),
+      setContact: (contact) => put("/api/admin/discord/contact", { contact }),
+    },
     classifiers: {
       report: (sel) => get(`/api/classifiers${qs(sel)}`),
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),

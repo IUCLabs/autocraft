@@ -23,6 +23,14 @@ export function settledFor(seed: number): Settled {
     : { status: "disagree", label: null, source: null, confidence: top, jevLabel: jev, haikuLabel: haiku, flags, referee: null };
 }
 
+/** Mock mentions: some items are named in watched Discord channels. */
+export const mockDiscordCount = (number: number): number => (number % 4 === 0 ? 1 + (number % 3) : 0);
+export const mockDiscordLinks = (number: number): { url: string; at: string }[] =>
+  Array.from({ length: mockDiscordCount(number) }, (_, k) => ({
+    url: `https://discord.com/channels/9000000000000001/9000000000000002/${9100000000000000 + number * 10 + k}`,
+    at: new Date(NOW - (number % 50 + k * 19 + 1) * H).toISOString(),
+  }));
+
 const POOL: (ItemListRow & { comment: string })[] = (() => {
   const r = rng(2024);
   const out: (ItemListRow & { comment: string })[] = [];
@@ -41,6 +49,7 @@ const POOL: (ItemListRow & { comment: string })[] = (() => {
         createdAt: new Date(NOW - (updatedH + 24 + Math.floor(r() * 2000)) * H).toISOString(),
         updatedAt: new Date(NOW - updatedH * H).toISOString(),
         comments: Math.floor(r() * 9),
+        discord: mockDiscordCount(number),
         settled: settledFor(number),
         stage: (r() < 0.1 ? (["reviewed", "take", "needs-decision", "hold"] as Stage[])[Math.floor(r() * 4)] : null),
         snippet: null,
@@ -69,6 +78,7 @@ export function itemList(f: ItemFilter): ItemList {
     if (f.flag?.some((x) => !it.settled.flags.includes(x))) return false;
     if (f.author && it.author.toLowerCase() !== f.author.toLowerCase()) return false;
     if (f.since && it.updatedAt < f.since) return false;
+    if (f.discord && !it.discord) return false;
     return words.every((w) => `${it.title} ${it.comment}`.toLowerCase().includes(w));
   });
   const byStatus = Object.fromEntries(STATUSES.map((s) => [s, base.filter((it) => it.settled.status === s).length])) as Record<SettledStatus, number>;
@@ -76,7 +86,7 @@ export function itemList(f: ItemFilter): ItemList {
   const rows = base.filter((it) => !want.size || want.has(it.settled.status));
   const sort = f.sort ?? (words.length ? "relevance" : f.state === "merged-by-us" ? "merged" : "updated");
   const key = (it: ItemListRow): string | number =>
-    sort === "number" ? it.number : sort === "created" ? it.createdAt : sort === "merged" ? it.mergedAt ?? "" : sort === "relevance" ? (it.title.toLowerCase().includes(words[0] ?? "") ? 1 : 0) : it.updatedAt;
+    sort === "number" ? it.number : sort === "discord" ? it.discord ?? 0 : sort === "created" ? it.createdAt : sort === "merged" ? it.mergedAt ?? "" : sort === "relevance" ? (it.title.toLowerCase().includes(words[0] ?? "") ? 1 : 0) : it.updatedAt;
   rows.sort((a, b) => {
     const x = key(a), y = key(b);
     const c = typeof x === "number" ? x - (y as number) : x.localeCompare(y as string);

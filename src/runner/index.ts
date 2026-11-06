@@ -16,6 +16,7 @@ import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
 import { dbReady, startHealthServer } from "../health.ts";
 import { envVar } from "../env.ts";
+import { startDiscord } from "../discord/index.ts";
 
 const USAGE = `usage: autocraft runner serve
        autocraft runner steps
@@ -52,6 +53,12 @@ async function serve(): Promise<void> {
     (w) => (console.log(`runner: worker API on ${w.url}`), w),
     (e: Error) => (console.error(`runner: worker API not started: ${e.message}`), null),
   );
+  // Optional: counts Discord mentions of tracked items when a bot token file is configured. A failure is logged and never stops the runner.
+  try {
+    startDiscord(db, ac.signal, (l) => console.log(l));
+  } catch (e) {
+    console.error(`runner: Discord not started: ${(e as Error).message}`);
+  }
   // Optional listener for the probes alone, for a runner whose worker API is not reachable by the prober.
   const healthListen = envVar("HEALTH_LISTEN");
   const health = healthListen

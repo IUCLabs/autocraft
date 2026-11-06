@@ -78,7 +78,7 @@ const HITS_SCORED = `hits AS (
 
 const STATUSES: SettledStatus[] = ["settled", "waiting", "disagree", "unclassified"];
 const STATES: Record<string, string> = { open: "OPEN", closed: "CLOSED", merged: "MERGED" };
-const SORTS: ItemSort[] = ["relevance", "updated", "created", "number", "merged"];
+const SORTS: ItemSort[] = ["relevance", "updated", "created", "number", "merged", "discord"];
 const BY_US = "merged-by-us";
 // The newest merge AutoCraft made of the item (merges_item), else the time GitHub recorded for a batch member.
 const MERGED_AT = "COALESCE((SELECT MAX(m.at) FROM main.merges m WHERE m.repo = i.repo AND m.number = i.number AND m.outcome = 'merged'), i.merged_at)";
@@ -142,6 +142,7 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
     where.push("i.updated_at >= :since");
     params.since = since;
   }
+  if (q.get("discord") === "1") where.push("EXISTS (SELECT 1 FROM main.discord_mentions d WHERE d.repo = i.repo AND d.number = i.number)");
   const flow = q.get("flow");
   if (flow) {
     const refs = flowMembers(db, flow);
@@ -164,7 +165,7 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
     statusWhere = `(${parts.join(" OR ")})`;
   }
   const sortQ = q.get("sort") as ItemSort | null;
-  if (sortQ && !SORTS.includes(sortQ)) throw new HttpError(400, "sort must be relevance, updated, created, number or merged");
+  if (sortQ && !SORTS.includes(sortQ)) throw new HttpError(400, "sort must be relevance, updated, created, number, merged or discord");
   let sort: ItemSort = sortQ ?? (fts ? "relevance" : state === BY_US ? "merged" : "updated");
   if (sort === "relevance" && !fts) sort = "updated";
   const desc = q.get("desc") !== "0";
@@ -173,6 +174,7 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
 
 const ORDER: Record<ItemSort, string> = {
   relevance: "h.score", updated: "i.updated_at", created: "i.created_at", number: "i.number", merged: MERGED_AT,
+  discord: "(SELECT COUNT(*) FROM main.discord_mentions d WHERE d.repo = i.repo AND d.number = i.number)",
 };
 
 type Row = SettledRow & {
@@ -217,7 +219,7 @@ const countsCache = new WeakMap<DatabaseSync, { sig: string; at: number; byKey: 
 
 function statusCounts(db: DatabaseSync, b: Built & { run: string | null }, sql: string, flow: string | null): Record<SettledStatus, number> {
   const sig = JSON.stringify(db.prepare(`SELECT (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
-      (SELECT MAX(rowid) FROM main.classifications) AS cl, (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get());
+      (SELECT MAX(rowid) FROM main.classifications) AS cl, (SELECT group_concat(name) FROM main.tracked_repos) AS tr, (SELECT seq FROM main.change_seq WHERE topic = 'discord') AS dm`).get());
   const now = Date.now();
   let c = countsCache.get(db);
   if (!c || c.sig !== sig || now - c.at >= COUNTS_TTL) {
@@ -271,6 +273,7 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
   const stages = stagesOf(db, rows);
   const snips = b.text ? snippets(db, b.params.q as string, rows) : new Map<number, Snippet>();
   const how = mergedHow(db, rows);
+  const mentions = discordCounts(db, rows);
   const quiet = quietFixPrs(db);
   const slots = queueSlots(db, await visibleRepos(db, req));
   return {
@@ -278,12 +281,21 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
     rows: rows.map((r): ItemListRow => ({
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state),
       title: r.title ?? "", author: r.author ?? "", createdAt: r.created_at ?? "", updatedAt: r.updated_at ?? "",
-      comments: r.comments_count ?? 0, settled: unflagged(fromRow(r), quiet.has(`${r.repo}#${r.number}`), canSeeInternals(req)) as ItemListRow["settled"],
+      comments: r.comments_count ?? 0, discord: mentions.get(`${r.repo}#${r.number}`) ?? 0, settled: unflagged(fromRow(r), quiet.has(`${r.repo}#${r.number}`), canSeeInternals(req)) as ItemListRow["settled"],
       stage: (stages.get(`${r.repo}#${r.number}`) ?? null) as Stage | null, snippet: snips.get(r.rid) ?? null,
       queue: slots.get(`${r.repo}#${r.number}`) ?? null,
       mergedHow: how.get(`${r.repo}#${r.number}`) ?? null, mergedAt: how.has(`${r.repo}#${r.number}`) ? r.merged_by_us_at ?? null : null,
     })),
   };
+}
+
+function discordCounts(db: DatabaseSync, rows: { repo: string; number: number }[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!rows.length) return out;
+  const pairs = rows.map(() => "(?, ?)").join(",");
+  for (const m of db.prepare(`SELECT repo, number, COUNT(*) AS n FROM main.discord_mentions WHERE (repo, number) IN (VALUES ${pairs}) GROUP BY repo, number`)
+    .all(...rows.flatMap((r) => [r.repo, r.number])) as { repo: string; number: number; n: number }[]) out.set(`${m.repo}#${m.number}`, m.n);
+  return out;
 }
 
 // How AutoCraft merged each listed PR: its merge step's path (rule or operator), or batch when only a merged batch carried it.

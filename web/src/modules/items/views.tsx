@@ -3,7 +3,7 @@
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useEffect, useState } from "react";
 import { Popover } from "radix-ui";
-import { CaretDownIcon, MagnifyingGlassIcon, ShieldWarningIcon, FlagIcon, XIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, ChatsCircleIcon, MagnifyingGlassIcon, ShieldWarningIcon, FlagIcon, XIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { ItemFilter, ItemList, ItemListRow, ItemSort, Settled, SettledStatus, Snippet, Stage, StatusFilter, TypeLabel } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
@@ -26,7 +26,7 @@ const STATUS: Record<SettledStatus, [string, Tone]> = {
 };
 const STATUS_KEYS = Object.keys(STATUS) as SettledStatus[];
 const FLAGS: [string, string][] = [["security", "Security"], ["needs decision", "Needs a decision"]];
-const SORTS: [ItemSort, string][] = [["relevance", "Relevance"], ["updated", "Updated"], ["created", "Created"], ["number", "Number"], ["merged", "Merged"]];
+const SORTS: [ItemSort, string][] = [["relevance", "Relevance"], ["updated", "Updated"], ["created", "Created"], ["number", "Number"], ["merged", "Merged"], ["discord", "Discord mentions"]];
 const STATES = [["open", "Open"], ["closed", "Closed"], ["merged", "Merged"], ["merged-by-us", "Merged by AutoCraft"], ["all", "Any state"]] as const;
 const STAGE: Record<Stage, string> = {
   classified: "Classified", labeled: "Labelled", reviewed: "Reviewed", take: "Taken", hold: "Held", close: "To close", "needs-decision": "Waiting for a decision",
@@ -59,6 +59,7 @@ function useFilter() {
     status: csv(state.status).filter((s): s is StatusFilter => s === "unsettled" || STATUS_KEYS.includes(s as SettledStatus)),
     flag: csv(state.flag).filter((f) => FLAGS.some(([k]) => k === f)),
     author: state.author?.trim() || undefined,
+    discord: state.discord === "1" || undefined,
     since: /^\d{4}-\d{2}-\d{2}$/.test(state.since ?? "") ? state.since : undefined,
     flow: /^[a-z]+\.[a-z-]+$/.test(state.flow ?? "") ? state.flow : undefined,
     sort: sort === "relevance" && !q ? undefined : sort,
@@ -141,6 +142,9 @@ export function ItemsView(_: ViewProps) {
             </button>
           ))}
         </div>
+        <button aria-pressed={!!filter.discord} data-active={!!filter.discord} className="chip max-md:h-11" onClick={() => set({ discord: filter.discord ? null : "1" })}>
+          <ChatsCircleIcon aria-hidden /> Mentioned on Discord
+        </button>
         {FLAGS.map(([k, l]) => {
           const on = filter.flag?.includes(k) ?? false;
           const next = on ? filter.flag!.filter((f) => f !== k) : [...(filter.flag ?? []), k];
@@ -286,6 +290,12 @@ export function SettledBadge({ s, detail }: { s: Settled; detail?: boolean }) {
   );
 }
 
+const DiscordCount = ({ n }: { n: number }) => (
+  <span className="inline-flex items-center gap-1" title={`${n} ${n === 1 ? "message" : "messages"} in watched Discord channels`}>
+    <ChatsCircleIcon aria-hidden className="text-ink/45" /> {n}
+  </span>
+);
+
 function Flags({ flags }: { flags: string[] }) {
   if (!flags.length) return <span className="text-ink/30">–</span>;
   return (
@@ -308,13 +318,14 @@ function Table({ rows, byUs }: { rows: ItemListRow[]; byUs: boolean }) {
   useNow();
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1000px] border-collapse text-sm">
+      <table className="w-full min-w-[1080px] border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs text-ink/55">
           <tr className="border-b border-line text-left">
             <th className="h-8 px-3 font-medium">Item</th>
             <th className="w-[120px] px-3 font-medium">Author</th>
             <th className="w-[80px] px-3 font-medium">{byUs ? "Merged" : "Updated"}</th>
             <th className="w-[230px] px-3 font-medium">Type</th>
+            <th className="w-[80px] px-3 font-medium">Discord</th>
             <th className="w-[120px] px-3 font-medium">Flags</th>
             <th className="w-[120px] px-3 font-medium">Stage</th>
           </tr>
@@ -337,6 +348,7 @@ function Table({ rows, byUs }: { rows: ItemListRow[]; byUs: boolean }) {
               <td className="px-3 py-2">
                 <SettledBadge s={it.settled} />
               </td>
+              <td className="num px-3 py-2 text-ink/70">{it.discord ? <DiscordCount n={it.discord} /> : <span className="text-ink/30">–</span>}</td>
               <td className="px-3 py-2">
                 <Flags flags={it.settled.flags} />
               </td>
@@ -373,6 +385,7 @@ function Cards({ rows, byUs }: { rows: ItemListRow[]; byUs: boolean }) {
             <SettledBadge s={it.settled} />
             <QueueBadge slot={it.queue} className="relative z-10" />
             <HowBadge how={it.mergedHow} />
+            {!!it.discord && <Badge icon={<ChatsCircleIcon className="text-[12px]" />}>Discord {it.discord}</Badge>}
             {it.settled.flags.length > 0 && <Flags flags={it.settled.flags} />}
             {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage] ?? it.stage}</span>}
           </div>

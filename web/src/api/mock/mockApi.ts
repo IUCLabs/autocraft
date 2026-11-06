@@ -17,7 +17,8 @@ import { promptsReport } from "../../../../src/prompts/index.ts";
 import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { pickDecision, shortRepo } from "../../lib/links";
-import { itemList, settledFor } from "./itemsFixtures";
+import { itemList, mockDiscordCount, mockDiscordLinks, settledFor } from "./itemsFixtures";
+import type { DiscordSetup } from "../types";
 import { postmergeFor, premergeFor, prWorkFor } from "./verifyFixtures";
 import { nextPageFixture } from "./nextMock";
 import { queueBatchList, queueList } from "./queueFixtures";
@@ -72,6 +73,15 @@ export function createMockApi(): Api {
   const choicesHooks: { reprepare?: (decisionId: string) => void } = {};
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
+  const discord: DiscordSetup = {
+    state: "connected", detail: null, at: nowIso(), contact: "discord-privacy@example.org", privacyPath: "/discord-privacy",
+    channels: [
+      { channelId: "9000000000000002", guildId: "9000000000000001", guildName: "Glasswing Community", name: "dev-chat", watched: true },
+      { channelId: "9000000000000003", guildId: "9000000000000001", guildName: "Glasswing Community", name: "support", watched: true },
+      { channelId: "9000000000000004", guildId: "9000000000000001", guildName: "Glasswing Community", name: "general", watched: false },
+      { channelId: "9000000000000005", guildId: "9000000000000001", guildName: "Glasswing Community", name: "announcements", watched: false },
+    ],
+  };
   const find = (id: string) => {
     const d = decisions.find((x) => x.id === id);
     if (!d) throw new Error(`no decision ${id}`);
@@ -214,7 +224,7 @@ export function createMockApi(): Api {
       const it = itemFor(repo, number);
       const postmerge = postmergeFor(number, it.kind, mockRole() !== "viewer");
       const merged = postmerge ? { state: "merged" as const, mergedAt: postmerge.at, mergedBy: "pipeline" } : {};
-      const full: Item = { ...it, ...merged, settled: settledFor(number), ...prWorkFor(number, it.kind), premerge: premergeFor(number, it.kind), postmerge };
+      const full: Item = { ...it, ...merged, discord: { count: mockDiscordCount(number), links: mockDiscordLinks(number) }, settled: settledFor(number), ...prWorkFor(number, it.kind), premerge: premergeFor(number, it.kind), postmerge };
       // As on the server, viewers get states and verdicts without job errors or model text.
       if (mockRole() !== "viewer") return wait(full);
       return wait({
@@ -225,6 +235,21 @@ export function createMockApi(): Api {
       });
     },
     items: (f) => wait(itemList(f), 70),
+    discord: {
+      setup: () => wait(structuredClone(discord)),
+      setChannel(channelId, watched) {
+        if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");
+        discord.channels.find((c) => c.channelId === channelId)!.watched = watched;
+        changed();
+        return wait(structuredClone(discord));
+      },
+      setContact(contact) {
+        if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");
+        discord.contact = contact.trim();
+        changed();
+        return wait(structuredClone(discord));
+      },
+    },
     search(q) {
       const s = q.trim().toLowerCase();
       if (!s) return Promise.resolve([]);

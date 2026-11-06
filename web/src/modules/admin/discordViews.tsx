@@ -1,0 +1,83 @@
+import { useEffect, useState } from "react";
+import { useApi, useQuery } from "../../api/client";
+import type { DiscordSetup } from "../../api/types";
+import type { ViewProps } from "../../registry/types";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
+import { Button } from "../../ui/atoms/Button";
+import { ErrorLine } from "../../ui/atoms/ErrorLine";
+import { Input } from "../../ui/atoms/Input";
+import { Switch } from "../../ui/atoms/Switch";
+import { TextLink } from "../../ui/atoms/TextLink";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
+import { Block } from "../../ui/molecules/Block";
+import { Facts } from "../../ui/molecules/Facts";
+import { Page } from "../../ui/organisms/Page";
+import { useWrite } from "../../lib/hooks";
+
+const STATE: Record<DiscordSetup["state"], [string, Tone]> = {
+  off: ["Off", "neutral"], connecting: ["Connecting", "warn"], connected: ["Connected", "ok"], reconnecting: ["Reconnecting", "warn"], failed: ["Failed", "bad"],
+};
+
+export function DiscordView(_: ViewProps) {
+  const { data, error, refetch } = useQuery("discord-setup", (api) => api.discord.setup());
+  const api = useApi();
+  const write = useWrite();
+  const guilds = data ? [...new Set(data.channels.map((c) => c.guildId))] : [];
+  return (
+    <Page title="Discord">
+      <ErrorLine error={error?.message ?? write.error} className="mt-3" />
+      {data && (
+        <>
+          <Block className="mt-4" title="Connection" aside={<Badge tone={STATE[data.state][1]}>{STATE[data.state][0]}</Badge>}>
+            <Facts
+              rows={[
+                ["State since", data.at ? <TimeAgo key="at" iso={data.at} /> : null],
+                ["Detail", data.detail],
+                ["Privacy page", <TextLink key="p" href={data.privacyPath}>{data.privacyPath}</TextLink>],
+              ]}
+            />
+            {data.state === "off" && <p className="mt-2 text-sm text-ink/55">The runner has no Discord token file.</p>}
+          </Block>
+          <Block className="mt-4" title="Channels" aside={`${data.channels.filter((c) => c.watched).length} watched`} flush>
+            {data.channels.length === 0 && <div className="px-4 py-3 text-sm text-ink/55">The bot has reported no channels.</div>}
+            {guilds.map((g) => (
+              <div key={g} className="border-b border-line last:border-0">
+                <div className="flex flex-wrap items-baseline gap-x-2 bg-ink/[0.03] px-4 py-2 text-sm font-medium">
+                  {data.channels.find((c) => c.guildId === g)?.guildName ?? "Server"}
+                  <span className="num text-2xs font-normal text-ink/45">{g}</span>
+                </div>
+                <ul>
+                  {data.channels.filter((c) => c.guildId === g).map((c) => (
+                    <li key={c.channelId} className="flex min-h-11 items-center gap-3 border-t border-line px-4 py-1.5 first:border-0">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm">#{c.name ?? "unnamed"}</div>
+                        <div className="num truncate text-2xs text-ink/45">{c.channelId}</div>
+                      </div>
+                      <Switch on={c.watched} label={`Watch #${c.name ?? c.channelId}`} busy={write.busy === c.channelId} onChange={(on) => void write.run(c.channelId, () => api.discord.setChannel(c.channelId, on)).then(() => refetch())} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </Block>
+          <ContactBlock contact={data.contact} onSave={(c) => write.run("contact", () => api.discord.setContact(c)).then(() => refetch())} busy={write.busy === "contact"} />
+        </>
+      )}
+    </Page>
+  );
+}
+
+function ContactBlock({ contact, onSave, busy }: { contact: string; onSave: (c: string) => void; busy: boolean }) {
+  const [v, setV] = useState(contact);
+  useEffect(() => setV(contact), [contact]);
+  return (
+    <Block className="mt-4" title="Deletion requests">
+      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => { e.preventDefault(); onSave(v); }}>
+        <Input value={v} onChange={(e) => setV(e.target.value)} maxLength={300} placeholder="Contact shown on the privacy page" aria-label="Contact for deletion requests" className="w-full sm:w-96" />
+        <Button type="submit" variant="primary" disabled={busy || v.trim() === contact} className="max-md:h-11 max-md:w-full">
+          Save
+        </Button>
+      </form>
+    </Block>
+  );
+}
