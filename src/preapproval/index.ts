@@ -10,6 +10,7 @@
 //   merged / asked / cancelled / failed end it.
 // Every transition is a pure reaction to rows other steps write (fixups, opus_reviews, pr_checks, items, merges), evaluated by
 // advancePreapprovals on each runner tick: no timer and no wait of its own; the one time comparison (the start of the mirror's last sync against the push) is made when the tick runs anyway. Merging itself is never called from here.
+import { settlesNow } from "../settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { Preapproval } from "../../web/src/api/types.ts";
 import type { Step } from "../conversations/cards.ts";
@@ -80,7 +81,8 @@ function move(db: DatabaseSync, p: Row, to: Row["state"], o: { head?: string | n
   return true;
 }
 
-const isOperator = (db: DatabaseSync, login: string | null): boolean => !!login && !!db.prepare("SELECT 1 FROM access WHERE login = ? AND role = 'operator'").get(login);
+/** An operator, or a maintainer who still settles on the repo (src/settlers.ts): their Merge answer and approval count. */
+const isOperator = (db: DatabaseSync, login: string | null, repo: string): boolean => settlesNow(db, login, [repo]);
 
 /** Takes back the Merge answer the hand-over wrote at the row's head (an answer anyone else wrote, or one already applied, stays). Inside the caller's transaction. */
 function revertAnswer(db: DatabaseSync, p: Row, by: string): boolean {
@@ -205,9 +207,9 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
   const at = iso();
   db.exec("BEGIN IMMEDIATE");
   try {
-    if (!isOperator(db, p.by)) {
+    if (!isOperator(db, p.by, p.repo)) {
       db.exec("ROLLBACK");
-      return { stop: `${p.by} is no longer an operator` };
+      return { stop: `${p.by} no longer settles decisions on ${p.repo}` };
     }
     const d0 = getDecision(db, id);
     if (d0 && d0.answer !== null && d0.answer !== "merge") {
@@ -385,7 +387,7 @@ function advance(db: DatabaseSync, p: Row): void {
   // queued: the merge queue owns it now; only an answer that stops counting ends it here.
   const d = getDecision(db, mergeDecisionId(p.repo, p.number, head));
   if (!d || d.answer !== "merge") return cancel("its Merge answer was withdrawn");
-  if (!isOperator(db, d.answered_by ?? p.by)) cancel(`${d.answered_by ?? p.by} is no longer an operator, so the Merge answer no longer counts`);
+  if (!isOperator(db, d.answered_by ?? p.by, p.repo)) cancel(`${d.answered_by ?? p.by} no longer settles decisions on ${p.repo}, so the Merge answer no longer counts`);
 }
 
 /** Ends fix-up requests the planner can no longer work (the PR's head moved, it closed, the push is not possible), with the reason in the thread. Requests of a pre-approved merge end with it. */
@@ -422,7 +424,7 @@ function carryAnswers(db: DatabaseSync): void {
     const it = prRow(db, x.repo, x.number);
     if (!it || it.kind !== "pr" || it.state !== "OPEN" || it.head_oid !== x.to_head) continue;
     const d = getDecision(db, mergeDecisionId(x.repo, x.number, x.from_head));
-    if (!d || d.answer !== "merge" || !d.answered_by || !isOperator(db, d.answered_by)) continue;
+    if (!d || d.answer !== "merge" || !d.answered_by || !isOperator(db, d.answered_by, x.repo)) continue;
     if (db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND (head = ? OR state IN (${ACTIVE.map(() => "?").join(",")}))`).get(x.repo, x.number, x.to_head, ...ACTIVE)) continue;
     // An answer the hand-over of a row wrote is that row's own; its ownPush handling carries it while the row is active.
     if (db.prepare("SELECT 1 FROM audit WHERE action = 'answer' AND target = ? AND details LIKE '%\"source\":\"preapproval\"%'").get(d.id) && db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND head = ? AND state IN (${ACTIVE.map(() => "?").join(",")})`).get(x.repo, x.number, x.from_head, ...ACTIVE)) continue;

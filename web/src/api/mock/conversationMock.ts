@@ -6,7 +6,7 @@ const MIN = 60_000;
 const at = (min: number) => new Date(NOW - min * MIN).toISOString();
 const REF = "designcraft#1484";
 
-const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], steps: [], ...c });
+const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], steps: [], canSettle: true, ...c });
 const LABELS: Record<ConversationCard["kind"], string> = { resolution: "Do it", comment: "Post comment", answer: "Answer", label: "Add label", backlog: "Move to Backlog", resolve: "Close decision", duplicate: "Close as duplicate", close: "Close issue" };
 
 function seed(): ConversationTurn[] {
@@ -162,10 +162,19 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
   const need = () => {
     if (me.role !== "operator") throw new Error("only operators write in conversations");
   };
+  // The server's rule for a card: an operator, or a maintainer with the setting on and write access (every mock repo uses the app's identity).
+  const settles = (repo: string) => me.role === "operator" || (me.role === "maintainer" && me.maintainerWrites && me.writeRepos.includes(repo));
+  const needCard = (k: ConversationCard) => {
+    const c = [...store.values()].find((x) => x.turns.some((t) => t.actions.includes(k)))!;
+    if (!settles(c.repo)) throw new Error("not allowed");
+  };
   const snap = <T,>(v: T, ms = 40) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
   return {
     conversations: {
-      get: (repo, n) => snap(open(repo, n)),
+      get: (repo, n) => {
+        const c = open(repo, n);
+        return snap({ ...c, turns: c.turns.map((t) => ({ ...t, actions: t.actions.map((k) => ({ ...k, canSettle: settles(c.repo) })) })) });
+      },
       async say(repo, n, text, ask) {
         need();
         const c = open(repo, n);
@@ -211,8 +220,9 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         return snap(p);
       },
       async editCard(id, edit) {
-        need();
         const k = find(id);
+        needCard(k);
+        if (edit.instructions !== undefined && me.role !== "operator") throw new Error("only operators edit a fix-up's instructions");
         if (edit.text !== undefined) k.text = edit.text;
         if (edit.issue && k.issue) Object.assign(k.issue, edit.issue);
         if (edit.instructions !== undefined && k.fixup) k.fixup.instructions = edit.instructions;
@@ -221,8 +231,8 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         return snap(k);
       },
       async doCard(id, opts) {
-        need();
         const k = find(id);
+        needCard(k);
         if (opts?.note && opts.note.length > 500) throw new Error("the note is longer than 500 characters");
         const c = [...store.values()].find((x) => x.turns.some((t) => t.actions.includes(k)))!;
         k.state = "running";
@@ -241,8 +251,8 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         return snap(k);
       },
       async dismissCard(id) {
-        need();
         const k = find(id);
+        needCard(k);
         Object.assign(k, { state: "dismissed", by: me.login, at: new Date().toISOString() });
         changed();
         return snap(k);

@@ -13,9 +13,11 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * An action Opus proposed. A card with `settles` is a resolution (title, steps, what it settles, then the buttons);
  * a card without it is a smaller, quieter single action. Props only: the caller runs the calls.
  */
-export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
+export function OpusCard({ card: a, operator, editInstructions = true, onRun, onDismiss, className }: {
   card: ConversationCard;
   operator: boolean;
+  /** False: the fix-up instructions show without an Edit button (they go to the fix-up model, so only operators write them). */
+  editInstructions?: boolean;
   /** Runs the card; `edit` holds the drafts (comment text, issue, fix-up instructions) that differ from the proposed ones. */
   onRun: (edit?: CardEdit) => Promise<unknown>;
   onDismiss: () => Promise<unknown>;
@@ -116,6 +118,7 @@ export function OpusCard({ card: a, operator, onRun, onDismiss, className }: {
                   editing={isEditing("fixup")}
                   onToggle={() => toggle("fixup")}
                   disabled={locked}
+                  readOnly={!editInstructions}
                   preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-ink/75">{instructions}</blockquote>}
                   editor={<textarea value={instructions} maxLength={1500} disabled={locked} onChange={(e) => setVals((v) => ({ ...v, instructions: e.target.value }))} rows={5} aria-label="Fix-up instructions" className={area} />}
                 />

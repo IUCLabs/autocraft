@@ -21,7 +21,7 @@ export function ExecLine({ d, canRetry, compact }: { d: Decision; canRetry: bool
   const write = useWrite();
   const me = useUser();
   // The write runs as the operator who answered, so only they can authorize it.
-  const answerer = me.role === "operator" && d.answeredBy?.toLowerCase() === me.login.toLowerCase();
+  const answerer = me.role !== "viewer" && d.answeredBy?.toLowerCase() === me.login.toLowerCase();
   const exec = d.exec;
   if (!exec || exec.state === "done") return null;
   const Icon = exec.state === "pending" ? HourglassIcon : WarningCircleIcon;

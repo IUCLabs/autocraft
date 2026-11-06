@@ -1,5 +1,6 @@
 // The dashboard's access list. The Access API and the CLI both write through
 // these functions, so every change ends the login's sessions and is audited.
+import { MAINTAINER_WRITES_KEY, maintainerWritesOn, setMaintainerWrites } from "./settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "./db.ts";
 import { audit } from "./dash/audit.ts";
@@ -90,6 +91,8 @@ export function removeLogin(db: DatabaseSync, by: string, login: string, opts: A
   });
 }
 
+const RANK: Record<Role, number> = { viewer: 0, maintainer: 1, operator: 2 };
+
 export function setRole(db: DatabaseSync, by: string, login: string, role: Role, opts: AccessWriteOptions = {}): boolean {
   if (!isRole(role)) throw new AccessError(`role must be ${ROLES.join(", ")}`);
   return tx(db, () => {
@@ -99,8 +102,8 @@ export function setRole(db: DatabaseSync, by: string, login: string, role: Role,
     if (opts.keepOperator) keepAnOperator(db, row);
     db.prepare("UPDATE access SET role = ? WHERE login = ?").run(role, login);
     const sessions = endSessions(db, login);
-    // An answering token must not outlive the operator role: it would work again if the login is promoted again.
-    const answerTokens = row.role === "operator" ? endAnswerTokens(db, login) : 0;
+    // A lowered role ends the login's answering tokens: they would work again if the login is promoted again.
+    const answerTokens = RANK[role] < RANK[row.role] ? endAnswerTokens(db, login) : 0;
     // A role change ends the sessions, so the login's GitHub App user token goes too and the next sign-in makes a new one.
     const userTokens = dropUserTokens(db, row.login);
     audit(db, by, "access-role", row.login, { from: row.role, to: role, sessions, ...(answerTokens ? { answerTokens } : {}), ...(userTokens ? { userTokens } : {}) });
@@ -112,7 +115,7 @@ export function operatorCount(db: DatabaseSync): number {
   return Number((db.prepare("SELECT COUNT(*) AS n FROM access WHERE role = 'operator'").get() as { n: number }).n);
 }
 
-const USAGE = "usage: autocraft access list | add <login> [--operator|--maintainer] [--note TEXT] | remove <login> | role <login> operator|maintainer|viewer";
+const USAGE = "usage: autocraft access list | add <login> [--operator|--maintainer] [--note TEXT] | remove <login> | role <login> operator|maintainer|viewer | maintainer-writes [on|off]";
 
 function run(args: string[]): void {
   const [sub, login, ...rest] = args;
@@ -141,6 +144,18 @@ function run(args: string[]): void {
         console.log(`added ${login} as ${role}`);
         return;
       }
+      case "maintainer-writes": {
+        // Maintainers with write access settle decisions on repos that use the app's identity (src/settlers.ts).
+        if (login === undefined) {
+          console.log(`maintainer-writes: ${maintainerWritesOn(db) ? "on" : "off"}`);
+          return;
+        }
+        if (login !== "on" && login !== "off") break;
+        const changed = setMaintainerWrites(db, login === "on");
+        if (changed) audit(db, "cli", "maintainer-writes", MAINTAINER_WRITES_KEY, { value: login });
+        console.log(changed ? `maintainer-writes: ${login}` : `maintainer-writes was already ${login}`);
+        return;
+      }
       case "remove":
         if (!login) break;
         removeLogin(db, "cli", login);
@@ -165,5 +180,5 @@ function run(args: string[]): void {
 }
 
 export const commands = {
-  access: { summary: "dashboard access list: list | add <login> [--operator|--maintainer] [--note] | remove <login> | role <login> operator|maintainer|viewer", run },
+  access: { summary: "dashboard access list: list | add <login> [--operator|--maintainer] [--note] | remove <login> | role <login> operator|maintainer|viewer | maintainer-writes [on|off]", run },
 };

@@ -32,10 +32,11 @@ export function ConnectView({ user }: ViewProps) {
   const url = `${location.origin}${data?.path ?? "/mcp"}`;
   const full = !!data && data.tokens.length >= data.max;
   const viewer = user.role === "viewer";
+  const settles = user.role === "operator" || (user.role === "maintainer" && user.maintainerWrites);
 
   const create = () =>
     void write.run("create", async () => {
-      const r = await api.mcp.create(label, user.role === "operator" && !!data?.answering && answer);
+      const r = await api.mcp.create(label, settles && !!data?.answering && answer);
       setMade({ id: r.id, token: r.token });
       setLabel("");
       setAnswer(false);
@@ -52,7 +53,7 @@ export function ConnectView({ user }: ViewProps) {
           }}
         >
           <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} placeholder="Label, e.g. laptop" aria-label="Token label" className="min-w-[12rem] flex-1 sm:max-w-xs" />
-          {user.role === "operator" && data?.answering && (
+          {settles && data?.answering && (
             <span className="flex items-center gap-2 text-sm text-ink/80">
               <Switch on={answer} onChange={setAnswer} label="Can answer decisions" />
               Can answer decisions

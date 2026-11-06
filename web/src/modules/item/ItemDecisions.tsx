@@ -10,7 +10,7 @@ import { AnswerGroup } from "./AnswerGroup";
 import { canComment } from "../../registry/permissions";
 import { FeedbackBox } from "../decisions/FeedbackBox";
 import { useFolded, useLocal } from "../decisions/state";
-import { AnsweredState, canActOn } from "../decisions/DecisionDetail";
+import { AnsweredState, canActOn, canTakeBack } from "../decisions/DecisionDetail";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { OpusWorking } from "../../ui/molecules/OpusWorking";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -48,7 +48,7 @@ export function OpenQuestions({ ds, focus, resolutions, onAnswered, boxes }: { d
       {notices.map((a) => (
         <AnswerNotice key={a.id} entry={a} className="rounded-md border border-line px-3" />
       ))}
-      {focus?.answer && <AnsweredState d={focus} canUndo={canActOn(user, [focus])} />}
+      {focus?.answer && <AnsweredState d={focus} canUndo={canTakeBack(user, focus)} />}
       {open.map((d, i) => (
         <Question key={d.id} d={d} siblings={ds} resolutions={i === 0 ? resolutions : undefined} here={d.id === focus?.id} onAnswered={onAnswered} feedback={!!boxes && d.id !== focus?.id} />
       ))}

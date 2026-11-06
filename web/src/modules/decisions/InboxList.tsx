@@ -12,7 +12,7 @@ import { ago, ageDays, when } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { ClaimPill, KIND_ICON } from "./parts";
-import { canActOn } from "./DecisionDetail";
+import { canTakeBack } from "./DecisionDetail";
 import { AnswerNotice } from "./AnswerNotice";
 import { ExecLine } from "./ExecLine";
 import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useReselectOnFilter, useSelection, useUndo } from "./state";
@@ -108,7 +108,7 @@ export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
                 <Count n={g.items.length} />
               </div>
               {g.items.map((d) => (
-                <Row key={d.id} phone={phone} d={d} canUndo={canActOn(user, [d])} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
+                <Row key={d.id} phone={phone} d={d} canUndo={canTakeBack(user, d)} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
               ))}
             </div>
           );

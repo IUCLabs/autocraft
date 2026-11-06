@@ -11,9 +11,9 @@ export function can(user: User, p: Permission): boolean {
 /** Viewers are read-only; maintainers and operators leave comments and suggestions. */
 export const canComment = (user: User): boolean => user.role !== "viewer";
 
-/** Operators with GitHub write on every repo involved act on a decision; everyone else leaves feedback. */
+/** GitHub write on every repo involved, for an operator or a maintainer; whether the role settles a decision is the decision's `canSettle`. Everyone else leaves feedback. */
 export function canAct(user: User, repos: string[]): boolean {
-  return user.role === "operator" && [...new Set(repos)].every((r) => user.writeRepos.includes(r));
+  return user.role !== "viewer" && [...new Set(repos)].every((r) => user.writeRepos.includes(r));
 }
 
 export const repoPermission = (user: User, repo: string): "write" | "none" => (user.writeRepos.includes(repo) ? "write" : "none");

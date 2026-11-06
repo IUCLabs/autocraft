@@ -44,6 +44,7 @@ import { scopeAnswers } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
 import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf } from "./rules.ts";
 import type { AssignFacts, PrFacts, PrTier } from "./plan.ts";
+import { SETTLER_LOGINS_SQL } from "../settlers.ts";
 import { activeTrips, brokeHeads } from "../push-outcomes.ts";
 
 export type { PrFacts } from "./plan.ts";
@@ -193,7 +194,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const decision = db.prepare("SELECT id FROM decisions WHERE id = ?");
   const statement = db.prepare("SELECT id, repo, number, text FROM owner_statements WHERE id = ?");
   const openQuestion = db.prepare(OPEN_QUESTION_SQL);
-  const answeredAfter = db.prepare("SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND answered_by IN (SELECT login FROM access WHERE role = 'operator')");
+  const answeredAfter = db.prepare(`SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND answered_by IN ${SETTLER_LOGINS_SQL}`);
   const pushChain = pushChainOf(db);
   const unsureAt = db.prepare(UNSURE_AT_SQL);
   const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");

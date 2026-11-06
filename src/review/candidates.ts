@@ -1,4 +1,5 @@
 // The head commit of a PR as best known, the scope answers per item.
+import { SETTLER_LOGINS_SQL } from "../settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { REVIEW_LABELS, sizeOf, type Size } from "../core/rules.ts";
 export { REVIEW_LABELS, sizeOf, type Size };
@@ -27,7 +28,7 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
 export function scopeAnswers(db: DatabaseSync, operatorsOnly = false): Map<string, string> {
   const out = new Map<string, string>();
   const rows = db.prepare(`SELECT repo, number, items, answer, exceptions FROM decisions
-    WHERE kind = 'scope' AND answer IS NOT NULL AND NOT (answer = 'withdrawn' AND answered_by = 'pipeline') ${operatorsOnly ? "AND answered_by IN (SELECT login FROM access WHERE role = 'operator')" : ""} ORDER BY answered_at DESC`).all() as
+    WHERE kind = 'scope' AND answer IS NOT NULL AND NOT (answer = 'withdrawn' AND answered_by = 'pipeline') ${operatorsOnly ? "AND answered_by IN ${SETTLER_LOGINS_SQL}" : ""} ORDER BY answered_at DESC`).all() as
     { repo: string | null; number: number | null; items: string | null; answer: string; exceptions: string | null }[];
   for (const r of rows) {
     if (r.number !== null) {

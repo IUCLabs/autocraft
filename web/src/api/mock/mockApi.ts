@@ -63,6 +63,11 @@ export function createMockApi(): Api {
   setClock(() => NOW);
   const me: User = MOCK_USERS[mockRole()];
   const decisions = structuredClone(DECISIONS);
+  // As on the server: the viewer's own flag per decision (an operator, or a maintainer under `maintainer_writes` with write access).
+  for (const d of decisions) {
+    const repos = d.items.length ? d.items.map((i) => i.repo) : [d.repo];
+    d.canSettle = me.role === "operator" || (me.role === "maintainer" && me.maintainerWrites && repos.every((r) => me.writeRepos.includes(r)));
+  }
   const threads: Record<string, DecisionComment[]> = structuredClone(THREADS);
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
@@ -73,8 +78,9 @@ export function createMockApi(): Api {
   };
   const reposOf = (d: Decision) => (d.items.length ? d.items.map((i) => i.repo) : [d.repo]);
   // The server checks the same rules; the client only hides what would be refused.
+  const settles = () => me.role === "operator" || (me.role === "maintainer" && me.maintainerWrites);
   const requireOperator = (d: Decision) => {
-    if (!canAct(me, reposOf(d))) throw new Error("not allowed");
+    if (!settles() || !canAct(me, reposOf(d))) throw new Error("not allowed");
   };
 
   const matches = (d: Decision, f: DecisionFilter) => {

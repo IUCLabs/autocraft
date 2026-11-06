@@ -3,6 +3,7 @@
 // Each write is recorded in dupe_group_posts right after it happens, so a retry or a crash
 // midway never repeats a comment or a close. A member that closed, merged or moved on its own
 // is skipped, and so is a whole decision whose answer or roles changed (undo, refresh) while the run went on.
+import { SETTLER_LOGINS_SQL } from "../settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { embedHash } from "../itemhash.ts";
@@ -42,14 +43,14 @@ type Decision = { id: string; answer: string };
 export function groupDecisionsToAct(db: DatabaseSync, repo: string): Decision[] {
   return db.prepare(`SELECT d.id, d.answer FROM decisions d JOIN dupe_groups g ON g.decision_id = d.id
     WHERE d.kind = 'duplicate' AND d.repo = ? AND d.answer IS NOT NULL AND d.answer NOT IN ('distinct', 'backlog') AND d.applied_at IS NULL
-      AND g.applied_answer = d.answer AND d.answered_by IN (SELECT login FROM access WHERE role = 'operator') ORDER BY d.answered_at`).all(repo) as Decision[];
+      AND g.applied_answer = d.answer AND d.answered_by IN ${SETTLER_LOGINS_SQL} ORDER BY d.answered_at`).all(repo) as Decision[];
 }
 
 /** Members the act step still has to close, over all repos: close-role members of the decisions above (as actOnGroups selects its closers) with no close record yet. The planner lists an act action for each. */
 export function groupClosersPending(db: DatabaseSync): { decisionId: string; repo: string; number: number }[] {
   const rows = db.prepare(`SELECT d.id, d.repo, gi.number FROM decisions d JOIN dupe_groups g ON g.decision_id = d.id JOIN dupe_group_items gi ON gi.decision_id = d.id
     WHERE d.kind = 'duplicate' AND d.repo IS NOT NULL AND d.id LIKE '%:dupegroup:%' AND d.answer IS NOT NULL AND d.answer NOT IN ('distinct', 'backlog') AND d.applied_at IS NULL
-      AND g.applied_answer = d.answer AND d.answered_by IN (SELECT login FROM access WHERE role = 'operator') AND gi.role = 'close'
+      AND g.applied_answer = d.answer AND d.answered_by IN ${SETTLER_LOGINS_SQL} AND gi.role = 'close'
       AND NOT EXISTS (SELECT 1 FROM dupe_group_posts p WHERE p.decision_id = d.id AND p.number = gi.number AND p.step = 'close')
     ORDER BY d.answered_at, gi.number`).all() as { id: string; repo: string; number: number }[];
   return rows.filter((r) => inPilot(db, r.repo, r.number) && !backlogHeld(db, r.repo, r.number)).map((r) => ({ decisionId: r.id, repo: r.repo, number: r.number }));

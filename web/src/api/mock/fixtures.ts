@@ -84,7 +84,7 @@ export const REPOS = REPO_OPEN.map(([r]) => r);
 export const MOCK_REPO_OWNERS: Record<string, string> = { "font-preview-service": "example-org" };
 
 /** Signed-in user per mock role; pick one with `?as=` or the user menu. */
-export const MOCK_USERS: Record<"operator" | "maintainer" | "viewer", User> = {
+export const MOCK_USERS: Record<"operator" | "maintainer" | "settler" | "viewer", User> = {
   operator: {
     login: "ochre-fox",
     role: "operator",
@@ -96,6 +96,13 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "viewer", User> = {
     role: "maintainer",
     writeRepos: ["photocraft", "designcraft", "vectorcraft", "deckcraft", "pdfcraft", "filmcraft"],
     maintainerWrites: false,
+  },
+  // A maintainer under `maintainer_writes`: settles decisions where they have write access.
+  settler: {
+    login: "kiri-n",
+    role: "maintainer",
+    writeRepos: ["photocraft", "designcraft", "vectorcraft", "deckcraft", "pdfcraft", "filmcraft"],
+    maintainerWrites: true,
   },
   viewer: { login: "glasswing", role: "viewer", writeRepos: [], maintainerWrites: false },
 };
@@ -829,6 +836,7 @@ function toDecision(s: Seed): Decision {
   const text = s.number === null ? { summary: BATCH_SUMMARY[s.repo] ?? s.question, body: null } : (TEXT[`${s.repo}#${s.number}`] ?? fillerText(s.title, s.repo));
   return {
     id,
+    canSettle: true,
     snoozed: null,
     preparing: false,
     kind: s.kind,

@@ -2,12 +2,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { CardEdit, Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
 import { buttonLabel, cardEffect, cardLines, type CardParams } from "../../conversations/cards.ts";
-import { cardOf, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
+import { cardOf, cardRepos, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, staleOf, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { needVisible } from "./visible.ts";
 import { slugOf } from "../../owners.ts";
+import { canSettle, canSettleCached } from "../../settlers.ts";
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
 
@@ -29,7 +30,8 @@ async function guardAsync<T>(f: () => Promise<T>): Promise<T> {
   }
 }
 
-export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
+/** `who`: the viewer, for the card's `canSettle` (an operator, or a maintainer under the rule of src/settlers.ts, from cached permissions). */
+export function cardView(db: DatabaseSync, c: CardRow, who?: { login: string; role: string }): ConversationCard {
   const params = JSON.parse(c.params) as CardParams;
   const effect = c.kind === "answer" || c.kind === "close" || c.kind === "resolution" ? cardEffect(db, params) : null;
   const lines = cardLines(db, params, c.description);
@@ -48,6 +50,7 @@ export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
     ...(stale && { stale }),
     ...(lines.settles && { settles: lines.settles }),
     label: buttonLabel(db, params),
+    canSettle: !!who && canSettleCached(db, who.login, who.role, cardRepos(c, params)),
     id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"],
     ...(c.text !== null && { text: c.text }),
     ...(effect && { writes: effect }),
@@ -62,7 +65,7 @@ export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
 /** The conversation plus the maintainer posts shared with Opus. */
 export type ConversationView = Conversation & { includes: IncludeRow[] };
 
-export function conversationView(db: DatabaseSync, repo: string, n: number): ConversationView {
+export function conversationView(db: DatabaseSync, repo: string, n: number, who?: { login: string; role: string }): ConversationView {
   // A card left Running by a crash must not show as running until the next restart.
   sweepRunningCards(db);
   const c = conversationOf(db, repo, n);
@@ -71,7 +74,7 @@ export function conversationView(db: DatabaseSync, repo: string, n: number): Con
   const cards = db.prepare("SELECT * FROM conversation_cards WHERE repo = ? AND number = ? ORDER BY id").all(repo, n) as unknown as CardRow[];
   const turns: ConversationTurn[] = turnsOf(db, repo, n).map((t) => ({
     id: t.id, kind: t.kind, login: t.login, at: t.at, body: t.body,
-    actions: cards.filter((x) => x.turn_id === t.id).map((x) => cardView(db, x)),
+    actions: cards.filter((x) => x.turn_id === t.id).map((x) => cardView(db, x, who)),
     notes: t.notes ? (JSON.parse(t.notes) as string[]) : [],
     ...(t.status && { status: t.status as ConversationTurn["status"] }),
     ...(t.error && { error: t.error }),
@@ -123,7 +126,7 @@ function needOperator(req: Req): void {
 export async function getConversation(db: DatabaseSync, req: Req): Promise<ConversationView> {
   const { repo, n } = itemOf(req);
   await needVisible(db, req, repo);
-  return conversationView(db, repo, n);
+  return conversationView(db, repo, n, req.user);
 }
 
 export async function postMessage(db: DatabaseSync, req: Req, deps?: StoreDeps): Promise<ConversationView> {
@@ -131,7 +134,7 @@ export async function postMessage(db: DatabaseSync, req: Req, deps?: StoreDeps):
   const { repo, n } = itemOf(req);
   await needVisible(db, req, repo);
   await guardAsync(() => addOperatorMessage(db, repo, n, req.user.login, text(req), deps, ask(req)));
-  return conversationView(db, repo, n);
+  return conversationView(db, repo, n, req.user);
 }
 
 /** Shares a maintainer post with Opus (`on`) or stops sharing it; the next asked message carries it. */
@@ -142,27 +145,34 @@ export async function postInclude(db: DatabaseSync, req: Req, deps?: StoreDeps):
   const b = req.json as { source?: unknown; on?: unknown } | null;
   if (!b || typeof b !== "object" || typeof b.source !== "string" || typeof b.on !== "boolean") throw new HttpError(400, "the body must be an object with a source and on (true or false)");
   guard(() => setInclude(db, repo, n, b.source as string, b.on as boolean, req.user.login, deps));
-  return conversationView(db, repo, n);
+  return conversationView(db, repo, n, req.user);
 }
 
+/** The card, for someone who settles it: an operator with write access on its repo, or a maintainer under the rule of src/settlers.ts on every repo it writes to. */
 async function needCard(db: DatabaseSync, req: Req): Promise<CardRow> {
-  needOperator(req);
   const id = Number(req.params.id);
   const c = Number.isInteger(id) ? cardOf(db, id) : undefined;
   if (!c) throw new HttpError(404, `no card ${req.params.id}`);
   await needVisible(db, req, c.repo);
-  if (!(await req.user.canWrite(c.repo).catch(() => false))) throw new HttpError(403, `no write access to ${slugOf(c.repo)}`);
+  if (isOperator(req)) {
+    if (!(await req.user.canWrite(c.repo).catch(() => false))) throw new HttpError(403, `no write access to ${slugOf(c.repo)}`);
+  } else if (!(await canSettle(db, req.user, cardRepos(c, JSON.parse(c.params) as CardParams)))) {
+    throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, runs cards");
+  }
   return c;
 }
 
 export async function editCardText(db: DatabaseSync, req: Req): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView(db, guard(() => editCard(db, c.id, req.user.login, cardEdit(req))));
+  const edit = cardEdit(req);
+  // The fix-up instructions go to the fix-up model: only an operator writes them.
+  if (edit.instructions !== undefined && !isOperator(req)) throw new HttpError(403, "only operators edit a fix-up's instructions");
+  return cardView(db, guard(() => editCard(db, c.id, req.user.login, edit)), req.user);
 }
 
 export async function dismiss(db: DatabaseSync, req: Req): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView(db, guard(() => dismissCard(db, c.id, req.user.login)));
+  return cardView(db, guard(() => dismissCard(db, c.id, req.user.login)), req.user);
 }
 
 /** Runs the card once; a second press returns the card as it is. */
@@ -172,5 +182,5 @@ export async function doIt(db: DatabaseSync, req: Req, deps?: ActDeps): Promise<
   if (b?.note !== undefined && typeof b.note !== "string") throw new HttpError(400, "note must be a string");
   if (b?.skip !== undefined && (!Array.isArray(b.skip) || b.skip.some((k) => !Number.isInteger(k)))) throw new HttpError(400, "skip must be a list of step positions");
   const skip = (b?.skip as number[] | undefined) ?? [];
-  return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, skip, note: b?.note as string | undefined, canWrite: (r) => req.user.canWrite(r) }))).card);
+  return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, skip, note: b?.note as string | undefined, noteStaysOut: !isOperator(req), canWrite: (r) => req.user.canWrite(r) }))).card, req.user);
 }

@@ -125,6 +125,8 @@ export interface Decision {
   risks: string[];
   /** True while Undo still works: answered and not yet applied or posted. */
   undoable: boolean;
+  /** The viewer may answer, undo their own answer and use Backlog on this decision: an operator, or a maintainer with write access where the app acts for them (setting `maintainer_writes`). */
+  canSettle: boolean;
   /** The prepare step is writing this decision's options and recommendation (asked, or the PR got a push since the last prepare). */
   preparing: boolean;
   /** Open and snoozed: out of the inbox until new activity on the item (a GitHub comment or push, a feedback post, an operator message), which clears it. */
@@ -666,7 +668,7 @@ export interface User {
   role: Role;
   /** repos where GitHub grants write, maintain or admin */
   writeRepos: RepoName[];
-  /** Deployment setting `maintainer_writes`, reserved: off here, and it has no effect in the UI. */
+  /** Deployment setting `maintainer_writes`: maintainers with write access settle decisions on repos that use the app's identity. */
   maintainerWrites: boolean;
 }
 
@@ -1778,6 +1780,8 @@ export interface ConversationCard {
   /** "resolution" for cards Opus proposes from now on; the other kinds are single actions on older turns. */
   kind: "resolution" | "comment" | "answer" | "label" | "backlog" | "duplicate" | "resolve" | "close";
   title: string;
+  /** The viewer may press, edit and dismiss this card (same rule as `Decision.canSettle`, over every repo the card writes to). */
+  canSettle: boolean;
   /** What runs, in order, one plain line each (e.g. "Post the comment below", "Close the issue as completed"); empty for a card that only settles the question. */
   steps: string[];
   /** The open decision's option this card settles with: the card is Opus's draft for that option's row. Absent: an outcome of its own (handled, a close, a step-only action). */

@@ -254,6 +254,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                       toggleEdit(c, "fixup");
                     }}
                     disabled={busy || c.state === "running"}
+                    readOnly={user.role !== "operator"}
                     preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{instrOf(c)}</blockquote>}
                     editor={<textarea value={instrOf(c)} maxLength={1500} onChange={(e) => setInstr((m) => ({ ...m, [c.id]: e.target.value }))} rows={5} aria-label="Fix-up instructions" disabled={locked(c)} className={area} />}
                   />
@@ -368,7 +369,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
             )}
           </>
         )}
-        {d.snoozed ? (
+        {user.role !== "operator" ? null : d.snoozed ? (
           <>
             <span className="text-sm text-ink/60">Snoozed until new activity</span>
             <Button variant="secondary" icon={BellIcon} className="max-md:h-11" disabled={busy} onClick={() => void snooze()}>

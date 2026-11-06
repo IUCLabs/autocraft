@@ -29,7 +29,7 @@ export type CardRow = {
 };
 
 /** `canWrite` is the signed-in operator's write access to a repo; the shell has none to check. */
-export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** The operator's note with the choice. */ note?: string };
+export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** The note with the choice. */ note?: string; /** The presser is not an operator: the note is stored and shown but never put in the model's block. */ noteStaysOut?: boolean };
 
 export const cardOf = (db: DatabaseSync, id: number): CardRow | undefined =>
   db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(id) as CardRow | undefined;
@@ -45,6 +45,10 @@ const CARD_NOTE: Note = { by: "operator", model: CLAUDE_PROMPTS["conversation.tu
 
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300);
 const ref = (repo: string, n: number) => `${repo}#${n}`;
+
+/** The repos a card writes to: its item's, and where a resolution transfers the item or opens an issue. */
+export const cardRepos = (c: CardRow, params: CardParams): string[] =>
+  [...new Set([c.repo, ...(params.kind === "resolution" ? params.steps.flatMap((x) => (x.kind === "transfer" ? [x.to] : x.kind === "open_issue" ? [x.repo] : [])) : [])])];
 
 /** Replaces the drafts of a card that has not run: the comment text, the open_issue step's title and body, the fixup step's instructions. A field left out stays. */
 export function editCard(db: DatabaseSync, id: number, by: string, edit: CardEdit, deps?: StoreDeps): CardRow {
@@ -482,7 +486,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     }
   }
   // A card's GitHub writes are the pressing operator's own: on a repo with the app's identity they use that operator's token, and a card that cannot stays proposed.
-  const repos = [c.repo, ...(params.kind === "resolution" ? params.steps.flatMap((x) => (x.kind === "transfer" ? [x.to] : x.kind === "open_issue" ? [x.repo] : [])) : [])];
+  const repos = cardRepos(c, params);
   const writes = params.kind === "comment" || params.kind === "label" || params.kind === "close" || params.kind === "duplicate"
     || (params.kind === "resolution" && params.steps.some((x) => x.kind !== "review" && x.kind !== "fixup"));
   const lr = writes ? await laneForOperator(db, deps.lane, by, repos) : null;
@@ -502,9 +506,11 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   db.prepare("UPDATE conversation_cards SET state = ?, result = ?, result_url = ?, error = ?, acted_at = ? WHERE id = ?")
     .run(out ? "done" : "failed", out?.result ?? null, out?.url ?? null, error, end, id);
   audit(db, by, "conversation-card", ref(c.repo, c.number), { card: id, kind: c.kind, state: out ? "done" : "failed", error: error ?? undefined, ...(skipped.length && { skipped }), ...(note && { note: true }) });
-  const sentence = out ? `The operator ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The operator ${by} tried the proposed action: ${c.description}${skipped.length ? ` (without: ${skipped.join("; ")})` : ""}. It failed: ${error}.`;
+  const who = deps.noteStaysOut ? "maintainer" : "operator";
+  const sentence = out ? `The ${who} ${by} ran the proposed action: ${c.description}. Result: ${out.result}.` : `The ${who} ${by} tried the proposed action: ${c.description}${skipped.length ? ` (without: ${skipped.join("; ")})` : ""}. It failed: ${error}.`;
   const posted_text = params.kind === "comment" ? c.text ?? params.text : (params.kind === "close" || (params.kind === "resolution" && params.steps.some((x) => x.kind === "comment") && (out || posted))) && c.text ? c.text : undefined;
-  const data = posted_text !== undefined || note ? { ...(posted_text !== undefined && { posted_text }), ...(note && { operator_note: note }) } : undefined;
+  const modelNote = deps.noteStaysOut ? undefined : note;
+  const data = posted_text !== undefined || modelNote ? { ...(posted_text !== undefined && { posted_text }), ...(modelNote && { operator_note: modelNote }) } : undefined;
   insertTurn(db, c.repo, c.number, {
     kind: "system", login: "system", body: (out ? `${by} ran the card: ${c.description}. ${out.result}.` : `${by} tried the card: ${c.description}. It failed: ${error}.`) + (note ? ` Note: ${note}` : ""),
     block: systemBlock(sentence, data),
