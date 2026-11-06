@@ -10,8 +10,12 @@ import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { decisionStamp, validateCard } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
-import { applyDrafts, compose, coresFor, currentChoices, mergeChoices, writeChoices } from "../src/decide/choices.ts";
-import { coreKey } from "../src/decide/choices-types.ts";
+import { applyDrafts, autocraftLine, compose, coresFor, currentChoices, mergeChoices, writeChoices } from "../src/decide/choices.ts";
+import { coreKey, parseCoreKey } from "../src/decide/choices-types.ts";
+import { SCOPE_OPTIONS } from "../src/decide/decision.ts";
+import { CLOSE_OPTIONS } from "../src/act/index.ts";
+import { MERGE_OPTIONS } from "../src/core/rules.ts";
+import { GROUP_OPTIONS } from "../src/dupes/held.ts";
 import { parseChoices } from "../src/decide/choices-parse.ts";
 import { parsePrepareReply } from "../src/decide/prepare.ts";
 import { insertTurn, opusBlock } from "../src/conversations/store.ts";
@@ -75,11 +79,16 @@ describe("decision choices", () => {
     assert.equal(currentChoices(db, d.id), undefined, "settling replaces the choices");
   });
 
-  test("a core without a GitHub write says whether the pipeline carries on", () => {
+  test("every core says what AutoCraft does after the answer", () => {
     const db = fresh();
-    const after = (id: string) => Object.fromEntries(coresFor(db, getDecision(db, id)!).map((c) => [c.key, c.after]));
-    assert.deepEqual(after("app#1:scope"), { "o:take": "autocraft", "o:close": undefined, backlog: "nothing" });
-    assert.deepEqual(after("app#2:merge"), { "o:merge": undefined, "fixup-merge": undefined, "o:hold": "nothing", backlog: "nothing" });
+    const line = (id: string) => Object.fromEntries(coresFor(db, getDecision(db, id)!).map((c) => [c.key, c.autocraft]));
+    assert.equal(line("app#1:scope")["o:take"], "keeps working: may try a fix");
+    assert.equal(line("app#2:merge")["o:hold"], "holds the merge until someone answers again");
+    for (const id of ["app#1:scope", "app#2:merge"]) for (const [k, v] of Object.entries(line(id))) assert.ok(v, `${id} ${k}`);
+    // Every option key the decision kinds ask with, and the cores Opus may add, has a phrase.
+    const options = [...Object.keys(SCOPE_OPTIONS), ...Object.keys(CLOSE_OPTIONS), ...Object.keys(MERGE_OPTIONS), ...Object.keys(GROUP_OPTIONS), "keep:7", "backlog"];
+    for (const k of options) for (const kind of ["scope", "close", "merge", "duplicate"]) assert.ok(autocraftLine(parseCoreKey(k === "backlog" ? k : `o:${k}`)!, kind, "pr"), `${kind} ${k}`);
+    for (const k of ["fixup-merge", "x:close:completed", "x:duplicate:3", "x:transfer:a/b", "x:fixup", "x:review"]) assert.ok(autocraftLine(parseCoreKey(k)!, "scope", "issue"), k);
   });
 
   test("an extra the core does not take is refused", () => {

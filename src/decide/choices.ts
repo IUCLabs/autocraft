@@ -4,7 +4,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { writeEffect } from "../act/index.ts";
-import { KEEP_IN_CORE } from "../core/rules.ts";
 import { applicableSteps } from "../conversations/cards.ts";
 import { getDecision, optionsOf, type DecisionRow, type Kind } from "../decisions.ts";
 import {
@@ -77,18 +76,42 @@ function optionWrites(kind: Kind, key: string): ActionTag[] {
 }
 
 /**
- * Options after which the pipeline carries on: scope calls that keep the item in core or label it (the Label stage adds the plugin label),
- * and keep or "not duplicates" on a duplicate decision. Everything else that writes nothing only waits (Later, Hold, keeping a PR open, need-info).
+ * What AutoCraft itself does after an answer, as one short fixed phrase per core (the dashboard shows it beside the GitHub writes).
+ * Each phrase follows the pipeline: scope take / small-extra stay in core (PRs go to review, an issue may get a fix attempt: src/decisions-used.ts),
+ * plugin makes the Label stage add the plugin candidate label, need-info and Hold only keep the item out of later stages, a merge answer
+ * goes through verify, CI and the merge queue (src/core/decide.ts), and every answer that closes or moves the item ends the work on it here.
  */
-const CONTINUES = new Set([...KEEP_IN_CORE, "plugin"]);
-const afterOf = (p: ParsedCoreKey, kind: string): "autocraft" | "nothing" =>
-  p.type === "review" || (p.type === "option" && (CONTINUES.has(p.option) || (kind === "duplicate" && (p.option === "keep" || p.option === "distinct")))) ? "autocraft" : "nothing";
+export function autocraftLine(p: ParsedCoreKey, kind: string, itemKind: string): string {
+  switch (p.type) {
+    case "backlog": return "moves it to the Backlog";
+    case "fixup-merge": return "pushes the fix-up, reviews again, merges if both pass";
+    case "close": return "records the answer and stops working on it";
+    case "duplicate": return "records it as a duplicate and stops working on it";
+    case "transfer": return "stops working on it here";
+    case "fixup": return "pushes the fix-up and reviews again";
+    case "review": return "reviews the PR again, then asks again if needed";
+    case "option": break;
+  }
+  switch (p.option) {
+    case "merge": return "queues it: merges after CI and checks pass";
+    case "hold": return kind === "merge" ? "holds the merge until someone answers again" : "keeps it open and waits";
+    case "close": return "records the answer and stops working on it";
+    case "keep": return kind === "duplicate" ? "keeps this one and works on it as before" : "keeps it open and does not ask again at this head";
+    case "take": case "small-extra": return itemKind === "pr" ? "keeps working: review, fix-up, merge" : "keeps working: may try a fix";
+    case "plugin": return "adds the plugin candidate label later";
+    case "need-info": return "keeps it out of later stages until asked again";
+    case "accept": return "closes the duplicates and keeps the original";
+    case "distinct": return "records that they differ and works on each";
+  }
+  if (p.option.startsWith("keep:")) return "closes the other duplicates and keeps this one";
+  return "records the answer";
+}
 
 const mk = (db: DatabaseSync, d: DecisionRow, key: CoreKey, label: string, o: { writes: ActionTag[]; base: ExtraKind[]; applicable: Set<string>; closing?: boolean }): Core => {
   const parsed = parseCoreKey(key)!;
   const allowed = o.base.filter((k) => o.applicable.has(k));
   return {
-    key, label, writes: o.writes, ...(o.writes.length === 0 && { after: afterOf(parsed, d.kind) }), extras: [], drafted: false, parsed, decision: d.id, allowed, closing: !!o.closing,
+    key, label, writes: o.writes, autocraft: autocraftLine(parsed, d.kind, itemOf(db, d.repo!, d.number!)?.kind ?? "issue"), extras: [], drafted: false, parsed, decision: d.id, allowed, closing: !!o.closing,
     ...(o.closing && { params: { reason: "" } }),
   };
 };

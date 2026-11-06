@@ -17,6 +17,7 @@ function mergeChoices(n: number): DecisionChoices {
     {
       key: "o:merge",
       label: "Merge",
+      autocraft: "queues it: merges after CI and checks pass",
       writes: ["merge"],
       drafted: true,
       extras: [
@@ -26,7 +27,7 @@ function mergeChoices(n: number): DecisionChoices {
     },
     {
       key: "fixup-merge",
-      label: "Fix up first, then merge",
+      label: "Fix up first, then merge", autocraft: "pushes the fix-up, reviews again, merges if both pass",
       params: { instructions: "Drop the committed dictionary files and load the `hu` pack through craft-proof's `load_pack`. Keep the hyphenation tests." },
       writes: ["push", "merge"],
       drafted: true,
@@ -34,9 +35,8 @@ function mergeChoices(n: number): DecisionChoices {
     },
     {
       key: "o:hold",
-      label: "Hold for a second review",
+      label: "Hold for a second review", autocraft: "holds the merge until someone answers again",
       writes: [],
-      after: "nothing",
       drafted: false,
       extras: [
         { id: "e1", kind: "label", tag: "label", on: true, label: "needs second review" },
@@ -45,13 +45,13 @@ function mergeChoices(n: number): DecisionChoices {
     },
     {
       key: "x:close:not_planned",
-      label: "Close as not planned",
+      label: "Close as not planned", autocraft: "records the answer and stops working on it",
       params: { reason: "The language pack already covers Hungarian, so the committed dictionary files are not needed in this repo." },
       writes: ["comment", "close"],
       drafted: true,
       extras: [{ id: "e1", kind: "open_issue", tag: "open_issue", on: false, title: "Load Hungarian from the language pack", body: issueBody }],
     },
-    { key: "backlog", label: "Later", writes: [], after: "nothing", drafted: false, extras: [] },
+    { key: "backlog", label: "Later", autocraft: "moves it to the Backlog", writes: [], drafted: false, extras: [] },
   ];
   return { id: `ch-${n}`, decisionId: "designcraft#1484:merge", pick: { core: "o:merge", reason: "Review and CI are green and the author is whitelisted. The data duplicates the language pack, so a follow-up issue covers moving onto it." }, cores, source: "prepare", at: at(5) };
 }
@@ -61,7 +61,7 @@ function scopeChoices(n: number): DecisionChoices {
   const cores: ChoiceCore[] = [
     {
       key: "x:close:completed",
-      label: "Close as done (#3880)",
+      label: "Close as done (#3880)", autocraft: "records the answer and stops working on it",
       writes: ["close"],
       drafted: true,
       extras: [
@@ -69,18 +69,18 @@ function scopeChoices(n: number): DecisionChoices {
         { id: "e2", kind: "label", tag: "label", on: false, label: "small extra" },
       ],
     },
-    { key: "o:take", label: "In scope: take it", writes: [], after: "autocraft", drafted: false, extras: [{ id: "e1", kind: "label", tag: "label", on: false, label: "in scope" }] },
-    { key: "o:small-extra", label: "Keep as a feature request", writes: ["label"], drafted: true, extras: [{ id: "e1", kind: "comment", tag: "comment", on: false, text: "Keeping this open as a feature request." }] },
-    { key: "o:plugin", label: "Plugin candidate", writes: ["comment"], drafted: false, extras: [{ id: "e1", kind: "comment", tag: "comment", on: true, text: "This fits a plugin better than the core app. Could you move it to a plugin?" }] },
+    { key: "o:take", label: "In scope: take it", autocraft: "keeps working: may try a fix", writes: [], drafted: false, extras: [{ id: "e1", kind: "label", tag: "label", on: false, label: "in scope" }] },
+    { key: "o:small-extra", label: "Keep as a feature request", autocraft: "keeps working: may try a fix", writes: ["label"], drafted: true, extras: [{ id: "e1", kind: "comment", tag: "comment", on: false, text: "Keeping this open as a feature request." }] },
+    { key: "o:plugin", label: "Plugin candidate", autocraft: "adds the plugin candidate label later", writes: ["comment"], drafted: false, extras: [{ id: "e1", kind: "comment", tag: "comment", on: true, text: "This fits a plugin better than the core app. Could you move it to a plugin?" }] },
     {
       key: "o:close",
-      label: "Close as out of scope",
+      label: "Close as out of scope", autocraft: "records the answer and stops working on it",
       params: { reason: "This is outside the scope of the app." },
       writes: ["comment", "close"],
       drafted: false,
       extras: [],
     },
-    { key: "backlog", label: "Later", writes: [], after: "nothing", drafted: false, extras: [] },
+    { key: "backlog", label: "Later", autocraft: "moves it to the Backlog", writes: [], drafted: false, extras: [] },
   ];
   return { id: `ch-s${n}`, decisionId: "photocraft#4127:scope", pick: { core: "x:close:completed", reason: "Wave already shipped in #3880, so the work is done and the issue can close." }, cores, source: "prepare", at: at(8) };
 }

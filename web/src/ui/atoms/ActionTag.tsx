@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ArrowCounterClockwiseIcon, ArrowFatUpIcon, ArrowsLeftRightIcon, ChatTextIcon, EyeIcon, GitMergeIcon, PlusCircleIcon, RobotIcon, TagIcon, UserPlusIcon, XCircleIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, ArrowFatUpIcon, ArrowsLeftRightIcon, ChatTextIcon, EyeIcon, GitMergeIcon, PlusCircleIcon, TagIcon, UserPlusIcon, XCircleIcon } from "@phosphor-icons/react";
 import type { ActionTag as Tag } from "../../api/types";
 import { cn } from "../cn";
 
@@ -29,16 +29,6 @@ export function ActionTag({ tag, className }: { tag: Tag; className?: string }) 
     <span className={cn(PILL, className)}>
       <Icon className="text-[12px]" />
       {word}
-    </span>
-  );
-}
-
-/** The mark of a core with no GitHub write: the pipeline carries on ("AutoCraft continues") or the item only waits ("nothing happens"). Same pill style. */
-export function AfterTag({ after, className }: { after: "autocraft" | "nothing"; className?: string }) {
-  return (
-    <span className={cn(PILL, className)}>
-      {after === "autocraft" && <RobotIcon className="text-[12px]" />}
-      {after === "autocraft" ? "AutoCraft continues" : "nothing happens"}
     </span>
   );
 }

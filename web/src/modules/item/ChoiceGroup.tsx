@@ -1,8 +1,8 @@
 import { useRef, useState, type KeyboardEvent } from "react";
-import { ArrowsClockwiseIcon, BellIcon, BellSlashIcon } from "@phosphor-icons/react";
+import { ArrowsClockwiseIcon, BellIcon, BellSlashIcon, RobotIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { ActionTag as Tag, ChoiceCore, ChoiceExtra, Decision, DecisionChoices, DoChoiceBody, User } from "../../api/types";
-import { ActionTag, AfterTag, tagWords } from "../../ui/atoms/ActionTag";
+import { ActionTag, tagWords } from "../../ui/atoms/ActionTag";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { CheckRow } from "../../ui/molecules/CheckRow";
@@ -50,7 +50,7 @@ function NoteField({ d, required }: { d: Decision; required?: boolean }) {
 }
 
 /** Operators: run the prepare step for this question again (Opus drafts new choices). */
-function ReprepareButton({ d, user, busy, setBusy, setError }: { d: Decision; user: User; busy: boolean; setBusy: (b: boolean) => void; setError: (e?: string) => void }) {
+function ReprepareButton({ d, user, busy, setBusy, setError, text }: { d: Decision; user: User; busy: boolean; setBusy: (b: boolean) => void; setError: (e?: string) => void; text?: boolean }) {
   const api = useApi();
   if (user.role !== "operator" || d.number === null || d.group.length > 0) return null;
   const run = async () => {
@@ -64,14 +64,18 @@ function ReprepareButton({ d, user, busy, setBusy, setError }: { d: Decision; us
       setBusy(false);
     }
   };
-  return (
+  return text ? (
+    <button type="button" className={textBtn} disabled={busy || d.preparing} onClick={() => void run()}>
+      Re-prepare
+    </button>
+  ) : (
     <Button variant="secondary" icon={ArrowsClockwiseIcon} className="max-md:h-11" disabled={busy || d.preparing} onClick={() => void run()}>
       Re-prepare
     </Button>
   );
 }
 
-function SnoozeButton({ d, user, busy, setBusy, setError }: { d: Decision; user: User; busy: boolean; setBusy: (b: boolean) => void; setError: (e?: string) => void }) {
+function SnoozeButton({ d, user, busy, setBusy, setError, text }: { d: Decision; user: User; busy: boolean; setBusy: (b: boolean) => void; setError: (e?: string) => void; text?: boolean }) {
   const api = useApi();
   if (user.role !== "operator") return null;
   const snooze = async () => {
@@ -85,6 +89,19 @@ function SnoozeButton({ d, user, busy, setBusy, setError }: { d: Decision; user:
       setBusy(false);
     }
   };
+  if (text)
+    return d.snoozed ? (
+      <>
+        <span className="text-xs text-ink/60">Snoozed until new activity</span>
+        <button type="button" className={textBtn} disabled={busy} onClick={() => void snooze()}>
+          Wake
+        </button>
+      </>
+    ) : (
+      <button type="button" className={textBtn} disabled={busy} onClick={() => void snooze()}>
+        Snooze
+      </button>
+    );
   return d.snoozed ? (
     <>
       <span className="text-sm text-ink/60">Snoozed until new activity</span>
@@ -99,16 +116,31 @@ function SnoozeButton({ d, user, busy, setBusy, setError }: { d: Decision; user:
   );
 }
 
-const Heading = ({ children }: { children: string }) => <h3 className="mb-0.5 px-2 text-xs font-semibold text-ink/60">{children}</h3>;
-/** The core's marks on the label line: its GitHub writes, or what happens instead when it writes none. */
-const Marks = ({ core }: { core: ChoiceCore }) => (
-  <>
-    {core.writes.map((t, i) => (
-      <ActionTag key={`${t}${i}`} tag={t} />
-    ))}
-    {core.writes.length === 0 && core.after && <AfterTag after={core.after} />}
-  </>
-);
+/** Cores after which AutoCraft keeps working although nothing is written to GitHub yet. */
+const NOTHING_NOW = new Set(["o:take", "o:small-extra", "o:plugin", "x:review"]);
+const LINE = "grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-2 text-xs";
+const textBtn = "flex h-8 items-center rounded px-1.5 text-xs text-ink/60 hover:text-ink hover:underline disabled:opacity-40 max-md:h-11";
+
+/** The "GitHub" and "AutoCraft" lines of a card: every write that will go out, and what AutoCraft itself does. `full` shows the AutoCraft line unclipped. */
+function CardLines({ core, tags, full }: { core: ChoiceCore; tags: Tag[]; full: boolean }) {
+  return (
+    <span className="mt-1.5 block space-y-1">
+      <span className={LINE}>
+        <span className="text-ink/50">GitHub</span>
+        <span className="flex flex-wrap items-center gap-1">
+          {tags.length ? tags.map((t) => <ActionTag key={t} tag={t} />) : <span className="text-ink/60">{NOTHING_NOW.has(core.key) ? "nothing now" : "nothing"}</span>}
+        </span>
+      </span>
+      <span className={LINE}>
+        <span className="text-ink/50">AutoCraft</span>
+        <span className={cn("flex min-w-0 items-baseline gap-1 text-ink/75", !full && "[&>span]:truncate")}>
+          <RobotIcon className="relative top-px shrink-0 text-[12px]" />
+          <span className={cn("min-w-0", full && "break-words")}>{core.autocraft}</span>
+        </span>
+      </span>
+    </span>
+  );
+}
 
 /**
  * An open question's answer. With `choices`: the core actions as a pick-one list (Opus's pick selected), the selected core's
@@ -152,8 +184,13 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
   const reason = cs.reason ?? core.params?.reason;
   const instructions = cs.instructions ?? core.params?.instructions;
 
-  const tags = [...core.writes, ...on.map((x) => x.tag)];
-  const writes = ORDER.filter((t) => tags.includes(t));
+  // The GitHub writes a core would make with the ticks as they stand: its own and its ticked extras'.
+  const writesOf = (c: ChoiceCore): Tag[] => {
+    const t = st(c.key).ticks;
+    const all = [...c.writes, ...c.extras.filter((x) => t[x.id] ?? x.on).map((x) => x.tag)];
+    return ORDER.filter((o) => all.includes(o));
+  };
+  const writes = writesOf(core);
   const running = choices.run?.state === "running";
   const blank = on.some((x) => (x.kind === "comment" && !editOf(x).text?.trim()) || (x.kind === "open_issue" && !editOf(x).title?.trim()));
   const label = picked && writes.length ? `Do it: ${tagWords(writes)}` : "Do it";
@@ -164,6 +201,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
     setKey(k);
   };
   const onKey = (e: KeyboardEvent) => {
+    if ((e.target as HTMLElement).getAttribute("role") !== "radio") return;
     const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;
     if (!step) return;
     e.preventDefault();
@@ -312,25 +350,55 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
           <span className="font-medium">Opus:</span> {choices.pick.reason}
         </p>
       )}
-      <Heading>What happens to it</Heading>
-      <div role="radiogroup" aria-label="What happens to it" onKeyDown={onKey} className="grid grid-cols-[minmax(0,1fr)] gap-0.5">
+      <div role="radiogroup" aria-label="What happens to it" onKeyDown={onKey} className="grid grid-cols-[minmax(0,1fr)] gap-2">
         {choices.cores.map((c, i) => {
           const sel = picked && c.key === core.key;
+          const tags = writesOf(c);
           return (
-            <RadioRow key={c.key} ref={(el) => void (refs.current[i] = el)} selected={sel} onSelect={() => select(c.key)} tabIndex={sel || (!picked && i === 0) ? 0 : -1} disabled={busy || running} title={c.label} marks={<Marks core={c} />} tag={c.key === choices.pick?.core ? opusTag : undefined}>
-              {sel && (c.params?.reason !== undefined || c.params?.instructions !== undefined) ? params(c) : undefined}
-            </RadioRow>
+            <div key={c.key} className={cn("rounded-lg border", sel ? "border-accent/60 bg-accent/[0.05]" : "border-line")}>
+              <button
+                ref={(el) => void (refs.current[i] = el)}
+                type="button"
+                role="radio"
+                aria-checked={sel}
+                aria-expanded={sel}
+                tabIndex={sel || (!picked && i === 0) ? 0 : -1}
+                disabled={busy || running}
+                onClick={() => select(c.key)}
+                className="block w-full min-w-0 rounded-lg px-3 py-2.5 text-left hover:bg-ink/[0.03] max-md:min-h-11"
+              >
+                <span className="flex items-baseline gap-2 text-sm font-medium">
+                  <span className="min-w-0 flex-1 break-words">{c.label}</span>
+                  {c.key === choices.pick?.core && opusTag}
+                </span>
+                <CardLines core={c} tags={tags} full={sel} />
+              </button>
+              {sel && (
+                <div className="space-y-2 border-t border-line px-3 pb-3 pt-2">
+                  {params(c)}
+                  {core.extras.length > 0 && <div className="-mx-2 grid grid-cols-[minmax(0,1fr)] gap-0.5">{core.extras.map(extra)}</div>}
+                  <NoteField d={d} />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="primary"
+                      className={cn("max-md:h-11", armed && "border-bad bg-bad text-white hover:bg-bad/90")}
+                      loading={busy || running}
+                      disabled={blank}
+                      onClick={() => void run()}
+                    >
+                      {armed ? `Confirm: ${tagWords(writes)}` : label}
+                    </Button>
+                    {armed && (
+                      <Button variant="ghost" className="max-md:h-11" onClick={() => setArmed(false)}>
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           );
         })}
-      </div>
-      {picked && core.extras.length > 0 && (
-        <div className="mt-3">
-          <Heading>Also</Heading>
-          <div className="grid grid-cols-[minmax(0,1fr)] gap-0.5">{core.extras.map(extra)}</div>
-        </div>
-      )}
-      <div className="mt-3">
-        <NoteField d={d} />
       </div>
       {elsewhere !== null && (
         <div className="mt-3 space-y-2">
@@ -340,28 +408,16 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
           </Button>
         </div>
       )}
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-x-1">
         {operator && d.number !== null && (
-          <Button variant="secondary" className="max-md:h-11" disabled={elsewhere !== null || busy} onClick={() => setElsewhere("")}>
+          <button type="button" className={textBtn} disabled={elsewhere !== null || busy} onClick={() => setElsewhere("")}>
             Something else…
-          </Button>
+          </button>
         )}
-        <Button
-          variant="primary"
-          className={cn("max-md:h-11", armed && "border-bad bg-bad text-white hover:bg-bad/90")}
-          loading={busy || running}
-          disabled={blank || !picked}
-          onClick={() => void run()}
-        >
-          {armed ? `Confirm: ${tagWords(writes)}` : label}
-        </Button>
-        {armed && (
-          <Button variant="ghost" className="max-md:h-11" onClick={() => setArmed(false)}>
-            Cancel
-          </Button>
-        )}
-        <ReprepareButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} />
-        <SnoozeButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} />
+        <span className="ml-auto flex items-center gap-x-1">
+          <ReprepareButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} text />
+          <SnoozeButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} text />
+        </span>
       </div>
       <ErrorLine error={error} className="mt-2" />
       {choices.run?.state === "failed" && choices.run.error && <ErrorLine error={choices.run.error} className="mt-2" />}
