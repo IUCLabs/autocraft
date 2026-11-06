@@ -1645,3 +1645,31 @@ CREATE TABLE IF NOT EXISTS security_calls (
   agent_run_id INTEGER                -- the agent run (/agents/:id) the call made; null for rows from before this column and for calls that made none
 );
 CREATE INDEX IF NOT EXISTS security_calls_scan ON security_calls(scan_id, id);
+
+-- Discord mentions (optional feature, see docs/pipeline.md). Channels are what the bot reports; `watched` is the operators' choice.
+CREATE TABLE IF NOT EXISTS discord_channels (
+  channel_id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  guild_name TEXT,
+  name TEXT,
+  watched INTEGER NOT NULL DEFAULT 0
+);
+-- Gateway connection state, one row.
+CREATE TABLE IF NOT EXISTS discord_status (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  state TEXT NOT NULL,                -- connecting | connected | reconnecting | failed
+  detail TEXT,
+  at TEXT NOT NULL
+);
+-- One row per (message, item). `sealed` is AES-256-GCM of guild, channel, message id and time; `msg_hash` and `author_hash`
+-- are keyed hashes that only serve deletion. No message text and no author id.
+CREATE TABLE IF NOT EXISTS discord_mentions (
+  msg_hash TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  author_hash TEXT,
+  sealed TEXT NOT NULL,
+  PRIMARY KEY (msg_hash, repo, number)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS discord_mentions_item ON discord_mentions (repo, number);
+CREATE INDEX IF NOT EXISTS discord_mentions_author ON discord_mentions (author_hash);

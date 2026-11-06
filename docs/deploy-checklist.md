@@ -42,6 +42,8 @@ The image sets every path (`/data/...`, `/config/...`). A deployment sets only t
 | `AUTOCRAFT_REVIEW_BOTS` | no | `coderabbitai` | Logins of review bots whose comments never make a review stale. Set it alike for dashboard, runner and periodic. |
 | `AUTOCRAFT_GITHUB_APP_NAME` | no | `AutoCraft` | Name suggested on the GitHub App registration form. |
 | `AUTOCRAFT_IMAGE_TOKEN_FILE` | no | `gh auth token` | File holding the token the dashboard's image proxy uses for GitHub images. |
+| `AUTOCRAFT_DISCORD_TOKEN_FILE` | no | off | File holding a Discord bot token (mode 600). Setting it on the runner turns on Discord mention counting; it needs the key file too. |
+| `AUTOCRAFT_DISCORD_KEY_FILE` | with the token file | none | File of at least 32 random characters (mode 600) that encrypts stored message references. Set it on the dashboard as well to show message links. |
 | `AUTOCRAFT_MERGE_CMD` | no | built-in `safe-merge` | External merge command; it must accept `--head <sha>`. |
 | `AUTOCRAFT_CALL_IDLE_MIN` | no | `15` | Minutes a model call may stay silent before it is stopped. |
 

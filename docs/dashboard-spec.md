@@ -128,6 +128,14 @@ Agreement between classifiers on the same items (for the Jev vs Haiku trial, lat
 
 Access list with add, remove and role change; active sessions with revoke.
 
+### Discord (operators)
+
+Shown as a setting; the pipeline does not depend on it. The bot's connection state, the servers and text channels it reports (names and IDs) with a switch per channel for watching, the contact text for deletion requests, and a link to the public privacy page. Only operators change anything; the writes are audited (`discord-watch`, `discord-unwatch`, `discord-contact`).
+
+The item page shows a "Discord N" badge in its header and, in the details, a list of message links (`discord.com/channels/<server>/<channel>/<message>` with the time). Counts are visible to everyone who sees the item; the links are decrypted on the server and need the key file in the dashboard's environment, otherwise only the count shows. The Items page has a Discord column (a badge on phones), the sort "Discord mentions" and the filter "Mentioned on Discord".
+
+`/discord-privacy` is the one page outside sign-in: what the bot reads, what it keeps, what it never keeps, and how to ask for deletion.
+
 ### Audit (operators and maintainers)
 
 The audit log, filterable by login and action. Maintainers get only listed actions, and none for accounts or access (access changes, session revokes, sign-ins, account changes and logins); an action nobody listed stays hidden from them.

@@ -260,6 +260,8 @@ export interface Item extends ItemRef {
   area?: string | null;
   stages: StageEntry[];
   comments: ItemComment[];
+  /** Explicit mentions in watched Discord channels; absent in mocks that have none. */
+  discord?: DiscordInfo;
   decisionIds: string[];
   /** For the latest classification run. */
   settled: Settled;
@@ -515,7 +517,7 @@ export interface Snippet {
   text: string;
 }
 
-export type ItemSort = "relevance" | "updated" | "created" | "number" | "merged";
+export type ItemSort = "relevance" | "updated" | "created" | "number" | "merged" | "discord";
 
 /** `status: "unsettled"` stands for waiting and disagree together. */
 export type StatusFilter = SettledStatus | "unsettled";
@@ -538,6 +540,8 @@ export interface ItemFilter {
   author?: string;
   /** Updated on or after this date (YYYY-MM-DD). */
   since?: string;
+  /** Only items a watched Discord channel mentions. */
+  discord?: boolean;
   /** A flowchart branch, `<node>.<branch>` (FlowNode.id, FlowBranch.id): only the items it counts. */
   flow?: string;
   /** Default `relevance` with a query, else `updated`. */
@@ -558,6 +562,8 @@ export interface ItemListRow extends ItemRef {
   createdAt: string;
   updatedAt: string;
   comments: number;
+  /** Messages in watched Discord channels that name the item. */
+  discord?: number;
   settled: Settled;
   /** Latest pipeline stage. */
   stage: Stage | null;
@@ -852,6 +858,31 @@ export interface SessionInfo {
   userAgent: string | null;
   /** the session making this request */
   current: boolean;
+}
+
+/** Messages that name the item. Links need the server's key file; the count does not. */
+export interface DiscordInfo {
+  count: number;
+  links: { url: string; at: string }[];
+}
+
+export interface DiscordChannel {
+  channelId: string;
+  guildId: string;
+  guildName: string | null;
+  name: string | null;
+  watched: boolean;
+}
+
+export interface DiscordSetup {
+  /** `off` while the runner has not started the gateway client (no token file). */
+  state: "off" | "connecting" | "connected" | "reconnecting" | "failed";
+  detail: string | null;
+  at: string | null;
+  channels: DiscordChannel[];
+  contact: string;
+  /** The public privacy page. */
+  privacyPath: string;
 }
 
 /** A live agent token of any login (operators see all of them). */

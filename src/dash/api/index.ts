@@ -18,6 +18,7 @@ import { HttpError, RateLimiter } from "../server/util.ts";
 import { findingsOf, type PremergeRow } from "../../premerge/store.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
+import * as discord from "./discord.ts";
 import * as agents from "./agents.ts";
 import * as build from "./build.ts";
 import * as dec from "./decisions.ts";
@@ -141,6 +142,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     pipelineOn: (db.prepare("SELECT pipeline FROM tracked_repos WHERE name = ?").get(repo) as { pipeline: number } | undefined)?.pipeline === 1,
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n), area: areaNameOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
+    discord: discord.discordOf(db, repo, n),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: unflagged(settledOf(db, repo, n), isQuiet(db, repo, n), !veil) as Item["settled"], priority: priorityOf(db, repo, n),
     ...(it.kind === "pr" ? prWork(db, repo, n, canSeeInternals(req)) : { verification: null, fixups: [] }),
@@ -437,6 +439,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/ci-approve", (db, req) => adm.ciApproval(db, req, true)),
     post("/api/repos/ci-revoke", (db, req) => adm.ciApproval(db, req, false)),
     get("/api/sandbox/workspace", adm.workspaceInfo),
+    get("/api/admin/discord", discord.setup),
+    { method: "PUT", pattern: "/api/admin/discord/channel", operator: true, handler: ok(discord.putChannel) },
+    { method: "PUT", pattern: "/api/admin/discord/contact", operator: true, handler: ok(discord.putContact) },
     { method: "PUT", pattern: "/api/sandbox/workspace", operator: true, handler: ok(adm.setWorkspaceInfo) },
     get("/api/merge/single", adm.singleMerge),
     { method: "PUT", pattern: "/api/merge/single", operator: true, handler: ok(adm.setSingleMerge) },

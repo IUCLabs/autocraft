@@ -2,6 +2,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from
 import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
+  DiscordSetup,
   CardEdit,
   DoChoiceBody,
   Preapproval,
@@ -250,6 +251,12 @@ export interface Api {
     revokeLink(id: string): Promise<{ links: GithubSetupLink[] }>;
     /** Clears the app's keys; `settingsUrl` is where to delete the app on GitHub. */
     remove(): Promise<{ settingsUrl: string }>;
+  };
+  /** Optional Discord mention counting. Operators change it; everyone signed in may read it. */
+  discord: {
+    setup(): Promise<DiscordSetup>;
+    setChannel(channelId: string, watched: boolean): Promise<DiscordSetup>;
+    setContact(contact: string): Promise<DiscordSetup>;
   };
   classifiers: {
     /** `run`, `a` and `b` default to the latest run and its first pair. */
