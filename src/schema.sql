@@ -1603,6 +1603,15 @@ CREATE TABLE IF NOT EXISTS security_findings (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS security_findings_scan ON security_findings(scan_id, number);
 
+-- Quiet pull requests a finding once had and no longer points at (closed without merging). They stay quiet, also if reopened,
+-- until the finding is published or dismissed.
+CREATE TABLE IF NOT EXISTS security_quiet_prs (
+  repo TEXT NOT NULL,
+  pr INTEGER NOT NULL,
+  finding INTEGER NOT NULL,
+  PRIMARY KEY (repo, pr)
+) WITHOUT ROWID;
+
 -- The model calls of a scan, for the cost total and a finding's timeline. kind: model | area | verify.
 CREATE TABLE IF NOT EXISTS security_calls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

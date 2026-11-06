@@ -387,12 +387,28 @@ export function linkReviewCalls(events: Ev[]): Set<number> {
 /** Every source runs whatever the filter, so a filtered event still gets the head its neighbours carry. */
 const VEILED_KINDS: TraceKind[] = ["model-call", "check", "review", "decision", "conversation"];
 
+/** A viewer's copy of a step, job or plan event on a quiet pull request: the kind, time and outcome state stay; free text goes. */
+function veilEvent(e: Ev): Ev {
+  if (!["step", "job", "plan"].includes(e.kind)) return e;
+  let summary = e.summary;
+  const colon = summary.indexOf(": ");
+  if (e.kind === "step" && colon >= 0) {
+    const comma = summary.indexOf(", ", colon + 2);
+    summary = comma >= 0 ? summary.slice(0, comma) : summary;
+  } else if (e.id.startsWith("plan:")) summary = summary.replace(/, waiting for .*$/, "");
+  else if (colon >= 0) summary = summary.slice(0, colon);
+  const detail = e.detail ? { ...e.detail } as Record<string, unknown> : undefined;
+  if (detail) for (const k of ["reason", "outcome", "error", "wait", "note"]) if (k in detail) detail[k] = null;
+  if (detail && "reasons" in detail) detail.reasons = [];
+  return { ...e, summary, ...(detail ? { detail } : {}) };
+}
+
 function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   const all: Ev[] = [];
   for (const e of SOURCES.flatMap((s) => s.run(c))) {
     if (c.veiled && VEILED_KINDS.includes(e.kind)) continue;
     const at = iso(e.at);
-    if (at) all.push({ ...e, at });
+    if (at) all.push({ ...(c.veiled ? veilEvent(e) : e), at });
   }
   carryHeads(all);
   const taken = !kinds || kinds.has("review") ? linkReviewCalls(all) : new Set<number>();

@@ -15,6 +15,7 @@ import { inPilot, setPilot } from "../src/pilot.ts";
 import { fixOnMain, pollLanding, runAdvisory, stallReason, runLand, runPublish, type LandDeps } from "../src/security/land.ts";
 import { runFix, type FixDeps } from "../src/security/fix.ts";
 import { fixBranch, giveaway, parseFixReply, patchGiveaway, quietProblem } from "../src/security/rules.ts";
+import { isQuiet } from "../src/security/quiet.ts";
 import { rawFinding } from "../src/security/store.ts";
 import { Git } from "../src/fixup/git.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -180,6 +181,9 @@ describe("private fix and landing", () => {
     await pollLanding(db, deps(fake().exec));
     assert.equal(stateOf(n).state, "ready");
     assert.equal(stateOf(n).fix_pr, null);
+    assert.ok(isQuiet(db, "photocraft", 78), "a closed quiet pull request stays quiet if it is reopened");
+    db.prepare("UPDATE security_findings SET state = 'published' WHERE number = ?").run(n);
+    assert.ok(!isQuiet(db, "photocraft", 78), "and is not quiet once the advisory is published");
   });
 
   test("advisory route: the fork steps, an admin wait on a refusal, and the merge seen on main", async () => {

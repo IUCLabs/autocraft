@@ -14,6 +14,7 @@ import {
   type Writer,
 } from "../github/write.ts";
 import { findingKey, advance, rawFinding, type FindingRow } from "./store.ts";
+import { rememberQuietPr } from "./quiet.ts";
 import { giveaway, landBody, nameGiveaway } from "./rules.ts";
 import type { ExecResult } from "../fixup/git.ts";
 
@@ -286,7 +287,7 @@ export async function pollLanding(db: DatabaseSync, d: Pick<LandDeps, "exec" | "
       } catch (e) {
         d.log(`security: ${f.repo}: draft advisory not created: ${oneLine(String((e as Error).message ?? e), 160)}`);
       }
-    } else if (pr?.state === "CLOSED" && advance(db, f.repo, f.number, ["landing"], "ready", { fix_pr: null, note: "The pull request was closed without merging." })) moved++;
+    } else if (pr?.state === "CLOSED" && (rememberQuietPr(db, f.repo, f.number, f.fix_pr), advance(db, f.repo, f.number, ["landing"], "ready", { fix_pr: null, note: "The pull request was closed without merging." }))) moved++;
     else if (pr?.state === "OPEN") setNote(db, f.repo, f.number, stallReason(db, f.repo, f.fix_pr));
   }
   const waiting = db.prepare("SELECT repo, number, fix_commit, fork, fix_pr FROM security_findings WHERE state = 'awaiting-admin' AND fix_commit IS NOT NULL").all() as { repo: string; number: number; fix_commit: string; fork: string | null; fix_pr: number | null }[];
