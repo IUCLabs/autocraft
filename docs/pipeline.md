@@ -146,7 +146,7 @@ Asks the operator for a scope call on open items that either carry the needs-dec
 | `take` | In scope. PRs go to Review |
 | `small-extra` | Keep in core, label "small extra" |
 | `plugin` | Not for core. Keep open, label "plugin candidate" |
-| `close` | Out of scope. Goes to Act |
+| `close` | Out of scope. Goes to Act, which posts "Closing this as out of scope" and a one-sentence reason: the reason a conversation card gave when it answered (the `reason` of its answer settle, cleaned like a comment and stored as the decision's public text), else the decision's own text. A reason is cut at a sentence or word end, never inside a word |
 | `need-info` | Ask how the reference app behaves, then decide again |
 
 Model: Opus. Daily limit 100.

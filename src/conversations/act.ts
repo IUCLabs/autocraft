@@ -100,7 +100,7 @@ export function dismissCard(db: DatabaseSync, id: number, by: string, deps?: Sto
 type Outcome = { result: string; url: string | null };
 
 /** Answers the decision the card was written for, like a dashboard answer: one transaction, the decision's claims cleared. */
-async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string | undefined, stamp: string | undefined, key: string, by: string, at: string, canWrite?: ActDeps["canWrite"], note?: string): Promise<Outcome> {
+async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string | undefined, stamp: string | undefined, key: string, by: string, at: string, canWrite?: ActDeps["canWrite"], note?: string, publicReason?: string): Promise<Outcome> {
   if (!decisionId) throw new Error("the card names no decision: the decision changed");
   const d0 = getDecision(db, decisionId);
   if (!d0 || d0.answer !== null || d0.repo !== c.repo || d0.number !== c.number || (stamp !== undefined && decisionStamp(db, d0) !== stamp)) throw new Error("the decision changed");
@@ -111,8 +111,9 @@ async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string |
     if (!d || d.answer !== null || (stamp !== undefined && decisionStamp(db, d) !== stamp)) throw new Error("the decision changed");
     const o = optionsOf(d).find((x) => x.key === key);
     if (!o) throw new Error(`"${key}" is not an option of the decision`);
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
-      WHERE id = ? AND answer IS NULL`).run(key, note ?? null, by, at, d.id);
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL,
+      public_text = COALESCE(?, public_text)
+      WHERE id = ? AND answer IS NULL`).run(key, note ?? null, by, at, publicReason ?? null, d.id);
     if (r.changes !== 1) throw new Error("the decision changed");
     db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
     replaceProposedCards(db, d.repo, d.number);
@@ -412,7 +413,7 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
     }
     const s = p.settle;
     if (s) {
-      results.push((s.kind === "answer" ? await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note)
+      results.push((s.kind === "answer" ? await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note, s.reason)
         : s.kind === "backlog" ? await answerDecision(db, c, s.decision, s.stamp, BACKLOG.key, by, at, canWrite, ctx.note)
         : resolveDecision(db, c, s.decision, s.stamp, ctx.note ? `${s.summary}: ${ctx.note}` : s.summary, by, at)).result);
     }

@@ -4,6 +4,7 @@ import { ownerOf, splitSlug } from "../owners.ts";
 import { REFERENCE_LEAK } from "../review/opus-parse.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { writeEffect } from "../act/index.ts";
+import { cleanReason } from "../act/templates.ts";
 import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decisions.ts";
 import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
@@ -38,7 +39,8 @@ export type Step =
 
 /** How a resolution ends the item's open decision. `stamp` identifies the decision state it was written for. */
 export type Settle =
-  | { kind: "answer"; decision: string; option: string; stamp: string }
+  /** `reason`: the public reason a closing option's comment gives (see settleOf); it replaces the decision's own text when the card runs. */
+  | { kind: "answer"; decision: string; option: string; stamp: string; reason?: string }
   /** `fromClose`: derived from the close or duplicate step, so its summary is false when that step is skipped. */
   | { kind: "handled"; decision: string; summary: string; stamp: string; fromClose?: true }
   | { kind: "backlog"; decision: string; stamp: string };
@@ -123,7 +125,7 @@ export function stepLine(st: Step): string {
 export function settleLine(db: DatabaseSync, s: Settle): string {
   const d = getDecision(db, s.decision);
   switch (s.kind) {
-    case "answer": return `Answers the ${questionWord(d)} question with "${optionLabel(d, s.option)}"`;
+    case "answer": return `Answers the ${questionWord(d)} question with "${optionLabel(d, s.option)}"${s.reason ? `, giving the reason: ${s.reason}` : ""}`;
     case "handled": return `Closes the ${questionWord(d)} question as handled: "${s.summary}"`;
     case "backlog": return "Moves the item to the Backlog";
   }
@@ -407,7 +409,14 @@ function settleOf(db: DatabaseSync, d: DecisionRow, raw: unknown): Checked<Settl
   switch (s.kind) {
     case "answer":
       if (typeof s.option !== "string" || !optionsOf(d).some((o) => o.key === s.option)) return { note: `dropped a resolution: "${String(s.option).slice(0, 40)}" is not an option of the open decision` };
-      return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
+      if (s.reason === undefined || s.reason === null || s.reason === "") return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
+      if (typeof s.reason !== "string") return { note: "dropped a resolution whose settle reason is not text" };
+      // Only an option that closes with a comment takes a reason; for any other the field is ignored.
+      if (!/\bcloses\b/.test(writeEffect(d.kind as Kind, s.option) ?? "")) return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
+      const reason = cleanReason(cleanComment(s.reason));
+      if (!reason) return { value: { kind: "answer", decision: d.id, option: s.option, stamp } };
+      if (REFERENCE_LEAK.test(reason)) return { note: "dropped a resolution whose settle reason mentions the reference folder or its documentation" };
+      return { value: { kind: "answer", decision: d.id, option: s.option, stamp, reason } };
     case "backlog":
       return { value: { kind: "backlog", decision: d.id, stamp } };
     case "handled": {
@@ -538,11 +547,13 @@ export function commentTexts(reply: string): { field: string; text: string }[] {
   let list: unknown;
   try { list = JSON.parse(m[1]!); } catch { return []; }
   if (!Array.isArray(list)) return [];
-  return list.slice(0, 20).flatMap((c: { kind?: unknown; text?: unknown; steps?: unknown }, i) => {
+  return list.slice(0, 20).flatMap((c: { kind?: unknown; text?: unknown; steps?: unknown; settle?: { reason?: unknown } | null }, i) => {
     if (!c || c.kind !== "resolution") return [];
     const out: { field: string; text: string }[] = [];
     const text = typeof c.text === "string" ? cleanComment(c.text) : "";
     if (text) out.push({ field: `cards[${i}].text`, text });
+    const reason = typeof c.settle?.reason === "string" ? cleanComment(c.settle.reason) : "";
+    if (reason) out.push({ field: `cards[${i}].settle.reason`, text: reason });
     if (Array.isArray(c.steps)) c.steps.forEach((st: { kind?: unknown; body?: unknown; title?: unknown }, j) => {
       if (!st || st.kind !== "open_issue") return;
       const body = typeof st.body === "string" ? cleanComment(st.body) : "", title = typeof st.title === "string" ? cleanComment(st.title).replace(/\s+/g, " ") : "";
