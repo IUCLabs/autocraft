@@ -55,7 +55,7 @@ test("every audited write in write.ts takes its identity from a grant", () => {
   // The rows started with begin() directly (labels, merge, command-line merge) carry the identity in their details.
   const begins = src.split("\n").filter((l) => /\bbegin\(w, /.test(l) && !/function /.test(l));
   assert.equal(begins.length, 4);
-  for (const l of begins) assert.match(l, /begin\(w, (action, target, details|"labels-apply", .*det\(it\)|"merge", target, base|"merge", .*details)\)/);
+  for (const l of begins) assert.match(l, /begin\(w, (action, target, details|"labels-apply", .*det\(it\)|"merge", target, base|"merge", .*details(, splitSlug\(repoSlug\)\.owner)?)\)/);
   assert.match(src, /identity: idOf\(w, it\.g\)/);
   assert.match(src, /base = \{ \.\.\.details, method, identity: idOf\(w, g\) \}/);
   assert.match(src, /identity: "legacy"/);
