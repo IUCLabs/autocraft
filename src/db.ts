@@ -270,6 +270,21 @@ function migrateValues(db: DatabaseSync): void {
     db.exec("INSERT INTO main.settings (key, value) VALUES ('prepare_dropped_redone', '1') ON CONFLICT (key) DO NOTHING");
     db.exec("COMMIT");
   }
+  // Once: open decisions prepared before the pick had to keep its card (a pick whose card was dropped) or before an Out of scope
+  // card could carry its public reason are prepared again. Merge and close questions at an old head are left to the set-aside.
+  if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'prepare_pick_redone'").get()) {
+    db.exec("BEGIN IMMEDIATE");
+    db.exec(`UPDATE main.decisions SET prepared_at = NULL, prepared_head = NULL
+      WHERE answer IS NULL AND number IS NOT NULL AND id NOT LIKE '%:dupegroup:%' AND prepared_at IS NOT NULL
+        AND NOT (kind IN ('merge', 'close') AND instr(id, '@') > 0
+          AND substr(id, instr(id, '@') + 1) IS NOT (SELECT i.head_oid FROM main.items i WHERE i.repo = decisions.repo AND i.number = decisions.number))
+        AND ((recommended IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.conversation_cards c WHERE c.repo = decisions.repo AND c.number = decisions.number AND c.state = 'proposed'
+              AND (json_extract(c.params, '$.settle.option') = decisions.recommended OR json_extract(c.params, '$.option') = decisions.recommended)))
+          OR (kind = 'scope' AND EXISTS (SELECT 1 FROM main.conversation_cards c WHERE c.repo = decisions.repo AND c.number = decisions.number AND c.state = 'proposed'
+              AND json_extract(c.params, '$.settle.kind') = 'answer' AND json_extract(c.params, '$.settle.option') = 'close' AND json_extract(c.params, '$.settle.reason') IS NULL)))`);
+    db.exec("INSERT INTO main.settings (key, value) VALUES ('prepare_pick_redone', '1') ON CONFLICT (key) DO NOTHING");
+    db.exec("COMMIT");
+  }
   // Looked up first: an UPDATE that changes nothing still takes the write lock.
   if (db.prepare("SELECT 1 FROM main.access WHERE role = 'admin'").get())db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
   // Priority rows written with the impact names (critical, high, normal, low) become levels.
