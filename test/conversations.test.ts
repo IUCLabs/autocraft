@@ -221,7 +221,7 @@ describe("Do it", () => {
     assert.equal(card.card.state, "done", card.card.error ?? "");
     const comment = commentPreview(getDecision(db, "app#1:scope")!)!;
     assert.match(comment, /out of scope/);
-    assert.match(comment, /Reason: The reference app does not do this, so it stays out\. See\.?$/);
+    assert.match(comment, /Reason: The reference app does not do this, so it stays out\. See bob\./);
     assert.doesNotMatch(comment, /@|https/);
   });
 
