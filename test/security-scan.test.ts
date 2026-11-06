@@ -143,6 +143,11 @@ describe("security deep scan", () => {
     // Back to new as after a failed fix: the finding is left for the operator, not started again.
     db.prepare("UPDATE security_findings SET state = 'new' WHERE scan_id = ?").run(id);
     assert.equal(await autoFixConfirmed(db), 0);
+    // A fix the pipeline switch cancelled does not count: once the finding is back to new, the fix is queued again.
+    db.prepare("UPDATE jobs SET state = 'cancelled' WHERE step = 'security-fix'").run();
+    db.prepare("UPDATE security_findings SET state = 'fixing', updated_at = '2026-01-01T00:00:00Z' WHERE scan_id = ? AND title = 'Layer length trusted'").run(id);
+    assert.equal(await autoFixConfirmed(db), 1);
+    db.prepare("UPDATE security_findings SET state = 'new' WHERE scan_id = ?").run(id);
     db.prepare("DELETE FROM jobs WHERE step = 'security-fix'").run();
     db.prepare("DELETE FROM audit WHERE action = 'security-finding-fix'").run();
     // A second scan does not raise the same findings again, nor ask to verify them.
