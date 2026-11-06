@@ -69,6 +69,7 @@ export function createMockApi(): Api {
     d.canSettle = me.role === "operator" || (me.role === "maintainer" && me.maintainerWrites && repos.every((r) => me.writeRepos.includes(r)));
   }
   const threads: Record<string, DecisionComment[]> = structuredClone(THREADS);
+  const choicesHooks: { reprepare?: (decisionId: string) => void } = {};
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
   const find = (id: string) => {
@@ -171,8 +172,17 @@ export function createMockApi(): Api {
         changed();
         return wait(d, 30);
       },
-      async reprepare() {
-        throw new Error("not implemented");
+      async reprepare(id) {
+        const d = find(id);
+        requireOperator(d);
+        d.preparing = true;
+        changed();
+        choicesHooks.reprepare?.(id);
+        setTimeout(() => {
+          d.preparing = false;
+          changed();
+        }, 2500);
+        return wait(d, 30);
       },
       async retract(id) {
         const d = find(id);
@@ -231,7 +241,7 @@ export function createMockApi(): Api {
     ...createConversationMock(me, changed, (repo, number, option, note) => {
       const d = decisions.find((x) => !x.answer && x.repo === shortRepo(repo) && x.number === number);
       if (d) settle(d, option, note, null);
-    }),
+    }, choicesHooks),
     ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),
     ...createMcpMock(me, changed),

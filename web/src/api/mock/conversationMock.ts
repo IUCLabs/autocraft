@@ -1,5 +1,5 @@
 import type { Api } from "../client";
-import type { Conversation, ConversationCard, ConversationTurn, User } from "../types";
+import type { ChoiceCore, Conversation, ConversationCard, ConversationTurn, DecisionChoices, User } from "../types";
 import { NOW, PREAPPROVALS } from "./fixtures";
 
 const MIN = 60_000;
@@ -8,6 +8,82 @@ const REF = "designcraft#1484";
 
 const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], headline: c.title, steps: [], canSettle: true, ...c });
 const LABELS: Record<ConversationCard["kind"], string> = { resolution: "Do it", comment: "Post comment", answer: "Answer", label: "Add label", backlog: "Move to Backlog", resolve: "Close decision", duplicate: "Close as duplicate", close: "Close issue" };
+
+const issueBody = "designcraft#1484 commits the Hungarian dictionary and hyphenation patterns. craft-i18n ships the same data as the `hu` pack.\n\nSwitch the spellchecker to load the pack through craft-proof and remove the committed files.";
+
+/** The merge PR: Opus picks Merge with a follow-up issue ticked; other cores carry their own drafts. */
+function mergeChoices(n: number): DecisionChoices {
+  const cores: ChoiceCore[] = [
+    {
+      key: "o:merge",
+      label: "Merge",
+      writes: ["merge"],
+      drafted: true,
+      extras: [
+        { id: "e1", kind: "open_issue", tag: "open_issue", on: true, title: "Load Hungarian from the language pack", body: issueBody },
+        { id: "e2", kind: "comment", tag: "comment", on: false, text: "Merged. The data files duplicate the `hu` pack, so a follow-up moves the spellchecker onto the pack." },
+      ],
+    },
+    {
+      key: "fixup-merge",
+      label: "Fix up first, then merge",
+      params: { instructions: "Drop the committed dictionary files and load the `hu` pack through craft-proof's `load_pack`. Keep the hyphenation tests." },
+      writes: ["push", "merge"],
+      drafted: true,
+      extras: [{ id: "e1", kind: "comment", tag: "comment", on: true, text: "Thanks for the Hungarian work. I'm pushing a change that loads the language pack instead of the committed data, then merging." }],
+    },
+    {
+      key: "o:hold",
+      label: "Hold for a second review",
+      writes: [],
+      drafted: false,
+      extras: [
+        { id: "e1", kind: "label", tag: "label", on: true, label: "needs second review" },
+        { id: "e2", kind: "comment", tag: "comment", on: false, text: "Holding this for a second review of the hyphenation rules." },
+      ],
+    },
+    {
+      key: "x:close:not_planned",
+      label: "Close as not planned",
+      params: { reason: "The language pack already covers Hungarian, so the committed dictionary files are not needed in this repo." },
+      writes: ["comment", "close"],
+      drafted: true,
+      extras: [{ id: "e1", kind: "open_issue", tag: "open_issue", on: false, title: "Load Hungarian from the language pack", body: issueBody }],
+    },
+    { key: "backlog", label: "Later", writes: [], drafted: false, extras: [] },
+  ];
+  return { id: `ch-${n}`, decisionId: "designcraft#1484:merge", pick: { core: "o:merge", reason: "Review and CI are green and the author is whitelisted. The data duplicates the language pack, so a follow-up issue covers moving onto it." }, cores, source: "prepare", at: at(5) };
+}
+
+/** A scope question where the item was already done: Opus adds a close-as-done core. */
+function scopeChoices(n: number): DecisionChoices {
+  const cores: ChoiceCore[] = [
+    {
+      key: "x:close:completed",
+      label: "Close as done (#3880)",
+      params: { reason: "Wave was added in #3880, so this request is covered. Closing as done." },
+      writes: ["comment", "close"],
+      drafted: true,
+      extras: [
+        { id: "e1", kind: "comment", tag: "comment", on: true, text: "This was done in #3880: Filter > Distort > Wave ships with the same five parameters. Closing as completed." },
+        { id: "e2", kind: "label", tag: "label", on: false, label: "small extra" },
+      ],
+    },
+    { key: "o:take", label: "In scope: take it", writes: [], drafted: false, extras: [{ id: "e1", kind: "label", tag: "label", on: false, label: "in scope" }] },
+    { key: "o:small-extra", label: "Keep as a feature request", writes: ["label"], drafted: true, extras: [{ id: "e1", kind: "comment", tag: "comment", on: false, text: "Keeping this open as a feature request." }] },
+    { key: "o:plugin", label: "Plugin candidate", writes: ["comment"], drafted: false, extras: [{ id: "e1", kind: "comment", tag: "comment", on: true, text: "This fits a plugin better than the core app. Could you move it to a plugin?" }] },
+    {
+      key: "o:close",
+      label: "Close as out of scope",
+      params: { reason: "This is outside the scope of the app." },
+      writes: ["comment", "close"],
+      drafted: false,
+      extras: [],
+    },
+    { key: "backlog", label: "Later", writes: [], drafted: false, extras: [] },
+  ];
+  return { id: `ch-s${n}`, decisionId: "photocraft#4127:scope", pick: { core: "x:close:completed", reason: "Wave already shipped in #3880, so the work is done and the issue can close." }, cores, source: "prepare", at: at(8) };
+}
 
 function seed(): ConversationTurn[] {
   return [
@@ -49,100 +125,6 @@ function seed(): ConversationTurn[] {
       body: "The `hu` pack was merged in designcraft#1301, so the data this PR adds is already covered. I would post a note and close it as completed.",
       actions: [
         card({
-          id: 7,
-          kind: "resolution",
-          label: "Close as completed",
-          headline: "Close issue as completed",
-          preview: 'Comment: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work."',
-          title: "On designcraft#1484: Post the comment below; Close the issue as completed; Closes the merge question as handled",
-          steps: ["Post the comment below", "Close the PR as completed"],
-          commentStep: 0,
-          settles: "Closes the merge question as handled",
-          text: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work.",
-          writes: "closes the PR on GitHub",
-          state: "proposed",
-        }),
-        card({
-          id: 6,
-          kind: "resolution",
-          label: "Ask for the pack",
-          title: "Ask the author to use the language pack",
-          steps: ["Post the comment below", "Add the label needs changes"],
-          settles: 'Answers the merge question with "Ask to use the language pack"',
-          option: "changes",
-          commentStep: 0,
-          text: "Thanks for adding Hungarian. craft-i18n already ships a `hu` pack that craft-proof reads, so the data files don't need to be committed. Could you load the pack instead?",
-          writes: "posts a comment on GitHub",
-          state: "proposed",
-        }),
-        card({
-          id: 8,
-          kind: "resolution",
-          label: "Hold with a label",
-          title: "Hold for a second review",
-          steps: ["Add the label needs second review"],
-          settles: 'Answers the merge question with "Hold for a second review"',
-          option: "hold",
-          stale: "new-comments",
-          state: "proposed",
-        }),
-        card({
-          id: 10,
-          kind: "resolution",
-          label: "Merge and open the issue",
-          title: "Merge now and open a follow-up issue",
-          steps: ["Open an issue in designcraft: Load Hungarian from the language pack"],
-          settles: 'Answers the merge question with "Merge"',
-          option: "merge",
-          issue: {
-            step: 0,
-            repo: "designcraft",
-            title: "Load Hungarian from the language pack",
-            body: "designcraft#1484 commits the Hungarian dictionary and hyphenation patterns. craft-i18n ships the same data as the `hu` pack.\n\nSwitch the spellchecker to load the pack through craft-proof and remove the committed files.",
-          },
-          writes: "merges the PR and opens an issue on GitHub",
-          state: "proposed",
-        }),
-        card({
-          id: 11,
-          kind: "resolution",
-          label: "Fix up, then merge",
-          headline: "Fix up and merge",
-          preview: "Instructions: Drop the committed dictionary files and load the `hu` pack through craft-proof's `load_pack`. Keep the hyphenation tests.",
-          title: "Fix up the PR, then merge it",
-          steps: ["Fix up the PR with the instructions below, then merge it once the review and CI pass"],
-          settles: "Pre-approves the merge",
-          fixup: {
-            step: 0,
-            merge: true,
-            instructions: "Drop the committed dictionary files and load the `hu` pack through craft-proof's `load_pack`. Keep the hyphenation tests.",
-          },
-          writes: "pushes to the PR branch and merges it",
-          state: "proposed",
-        }),
-        card({
-          id: 12,
-          kind: "resolution",
-          label: "Answer",
-          headline: 'Answer "Out of scope"',
-          preview: "Reason: Hungarian is covered by the language pack, so the committed dictionary files are not needed in this repo.",
-          title: 'On designcraft#1484: Answers the merge question with "Out of scope", giving the reason: covered by the language pack',
-          steps: [],
-          settles: 'Answers the merge question with "Out of scope", giving the reason: covered by the language pack',
-          option: "out-of-scope",
-          state: "proposed",
-        }),
-        card({
-          id: 13,
-          kind: "resolution",
-          label: "Move issue",
-          headline: "Move issue to storytold/craft-i18n",
-          title: "On designcraft#1484: Move the issue to storytold/craft-i18n",
-          steps: ["Move the issue to storytold/craft-i18n"],
-          settles: 'Closes the merge question as handled: "Moved to storytold/craft-i18n"',
-          state: "proposed",
-        }),
-        card({
           id: 9,
           kind: "comment",
           label: "Post comment",
@@ -157,7 +139,22 @@ function seed(): ConversationTurn[] {
 }
 
 /** In-memory conversations. Only designcraft#1484 starts with one; an operator's message is answered after a few seconds. */
-export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void): Pick<Api, "conversations"> {
+export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void, hooks?: { reprepare?: (decisionId: string) => void }): Pick<Api, "conversations"> {
+  // The open choices by item; a run that settles the question removes them.
+  const choices = new Map<string, DecisionChoices>([[REF, mergeChoices(1)], ["photocraft#4127", scopeChoices(1)]]);
+  let epoch = 1;
+  if (hooks)
+    hooks.reprepare = (decisionId) => {
+      // Like the server: the old choices stay while Opus works, then a new set replaces them.
+      setTimeout(() => {
+        for (const [k, c] of choices) {
+          if (c.decisionId !== decisionId) continue;
+          const fresh = decisionId.endsWith(":scope") ? scopeChoices(++epoch) : mergeChoices(++epoch);
+          choices.set(k, { ...fresh, pick: { core: c.pick!.core, reason: `${c.pick!.reason} Checked again against the current head.` } });
+        }
+        changed();
+      }, 2500);
+    };
   const sys = (id: number, min: number, body: string): ConversationTurn => ({ id, kind: "system", login: "system", at: at(min), body, actions: [], notes: [] });
   const store = new Map<string, Conversation>([
     ["vectorcraft#1402", { repo: "vectorcraft", number: 1402, exists: true, pending: false, startedBy: "opus", includes: [], turns: [
@@ -199,7 +196,7 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
     conversations: {
       get: (repo, n) => {
         const c = open(repo, n);
-        return snap({ ...c, turns: c.turns.map((t) => ({ ...t, actions: t.actions.map((k) => ({ ...k, canSettle: settles(c.repo) })) })) });
+        return snap({ ...c, choices: choices.get(`${c.repo}#${c.number}`) ?? null, turns: c.turns.map((t) => ({ ...t, actions: t.actions.map((k) => ({ ...k, canSettle: settles(c.repo) })) })) });
       },
       async say(repo, n, text, ask) {
         need();
@@ -277,8 +274,28 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         }
         return snap(k);
       },
-      async doChoice() {
-        throw new Error("not implemented");
+      async doChoice(choiceId, body) {
+        const entry = [...choices].find(([, c]) => c.id === choiceId);
+        if (!entry) throw new Error("these choices were replaced");
+        const [ref, ch] = entry;
+        const [repo, num] = ref.split("#") as [string, string];
+        if (!settles(repo)) throw new Error("not allowed");
+        const core = ch.cores.find((c) => c.key === body.core);
+        if (!core) throw new Error(`no core ${body.core}`);
+        if (body.note && body.note.length > 500) throw new Error("the note is longer than 500 characters");
+        if (body.params?.instructions !== undefined && me.role !== "operator") throw new Error("only operators edit a fix-up's instructions");
+        ch.run = { cardId: nextId, state: "running" };
+        changed();
+        await new Promise((r) => setTimeout(r, 600));
+        const at = new Date().toISOString();
+        const did = [...core.writes, ...core.extras.filter((x) => body.extras.some((e) => e.id === x.id)).map((x) => x.tag)];
+        const c = open(repo, Number(num));
+        c.turns.push({ id: nextId++, kind: "system", login: "system", at, body: `${me.login} ran: ${core.label}${did.length ? ` (${did.join(", ")})` : ""}.${body.note ? ` Note: ${body.note}` : ""}`, actions: [], notes: [] });
+        choices.delete(ref);
+        const answer = core.key.startsWith("o:") ? core.key.slice(2) : core.key === "backlog" ? "backlog" : "handled";
+        settle?.(repo, Number(num), answer, body.note ?? null);
+        changed();
+        return snap(card({ id: nextId++, kind: "resolution", title: core.label, state: "done", fromChoice: true, by: me.login, at, done: { at, link: "", label: core.label } }));
       },
       async dismissCard(id) {
         const k = find(id);
