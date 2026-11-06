@@ -132,7 +132,7 @@ export function addedCore(db: DatabaseSync, d: DecisionRow, key: CoreKey, applic
     applicable.has(step) ? { ...mk(db, d, key, label, { writes, base, applicable }), ...(params && { params }) } : null;
   switch (p.type) {
     case "close": return c(isPr ? "Close PR" : `Close issue as ${p.reason === "completed" ? "completed" : "not planned"}`, "close", ["close"], ["comment", "label", "unlabel", "open_issue"]);
-    case "duplicate": return c(`Close as duplicate of #${p.of}`, "duplicate", ["close"], ["label", "unlabel"], { target: String(p.of) });
+    case "duplicate": return c(`Close as duplicate of #${p.of}`, "duplicate", ["close"], ["comment", "label", "unlabel"], { target: String(p.of) });
     case "transfer": return c(`Move issue to ${p.repo}`, "transfer", ["move"], ["comment", "label"], { target: p.repo });
     case "fixup": return c("Fix up the PR", "fixup", ["push"], NON_ENDING, { instructions: "" });
     case "review": return c("Review the PR again", "review", [], ["comment", "label", "request_reviewers"]);

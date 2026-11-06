@@ -141,7 +141,7 @@ function seed(): ConversationTurn[] {
 /** In-memory conversations. Only designcraft#1484 starts with one; an operator's message is answered after a few seconds. */
 export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void, hooks?: { reprepare?: (decisionId: string) => void }): Pick<Api, "conversations"> {
   // The open choices by item; a run that settles the question removes them.
-  const choices = new Map<string, DecisionChoices>([[REF, mergeChoices(1)], ["photocraft#4127", scopeChoices(1)]]);
+  const choices = new Map<string, DecisionChoices>([[REF, mergeChoices(1)], ["photocraft#4127", scopeChoices(1)], ["gridcraft#977", { ...mergeChoices(1), id: "ch-g1", decisionId: "gridcraft#977:merge", pick: null }]]);
   let epoch = 1;
   if (hooks)
     hooks.reprepare = (decisionId) => {
@@ -150,7 +150,7 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         for (const [k, c] of choices) {
           if (c.decisionId !== decisionId) continue;
           const fresh = decisionId.endsWith(":scope") ? scopeChoices(++epoch) : mergeChoices(++epoch);
-          choices.set(k, { ...fresh, pick: { core: c.pick!.core, reason: `${c.pick!.reason} Checked again against the current head.` } });
+          choices.set(k, { ...fresh, pick: c.pick && { core: c.pick.core, reason: `${c.pick.reason} Checked again against the current head.` } });
         }
         changed();
       }, 2500);

@@ -156,7 +156,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
   const writes = ORDER.filter((t) => tags.includes(t));
   const running = choices.run?.state === "running";
   const blank = on.some((x) => (x.kind === "comment" && !editOf(x).text?.trim()) || (x.kind === "open_issue" && !editOf(x).title?.trim()));
-  const label = writes.length ? `Do it: ${tagWords(writes)}` : "Do it";
+  const label = picked && writes.length ? `Do it: ${tagWords(writes)}` : "Do it";
 
   const select = (k: string) => {
     setArmed(false);
