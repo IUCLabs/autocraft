@@ -28,6 +28,9 @@ test("a PR on the path to merge keeps the assignment, one that left it loses it"
   assert.equal(unassigns(decidePr(prFacts({ assignment: ours }))), false, "ready, merge due");
   assert.equal(unassigns(decidePr(prFacts({ review: null, draft: true, assignment: ours }))), true, "draft");
   assert.equal(unassigns(decidePr(prFacts({ inScope: false, assignment: ours }))), true, "out of scope");
+  const pushed = decidePr(prFacts({ head: "h2", assignment: ours }));
+  assert.ok(pushed.actions.some((a) => a.kind === "review"));
+  assert.equal(unassigns(pushed), false, "the contributor pushed: the new head's review is due");
   const held = { mergeable: "CONFLICTING", conflict: { bucket: "held", base: "main", baseOk: true } };
   assert.equal(unassigns(decidePr(prFacts({ ...held, assignment: ours }))), true, "conflict held");
   assert.equal(unassigns(decidePr(prFacts({ ...held, conflict: { bucket: "merge", base: "main", baseOk: true }, assignment: ours }))), false, "conflict merge due");
@@ -91,7 +94,7 @@ test("the unassign step releases what the planner says and only our own assignme
   assert.deepEqual(r.unassigned, ["app#1"]);
 });
 
-test("our own push keeps the assignment while its review is stale; a stage assigns again after our own unassign", async () => {
+test("a push keeps the assignment while the new head's review is due; a stage assigns again after our own unassign", async () => {
   const w = world().repo().pr(1, { head: "old" }).review(1, { head: "old" }).pr(2, { head: "theirs" }).review(2, { head: "old" });
   for (const n of [1, 2]) {
     w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('2026-11-04T00:00:00Z', 'assign', 'assign', ?, '{\"assignee\":\"pipeline-bot\"}')").run(`app#${n}`);
@@ -102,10 +105,13 @@ test("our own push keeps the assignment while its review is stale; a stage assig
   w.db.prepare("INSERT INTO settings (key, value) VALUES ('review_stale:app#1', '2999-01-01T00:00:00Z'), ('review_stale:app#2', '2999-01-01T00:00:00Z')").run();
   w.db.prepare("INSERT INTO push_outcomes (at, stage, action, repo, number, from_oid, to_oid, before_res) VALUES ('2026-11-04T00:01:00Z', 'fixup', 'fixup-push', 'app', 1, 'old', 'new', 'unknown')").run();
   const r = await runUnassign(w.db, { repo: "app", by: "pipeline", runId: "t", querier: w.gh.querier });
-  assert.deepEqual(r.unassigned, ["app#2"], "the contributor's push releases, our own does not");
+  assert.deepEqual(r.unassigned, [], "neither our push nor the contributor's releases while the new head's review is due");
 
   const g = guardRepo(w.db, "app", "push", "pipeline");
   assert.ok(!("refused" in g));
+  // Our own earlier unassign of #2 (as a give-up would leave it).
+  w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('2026-11-04T00:02:00Z', 'unassign', 'unassign', 'app#2', '{\"assignee\":\"pipeline-bot\",\"state\":\"done\"}')").run();
+  w.db.prepare("UPDATE items SET assignees = '[]' WHERE repo = 'app' AND number = 2").run();
   w.gh.live(2, { assignees: [] });
   const claim = () => claimForWork({ db: w.db, login: "t" }, g as never, w.gh.querier, "app", 2, "pr", { id: "U1", login: "pipeline-bot" }, { run: "t" });
   assert.equal(await claim(), true, "assigns again after our own unassign");

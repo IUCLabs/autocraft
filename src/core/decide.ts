@@ -212,10 +212,12 @@ const stuckWait = (f: PrFacts): string | null => {
   return cf === "cannot-push" ? approval : null;
 };
 
-/** Actions that work the PR towards merge (a push, a base merge, a pre-merge review, the merge), as against comment-only asks. */
+/** Actions that work the PR towards merge (a push, a base merge, a review of a new head, a pre-merge review, the merge), as against comment-only asks. */
 const worksOn = (a: Action): boolean => {
   const b = a.params?.bucket;
   switch (a.kind) {
+    // A contributor's push during our work leaves a new head to review: the PR is still ours to carry on.
+    case "review": case "carry": return true;
     case "fixup": return b === "fix" && a.params?.source !== "carry";
     case "conflict": return b === "merge";
     case "cifix": return b === "work" || b === "collect" || b === "rerun";
