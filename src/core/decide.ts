@@ -268,6 +268,8 @@ export function decidePr(f: PrFacts): Plan {
     const approve = f.runs && !f.mergeHeld && (f.runs.reread || (f.runs.crossRepo && f.runs.approvable > 0));
     return plan("integration", { actions: approve ? [act("approve-ci", f.head)] : [] });
   }
+  // The mirror shows a head we already pushed off: anything planned or asked here would be about a commit that is gone, and the PR is still ours, so the assignment stays.
+  if (open && f.pushedOff) return plan("pushed", { wait: "the mirror to show our push" });
   const held = f.heldBacklog || f.heldDuplicate;
 
   // Actions that do not depend on the PR's place in the queue.
