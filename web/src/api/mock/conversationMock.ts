@@ -61,8 +61,7 @@ function scopeChoices(n: number): DecisionChoices {
     {
       key: "x:close:completed",
       label: "Close as done (#3880)",
-      params: { reason: "Wave was added in #3880, so this request is covered. Closing as done." },
-      writes: ["comment", "close"],
+      writes: ["close"],
       drafted: true,
       extras: [
         { id: "e1", kind: "comment", tag: "comment", on: true, text: "This was done in #3880: Filter > Distort > Wave ships with the same five parameters. Closing as completed." },
