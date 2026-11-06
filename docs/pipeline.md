@@ -565,7 +565,7 @@ Opus adds the cores from Fix up the PR to Move issue when no offered core covers
 
 The steps run in this order: comment, labels, unlabels, assign, request reviewers, open issue, fix-up or review, and last the closing step (close, duplicate or transfer). Choices have no reopen extra: a card on a closed item (written in the item's conversation) starts with a reopen step, only on an issue or a closed, unmerged PR.
 
-**Who can press Do it.** Operators. Maintainers can too, on a repo that acts as the GitHub App, while the maintainer-writes setting is on and the maintainer has write, maintain or admin access to every repo the decision covers (`canSettle`, `src/settlers.ts`); the write then shows under their own GitHub name. Everyone else reads the decision.
+**Who can press Do it.** Operators. Maintainers can too, on a repo that acts as the GitHub App, while the maintainer-writes setting is on and the maintainer has write, maintain or admin access to every repo the decision covers; the write then shows under their own GitHub name. Everyone else reads the decision.
 
 **More buttons.** These are for operators.
 
