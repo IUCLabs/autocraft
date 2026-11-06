@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { FindingView, ScanView, SecurityOverview } from "../../../web/src/api/types.ts";
 import { actOnFindingAs, SecurityError, startScanAs, stopScanAs } from "../../security/actions.ts";
-import { overview, reconcileFindings, findingRow, toFinding } from "../../security/store.ts";
+import { overview, reconcileFindings, findingRow, toFinding, scanRow } from "../../security/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -57,9 +57,12 @@ export async function startScan(db: DatabaseSync, req: Req): Promise<ScanView> {
   return asHttp(() => startScanAs(db, repo, req.user.login, b.capUsd));
 }
 
-export function stopScan(db: DatabaseSync, req: Req): Promise<ScanView> {
+export async function stopScan(db: DatabaseSync, req: Req): Promise<ScanView> {
   needOperator(req);
   const id = number(req.params.id, "scan");
+  const scan = scanRow(db, id);
+  if (!scan) throw new HttpError(404, NOT_FOUND);
+  await needVisible(db, req, scan.repo);
   return asHttp(() => stopScanAs(db, id, req.user.login));
 }
 
