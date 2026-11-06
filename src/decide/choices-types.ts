@@ -16,41 +16,35 @@ export type CloseReason = "completed" | "not_planned";
 /**
  * Core keys: `o:<option>`, `fixup-merge`, `backlog`, and the cores only Opus adds:
  * `x:close:<reason>`, `x:duplicate:<n>`, `x:transfer:<repo>`, `x:fixup`, `x:review`.
- * On a scope decision the fix-up cores name the keep answer they record: `fixup-merge:<small-extra|take>`, `x:fixup:<small-extra|take>`.
  */
 export type CoreKey = string;
 
 export type ParsedCoreKey =
   | { type: "option"; option: string }
-  | { type: "fixup-merge"; keep?: KeepAnswer }
+  | { type: "fixup-merge" }
   | { type: "backlog" }
   | { type: "close"; reason: CloseReason }
   | { type: "duplicate"; of: number }
   | { type: "transfer"; repo: string }
-  | { type: "fixup"; keep?: KeepAnswer }
+  | { type: "fixup" }
   | { type: "review" };
-
-/** The scope answers a fix-up core on a scope decision records (the answers that keep a PR in core). */
-export type KeepAnswer = "small-extra" | "take";
 
 export const coreKey = {
   option: (option: string): CoreKey => `o:${option}`,
-  fixupMerge: (keep?: KeepAnswer): CoreKey => (keep ? `fixup-merge:${keep}` : "fixup-merge"),
+  fixupMerge: "fixup-merge" as CoreKey,
   backlog: "backlog" as CoreKey,
   close: (reason: CloseReason): CoreKey => `x:close:${reason}`,
   duplicate: (of: number): CoreKey => `x:duplicate:${of}`,
   transfer: (repo: string): CoreKey => `x:transfer:${repo}`,
-  fixup: (keep?: KeepAnswer): CoreKey => (keep ? `x:fixup:${keep}` : "x:fixup"),
+  fixup: "x:fixup" as CoreKey,
   review: "x:review" as CoreKey,
 };
 
 /** Null for a key outside the scheme. */
 export function parseCoreKey(key: string): ParsedCoreKey | null {
   if (key === "fixup-merge") return { type: "fixup-merge" };
-  if (key === "fixup-merge:small-extra" || key === "fixup-merge:take") return { type: "fixup-merge", keep: key.slice(12) as KeepAnswer };
   if (key === "backlog") return { type: "backlog" };
   if (key === "x:fixup") return { type: "fixup" };
-  if (key === "x:fixup:small-extra" || key === "x:fixup:take") return { type: "fixup", keep: key.slice(8) as KeepAnswer };
   if (key === "x:review") return { type: "review" };
   if (key.startsWith("o:") && key.length > 2) return { type: "option", option: key.slice(2) };
   const close = /^x:close:(completed|not_planned)$/.exec(key);
@@ -64,12 +58,12 @@ export function parseCoreKey(key: string): ParsedCoreKey | null {
 export function formatCoreKey(p: ParsedCoreKey): CoreKey {
   switch (p.type) {
     case "option": return coreKey.option(p.option);
-    case "fixup-merge": return coreKey.fixupMerge(p.keep);
+    case "fixup-merge": return coreKey.fixupMerge;
     case "backlog": return coreKey.backlog;
     case "close": return coreKey.close(p.reason);
     case "duplicate": return coreKey.duplicate(p.of);
     case "transfer": return coreKey.transfer(p.repo);
-    case "fixup": return coreKey.fixup(p.keep);
+    case "fixup": return coreKey.fixup;
     case "review": return coreKey.review;
   }
 }
@@ -176,15 +170,4 @@ export interface DoChoiceBody {
   /** Ticked extras only, with the user's own text edits. */
   extras: { id: string; text?: string; title?: string; body?: string }[];
   note?: string;
-}
-
-/**
- * The key a fix-up core has on a scope decision: a stored `fixup-merge` or `x:fixup` (written before the keep answer was part of the key)
- * becomes the small-extra core when its extras tick the "small extra" label, else the take core. Other keys and other decisions keep theirs.
- */
-export function scopeCoreKey(key: CoreKey, scope: boolean, extras: { kind: ExtraKind; on?: boolean; label?: string }[]): CoreKey {
-  const p = scope ? parseCoreKey(key) : null;
-  if (!p || (p.type !== "fixup-merge" && p.type !== "fixup") || p.keep) return key;
-  const keep: KeepAnswer = extras.some((e) => e.kind === "label" && e.on !== false && e.label === "small extra") ? "small-extra" : "take";
-  return formatCoreKey({ ...p, keep });
 }

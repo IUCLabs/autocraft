@@ -5,7 +5,7 @@ import type { CardParams, Step } from "../conversations/cards.ts";
 import { decisionStamp, openDecision } from "../conversations/cards.ts";
 import type { DecisionRow } from "../decisions.ts";
 import { applyDrafts, coresFor, MAX_ADDED_CORES, withIds, writeChoices } from "./choices.ts";
-import { coreKey, scopeCoreKey, type ChoicesBlockExtra, type ChoicesRow, type CoreKey, type StoredDraft } from "./choices-types.ts";
+import { coreKey, type ChoicesBlockExtra, type ChoicesRow, type CoreKey, type StoredDraft } from "./choices-types.ts";
 
 /** A proposed card as the mapper reads it. */
 export interface DraftCard { params: CardParams; text: string | null }
@@ -57,7 +57,7 @@ function mapCard(c: DraftCard): { key: CoreKey; draft: Draft; note?: string } | 
     case "duplicate": return { key: coreKey.duplicate(end.of), draft: { extras } };
     case "transfer": return { key: coreKey.transfer(end.to), draft: { extras } };
     case "review": return { key: coreKey.review, draft: { extras } };
-    case "fixup": return { key: end.merge ? coreKey.fixupMerge() : coreKey.fixup(), draft: { params: { instructions: end.instructions }, extras } };
+    case "fixup": return { key: end.merge ? coreKey.fixupMerge : coreKey.fixup, draft: { params: { instructions: end.instructions }, extras } };
     default: return null;
   }
 }
@@ -75,9 +75,8 @@ export function cardsToDrafts(db: DatabaseSync, d: DecisionRow, cards: DraftCard
   const seen = new Set<CoreKey>();
   cards.forEach((c, i) => {
     if (c.params.kind === "resolution" && c.params.steps.some((s) => s.kind === "reopen")) out.notes.push("dropped the reopen step of a card: choices have no reopen");
-    const m0 = mapCard(c);
-    if (!m0) return;
-    const m = { ...m0, key: scopeCoreKey(m0.key, d.kind === "scope", m0.draft.extras) };
+    const m = mapCard(c);
+    if (!m) return;
     if (m.note) out.notes.push(m.note);
     if (seen.has(m.key)) { out.notes.push(`left out a second card for ${m.key}`); return; }
     seen.add(m.key);
