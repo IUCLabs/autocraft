@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
   CardEdit,
+  DoChoiceBody,
   Preapproval,
   NextPage,
   ReleaseAction,
@@ -117,6 +118,8 @@ export interface Api {
     /** The feedback box: an optional pick (replaces the user's live one) and free text, at least one. Text alone joins the thread. */
     feedback(id: string, input: { option?: string | null; text?: string }): Promise<Decision>;
     retract(id: string): Promise<Decision>;
+    /** Operator: has Opus prepare the open decision again in the choices format; the current choices stay until replaced. */
+    reprepare(id: string): Promise<Decision>;
     /** Operator only: answer with the opinion's option. */
     adopt(id: string, opinionId: string, textsHash?: string): Promise<Decision>;
     claim(id: string): Promise<void>;
@@ -134,6 +137,8 @@ export interface Api {
     /** `skip`: indexes into `steps` the operator removed; the rest run in order. `note`: kept with the choice (on the decision it settles, in the thread), never posted to GitHub; at most 500 characters. */
     doCard(id: number, opts?: { skip?: number[]; note?: string }): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
+    /** Runs one core with its ticked extras as a card; returns that card. */
+    doChoice(choiceId: string, body: DoChoiceBody): Promise<ConversationCard>;
     /** Operator only: stops the item's running pre-approved merge (state becomes "cancelled"); the PR's open question, if any, stays. */
     cancelPreapproval(repo: RepoName, number: number): Promise<Preapproval>;
   };

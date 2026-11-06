@@ -1813,10 +1813,67 @@ export interface ConversationCard {
   /** Who pressed the button or dismissed the card, and when. */
   by?: string;
   at?: string;
+  /** Run from a decision's choices (`conversations.doChoice`), not proposed by Opus as a card. */
+  fromChoice?: boolean;
   /** The text was edited by an operator before it ran. */
   edited?: boolean;
   /** Who edited the text, when `edited`. */
   editedBy?: string;
+}
+
+// ---- Decision choices: one core action plus extras ---------------------------------
+
+/** The GitHub write a core or an extra performs; one pill each in the UI. */
+export type ActionTag = "merge" | "close" | "reopen" | "comment" | "open_issue" | "label" | "unlabel" | "assign" | "request_review" | "push" | "move";
+export type ExtraKind = "comment" | "open_issue" | "label" | "unlabel" | "assign" | "request_reviewers";
+/** `o:<option>`, `fixup-merge`, `backlog`, `x:close:<completed|not_planned>`, `x:duplicate:<n>`, `x:transfer:<repo>`, `x:fixup`, `x:review`. */
+export type CoreKey = string;
+
+export interface ChoiceExtra {
+  id: string;
+  kind: ExtraKind;
+  tag: ActionTag;
+  /** Ticked: Opus's tick before the user changes it. */
+  on: boolean;
+  text?: string;
+  title?: string;
+  body?: string;
+  label?: string;
+  login?: string;
+  logins?: string[];
+  repo?: string;
+}
+
+export interface ChoiceCore {
+  key: CoreKey;
+  label: string;
+  /** reason: closing cores; instructions: fix-up cores; target: duplicate-of number or transfer repo. */
+  params?: { reason?: string; instructions?: string; target?: string };
+  /** GitHub writes the core itself performs; empty when it only records an answer in AutoCraft. */
+  writes: ActionTag[];
+  extras: ChoiceExtra[];
+  /** Opus drafted this core's params and extras (beyond the offered list). */
+  drafted: boolean;
+}
+
+export interface DecisionChoices {
+  id: string;
+  decisionId: string;
+  pick: { core: CoreKey; reason: string } | null;
+  cores: ChoiceCore[];
+  /** The newest card run from these choices. */
+  run?: { cardId: number; state: ConversationCardState; error?: string };
+  source: "prepare" | "conversation" | "converted";
+  at: string;
+}
+
+/** Body of `conversations.doChoice`. */
+export interface DoChoiceBody {
+  core: CoreKey;
+  params?: { reason?: string; instructions?: string };
+  /** Ticked extras only, with the user's own text edits. */
+  extras: { id: string; text?: string; title?: string; body?: string }[];
+  note?: string;
 }
 
 export interface ConversationTurn {
@@ -1848,6 +1905,8 @@ export interface Conversation {
   /** Maintainer posts an operator included for Opus. `source` is "decision-comment:<id>" or "decision-opinion:<id>"; `sent` once Opus has been given it (it can no longer be removed). */
   includes: { source: string; by: string; at: string; sent: boolean }[];
   turns: ConversationTurn[];
+  /** The item's open bound decision's answer choices; null or absent when it has none. */
+  choices?: DecisionChoices | null;
 }
 
 // ---- Areas -------------------------------------------------------------------
