@@ -141,7 +141,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const brokeAt = brokeHeads(db, opts.repo);
   // carriedReview only carries our own plain fix-up (no carry or pre-merge source) as the head: skip its compiles for other PRs.
   const ourFixupHead = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' AND source IS NULL LIMIT 1");
-  const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ? AND number = ? AND to_oid = ?");
+  // A head we pushed, or the head our push moved off (the mirror may still show it, and our own comment makes its review stale).
+  const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND (to_oid = ?3 OR from_oid = ?3)");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
   const posts = new Map((db.prepare("SELECT repo, number, review_id, head_oid, posted_at, opus_at FROM review_posts").all() as { repo: string; number: number; review_id: string; head_oid: string | null; posted_at: string | null; opus_at: string | null }[])

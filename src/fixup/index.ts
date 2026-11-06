@@ -511,6 +511,8 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
           continue;
         }
       }
+      // The planner may have released the PR while the model worked (our own unassign is no one's final word).
+      if (!c.carry) await claim(c);
       rec.pushing(c, commit, v.files);
       const push = await pushBranch(gw, git, "fixup-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
       if (push.code !== 0) {
