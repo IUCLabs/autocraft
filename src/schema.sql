@@ -1104,7 +1104,8 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
   acted_at TEXT,
   edited_by TEXT,
   edited_at TEXT,
-  seen TEXT                           -- JSON {head, last_comment}: the item as Opus last saw it; null on cards from before it was recorded
+  seen TEXT,                          -- JSON {head, last_comment}: the item as Opus last saw it; null on cards from before it was recorded
+  choice_id TEXT                      -- the decision_choices row the card was run from (Do it on a choice); NULL for cards Opus proposed (db.ts adds it to older databases)
 );
 -- Maintainer posts (decision comments and opinions) an operator chose to share with Opus. Excluded unless a row exists; `sent_turn`
 -- is the operator turn whose stored block carries the text (each post is sent once).
@@ -1116,6 +1117,24 @@ CREATE TABLE IF NOT EXISTS conversation_includes (
   sent_turn INTEGER,
   PRIMARY KEY (repo, number, source)
 );
+-- Opus's drafts and pick for a decision's answer choices (core action plus extras). Only model output is stored; the core list is computed when read.
+CREATE TABLE IF NOT EXISTS decision_choices (
+  id TEXT PRIMARY KEY,
+  decision_id TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  turn_id INTEGER,                    -- the conversation turn that wrote it; NULL for prepare
+  stamp TEXT NOT NULL,                -- decisionStamp at write
+  seen TEXT,                          -- JSON {head, last_comment}: the item as Opus saw it
+  source TEXT NOT NULL,               -- prepare | conversation | converted
+  drafts TEXT NOT NULL,               -- JSON: core key -> {params?, extras: [{id, kind, on, ...fields}]}
+  added TEXT NOT NULL DEFAULT '[]',   -- JSON: core keys Opus added
+  pick TEXT NOT NULL,                 -- JSON {core, reason}
+  state TEXT NOT NULL DEFAULT 'current',  -- current | replaced
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS decision_choices_item ON decision_choices(repo, number, state);
+CREATE INDEX IF NOT EXISTS decision_choices_decision ON decision_choices(decision_id, state);
 CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
 CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);
 

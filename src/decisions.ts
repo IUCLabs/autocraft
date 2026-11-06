@@ -55,9 +55,12 @@ export const SNOOZED_SQL = (() => {
   OR EXISTS (SELECT 1 FROM conversation_turns st WHERE ${onItem("st")} AND st.kind = 'operator' AND st.at > decisions.snoozed_at)))`;
 })();
 
-/** A settled decision makes the drafts still proposed on its item obsolete (the ask card, the other options' drafts). */
+/** A settled decision makes the drafts still proposed on its item obsolete (the ask card, the other options' drafts, its choices). */
 export function replaceProposedCards(db: DatabaseSync, repo: string | null, number: number | null): void {
-  if (repo && number !== null) db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'proposed'").run(repo, number);
+  if (repo && number !== null) {
+    db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'proposed'").run(repo, number);
+    db.prepare("UPDATE main.decision_choices SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'current'").run(repo, number);
+  }
 }
 
 export const isBacklog = (answer: string | null): boolean => answer === BACKLOG.key;

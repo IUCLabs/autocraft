@@ -36,6 +36,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["security_findings", "fix_ref", "TEXT"],
   ["security_findings", "note", "TEXT"],
   ["decision_opinions", "via", "TEXT"],
+  ["conversation_cards", "choice_id", "TEXT"],
   ["decision_comments", "via", "TEXT"],
   ["jobs", "acted", "INTEGER"],
   ["job_items", "ref", "TEXT"],

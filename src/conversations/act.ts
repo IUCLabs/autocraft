@@ -24,6 +24,8 @@ import { ownerOf, slugOf } from "../owners.ts";
 
 export type CardRow = {
   seen: string | null;
+  /** The decision_choices row the card was run from. */
+  choice_id?: string | null;
   id: number; turn_id: number; repo: string; number: number; kind: string; params: string; text: string | null; description: string;
   state: string; result: string | null; result_url: string | null; error: string | null; acted_by: string | null; acted_at: string | null; edited_by: string | null; edited_at: string | null;
 };
