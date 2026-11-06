@@ -5,6 +5,7 @@ import { acquireLock } from "../mirror.ts";
 import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
 import { scopeToTracked } from "../repos.ts";
+import { convertOpenDecisionsOnce } from "../decide/choices-convert.ts";
 import { execJob } from "./exec.ts";
 import { isDraining, isEnabled, LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "./autopilot.ts";
 import { PilotError, pilotItems, setPilot } from "../pilot.ts";
@@ -31,6 +32,9 @@ async function serve(): Promise<void> {
   if (!release) die("another runner is running on this database");
   const db = connect();
   scopeToTracked(db);
+  // Once per database: open decisions' proposed cards become choices. Here rather than in db.ts migrations, which cannot import the decision modules.
+  const conv = convertOpenDecisionsOnce(db);
+  if (conv) console.log(`runner: converted ${conv.converted} open decisions to choices (${conv.skipped} skipped)`);
   const runner = new Runner({ db, lockFile: lock, maxJobs: Number(envVar("RUNNER_JOBS")) || DEFAULT_MAX_JOBS });
   const ac = new AbortController();
   process.once("SIGTERM", () => ac.abort());

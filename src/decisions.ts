@@ -464,11 +464,18 @@ function askCmd(args: string[]): void {
   console.log(`${r.inserted} asked, ${r.updated} updated`);
 }
 
-const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, retry: retryCmd, cards: cardsCmd, card: cardCmd, "test-repo": testRepoCmd };
+async function convertChoicesCmd(args: string[]): Promise<void> {
+  const { convertOpenDecisions } = await import("./decide/choices-convert.ts");
+  const dryRun = args.includes("--dry-run");
+  const r = convertOpenDecisions(connect(), { dryRun });
+  console.log(`${dryRun ? "would convert" : "converted"} ${r.converted} open decisions to choices; skipped ${r.skipped}`);
+}
+
+const SUB: Record<string, (args: string[]) => void | Promise<void>> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd, answer: answerCmd, retry: retryCmd, cards: cardsCmd, card: cardCmd, "test-repo": testRepoCmd, "convert-choices": convertChoicesCmd };
 
 export const commands = {
   decisions: {
-    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] | answer ID OPTION --as LOGIN [--note TEXT] | retry ID --as LOGIN | cards REPO#N | card ID --as LOGIN [--skip N,N] [--note TEXT] | test-repo [REPO on|off] (answers come from the dashboard, or `answer`/`card` on test repos as an operator login; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
+    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] | answer ID OPTION --as LOGIN [--note TEXT] | retry ID --as LOGIN | cards REPO#N | card ID --as LOGIN [--skip N,N] [--note TEXT] | test-repo [REPO on|off] | convert-choices [--dry-run] (answers come from the dashboard, or `answer`/`card` on test repos as an operator login; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
     run(args: string[]): void | Promise<void> {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
