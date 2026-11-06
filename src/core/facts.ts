@@ -40,7 +40,7 @@ import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
 import { postSource } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
-import { openScopeItems, scopeAnswers } from "../review/candidates.ts";
+import { scopeAnswers } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
 import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf } from "./rules.ts";
 import type { AssignFacts, PrFacts, PrTier } from "./plan.ts";
@@ -131,7 +131,6 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const stale = staleReviews(db, opts.repo);
   const staleActionable = staleReviews(db, opts.repo, true);
   const scope = scopeAnswers(db);
-  const scopeOpen = openScopeItems(db);
   const gates = gatesOf(db, opts.repo);
   const holds = mergeHolds(db, opts.repo);
   const inBatch = batchStates(db, opts.repo);
@@ -234,7 +233,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const base: PrFacts = {
       repo: r.repo, number: r.number, assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
       author: r.author, authorIsPipeline: r.author !== null && own.isOwn(r.repo, r.author), tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
-      scopeAnswer: scope.get(ref) ?? null, scopeOpen: scopeOpen.has(ref),
+      scopeAnswer: scope.get(ref) ?? null,
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, quiet: own.quiet.has(ref), mergeHeld: holds.has(ref),
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
       review: null, post: { postable: false, posted: null },

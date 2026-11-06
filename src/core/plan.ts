@@ -118,8 +118,6 @@ export type PrFacts = {
   labelUnsure?: boolean;
   /** The answer of the latest answered scope decision about the PR (a batch decision applies to its items). */
   scopeAnswer: string | null;
-  /** An unanswered scope decision covers the PR: no review, merge or close question until it is answered. */
-  scopeOpen?: boolean;
 
   // scope
   /** In scope: fast-tracked, or its repo's Pipeline switch is on and, with a pilot set, it is a pilot item. */

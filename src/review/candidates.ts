@@ -43,14 +43,3 @@ export function scopeAnswers(db: DatabaseSync, operatorsOnly = false): Map<strin
   }
   return out;
 }
-
-/** Items (`repo#number`) with an unanswered scope question: their own, or a batch's. */
-export function openScopeItems(db: DatabaseSync): Set<string> {
-  const out = new Set<string>();
-  const rows = db.prepare("SELECT repo, number, items FROM decisions WHERE kind = 'scope' AND answer IS NULL AND id NOT LIKE '%~replaced-%'").all() as { repo: string | null; number: number | null; items: string | null }[];
-  for (const r of rows) {
-    if (r.number !== null) out.add(`${r.repo}#${r.number}`);
-    else for (const i of parseRefs(r.items)) out.add(`${i.repo}#${i.number}`);
-  }
-  return out;
-}
