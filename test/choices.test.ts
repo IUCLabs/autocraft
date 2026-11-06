@@ -213,8 +213,10 @@ describe("decision choices", () => {
       ask(db, [{ id: "app#5:scope", kind: "scope", repo: "app", number: 5, question: "Scope?", options: Object.values(SCOPE_OPTIONS).map((o) => ({ key: o.key, label: o.label })) }]);
       const keys = coresFor(db, getDecision(db, "app#5:scope")!).map((c) => c.key);
       assert.ok(keys.includes("fixup-merge:small-extra") && keys.includes("fixup-merge:take") && !keys.includes("fixup-merge"), keys.join());
-      // The "small extra" label is what the answer sets, so ticking it adds no step.
-      const { composed } = choose(db, "app#5:scope", "fixup-merge:small-extra", [{ id: "label:small extra", kind: "label", label: "small extra" }], { instructions: "Rename a to b." });
+      // The answer writes nothing to GitHub, so a ticked label stays a step.
+      const withLabel = choose(db, "app#5:scope", "fixup-merge:small-extra", [{ id: "label:small extra", kind: "label", label: "small extra" }], { instructions: "Rename a to b." }).composed;
+      assert.ok("card" in withLabel && (withLabel.card.steps as { kind: string }[]).map((x) => x.kind).join() === "label,fixup");
+      const { composed } = choose(db, "app#5:scope", "fixup-merge:small-extra", [], { instructions: "Rename a to b." });
       assert.ok("card" in composed);
       const v = validateCard(db, "app", 5, composed.card);
       assert.ok("card" in v, "note" in v ? v.note : "");

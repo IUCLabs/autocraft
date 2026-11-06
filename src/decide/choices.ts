@@ -46,8 +46,6 @@ export const EXTRA_TAG: Record<ExtraKind, ActionTag> = {
 const NON_ENDING: ExtraKind[] = ["comment", "label", "unlabel", "assign", "request_reviewers", "open_issue"];
 /** Extra kinds always offered (with empty text) when the core takes them; the others only when Opus drafted them. */
 const ALWAYS: ExtraKind[] = ["comment", "open_issue"];
-/** The label a keep answer stands for; an extra that adds it is left out of the card, since the answer already sets it. */
-export const keepLabel = (keep: KeepAnswer): string => (keep === "small-extra" ? "small extra" : "missing feature");
 const KEEP_LABEL_NAME: Record<KeepAnswer, string> = { "small-extra": "Small extra", take: "Wanted in core" };
 const KEEPS: KeepAnswer[] = ["small-extra", "take"];
 const NO_ISSUE_OPTIONS = (key: string): boolean => key === "hold" || key === "need-info" || key.startsWith("keep");
@@ -207,8 +205,7 @@ export function applyDrafts(db: DatabaseSync, d: DecisionRow, cores: Core[], row
   }
   return all.map((core) => {
     const draft: StoredDraft | undefined = row?.drafts[core.key];
-    const keep = "keep" in core.parsed ? core.parsed.keep : undefined;
-    const extras = (draft?.extras ?? []).filter((e) => core.allowed.includes(e.kind) && !(keep && e.kind === "label" && e.label === keepLabel(keep))).map((e) => viewExtra(e, core, d));
+    const extras = (draft?.extras ?? []).filter((e) => core.allowed.includes(e.kind)).map((e) => viewExtra(e, core, d));
     for (const kind of ALWAYS) {
       if (core.allowed.includes(kind) && !extras.some((e) => e.kind === kind)) {
         extras.push(viewExtra({ id: kind, kind, on: false, ...(kind === "comment" ? { text: "" } : { title: "", body: "" }) }, core, d));
@@ -236,8 +233,7 @@ export function compose(core: Core, extras: ComposeExtra[], params: { reason?: s
   const steps: Record<string, unknown>[] = [];
   let text: string | undefined;
   for (const e of of("comment")) { steps.push({ kind: "comment" }); text = e.text; }
-  const keep = "keep" in core.parsed ? core.parsed.keep : undefined;
-  for (const e of of("label")) if (!(keep && e.label === keepLabel(keep))) steps.push({ kind: "label", label: e.label });
+  for (const e of of("label")) steps.push({ kind: "label", label: e.label });
   for (const e of of("unlabel")) steps.push({ kind: "unlabel", label: e.label });
   for (const e of of("assign")) steps.push({ kind: "assign", login: e.login });
   for (const e of of("request_reviewers")) steps.push({ kind: "request_reviewers", logins: e.logins });
