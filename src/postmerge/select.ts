@@ -95,7 +95,7 @@ export function pendingDefects(db: DatabaseSync, repo: string, now = Date.now())
   const out: PendingDefect[] = [];
   const quiet = quietFixPrs(db, repo);
   for (const r of rows) {
-    // A security fix is public text-free until its advisory is published: its findings stay on the dashboard.
+    // A security fix gets no public text until its advisory is published: its findings stay on the dashboard.
     if (quiet.has(`${r.repo}#${r.number}`)) continue;
     if (heldReason(db, r.repo, r.number, r.at)) continue;
     const have = followupsOf(db, r.repo, r.number).filter((x) => x.review_at === r.at);

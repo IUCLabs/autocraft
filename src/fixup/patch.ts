@@ -222,6 +222,8 @@ export type ConflictPr = {
   review_reason: string;
   /** The base branch being merged in. */
   base: string;
+  /** Set for a quiet pull request: the prompt adds the quiet rule; not part of the quoted JSON. */
+  quiet?: boolean;
   /** Each conflicted file as its conflict sections. */
   files: ConflictFile[];
   /** Present when an earlier resolution failed the lint check: its diff against the merge's conflicted tree and the findings on the lines it changed. */

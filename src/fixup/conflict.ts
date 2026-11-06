@@ -18,6 +18,8 @@ import { cachedDiff } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
+import { isQuiet } from "../security/quiet.ts";
+import { patchGiveaway } from "../security/rules.ts";
 import { BASE_NAME, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
 import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger } from "../prepush/resume.ts";
@@ -263,19 +265,29 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       checkout = (await x.d.checkout?.(x.repo, c.number, head)) ?? undefined;
       const body = ((db.prepare("SELECT body FROM items WHERE repo = ? AND number = ?").get(x.repo, c.number) as { body: string | null } | undefined)?.body ?? "").slice(0, 4000);
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
+      const quiet = isQuiet(db, x.repo, c.number);
       const resFiles: { path: string; mode: string; content: string }[] = [];
       const keptNow: Kept = {};
       // One resolver call and one check per file, so the size caps apply to a file, not to the whole PR. Every file must pass before anything is pushed.
       for (const t of shown) {
         const f = t.view;
         const ses = again ? sessionAsk(c.lint?.session, f.path, again.findings, new Date(x.at())) : {};
-        const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: [f], ...(again ? { previous: { patch: again.diff, findings: again.findings } } : {}), ...repoDir }], checkout, ses);
+        const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, ...(quiet ? { quiet } : {}), files: [f], ...(again ? { previous: { patch: again.diff, findings: again.findings } } : {}), ...repoDir }], checkout, ses);
         if (ses.kept) { keptNow[f.path] = ses.kept; x.ledger.hold(ses.kept); }
         if (reply === null) { fail("failed", `the model gave no answer for ${f.path}`); return; }
         const res = parseResolution(reply, f.sections.map((s) => s.id));
         if (!res.ok) { fail("refused", `${f.path}: ${res.reason}`); return; }
         const spliced = spliceSections(t.content, f.sections.map((s) => res.sections.get(s.id)!), f.path);
         if (spliced === null) { fail("refused", `the resolution of ${f.path} adds lines that are neither side, or declares code, imports or dependencies`); return; }
+        if (quiet) {
+          // Lines from either side are public already; only the lines the model wrote are checked.
+          const written = f.sections.flatMap((sec) => {
+            const sides = new Set(`${sec.ours}${sec.theirs}`.split("\n"));
+            return answerText(res.sections.get(sec.id)!).split("\n").filter((l) => l !== "" && !sides.has(l));
+          });
+          const word = written.length ? patchGiveaway(`diff --git a/${f.path} b/${f.path}\n--- a/${f.path}\n+++ b/${f.path}\n@@ -1 +1 @@\n${written.map((l) => `+${l}`).join("\n")}\n`) : null;
+          if (word) { fail("refused", `the resolution of ${f.path} adds "${word}" to a pull request whose fix is not yet public`); return; }
+        }
         const text = endNewline(t.content, spliced);
         resFiles.push({ path: f.path, mode: t.mode, content: t.crlf ? text.replace(/\r?\n/g, "\r\n") : text });
         const sections = checkSections([f], (s) => answerText(res.sections.get(s.id)!));

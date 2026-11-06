@@ -674,7 +674,7 @@ Reply with ONLY one JSON object: {"sections": [{"id": <section id>, "content": "
 {{pr}}
 </pr>`,
   output: `A JSON object: {"sections": [{"id", "content"}]}.`,
-  validation: `${CLAUDE_RESULT} The text from the first "{" to the last "}" is parsed as JSON. It is kept only when it answers every section id once and no other, each with content that has no conflict marker and is within the size limits. Our code splices the answers into the merge's files (text outside the sections cannot change; each answer is lines from the two sides plus at most three others) and builds the merge commit from them; the patch check (Opus) must approve before the push. Otherwise the try is recorded as refused or rejected and nothing is pushed.`,
+  validation: `${CLAUDE_RESULT} The text from the first "{" to the last "}" is parsed as JSON. It is kept only when it answers every section id once and no other, each with content that has no conflict marker and is within the size limits. Our code splices the answers into the merge's files (text outside the sections cannot change; each answer is lines from the two sides plus at most three others) and builds the merge commit from them; on a quiet pull request (a security fix not yet published) the lines the model wrote must also contain none of the words that name what the fix protects against; the patch check (Opus) must approve before the push. Otherwise the try is recorded as refused or rejected and nothing is pushed.`,
   limits: { perCall: 1, attempts: 1, timeoutSeconds: 900 },
   extra: [
     { label: "Comment on the PR after merging the default branch into it", value: CONFLICT_COMMENT_TEMPLATE },
@@ -1347,8 +1347,8 @@ const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string,
     return { pr: untrustedJson(rest), repo_access: repoAccess(repo_dir, "the pull request's head commit without our patch, to check callers and tests") };
   },
   "fixup.conflict": ([pr]) => {
-    const { repo_dir, ...rest } = pr!;
-    return { pr: untrustedJson(rest), repo_access: repoAccess(repo_dir, "the pull request's head commit, for callers and conventions around the conflicted files") };
+    const { repo_dir, quiet, ...rest } = pr!;
+    return { pr: untrustedJson(rest), repo_access: repoAccess(repo_dir, "the pull request's head commit, for callers and conventions around the conflicted files") + quietRule(quiet) };
   },
   "lint.reference.haiku": (texts) => ({ texts: untrustedJson(texts) }),
   "mainfix.classify": ([f]) => ({ failure: untrustedJson(f) }),
