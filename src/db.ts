@@ -260,8 +260,18 @@ function migrateValues(db: DatabaseSync): void {
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('mentions_built', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(names);
     db.exec("COMMIT");
   }
+  // Once: open decisions whose last prepare kept no card because every drafted card was dropped are prepared again, with the repeat that carries the drop notes.
+  if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'prepare_dropped_redone'").get()) {
+    db.exec("BEGIN IMMEDIATE");
+    db.exec(`UPDATE main.decisions SET prepared_at = NULL, prepared_head = NULL
+      WHERE answer IS NULL AND number IS NOT NULL AND id NOT LIKE '%:dupegroup:%' AND prepared_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM main.conversation_cards c WHERE c.repo = decisions.repo AND c.number = decisions.number AND c.state = 'proposed')
+        AND COALESCE((SELECT t.notes FROM main.conversation_turns t WHERE t.repo = decisions.repo AND t.number = decisions.number AND t.kind = 'opus' ORDER BY t.id DESC LIMIT 1), '[]') <> '[]'`);
+    db.exec("INSERT INTO main.settings (key, value) VALUES ('prepare_dropped_redone', '1') ON CONFLICT (key) DO NOTHING");
+    db.exec("COMMIT");
+  }
   // Looked up first: an UPDATE that changes nothing still takes the write lock.
-  if (db.prepare("SELECT 1 FROM main.access WHERE role = 'admin'").get()) db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
+  if (db.prepare("SELECT 1 FROM main.access WHERE role = 'admin'").get())db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
   // Priority rows written with the impact names (critical, high, normal, low) become levels.
   const OLD = "('critical', 'high', 'normal', 'low')";
   if (db.prepare(`SELECT 1 FROM main.item_priority WHERE impact IN ${OLD} OR jev_impact IN ${OLD} OR haiku_impact IN ${OLD} LIMIT 1`).get()) {
