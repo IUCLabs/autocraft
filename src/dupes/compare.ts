@@ -9,7 +9,7 @@
 import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { claudeRoom } from "../agents/call.ts";
+import { queueRoom } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
 import { COMPARE_ISSUES, COMPARE_PRS } from "../agents/steps.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
@@ -268,7 +268,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
     } else s.compared++;
     for (const m of set.members) jobItem(db, set.repo, m.number, `compared in duplicate set ${set.key}, keep #${r.kept}${r.source === "rule" ? " (by rule)" : ""}`, () => {});
     params.onHandled?.(++handled);
-  }), () => claudeRoom(db));
+  }), () => queueRoom(db));
   s.asked = askGroupDecisions(db, params.repo, NOW_ISO(d));
   log(`dupe-compare: ${s.compared} compared by a model, ${s.byRule} by rule, ${s.closedWins} won by a closed member, ${s.single} single, ${s.dropped} dropped; ${s.asked.length} decisions asked`);
   return s;

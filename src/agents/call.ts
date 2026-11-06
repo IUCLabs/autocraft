@@ -2,12 +2,13 @@
 // in one transaction so two job processes cannot both take the last slot.
 import type { DatabaseSync } from "node:sqlite";
 import { boxAccounts } from "./box.ts";
-import { accountHasRoom, chooseAccount, freeSlots, type Choice } from "./accounts.ts";
-import { insertRun, type RunStart } from "./runs.ts";
+import { accountHasRoom, chooseAccount, freeSlots, jevParallel, RUN_SLOT_MS, type Choice } from "./accounts.ts";
+import { JEV_PROMPTS } from "../prompts/index.ts";
+import { insertRun, onRunEnd, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
-export type CallContext = { jobId: number; step: string; stage: number; cancelled(): boolean };
+export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean };
 let context: CallContext | null = null;
 export const setCallContext = (c: CallContext | null): void => void (context = c);
 /** The job this process runs, or null outside a job. */
@@ -35,19 +36,51 @@ export function stepOf(promptId: string): { jobId: number | null; step: string; 
   return { jobId: null, ...(PROMPT_STEP[promptId] ?? { step: "unknown", stage: 0 }) };
 }
 
-export const allocation = { pollMs: 3000, logEveryMs: 5 * 60_000 };
+export const allocation = { pollMs: 3000, jevPollMs: 150, logEveryMs: 5 * 60_000, staleMs: 30_000 };
 
 export class NoAccountError extends Error {}
 export class CancelledError extends Error {}
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Queue class of a call outside a job, from the step its prompt belongs to (inside a job the step's priority is used). */
+const classOfStep = (step: string): 0 | 1 | 2 =>
+  step.startsWith("security-") ? 2
+    : ["fixup", "cifix", "main-fix", "fixissue", "fixissue-collect", "verify", "verify-collect", "premerge", "opus-review", "decide", "conversation"].includes(step) ? 1 : 0;
 
-/** Calls in this process that are waiting for a slot. */
-let waiting = 0;
+/** The queue class of the call being made: the job step's priority, or for calls outside a job the class of the prompt's step. */
+export const currentClass = (promptId?: string): 0 | 1 | 2 =>
+  context?.class ?? classOfStep(promptId ? (PROMPT_STEP[promptId]?.step ?? "unknown") : (context?.step ?? "unknown"));
 
-/** How many more Claude calls this process may start now: free slots on the enabled accounts, minus calls already waiting for one. */
-export function claudeRoom(db: DatabaseSync): number {
-  return Math.max(0, freeSlots(db) - waiting);
+/** Sleeps up to `ms`, or less when a run of this process ends (its slot may be free). */
+function sleepOrWake(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let off = () => {};
+    const t = setTimeout(() => { off(); resolve(); }, ms);
+    off = onRunEnd(() => { clearTimeout(t); off(); resolve(); });
+  });
+}
+
+type Waiter = { id: number; cls: number; step: string; repo: string | null; since: number };
+
+const runningWhere = (db: DatabaseSync, nowMs: number, where: string, arg: string): number =>
+  Number((db.prepare(`SELECT COUNT(*) AS n FROM agent_runs r LEFT JOIN jobs j ON j.id = r.job_id WHERE r.state = 'running' AND r.provider = 'claude' AND r.started_at >= ? AND ${where}`)
+    .get(new Date(nowMs - RUN_SLOT_MS).toISOString(), arg) as { n: number }).n);
+
+/** Fresh, eligible waiters in claim order: class, then fewest running calls of the waiter's repo, then of its step, then oldest. */
+function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
+  const rows = db.prepare("SELECT id, class AS cls, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[];
+  const repoN = new Map<string, number>(), stepN = new Map<string, number>();
+  for (const w of rows) {
+    if (w.repo !== null && !repoN.has(w.repo)) repoN.set(w.repo, runningWhere(db, nowMs, "j.repo = ?", w.repo));
+    if (!stepN.has(w.step)) stepN.set(w.step, runningWhere(db, nowMs, "r.step = ?", w.step));
+  }
+  return rows.sort((x, y) => y.cls - x.cls || (repoN.get(x.repo ?? "") ?? 0) - (repoN.get(y.repo ?? "") ?? 0) || stepN.get(x.step)! - stepN.get(y.step)! || x.since - y.since || x.id - y.id);
+}
+
+/** How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter of the current call's class. */
+export function queueRoom(db: DatabaseSync): number {
+  const cls = currentClass();
+  const ahead = (db.prepare("SELECT COUNT(*) AS n FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ? AND class >= ?").get(Date.now() - allocation.staleMs, cls) as { n: number }).n;
+  return Math.max(0, freeSlots(db) - Number(ahead));
 }
 
 export type Started = { runId: number; configDir: string; accountId: string };
@@ -78,17 +111,51 @@ export function tryStartClaudeRun(db: DatabaseSync, s: RunInput, minTokenMs?: nu
 
 export class WaitLimitError extends Error {}
 
-/** Waits for an enabled account with a free slot and headroom (at most `maxWaitMs` when given, else for ever), then records the running agent run on it. With `minTokenMs`, accounts whose login token expires sooner are skipped and the call waits for a refresh. */
+/**
+ * One poll of a waiting call, in one BEGIN IMMEDIATE: refreshes the waiter row (re-inserting it when it was deleted),
+ * works out whether an account could take the call, and claims only when the call ranks within the free slots.
+ * The waiter row is deleted in the same transaction as the run insert.
+ */
+function pollClaude(db: DatabaseSync, w: Waiter, s: RunInput, minTokenMs?: number): { started: Started } | { wait: Exclude<Choice, { account: unknown }> } {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const nowMs = Date.now();
+    const c = chooseAccount(db, nowMs, minTokenMs);
+    // Eligibility ignores full slots: a waiter that only lacks a slot still counts when ranking, one that lacks a fresh token does not.
+    const eligible = "account" in chooseAccount(db, nowMs, minTokenMs, true) ? 1 : 0;
+    const up = db.prepare("UPDATE model_waits SET seen_at = ?, eligible = ? WHERE id = ?").run(nowMs, eligible, w.id);
+    if (Number(up.changes) === 0) db.prepare("INSERT INTO model_waits (id, provider, class, job_id, step, repo, since, seen_at, eligible) VALUES (?, 'claude', ?, ?, ?, ?, ?, ?, ?)").run(w.id, w.cls, context?.jobId ?? null, w.step, w.repo, w.since, nowMs, eligible);
+    if (!("account" in c)) {
+      db.exec("COMMIT");
+      return { wait: c };
+    }
+    const rank = waiterOrder(db, nowMs).findIndex((x) => x.id === w.id);
+    if (rank < 0 || rank >= freeSlots(db, nowMs)) {
+      db.exec("COMMIT");
+      return { wait: { wait: "other calls are ahead in the queue" } };
+    }
+    const runId = insertRun(db, { ...s, ...stepOf(s.promptId), accountId: c.account.id });
+    db.prepare("DELETE FROM model_waits WHERE id = ?").run(w.id);
+    db.exec("COMMIT");
+    return { started: { runId, configDir: c.account.configDir, accountId: c.account.id } };
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already committed */ }
+    throw e;
+  }
+}
 
+/** Waits for an enabled account with a free slot and headroom (at most `maxWaitMs` when given, else for ever), then records the running agent run on it. Waiting calls are ordered by class (security first), then by the running calls of their repo and step, then by age. With `minTokenMs`, accounts whose login token expires sooner are skipped and the call waits for a refresh. */
 export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: string) => void = console.log, maxWaitMs?: number, minTokenMs?: number): Promise<Started> {
   let lastLog = 0;
   const began = Date.now();
-  // Counted until the claim, and decremented in the same synchronous step as it, so claudeRoom() is exact right after a call starts.
-  waiting++;
+  const w: Waiter = { id: 0, cls: currentClass(s.promptId), step: stepOf(s.promptId).step, repo: context?.repo ?? null, since: began };
+  // The row exists before the first poll returns, so queueRoom() is exact right after a call is made.
+  w.id = Number(db.prepare("INSERT INTO model_waits (provider, class, job_id, step, repo, since, seen_at, eligible) VALUES ('claude', ?, ?, ?, ?, ?, ?, 0)").run(w.cls, context?.jobId ?? null, w.step, w.repo, began, began).lastInsertRowid);
   try {
     for (;;) {
-      const c = tryStartClaudeRun(db, s, minTokenMs);
-      if ("runId" in c) return c;
+      const r = pollClaude(db, w, s, minTokenMs);
+      if ("started" in r) return r.started;
+      const c = r.wait;
       if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `autocraft accounts set <id> --enabled yes`");
       if (maxWaitMs !== undefined && Date.now() - began >= maxWaitMs) throw new WaitLimitError("no Claude account slot became free in time");
       if (Date.now() - lastLog >= allocation.logEveryMs) {
@@ -96,17 +163,36 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
         log(`waiting for a Claude account: ${scrubError(c.wait)}`);
       }
       if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
-      await sleep(allocation.pollMs);
+      await sleepOrWake(allocation.pollMs);
       if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
     }
   } finally {
-    waiting--;
+    db.prepare("DELETE FROM model_waits WHERE id = ?").run(w.id);
   }
 }
 
-/** Records a Jev call (no account, no slot). */
-export function startJevRun(db: DatabaseSync, s: Omit<RunStart, "accountId" | "jobId" | "step" | "stage">): number {
-  return insertRun(db, { ...s, ...stepOf(s.promptId), accountId: null });
+/** A Jev call counts against the cap while its row runs, for at most the longest Jev timeout (a row left running by a lost process stops counting). */
+const JEV_SLOT_MS = (Math.max(...Object.values(JEV_PROMPTS).map((p) => p.limits.timeoutSeconds)) + 60) * 1000;
+
+/** Waits until fewer than `jev_parallel` Jev calls are running (all processes together), then records the call. No ranking. */
+export async function startJevRun(db: DatabaseSync, s: Omit<RunStart, "accountId" | "jobId" | "step" | "stage">): Promise<number> {
+  for (;;) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const running = Number((db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE state = 'running' AND provider = 'jev' AND started_at >= ?").get(new Date(Date.now() - JEV_SLOT_MS).toISOString()) as { n: number }).n);
+      if (running < jevParallel(db)) {
+        const id = insertRun(db, { ...s, ...stepOf(s.promptId), accountId: null });
+        db.exec("COMMIT");
+        return id;
+      }
+      db.exec("COMMIT");
+    } catch (e) {
+      try { db.exec("ROLLBACK"); } catch { /* already committed */ }
+      throw e;
+    }
+    if (context?.cancelled()) throw new CancelledError("cancelled while waiting for Jev capacity");
+    await sleepOrWake(allocation.jevPollMs);
+  }
 }
 
 /** Records a follow-up run on the account of an earlier call (its session lives there), or returns null when that account is no longer enabled, has no headroom or no free slot. Same transaction rule as `tryStartClaudeRun`. */

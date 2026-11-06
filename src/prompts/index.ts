@@ -40,8 +40,8 @@ import { MAX_FILES, MAX_PATHS, MAX_ROUNDS, ISSUE_BODY_LIMIT, SAMPLE_PATCH, SAMPL
 import { REASON_WORDS as MAINFIX_REASON_WORDS, SAMPLE_MAIN_FIX, type MainFixInput } from "../mainfix/types.ts";
 import { MAX_CRATES, MAX_FILTERS, MAX_SUMMARY_WORDS, MAX_TEST_LINES, PLAN_BODY_LIMIT, SAMPLE_VERIFY_PLAN, SAMPLE_VERIFY_SUMMARY, SUMMARY_LOG_BYTES, type VerifyPlanInput, type VerifySummaryInput } from "../verify/types.ts";
 
-/** Jev calls at once unless the `jev_parallel` setting says otherwise (Jev has no accounts, so no slots limit it). */
-export const JEV_PARALLEL_DEFAULT = 4;
+/** Most Jev calls running at once, across all jobs, unless the `jev_parallel` setting says otherwise (Jev has no accounts, so no slots limit it). */
+export const JEV_PARALLEL_DEFAULT = 16;
 
 /** How a call is made: items per call, attempts per item, and the time limit per call. */
 export type Limits = { perCall: number; attempts: number; timeoutSeconds: number };

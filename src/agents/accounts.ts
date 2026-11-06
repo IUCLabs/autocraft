@@ -165,8 +165,9 @@ export type Choice =
  * The enabled account with a free slot and headroom that has the lowest weekly use.
  * With `minTokenMs`, an account whose login token expires within that many ms is not eligible
  * (a sandboxed call cannot refresh the token); it is named in the wait reason instead.
+ * With `ignoreSlots`, full accounts count as available: whether a call could run once a slot frees, used for a waiter's eligibility in the call queue.
  */
-export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now(), minTokenMs?: number): Choice {
+export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now(), minTokenMs?: number, ignoreSlots = false): Choice {
   const box = boxAccounts(db);
   syncAccounts(db, box);
   const enabled = rows(db, box).filter((r) => r.enabled === 1);
@@ -178,7 +179,7 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now(), minT
     const reading = readUsage(r.id), running = counts.get(r.id) ?? 0;
     const why = headroomReason(reading, limits, nowMs);
     if (why) reasons.push(`${r.label}: ${why}`);
-    else if (running >= r.max_concurrent) reasons.push(`${r.label}: ${running} of ${r.max_concurrent} slots in use`);
+    else if (!ignoreSlots && running >= r.max_concurrent) reasons.push(`${r.label}: ${running} of ${r.max_concurrent} slots in use`);
     else if (minTokenMs !== undefined && credentialsNearExpiry(db, r.id, box.find((b) => b.id === r.id)!.configDir, nowMs, minTokenMs)) reasons.push(`${r.label}: login token expires within ${Math.ceil(minTokenMs / 60_000)} min; waiting for its refresh`);
     else ok.push({ r, weekly: fresh(reading, nowMs)?.weekly?.pct ?? 0, running });
   }
@@ -214,7 +215,7 @@ export const JEV_PARALLEL_KEY = "jev_parallel";
 export { JEV_PARALLEL_DEFAULT };
 export const JEV_PARALLEL_MAX = 100;
 
-/** Jev calls at once (Jev has no accounts, so no slots limit it). */
+/** The most Jev calls running at once, all jobs together (Jev has no accounts, so no slots limit it). */
 export function jevParallel(db: DatabaseSync): number {
   const v = Number((db.prepare("SELECT value FROM settings WHERE key = ?").get(JEV_PARALLEL_KEY) as { value: string } | undefined)?.value);
   return Number.isInteger(v) && v >= 1 && v <= JEV_PARALLEL_MAX ? v : JEV_PARALLEL_DEFAULT;
