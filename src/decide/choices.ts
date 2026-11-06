@@ -142,7 +142,7 @@ export function coresFor(db: DatabaseSync, d: DecisionRow): Core[] {
     // On a scope question the fix-up core records the keep answer, so the PR is in core when it is reviewed and merged.
     for (const keep of d.kind === "scope" ? KEEPS : [undefined]) {
       const label = keep ? `${KEEP_LABEL_NAME[keep]}: fix up, then merge` : "Fix up first, then merge";
-      const c = mk(db, d, coreKey.fixupMerge(keep), label, { writes: keep ? ["label", "push", "merge"] : ["push", "merge"], base: NON_ENDING, applicable });
+      const c = mk(db, d, coreKey.fixupMerge(keep), label, { writes: ["push", "merge"], base: NON_ENDING, applicable });
       c.params = { instructions: "" };
       out.push(c);
     }
@@ -169,7 +169,7 @@ export function addedCore(db: DatabaseSync, d: DecisionRow, key: CoreKey, applic
     case "transfer": return c(`Move issue to ${p.repo}`, "transfer", ["move"], ["comment", "label"], { target: p.repo });
     case "fixup":
       if ((d.kind === "scope") !== !!p.keep) return null;
-      return c(p.keep ? `${KEEP_LABEL_NAME[p.keep]}: fix up` : "Fix up the PR", "fixup", p.keep ? ["label", "push"] : ["push"], NON_ENDING, { instructions: "" });
+      return c(p.keep ? `${KEEP_LABEL_NAME[p.keep]}: fix up` : "Fix up the PR", "fixup", ["push"], NON_ENDING, { instructions: "" });
     case "review": return c("Review the PR again", "review", [], ["comment", "label", "request_reviewers"]);
     default: return null;
   }

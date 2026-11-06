@@ -16,7 +16,7 @@ import type { CardEdit } from "../../web/src/api/types.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { closeRefusal, decisionStamp, isSettling, openDecision, otherTypeLabel, PUBLIC_TEXT_STEPS, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
+import { closeRefusal, decisionStamp, isSettling, openDecision, otherTypeLabel, PUBLIC_TEXT_STEPS, settleLine, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { ConversationError, insertTurn, staleOf, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, NOTE_MAX, type CloseReason } from "./types.ts";
@@ -379,7 +379,7 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
   const answerNow = async (s: NonNullable<typeof early>): Promise<void> => {
     results.push((await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note, s.reason)).result);
     answered = true;
-    done.push(`Answer the question with "${s.option}"`);
+    done.push(settleLine(db, s));
   };
   try {
     for (const st of p.steps) {
