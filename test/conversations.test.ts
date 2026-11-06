@@ -10,7 +10,7 @@ import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { setApproval as setLabelApproval } from "../src/labels/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
-import { applicableSteps, cleanComment, parseReply } from "../src/conversations/cards.ts";
+import { applicableSteps, cleanComment, headline, parseReply } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
 import { addOperatorMessage, ensureConversation, insertTurn, staleOf, turnsOf } from "../src/conversations/store.ts";
 import { answerPending } from "../src/conversations/run.ts";
@@ -397,5 +397,17 @@ describe("cleanReason", () => {
     assert.ok(long.replace(/\. /, ", ").includes(b.slice(0, -1)));
     assert.match(long, new RegExp(`${b.slice(0, -1).split(" ").pop()}\\b`));
     assert.equal(cleanReason("short one"), "short one.");
+  });
+});
+
+describe("card headline", () => {
+  test("names the action with its key parameter", () => {
+    const db = connect(":memory:");
+    const res = (steps: import("../src/conversations/cards.ts").Step[]) => ({ kind: "resolution" as const, steps, settle: null });
+    assert.equal(headline(db, res([{ kind: "close", reason: "completed", pr: false }])), "Close issue as completed");
+    assert.equal(headline(db, res([{ kind: "close", reason: "not_planned", pr: false }])), "Close issue as not planned");
+    assert.equal(headline(db, res([{ kind: "close", reason: "completed", pr: true }])), "Close PR");
+    assert.equal(headline(db, res([{ kind: "duplicate", of: 12 }])), "Close as duplicate of #12");
+    assert.equal(headline(db, res([{ kind: "transfer", to: "storytold/x" }])), "Move issue to storytold/x");
   });
 });

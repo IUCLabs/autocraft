@@ -1,7 +1,7 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
 import type { CardEdit, Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
-import { buttonLabel, cardEffect, cardLines, type CardParams } from "../../conversations/cards.ts";
+import { buttonLabel, cardEffect, cardLines, headline, type CardParams } from "../../conversations/cards.ts";
 import { cardOf, cardRepos, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, staleOf, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
@@ -41,6 +41,16 @@ export function cardView(db: DatabaseSync, c: CardRow, who?: { login: string; ro
   const issueStep = params.kind === "resolution" ? params.steps[issueAt] : undefined;
   const fixupStep = params.kind === "resolution" ? params.steps[fixupAt] : undefined;
   const stale = c.state === "proposed" ? staleOf(db, c.repo, c.number, c.seen) : undefined;
+  const one = (t: string) => t.replace(/\s+/g, " ").trim();
+  const settleReason = params.kind === "resolution" && params.settle?.kind === "answer" ? params.settle.reason : undefined;
+  const previews: [string, string | undefined | null][] = [
+    ["Comment", c.text],
+    ["Reason", settleReason],
+    ["Issue", issueStep?.kind === "open_issue" ? issueStep.title : undefined],
+    ["Instructions", fixupStep?.kind === "fixup" ? fixupStep.instructions : undefined],
+  ];
+  const first = previews.find(([, t]) => t && one(t));
+  const preview = first ? `${first[0]}: ${one(first[1]!)}` : undefined;
   return {
     steps: lines.steps,
     ...(commentStep >= 0 && { commentStep }),
@@ -50,6 +60,8 @@ export function cardView(db: DatabaseSync, c: CardRow, who?: { login: string; ro
     ...(stale && { stale }),
     ...(lines.settles && { settles: lines.settles }),
     label: buttonLabel(db, params),
+    headline: headline(db, params),
+    ...(preview && { preview }),
     canSettle: !!who && canSettleCached(db, who.login, who.role, cardRepos(c, params)),
     id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"],
     ...(c.text !== null && { text: c.text }),

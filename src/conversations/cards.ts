@@ -176,6 +176,27 @@ export function buttonLabel(db: DatabaseSync, p: CardParams): string {
   }
 }
 
+/** The card's first line: the button's action plus its key parameter ("Close issue as completed", "Close as duplicate of #12", "Move issue to <repo>"). Server-written. */
+export function headline(db: DatabaseSync, p: CardParams): string {
+  const closeOf = (pr: boolean, reason: CloseReason) => (pr ? "Close PR" : `Close issue as ${reason === "completed" ? "completed" : "not planned"}`);
+  switch (p.kind) {
+    case "resolution": {
+      const close = p.steps.find((x) => x.kind === "close");
+      if (close?.kind === "close") return closeOf(close.pr, close.reason);
+      const dup = p.steps.find((x) => x.kind === "duplicate");
+      if (dup?.kind === "duplicate") return `Close as duplicate of #${dup.of}`;
+      const move = p.steps.find((x) => x.kind === "transfer");
+      if (move?.kind === "transfer") return `Move issue to ${move.to}`;
+      const open = p.steps.find((x) => x.kind === "open_issue");
+      if (open?.kind === "open_issue" && buttonLabel(db, p) === "Open issue") return `Open issue in ${open.repo}`;
+      return buttonLabel(db, p);
+    }
+    case "duplicate": return `Close as duplicate of #${p.of}`;
+    case "close": return closeOf(p.pr, p.reason);
+    default: return buttonLabel(db, p);
+  }
+}
+
 /** The one-line description stored with a resolution: its steps and settlement. */
 export function describe(db: DatabaseSync, repo: string, n: number, p: CardParams & { kind: "resolution" }): string {
   const lines = cardLines(db, p, "");

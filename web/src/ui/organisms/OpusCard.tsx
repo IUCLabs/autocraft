@@ -83,7 +83,7 @@ export function OpusCard({ card: a, operator, editInstructions = true, onRun, on
         {a.state === "done" && <CheckIcon className="mt-0.5 shrink-0 text-ok" />}
         {a.state === "failed" && <WarningCircleIcon className="mt-0.5 shrink-0 text-bad" />}
         {a.state === "running" && <SpinnerIcon className="mt-0.5 shrink-0 animate-spin text-ink/50" />}
-        <span className={cn("min-w-0 flex-1 break-words", a.state === "dismissed" && "font-normal text-ink/45", a.state === "dismissed" && "line-through")}>{a.title}</span>
+        <span className={cn("min-w-0 flex-1 break-words", a.state === "dismissed" && "font-normal text-ink/45", a.state === "dismissed" && "line-through")}>{resolution ? a.headline : a.title}</span>
         {a.state === "done" && <span className="shrink-0 text-xs font-normal text-ok">Done</span>}
         {a.state === "failed" && <span className="shrink-0 text-xs font-normal text-bad">Failed</span>}
         {a.state === "running" && <span className="shrink-0 text-xs font-normal text-ink/55">Running…</span>}

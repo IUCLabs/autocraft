@@ -6,7 +6,7 @@ const MIN = 60_000;
 const at = (min: number) => new Date(NOW - min * MIN).toISOString();
 const REF = "designcraft#1484";
 
-const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], steps: [], canSettle: true, ...c });
+const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], headline: c.title, steps: [], canSettle: true, ...c });
 const LABELS: Record<ConversationCard["kind"], string> = { resolution: "Do it", comment: "Post comment", answer: "Answer", label: "Add label", backlog: "Move to Backlog", resolve: "Close decision", duplicate: "Close as duplicate", close: "Close issue" };
 
 function seed(): ConversationTurn[] {
@@ -49,6 +49,20 @@ function seed(): ConversationTurn[] {
       body: "The `hu` pack was merged in designcraft#1301, so the data this PR adds is already covered. I would post a note and close it as completed.",
       actions: [
         card({
+          id: 7,
+          kind: "resolution",
+          label: "Close as completed",
+          headline: "Close issue as completed",
+          preview: 'Comment: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work."',
+          title: "On designcraft#1484: Post the comment below; Close the issue as completed; Closes the merge question as handled",
+          steps: ["Post the comment below", "Close the PR as completed"],
+          commentStep: 0,
+          settles: "Closes the merge question as handled",
+          text: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work.",
+          writes: "closes the PR on GitHub",
+          state: "proposed",
+        }),
+        card({
           id: 6,
           kind: "resolution",
           label: "Ask for the pack",
@@ -59,18 +73,6 @@ function seed(): ConversationTurn[] {
           commentStep: 0,
           text: "Thanks for adding Hungarian. craft-i18n already ships a `hu` pack that craft-proof reads, so the data files don't need to be committed. Could you load the pack instead?",
           writes: "posts a comment on GitHub",
-          state: "proposed",
-        }),
-        card({
-          id: 7,
-          kind: "resolution",
-          label: "Close as completed",
-          title: "Close the PR as completed",
-          steps: ["Post the comment below", "Close the PR as completed"],
-          commentStep: 0,
-          settles: "Closes the merge question as handled",
-          text: "The Hungarian pack landed in designcraft#1301, so this is covered. Closing; thank you for the work.",
-          writes: "closes the PR on GitHub",
           state: "proposed",
         }),
         card({
@@ -105,6 +107,8 @@ function seed(): ConversationTurn[] {
           id: 11,
           kind: "resolution",
           label: "Fix up, then merge",
+          headline: "Fix up and merge",
+          preview: "Instructions: Drop the committed dictionary files and load the `hu` pack through craft-proof's `load_pack`. Keep the hyphenation tests.",
           title: "Fix up the PR, then merge it",
           steps: ["Fix up the PR with the instructions below, then merge it once the review and CI pass"],
           settles: "Pre-approves the merge",
@@ -114,6 +118,28 @@ function seed(): ConversationTurn[] {
             instructions: "Drop the committed dictionary files and load the `hu` pack through craft-proof's `load_pack`. Keep the hyphenation tests.",
           },
           writes: "pushes to the PR branch and merges it",
+          state: "proposed",
+        }),
+        card({
+          id: 12,
+          kind: "resolution",
+          label: "Answer",
+          headline: 'Answer "Out of scope"',
+          preview: "Reason: Hungarian is covered by the language pack, so the committed dictionary files are not needed in this repo.",
+          title: 'On designcraft#1484: Answers the merge question with "Out of scope", giving the reason: covered by the language pack',
+          steps: [],
+          settles: 'Answers the merge question with "Out of scope", giving the reason: covered by the language pack',
+          option: "out-of-scope",
+          state: "proposed",
+        }),
+        card({
+          id: 13,
+          kind: "resolution",
+          label: "Move issue",
+          headline: "Move issue to storytold/craft-i18n",
+          title: "On designcraft#1484: Move the issue to storytold/craft-i18n",
+          steps: ["Move the issue to storytold/craft-i18n"],
+          settles: 'Closes the merge question as handled: "Moved to storytold/craft-i18n"',
           state: "proposed",
         }),
         card({

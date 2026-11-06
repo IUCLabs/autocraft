@@ -1798,6 +1798,10 @@ export interface ConversationCard {
   settles?: string;
   /** The primary button: the action in a few words, written by the server from the card's parameters. */
   label: string;
+  /** The card's first line: the action with its key parameter, e.g. "Close issue as completed", "Close as duplicate of #12". */
+  headline: string;
+  /** One line under the headline: "Comment: …", "Reason: …", "Issue: …" or "Instructions: …". Absent: the card has no text. */
+  preview?: string;
   text?: string;
   /** An answer or close card that writes to GitHub: what it does, e.g. "closes the PR on GitHub". The button asks for a second confirmation. */
   writes?: string;

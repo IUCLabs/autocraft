@@ -154,7 +154,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
     }
   };
 
-  const radio = (id: string, i: number, title: string, tags: ReactNodeLike, extra?: ReactNodeLike) => {
+  const radio = (id: string, i: number, title: string, tags: ReactNodeLike, extra?: ReactNodeLike, preview?: string) => {
     const on = id === selected;
     return (
       <div className="flex items-start">
@@ -170,16 +170,28 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
           <span className={cn("mt-[3px] flex size-4 shrink-0 items-center justify-center rounded-full border", on ? "border-accent" : "border-line-strong")}>
             {on && <span className="size-2 rounded-full bg-accent" />}
           </span>
-          <span className="min-w-0 flex-1 text-sm font-medium">
-            {title}
-            {tags}
+          <span className="min-w-0 flex-1 overflow-hidden text-sm font-medium">
+            {preview === undefined ? (
+              <>
+                {title}
+                {tags}
+              </>
+            ) : (
+              <>
+                <span className="flex items-baseline gap-2">
+                  <span className="min-w-0 flex-1 break-words">{title}</span>
+                  {tags}
+                </span>
+                {preview && <span className="block truncate text-xs font-normal text-ink/55">{preview}</span>}
+              </>
+            )}
           </span>
         </button>
         {extra}
       </div>
     );
   };
-  const tag = (text: string) => <span className="ml-2 text-2xs font-normal text-accent-ink">{text}</span>;
+  const tag = (text: string, right?: boolean) => <span className={cn("shrink-0 text-2xs font-normal text-accent-ink", right ? "ml-auto" : "ml-2")}>{text}</span>;
 
   /** The drafted steps of a card: each can be removed, and the comment text sits under the comment step. */
   const steps = (c: ConversationCard) => {
@@ -290,7 +302,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
 
   return (
     <div className="mt-3">
-      <div role="radiogroup" aria-label={d.question} onKeyDown={onKey} className="grid gap-0.5">
+      <div role="radiogroup" aria-label={d.question} onKeyDown={onKey} className="grid grid-cols-[minmax(0,1fr)] gap-0.5">
         {d.options.map((o, i) => {
           const id = `o:${o.key}`;
           const on = id === selected;
@@ -326,11 +338,11 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
               {radio(
                 id,
                 i,
-                c.title,
-                c === suggested ? tag("Opus suggests") : null,
+                c.headline,
+                c === suggested ? tag("Opus suggests", true) : null,
                 <button
                   type="button"
-                  aria-label={`Dismiss: ${c.title}`}
+                  aria-label={`Dismiss: ${c.headline}`}
                   title="Dismiss"
                   disabled={busy || c.state === "running"}
                   onClick={() => void dismiss(c)}
@@ -338,6 +350,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                 >
                   <XIcon />
                 </button>,
+                c.preview ?? "",
               )}
               {on && (
                 <div className="space-y-2 pb-2.5 pl-9 pr-2 text-sm">
@@ -389,7 +402,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
       </div>
       <ErrorLine error={error} className="mt-2" />
       {failed.map((c) => (
-        <ErrorLine key={c.id} error={`${c.title}: ${c.error}`} className="mt-2" />
+        <ErrorLine key={c.id} error={`${c.headline}: ${c.error}`} className="mt-2" />
       ))}
     </div>
   );
