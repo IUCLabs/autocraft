@@ -15,7 +15,9 @@ import { doCard } from "../src/conversations/act.ts";
 import { addOperatorMessage, ensureConversation, insertTurn, staleOf, turnsOf } from "../src/conversations/store.ts";
 import { answerPending } from "../src/conversations/run.ts";
 import { connect } from "../src/db.ts";
-import { ask } from "../src/decisions.ts";
+import { ask, getDecision } from "../src/decisions.ts";
+import { cleanReason } from "../src/act/templates.ts";
+import { commentPreview } from "../src/act/index.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import * as conv from "../src/dash/api/conversations.ts";
 import { HttpError } from "../src/dash/server/util.ts";
@@ -211,6 +213,18 @@ describe("Do it", () => {
     return { sent, querier };
   };
 
+  test("a card answering Out of scope with a reason makes the close comment carry it", async () => {
+    const db = fresh();
+    const { querier } = github(false);
+    const id = resolution(db, [], { kind: "answer", option: "close", reason: "The reference app does not do this, so it stays out. See https://x.test/a @bob" }, null);
+    const card = await doCard(db, id, "op", { querier: querier as never });
+    assert.equal(card.card.state, "done", card.card.error ?? "");
+    const comment = commentPreview(getDecision(db, "app#1:scope")!)!;
+    assert.match(comment, /out of scope/);
+    assert.match(comment, /Reason: The reference app does not do this, so it stays out\. See\.?$/);
+    assert.doesNotMatch(comment, /@|https/);
+  });
+
   test("a transfer needs the comment approval of the target repository too", async () => {
     const db = fresh();
     db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('lib', 'op', ?, 1)").run(T0);
@@ -369,5 +383,18 @@ describe("stale cards", () => {
     assert.equal(staleOf(db, "app", 1, seen), undefined);
     add("c5", "2026-01-02T04:00:00Z", "bob", "what about X?");
     assert.equal(staleOf(db, "app", 1, seen), "new-comments");
+  });
+});
+
+describe("cleanReason", () => {
+  test("cuts at a sentence end or a word boundary, never inside a word", () => {
+    const long = "The change reworks the fonts toast and a Save As filename field in ways nobody asked for. It also touches the layout of the panel and renames several unrelated helper functions across the code base without tests";
+    const a = cleanReason(long)!;
+    assert.equal(a, "The change reworks the fonts toast and a Save As filename field in ways nobody asked for.");
+    const b = cleanReason(long.replace(/\. /, ", "))!;
+    assert.ok(b.length <= 200 && b.endsWith("…"), b);
+    assert.ok(long.replace(/\. /, ", ").includes(b.slice(0, -1)));
+    assert.match(long, new RegExp(`${b.slice(0, -1).split(" ").pop()}\\b`));
+    assert.equal(cleanReason("short one"), "short one.");
   });
 });

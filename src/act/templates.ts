@@ -19,8 +19,21 @@ export function cleanReason(s: string | null | undefined, max = REASON_MAX): str
     .replace(/@/g, "")
     .replace(/\s+/g, " ").trim();
   if (!t) return null;
-  const cut = t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+  const cut = t.length > max ? cutAtBoundary(t, max) : t;
   return /[.!?…]$/.test(cut) ? cut : `${cut}.`;
+}
+
+/** Cuts `t` to at most `max` characters: after the last sentence end that fits, else at the last word boundary with "…". Never inside a word. */
+function cutAtBoundary(t: string, max: number): string {
+  const head = t.slice(0, max);
+  const ends = [...head.matchAll(/[.!?](?=\s|$)/g)];
+  const last = ends.length ? ends[ends.length - 1]!.index! + 1 : 0;
+  if (last >= Math.min(40, max / 2)) return head.slice(0, last);
+  const room = t.slice(0, max - 1);
+  // A word is whole when the next character is a space.
+  const i = t[max - 1] === " " ? room.length : room.lastIndexOf(" ");
+  const words = (i > 0 ? room.slice(0, i) : room).trimEnd().replace(/[,;:\-–]+$/, "");
+  return `${words}…`;
 }
 
 /** `#n` in the same repo, else the full cross-repo reference. */
@@ -78,7 +91,7 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
     id: "act.scope-close", stage: "Act",
     purpose: "Posted when an operator answers a scope decision with Out of scope, just before the item is closed.",
     text: scopeCloseComment("{{reason}}"),
-    placeholders: [{ name: "reason", meaning: "The decision's public text, cleaned to one line of at most 200 characters; the Reason line is left out when there is none" }],
+    placeholders: [{ name: "reason", meaning: "The reason of the conversation card that answered Out of scope (one sentence), else the decision's public text; cleaned to one line of at most 200 characters, cut at a sentence or word end; the Reason line is left out when there is none" }],
     example: scopeCloseComment("The reference application does not do this."),
   },
   {
@@ -86,7 +99,7 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
     purpose: "Posted when an operator answers Close on a \"Close this PR?\" decision, just before the pull request is closed.",
     text: prCloseComment({ repo: "app", reason: "{{reason}}", duplicateOf: null }),
     placeholders: [
-      { name: "reason", meaning: "The review's reason, cleaned to one line of at most 200 characters" },
+      { name: "reason", meaning: "The reason of the conversation card that answered Close, else the review's reason; cleaned to one line of at most 200 characters, cut at a sentence or word end" },
       { name: "duplicate", meaning: "When the review names a duplicate, the comment is \"Closing this pull request. Duplicate of #N.\" instead" },
     ],
     example: prCloseComment({ repo: "app", reason: null, duplicateOf: "app#12" }),
