@@ -515,9 +515,9 @@ export function ghLandPr(w: Writer, g: Grant, exec: Exec, o: { repo: string; key
 const json = (v: unknown): string => JSON.stringify(v);
 
 /** Creates the repository's draft advisory (private to admins and security managers). The text is not kept in the audit row. */
-export async function ghAdvisoryCreate(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; summary: string; description: string; severity: "critical" | "high" | "medium" | "low" }): Promise<{ ghsa: string | null; result: ExecResult }> {
+export async function ghAdvisoryCreate(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; summary: string; description: string; severity: "critical" | "high" | "medium" | "low"; range: string; patched?: string | null }): Promise<{ ghsa: string | null; result: ExecResult }> {
   covers(g, o.repo);
-  const body = json({ summary: o.summary, description: o.description, severity: o.severity, vulnerabilities: [{ package: { ecosystem: "other", name: o.repo }, vulnerable_version_range: null, patched_versions: null }] });
+  const body = json({ summary: o.summary, description: o.description, severity: o.severity, vulnerabilities: [{ package: { ecosystem: "other", name: o.repo }, vulnerable_version_range: o.range, patched_versions: o.patched ?? null }] });
   let ghsa: string | null = null;
   const result = await recorded(w, "legacy", "security-advisory", o.key, { repo: o.repo },
     () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories`, "--input", "-", "--jq", ".ghsa_id"], { input: body }),
@@ -547,6 +547,17 @@ export function ghAdvisoryPr(w: Writer, g: Grant, exec: Exec, o: { repo: string;
   covers(g, o.repo);
   return viaGh(w, "legacy", exec, "security-advisory-pr", o.key, { repo: o.repo, fork: o.fork },
     ["pr", "create", "--repo", o.fork, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], o.body);
+}
+
+/** Sets the affected version range of a draft that has none (GitHub refuses to publish without one). Does nothing, and writes nothing, when the draft has a range. */
+export async function ghAdvisoryRange(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string; range: () => Promise<string> }): Promise<ExecResult | null> {
+  covers(g, o.repo);
+  const url = `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}`;
+  const cur = await exec("gh", ["api", url, "--jq", "[.vulnerabilities[]?.vulnerable_version_range // empty | select(. != \"\")] | length"]);
+  if (cur.code === 0 && cur.stdout.trim() !== "0") return null;
+  const range = await o.range();
+  return viaGh(w, "legacy", exec, "security-advisory-range", o.key, { repo: o.repo, ghsa: o.ghsa },
+    ["api", "-X", "PATCH", url, "--input", "-"], json({ vulnerabilities: [{ package: { ecosystem: "other", name: o.repo }, vulnerable_version_range: range, patched_versions: null }] }));
 }
 
 /** Publishes the draft advisory; a published advisory deletes its private fork. */

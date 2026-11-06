@@ -653,3 +653,5 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | `autocraft pipeline on\|off\|limit`, `accounts list\|set\|jev` | Switch, limits, accounts |
 
 On a test repo, an operator login may answer decisions and run cards from the CLI; the audit rows are marked as a session. The command refuses a decision that touches any repo not marked as a test repo, and a login that is not an operator. A duplicate group answer approves the comments stored now and prints them. On a test repo, a post-merge defect or a red default branch trips the breaker `merge:<repo>` only, which holds merges on that repo and not the whole pipeline.
+
+**Security advisories.** A draft repository advisory names its affected versions as `<= <version>`, the version in the Cargo.toml of the crate that holds the finding's first reference at the scan's pinned commit (the workspace version when the crate inherits it); when no version can be read the range is `<= <first 12 characters of the commit>`. GitHub refuses to publish an advisory without a range, so Publish first sets one on a draft that has none.
