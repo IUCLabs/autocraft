@@ -506,6 +506,21 @@ export async function snooze(db: DatabaseSync, req: Req): Promise<Decision> {
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
+/**
+ * Operator: prepare an open decision again. Clears what marks it prepared or failed, so the next pass runs the prepare step for
+ * it before the other due ones; its current choices stay until the new ones replace them.
+ */
+export async function reprepare(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireOperator(req, d);
+  if (d.answer) throw new HttpError(409, "only an open decision can be prepared again");
+  if (!d.repo || d.number === null || !db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ?").get(d.repo, d.number)) throw new HttpError(409, "the decision has no item to prepare it for");
+  db.prepare(`UPDATE main.decisions SET prepared_at = NULL, prepared_head = NULL, recommend_failures = NULL, recommend_failed_at = NULL, prepare_failed_head = NULL, prepare_requested_at = ?
+    WHERE id = ? AND answer IS NULL`).run(new Date().toISOString(), d.id);
+  audit(db, req.user.login, "reprepare", d.id);
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+}
+
 export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireSettler(db, req, d, true);

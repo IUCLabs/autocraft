@@ -131,6 +131,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["decisions", "prepared_at", "TEXT"],
   ["decisions", "prepared_head", "TEXT"],
   ["decisions", "prepare_failed_head", "TEXT"],
+  ["decisions", "prepare_requested_at", "TEXT"],
   ["tracked_repos", "pipeline", "INTEGER NOT NULL DEFAULT 0"],
   ["conversation_turns", "seq", "INTEGER"],
   ["conversation_turns", "claim", "TEXT"],

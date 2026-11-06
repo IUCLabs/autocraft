@@ -8,7 +8,7 @@ export type PrepareInput = {
   repo_dir?: string;
   /** Set when the repo's reference folder is mounted at /reference; not part of the quoted JSON. */
   reference?: boolean;
-  /** A decision about several items: the reply has a summary and a pick and no actions block; not part of the quoted JSON. */
+  /** A decision about several items, or one that is not the item's current question: the reply has a summary and a pick only; not part of the quoted JSON. */
   group?: boolean;
   /** The item as the prompt sees it: title, body, author association, labels, first comments. */
   item: Record<string, unknown>;
@@ -19,11 +19,13 @@ export type PrepareInput = {
   question: string;
   facts: string[];
   options: { key: string; label: string; hint: string }[];
+  /** The core actions of the decision with the extra kinds each takes; empty for a decision without cores (a group). */
+  cores: { key: string; label: string; extras: string[] }[];
   /** What stopped the pipeline: the output of the call that asked, as stored (review, classifier labels, duplicate comparison, the question's context). */
   stopped: Record<string, unknown>;
   /** The operator messages of the item's conversation, newest last, as the conversation prompt shows them. */
   operator_turns?: string;
-  /** Second call only: why the cards of the first reply were dropped, so the model corrects them. */
+  /** Second call only: why parts of the first reply were dropped, so the model corrects them. */
   previous?: string[];
 };
 
@@ -51,6 +53,13 @@ export const SAMPLE_PREPARE: PrepareInput[] = [{
     { key: "plugin", label: "Plug-in candidate", hint: "Not for core. Keep open and label it plugin candidate." },
     { key: "need-info", label: "Check the reference app", hint: "Ask how the reference app behaves before deciding." },
     { key: "close", label: "Out of scope", hint: "Not wanted. Close with a short reason." },
+  ],
+  cores: [
+    { key: "o:take", label: "Wanted in core", extras: ["comment", "label", "unlabel", "assign", "open_issue"] },
+    { key: "o:plugin", label: "Plug-in candidate", extras: ["comment", "label", "unlabel", "assign", "open_issue"] },
+    { key: "o:need-info", label: "Check the reference app", extras: ["comment", "label", "unlabel", "assign"] },
+    { key: "o:close", label: "Out of scope", extras: ["label", "unlabel", "assign", "open_issue"] },
+    { key: "backlog", label: "Later", extras: [] },
   ],
   stopped: {
     context: "The classifiers settled on missing feature and flagged it as needing a maintainer's call.",

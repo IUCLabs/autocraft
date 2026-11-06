@@ -359,31 +359,39 @@ describe("close journey", () => {
 });
 
 describe("issue journey", () => {
-  test("a prepare reply whose cards were all dropped is asked again with the reasons, and the repeat's cards are kept", async () => {
+  const summaryText = "The issue asks for a small export option, which the reference app has, so it fits the project and can be taken as it is.";
+  const choices = (o: unknown) => `\n\`\`\`choices\n${JSON.stringify(o)}\n\`\`\``;
+
+  test("a prepare reply whose choices were all dropped is asked again with the reasons, and the repeat's choices are kept", async () => {
     const w = fresh().issue(7);
     ask(w.db, [{ id: "app:scope:7", kind: "scope", repo: "app", number: 7, question: "Take #7?", options: [{ key: "take", label: "Take" }, { key: "close", label: "Close" }] }]);
-    const summary = "The issue asks for a small export option, which the reference app has, so it fits the project and can be taken as it is.";
-    const card = (option: string) => `\n\`\`\`actions\n[{"kind":"resolution","steps":[],"settle":{"kind":"answer","option":"${option}"},"text":null}]\n\`\`\``;
     const inputs: string[] = [];
-    w.models((input) => { inputs.push(input); return `Pick: take | fits.\n${summary}${card(inputs.length === 1 ? "bogus" : "take")}`; });
+    w.models((input) => {
+      inputs.push(input);
+      const core = inputs.length === 1 ? "o:bogus" : "o:take";
+      return summaryText + choices({ pick: { core, reason: "fits." }, cores: [{ core, extras: [] }] });
+    });
     assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
     assert.equal(inputs.length, 2);
-    assert.ok(!inputs[0]!.includes("<previous>") && inputs[1]!.includes("<previous>") && inputs[1]!.includes("is not an option of the open decision"));
-    assert.equal(w.rows("SELECT 1 FROM conversation_cards WHERE state = 'proposed'").length, 1);
+    assert.ok(!inputs[0]!.includes("<previous>") && inputs[1]!.includes("<previous>") && inputs[1]!.includes("is not one of the offered choices"));
+    assert.deepEqual(w.rows("SELECT state, json_extract(pick, '$.core') AS core FROM decision_choices"), [{ state: "current", core: "o:take" }]);
+    assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = 'app:scope:7' AND recommended = 'take'").length, 1);
   });
 
-  test("a pick whose card was dropped is asked again once; a pick still without a card is stored as no pick", async () => {
+  test("a pick whose core was dropped is asked again once; a pick still without a core is stored as no pick", async () => {
     const w = fresh().issue(7);
     ask(w.db, [{ id: "app:scope:7", kind: "scope", repo: "app", number: 7, question: "Take #7?", options: [{ key: "take", label: "Take" }, { key: "close", label: "Close" }] }]);
-    const summary = "The issue asks for a small export option, which the reference app has, so it fits the project and can be taken as it is.";
-    const card = (option: string) => `{"kind":"resolution","steps":[],"settle":{"kind":"answer","option":"${option}"},"text":null}`;
     const inputs: string[] = [];
-    // The pick's card is invalid both times; the card for the other option survives.
-    w.models((input) => { inputs.push(input); return `Pick: take | fits.\n${summary}\n\`\`\`actions\n[${card("bogus")},${card("close")}]\n\`\`\``; });
+    // A review core cannot apply to an issue, so the added core and the pick on it are dropped both times; the drafted close core survives.
+    w.models((input) => {
+      inputs.push(input);
+      return summaryText + choices({ pick: { core: "x:review", reason: "fits." }, cores: [{ core: "o:close", reason: "Not planned.", extras: [] }], add: [{ end: { review: true }, extras: [] }] });
+    });
     assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
     assert.equal(inputs.length, 2);
-    assert.ok(inputs[1]!.includes('your pick "take" has no card'));
+    assert.ok(inputs[1]!.includes('your pick "x:review"'));
     assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = 'app:scope:7' AND recommended IS NULL").length, 1);
+    assert.deepEqual(w.rows("SELECT json_extract(pick, '$.core') AS core FROM decision_choices WHERE state = 'current'"), [{ core: null }]);
   });
 
   test("a duplicate group whose kept item is closed is prepared while a member it would close is open", async () => {
@@ -393,7 +401,7 @@ describe("issue journey", () => {
     w.db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 7").run();
     assert.deepEqual(prepareIds(w.db), ["app:dupegroup:7"]);
     assert.equal(preparing(w.db, getDecision(w.db, "app:dupegroup:7")!), true);
-    w.models(() => "Pick: accept | same report.\nBoth issues report the same crash when opening an empty file, and #7 already has the fix, so #8 can be closed as its duplicate.");
+    w.models(() => `Both issues report the same crash when opening an empty file, and #7 already has the fix, so #8 can be closed as its duplicate.${choices({ pick: { core: "o:accept", reason: "same report." } })}`);
     assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
     assert.deepEqual(prepareIds(w.db), []);
     w.db.prepare("UPDATE decisions SET prepared_at = NULL").run();
@@ -419,7 +427,7 @@ describe("issue journey", () => {
 
   test("a reply without a valid summary leaves the decision preparing; the retry after the backoff stores summary, pick and an Opus turn", async () => {
     const w = fresh().issue(5, { flags: ["needs decision"] });
-    w.models(() => "Pick: take | wanted\ntoo short");
+    w.models(() => `too short${choices({ pick: { core: "o:take", reason: "wanted" } })}`);
     const r = await runDecide(w.db, {}, quiet);
     assert.equal(r.asked, 1);
     assert.equal(r.prepared, 0);
@@ -438,7 +446,7 @@ describe("issue journey", () => {
     w.db.prepare("UPDATE tracked_repos SET pipeline = 1").run();
     w.db.prepare("UPDATE decisions SET recommend_failures = 1").run();
     w.db.prepare("UPDATE decisions SET recommend_failed_at = ?").run(new Date(Date.now() - 2 * 3_600_000).toISOString());
-    w.models(() => "Pick: take | The reference app has this case.\nIt reports a panic on an empty slice. The reference app has no such case, so a fix is wanted.");
+    w.models(() => `It reports a panic on an empty slice. The reference app has no such case, so a fix is wanted.${choices({ pick: { core: "o:take", reason: "The reference app has this case." }, cores: [{ core: "o:take", extras: [] }] })}`);
     assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
     const [p] = w.rows("SELECT recommended, recommended_reason, recommended_by, summary, prepared_at FROM decisions WHERE kind = 'scope'");
     assert.equal(p!.recommended, "take");
@@ -454,7 +462,7 @@ describe("issue journey", () => {
     assert.equal(q!.recommended, "take");
     // An older open decision of the same item is prepared with summary and pick only: no second turn replaces the first one's cards.
     w.db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, asked_by) SELECT 'older', 'other', repo, number, 'Older?', options, '2000-01-01T00:00:00Z', asked_by FROM decisions WHERE number = 5").run();
-    w.models(() => "Pick: take | still wanted.\nThe older question concerns the same panic on an empty slice and the answer is the same.\n```actions\n[]\n```");
+    w.models(() => `The older question concerns the same panic on an empty slice and the answer is the same.${choices({ pick: { core: "o:take", reason: "still wanted." } })}`);
     assert.equal((await runDecide(w.db, {}, quiet)).prepared, 1);
     assert.equal(w.rows("SELECT 1 FROM conversation_turns WHERE number = 5 AND kind = 'opus'").length, 1);
     assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = 'older' AND prepared_at IS NOT NULL AND recommended = 'take'").length, 1);
@@ -465,7 +473,7 @@ describe("issue journey", () => {
     const fix = `diff --git a/${lib} b/${lib}\n--- a/${lib}\n+++ b/${lib}\n@@ -1,3 +1,3 @@\n pub fn first(v: &[u8]) -> u8 {\n-    v[0]\n+    v.first().copied().unwrap_or(0)\n }\n`;
     const newTest = `diff --git a/${test} b/${test}\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/${test}\n@@ -0,0 +1,4 @@\n+#[test]\n+fn empty_slice_does_not_panic() {\n+    assert_eq!(app::first(&[]), 0);\n+}\n`;
     const w = fresh().issue(5, { flags: ["needs decision"] }).models((input) => {
-      if (input.includes("<decision>")) return "Pick: none\nIt reports a panic on an empty slice. The reference app has no such case.";
+      if (input.includes("<decision>")) return `It reports a panic on an empty slice. The reference app has no such case.${choices({ pick: { core: null, reason: null } })}`;
     });
     // Classified and flagged: the planner wants a scope decision and holds the fix back until it is answered.
     const item = () => w.plan().items.find((i) => i.facts.number === 5)!.plan;

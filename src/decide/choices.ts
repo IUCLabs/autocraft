@@ -7,13 +7,13 @@ import { writeEffect } from "../act/index.ts";
 import { applicableSteps } from "../conversations/cards.ts";
 import { optionsOf, type DecisionRow, type Kind } from "../decisions.ts";
 import {
-  coreKey, parseCoreKey,
+  coreKey, MAX_ADDED_CORES, parseCoreKey,
   type ActionTag, type ChoiceCore, type ChoiceExtra, type ChoicesBlockExtra, type ChoicesRow, type ChoicesSource, type CoreKey, type ExtraKind,
   type ParsedCoreKey, type StoredDraft, type StoredExtra,
 } from "./choices-types.ts";
 
 /** Most cores Opus may add on top of the offered ones. */
-export const MAX_ADDED_CORES = 3;
+export { MAX_ADDED_CORES };
 
 /** A core with what building a card from it needs. The `ChoiceCore` fields are what the web receives. */
 export interface Core extends ChoiceCore {
@@ -109,8 +109,13 @@ export function coresFor(db: DatabaseSync, d: DecisionRow): Core[] {
   return out;
 }
 
+/** The cores as the prompt lists them: key, label and the extra kinds each takes. */
+export function coreSummaries(db: DatabaseSync, d: DecisionRow): { key: CoreKey; label: string; extras: ExtraKind[] }[] {
+  return coresFor(db, d).map((c) => ({ key: c.key, label: c.label, extras: c.allowed }));
+}
+
 /** A core only Opus adds, or null when its key is outside the scheme or cannot apply to the item now. */
-function addedCore(db: DatabaseSync, d: DecisionRow, key: CoreKey, applicable: Set<string>): Core | null {
+export function addedCore(db: DatabaseSync, d: DecisionRow, key: CoreKey, applicable: Set<string>): Core | null {
   const p = parseCoreKey(key);
   if (!p) return null;
   const isPr = itemOf(db, d.repo!, d.number!)?.kind === "pr";

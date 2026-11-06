@@ -12,6 +12,9 @@ import { validateCard } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
 import { applyDrafts, compose, coresFor, currentChoices, mergeChoices, writeChoices } from "../src/decide/choices.ts";
 import { coreKey } from "../src/decide/choices-types.ts";
+import { parseChoices } from "../src/decide/choices-parse.ts";
+import { parsePrepareReply } from "../src/decide/prepare.ts";
+import { insertTurn, opusBlock } from "../src/conversations/store.ts";
 import { connect } from "../src/db.ts";
 import { ask, getDecision } from "../src/decisions.ts";
 import { choicesView } from "../src/dash/api/conversations.ts";
@@ -105,5 +108,53 @@ describe("decision choices", () => {
     assert.equal(row.added.length, 3);
     assert.equal(notes.length, 1);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM decision_choices WHERE state = 'current'").get()!.n, 1);
+  });
+
+  const block = (o: unknown) => `Summary text.\n\`\`\`choices\n${JSON.stringify(o)}\n\`\`\``;
+
+  test("parseChoices keeps a valid core with its extras and drops an extra the core does not take, with a note", () => {
+    const db = fresh();
+    const d = getDecision(db, "app#2:merge")!;
+    const r = parseChoices(db, "app", 2, d, block({
+      pick: { core: "o:merge", reason: "Looks right." },
+      cores: [{ core: "o:merge", extras: [
+        { kind: "comment", on: true, text: "Thanks, merging." },
+        { kind: "open_issue", on: true, repo: "app", title: "Follow up", body: "Check the edge case." },
+        { kind: "request_reviewers", on: true, logins: ["x"] },
+      ] }],
+    }))!;
+    assert.deepEqual(r.choices!.cores["o:merge"]!.extras.map((e) => e.kind), ["comment", "open_issue"]);
+    assert.equal(r.notes.length, 1);
+    assert.match(r.notes[0]!, /request_reviewers extra of o:merge/);
+    assert.deepEqual(r.choices!.pick, { core: "o:merge", reason: "Looks right." });
+    // A core that does not validate is dropped and a pick on it is lost; a fix-up core needs instructions.
+    const bad = parseChoices(db, "app", 2, d, block({ pick: { core: "fixup-merge", reason: "x" }, cores: [{ core: "fixup-merge", instructions: "", extras: [] }] }))!;
+    assert.equal(bad.pickLost, "fixup-merge");
+    assert.deepEqual(bad.choices!.cores, {});
+    assert.equal(parseChoices(db, "app", 2, d, "Only text.")!.choices, null);
+  });
+
+  test("a prepare reply with a choices block writes a choices row with the pick and the recommendation", () => {
+    const db = fresh();
+    const d = getDecision(db, "app#2:merge")!;
+    const text = "The PR changes the export path and the reference app does the same, so it can be merged as it is after the follow-up is filed.";
+    const got = parsePrepareReply(db, { repo: "app", n: 2, d, single: true }, `${text}\n\`\`\`choices\n${JSON.stringify({
+      pick: { core: "o:merge", reason: "Same as the reference app." },
+      cores: [{ core: "o:merge", extras: [{ kind: "open_issue", on: true, repo: "app", title: "Follow up", body: "Check the edge case." }] }],
+      ask: { text: "Which version do you run?" },
+    })}\n\`\`\``)!;
+    assert.equal(got.pick, "merge");
+    assert.ok(got.ask);
+    insertTurn(db, "app", 2, { kind: "opus", login: "opus", body: got.text, block: opusBlock(got.text, [got.ask!], got.choices), cards: [got.ask!], choices: { decision: d, parsed: got.choices!, source: "prepare", by: "opus" } });
+    const row = currentChoices(db, d.id)!;
+    assert.equal(row.source, "prepare");
+    assert.deepEqual(row.pick, { core: "o:merge", reason: "Same as the reference app." });
+    assert.equal(row.drafts["o:merge"]!.extras[0]!.on, true);
+    assert.ok(row.turnId);
+    const rec = db.prepare("SELECT recommended, recommended_reason, recommended_by FROM decisions WHERE id = ?").get(d.id) as Record<string, string>;
+    assert.deepEqual({ ...rec }, { recommended: "merge", recommended_reason: "Same as the reference app.", recommended_by: "opus" });
+    // A single decision without a block is no valid reply; one that only takes a pick may come without.
+    assert.equal(parsePrepareReply(db, { repo: "app", n: 2, d, single: true }, text), null);
+    assert.equal(parsePrepareReply(db, { repo: "app", n: 2, d, single: false }, text)!.pick, null);
   });
 });

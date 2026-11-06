@@ -6,6 +6,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { factsOf, getDecision, optionsOf, type DecisionRow } from "../decisions.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
 import { applicableSteps, cleanComment, openDecision, type NewCard } from "./cards.ts";
+import { choicesJson, storeParsedChoices, type ParsedChoices } from "../decide/choices-parse.ts";
+import { coreSummaries } from "../decide/choices.ts";
 import { ITEM_BODY_LIMIT, ITEM_COMMENT_LIMIT, ITEM_COMMENTS, ITEM_DIFF_LIMIT, MESSAGE_MAX, OPENING_MAX, type TurnKind } from "./types.ts";
 
 export class ConversationError extends Error {
@@ -41,16 +43,16 @@ const STALE_CLAIM_MS = (CLAUDE_PROMPTS["conversation.turn"].limits.timeoutSecond
 // ---- blocks ------------------------------------------------------------------
 
 /** Text of operators and Opus must not close or open the frame the prompt puts around turns. */
-const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included|steps)\b/gi, "&lt;$1$2");
+const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|choices|cores|untrusted|included|steps)\b/gi, "&lt;$1$2");
 
 export type Included = { login: string; at: string; text: string; /** An agent sent it for the login. */ viaAgent?: boolean };
 
 const attr = (v: string): string => v.replace(/[^\w.:-]/g, "");
 
 /** `included`: maintainers' posts the operator chose to share, carried in this turn once. */
-export function operatorBlock(login: string, text: string, included: Included[] = [], steps?: string[]): string {
+export function operatorBlock(login: string, text: string, included: Included[] = [], steps?: string[], cores?: unknown[]): string {
   const extra = included.map((i) => `<included from="maintainer" login="${attr(i.login)}" at="${attr(i.at)}"${i.viaAgent ? ' via="agent"' : ""}>\n${frameSafe(i.text)}\n</included>\n`).join("");
-  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}${steps ? `<steps>${JSON.stringify(steps)}</steps>\n` : ""}</turn>\n`;
+  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}${cores ? `<cores>${JSON.stringify(cores)}</cores>\n` : ""}${steps ? `<steps>${JSON.stringify(steps)}</steps>\n` : ""}</turn>\n`;
 }
 
 /** The steps list Opus last saw: the newest `<steps>` line of the stored turns, else the item block's. */
@@ -65,9 +67,23 @@ function seenSteps(db: DatabaseSync, repo: string, n: number): string[] | null {
   return m ? parse(m[1]!) : null;
 }
 
-export function opusBlock(text: string, cards: NewCard[]): string {
+/** The cores Opus last saw for the item's open decision: the newest `<cores>` line of the stored operator turns, else the item block's. Null: none known. */
+function seenCores(db: DatabaseSync, repo: string, n: number): unknown[] | null {
+  const parse = (j: string): unknown[] | null => { try { const v = JSON.parse(j) as unknown; return Array.isArray(v) ? v : null; } catch { return null; } };
+  for (const t of [...turnsOf(db, repo, n)].reverse()) {
+    if (t.kind !== "operator") continue;
+    const m = /\n<cores>(\[[^\n]*\])<\/cores>\n(?:<steps>[^\n]*<\/steps>\n)?<\/turn>\n$/.exec(t.block);
+    if (m) return parse(m[1]!);
+  }
+  try {
+    const decision = (JSON.parse(conversationOf(db, repo, n)?.item_block ?? "null") as { decision?: { cores?: unknown } } | null)?.decision;
+    return Array.isArray(decision?.cores) ? decision.cores : null;
+  } catch { return null; }
+}
+
+export function opusBlock(text: string, cards: NewCard[], choices?: ParsedChoices | null): string {
   const list = cards.map((c) => ({ ...c.params, ...(c.params.kind === "resolution" && c.text !== null && { text: c.text }) }));
-  return `<turn from="opus">\n${frameSafe(text)}\n${cards.length ? `<actions>\n${JSON.stringify(list)}\n</actions>\n` : ""}</turn>\n`;
+  return `<turn from="opus">\n${frameSafe(text)}\n${cards.length ? `<actions>\n${JSON.stringify(list)}\n</actions>\n` : ""}${choices ? `<choices>\n${choicesJson(choices)}\n</choices>\n` : ""}</turn>\n`;
 }
 
 /** A turn from our code: a plain sentence and, when GitHub text is quoted, that data as untrusted JSON. */
@@ -145,11 +161,12 @@ const OWN_NOTE_PREFIXES = ["_AI-generated ", "_Automated "];
 
 const cut = (s: string | null, max: number): string => (s ?? "").slice(0, max);
 
-function decisionPart(d: DecisionRow | undefined): unknown {
+function decisionPart(db: DatabaseSync, d: DecisionRow | undefined): unknown {
   if (!d) return null;
   return {
     question: d.question, facts: factsOf(d), summary: d.summary ?? "",
     options: optionsOf(d).map((o) => ({ key: o.key, label: o.label, hint: o.hint ?? "" })),
+    cores: coreSummaries(db, d),
     recommended: d.recommended ?? null, recommended_reason: d.recommended_reason ?? null, answer: d.answer ?? null,
   };
 }
@@ -167,7 +184,7 @@ export async function buildItemBlock(db: DatabaseSync, repo: string, n: number, 
     author: i.author, author_association: i.author_association, labels: labelsOf(i),
     comments: comments.map((c) => ({ author: c.author, body: cut(c.body, ITEM_COMMENT_LIMIT) })),
     ...(pr ? { head: i.head_oid, lines: { additions: i.additions, deletions: i.deletions, files: i.changed_files }, diff: diff === null ? null : cut(diff, ITEM_DIFF_LIMIT) + (diff.length > ITEM_DIFF_LIMIT ? "\n[diff cut]" : "") } : {}),
-    decision: decisionPart(openDecision(db, repo, n) ?? latestDecision(db, repo, n)),
+    decision: decisionPart(db, openDecision(db, repo, n) ?? latestDecision(db, repo, n)),
     steps: applicableSteps(db, repo, n),
   };
   return { block: untrustedJson(data), sig: sigOf(db, i) };
@@ -185,7 +202,10 @@ export async function ensureConversation(db: DatabaseSync, repo: string, n: numb
 
 // ---- turns -------------------------------------------------------------------
 
-type NewTurn = { kind: TurnKind; login: string; body: string; block: string; status?: string | null; notes?: string[]; cards?: NewCard[] };
+/** Validated choices an Opus turn carries; stored with the turn (a prepare replaces the decision's choices, a conversation turn merges into them). */
+export type TurnChoices = { decision: DecisionRow; parsed: ParsedChoices; source: "prepare" | "conversation"; by?: string };
+
+type NewTurn = { kind: TurnKind; login: string; body: string; block: string; status?: string | null; notes?: string[]; cards?: NewCard[]; choices?: TurnChoices };
 
 const nextSeq = (db: DatabaseSync, repo: string, n: number): number =>
   Number((db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM conversation_turns WHERE repo = ? AND number = ?").get(repo, n) as { s: number }).s);
@@ -213,6 +233,7 @@ function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: n
     db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description, seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description, seen);
   }
+  if (t.choices) storeParsedChoices(db, t.choices.decision, t.choices.parsed, { turnId: id, seen, source: t.choices.source, by: t.choices.by });
   return id;
 }
 
@@ -268,7 +289,7 @@ export async function refreshItem(db: DatabaseSync, repo: string, n: number, dep
   }
   if (was.decision !== now.decision || was.answer !== now.answer) {
     changed.push("decision");
-    data.decision = decisionPart(openDecision(db, repo, n) ?? latestDecision(db, repo, n));
+    data.decision = decisionPart(db, openDecision(db, repo, n) ?? latestDecision(db, repo, n));
   }
   const text = `The ${pr ? "PR" : "issue"} was updated (${changed.join(", ")}). The current values of these fields follow; they replace the item block where they differ.`;
   return inTx(db, () => {
@@ -297,7 +318,9 @@ export async function addOperatorMessage(db: DatabaseSync, repo: string, n: numb
     return inTx(db, () => {
       const now = applicableSteps(db, repo, n), seen = seenSteps(db, repo, n);
       const steps = seen && JSON.stringify(seen) === JSON.stringify(now) ? undefined : now;
-      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post), steps), ...(ask && { status: "pending" }) }, deps);
+      const d = openDecision(db, repo, n), nowCores = d ? coreSummaries(db, d) : [], seenC = seenCores(db, repo, n);
+      const cores = JSON.stringify(seenC ?? []) === JSON.stringify(nowCores) ? undefined : nowCores;
+      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post), steps, cores), ...(ask && { status: "pending" }) }, deps);
       for (const x of shared) db.prepare("UPDATE conversation_includes SET sent_turn = ? WHERE repo = ? AND number = ? AND source = ? AND sent_turn IS NULL").run(id, repo, n, x.source);
       return id;
     });
@@ -413,12 +436,12 @@ const claimed = (db: DatabaseSync, repo: string, n: number, claim: string): Turn
  * Stores Opus's reply to the claimed message and marks the message answered, in one transaction. Returns the reply's turn id,
  * or null when the run no longer holds the message (its claim was released and taken by another run).
  */
-export function storeReply(db: DatabaseSync, repo: string, n: number, claim: string, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps, seen?: string | null): number | null {
+export function storeReply(db: DatabaseSync, repo: string, n: number, claim: string, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps, seen?: string | null, choices?: TurnChoices): number | null {
   return inTx(db, () => {
     const wait = claimed(db, repo, n, claim);
     if (!wait) return null;
     let id = 0;
-    settleWait(db, repo, n, wait, "answered", null, () => { id = insertRow(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards), notes, cards }, nextSeq(db, repo, n), null, deps, seen); });
+    settleWait(db, repo, n, wait, "answered", null, () => { id = insertRow(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards, choices?.parsed), notes, cards, ...(choices && { choices }) }, nextSeq(db, repo, n), null, deps, seen); });
     return id;
   });
 }
