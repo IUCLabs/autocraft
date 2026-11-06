@@ -124,7 +124,7 @@ Rules:
 
 Reply in this form and nothing else:
 TITLE: <a plain title, at most ${FIX_TITLE_MAX} characters, imperative, no trailing period>
-SUMMARY: <one to three plain sentences, at most ${FIX_SUMMARY_MAX} characters, on what the code does now and why the change is correct>
+SUMMARY: <one to three plain sentences, at most ${FIX_SUMMARY_MAX} characters, on what the code does now and why the change is correct. The pull request states the test results itself, so do not mention which checks or tests you ran>
 ${PATCH_MARK}
 <a unified diff in git format: for each file a "diff --git a/<path> b/<path>" line, the "--- a/<path>" and "+++ b/<path>" lines (for the new file "new file mode 100644", "--- /dev/null" and "+++ b/<path>"), then the hunks with 3 lines of context. No Markdown.>
 
