@@ -3,6 +3,7 @@
 // neighbours in the same repo from the vector index.
 import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql } from "./held.ts";
+import { quietSqlFor } from "../security/quiet.ts";
 import type { VectorIndex } from "../embed/vectors.ts";
 
 /**
@@ -46,7 +47,10 @@ export type Pair = { repo: string; a: number; b: number; a_hash: string; b_hash:
 export function neighbourPairs(db: DatabaseSync, index: VectorIndex, item: ScanItem, nowMs: number, threshold = SIM_THRESHOLD, cap = MAX_NEIGHBOURS): Pair[] {
   const v = index.vectorOf(db, item.repo, item.number);
   if (!v) return [];
-  const get = db.prepare(`SELECT ${COLS} FROM items i WHERE i.repo = ? AND i.number = ? AND ${notOwnIntegrationSql("i")}`);
+  // A quiet pull request is never paired: a duplicate close or group question would name it on GitHub.
+  const quiet = db.prepare(`SELECT 1 AS q WHERE ${quietSqlFor("?", "?")}`);
+  if (quiet.get(item.repo, item.number)) return [];
+  const get = db.prepare(`SELECT ${COLS} FROM items i WHERE i.repo = ? AND i.number = ? AND ${notOwnIntegrationSql("i")} AND NOT ${quietSqlFor("i.repo", "i.number")}`);
   const out: Pair[] = [];
   for (const h of index.nearest(db, v, LOOKUP, `${item.repo}#${item.number}`, item.repo)) {
     if (h.score < threshold || out.length >= cap) break;

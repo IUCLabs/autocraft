@@ -462,7 +462,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const skipped: string[] = [];
   let noteIsSummary = false;
   // A card drafted before the PR became quiet (a security fix not yet published) must not post model-written text any more.
-  if (params.kind === "comment" || (params.kind === "resolution" && params.steps.some((x) => PUBLIC_TEXT_STEPS.has(x.kind)))) {
+  if ((params.kind === "comment") || (params.kind === "close" && c.text) || (params.kind === "resolution" && params.steps.some((x) => PUBLIC_TEXT_STEPS.has(x.kind)))) {
     if (isQuiet(db, c.repo, c.number)) throw new ConversationError(409, "this card posts text, and the pull request is quiet until its fix is published");
   }
   if (deps.skip?.length) {

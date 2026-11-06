@@ -150,7 +150,7 @@ export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | nu
   const has = (s: string) => x.recorded.includes(s);
   const commenting = f.repoFacts.commentApproved;
   // Heads held before the repo got comment approval are asked once it has it.
-  const ask = (held: boolean): { bucket: FixupBucket; done: boolean } => (commenting ? { bucket: "ask", done: false } : { bucket: "cannot-push", done: held });
+  const ask = (held: boolean): { bucket: FixupBucket; done: boolean } => (f.quiet ? { bucket: "cannot-push", done: true } : commenting ? { bucket: "ask", done: false } : { bucket: "cannot-push", done: held });
   if (has("asked") && !f.pushable) return { bucket: "asked", done: true };
   if (has("comment-failed")) return { bucket: "cannot-push", done: true };
   // A stored patch waits for its lint task: no new try, no ask.
@@ -281,7 +281,7 @@ export function decidePr(f: PrFacts): Plan {
   if (f.ghState === "OPEN" && !f.heldBacklog && f.head && !f.draft && f.mergeable !== "CONFLICTING") {
     for (const c of declinedBy(f) || f.lint.some((l) => l.source === "carry") ? [] : f.carry) {
       if (f.pushable && f.repoFacts.pushApproved && c.attempts + 1 <= FIXUP_MAX_ATTEMPTS) extra.push(act("fixup", f.head, { bucket: "fix", source: "carry" }));
-      else if (f.repoFacts.commentApproved) extra.push(act("fixup", f.head, { bucket: "ask", source: "carry" }));
+      else if (f.repoFacts.commentApproved && !f.quiet) extra.push(act("fixup", f.head, { bucket: "ask", source: "carry" }));
     }
   }
 

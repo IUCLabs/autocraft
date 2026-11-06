@@ -25,7 +25,7 @@ import { commitIdentity } from "../github/identity.ts";
 import { outsideShown, shownSize, viewFile } from "../fixup/excerpt.ts";
 import { editable, validatePatch } from "../fixup/patch.ts";
 import { isQuiet } from "../security/quiet.ts";
-import { patchGiveaway } from "../security/rules.ts";
+import { patchGiveaway, QUIET_PATCH_REFUSAL } from "../security/rules.ts";
 import { readGate } from "../merge/changes-requested.ts";
 import { longLivedOf, pushable } from "../fixup/pushable.ts";
 import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
@@ -242,6 +242,8 @@ function logText(f: CiFailure): CifixPr["failure"] {
 /** What `patchFromFailure` needs to know about the commit and the failure it patches. */
 export type PatchRequest = {
   git: Git;
+  /** The patch is for a quiet pull request even though `number` names none (a default-branch fix whose culprit is one). */
+  quiet?: boolean;
   /** How the models and the audit log name the subject, for example `repo#12`. */
   ref: string;
   title: string;
@@ -304,14 +306,14 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
     shown.push(v.file);
   }
   if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
-  const quiet = isQuiet(db, repo, r.number);
+  const quiet = !!r.quiet || isQuiet(db, repo, r.number);
   const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, shown.map((s) => s.path)))) });
   const reply = await d.ask(db, [{ ref, title, failure: logText(failure), ...(quiet ? { quiet } : {}), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool, r.session);
   if (reply === null) return no("failed", "the model gave no answer");
   const v = validatePatch(reply, shown.map((s) => s.path));
   if (!v.ok) return no("refused", v.reason);
   const word = quiet ? patchGiveaway(v.patch) : null;
-  if (word) return no("refused", `the patch adds "${word}" to a pull request whose fix is not yet public`);
+  if (word) return no("refused", QUIET_PATCH_REFUSAL);
   const guard = guardPatch(v.patch, v.files, contents);
   if (guard) return no("refused", guard);
   if (v.patch.length > CHECK_PATCH_CAP) return no("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`);

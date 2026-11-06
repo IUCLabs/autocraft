@@ -19,7 +19,7 @@ import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
 import { isQuiet } from "../security/quiet.ts";
-import { patchGiveaway } from "../security/rules.ts";
+import { patchGiveaway, QUIET_PATCH_REFUSAL } from "../security/rules.ts";
 import { BASE_NAME, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
 import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger } from "../prepush/resume.ts";
@@ -286,7 +286,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
             return answerText(res.sections.get(sec.id)!).split("\n").filter((l) => l !== "" && !sides.has(l));
           });
           const word = written.length ? patchGiveaway(`diff --git a/${f.path} b/${f.path}\n--- a/${f.path}\n+++ b/${f.path}\n@@ -1 +1 @@\n${written.map((l) => `+${l}`).join("\n")}\n`) : null;
-          if (word) { fail("refused", `the resolution of ${f.path} adds "${word}" to a pull request whose fix is not yet public`); return; }
+          if (word) { fail("refused", QUIET_PATCH_REFUSAL); return; }
         }
         const text = endNewline(t.content, spliced);
         resFiles.push({ path: f.path, mode: t.mode, content: t.crlf ? text.replace(/\r?\n/g, "\r\n") : text });

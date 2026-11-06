@@ -129,6 +129,8 @@ export type PrFacts = {
   heldBacklog: boolean;
   /** Held by a duplicate decision (pair or group), not counting a Backlog answer. */
   heldDuplicate: boolean;
+  /** The quiet pull request of a security fix that is not yet public: nothing is posted about it on GitHub. */
+  quiet?: boolean;
   /** An operator holds its merge. */
   mergeHeld: boolean;
   fast: boolean;
