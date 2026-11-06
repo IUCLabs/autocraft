@@ -1,8 +1,10 @@
-// Private per-repo reference documentation: plain-text files (and the source PDF) in `<data dir>/reference/<repo>/`, mounted
+// Private per-repo reference documentation: plain-text pages, their images and the source PDF in `<data dir>/reference/<repo>/`, mounted
 // read-only at /reference for the calls that judge reference-app behaviour. Operators import it with
 // `autocraft reference import`; nothing in it is ever quoted, cited or posted.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, createWriteStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
@@ -11,11 +13,11 @@ import { isTracked } from "./repos.ts";
 
 export class ReferenceError extends Error {}
 
-export const MAX_BYTES = 100 * 1024 * 1024;
-const MAX_MEMBERS = 20_000;
+export const MAX_BYTES = 1024 * 1024 * 1024;
+const MAX_MEMBERS = 50_000;
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
-const EXTENSION = /\.(txt|md|pdf)$/;
+const EXTENSION = /\.(txt|md|pdf|png|jpe?g|gif|webp|svg)$/;
 
 export const referenceRoot = (): string => join(dirname(dbPath()), "reference");
 
@@ -30,7 +32,7 @@ export function referenceDir(repo: string): string | undefined {
   }
 }
 
-/** Lists the archive and refuses any member that is not a plain .txt/.md file (or a directory) under the rules; returns the file count and byte total. */
+/** Lists the archive and refuses any member that is not a plain page, image or PDF file (or a directory) under the rules; returns the file count and byte total. */
 function checkArchive(tarFile: string): { files: number; bytes: number } {
   let out: string;
   try {
@@ -51,7 +53,7 @@ function checkArchive(tarFile: string): { files: number; bytes: number } {
     const parts = name.split("/");
     if (parts.length > (type === "d" ? 1 : 2) || !parts.every((p) => SEGMENT.test(p))) throw new ReferenceError("a name in the archive is not allowed");
     if (type === "-") {
-      if (!EXTENSION.test(name)) throw new ReferenceError("only .txt, .md and .pdf files are allowed");
+      if (!EXTENSION.test(name)) throw new ReferenceError("only .txt, .md, .pdf and image (.png, .jpg, .gif, .webp, .svg) files are allowed");
       files++;
       bytes += Number(size);
       if (bytes > MAX_BYTES) throw new ReferenceError(`the files exceed ${MAX_BYTES} bytes`);
@@ -121,18 +123,19 @@ export function listReferences(): { repo: string; files: number; bytes: number }
   return rows;
 }
 
-async function readStdin(): Promise<Buffer> {
-  const chunks: Buffer[] = [];
+/** Streams stdin to `file`, refusing an archive larger than twice the file limit. */
+async function saveStdin(file: string): Promise<void> {
   let n = 0;
-  for await (const c of process.stdin as AsyncIterable<Buffer>) {
-    n += c.length;
-    if (n > MAX_BYTES * 2) throw new ReferenceError("the archive on stdin is too large");
-    chunks.push(c);
-  }
-  return Buffer.concat(chunks);
+  const cap = new Transform({
+    transform(c: Buffer, _enc, done) {
+      n += c.length;
+      done(n > MAX_BYTES * 2 ? new ReferenceError("the archive on stdin is too large") : null, c);
+    },
+  });
+  await pipeline(process.stdin, cap, createWriteStream(file));
 }
 
-const USAGE = "usage: autocraft reference import <repo> [--replace]   (tar stream of .txt/.md/.pdf files on stdin)\n       autocraft reference list";
+const USAGE = "usage: autocraft reference import <repo> [--replace]   (tar stream of .txt/.md/.pdf and image files on stdin)\n       autocraft reference list";
 
 export const commands = {
   reference: {
@@ -146,7 +149,7 @@ export const commands = {
           const tmp = mkdtempSync(join(dirname(dbPath()), ".reference-tar-"));
           try {
             const file = join(tmp, "in.tar");
-            writeFileSync(file, await readStdin());
+            await saveStdin(file);
             const r = importReference(connect(), "cli", rest[0], file, rest.includes("--replace"));
             console.log(`imported ${r.files} files (${r.bytes} bytes) for ${rest[0]}`);
           } finally {
