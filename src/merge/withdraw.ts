@@ -100,12 +100,44 @@ export function withdrawOtherHeadQuestions(db: DatabaseSync, repo: string, numbe
 /** Why a question is set aside for a newer one. */
 const NEWER_NOTE = "superseded by a newer question about the item";
 
+/** Why a Merge? or Close? question is set aside once its PR's head moved on. */
+const HEAD_MOVED_NOTE = "the pull request changed since";
+
+/**
+ * Sets aside open Merge? and Close? questions asked at a head that is no longer the PR's head in the mirror: the merge queue
+ * and Act read only the current head's id, so an answer to the old one has no effect. Answered decisions are not touched.
+ */
+function setAsideOldHeadQuestions(db: DatabaseSync, at: string, repo?: string): number {
+  const rows = db.prepare(`SELECT d.id, d.kind, d.repo, d.number FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
+    WHERE d.answer IS NULL AND d.kind IN ('merge', 'close') AND d.id NOT LIKE '%~replaced-%' AND i.kind = 'pr' AND i.head_oid IS NOT NULL
+      AND d.id <> d.repo || '#' || d.number || ':' || d.kind || '@' || i.head_oid AND d.id LIKE d.repo || '#' || d.number || ':' || d.kind || '@%' ${repo ? "AND d.repo = ?" : ""}`)
+    .all(...(repo ? [repo] : [])) as { id: string; kind: string; repo: string; number: number }[];
+  if (!rows.length) return 0;
+  const close = db.prepare("UPDATE main.decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const r of rows) {
+      const old = `${r.id}~replaced-${at}`;
+      renameDecision(db, r.id, old);
+      close.run(WITHDRAWN, at, at, HEAD_MOVED_NOTE, old);
+      audit(db, "pipeline", "decision-withdrawn", old, { repo: r.repo, number: r.number, kind: r.kind, why: HEAD_MOVED_NOTE });
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return rows.length;
+}
+
 /**
  * An item has at most one open single-item decision: of its open scope, merge and close questions the newest asked stays
  * and the others are set aside (renamed like a superseded Merge? question, so an answer to them never counts). A set-aside
- * scope question keeps its stages row, so Decide does not ask it again. Returns how many were set aside. Idempotent.
+ * scope question keeps its stages row, so Decide does not ask it again. Merge? and Close? questions at a head the PR has
+ * moved past are set aside too. Returns how many were set aside. Idempotent.
  */
 export function setAsideSupersededQuestions(db: DatabaseSync, at: string, repo?: string): number {
+  const stale = setAsideOldHeadQuestions(db, at, repo);
   const rows = db.prepare(`SELECT id, kind, repo, number FROM decisions WHERE answer IS NULL AND number IS NOT NULL
     AND kind IN ('scope', 'merge', 'close') AND id NOT LIKE '%:dupegroup:%' AND id NOT LIKE '%~replaced-%' ${repo ? "AND repo = ?" : ""}
     ORDER BY asked_at DESC, rowid DESC`).all(...(repo ? [repo] : [])) as { id: string; kind: string; repo: string; number: number }[];
@@ -116,7 +148,7 @@ export function setAsideSupersededQuestions(db: DatabaseSync, at: string, repo?:
     if (seen.has(k)) aside.push({ r, why: NEWER_NOTE });
     else seen.add(k);
   }
-  if (!aside.length) return 0;
+  if (!aside.length) return stale;
   const close = db.prepare("UPDATE main.decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL");
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -131,7 +163,7 @@ export function setAsideSupersededQuestions(db: DatabaseSync, at: string, repo?:
     db.exec("ROLLBACK");
     throw e;
   }
-  return aside.length;
+  return stale + aside.length;
 }
 
 type OpenRow = { id: string; kind: string; repo: string | null; number: number | null; state: string | null; itemKind: string | null };

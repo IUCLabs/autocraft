@@ -84,3 +84,20 @@ describe("one open question per item", () => {
     assert.equal(setAsideSupersededQuestions(db, T0), 0);
   });
 });
+
+describe("questions at a head the PR moved past", () => {
+  test("an open merge question at an old head is set aside; an answered one and the current head's stay", () => {
+    const db = fresh();
+    db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, labels, head_oid) VALUES ('app', 10, 'pr', 'OPEN', 'PR', 'Body', 'someone', '${T0}', '${T0}', '[]', 'bbb')`).run();
+    db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, labels, head_oid) VALUES ('app', 11, 'pr', 'OPEN', 'PR', 'Body', 'someone', '${T0}', '${T0}', '[]', 'bbb')`).run();
+    ask(db, [
+      { id: "app#10:merge@aaa", kind: "merge", repo: "app", number: 10, question: "Merge?", options: OPTIONS },
+      { id: "app#11:merge@aaa", kind: "merge", repo: "app", number: 11, question: "Merge?", options: OPTIONS },
+    ]);
+    db.prepare("UPDATE main.decisions SET answer = 'merge', answered_by = 'op', answered_at = ? WHERE id = 'app#11:merge@aaa'").run(T0);
+    assert.equal(setAsideSupersededQuestions(db, T0), 1);
+    assert.equal(getDecision(db, "app#10:merge@aaa"), undefined);
+    assert.equal(getDecision(db, `app#10:merge@aaa~replaced-${T0}`)?.answer, "withdrawn");
+    assert.equal(getDecision(db, "app#11:merge@aaa")?.answer, "merge");
+  });
+});
