@@ -159,7 +159,7 @@ export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTr
 // Opinions and comments are display-only and never read here.
 export type Actionable = { id: string; kind: Kind; repo: string | null; number: number | null; items: Ref[]; answer: string; exceptions: Exception[] };
 
-function operators(db: DatabaseSync): Set<string> {
+export function operators(db: DatabaseSync): Set<string> {
   return new Set((db.prepare("SELECT login FROM access WHERE role = 'operator'").all() as { login: string }[]).map((r) => r.login));
 }
 
