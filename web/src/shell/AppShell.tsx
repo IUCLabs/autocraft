@@ -1,7 +1,7 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon, PlugsConnectedIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, ListIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon, PlugsConnectedIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -44,6 +44,7 @@ export function AppShell() {
   const [railOpen, setRailOpen] = usePref(user.login, "rail-open", true);
   const [help, setHelp] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
 
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
   const entries = visible.flatMap((m) => (m.nav ? [m.nav] : []));
@@ -83,7 +84,10 @@ export function AppShell() {
   if (phone) {
     return (
       <div className="flex h-full flex-col bg-panel">
-        <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-4 pr-1.5">
+        <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-1 pr-1.5">
+          <button id="nav-toggle" aria-label="Open navigation" onClick={() => setNavOpen(true)} className="flex size-11 shrink-0 items-center justify-center text-ink/70">
+            <ListIcon className="text-[20px]" />
+          </button>
           <Wordmark />
           <div className="flex-1" />
           <LiveDot />
@@ -96,6 +100,7 @@ export function AppShell() {
         </header>
         <main className="min-h-0 flex-1">{content}</main>
         <PhoneTabs rail={rail} />
+        <NavDrawer open={navOpen} onOpenChange={setNavOpen} rail={rail} />
         <Dialog.Root open={searchOpen} onOpenChange={setSearchOpen}>
           <Dialog.Portal>
             <Dialog.Content className="fixed inset-0 z-50 flex flex-col bg-panel animate-fadeIn" aria-describedby={undefined}>
@@ -117,16 +122,7 @@ export function AppShell() {
     <div className="flex h-full bg-bg">
       <aside className={cn("flex shrink-0 flex-col border-r border-line bg-bg transition-[width] duration-base ease-out", railOpen ? "w-[220px]" : "w-[52px]")}>
         <div className={cn("flex h-11 shrink-0 items-center px-4", !railOpen && "justify-center px-0")}>{railOpen ? <Wordmark /> : <Logo size={20} />}</div>
-        <nav className="flex-1 overflow-y-auto px-2 pb-3 pt-1" aria-label="Main">
-          {rail.map((g) => (
-            <div key={g.label} className="mb-3">
-              {railOpen && g.label && <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink/45">{g.label}</div>}
-              {g.entries.map((n) => (
-                <RailLink key={n.to} entry={n} open={railOpen} />
-              ))}
-            </div>
-          ))}
-        </nav>
+        <RailNav rail={rail} open={railOpen} className="flex-1" />
         <RunMeter open={railOpen} />
         <div className={cn("flex items-center border-t border-line p-2", !railOpen && "justify-center")}>
           <button onClick={() => setRailOpen(!railOpen)} className="flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink" aria-label={railOpen ? "Collapse sidebar" : "Expand sidebar"} title="Toggle sidebar  [">
@@ -187,11 +183,13 @@ function Wordmark() {
   );
 }
 
-function RailLink({ entry, open }: { entry: NavEntry; open: boolean }) {
+function RailLink({ entry, open, tall }: { entry: NavEntry; open: boolean; tall?: boolean }) {
   const count = entry.useBadge?.();
   const cls = (isActive: boolean) =>
     cn(
-      "relative flex h-7 items-center gap-2 rounded px-2 text-sm text-ink/70 transition-colors duration-fast hover:bg-ink/[0.06] hover:text-ink",
+      "relative flex items-center gap-2 rounded px-2 text-sm",
+      tall ? "h-11" : "h-7",
+      "text-ink/70 transition-colors duration-fast hover:bg-ink/[0.06] hover:text-ink",
       isActive && "bg-ink/[0.08] font-medium text-ink",
       !open && "justify-center px-0",
     );
@@ -210,34 +208,55 @@ function RailLink({ entry, open }: { entry: NavEntry; open: boolean }) {
   );
 }
 
-function PhoneTabs({ rail }: { rail: { label: string; entries: NavEntry[] }[] }) {
+type RailGroup = { label: string; entries: NavEntry[] };
+
+/** The nav rail: the desktop sidebar and the phone drawer both render this. */
+function RailNav({ rail, open, className, tall }: { rail: RailGroup[]; open: boolean; className?: string; tall?: boolean }) {
+  return (
+    <nav className={cn("overflow-y-auto px-2 pb-3 pt-1", className)} aria-label="Main">
+      {rail.map((g) => (
+        <div key={g.label} className="mb-3">
+          {open && g.label && <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink/45">{g.label}</div>}
+          {g.entries.map((n) => (
+            <RailLink key={n.to} entry={n} open={open} tall={tall} />
+          ))}
+        </div>
+      ))}
+    </nav>
+  );
+}
+
+/** Phone: the rail in a left drawer. Radix Dialog supplies the focus trap, Escape, scroll lock and focus return. */
+function NavDrawer({ open, onOpenChange, rail }: { open: boolean; onOpenChange: (o: boolean) => void; rail: RailGroup[] }) {
+  const { pathname } = useLocation();
+  useEffect(() => onOpenChange(false), [pathname, onOpenChange]);
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 animate-fadeIn" />
+        <Dialog.Content className="fixed inset-y-0 left-0 z-50 flex w-[280px] max-w-[85vw] flex-col border-r border-line bg-bg pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pt-[env(safe-area-inset-top)] animate-fadeIn" aria-describedby={undefined} onCloseAutoFocus={(e) => { e.preventDefault(); document.getElementById("nav-toggle")?.focus(); }}>
+          <Dialog.Title className="sr-only">Navigation</Dialog.Title>
+          <div className="flex h-12 shrink-0 items-center justify-between pl-4 pr-1.5">
+            <Wordmark />
+            <Dialog.Close className="flex size-11 items-center justify-center text-ink/70" aria-label="Close navigation">
+              <XIcon />
+            </Dialog.Close>
+          </div>
+          <RailNav rail={rail} open tall className="min-h-0 flex-1 overscroll-contain" />
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function PhoneTabs({ rail }: { rail: RailGroup[] }) {
   const all = rail.flatMap((g) => g.entries);
   const tabs = PHONE_TABS.flatMap((p) => all.filter((e) => e.to === p));
-  const rest = all.filter((e) => !PHONE_TABS.includes(e.to));
-  const loc = useLocation();
-  const moreActive = rest.some((n) => (n.to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(n.to)));
   return (
-    <nav aria-label="Main" style={{ gridTemplateColumns: `repeat(${tabs.length + 1}, 1fr)` }} className="grid shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
+    <nav aria-label="Primary" style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }} className="grid shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
       {tabs.map((n) => (
         <PhoneTab key={n.to} entry={n} />
       ))}
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger className={cn("flex h-14 flex-col items-center justify-center gap-0.5 rounded-none text-2xs font-medium text-ink/55", moreActive && "text-accent-ink")}>
-          <DotsThreeIcon className="text-[20px]" />
-          More
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Portal>
-          <DropdownMenu.Content side="top" align="end" sideOffset={4} className={menuCls}>
-            {rest.map((n) => (
-              <DropdownMenu.Item key={n.to} asChild>
-                <NavLink to={n.to} className={cn(itemCls, "h-11")}>
-                  <n.icon className="text-ink/55" /> {n.label}
-                </NavLink>
-              </DropdownMenu.Item>
-            ))}
-          </DropdownMenu.Content>
-        </DropdownMenu.Portal>
-      </DropdownMenu.Root>
     </nav>
   );
 }

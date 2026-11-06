@@ -82,7 +82,7 @@ Rules:
 - **Shell**: sidebar, 44 px top bar (breadcrumb, global search, live counters, role badge, theme toggle, user menu), workspace.
 - **Sidebar** (220 px, collapses to 52 px with `[`): ArtCraft logo, Pipeline flow (the home page, see dashboard-spec.md), Decisions and Progress, then Insight (Contributors, Classifiers, Cost) and Operator (Repos, Access). A backlog meter at the bottom shows the percentage done and the done split.
 - **Workspace**: each view is a row of panels in a `PanelGroup`. Panels are resizable; panels marked `collapsible` fold to a narrow strip with a vertical label. Layouts are saved per user and view (`autocraft:<login>:layout:<view>` in localStorage; the storage adapter is two calls the server can implement later).
-- **Phones** (< 768 px): one column. A view either supplies its own phone component (Decisions) or its panels stack top to bottom, skipping those marked `hideOnPhone`. The sidebar becomes a bottom tab bar (entries with `phoneTab`, plus More); search opens full screen.
+- **Phones** (< 768 px): one column. A view either supplies its own phone component (Decisions) or its panels stack top to bottom, skipping those marked `hideOnPhone`. The bottom tab bar holds the primary entries (Now, Next, Needs you, Items). A hamburger button left of the logo opens the sidebar as a left drawer: the same rail component (groups, icons, permission filtering, active state), scrolling on its own, with a scrim; it closes on scrim tap, Escape, close button and route change, traps focus and locks body scroll. Search opens full screen.
 
 ## 5. Extensibility
 
