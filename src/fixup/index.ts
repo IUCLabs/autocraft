@@ -27,6 +27,8 @@ import { ghAskComment, ghComment, ghEditComment, pushBranch, type Note, type Wri
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
+import { isQuiet } from "../security/quiet.ts";
+import { patchGiveaway } from "../security/rules.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
@@ -394,6 +396,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
       const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
+      const quiet = isQuiet(db, repo, c.number);
       const shown: FixupPr["files"] = [];
       let total = 0, tooBig: string | null = null, bad: string | null = null;
       for (const path of files) {
@@ -435,7 +438,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // The model's patch: the stored one when it is clean, else a new answer (with the findings on the earlier patch).
       const ses: SessionAsk = c.lint && findings.length ? sessionAsk(c.lint.session, "", findings, new Date(at())) : {};
       if (folded !== null) dropSessions(c.lint!.session);
-      const raw = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(c.operator ? { operator: c.operator.instructions } : {}), ...(carried ? { carried_from: carried } : {}),
+      const raw = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, ...(quiet ? { quiet } : {}), files: shown, diff: diff.text, ...(c.operator ? { operator: c.operator.instructions } : {}), ...(carried ? { carried_from: carried } : {}),
         ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout,
         new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(c.operator ? validatePatch(splitChanges(p).diff, null, operatorEditable) : validatePatch(p, files, fixupEditable))) }), ses);
       ledger.hold(ses.kept);
@@ -446,6 +449,8 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const reply = split.diff;
       const v = c.operator ? validatePatch(reply, null, operatorEditable) : validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
+      const word = quiet ? patchGiveaway(v.patch) : null;
+      if (word) { fail("refused", `the patch adds "${word}" to a pull request whose fix is not yet public`); continue; }
 
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;

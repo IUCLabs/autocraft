@@ -16,7 +16,8 @@ import type { CardEdit } from "../../web/src/api/types.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { closeRefusal, decisionStamp, isSettling, openDecision, otherTypeLabel, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
+import { closeRefusal, decisionStamp, isSettling, openDecision, otherTypeLabel, PUBLIC_TEXT_STEPS, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
+import { isQuiet } from "../security/quiet.ts";
 import { ConversationError, insertTurn, staleOf, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, NOTE_MAX, type CloseReason } from "./types.ts";
 import { ownerOf, slugOf } from "../owners.ts";
@@ -460,6 +461,10 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   let params = JSON.parse(c.params) as CardParams;
   const skipped: string[] = [];
   let noteIsSummary = false;
+  // A card drafted before the PR became quiet (a security fix not yet published) must not post model-written text any more.
+  if (params.kind === "comment" || (params.kind === "resolution" && params.steps.some((x) => PUBLIC_TEXT_STEPS.has(x.kind)))) {
+    if (isQuiet(db, c.repo, c.number)) throw new ConversationError(409, "this card posts text, and the pull request is quiet until its fix is published");
+  }
   if (deps.skip?.length) {
     if (params.kind !== "resolution") throw new ConversationError(400, "only a resolution has steps to skip");
     const all = params.steps;

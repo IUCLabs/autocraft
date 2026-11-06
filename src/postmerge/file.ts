@@ -16,6 +16,7 @@ import { pipelineLogin } from "../review/discussion.ts";
 import { ghFileExists, type FileChecker } from "../review/diff.ts";
 import { issueBody, issueTitle, refusal } from "./template.ts";
 import { pilotSqlFor } from "../pilot.ts";
+import { isQuiet } from "../security/quiet.ts";
 import { dedupeDefects, pendingDefects, recentFiled, reviewOf, followupsOf, type FollowupState, type PendingDefect } from "./select.ts";
 
 export const ACTOR = "postmerge-file";
@@ -169,6 +170,7 @@ export async function fileFinding(db: DatabaseSync, ref: string, index: number, 
   if (!f) throw new Error(`${ref} has no finding ${index}; its review has ${r.findings.length} (counted from 0)`);
   if (f.severity !== "defect") throw new Error(`finding ${index} of ${ref} is minor; only defects are filed`);
   if (!commentApprovalOf(db, repo)) throw new Error(`commenting in ${repo} is not approved`);
+  if (isQuiet(db, repo, number)) throw new Error(`${ref} is a quiet pull request: its fix is not public yet, so no issue is filed about it`);
   if (!db.prepare(`SELECT 1 WHERE ${pilotSqlFor("?1", "CAST(?2 AS INTEGER)")}`).get(repo, number)) throw new Error(`${ref} is outside the pipeline's scope (pipeline flag or pilot)`);
   const have = followupsOf(db, repo, number).find((x) => x.review_at === r.at && x.finding === index);
   if (have?.state === "filed" || have?.state === "filing") throw new Error(`finding ${index} of ${ref} is already ${have.state === "filed" ? `filed as issue ${have.issue_number}` : "being filed with an unknown outcome; check GitHub"}`);

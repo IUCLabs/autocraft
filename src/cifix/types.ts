@@ -15,6 +15,8 @@ export type CifixPr = {
   repo_dir?: string;
   ref: string;
   title: string;
+  /** Set for a quiet pull request: the prompt adds the quiet rule; not part of the quoted JSON. */
+  quiet?: boolean;
   /** The failed checks with the tail of each failed step's log. */
   failure: { check: string; steps: { job: string; step: string; log: string }[] }[];
   /** Each file the patch may edit, at the PR's head commit: whole, or in part when it is large. */

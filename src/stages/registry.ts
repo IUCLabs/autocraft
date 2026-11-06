@@ -419,7 +419,7 @@ export const STAGES: StageDef[] = [
   },
   {
     id: "postmerge", title: "Post-merge review", order: 13, runStage: 8, docSection: "Post-merge review", mode: "steps",
-    description: "Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown.",
+    description: "Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting, except on a security fix whose advisory is not published yet (its findings are only shown); minor findings are only shown.",
     steps: [{ name: "postmerge", maxMin: 30, label: "Post-merge review", limit: null }, { name: "postmerge-file", maxMin: 10, label: "File follow-up issues", limit: 20 }],
     lanes: [{ name: "postmerge", steps: ["postmerge"], order: 22 }, { name: "postmerge-file", steps: ["postmerge-file"], order: 23 }],
     reads: ["Merged PRs and their merge commits", "Our commits and reviews of each PR", "Open issues and PRs, for duplicates", "Repo checkout"],

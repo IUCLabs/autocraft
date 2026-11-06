@@ -8,6 +8,7 @@ import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decision
 import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
 import { pilotSql } from "../pilot.ts";
+import { isQuiet } from "../security/quiet.ts";
 import { LOGIN } from "../access.ts";
 import { CLOSE_REASONS, COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, RESOLVE_MAX, type CardKind, type CloseReason } from "./types.ts";
 
@@ -376,11 +377,15 @@ function pipelineStep(db: DatabaseSync, repo: string, n: number, st: Record<stri
 
 const MAX_STEPS = 8;
 
+/** Steps that post model-written text on GitHub: not offered on a quiet pull request, whose fix must not be described in public before the advisory is published. */
+export const PUBLIC_TEXT_STEPS: ReadonlySet<string> = new Set(["comment", "open_issue", "transfer"]);
+
 /** The step kinds that can validate for the item as it is now, from the same facts and refusals as validateResolution; "fixup with merge" is listed apart. */
 export function applicableSteps(db: DatabaseSync, repo: string, n: number): string[] {
   const f = itemFacts(db, repo, n);
   if (!f) return [];
   const open = f.state === "OPEN", isPr = pr(f), out: string[] = ["open_issue"];
+  const quiet = isQuiet(db, repo, n);
   if (open) {
     out.push("comment", "label", "assign");
     if (ALL_LABELS.some((l) => !("note" in unlabelStep(db, repo, n, l.name)))) out.push("unlabel");
@@ -391,7 +396,7 @@ export function applicableSteps(db: DatabaseSync, repo: string, n: number): stri
       if (d && (d.kind === "merge" || d.kind === "scope")) out.push("fixup with merge");
     } else if (!closeRefusal(db, repo, n)) out.push("transfer");
   } else if (f.state === "CLOSED" && !("note" in reopenStep(db, repo, n))) out.push("reopen");
-  return out;
+  return quiet ? out.filter((k) => !PUBLIC_TEXT_STEPS.has(k)) : out;
 }
 
 /** The settlement the model asked for, checked against the item's open decision `d`. */
@@ -462,6 +467,7 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
     if ("note" in r) return r;
     steps.push(r.value);
   }
+  if (steps.some((x) => PUBLIC_TEXT_STEPS.has(x.kind)) && isQuiet(db, repo, n)) return { note: "dropped a resolution that posts text on a quiet pull request" };
   const labels = steps.flatMap((x) => (x.kind === "label" ? [x.label] : []));
   if (new Set(labels).size !== labels.length) return { note: "dropped a resolution that adds the same label twice" };
   if (labels.filter(isTypeLabel).length > 1) return { note: "dropped a resolution that adds more than one type label" };

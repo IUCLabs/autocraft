@@ -111,6 +111,24 @@ describe("cards", () => {
     assert.equal(none.cards.length, 1);
     assert.equal(none.notes.length, 1);
   });
+
+  test("a quiet pull request gets no card that posts model-written text", () => {
+    const db = fresh();
+    const R = (steps: unknown[], settle: unknown, extra: object = {}) => ({ kind: "resolution", steps, settle, ...extra });
+    const reply = `Review found an unrelated defect.\n\`\`\`actions\n${JSON.stringify([
+      R([{ kind: "label", label: "bugfix" }], null),
+      R([{ kind: "open_issue", repo: "app", title: "Follow up", body: "details" }], null),
+      R([{ kind: "comment" }], null, { text: "Which version?" }),
+    ])}\n\`\`\``;
+    assert.deepEqual(parseReply(db, "app", 2, reply)!.cards.map((c) => c.params.kind === "resolution" ? c.params.steps.map((x) => x.kind).join() : ""), ["label", "open_issue"]);
+    db.prepare("INSERT INTO security_scans (id, repo, state, started_by, started_at) VALUES (900, 'app', 'done', 'op', ?)").run(T0);
+    db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, reach, impact, fingerprint, fix_pr, created_at, updated_at)
+      VALUES ('app', 900, 900, 'a', 't', 'high', 0, 'landing', '[]', 'r', 'i', 'fp900', 2, ?, ?)`).run(T0, T0);
+    const p = parseReply(db, "app", 2, reply)!;
+    assert.deepEqual(p.cards.map((c) => c.params.kind === "resolution" ? c.params.steps.map((x) => x.kind).join() : ""), ["label"]);
+    assert.equal(p.notes.length, 2);
+    assert.ok(!applicableSteps(db, "app", 2).some((k) => k === "comment" || k === "open_issue" || k === "transfer"));
+  });
 });
 
 describe("new step kinds", () => {

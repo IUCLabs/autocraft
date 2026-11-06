@@ -193,6 +193,8 @@ export type FixupPr = {
   title: string;
   /** The review's fix list for this PR. */
   fixes: { file: string; change: string }[];
+  /** Set for a quiet pull request: the prompt adds the quiet rule; not part of the quoted JSON. */
+  quiet?: boolean;
   /** Each file the fixes name, at the PR's head commit: whole, or in part when it is large. */
   files: ShownFile[];
   /** The PR's diff. */
