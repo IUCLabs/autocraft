@@ -22,6 +22,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { closeItem, commentOn, duplicateClose, type CloseHow, type Note, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
+import { isQuiet } from "../security/quiet.ts";
 import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow, type Kind } from "../decisions.ts";
 import { HEAD_FACT } from "../merge/queue.ts";
 import { fillReviewSummaries, reviewText } from "../review/summary.ts";
@@ -105,14 +106,15 @@ function closeRows(db: DatabaseSync, repo: string): ReviewRow[] {
   return plannedItems(db, "act", { repo }).filter((p) => p.action.params?.ask).map((p) => get.get(repo, p.facts.number, p.action.head) as ReviewRow | undefined).filter((r): r is ReviewRow => !!r);
 }
 
-export function closeQuestion(r: ReviewRow, why: string | null = null): Record<string, unknown> & { id: string } {
+/** A quiet pull request's question carries no model reason: the reason would name what the fix protects against, and the close comment is public. */
+export function closeQuestion(r: ReviewRow, why: string | null = null, quiet = false): Record<string, unknown> & { id: string } {
   const reason = cleanReason(r.reason);
   return {
     id: closeDecisionId(r.repo, r.number, r.head_oid), kind: "close", repo: r.repo, number: r.number,
     question: "Close this PR?",
     context: `The Opus review says close${r.sure === 0 ? " (Opus was unsure)" : ""}.`,
     facts: [
-      `${REASON_FACT}${r.reason.replace(/\s+/g, " ").trim().slice(0, 300)}`,
+      ...(quiet ? [] : [`${REASON_FACT}${r.reason.replace(/\s+/g, " ").trim().slice(0, 300)}`]),
       `author: ${r.author ?? "unknown"}, size ${sizeOf(r.lines)}`,
       `${HEAD_FACT}${r.head_oid}`,
     ],
@@ -120,13 +122,13 @@ export function closeQuestion(r: ReviewRow, why: string | null = null): Record<s
     // A recommendation always comes with the review's reason for it.
     ...(why ? { recommended: "close", recommended_reason: why } : {}),
     // The reason the closing comment gives; the operator sees it in the facts.
-    public_text: reason,
+    ...(quiet ? {} : { public_text: reason }),
     asked_by: ACTOR,
   };
 }
 
 export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): string[] {
-  const qs = closeRows(db, repo).map((r) => closeQuestion(r, reviewText(db, r.repo, r.number, r.head_oid)?.why ?? null));
+  const qs = closeRows(db, repo).map((r) => closeQuestion(r, reviewText(db, r.repo, r.number, r.head_oid)?.why ?? null, isQuiet(db, r.repo, r.number)));
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
   fillReviewSummaries(db, at, repo);
   return qs.map((q) => q.id);
@@ -190,8 +192,9 @@ export function decisionNote(d: DecisionRow): Note {
   return model ? { by: "operator", model } : { by: "fixed-operator" };
 }
 
-function commentFor(d: DecisionRow, t: Target): string {
+function commentFor(d: DecisionRow, t: Target, quiet = false): string {
   if (t.kind === "scope") return scopeCloseComment(d.public_text);
+  if (quiet) return prCloseComment({ repo: t.repo, reason: null, duplicateOf: null });
   return prCloseComment({ repo: t.repo, reason: d.public_text ?? factValue(d, REASON_FACT), duplicateOf: factValue(d, DUP_FACT) });
 }
 
@@ -300,7 +303,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
           if (!o) { skip(t, "GitHub returned no such original"); continue; }
           how = duplicateClose({ id: o.id, pr: o.type === "PullRequest" }, `${orig[1]}#${orig[2]}`);
           body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
-        } else body = commentFor(dec, t);
+        } else body = commentFor(dec, t, t.kind === "close" && isQuiet(db, t.repo, t.number));
         url = await commentOn(w, g, q, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);

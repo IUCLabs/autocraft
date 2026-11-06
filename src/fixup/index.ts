@@ -28,7 +28,7 @@ import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { isQuiet } from "../security/quiet.ts";
-import { patchGiveaway } from "../security/rules.ts";
+import { patchGiveaway, QUIET_PATCH_REFUSAL } from "../security/rules.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
@@ -306,6 +306,14 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         log(`  ${ref}: held: ${reason}`);
         return;
       }
+      if (isQuiet(db, repo, c.number)) {
+        // The review's fix list names what the fix protects against: a quiet pull request is never asked.
+        const reason = "a quiet pull request is not asked for changes";
+        rec.fixup(c, "cannot-push", reason, []);
+        summary.held.push({ ref, reason });
+        log(`  ${ref}: held: ${reason}`);
+        return;
+      }
       const body = c.carry ? c.carry.suggestion! : askText(c.fixes);
       const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "ask", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY);
       if ("refused" in g) { log(`  ${ref}: not asked: ${g.refused}`); return; }
@@ -450,7 +458,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const v = c.operator ? validatePatch(reply, null, operatorEditable) : validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
       const word = quiet ? patchGiveaway(v.patch) : null;
-      if (word) { fail("refused", `the patch adds "${word}" to a pull request whose fix is not yet public`); continue; }
+      if (word) { fail("refused", QUIET_PATCH_REFUSAL); continue; }
 
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;
@@ -516,7 +524,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       summary.pushed.push(ref);
       jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 
-      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files, await postableChanges(db, repo, `${repo}#${c.number}`, split.changes, c.operator.instructions)) : commentText(v.files, c.attempt);
+      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files, quiet ? [] : await postableChanges(db, repo, `${repo}#${c.number}`, split.changes, c.operator.instructions)) : commentText(v.files, c.attempt);
       const note: Note = c.carry ? { by: "operator", model: PROMPT.models[0] } : c.operator ? { by: "fixed-operator" } : { by: "model", kind: "comment", model: PROMPT.models[0] };
       // A plain review-fix push right after our own review-fix comment extends that comment instead of adding a second one.
       const prev = c.carry || c.operator ? null : await newestOwnComment(d.querier, new Set([who.login, ...ownLogins(db, repo)]), repo, c.number);

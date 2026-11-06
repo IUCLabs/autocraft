@@ -185,6 +185,9 @@ function commentText(line: string, st: { inBlock: boolean }): string {
 /** Giveaway test for names and paths: underscores, slashes and dots split words, so a name like test_path_traversal is caught. */
 export const nameGiveaway = (s: string): string | null => giveaway(s.replace(/[_/.]+/g, " "));
 
+/** The stored reason when a patch for a quiet pull request is refused for its wording: it names neither the word nor the fix. */
+export const QUIET_PATCH_REFUSAL = "the patch uses wording this pull request must not contain";
+
 /**
  * The giveaway word in what a unified diff shows: the narrow list for code tokens on added lines, the full list for the file
  * names, for comments and for function (test) names, or null when there is none.
