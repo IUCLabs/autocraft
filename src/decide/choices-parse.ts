@@ -7,6 +7,7 @@ import {
   addedCore, compose, coresFor, currentChoices, extraId, mergeChoices, MAX_ADDED_CORES, withIds, writeChoices, type Core,
 } from "./choices.ts";
 import { coreKey, type ChoicesBlockExtra, type ChoicesRow, type CoreKey, type ExtraKind, type StoredDraft } from "./choices-types.ts";
+import { cardsToDrafts } from "./choices-convert.ts";
 import { PREPARE_REASON_MAX } from "./prepare-types.ts";
 
 /** A validated `choices` block: what a prepare writes whole and a conversation turn merges. */
@@ -270,14 +271,17 @@ export interface SettlingDrafts {
 }
 
 /**
- * The seam for the converter of settling action cards (cards of an `actions` block that settle the item's open decision) into
- * choices drafts. The default drops the cards with a note.
+ * Settling action cards of a conversation turn become drafts through `cardsToDrafts`; cards that map to no core are dropped with a note.
+ * Tests or other callers may replace the hook.
  */
 export const hooks: { settlingCardsToDrafts: (db: DatabaseSync, repo: string, n: number, d: DecisionRow, cards: NewCard[]) => SettlingDrafts } = {
-  settlingCardsToDrafts: (_db, _repo, _n, _d, cards) => ({
-    patch: null,
-    notes: [`dropped ${cards.length === 1 ? "a card" : `${cards.length} cards`} that settle the decision: its answers are drafted in a choices block`],
-  }),
+  settlingCardsToDrafts: (db, _repo, _n, d, cards) => {
+    const r = cardsToDrafts(db, d, cards.map((c) => ({ params: c.params, text: c.text })));
+    const notes = [...r.notes];
+    const unmapped = cards.length - r.used.length;
+    if (unmapped > 0) notes.push(`dropped ${unmapped === 1 ? "a card" : `${unmapped} cards`} that settle the decision without matching one of its choices`);
+    return { patch: r.used.length ? { cores: r.cores, add: r.add, pick: null } : null, notes };
+  },
 };
 
 export interface TurnReply extends Parsed {

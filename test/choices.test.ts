@@ -73,6 +73,13 @@ describe("decision choices", () => {
     assert.equal(currentChoices(db, d.id), undefined, "settling replaces the choices");
   });
 
+  test("a core without a GitHub write says whether the pipeline carries on", () => {
+    const db = fresh();
+    const after = (id: string) => Object.fromEntries(coresFor(db, getDecision(db, id)!).map((c) => [c.key, c.after]));
+    assert.deepEqual(after("app#1:scope"), { "o:take": "autocraft", "o:close": undefined, backlog: "nothing" });
+    assert.deepEqual(after("app#2:merge"), { "o:merge": undefined, "fixup-merge": undefined, "o:hold": "nothing", backlog: "nothing" });
+  });
+
   test("an extra the core does not take is refused", () => {
     const db = fresh();
     // Hold takes no open_issue; the merge answer takes no request_reviewers; a backlog core takes no extras.

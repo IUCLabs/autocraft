@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { writeEffect } from "../act/index.ts";
+import { KEEP_IN_CORE } from "../core/rules.ts";
 import { applicableSteps } from "../conversations/cards.ts";
 import { optionsOf, type DecisionRow, type Kind } from "../decisions.ts";
 import {
@@ -75,11 +76,15 @@ function optionWrites(kind: Kind, key: string): ActionTag[] {
   return out;
 }
 
+/** Options after which the pipeline carries on: scope calls that keep the item in core, keeping a PR open, and "not duplicates". Everything else that writes nothing only waits. */
+const CONTINUES = new Set([...KEEP_IN_CORE, "keep", "distinct"]);
+const afterOf = (p: ParsedCoreKey): "autocraft" | "nothing" => ((p.type === "option" && CONTINUES.has(p.option)) || p.type === "review" ? "autocraft" : "nothing");
+
 const mk = (db: DatabaseSync, d: DecisionRow, key: CoreKey, label: string, o: { writes: ActionTag[]; base: ExtraKind[]; applicable: Set<string>; closing?: boolean }): Core => {
   const parsed = parseCoreKey(key)!;
   const allowed = o.base.filter((k) => o.applicable.has(k));
   return {
-    key, label, writes: o.writes, extras: [], drafted: false, parsed, decision: d.id, allowed, closing: !!o.closing,
+    key, label, writes: o.writes, ...(o.writes.length === 0 && { after: afterOf(parsed) }), extras: [], drafted: false, parsed, decision: d.id, allowed, closing: !!o.closing,
     ...(o.closing && { params: { reason: "" } }),
   };
 };

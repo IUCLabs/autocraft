@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { ArrowCounterClockwiseIcon, ArrowFatUpIcon, ArrowsLeftRightIcon, ChatTextIcon, EyeIcon, GitMergeIcon, PlusCircleIcon, TagIcon, UserPlusIcon, XCircleIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, ArrowFatUpIcon, ArrowsLeftRightIcon, ChatTextIcon, EyeIcon, GitMergeIcon, PlusCircleIcon, RobotIcon, TagIcon, UserPlusIcon, XCircleIcon } from "@phosphor-icons/react";
 import type { ActionTag as Tag } from "../../api/types";
 import { cn } from "../cn";
 
@@ -20,13 +20,25 @@ const TAGS: Record<Tag, { icon: ComponentType<{ className?: string }>; word: str
 /** The plain words for a set of tags, as in "Do it: comment, close". */
 export const tagWords = (tags: Tag[]) => tags.map((t) => TAGS[t].word).join(", ");
 
+const PILL = "inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-ink/[0.06] px-2 text-2xs font-normal text-ink/60";
+
 /** One GitHub write as a muted pill: icon and word. Not interactive. */
 export function ActionTag({ tag, className }: { tag: Tag; className?: string }) {
   const { icon: Icon, word } = TAGS[tag];
   return (
-    <span className={cn("inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-ink/[0.06] px-2 text-2xs font-normal text-ink/60", className)}>
+    <span className={cn(PILL, className)}>
       <Icon className="text-[12px]" />
       {word}
+    </span>
+  );
+}
+
+/** The mark of a core with no GitHub write: the pipeline carries on ("AutoCraft continues") or the item only waits ("nothing happens"). Same pill style. */
+export function AfterTag({ after, className }: { after: "autocraft" | "nothing"; className?: string }) {
+  return (
+    <span className={cn(PILL, className)}>
+      {after === "autocraft" && <RobotIcon className="text-[12px]" />}
+      {after === "autocraft" ? "AutoCraft continues" : "nothing happens"}
     </span>
   );
 }

@@ -2,7 +2,7 @@ import { useRef, useState, type KeyboardEvent } from "react";
 import { ArrowsClockwiseIcon, BellIcon, BellSlashIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { ActionTag as Tag, ChoiceCore, ChoiceExtra, Decision, DecisionChoices, DoChoiceBody, User } from "../../api/types";
-import { ActionTag, tagWords } from "../../ui/atoms/ActionTag";
+import { ActionTag, AfterTag, tagWords } from "../../ui/atoms/ActionTag";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { CheckRow } from "../../ui/molecules/CheckRow";
@@ -78,16 +78,15 @@ function SnoozeButton({ d, user, busy, setBusy, setError }: { d: Decision; user:
 }
 
 const Heading = ({ children }: { children: string }) => <h3 className="mb-0.5 px-2 text-xs font-semibold text-ink/60">{children}</h3>;
-const Tags = ({ tags }: { tags: Tag[] }) =>
-  tags.length ? (
-    <div className="flex flex-wrap gap-1">
-      {tags.map((t, i) => (
-        <ActionTag key={`${t}${i}`} tag={t} />
-      ))}
-    </div>
-  ) : (
-    <p className="text-xs text-ink/55">nothing on GitHub</p>
-  );
+/** The core's marks on the label line: its GitHub writes, or what happens instead when it writes none. */
+const Marks = ({ core }: { core: ChoiceCore }) => (
+  <>
+    {core.writes.map((t, i) => (
+      <ActionTag key={`${t}${i}`} tag={t} />
+    ))}
+    {core.writes.length === 0 && core.after && <AfterTag after={core.after} />}
+  </>
+);
 
 /**
  * An open question's answer. With `choices`: the core actions as a pick-one list (Opus's pick selected), the selected core's
@@ -306,9 +305,8 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
         {choices.cores.map((c, i) => {
           const sel = c.key === core.key;
           return (
-            <RadioRow key={c.key} ref={(el) => void (refs.current[i] = el)} selected={sel} onSelect={() => select(c.key)} tabIndex={sel ? 0 : -1} disabled={busy || running} title={c.label} tag={c.key === choices.pick?.core ? opusTag : undefined}>
-              <Tags tags={c.writes} />
-              {sel && params(c)}
+            <RadioRow key={c.key} ref={(el) => void (refs.current[i] = el)} selected={sel} onSelect={() => select(c.key)} tabIndex={sel ? 0 : -1} disabled={busy || running} title={c.label} marks={<Marks core={c} />} tag={c.key === choices.pick?.core ? opusTag : undefined}>
+              {sel && (c.params?.reason !== undefined || c.params?.instructions !== undefined) ? params(c) : undefined}
             </RadioRow>
           );
         })}

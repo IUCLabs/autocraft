@@ -145,6 +145,8 @@ export interface ChoiceCore {
   params?: { reason?: string; instructions?: string; target?: string };
   /** GitHub writes the core itself performs; empty when it only records an answer in AutoCraft. */
   writes: ActionTag[];
+  /** Set only when `writes` is empty: the pipeline carries on from the answer ("autocraft") or the item just waits ("nothing"). */
+  after?: "autocraft" | "nothing";
   extras: ChoiceExtra[];
   /** Opus drafted this core's params and extras (beyond the offered list). */
   drafted: boolean;

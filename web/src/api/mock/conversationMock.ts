@@ -36,6 +36,7 @@ function mergeChoices(n: number): DecisionChoices {
       key: "o:hold",
       label: "Hold for a second review",
       writes: [],
+      after: "nothing",
       drafted: false,
       extras: [
         { id: "e1", kind: "label", tag: "label", on: true, label: "needs second review" },
@@ -50,7 +51,7 @@ function mergeChoices(n: number): DecisionChoices {
       drafted: true,
       extras: [{ id: "e1", kind: "open_issue", tag: "open_issue", on: false, title: "Load Hungarian from the language pack", body: issueBody }],
     },
-    { key: "backlog", label: "Later", writes: [], drafted: false, extras: [] },
+    { key: "backlog", label: "Later", writes: [], after: "nothing", drafted: false, extras: [] },
   ];
   return { id: `ch-${n}`, decisionId: "designcraft#1484:merge", pick: { core: "o:merge", reason: "Review and CI are green and the author is whitelisted. The data duplicates the language pack, so a follow-up issue covers moving onto it." }, cores, source: "prepare", at: at(5) };
 }
@@ -68,7 +69,7 @@ function scopeChoices(n: number): DecisionChoices {
         { id: "e2", kind: "label", tag: "label", on: false, label: "small extra" },
       ],
     },
-    { key: "o:take", label: "In scope: take it", writes: [], drafted: false, extras: [{ id: "e1", kind: "label", tag: "label", on: false, label: "in scope" }] },
+    { key: "o:take", label: "In scope: take it", writes: [], after: "autocraft", drafted: false, extras: [{ id: "e1", kind: "label", tag: "label", on: false, label: "in scope" }] },
     { key: "o:small-extra", label: "Keep as a feature request", writes: ["label"], drafted: true, extras: [{ id: "e1", kind: "comment", tag: "comment", on: false, text: "Keeping this open as a feature request." }] },
     { key: "o:plugin", label: "Plugin candidate", writes: ["comment"], drafted: false, extras: [{ id: "e1", kind: "comment", tag: "comment", on: true, text: "This fits a plugin better than the core app. Could you move it to a plugin?" }] },
     {
@@ -79,7 +80,7 @@ function scopeChoices(n: number): DecisionChoices {
       drafted: false,
       extras: [],
     },
-    { key: "backlog", label: "Later", writes: [], drafted: false, extras: [] },
+    { key: "backlog", label: "Later", writes: [], after: "nothing", drafted: false, extras: [] },
   ];
   return { id: `ch-s${n}`, decisionId: "photocraft#4127:scope", pick: { core: "x:close:completed", reason: "Wave already shipped in #3880, so the work is done and the issue can close." }, cores, source: "prepare", at: at(8) };
 }
