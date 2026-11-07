@@ -73,3 +73,26 @@ test("cards that rest on the code are told apart from those that do not", () => 
   assert.equal(dependsOnCode({ kind: "resolution", steps: [{ kind: "label", label: "x" }], settle: { kind: "backlog", decision: "d", stamp: "s" } }, null), false);
   assert.equal(dependsOnCode({ kind: "resolution", steps: [{ kind: "close", reason: "not_planned" as never, pr: true }], settle: null }, null), false);
 });
+
+test("after a push, a scope decision whose choices hold a code-dependent core is prepared again once per new head", () => {
+  const { w, head } = setup();
+  const put = (drafts: object, seenHead: string) => {
+    w.db.prepare("DELETE FROM decision_choices").run();
+    w.db.prepare(`INSERT INTO decision_choices (id, decision_id, repo, number, stamp, seen, source, drafts, added, pick, state, created_at)
+      VALUES ('c1', 'app#7:scope', 'app', 7, 's', ?, 'prepare', ?, '[]', '{}', 'current', '2026-11-04T10:00:00.000Z')`).run(JSON.stringify({ head: seenHead }), JSON.stringify(drafts));
+  };
+  put({ "o:close": { extras: [] }, backlog: { extras: [] } }, head);
+  w.db.prepare("UPDATE items SET head_oid = 'newhead' WHERE number = 7").run();
+  // Only code-independent cores: left as they are.
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), []);
+  put({ "o:take": { extras: [{ kind: "comment", on: true }] } }, head);
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), ["app#7:scope"]);
+  // Prepared for the new head: not due again.
+  put({ "o:take": { extras: [{ kind: "comment", on: true }] } }, "newhead");
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), []);
+  // Capped: the existing choices stay, shown as prepared earlier.
+  put({ "x:fixup": { params: { instructions: "do" }, extras: [] } }, head);
+  for (const at of ["01", "02", "03"]) w.db.prepare("INSERT INTO decision_prepares (decision_id, at, manual) VALUES ('app#7:scope', ?, 0)").run(`${new Date().toISOString().slice(0, 10)}T00:00:${at}.000Z`);
+  assert.equal(preparing(w.db, getDecision(w.db, "app#7:scope")!), false);
+  assert.equal(preparedEarlier(w.db, getDecision(w.db, "app#7:scope")!), true);
+});

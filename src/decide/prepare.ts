@@ -264,8 +264,6 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
         insertTurn(db, repo, n, { kind: "opus", login: "opus", body: got.text, block: opusBlock(got.text, cards, got.choices), notes: got.notes, cards, ...(got.choices && { choices: { decision: d, parsed: got.choices, source: "prepare" as const, by: model } }) }, { diff: p.diff });
       }
       store.run(got.pick, got.pick ? got.reason || null : null, model, got.summary, model, at, at, head, readKey, d.id, d.question, d.options);
-      // A non-merge prepare is not tied to the head, but a push during the call means the choices describe older code: due again at once.
-      if (isPr && d.kind !== "merge" && after.head_oid !== head) db.prepare("UPDATE main.decisions SET prepared_at = NULL WHERE id = ? AND answer IS NULL").run(d.id);
       res.stored++;
     } catch (e) {
       p.log(`decide: could not store the prepare of ${d.id}: ${(e as Error).message}`);

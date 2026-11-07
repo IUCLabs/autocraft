@@ -410,7 +410,7 @@ export function dependsOnCode(params: CardParams, text: string | null): boolean 
   switch (params.kind) {
     case "comment": return true;
     case "close": return text !== null && text.trim() !== "";
-    case "resolution": return params.steps.some((x) => x.kind === "comment" || x.kind === "open_issue" || x.kind === "fixup");
+    case "resolution": return params.steps.some((x) => x.kind === "comment" || x.kind === "open_issue" || x.kind === "fixup") || (params.settle?.kind === "answer" && !!params.settle.reason?.trim());
     default: return false;
   }
 }
