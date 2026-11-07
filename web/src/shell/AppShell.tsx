@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, ListIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon, PlugsConnectedIcon, LinkBreakIcon, LinkIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -11,18 +11,17 @@ import { useIsPhone } from "./useMedia";
 import { useTheme, type ThemePref } from "./theme";
 import { usePref } from "./layoutStorage";
 import { useHotkeys, useActiveShortcuts } from "./keyboard";
+import { REPORTS, SETTINGS, openEntries, type Entry } from "../modules/hub/entries";
 import { SearchBox } from "./SearchBox";
 import { Avatar } from "../ui/atoms/Avatar";
 import { Kbd } from "../ui/atoms/Kbd";
 import { Logo } from "../ui/atoms/Logo";
-import { Badge, type Tone } from "../ui/atoms/Badge";
+import { Badge } from "../ui/atoms/Badge";
 import { cn } from "../ui/cn";
-import { MAIN_CI_DOT, MAIN_CI_LABEL } from "../ui/atoms/MainCiBadge";
-import type { MainCiState, MainCiSummary } from "../api/types";
 import { useApi, useQuery } from "../api/client";
 import { HealthMenu } from "../ui/organisms/HealthMenu";
-import { useLiveStatus, type LiveStatus } from "../api/live";
-import { num, zoneName } from "../lib/format";
+import { useLiveStatus } from "../api/live";
+import { zoneName } from "../lib/format";
 import { UnlinkDiscordDialog } from "./UnlinkDiscord";
 import { LinkDiscordDialog } from "./LinkDiscord";
 
@@ -31,12 +30,10 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 
 // The rail is laid out here by path, so a module only declares its own entry. A path no module
 // registers (a page the reader's role cannot open) is left out.
-const RAIL: { label: string; paths: string[] }[] = [
-  { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity"] },
-  { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/admin/github-app", "/admin/discord", "/audit", "/prompts"] },
-  { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/security/scans", "/classifiers", "/contributors", "/main-ci", "/about"] },
-];
-const PHONE_TABS = ["/", "/next", "/needs", "/items"];
+// The main list is laid out here by path, so a module only declares its own entry. A path no module
+// registers (a page the reader's role cannot open) is left out. Reports and Settings follow as collapsible sections.
+const MAIN = ["/", "/needs", "/items", "/next", "/security"];
+const PHONE_TABS = ["/", "/needs", "/items", "/next"];
 
 export function AppShell() {
   const user = useUser();
@@ -50,7 +47,7 @@ export function AppShell() {
 
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
   const entries = visible.flatMap((m) => (m.nav ? [m.nav] : []));
-  const rail = RAIL.map((g) => ({ label: g.label, entries: g.paths.flatMap((p) => entries.filter((e) => e.to === p)) })).filter((g) => g.entries.length > 0);
+  const rail = [{ label: "", entries: MAIN.flatMap((p) => entries.filter((e) => e.to === p)) }];
   const routes = visible.flatMap((m) => m.routes);
   const hiddenPaths = useMemo(() => modules.filter((m) => !can(user, m.permission)).flatMap((m) => m.routes.map((r) => ({ path: r.path, permission: m.permission }))), [user]);
 
@@ -60,7 +57,7 @@ export function AppShell() {
     "?": () => setHelp(true),
     "[": () => setRailOpen(!railOpen),
     "g h": () => navigate("/"),
-    "g n": () => navigate("/next"),
+    "g q": () => navigate("/next"),
     "g d": () => navigate("/needs"),
     "g i": () => navigate("/items"),
     "g p": () => navigate("/progress"),
@@ -71,6 +68,7 @@ export function AppShell() {
       {routes.map((r) => (
         <Route key={r.path} path={r.path} element={r.path === "/" ? <OldFlowLink route={r} /> : <RouteView route={r} />} />
       ))}
+      <Route path="item/:repo/:number" element={<ItemRedirect />} />
       <Route path="decisions/*" element={<RedirectTo from="/decisions" to="/needs/decisions" />} />
       <Route path="decisions" element={<RedirectTo to="/needs" />} />
       <Route path="queue/merge" element={<RedirectTo to="/next/merge" />} />
@@ -92,9 +90,8 @@ export function AppShell() {
           </button>
           <Wordmark />
           <div className="flex-1" />
-          <LiveDot />
+          <ReconnectMark />
           <HealthMenu />
-          <RoleChip />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
             <MagnifyingGlassIcon className="text-[18px]" />
           </button>
@@ -125,7 +122,9 @@ export function AppShell() {
       <aside className={cn("flex shrink-0 flex-col border-r border-line bg-bg transition-[width] duration-base ease-out", railOpen ? "w-[220px]" : "w-[52px]")}>
         <div className={cn("flex h-11 shrink-0 items-center px-4", !railOpen && "justify-center px-0")}>{railOpen ? <Wordmark /> : <Logo size={20} />}</div>
         <RailNav rail={rail} open={railOpen} className="flex-1" />
-        <RunMeter open={railOpen} />
+        <div className="px-2 pb-1">
+          <FootLink to="/about" icon={InfoIcon} label="How it works" open={railOpen} />
+        </div>
         <div className={cn("flex items-center border-t border-line p-2", !railOpen && "justify-center")}>
           <button onClick={() => setRailOpen(!railOpen)} className="flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink" aria-label={railOpen ? "Collapse sidebar" : "Expand sidebar"} title="Toggle sidebar  [">
             <SidebarSimpleIcon className="text-[15px]" />
@@ -139,15 +138,11 @@ export function AppShell() {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg pl-4 pr-2">
-          <Breadcrumb routes={routes} />
           <div className="mx-auto w-full max-w-[440px]">
             <SearchBox />
           </div>
-          <LiveDot />
-          <LiveCounters />
+          <ReconnectMark />
           <HealthMenu />
-          <RoleChip />
-          <ThemeSwitch theme={theme} setTheme={setTheme} />
           <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />
         </header>
         <main className="min-h-0 flex-1 bg-panel">{content}</main>
@@ -162,18 +157,6 @@ function RouteView({ route }: { route: RouteDef }) {
   const user = useUser();
   if (route.permission && !can(user, route.permission)) return <div className="p-8 text-ink/60">You can't open this page.</div>;
   return <Workspace view={route.view} props={{ params, user }} />;
-}
-
-const LIVE_DOT: Record<LiveStatus, [label: string, color: string]> = {
-  open: ["Live", "bg-[#22e05a]"],
-  connecting: ["Reconnecting", "bg-warn"],
-  down: ["Offline", "bg-bad"],
-};
-
-/** The state of the server's event stream, as a colour and a tooltip. */
-function LiveDot() {
-  const [label, color] = LIVE_DOT[useLiveStatus()];
-  return <span role="img" aria-label={label} title={label} className={cn("inline-block size-2 shrink-0 rounded-full", color)} />;
 }
 
 function Wordmark() {
@@ -217,14 +200,50 @@ function RailNav({ rail, open, className, tall }: { rail: RailGroup[]; open: boo
   return (
     <nav className={cn("overflow-y-auto px-2 pb-3 pt-1", className)} aria-label="Main">
       {rail.map((g) => (
-        <div key={g.label} className="mb-3">
-          {open && g.label && <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink/45">{g.label}</div>}
+        <div key={g.label} className="mb-1">
           {g.entries.map((n) => (
             <RailLink key={n.to} entry={n} open={open} tall={tall} />
           ))}
         </div>
       ))}
+      <RailSection id="reports" label="Reports" icon={ChartBarIcon} to="/reports" entries={REPORTS} open={open} tall={tall} />
+      <RailSection id="settings" label="Settings" icon={GearSixIcon} to="/settings" entries={SETTINGS} open={open} tall={tall} />
     </nav>
+  );
+}
+
+/** A collapsible group of sub-items; the choice is remembered. The collapsed rail shows the section as one icon. */
+function RailSection({ id, label, icon: Icon, to, entries, open, tall }: { id: string; label: string; icon: typeof GearSixIcon; to: string; entries: Entry[]; open: boolean; tall?: boolean }) {
+  const user = useUser();
+  const { pathname } = useLocation();
+  const items = openEntries(user, entries);
+  const here = items.some((e) => pathname === e.to || pathname.startsWith(`${e.to}/`)) || pathname === to;
+  const [expanded, setExpanded] = usePref(user.login, `rail-section-${id}`, false);
+  const row = cn("flex items-center gap-2 rounded px-2 text-sm text-ink/70 hover:bg-ink/[0.06] hover:text-ink", tall ? "h-11" : "h-7");
+  if (!open)
+    return (
+      <NavLink to={to} title={label} className={cn(row, "justify-center px-0", here && "bg-ink/[0.08] text-ink")}>
+        <Icon className="text-[15px] opacity-80" />
+      </NavLink>
+    );
+  const show = expanded || here;
+  return (
+    <div className="mt-1">
+      <button onClick={() => setExpanded(!show)} aria-expanded={show} className={cn(row, "w-full text-left")}>
+        <Icon className="text-[15px] opacity-80" />
+        <span className="flex-1">{label}</span>
+        <CaretRightIcon className={cn("text-[11px] text-ink/40 transition-transform duration-fast", show && "rotate-90")} />
+      </button>
+      {show && (
+        <div className="ml-[15px] border-l border-line pl-1.5">
+          {items.map((e) => (
+            <NavLink key={e.to} to={e.to} className={({ isActive }) => cn("flex items-center rounded px-2 text-sm text-ink/65 hover:bg-ink/[0.06] hover:text-ink", tall ? "h-10" : "h-[26px]", isActive && "bg-ink/[0.08] font-medium text-ink")}>
+              {e.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -245,6 +264,9 @@ function NavDrawer({ open, onOpenChange, rail }: { open: boolean; onOpenChange: 
             </Dialog.Close>
           </div>
           <RailNav rail={rail} open tall className="min-h-0 flex-1 overscroll-contain" />
+          <div className="border-t border-line px-2 py-1">
+            <FootLink to="/about" icon={InfoIcon} label="How it works" open tall />
+          </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -283,6 +305,13 @@ function OldFlowLink({ route }: { route: RouteDef }) {
   return <RouteView route={route} />;
 }
 
+/** The old two-panel item page path opens the item page. */
+function ItemRedirect() {
+  const { repo, number } = useParams();
+  const loc = useLocation();
+  return <Navigate to={`/items/${repo}/${number}${loc.search}`} replace />;
+}
+
 /** Sends an old path to its new place. `from` is the prefix to swap, so `/decisions/a/1` becomes `/needs/decisions/a/1`; `search` replaces the query. */
 function RedirectTo({ to, from, search }: { to: string; from?: string; search?: string }) {
   const loc = useLocation();
@@ -290,78 +319,11 @@ function RedirectTo({ to, from, search }: { to: string; from?: string; search?: 
   return <Navigate to={`${to}${tail}${search ?? loc.search}`} replace />;
 }
 
-function Breadcrumb({ routes }: { routes: RouteDef[] }) {
-  const loc = useLocation();
-  const first = loc.pathname.split("/")[1] ?? "";
-  // Pages that share a first segment (/admin/...) are told apart by the whole path.
-  const whole = loc.pathname.replace(/^\/|\/$/g, "");
-  const r = routes.find((x) => x.path === whole) ?? routes.find((x) => x.path.split("/")[0] === first);
-  const rest = decodeURIComponent(loc.pathname.split("/").slice(2).join("/"));
-  const isItem = (first === "item" || first === "items") && rest.includes("/");
-  return (
-    <div className="flex w-[120px] shrink-0 items-center gap-1.5 truncate text-sm">
-      <span className="font-medium">{isItem ? "Item" : (r?.view.title ?? "")}</span>
-      {isItem && (
-        <>
-          <span className="text-ink/35">/</span>
-          <span className="code truncate text-ink/60">{rest.replace("/", "#")}</span>
-        </>
-      )}
-    </div>
-  );
-}
-
-const CI_ORDER: MainCiState[] = ["green", "red", "running", "optional"];
-
-function MainCiIndicator({ summary }: { summary: MainCiSummary }) {
-  const shown = CI_ORDER.filter((s) => s === "green" || summary[s] > 0);
-  return (
-    <Link to="/main-ci" className="flex items-center gap-1 hover:text-ink" aria-label="Main CI" title="Main CI">
-      <HeartbeatIcon className="text-sm" />
-      {shown.map((s) => (
-        <span key={s} className="flex items-center gap-0.5" title={`${MAIN_CI_LABEL[s]}: ${summary[s]}`}>
-          <span className={cn("size-1.5 rounded-full", MAIN_CI_DOT[s])} />
-          <span className="num font-medium text-ink">{summary[s]}</span>
-        </span>
-      ))}
-    </Link>
-  );
-}
-
-function LiveCounters() {
-  const { data } = useQuery("progress", (api) => api.progress());
-  if (!data) return null;
-  const lastHour = data.perHourPipeline[data.perHourPipeline.length - 1] ?? 0;
-  return (
-    <div className="hidden shrink-0 items-center gap-2.5 whitespace-nowrap text-xs text-ink/60 xl:flex">
-      {data.mainCi && <MainCiIndicator summary={data.mainCi} />}
-      <span className="flex items-center gap-1.5">
-        <span className="size-1.5 rounded-full bg-warn" />
-        <span className="num font-medium text-ink">{data.decisionsOpen}</span> waiting
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="size-1.5 rounded-full bg-ok" />
-        <span className="num font-medium text-ink">{lastHour}</span> done by the pipeline in the last hour
-      </span>
-    </div>
-  );
-}
-
 const THEMES: { v: ThemePref; icon: typeof SunIcon; label: string }[] = [
   { v: "dark", icon: MoonIcon, label: "Dark" },
   { v: "light", icon: SunIcon, label: "Light" },
   { v: "system", icon: MonitorIcon, label: "System" },
 ];
-
-function ThemeSwitch({ theme, setTheme }: { theme: ThemePref; setTheme: (t: ThemePref) => void }) {
-  const cur = THEMES.find((t) => t.v === theme)!;
-  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
-  return (
-    <button onClick={() => setTheme(next.v)} className="flex size-8 shrink-0 items-center justify-center text-ink/60 hover:bg-ink/[0.06] hover:text-ink" aria-label={`Theme: ${cur.label}. Switch to ${next.label}`} title={`Theme: ${cur.label}`}>
-      <cur.icon className="text-[15px]" />
-    </button>
-  );
-}
 
 const menuCls = "z-50 min-w-[220px] rounded-md border border-line-strong bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise";
 const itemCls = "flex h-8 cursor-default items-center gap-2.5 rounded px-2 text-sm outline-none data-[highlighted]:bg-ink/[0.07]";
@@ -388,8 +350,9 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
             <Avatar login={user.login} size={32} />
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold">{user.login}</div>
-              <div className="text-xs text-ink/55">
-                {roleLabel(user)} · write on {user.writeRepos.length} repos
+              <div className="flex items-center gap-1.5 text-xs text-ink/55">
+                <Badge tone={user.role === "operator" ? "accent" : "neutral"}>{roleLabel(user)}</Badge>
+                <span>write on {user.writeRepos.length} repos</span>
               </div>
               <div className="text-xs text-ink/55">Times in {zoneName()}</div>
             </div>
@@ -413,8 +376,8 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
             </Suspense>
           )}
           <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
-          <DropdownMenu.Item onSelect={() => navigate("/connect")} className={itemCls}>
-            <PlugsConnectedIcon className="text-ink/55" /> Connect agent
+          <DropdownMenu.Item onSelect={() => navigate("/about")} className={itemCls}>
+            <InfoIcon className="text-ink/55" /> How it works
           </DropdownMenu.Item>
           <DropdownMenu.Item onSelect={() => onHelp?.()} className={itemCls}>
             <KeyboardIcon className="text-ink/55" /> <span className="flex-1">Keyboard shortcuts</span> <Kbd keys="?" />
@@ -480,27 +443,6 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
   );
 }
 
-function RunMeter({ open }: { open: boolean }) {
-  const { data } = useQuery("progress", (api) => api.progress());
-  if (!data || !open) return null;
-  const ours = data.done.mergedByPipeline + data.done.closedByPipeline;
-  const f = data.funnel;
-  return (
-    <NavLink to="/progress" className="mx-2 mb-2 block rounded-md border border-line p-2.5 hover:border-line-strong">
-      <div className="flex items-baseline justify-between text-xs">
-        <span className="font-medium text-ink/80">Classified</span>
-        <span className="num text-ink/55">{f.open ? Math.round((f.classified / f.open) * 100) : 0}%</span>
-      </div>
-      <div className="mt-2 flex h-1 gap-px overflow-hidden rounded-full bg-ink/10">
-        <div className="bg-c1" style={{ width: `${f.open ? (f.classified / f.open) * 100 : 0}%` }} />
-      </div>
-      <div className="num mt-1.5 text-2xs text-ink/50">
-        {num(f.open)} open · {ours ? `${num(ours)} done by the pipeline` : "pipeline not started yet"}
-      </div>
-    </NavLink>
-  );
-}
-
 /** A page this reader's role doesn't open says so; anything else is unknown. */
 function NoRoute({ hidden }: { hidden: { path: string; permission: Permission }[] }) {
   const { pathname } = useLocation();
@@ -509,13 +451,23 @@ function NoRoute({ hidden }: { hidden: { path: string; permission: Permission }[
   return <div className="p-8 text-ink/60">{text}</div>;
 }
 
-/** The reader's role decides what every button means, so it stays visible. */
-function RoleChip() {
-  const user = useUser();
-  const tone: Tone = user.role === "operator" ? "accent" : "neutral";
+
+/** Shown only while the live connection is down. */
+function ReconnectMark() {
+  const status = useLiveStatus();
+  if (status === "open") return null;
   return (
-    <span className="inline-flex shrink-0" title="Your role on this dashboard">
-      <Badge tone={tone}>{roleLabel(user)}</Badge>
+    <span role="status" className="flex shrink-0 items-center gap-1.5 px-2 text-xs text-warn">
+      <span className="size-2 rounded-full bg-warn" /> {status === "down" ? "Offline" : "Reconnecting"}
     </span>
+  );
+}
+
+function FootLink({ to, icon: Icon, label, open, tall }: { to: string; icon: typeof GearSixIcon; label: string; open: boolean; tall?: boolean }) {
+  return (
+    <NavLink to={to} title={open ? undefined : label} className={({ isActive }) => cn("flex items-center gap-2 rounded px-2 text-sm text-ink/60", tall ? "h-11" : "h-7", " hover:bg-ink/[0.06] hover:text-ink", isActive && "bg-ink/[0.08] font-medium text-ink", !open && "justify-center px-0")}>
+      <Icon className="text-[15px] opacity-80" />
+      {open && label}
+    </NavLink>
   );
 }

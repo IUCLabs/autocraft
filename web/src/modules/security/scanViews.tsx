@@ -18,7 +18,12 @@ import { cn } from "../../ui/cn";
 import { Block } from "../../ui/molecules/Block";
 import { RateBar } from "../../ui/molecules/RateBar";
 import { ScanRow } from "../admin/securityParts";
-import { Page, selectCls, useUrlState } from "../admin/parts";
+import { selectCls, useUrlState } from "../admin/parts";
+import { SecurityPage } from "./SecurityPage";
+
+const Page = ({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) => (
+  <SecurityPage tab="scans" heading={title === "Deep scans" ? undefined : title} sub={sub}>{children}</SecurityPage>
+);
 import { RunDetailBody } from "../agents/views";
 
 const usd = (v: number | null) => formatCost(v) ?? "–";

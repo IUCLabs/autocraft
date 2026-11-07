@@ -58,7 +58,7 @@ function findings(): FindingView[] {
       fixDiff: "--- a/crates/templates/src/import.rs\n+++ b/crates/templates/src/import.rs\n@@ -52,3 +52,5 @@\n-    let data = fs::read(base.join(rel))?;\n+    let path = base.join(rel).canonicalize()?;\n+    let data = fs::read(path)?;\n",
     }),
     f(11, {
-      title: "Recent-files list opens paths without checking the file type", severity: "medium", state: "new", area: "ipc", refs: [{ path: "crates/ipc/src/recent.rs", line: 33, claim: "" }],
+      title: "Recent-files list opens paths without checking the file type", severity: "high", state: "new", area: "ipc", refs: [{ path: "crates/ipc/src/recent.rs", line: 33, claim: "" }],
       note: "Round 3 failed: the regression test passes without the fix, so it does not show the defect.",
     }),
     f(8, { title: "Cloud sync client does not verify the server certificate chain length", severity: "low", state: "landed", area: "cloud", decidedBy: "kiri-n", fixPr: 2402, fixPrUrl: "https://github.com/storytold/designcraft/pull/2402", refs: [{ path: "crates/cloud/src/tls.rs", line: 120, claim: "" }] }),

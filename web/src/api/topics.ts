@@ -24,6 +24,10 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["main-ci", ["mainci", "repos"]],
   // The trace reads most tables behind an item page plus model calls, jobs and GitHub detail. The `trace` topic leaves out a running call's progress lines; the page also asks the server `since` its last stamp.
   ["item-trace:", TRACE],
+  // The item page is the trace plus the header (labels, Discord, fast track, holds) and the GitHub side; it also asks `since` its last stamp.
+  ["item-page:", [...new Set<Topic>([...TRACE, "discord", "fasttrack", "github", "ranks"])]],
+  ["items-status:", withSlot("items", "stages", "classify", "decisions", "plans")],
+  ["home", withSlot("decisions", "decision-snooze", "plans", "jobs", "limits", "accounts", "settings", "queue", "items", "mainci", "github", "usage", "security")],
   // One opened event row: its detail reads what the timeline does; the run, task and decision behind it read one table each.
   ["item-trace-detail:", TRACE],
   ["item-trace-run:", ["agents"]],

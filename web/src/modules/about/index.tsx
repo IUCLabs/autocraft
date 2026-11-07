@@ -9,5 +9,5 @@ export const aboutModule: FeatureModule = {
   permission: "viewer",
   nav: { label: "How it works", icon: InfoIcon, to: "/about" },
   commands: [],
-  routes: [{ path: "about", view: { id: "about", title: "How it works", panels: [{ id: "pipeline", title: "How it works", component: HowItWorks, defaultSize: 100 }] } }],
+  routes: [{ path: "about/:stage?", view: { id: "about", title: "How it works", panels: [{ id: "pipeline", title: "How it works", component: HowItWorks, defaultSize: 100 }] } }],
 };

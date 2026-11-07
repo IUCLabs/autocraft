@@ -139,7 +139,7 @@ function seed(): ConversationTurn[] {
 }
 
 /** In-memory conversations. Only designcraft#1484 starts with one; an operator's message is answered after a few seconds. */
-export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void, hooks?: { reprepare?: (decisionId: string) => void }): Pick<Api, "conversations"> {
+export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void, hooks?: { reprepare?: (decisionId: string) => void }, derive?: (repo: string, number: number) => DecisionChoices | null): Pick<Api, "conversations"> {
   // The open choices by item; a run that settles the question removes them.
   const choices = new Map<string, DecisionChoices>([[REF, mergeChoices(1)], ["photocraft#4127", scopeChoices(1)], ["gridcraft#977", { ...mergeChoices(1), id: "ch-g1", decisionId: "gridcraft#977:merge", pick: null }]]);
   let epoch = 1;
@@ -197,7 +197,13 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
     conversations: {
       get: (repo, n) => {
         const c = open(repo, n);
-        return snap({ ...c, choices: choices.get(`${c.repo}#${c.number}`) ?? null, turns: c.turns.map((t) => ({ ...t, actions: t.actions.map((k) => ({ ...k, canSettle: settles(c.repo) })) })) });
+        const ref = `${c.repo}#${c.number}`;
+        // Open questions without hand-written choices get the same card form, built from their options.
+        if (!choices.has(ref)) {
+          const d = derive?.(c.repo, c.number);
+          if (d) choices.set(ref, d);
+        }
+        return snap({ ...c, choices: choices.get(ref) ?? null, turns: c.turns.map((t) => ({ ...t, actions: t.actions.map((k) => ({ ...k, canSettle: settles(c.repo) })) })) });
       },
       async say(repo, n, text, ask) {
         need();

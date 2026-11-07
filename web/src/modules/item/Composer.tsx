@@ -13,7 +13,9 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * The thread's one input, stuck to the bottom of the page (above the phone tab bar): operators write to Opus,
  * maintainers who cannot act leave feedback on the open question, viewers get nothing.
  */
-export function Composer({ repo, number, operator, commenter, exists, pending, feedbackOn, choices, opusTurns }: {
+export function Composer({ repo, number, operator, commenter, exists, pending, feedbackOn, choices, opusTurns, flush }: {
+  /** The parent has no side padding to cancel: the bar spans it. */
+  flush?: boolean;
   repo: RepoName;
   number: number;
   operator: boolean;
@@ -48,7 +50,7 @@ export function Composer({ repo, number, operator, commenter, exists, pending, f
       setSending(false);
     }
   };
-  const shell = "sticky bottom-0 z-10 -mx-4 mt-4 border-t border-line bg-panel px-4 py-2.5 md:-mx-6 md:px-6";
+  const shell = flush ? "sticky bottom-0 z-10 mt-4 border-t border-line bg-panel px-4 py-2.5 md:px-6" : "sticky bottom-0 z-10 -mx-4 mt-4 border-t border-line bg-panel px-4 py-2.5 md:-mx-6 md:px-6";
   if (operator)
     return (
       <div className={shell}>

@@ -2,3 +2,5 @@ node_modules/
 *.db
 *.db-*
 export/
+
+**/real-data.json

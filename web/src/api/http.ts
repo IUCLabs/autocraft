@@ -1,5 +1,5 @@
 import type { Api } from "./client";
-import type { DecisionFilter, ItemFilter } from "./types";
+import type { ConversationCard, DecisionFilter, ItemFilter } from "./types";
 
 /** Query string from the set fields; booleans as 1 / 0. */
 function qs(f: object): string {
@@ -137,7 +137,15 @@ export function createHttpApi(): Api {
       cancelPreapproval: (repo, n) => post(`/api/items/${repo}/${n}/preapproval/cancel`),
       doCard: (id, opts) => post(`/api/conversation-cards/${id}/do`, opts?.skip?.length || opts?.note ? { ...(opts.skip?.length && { skip: opts.skip }), ...(opts.note && { note: opts.note }) } : undefined),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
-      doChoice: (choiceId, body) => post(`/api/decision-choices/${encodeURIComponent(choiceId)}/do`, body),
+      // A finding's choices are built from its actions (no decision row): the answer is the finding action itself.
+      doChoice: async (choiceId, body) => {
+        const f = /^ch-f-(.+)-(\d+)-/.exec(choiceId);
+        if (!f) return post(`/api/decision-choices/${encodeURIComponent(choiceId)}/do`, body);
+        const action = body.core === "backlog" ? "backlog" : body.core.slice(2);
+        await post(`/api/security/findings/${encodeURIComponent(f[1]!)}/${f[2]}`, { action, reason: body.note ?? body.params?.reason });
+        const at = new Date().toISOString();
+        return { id: 0, kind: "resolution", title: action, label: "Do it", headline: action, steps: [], canSettle: true, state: "done", fromChoice: true, by: "", at, done: { at, link: "", label: action } } as ConversationCard;
+      },
     },
     areas: {
       get: (repo) => get(`/api/areas/${encodeURIComponent(repo)}`),
@@ -158,6 +166,11 @@ export function createHttpApi(): Api {
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
     items: (f) => get(`/api/items${itemQuery(f)}`),
     progress: () => get("/api/progress"),
+    home: () => get("/api/home"),
+    itemPage: (repo, number, since) => get(`/api/items/${encodeURIComponent(repo)}/${number}/page${qs({ since })}`),
+    itemStatusList: (f) => get(`/api/items/status${qs({ q: f.q, phase: f.phase, kind: f.kind, repo: f.repo?.join(","), cursor: f.cursor })}`),
+    securityList: () => get("/api/security/findings"),
+    findingPage: (repo, number) => get(`/api/security/findings/${encodeURIComponent(repo)}/${number}/page`),
     mainCi: () => get("/api/main-ci"),
     contributors: {
       list: (filter) => get(`/api/contributors${qs(filter)}`),

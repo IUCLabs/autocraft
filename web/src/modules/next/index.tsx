@@ -7,7 +7,7 @@ const NextView = lazyView(() => import("./views"), "NextView");
 export const nextModule: FeatureModule = {
   id: "next",
   permission: "viewer",
-  nav: { label: "Next", icon: ListChecksIcon, to: "/next" },
+  nav: { label: "Queue", icon: ListChecksIcon, to: "/next" },
   commands: [{ id: "go-next", keys: "g n", label: "Go to next", group: "Go to" }],
   routes: [{ path: "next/:tab?", view: { id: "next", title: "Next", panels: [{ id: "main", title: "Next", component: NextView, defaultSize: 100 }] } }],
 };
