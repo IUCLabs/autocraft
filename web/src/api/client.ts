@@ -5,6 +5,12 @@ import type {
   DiscordAccount,
   DiscordLinkCode,
   DiscordSetup,
+  Home,
+  ItemPageData,
+  ItemStatusFilter,
+  ItemStatusList,
+  SecurityList,
+  FindingPageData,
   CardEdit,
   DoChoiceBody,
   Preapproval,
@@ -178,6 +184,16 @@ export interface Api {
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */
   items(filter: ItemFilter): Promise<ItemList>;
   progress(): Promise<Progress>;
+  /** Home: needs, problems, phase counts, progress and what was done today, in one payload. */
+  home(): Promise<Home>;
+  /** The item page's AutoCraft and GitHub sides: status, reviews with earlier ones, result cards, history, GitHub's own sections. */
+  itemPage(repo: RepoName, number: number): Promise<ItemPageData>;
+  /** The Items list with a status per row; findings are rows for staff. */
+  itemStatusList(filter: ItemStatusFilter): Promise<ItemStatusList>;
+  /** Staff: all findings grouped by what they need. */
+  securityList(): Promise<SecurityList>;
+  /** Staff: a finding with its status, fix rounds and history. */
+  findingPage(repo: RepoName, number: number): Promise<FindingPageData>;
   /** CI on the default branch of every synced repo the viewer may see. */
   mainCi(): Promise<MainCi>;
   /** Anyone signed in reads; writes and the preview are for operators. Override notes come only to operators. */

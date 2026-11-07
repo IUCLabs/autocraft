@@ -2288,3 +2288,140 @@ export type McpToken = { id: number; label: string | null; canAnswer: boolean; c
 export type McpTokens = { tokens: McpToken[]; max: number; path: string; /** Whether an operator may make a token that answers decisions. */ answering: boolean };
 /** After making a token: the list, the new token's id, and its value, shown this once. */
 export type McpTokenCreated = McpTokens & { id: number; token: string };
+
+// ---- redesign: one status per item, Home, the two-sided item page, findings as items ----------------------------
+
+export type ItemPhase = "Triage" | "Waiting for a person" | "Review" | "Fixing" | "Verifying" | "In queue" | "Merged" | "Closed" | "Held" | "Out of scope";
+
+/** Where an item is, what it waits for and what happens next; every page draws the same line. */
+export interface ItemStatus {
+  phase: ItemPhase;
+  /** What it waits for, in words ("CI on a1b2c3d", "a Merge? answer"); null when it does not wait. */
+  waiting: string | null;
+  /** What happens when the wait ends. */
+  next: string | null;
+  /** When the item entered this state. */
+  since: string;
+}
+
+export type ProblemKind = "stopped" | "health" | "stuck" | "gave-up";
+export interface HomeProblem { kind: ProblemKind; title: string; detail: string; to: string }
+export type NeedKind = DecisionKind | "security";
+export interface HomeNeed { id: string; kind: NeedKind; repo: RepoName; number: number | null; title: string; recommendation: string | null; askedAt: string; itemKind: ItemKind | null; to: string }
+export interface HomeDone { at: string; what: "merged" | "closed" | "review posted"; repo: RepoName; number: number; title: string; kind: ItemKind }
+export interface Home {
+  needs: { total: number; byKind: Partial<Record<NeedKind, number>>; oldest: HomeNeed[] };
+  problems: HomeProblem[];
+  /** Counts per phase; each opens Items filtered to that phase. */
+  phases: Record<ItemPhase, number>;
+  running: string;
+  progress: { openNow: number; openAtStart: number; done24h: number; byAutoCraftPct: number; perHour: number[]; spendTodayUsd: number };
+  done: HomeDone[];
+}
+
+export type ReviewTrigger = "new-head" | "discussion" | "operator" | "model-change";
+export type ReviewVerdict = "take" | "take-fix" | "hold" | "close";
+export interface ReviewClaim { path: string; line: number; text: string }
+/** One Opus review of a head. On GitHub the reviews are one comment, edited in place. */
+export interface OpusReviewEntry {
+  id: string;
+  head: string;
+  /** The PR's head is still this commit. */
+  current: boolean;
+  at: string;
+  trigger: ReviewTrigger;
+  /** Why it ran, in a sentence ("Two new commits since the last review"). */
+  why: string;
+  verdict: ReviewVerdict;
+  sure: boolean;
+  summary: string;
+  fixes: string[];
+  risks: string[];
+  claims: ReviewClaim[];
+  costUsd: number;
+}
+export interface ReviewHistory { latest: OpusReviewEntry | null; earlier: OpusReviewEntry[] }
+
+export type ResultTone = "ok" | "warn" | "bad" | "neutral" | "accent";
+/** A compact result card of the AutoCraft side: Verify, Fix-ups, Pre-merge review, Classifiers, Duplicates. `earlier` holds older results of the same kind. */
+export interface ResultCard {
+  id: string;
+  kind: "verify" | "fixup" | "premerge" | "postmerge" | "classifiers" | "duplicates" | "security";
+  title: string;
+  outcome: string;
+  tone: ResultTone;
+  at: string;
+  detail: string | null;
+  earlier: { at: string; outcome: string }[];
+}
+
+export type HistoryKind = "model" | "write" | "decision" | "event";
+export interface HistoryCall { label: string; kind: "model" | "tool"; costUsd: number | null }
+export interface HistoryEntry {
+  id: string;
+  at: string;
+  step: string;
+  outcome: string;
+  /** Model that ran the step, if any. */
+  model: string | null;
+  costUsd: number | null;
+  kind: HistoryKind;
+  calls: HistoryCall[];
+  /** The GitHub write this row made; links to the same write on the GitHub side. */
+  writeId: string | null;
+}
+
+export type GithubTab = "conversation" | "commits" | "checks" | "files";
+export interface GithubEvent {
+  id: string;
+  type: "opened" | "comment" | "review" | "label" | "push" | "merged" | "closed";
+  at: string;
+  actor: string;
+  body: string | null;
+  /** Set for AutoCraft's own writes: the identity it wrote as and the history row that made it. */
+  autocraft: { as: string; historyId: string } | null;
+}
+export interface GithubSide {
+  description: string;
+  events: GithubEvent[];
+  checks: { name: string; state: CiState }[];
+  commits: { sha: string; message: string; author: string; at: string; byAutoCraft: boolean }[];
+  files: { path: string; additions: number; deletions: number }[];
+  url: string;
+}
+
+export interface ItemPageData {
+  repo: RepoName;
+  number: number;
+  kind: ItemKind;
+  state: ItemState;
+  title: string;
+  author: string;
+  status: ItemStatus;
+  costUsd: number;
+  reviews: ReviewHistory;
+  results: ResultCard[];
+  history: HistoryEntry[];
+  github: GithubSide;
+}
+
+/** One row of the Items list; findings are rows for staff. */
+export interface ItemStatusRow {
+  repo: RepoName;
+  number: number;
+  kind: ItemKind | "finding";
+  state: ItemState;
+  title: string;
+  status: ItemStatus;
+  updatedAt: string;
+  severity?: FindingSeverity;
+}
+export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind | "finding"; repo?: RepoName[] }
+export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number }
+
+/** A finding's status line, on the shape items use. */
+export interface FindingRow { repo: RepoName; number: number; title: string; severity: FindingSeverity; state: FindingState; urgent: boolean; area: string; status: ItemStatus; attempts: number; updatedAt: string }
+export type SecurityGroup = "Needs a person" | "Fixing" | "Ready to land" | "Landing" | "Landed or published" | "Dismissed or backlog";
+export interface SecurityList { groups: { group: SecurityGroup; rows: FindingRow[] }[] }
+export interface FixRound { round: number; outcome: "passed" | "failed"; why: string; at: string; costUsd: number }
+export interface FindingPageData { finding: FindingView; status: ItemStatus; attempts: number; rounds: FixRound[]; history: HistoryEntry[]; costUsd: number }

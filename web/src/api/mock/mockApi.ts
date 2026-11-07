@@ -11,6 +11,7 @@ import { createActivityMock } from "./activityMock";
 import { createAreasMock } from "./areasMock";
 import { createConversationMock } from "./conversationMock";
 import { createSecurityMock } from "./securityMock";
+import { createRedesignMock, type RedesignApi } from "./redesignMock";
 import { createBuildMock } from "./buildMock";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
@@ -122,7 +123,7 @@ export function createMockApi(): Api {
 
   // A screenshot aid: localStorage.mockSlow (ms) delays decision refetches so the moment after an answer can be captured.
   const lag = () => Number(globalThis.localStorage?.getItem("mockSlow")) || 10;
-  return {
+  const api: Omit<Api, keyof RedesignApi> = {
     me: () => wait(me, 10),
     repos: () => wait(REPOS, 10),
     repoOwners: () => wait(MOCK_REPO_OWNERS, 10),
@@ -323,4 +324,5 @@ export function createMockApi(): Api {
     semanticSearch: (q) => wait(semanticHits(q), 90),
     work: (f) => wait(workList(f), 60),
   };
+  return { ...api, ...createRedesignMock(me, api) };
 }

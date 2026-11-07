@@ -24,5 +24,7 @@ import { mainCiModule } from "../modules/mainci";
 import { activityModule } from "../modules/activity";
 import { batchModule } from "../modules/batch";
 import { securityModule } from "../modules/security";
+import { homeModule } from "../modules/home";
+import { hubModule } from "../modules/hub";
 
-export const modules: FeatureModule[] = [nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, batchModule, securityModule];
+export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, batchModule, securityModule];

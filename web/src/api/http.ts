@@ -158,6 +158,11 @@ export function createHttpApi(): Api {
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
     items: (f) => get(`/api/items${itemQuery(f)}`),
     progress: () => get("/api/progress"),
+    home: () => get("/api/home"),
+    itemPage: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${number}/page`),
+    itemStatusList: (f) => get(`/api/items/status${qs({ q: f.q, phase: f.phase, kind: f.kind, repo: f.repo?.join(",") })}`),
+    securityList: () => get("/api/security/findings"),
+    findingPage: (repo, number) => get(`/api/security/findings/${encodeURIComponent(repo)}/${number}/page`),
     mainCi: () => get("/api/main-ci"),
     contributors: {
       list: (filter) => get(`/api/contributors${qs(filter)}`),
