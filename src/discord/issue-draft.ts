@@ -14,7 +14,9 @@ export type PublicRepo = { owner: string; name: string };
 export function sanitize(text: string, repos: PublicRepo[]): string {
   const ok = new Set(repos.map((r) => `${r.owner}/${r.name}`.toLowerCase()));
   return text
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, "")
     .replace(/<[^>\n]*>/g, "")
+    .replace(/\]\(\s*(?!https:\/\/github\.com\/)[^)]*\)/g, "](link removed)")
     .replace(/@/g, "")
     .replace(/(?:https?:\/\/|www\.)[^\s)\]>]+/gi, (u) => {
       const m = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/\d+\/?$/i.exec(u);

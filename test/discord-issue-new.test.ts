@@ -9,6 +9,7 @@ import type { Embedder } from "../src/embed/model.ts";
 import { toBlob } from "../src/embed/store.ts";
 import { VectorIndex } from "../src/embed/vectors.ts";
 import { Interactions } from "../src/discord/interactions.ts";
+import { sanitize } from "../src/discord/issue-draft.ts";
 import { installIssueNew, type IssueAsk } from "../src/discord/issue-new.ts";
 import { DiscordKeys } from "../src/discord/keys.ts";
 import type { CallbackData, CommandDef, DiscordRest, EditBody, MessageBody } from "../src/discord/rest.ts";
@@ -107,7 +108,8 @@ describe("new issue helper", () => {
     calls.length = 0;
     await newCmd("u4");
     await submit("u4", modalId(), { title: "webp export", description: "quality slider does nothing" });
-    await press("u4", rows(rest.edits[0]!).find((x) => x.label === "None of these")!.custom_id!);
+    const noneId = rows(rest.edits[0]!).find((x) => x.label === "None of these")!.custom_id!;
+    await press("u4", noneId);
     const modal = rest.callbacks[0]!;
     assert.equal(modal.type, 9);
     const fields = (modal.data as unknown as { components: { components: { custom_id: string; label: string }[] }[] }).components.map((r) => r.components[0]!);
@@ -125,6 +127,15 @@ describe("new issue helper", () => {
     assert.match(body, /\[link removed\]/);
     // The model got the person's text only as a JSON data block through the registered prompt input.
     assert.deepEqual((calls.find((c) => c.id === "discord.issue-draft")!.input as { answers: unknown[] }).answers, [{ question: "Steps to reproduce", answer: "Export twice" }, { question: "Version and platform", answer: "1.0 on Linux" }]);
+    // Pressing None of these again, or sending the answers again, makes no new model call.
+    const before = calls.length;
+    await press("u4", noneId);
+    assert.match(rest.callbacks[0]!.data!.content!, /already used/);
+    await submit("u4", modal.data!.custom_id!, { steps: "again" });
+    assert.match(rest.edits[0]!.content!, /already used/);
+    assert.equal(calls.length, before);
+    await press("u4", "inewi:bogus:x");
+    assert.match(rest.callbacks[0]!.data!.content!, /expired/);
     // Edit reopens the draft in a form; the result replaces the draft.
     await press("u4", rows(out).find((x) => x.label === "Edit")!.custom_id!);
     const edit = rest.callbacks[0]!;
@@ -167,4 +178,12 @@ describe("new issue helper", () => {
     assert.equal(rest.callbacks[0]!.type, 4);
     assert.match(rest.callbacks[0]!.data!.content!, /Too many/);
   });
+});
+
+test("the sanitizer removes foreign link targets and hidden comments", () => {
+  const repos = [{ owner: "storytold", name: "photocraft" }];
+  const out = sanitize("[a](//evil.example/x) ![b](/rel.png) [c](https://github.com/storytold/photocraft/issues/2) <!-- hidden", repos);
+  assert.doesNotMatch(out, /evil|rel\.png|hidden/);
+  assert.match(out, /issues\/2/);
+  assert.equal(sanitize("x <!-- c --> y", repos), "x  y");
 });

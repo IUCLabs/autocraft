@@ -26,6 +26,8 @@ const USER_LIMIT = 3, CHANNEL_LIMIT = 10;
 const MODEL_WAIT_MS = 20_000;
 const MAX_MATCHES = 3;
 const MESSAGE_CHARS = 1900;
+const MAX_CALLS = 2;
+const USED = "That button was already used. Start again with /issue new.";
 
 /** The model step; tests replace it. Null when the call failed or got no answer. */
 export type IssueAsk = {
@@ -56,6 +58,10 @@ type Session = {
   matches: Match[]; questions: FollowUpId[]; capped: boolean;
   answers: { question: string; answer: string }[];
   draft?: { title: string; body: string };
+  /** Where the session is: the buttons of an earlier step stop working once a later one is reached. */
+  stage: "form" | "matched" | "asking" | "drafted";
+  /** Model calls made; at most MAX_CALLS (the questions and one draft). */
+  calls: number;
 };
 
 export type IssueNewDeps = { db: DatabaseSync; keys: DiscordKeys; search: Search; log: (line: string) => void; ask?: IssueAsk; now?: () => number };
@@ -129,7 +135,7 @@ export class IssueNew {
     const sid = randomBytes(6).toString("base64url");
     this.#sessions.set(sid, {
       user: call.userId, repo, repoUrl: `https://github.com/${url.owner}/${url.name}`, expires: this.#now() + SESSION_MS,
-      title: "", description: "", matches: [], questions: [], capped: false, answers: [],
+      title: "", description: "", matches: [], questions: [], capped: false, answers: [], stage: "form", calls: 0,
     });
     await call.showModal({
       custom_id: `inew:form:${sid}`, title: `New issue: ${repo}`.slice(0, 45),
@@ -144,12 +150,14 @@ export class IssueNew {
   async form(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
     if (!s) return void (await call.edit({ content: "This form has expired. Start again with /issue new." }));
+    if (s.stage !== "form") return void (await call.edit({ content: USED }));
     const f = call.fields();
     s.title = (f.title ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
     s.description = (f.description ?? "").trim().slice(0, ISSUE_FORM_BODY_CHARS);
     if (!s.title || !s.description) return void (await call.edit({ content: "Both the title and the description are needed. Start again with /issue new." }));
-    s.expires = this.#now() + SESSION_MS;
+    s.stage = "matched";
     s.capped = this.#overCap();
+    if (!s.capped) s.calls++;
     const asking = s.capped ? Promise.resolve(null) : this.#model("discord.issue-questions", { ref: "discord", repo: s.repo, title: s.title, description: s.description });
     const [found, reply] = await Promise.all([this.#d.search.find(`${s.title}\n${s.description}`.slice(0, QUESTION_CHARS)), asking]);
     s.matches = found.matches.filter((m) => m.repo === s.repo).slice(0, MAX_MATCHES);
@@ -174,7 +182,7 @@ export class IssueNew {
   async match(call: Call, sid: string, n: number): Promise<void> {
     const s = this.#session(call, sid);
     const m = s?.matches[n];
-    if (!s || !m) return void (await call.edit({ content: "This form has expired. Start again with /issue new." }));
+    if (!s || !m || s.stage !== "matched") return void (await call.edit({ content: "This form has expired. Start again with /issue new." }));
     this.#sessions.delete(sid);
     await call.edit({ content: `${m.repo}#${m.number}: ${m.url}` });
   }
@@ -183,10 +191,13 @@ export class IssueNew {
   async none(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
     if (!s) return void (await call.reply({ content: "This form has expired. Start again with /issue new." }));
+    if (s.stage !== "matched" && !(s.stage === "asking" && s.questions.length)) return void (await call.reply({ content: USED }));
     if (!s.questions.length) {
+      s.stage = "drafted";
       await call.defer();
       return void (await this.#finish(call, s, sid));
     }
+    s.stage = "asking";
     await call.showModal({
       custom_id: `inew:ans:${sid}`, title: "A few more details",
       components: s.questions.map((id) => field(id, followUp(id).label, 2, ISSUE_ANSWER_CHARS, { required: false, placeholder: followUp(id).placeholder })),
@@ -196,6 +207,8 @@ export class IssueNew {
   async answers(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
     if (!s) return void (await call.edit({ content: "This form has expired. Start again with /issue new." }));
+    if (s.stage !== "asking") return void (await call.edit({ content: USED }));
+    s.stage = "drafted";
     const f = call.fields();
     s.answers = s.questions.map((id) => ({ question: followUp(id).label, answer: (f[id] ?? "").trim().slice(0, ISSUE_ANSWER_CHARS) })).filter((a) => a.answer);
     await this.#finish(call, s, sid);
@@ -204,13 +217,13 @@ export class IssueNew {
   async #finish(call: Call, s: Session, sid: string): Promise<void> {
     const repos = this.#repos();
     let draft: { title: string; body: string } | null = null;
-    if (!s.capped && !this.#overCap()) {
+    if (!s.capped && s.calls < MAX_CALLS && !this.#overCap()) {
+      s.calls++;
       const text = await this.#model("discord.issue-draft", { ref: "discord", repo: s.repo, title: s.title, description: s.description, answers: s.answers });
       const raw = text === null ? null : parseDraft(text);
       draft = raw ? cleanDraft(raw, repos) : null;
     }
     s.draft = draft ?? formDraft(s, repos);
-    s.expires = this.#now() + SESSION_MS;
     await call.edit(this.#render(s, sid));
   }
 
@@ -247,7 +260,6 @@ export class IssueNew {
     const f = call.fields();
     const d = cleanDraft({ title: f.title ?? "", body: f.body ?? "" }, this.#repos());
     if (d) s.draft = d;
-    s.expires = this.#now() + SESSION_MS;
     await call.edit(this.#render(s, sid));
   }
 }
@@ -271,6 +283,7 @@ export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew 
     if (action === "open") await flow.open(call, a ?? null, seedOf(b));
     else if (action === "none") await flow.none(call, a ?? "");
     else if (action === "edit") await flow.edit(call, a ?? "");
+    else await call.reply({ content: "This form has expired. Start again with /issue new." });
   }, { immediate: true });
   ix.component("inew", async (call) => {
     const [, action, sid, n] = (call.interaction.data?.custom_id ?? "").split(":");
@@ -278,6 +291,7 @@ export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew 
     else if (action === "it") await flow.match(call, sid ?? "", Number(n));
     else if (action === "ans") await flow.answers(call, sid ?? "");
     else if (action === "fix") await flow.fix(call, sid ?? "");
+    else await call.edit({ content: "This form has expired. Start again with /issue new." });
   });
   return flow;
 }
