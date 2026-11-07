@@ -234,7 +234,8 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
   const fx = fixupOf(f), cf = cifixBucket(f);
   const inBatch = state === "in-batch" || state === "batch-checking" || f.inActiveBatch;
   const flying = inFlightNow(f, state);
-  const working = actions.some(worksOn) || inBatch || flying;
+  const waitingToReview = f.reviewHold?.kind === "ci" || f.reviewHold?.kind === "interval";
+  const working = actions.some(worksOn) || inBatch || flying || waitingToReview;
   // A conflicting PR whose conflict step has nothing to do (asked, held, not approved, done) waits on its author, whatever the queue state says.
   const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting";
   const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || conflictStuck

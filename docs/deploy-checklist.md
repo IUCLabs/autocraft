@@ -39,7 +39,7 @@ The image sets every path (`/data/...`, `/config/...`). A deployment sets only t
 | `AUTOCRAFT_STOP_TIMEOUT` | no | `25` | Seconds the runner may take to stop. Keep the pod's `terminationGracePeriodSeconds` above it (30). |
 | `AUTOCRAFT_HEALTH_LISTEN` | no | off | `host:port` of a runner listener that serves only `/healthz` and `/readyz`. |
 | `AUTOCRAFT_NO_SANDBOX` | no | off | `1` runs without bubblewrap, so without tool mode. Use it only if the cluster cannot allow the runner settings below. |
-| `AUTOCRAFT_REVIEW_BOTS` | no | `coderabbitai` | Logins of review bots whose comments never make a review stale. Set it alike for dashboard, runner and periodic. |
+| `AUTOCRAFT_REVIEW_BOTS` | no | `coderabbitai,dependabot,renovate` | Logins of review bots whose comments never make a review stale. Set it alike for dashboard, runner and periodic. |
 | `AUTOCRAFT_GITHUB_APP_NAME` | no | `AutoCraft` | Name suggested on the GitHub App registration form. |
 | `AUTOCRAFT_IMAGE_TOKEN_FILE` | no | `gh auth token` | File holding the token the dashboard's image proxy uses for GitHub images. |
 | `AUTOCRAFT_DISCORD_TOKEN_FILE` | no | off | File holding a Discord bot token (mode 600). Setting it on the runner turns on Discord mention counting; it needs the key file too. |

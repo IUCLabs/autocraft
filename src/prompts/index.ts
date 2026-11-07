@@ -244,7 +244,7 @@ public: the review as it will be posted on the pull request for its author and t
 - It never mentions /reference or any documentation outside the repository.
 - At most 8 points. In mode "delta" it covers the whole pull request at its new head, not only the new changes.
 
-blocked_by: fill it only when the verdict is hold because of something outside this pull request: it is stacked on, or depends on, another open pull request or item (for example its changes include the commits of another open pull request), or a person must first decide another item. List each as "repo#number". The pull request is then not reviewed again until those items are merged, closed or decided, so name only items that really are the reason. Otherwise "blocked_by" is [].
+blocked_by: fill it only when the verdict is hold because of something outside this pull request: it is stacked on, or depends on, another open pull request or item (for example its changes include the commits of another open pull request), or a person must first decide another item. List each as "repo#number" (or "#number" for a pull request of this repository). The pull request is then not reviewed again until those items are merged, closed or decided, so name only items that really are the reason. Otherwise "blocked_by" is [].
 
 summary: 2 or 3 plain sentences: what the pull request does, your verdict, and the main risk. ${SUMMARY_RULES}
 

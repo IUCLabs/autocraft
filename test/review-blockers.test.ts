@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadPlanSet } from "../src/core/plan-set.ts";
-import { isCounted, markReviewsStale, staleReviews } from "../src/review/discussion.ts";
-import { setReviewMinInterval } from "../src/review/gate.ts";
+import { cifixBucket } from "../src/core/decide.ts";
+import { detectAutopilot } from "../src/runner/autopilot.ts";
+import { isCounted, liveGate, markReviewsStale, staleReviews } from "../src/review/discussion.ts";
+import { recordReviewFailure, setReviewMinInterval } from "../src/review/gate.ts";
 import { saveOpus } from "../src/review/opus.ts";
 import { parseOpusReply } from "../src/review/opus-parse.ts";
 import { world } from "./world-db.ts";
@@ -61,6 +63,10 @@ test("a head is reviewed once CI at it has finished green", () => {
   assert.equal(reviews(w, 1), 0);
   assert.match(planOf(w, 1).wait ?? "", /CI on the latest commit/);
   w.db.prepare("UPDATE pr_checks SET overall = 'failure', checks = '[{\"name\":\"gate / test\",\"state\":\"failure\"}]' WHERE number = 1").run();
+  assert.equal(reviews(w, 1), 1); // the first review of a PR runs on finished red CI
+  review(w, 1, "h1", "take");
+  w.synced(1, "h2");
+  w.db.prepare("UPDATE pr_checks SET overall = 'failure', checks = '[{\"name\":\"gate / test\",\"state\":\"failure\"}]' WHERE number = 1").run();
   assert.equal(reviews(w, 1), 0);
   w.db.prepare("UPDATE pr_checks SET overall = 'success', checks = '[]' WHERE number = 1").run();
   assert.equal(reviews(w, 1), 1);
@@ -88,4 +94,68 @@ test("a second review inside the minimum interval waits until it passes; Review 
   await sleep(5);
   markReviewsStale(w.db, "op", "app", 1);
   assert.equal(reviews(w, 1), 1);
+});
+
+test("a PR whose review waits for CI gets its repo's checks read again", async () => {
+  const w = noGaps(world().repo().pr(1, { head: "h1" }).pipeline(true));
+  review(w, 1, "h1", "take");
+  w.synced(1, "h2");
+  w.db.prepare("UPDATE pr_checks SET overall = 'pending' WHERE number = 1").run();
+  const found = await detectAutopilot(w.db);
+  assert.ok(found.proposals.some((p) => p.step === "checks" && p.params.repo === "app"), JSON.stringify(found.proposals));
+});
+
+test("red CI at a new head leaves the CI fix to work from the earlier review; the first review still runs on red CI", () => {
+  const w = noGaps(world().repo().pr(1, { head: "h1" }).pr(2, { head: "g1" }));
+  review(w, 1, "h1", "take");
+  w.synced(1, "h2");
+  const red = "UPDATE pr_checks SET overall = 'failure', checks = '[{\"name\":\"gate / test\",\"state\":\"failure\"}]' WHERE number = ";
+  w.db.prepare(red + "1").run();
+  assert.equal(reviews(w, 1), 0);
+  const facts = loadPlanSet(w.db).prs.find((p) => p.facts.number === 1)!.facts;
+  assert.notEqual(cifixBucket(facts), null);
+  w.db.prepare(red + "2").run();
+  assert.equal(reviews(w, 2), 1);
+});
+
+test("a head made only by our own push skips the interval", () => {
+  const w = world().repo().pr(1, { head: "h1" });
+  setReviewMinInterval(w.db, 120, "test");
+  review(w, 1, "h1", "take");
+  w.synced(1, "h2");
+  assert.equal(reviews(w, 1), 0);
+  w.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('app', 1, 'h1', 'h2', 'pushed', 1, ?)").run(new Date().toISOString());
+  assert.equal(reviews(w, 1), 1);
+});
+
+test("review calls and failed tries count: runs fill the day's cap, failures back off then hold", () => {
+  const w = noGaps(world().repo().pr(1, { head: "h1" }));
+  review(w, 1, "h1", "take");
+  w.synced(1, "h2");
+  for (let i = 0; i < 3; i++) {
+    const id = Number(w.db.prepare("INSERT INTO agent_runs (step, stage, prompt_id, prompt_version, provider, model, state, started_at) VALUES ('opus-review', 5, 'review.opus', '1', 'claude', 'opus', 'failed', ?)").run(new Date().toISOString()).lastInsertRowid);
+    w.db.prepare("INSERT INTO agent_run_items (run_id, repo, number) VALUES (?, 'app', 1)").run(id);
+  }
+  w.db.prepare("DELETE FROM opus_review_history").run();
+  assert.match(planOf(w, 1).wait ?? "", /review cap for today/);
+  w.db.prepare("DELETE FROM agent_runs").run(); w.db.prepare("DELETE FROM agent_run_items").run();
+  assert.equal(reviews(w, 1), 1);
+  recordReviewFailure(w.db, "app", 1, "h2");
+  assert.equal(reviews(w, 1), 0);
+  assert.equal(planOf(w, 1, Date.now() + 11 * 60_000).actions.filter((a) => a.kind === "review").length, 1);
+  for (let i = 0; i < 3; i++) recordReviewFailure(w.db, "app", 1, "h2");
+  assert.equal(planOf(w, 1, Date.now() + 24 * 3600_000 * 0.5).actions.filter((a) => a.kind === "review").length, 0);
+  assert.match(planOf(w, 1).wait ?? "", /failed 4 times/);
+});
+
+test("the merge-time check ignores the PR author's new comment", async () => {
+  const w = noGaps(world().repo().pr(1, { head: "h1", author: "regular" }));
+  review(w, 1, "h1", "take");
+  const at = new Date(Date.now() + 5000).toISOString();
+  const node = (assoc: string, login: string) => ({ id: `c-${login}`, author: { login, __typename: "User" }, authorAssociation: assoc, createdAt: at, body: "Please look again" });
+  const q = (login: string, assoc: string) => ({ spent: 0, remaining: 1, async query() {
+    return { repository: { pullRequest: { author: { login: "regular" }, reviewDecision: null, comments: { nodes: [node(assoc, login)] }, reviews: { nodes: [] }, formal: { nodes: [] }, reviewThreads: { nodes: [] } } } };
+  } }) as never;
+  assert.equal((await liveGate(w.db, q("regular", "CONTRIBUTOR"), "app", 1, "h1")).moved, false);
+  assert.equal((await liveGate(w.db, q("maint", "MEMBER"), "app", 1, "h1")).moved, true);
 });

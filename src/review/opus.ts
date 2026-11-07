@@ -10,7 +10,7 @@ import { REVIEW_OPUS } from "../agents/steps.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
 import { openBlockers } from "./blockers.ts";
-import { reviewHold } from "./gate.ts";
+import { recordReviewFailure, reviewHolds } from "./gate.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { headWasUnsure, mergeDecisionId } from "../merge/queue.ts";
@@ -205,12 +205,13 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       return summary;
     }
     const asked = cands.length;
+    const holds = reviewHolds(db);
     const byNumber = new Map(live.map((l) => [l.number, l]));
     cands = cands.filter((c) => {
       const l = byNumber.get(c.number);
       const ok = !!l && l.state === "OPEN" && !l.is_draft && l.head_oid === c.head_oid;
       // The checks were just read: a head whose CI is running or red waits for the next push or the finished run.
-      const hold = ok ? reviewHold(db, repo, c.number, c.head_oid) : null;
+      const hold = ok ? holds(c.repo, c.number, c.head_oid) : null;
       if (hold) { log(`  ${refOf(c)}: not reviewed, waits for ${hold.wait}`); return false; }
       if (!ok) log(`  ${refOf(c)}: dropped, ${l ? `now ${l.state}${l.is_draft ? " draft" : ""} at ${l.head_oid.slice(0, 7)}` : "not found on GitHub"}`);
       return ok;
@@ -267,6 +268,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: outcomes });
       tally(c, got);
     } else {
+      recordReviewFailure(db, c.repo, c.number, c.head_oid);
       jobItem(db, c.repo, c.number, "no valid Opus review", log);
       summary.missing.push(refOf(c));
     }

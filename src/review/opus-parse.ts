@@ -75,15 +75,18 @@ export type OpusPr = {
   statements?: OwnerStatement[];
 };
 
-const BLOCKER_REF = /^[\w.-]+#\d+$/;
+/** "repo#n", "#n" (a PR of the same repo) or "owner/repo#n" (the owner is dropped). */
+const BLOCKER_REF = /^(?:[\w.-]+\/)?([\w.-]*)#(\d+)$/;
 
-/** The `blocked_by` of a reply: well-formed "repo#n" refs other than the PR itself, one each, at most 5. Whether they are tracked is checked against the database (openBlockers). */
+/** The `blocked_by` of a reply: refs normalised to "repo#n", other than the PR itself, one each, at most 5. Whether they are tracked is checked against the database (openBlockers). */
 export function parseBlockedBy(v: unknown, self: string): string[] {
   if (!Array.isArray(v)) return [];
   const out: string[] = [];
   for (const x of v) {
-    const ref = typeof x === "string" ? x.trim() : "";
-    if (BLOCKER_REF.test(ref) && ref !== self && !out.includes(ref)) out.push(ref);
+    const m = BLOCKER_REF.exec(typeof x === "string" ? x.trim() : "");
+    if (!m) continue;
+    const ref = `${m[1] || self.split("#")[0]}#${m[2]}`;
+    if (ref !== self && !out.includes(ref)) out.push(ref);
   }
   return out.slice(0, 5);
 }

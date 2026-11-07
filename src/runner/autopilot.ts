@@ -297,12 +297,23 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       const top = firstByRepo(planned(db, "review", { plans: plansOf(db, ctx) }));
       // A PR waiting out the minimum time between reviews is planned again when it ends.
       for (const p of plansOf(db, ctx).prs) if (p.facts.reviewHold?.until) ctx.wake?.push(p.facts.reviewHold.until);
+      // No other stage re-reads the checks of a head that was stored as running or red: a PR whose review waits for CI has its repo's checks read again, at most once per WAITING_CI_RECHECK_MS.
+      const ciWait = new Set(plansOf(db, ctx).prs.filter((p) => p.facts.reviewHold?.kind === "ci" && p.plan.wait === p.facts.reviewHold.wait).map((p) => p.facts.repo));
       for (const repo of flightFirst(plansOf(db, ctx), fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number))) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
         const review = { step: "opus-review", params: { repo } };
         out.push(fresh ? review : { step: "checks", params: { repo }, poll: true, gate: review });
+      }
+      for (const repo of [...ciWait].sort()) {
+        if (out.some((c) => c.params.repo === repo)) continue;
+        const last = lastJobEnd(db, "checks", repo);
+        if (last && Date.now() - Date.parse(last.endedAt) < WAITING_CI_RECHECK_MS) {
+          ctx.wake?.push(Date.parse(last.endedAt) + WAITING_CI_RECHECK_MS);
+          continue;
+        }
+        out.push({ step: "checks", params: { repo }, poll: true });
       }
       return out;
     },
