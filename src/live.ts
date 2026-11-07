@@ -13,7 +13,7 @@ type Source = { table: string; ops?: ("INSERT" | "UPDATE" | "DELETE")[]; when?: 
  */
 export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
   repos: ["synced_at", "high_water", "reconciled_at"],
-  items: ["embed_hash", "class_hash", "class_scheme", "synced_at"],
+  items: ["embed_hash", "class_hash", "class_scheme"],
   classifications: ["at", "input_hash"],
   pr_checks: ["fetched_at"],
   main_ci: ["updated_at"],

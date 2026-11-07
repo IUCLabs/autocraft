@@ -35,9 +35,12 @@ test("a signed delivery queues one row per item, a bad or missing signature and 
   assert.equal(deliver(db, "issues", body(10, "storytold/zzz")).status, 202);
   assert.equal(deliver(db, "issues", body(11, "someoneelse/a")).status, 202);
   assert.equal(deliver(db, "ping", {}).status, 200);
-  const pr = { repository: { full_name: "storytold/a", name: "a" }, check_suite: { pull_requests: [{ number: 12, base: { repo: { name: "a" } } }, { number: 99, base: { repo: { name: "fork" } } }] } };
-  assert.equal(deliver(db, "check_suite", pr).status, 202);
-  assert.deepEqual(queued(db), [{ repo: "a", number: 7 }, { repo: "a", number: 8 }, { repo: "a", number: 12 }]);
+  const suite = (action: string, prs: unknown[], sha = "s1") => ({ action, repository: { full_name: "storytold/a", name: "a", id: 1 }, check_suite: { head_sha: sha, pull_requests: prs } });
+  assert.equal(deliver(db, "check_suite", suite("requested", [{ number: 13, base: { repo: { id: 1 } } }])).status, 202);
+  assert.equal(deliver(db, "check_suite", suite("completed", [{ number: 12, base: { repo: { id: 1 } } }, { number: 99, base: { repo: { id: 2 } } }])).status, 202);
+  db.exec("INSERT INTO items (repo, number, kind, state, head_oid) VALUES ('a', 14, 'pr', 'OPEN', 'fork-sha')");
+  assert.equal(deliver(db, "check_suite", suite("completed", [], "fork-sha")).status, 202);
+  assert.deepEqual(queued(db), [{ repo: "a", number: 7 }, { repo: "a", number: 8 }, { repo: "a", number: 12 }, { repo: "a", number: 14 }]);
 });
 
 test("the drain re-reads a queued item, sets synced_at and clears the request", async () => {
@@ -52,8 +55,18 @@ test("the drain re-reads a queued item, sets synced_at and clears the request", 
   const c = validating({ spent: 0, remaining: 4000 as number | null, async query(_q: string, v: Record<string, unknown>) { calls.push(v); return { repository: { issueOrPullRequest: node } }; } });
   assert.equal(await drainSyncRequests(db, c), 1);
   assert.deepEqual(calls, [{ owner: "storytold", name: "a", number: 5 }]);
-  const row = db.prepare("SELECT title, synced_at FROM items WHERE repo = 'a' AND number = 5").get() as { title: string; synced_at: string };
+  const row = db.prepare("SELECT title, (SELECT synced_at FROM item_reads r WHERE r.repo = i.repo AND r.number = i.number) AS synced_at FROM items i WHERE repo = 'a' AND number = 5").get() as { title: string; synced_at: string };
   assert.equal(row.title, "t");
   assert.match(row.synced_at, /^\d{4}-\d\d-\d\dT/);
+  assert.deepEqual(queued(db), []);
+});
+
+test("a request that fails for a reason other than a transient one is dropped so the queue moves on", async () => {
+  const db = scratch();
+  for (const n of [1, 2]) deliver(db, "issues", { repository: { full_name: "storytold/a", name: "a" }, issue: { number: n } });
+  let calls = 0;
+  const c = { spent: 0, remaining: 4000 as number | null, async query() { if (calls++ === 0) throw new Error("graphql error"); return { repository: { issueOrPullRequest: null } }; } };
+  await drainSyncRequests(db, c);
+  assert.equal(calls, 2);
   assert.deepEqual(queued(db), []);
 });

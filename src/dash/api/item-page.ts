@@ -74,7 +74,8 @@ const clean = (s: string, max = 1500): string => {
 
 /** What the page reads beyond the trace's fingerprint: header parts, comment edits, commits, checks, files and the plan view. */
 const EXTRA = [
-  "SELECT title, labels, synced_at, LENGTH(COALESCE(body, '')), ci_state, mergeable, additions, deletions, url, closing_issues FROM items WHERE repo = ?1 AND number = ?2",
+  "SELECT title, labels, LENGTH(COALESCE(body, '')), ci_state, mergeable, additions, deletions, url, closing_issues FROM items WHERE repo = ?1 AND number = ?2",
+  "SELECT synced_at FROM item_reads WHERE repo = ?1 AND number = ?2",
   "SELECT view FROM item_plans WHERE repo = ?1 AND number = ?2",
   "SELECT COUNT(*), SUM(LENGTH(COALESCE(body, ''))), SUM(url IS NOT NULL), group_concat(COALESCE(review_state, '')) FROM comments WHERE repo = ?1 AND number = ?2",
   "SELECT COUNT(*), MAX(first_seen_at), SUM(LENGTH(COALESCE(message, ''))) FROM pr_commits WHERE repo = ?1 AND number = ?2",
@@ -334,7 +335,7 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
   if (req.query.get("since") === stamp) return { unchanged: true, stamp };
   const it = await itemCore(db, req);
   const ev = gather(c, null);
-  const row = db.prepare("SELECT url, head_oid, synced_at FROM items WHERE repo = ? AND number = ?").get(c.repo, c.n) as { url: string | null; head_oid: string | null; synced_at: string | null };
+  const row = db.prepare("SELECT url, head_oid, (SELECT synced_at FROM item_reads r WHERE r.repo = items.repo AND r.number = items.number) AS synced_at FROM items WHERE repo = ? AND number = ?").get(c.repo, c.n) as { url: string | null; head_oid: string | null; synced_at: string | null };
   const cost = (db.prepare(`SELECT COALESCE(SUM(r.cost_usd), 0) AS cost FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ?${hiddenSql(c.hidden)}`)
     .get(c.repo, c.n, ...c.hidden) as { cost: number }).cost;
   return {

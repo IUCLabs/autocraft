@@ -97,6 +97,7 @@ export class Runner {
   private flowAt = 0;
   private webhookAt = 0;
   private webhooking: Promise<void> | null = null;
+  private webhookClient: import("../mirror.ts").Client | null = null;
   private planning: Promise<void> | null = null;
   private detected: Detected | null = null;
   private flowing: Promise<void> | null = null;
@@ -180,10 +181,24 @@ export class Runner {
     this.webhookAt = Date.now();
     if (!this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
     this.webhooking = (async () => {
-      const { lockHeld, lockPath, Client } = await import("../mirror.ts");
-      if (lockHeld(lockPath())) return;
+      const { lockHeld, lockPath, fullLockPath, Client } = await import("../mirror.ts");
+      if (lockHeld(lockPath()) || lockHeld(fullLockPath())) return;
+      // One client for the runner's life, seeded from the last sync's reading, so the reserve holds from the first read.
+      if (!this.webhookClient) this.webhookClient = new Client(1000);
+      const c = this.webhookClient;
+      const get = (k: string): string | undefined => (this.db.prepare("SELECT value FROM main.settings WHERE key = ?").get(k) as { value: string } | undefined)?.value;
+      const seen = Number(get("sync_rate_remaining"));
+      const reset = Date.parse(get("sync_rate_reset_at") ?? "");
+      // Below the reserve nothing is read until the limit resets; the sync's reading is newer than ours when it is the later one.
+      if (Number.isFinite(seen) && Number.isFinite(reset) && reset > Date.now()) {
+        c.remaining = c.remaining === null ? seen : Math.min(c.remaining, seen);
+        c.resetAt = new Date(reset);
+      } else if (c.resetAt && c.resetAt.getTime() <= Date.now()) {
+        c.remaining = null;
+        c.resetAt = null;
+      }
       const { drainSyncRequests } = await import("../github/webhooks.ts");
-      const n = await drainSyncRequests(this.db, new Client(1000), { limit: 10, log: this.o.log });
+      const n = await drainSyncRequests(this.db, c, { limit: 10, log: this.o.log });
       if (n) this.o.log(`webhooks: read ${n} items again`);
     })().catch((e) => this.o.log(`webhooks: ${(e as Error).message}`)).finally(() => (this.webhooking = null));
   }

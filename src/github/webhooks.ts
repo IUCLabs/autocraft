@@ -30,21 +30,29 @@ function trackedName(db: DatabaseSync, payload: Obj): string | null {
   return ownerOf(name).toLowerCase() === owner.toLowerCase() ? name : null;
 }
 
-/** The item numbers an event names. Check events name the pull requests of their head; `status` names none. */
-export function itemNumbers(event: string, payload: Obj): number[] {
+/**
+ * The item numbers an event names. A check event counts when it completes and names the pull requests of its head;
+ * GitHub lists none for a fork's pull request, so the head commit is matched to this repository's open pull requests.
+ */
+export function itemNumbers(db: DatabaseSync, repo: string, event: string, payload: Obj): number[] {
+  const one = (v: unknown): number[] => [num(v)].filter((n): n is number => n !== null);
   switch (event) {
-    case "issues": return [num(obj(payload.issue).number)].filter((n): n is number => n !== null);
-    case "issue_comment": return [num(obj(payload.issue).number)].filter((n): n is number => n !== null);
+    case "issues":
+    case "issue_comment": return one(obj(payload.issue).number);
     case "pull_request":
     case "pull_request_review":
-    case "pull_request_review_comment": return [num(obj(payload.pull_request).number)].filter((n): n is number => n !== null);
+    case "pull_request_review_comment": return one(obj(payload.pull_request).number);
     case "check_suite":
     case "check_run": {
-      const prs = obj(payload[event]).pull_requests;
-      if (!Array.isArray(prs)) return [];
-      const repoName = obj(payload.repository).name;
-      // A fork's pull request is listed with the fork's base repository; only this repository's own are ours.
-      return prs.filter((p) => obj(obj(obj(p).base).repo).name === repoName).map((p) => num(obj(p).number)).filter((n): n is number => n !== null);
+      const body = obj(payload[event]);
+      if (payload.action !== "completed") return [];
+      const repoId = obj(payload.repository).id;
+      const listed = Array.isArray(body.pull_requests) ? body.pull_requests : [];
+      const own = listed.filter((p) => repoId !== undefined && obj(obj(obj(p).base).repo).id === repoId).flatMap((p) => one(obj(p).number));
+      if (own.length || listed.length) return own;
+      const sha = body.head_sha;
+      if (typeof sha !== "string" || !sha) return [];
+      return (db.prepare("SELECT number FROM main.items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND head_oid = ?").all(repo, sha) as { number: number }[]).map((r) => r.number);
     }
     default: return [];
   }
@@ -53,10 +61,10 @@ export function itemNumbers(event: string, payload: Obj): number[] {
 /** Queues the items one delivery names, one row per item. Returns how many were queued. */
 export function queueDelivery(db: DatabaseSync, event: string, payload: unknown, now: Date = new Date()): number {
   const p = obj(payload);
-  const numbers = itemNumbers(event, p);
-  if (!numbers.length) return 0;
   const repo = trackedName(db, p);
   if (!repo) return 0;
+  const numbers = itemNumbers(db, repo, event, p);
+  if (!numbers.length) return 0;
   const at = now.toISOString().replace(/\.\d+Z$/, "Z");
   const ins = db.prepare(`INSERT INTO main.sync_requests (repo, number, event, requested_at) VALUES (?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET event = excluded.event, requested_at = excluded.requested_at`);
@@ -106,7 +114,9 @@ export async function drainSyncRequests(db: DatabaseSync, client: Querier, opts:
       done++;
     } catch (e) {
       opts.log?.(`webhook re-read ${r.repo}#${r.number}: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+      // A read that fails for another reason would stay first in line and starve the rest; the poll covers it.
       if (e instanceof Transient) break;
+      gone();
     }
   }
   return done;
