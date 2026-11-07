@@ -3,9 +3,8 @@
 // the delta since the head it reviewed before. Reads GitHub (diffs); never writes to it.
 import type { DatabaseSync } from "node:sqlite";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { queueRoom } from "../agents/call.ts";
+import { currentJobId, queueRoom } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
-import { currentJobId } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
 import { REVIEW_OPUS } from "../agents/steps.ts";
 import { Client, type Querier } from "../mirror.ts";
