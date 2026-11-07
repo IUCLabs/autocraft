@@ -86,7 +86,8 @@ function setup() {
     ask: async (_db, input) => {
       asked.push(input[0]!.ref);
       if (asked.length === 2) { overlap = true; release(); }
-      await Promise.race([both, new Promise((r) => setTimeout(r, 1500))]);
+      // Long enough for the second PR's git work under a loaded full-suite run; released as soon as it asks.
+      await Promise.race([both, new Promise((r) => setTimeout(r, 20_000))]);
       return null;
     },
     check: async () => null,
