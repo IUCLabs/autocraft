@@ -903,6 +903,8 @@ export interface DiscordLinkCode {
 export interface DiscordAccount {
   linked: boolean;
   at: string | null;
+  /** False when the server cannot make link codes, so the menu hides "Link Discord". */
+  configured: boolean;
 }
 
 /** A live agent token of any login (operators see all of them). */

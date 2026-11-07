@@ -276,12 +276,12 @@ export function createMockApi(): Api {
         changed();
         return wait(structuredClone(discord));
       },
-      account: () => wait({ linked: discordLinked, at: nowIso() }),
+      account: () => wait({ linked: discordLinked, at: nowIso(), configured: new URLSearchParams(location.search).get("discord") !== "off" }),
       linkCode: () => wait({ code: "K7Q4MX2P", expiresAt: new Date(Date.now() + 10 * 60_000).toISOString() }),
       unlinkOwn() {
         discordLinked = false;
         changed();
-        return wait({ linked: false, at: null });
+        return wait({ linked: false, at: null, configured: true });
       },
       setContact(contact) {
         if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");

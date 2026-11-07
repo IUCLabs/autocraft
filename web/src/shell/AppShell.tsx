@@ -386,9 +386,11 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
           <DropdownMenu.Item onSelect={() => onHelp?.()} className={itemCls}>
             <KeyboardIcon className="text-ink/55" /> <span className="flex-1">Keyboard shortcuts</span> <Kbd keys="?" />
           </DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={() => setLinking(true)} className={itemCls}>
-            <LinkIcon className="text-ink/55" /> Link Discord
-          </DropdownMenu.Item>
+          {discord.data?.configured && (
+            <DropdownMenu.Item onSelect={() => setLinking(true)} className={itemCls}>
+              <LinkIcon className="text-ink/55" /> Link Discord
+            </DropdownMenu.Item>
+          )}
           {discord.data?.linked && (
             <DropdownMenu.Item onSelect={() => setUnlinking(true)} className={itemCls}>
               <LinkBreakIcon className="text-ink/55" /> Unlink Discord
