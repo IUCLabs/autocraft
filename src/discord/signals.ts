@@ -10,7 +10,7 @@ import { JEV_PROMPTS } from "../prompts/index.ts";
 import type { DiscordKeys } from "./keys.ts";
 import { jevSignal, parseSignal, signalBand, signalState, type SignalAsk } from "./signal-ask.ts";
 import { isWatched, trackedRepos, type DiscordLink } from "./store.ts";
-import { parseRefs } from "./refs.ts";
+import { parseRefs, type ItemKey } from "./refs.ts";
 
 export const SIGNAL_CAP_KEY = "discord_signal_daily_usd";
 export const DEFAULT_SIGNAL_CAP_USD = 1;
@@ -99,10 +99,13 @@ export class Signals {
     // An update without an edit time is Discord adding a link preview: the text is the same.
     if (type === "MESSAGE_UPDATE" && !m.edited_timestamp) return;
     if (!isWatched(this.#d.db, m.channel_id)) return;
+    // Only a message that names one to MAX_ITEMS items is checked, so only those use up the limits.
+    const refs = parseRefs(m.content, trackedRepos(this.#d.db));
+    if (!refs.length || refs.length > MAX_ITEMS) return;
     if (!this.#allow(m.author?.id ? this.#d.keys.hash("author", m.author.id) : "", this.#d.keys.hash("channel", m.channel_id))) return;
     const hash = this.#d.keys.hash("message", m.id);
     // An edit that arrives during a call waits for it, so the later text decides.
-    const run = (this.#chain.get(hash) ?? Promise.resolve()).then(() => this.#check(hash, m.content!)).catch((e: Error) => this.#d.log(`discord: signal check failed: ${e.message.slice(0, 200)}`));
+    const run = (this.#chain.get(hash) ?? Promise.resolve()).then(() => this.#check(hash, m.content!, refs)).catch((e: Error) => this.#d.log(`discord: signal check failed: ${e.message.slice(0, 200)}`));
     const tail: Promise<void> = run.finally(() => { if (this.#chain.get(hash) === tail) this.#chain.delete(hash); });
     this.#chain.set(hash, tail);
   }
@@ -129,10 +132,8 @@ export class Signals {
     }
   }
 
-  async #check(hash: string, text: string): Promise<void> {
+  async #check(hash: string, text: string, refs: ItemKey[]): Promise<void> {
     const { db } = this.#d;
-    const refs = parseRefs(text, trackedRepos(db));
-    if (refs.length > MAX_ITEMS) return;
     const title = db.prepare("SELECT title FROM main.items WHERE repo = ? AND number = ?");
     const rows = db.prepare("SELECT 1 FROM discord_mentions WHERE msg_hash = ? AND repo = ? AND number = ?");
     const set = db.prepare("UPDATE discord_mentions SET signal = ? WHERE msg_hash = ? AND repo = ? AND number = ?");
