@@ -16,6 +16,7 @@ import type { ViewProps } from "../../registry/types";
 
 const NEED_LABEL: Record<NeedKind, string> = { merge: "Merge?", scope: "Scope", duplicate: "Duplicates", close: "Close", split: "Split", other: "Other", security: "Security" };
 const NEED_ICON: Record<NeedKind, Icon> = { ...KIND_ICON, security: ShieldWarningIcon };
+const KIND_ORDER: NeedKind[] = ["merge", "security", "scope", "duplicate", "close", "split", "other"];
 const SHOWN: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed"];
 const PHASE_LABEL: Partial<Record<ItemPhase, string>> = { "Waiting for a person": "Waiting", Merged: "Merged today", Closed: "Closed today" };
 const DONE_LABEL: Record<HomeDone["what"], string> = { merged: "Merged", closed: "Closed", "review posted": "Review posted" };
@@ -51,31 +52,35 @@ export function HomeView(_: ViewProps) {
   const { data, error } = useQuery("home", (a) => a.home());
   if (!data) return <Pending error={error} />;
   const { needs, problems, phases, progress, done } = data;
-  const kinds = (Object.keys(needs.byKind) as NeedKind[]).filter((k) => needs.byKind[k]);
+  const kinds = KIND_ORDER.filter((k) => needs.byKind[k]);
   const max = Math.max(...progress.perHour, 1);
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-[1180px] flex-col gap-7 px-4 pb-10 pt-5 md:px-6">
         <div className={cn("grid gap-7", problems.length > 0 && "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]")}>
           <Section title="Needs you" count={needs.total} to="/needs" linkLabel="All decisions">
-            <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink/60">
-              {kinds.map((k) => (
-                <Link key={k} to="/needs" className="hover:text-ink">
-                  {NEED_LABEL[k]} <span className="num font-medium text-ink">{needs.byKind[k]}</span>
-                </Link>
-              ))}
-            </div>
-            <ul>
-              {needs.oldest.map((n) => (
-                <NeedRow key={n.id} n={n} canOpen={user.role !== "viewer"} />
-              ))}
-            </ul>
+            {needs.total === 0 ? (
+              <p className="border-t border-line py-3 text-sm text-ink/55">Nothing is waiting for a person.</p>
+            ) : (
+              kinds.map((k) => {
+                const rows = needs.oldest.filter((n) => n.kind === k);
+                return (
+                  <div key={k}>
+                    <Link to={k === "security" ? "/security" : `/needs?kind=${k}`} className="flex min-h-9 items-center gap-2 border-t border-line text-xs text-ink/60 hover:text-ink max-md:min-h-11">
+                      {NEED_LABEL[k]} <span className="num font-medium text-ink">{needs.byKind[k]}</span>
+                      <CaretRightIcon className="ml-auto text-ink/30" />
+                    </Link>
+                    {rows.length > 0 && <ul>{rows.map((n) => <NeedRow key={n.id} n={n} canOpen={user.role !== "viewer"} />)}</ul>}
+                  </div>
+                );
+              })
+            )}
           </Section>
           {problems.length > 0 && (
             <Section title="Problems" count={problems.length}>
               <ul>
                 {problems.map((p) => (
-                  <li key={p.title} className="relative flex items-start gap-3 border-t border-line py-2.5 hover:bg-ink/[0.025] max-md:py-3">
+                  <li key={`${p.kind}${p.to}${p.title}`} className="relative flex items-start gap-3 border-t border-line py-2.5 hover:bg-ink/[0.025] max-md:py-3">
                     {p.kind === "stopped" ? <XCircleIcon weight="fill" className="mt-[3px] shrink-0 text-bad" /> : <WarningCircleIcon weight="fill" className="mt-[3px] shrink-0 text-warn" />}
                     <div className="min-w-0 flex-1">
                       <Link to={p.to} className="text-sm font-medium after:absolute after:inset-0 hover:underline">{p.title}</Link>
@@ -120,12 +125,12 @@ export function HomeView(_: ViewProps) {
               {done.map((d) => {
                 const Ico = DONE_ICON[d.what];
                 return (
-                  <li key={`${d.repo}${d.number}${d.what}`} className="flex items-start gap-2.5 border-t border-line py-2 text-sm">
+                  <li key={`${d.repo}${d.number}${d.what}${d.at}`} className="relative flex items-start gap-2.5 border-t border-line py-2 text-sm hover:bg-ink/[0.025] max-md:py-3">
                     <TimeAgo iso={d.at} className="num w-14 shrink-0 pt-px text-xs text-ink/50" />
                     <Ico className="mt-[3px] shrink-0 text-accent-ink" />
                     <span className="min-w-0 flex-1 text-ink/70">
                       {DONE_LABEL[d.what]}{" "}
-                      <Link to={itemPath(d.repo, d.number)} className="hover:underline"><span className="code text-ink/60">{d.repo}#{d.number}</span> <span className="text-ink">{d.title}</span></Link>
+                      <Link to={itemPath(d.repo, d.number)} className="after:absolute after:inset-0 hover:underline"><span className="code text-ink/60">{d.repo}#{d.number}</span> <span className="text-ink">{d.title}</span></Link>
                     </span>
                   </li>
                 );
