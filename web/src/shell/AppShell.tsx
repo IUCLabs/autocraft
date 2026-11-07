@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon, HeartbeatIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon, HeartbeatIcon, CloudIcon, CloudCheckIcon, CloudSlashIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -90,7 +90,7 @@ export function AppShell() {
           <button id="nav-toggle" aria-label="Open navigation" onClick={() => setNavOpen(true)} className="flex size-11 shrink-0 items-center justify-center text-ink/70">
             <ListIcon className="text-[20px]" />
           </button>
-          <Wordmark />
+          <NavLink to="/" aria-label="AutoCraft home" className="flex size-11 shrink-0 items-center justify-center"><Logo size={20} /></NavLink>
           <div className="flex-1" />
           <MainCiDots />
           <LiveDot />
@@ -456,16 +456,16 @@ function NoRoute({ hidden }: { hidden: { path: string; permission: Permission }[
 }
 
 
-const LIVE_DOT: Record<LiveStatus, [label: string, color: string]> = {
-  open: ["Live", "bg-[#22e05a]"],
-  connecting: ["Reconnecting", "bg-warn"],
-  down: ["Offline", "bg-bad"],
+const LIVE: Record<LiveStatus, [label: string, icon: typeof CloudIcon, color: string]> = {
+  open: ["Live", CloudCheckIcon, "text-ok"],
+  connecting: ["Reconnecting", CloudIcon, "text-warn"],
+  down: ["Offline", CloudSlashIcon, "text-bad"],
 };
 
-/** The state of the server's event stream, as a colour and a tooltip. */
+/** The state of the server's event stream, as an icon and a tooltip. */
 function LiveDot() {
-  const [label, color] = LIVE_DOT[useLiveStatus()];
-  return <span role="img" aria-label={label} title={label} className={cn("mx-1 inline-block size-2 shrink-0 rounded-full", color)} />;
+  const [label, Icon, color] = LIVE[useLiveStatus()];
+  return <Icon role="img" aria-label={label} className={cn("mx-1 shrink-0 text-[17px]", color)}><title>{label}</title></Icon>;
 }
 
 const CI_ORDER: MainCiState[] = ["green", "red", "running", "optional"];
