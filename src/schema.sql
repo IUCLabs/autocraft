@@ -1777,6 +1777,28 @@ CREATE TABLE IF NOT EXISTS discord_link_codes (
   expires_at TEXT NOT NULL
 ) WITHOUT ROWID;
 
+-- Decision alerts by direct message (src/discord/alerts.ts). A row of `discord_alerts` is an opted-in linked account: `sealed` holds the
+-- direct-message channel id. A row of `discord_alert_msgs` is one message about a decision, kept to edit it after the answer; `sealed` is
+-- null for a decision named only in a summary message. Both go when the link is removed. Bookkeeping: not a change topic.
+CREATE TABLE IF NOT EXISTS discord_alerts (
+  user_hash TEXT PRIMARY KEY,
+  sealed TEXT NOT NULL,
+  created_at TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS discord_alert_msgs (
+  decision_id TEXT NOT NULL,
+  user_hash TEXT NOT NULL,
+  sealed TEXT,
+  choices_id TEXT,
+  sent_at TEXT NOT NULL,
+  PRIMARY KEY (decision_id, user_hash)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS discord_alert_msgs_user ON discord_alert_msgs (user_hash, sent_at);
+CREATE TRIGGER IF NOT EXISTS discord_links_alerts AFTER DELETE ON discord_links BEGIN
+  DELETE FROM discord_alerts WHERE user_hash = old.user_hash;
+  DELETE FROM discord_alert_msgs WHERE user_hash = old.user_hash;
+END;
+
 -- Reads of the public status layer (src/public/status.ts): merged and posted in the last days.
 CREATE INDEX IF NOT EXISTS items_merged_at ON items(merged_at);
 CREATE INDEX IF NOT EXISTS review_posts_posted ON review_posts(posted_at);

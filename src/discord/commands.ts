@@ -51,6 +51,7 @@ export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSyn
     options: [
       { type: 1, name: "link", description: "Link this Discord account to your dashboard login", options: [{ type: 3, name: "code", description: "The code from Link Discord in the dashboard menu", required: true, max_length: 20 }] },
       { type: 1, name: "unlink", description: "Remove the link between this Discord account and your dashboard login" },
+      { type: 1, name: "alerts", description: "Direct messages about new decisions you can settle", options: [{ type: 3, name: "state", description: "on or off", required: true, choices: [{ name: "on", value: "on" }, { name: "off", value: "off" }] }] },
       { type: 1, name: "stats", description: "Counts for the public repos", options: [{ type: 3, name: "repo", description: "One repo; all public repos when left out", autocomplete: true }] },
       { type: 1, name: "status", description: "Where an issue or pull request is in AutoCraft", options: [{ type: 3, name: "item", description: "For example photocraft#123", required: true, max_length: 100 }] },
     ],

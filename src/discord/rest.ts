@@ -115,6 +115,11 @@ export class RestClient implements DiscordRest {
     await this.#queue("PATCH", `/webhooks/${applicationId}/${token}/messages/@original`, { allowed_mentions: { parse: [] }, ...body }, false);
   }
 
+  /** The direct-message channel with a user (the same channel each time). */
+  async createDm(userId: string): Promise<{ id: string }> {
+    return (await this.#queue("POST", "/users/@me/channels", { recipient_id: userId }, true)) as { id: string };
+  }
+
   async overwriteGuildCommands(applicationId: string, guildId: string, commands: CommandDef[]): Promise<void> {
     await this.#queue("PUT", `/applications/${applicationId}/guilds/${guildId}/commands`, commands, true);
   }

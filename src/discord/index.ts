@@ -2,6 +2,10 @@
 // are set; the runner starts it next to the worker server. See docs/pipeline.md.
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
+import { loadConfig, type Config } from "../dash/server/config.ts";
+import { TokenBox } from "../dash/server/crypto.ts";
+import { providerFor } from "../dash/server/provider.ts";
+import { userForLogin } from "../dash/server/sessions.ts";
 import { audit } from "../dash/audit.ts";
 import { envVar } from "../env.ts";
 import { localEmbedder } from "../embed/model.ts";
@@ -15,6 +19,7 @@ import { RestClient } from "./rest.ts";
 import { forgetLink } from "./links.ts";
 import { Search, dropTexts } from "./search.ts";
 import { installAccountCommands } from "./commands.ts";
+import { DecisionAlerts, installAlertCommands } from "./alerts.ts";
 import { installSearchCommands } from "./search-commands.ts";
 import { dropIssueTexts, installIssueNew } from "./issue-new.ts";
 import { DiscordConfigError, readKeyFile, readTokenFile, type DiscordKeys } from "./keys.ts";
@@ -60,6 +65,21 @@ export function dispatcher(db: DatabaseSync, keys: DiscordKeys, interactions: In
   };
 }
 
+/** Decision alerts by direct message. The GitHub permissions of a linked login are read as the dashboard reads them, from the dashboard's configuration when this process has it, else from the cached permissions only. */
+function installDecisionAlerts(db: DatabaseSync, keys: DiscordKeys, rest: RestClient, interactions: Interactions, signal: AbortSignal, log: (l: string) => void): void {
+  let config: Config | null = null;
+  try { config = loadConfig(process.env); } catch (e) { log(`runner: Discord alerts use cached permissions only: ${(e as Error).message}`); }
+  const box = config ? new TokenBox(config.secrets.sessionKey) : null;
+  const provider = config ? providerFor(config) : null;
+  const alerts = new DecisionAlerts({
+    db, keys, rest, log, baseUrl: config?.baseUrl ?? envVar("BASE_URL") ?? null,
+    // Without the dashboard configuration there is no token box: userForLogin then answers from cached permissions, as it does for agent tokens.
+    userFor: (login, role, forWrite) => userForLogin(db, box as never, provider as never, login, role, forWrite),
+  });
+  installAlertCommands(interactions, alerts);
+  alerts.start(signal);
+}
+
 /** Starts the gateway when configured. A bad configuration or a failed connection is logged and never stops the caller. */
 export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: string) => void): void {
   const tokenFile = envVar("DISCORD_TOKEN_FILE");
@@ -83,6 +103,7 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
   installSearchCommands(interactions, { db, keys, search });
   installAccountCommands(interactions, { db, keys });
   installIssueNew(interactions, { db, keys, search, log });
+  installDecisionAlerts(db, keys, rest, interactions, signal, log);
   const pings = new Pings({ db, keys, rest, search, log });
   const signals = new Signals({ db, keys, log });
   // A crash during a call can leave the question in a recorded prompt.
