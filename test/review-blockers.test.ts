@@ -103,6 +103,9 @@ test("a PR whose review waits for CI gets its repo's checks read again", async (
   w.db.prepare("UPDATE pr_checks SET overall = 'pending' WHERE number = 1").run();
   const found = await detectAutopilot(w.db);
   assert.ok(found.proposals.some((p) => p.step === "checks" && p.params.repo === "app"), JSON.stringify(found.proposals));
+  // A red head only changes with a push, which sync sees: no polling for it.
+  w.db.prepare("UPDATE pr_checks SET overall = 'failure', checks = '[{\"name\":\"gate / test\",\"state\":\"failure\"}]' WHERE number = 1").run();
+  assert.ok(!(await detectAutopilot(w.db)).proposals.some((p) => p.step === "checks"));
 });
 
 test("red CI at a new head leaves the CI fix to work from the earlier review; the first review still runs on red CI", () => {

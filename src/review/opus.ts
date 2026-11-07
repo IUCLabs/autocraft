@@ -87,6 +87,7 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims, blocked_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
     r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims, blockedBy);
+  db.prepare("DELETE FROM main.settings WHERE key = ?").run(`review_fail:${c.repo}#${c.number}@${c.head_oid}`);
   db.prepare("DELETE FROM opus_carried_fixes WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
   for (const u of s.unapplied ?? []) {
     db.prepare("INSERT INTO opus_carried_fixes (repo, number, head_oid, from_head, file, change, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")

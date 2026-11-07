@@ -107,8 +107,8 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
     const r = runs.get({ today, repo, number }) as { n: number; last: string | null };
     if (Math.max(h.n, r.n) >= MAX_REVIEWS_PER_DAY) return { kind: "cap", wait: "review cap for today reached; next on a maintainer's request or tomorrow", until: nextMidnight(nowMs) };
     if (interval) {
-      const at = [h.last, r.last].filter((x): x is string => !!x).sort().pop();
-      const until = at ? Date.parse(at) + interval : 0;
+      // Successful reviews only: failed calls count toward the cap, and the failure backoff spaces their retries.
+      const until = h.last ? Date.parse(h.last) + interval : 0;
       if (until > nowMs) return { kind: "interval", wait: `next review after ${new Date(until).toISOString().slice(11, 16)}`, until };
     }
     return null;

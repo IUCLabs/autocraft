@@ -234,14 +234,14 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
   const fx = fixupOf(f), cf = cifixBucket(f);
   const inBatch = state === "in-batch" || state === "batch-checking" || f.inActiveBatch;
   const flying = inFlightNow(f, state);
-  const waitingToReview = f.reviewHold?.kind === "ci" || f.reviewHold?.kind === "interval";
-  const working = actions.some(worksOn) || inBatch || flying || waitingToReview;
+  const waitingToReview = (f.reviewHold?.kind === "ci" && !f.reviewHold.red) || f.reviewHold?.kind === "interval";
+  const working = actions.some(worksOn) || inBatch || flying;
   // A conflicting PR whose conflict step has nothing to do (asked, held, not approved, done) waits on its author, whatever the queue state says.
   const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting";
   const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || conflictStuck
     || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push" || cf === "done"
     || f.mergeHeld || (state === "ci-approval" && !f.repoFacts.ciApproved);
-  const keep = working || (!gaveUp && PROGRESS_STATES.has(state));
+  const keep = working || (!gaveUp && (waitingToReview || PROGRESS_STATES.has(state)));
   return unassignActions(f.assignment, f.ghState === "OPEN", !keep);
 }
 
