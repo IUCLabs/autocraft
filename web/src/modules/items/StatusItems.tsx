@@ -1,5 +1,5 @@
 // Items: every issue and PR with one status line, filtered by phase.
-import { MagnifyingGlassIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
+import { ChatsCircleIcon, MagnifyingGlassIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import { usePagedQuery } from "../../api/client";
 import type { ItemPhase, ItemStatusFilter, ItemStatusRow } from "../../api/types";
@@ -33,7 +33,8 @@ export function StatusItemsView(_: ViewProps) {
   const phase = PHASES.find((p) => p === state.phase);
   const kind = state.kind === "pr" || state.kind === "issue" ? state.kind : undefined;
   const repo = state.repo || undefined;
-  const filter: ItemStatusFilter = { q: state.q?.trim() || undefined, phase, kind, repo: repo ? [repo] : undefined };
+  const asked = state.asked === "1";
+  const filter: ItemStatusFilter = { q: state.q?.trim() || undefined, phase, kind, repo: repo ? [repo] : undefined, asked: asked || undefined };
   // A change event refetches every loaded page in order, so Load more keeps its place.
   const { pages, error, hasMore, loadingMore, loadMore } = usePagedQuery(`items-status:${JSON.stringify(filter)}`, (a, cursor) => a.itemStatusList({ ...filter, cursor }), (p) => p.nextCursor);
   const data = pages?.[0];
@@ -59,6 +60,9 @@ export function StatusItemsView(_: ViewProps) {
         {kinds.map(([l, k]) => (
           <button key={l} onClick={() => update({ kind: k ?? null })} aria-pressed={kind === k} className="h-7 rounded px-2 text-xs text-ink/60 hover:text-ink aria-pressed:bg-ink/[0.08] aria-pressed:font-medium aria-pressed:text-ink max-md:h-11">{l}</button>
         ))}
+        <button onClick={() => update({ asked: asked ? null : "1" })} aria-pressed={asked} className="ml-1 inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-ink/60 hover:text-ink aria-pressed:bg-ink/[0.08] aria-pressed:font-medium aria-pressed:text-ink max-md:h-11">
+          <ChatsCircleIcon aria-hidden /> Asked about on Discord
+        </button>
       </div>
       {!rows ? <Pending error={error} /> : rows.length === 0 ? <p className="py-8 text-sm text-ink/55">No items match.</p> : (
         <>

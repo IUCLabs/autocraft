@@ -99,7 +99,7 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
         ...statusRows().filter((r) => !real?.rows.some((x) => x.repo === r.repo && x.number === r.number)),
       ];
       const q = f.q?.trim().toLowerCase();
-      const base1 = all.filter((r) => (!f.kind || r.kind === f.kind) && (!f.repo?.length || f.repo.includes(r.repo)) && (!q || `${r.repo}#${r.number} ${r.title}`.toLowerCase().includes(q)));
+      const base1 = all.filter((r) => (!f.asked || r.number % 3 === 0) && (!f.kind || r.kind === f.kind) && (!f.repo?.length || f.repo.includes(r.repo)) && (!q || `${r.repo}#${r.number} ${r.title}`.toLowerCase().includes(q)));
       const byPhase = Object.fromEntries(PHASES.map((p) => [p, base1.filter((r) => r.status.phase === p).length])) as Record<ItemPhase, number>;
       const isReal = (r: ItemStatusRow) => !!real?.rows.some((x) => x.repo === r.repo && x.number === r.number);
       const rows = base1.filter((r) => !f.phase || r.status.phase === f.phase).sort((a, b) => Number(isReal(b)) - Number(isReal(a)) || b.updatedAt.localeCompare(a.updatedAt));
