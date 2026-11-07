@@ -44,6 +44,9 @@ export type Action = { kind: ActionKind; head: string | null; params?: Record<st
 
 export type LintFact = { step: "fixup" | "cifix" | "conflict"; source: "review" | "premerge" | "carry" | "operator"; ended: boolean };
 
+/** Who a wait is on: a person at the repo (an operator or maintainer to approve or answer), the PR's contributor, or the system (CI, a sync, a model step, a timer). */
+export type WaitKind = "person" | "contributor" | "system";
+
 export type Plan = {
   repo: string; number: number; head: string | null;
   state: PlanState;
@@ -58,6 +61,8 @@ export type Plan = {
   conflictNote: string | null;
   /** What it waits on when no main-path action is due. */
   wait: string | null;
+  /** Who `wait` is on; null exactly when `wait` is. */
+  waitKind: WaitKind | null;
   /** The merge rule or an operator's answer lets it merge now (a refused PR still counts while its retry waits for a change). */
   eligible: boolean;
 };
@@ -370,6 +375,8 @@ export type ItemPlan = {
   actions: Action[];
   /** What it waits on when no action is due. */
   wait: string | null;
+  /** Who `wait` is on; null exactly when `wait` is. */
+  waitKind: WaitKind | null;
 };
 
 /** The item's plans together: the triage plan, and for a PR the review-to-merge Plan; `actions` lists both, triage first. */

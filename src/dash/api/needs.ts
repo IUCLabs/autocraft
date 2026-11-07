@@ -103,7 +103,7 @@ function view(db: DatabaseSync, r: Raw): NeedsFeedbackRow {
 
 const humanize = (id: string): string => { const t = id.replace(/[-_]+/g, " ").trim(); return t.charAt(0).toUpperCase() + t.slice(1); };
 
-async function stopped(db: DatabaseSync, hidden: string[]): Promise<NeedsStoppedRow[]> {
+export async function stopped(db: DatabaseSync, hidden: string[]): Promise<NeedsStoppedRow[]> {
   const out: NeedsStoppedRow[] = [];
   for (const t of db.prepare("SELECT stage, reason, tripped_at FROM stage_trips WHERE active = 1 ORDER BY tripped_at").all() as { stage: string; reason: string; tripped_at: string }[])
     out.push({ id: `breaker:${t.stage}`, kind: "breaker", title: humanize(t.stage), reason: blankIfHidden(t.reason, hidden), since: t.tripped_at, resume: { type: "trip", stage: t.stage } });

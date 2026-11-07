@@ -140,6 +140,20 @@ describe("security fix rounds", () => {
     assert.match(row.last_failure ?? "", /attacker/);
   });
 
+  test("rounds left by a dead fix job are logged under their own attempt when the finding is reconciled", async () => {
+    const n = finding();
+    db.prepare("UPDATE security_findings SET fix_attempts = 1 WHERE number = ?").run(n);
+    await runFix(db, "photocraft", n, world(n, () => reply(n)).deps);
+    db.prepare("UPDATE security_fix_rounds SET state = 'failed', failure = 'boom' WHERE number = ?").run(n);
+    db.prepare("UPDATE security_findings SET updated_at = '2026-11-01T00:00:00Z' WHERE number = ?").run(n);
+    reconcileFindings(db, "photocraft");
+    const row = rawFinding(db, "photocraft", n)!;
+    assert.equal(row.state, "new");
+    assert.match(row.last_failure ?? "", /ended before/);
+    assert.deepEqual(rounds(n), []);
+    assert.deepEqual((db.prepare("SELECT attempt, round, state FROM security_fix_log WHERE number = ?").all(n) as { attempt: number; round: number; state: string }[]).map((r) => `${r.attempt}:${r.round}:${r.state}`), ["1:1:failed"]);
+  });
+
   test("a round building past 4 hours is cancelled and read; a pipeline fix waits for the switch, an operator's does not", async () => {
     const n = finding(), m = finding();
     for (const [k, by] of [[n, "boss"], [m, "pipeline"]] as const) {

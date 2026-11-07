@@ -122,7 +122,8 @@ export function decideItem(f: ItemFacts): ItemPlan {
 
   // A closed item is here for its unapplied answered close only.
   if (!f.open) actions.splice(0, actions.length, ...actions.filter((a) => a.kind === "act" && !a.params?.ask));
-  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.some(isWork) ? null : !f.inScope ? "not in scope" : state === "classified" && pluginPr(f) ? PLUGIN_WAIT : WAITS[state] ?? null };
+  const wait = actions.some(isWork) ? null : !f.inScope ? "not in scope" : state === "classified" && pluginPr(f) ? PLUGIN_WAIT : WAITS[state] ?? null;
+  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait, waitKind: wait === null ? null : f.inScope && (state === "held-duplicate" || state === "scope-open") ? "person" : "system" };
 }
 
 /** The Work page's next-step text (rank/next.ts nextStepOf), from the item's state and, for a PR, the facts of its review-to-merge path. */
