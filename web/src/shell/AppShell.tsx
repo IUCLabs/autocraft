@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon, HeartbeatIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -20,7 +20,9 @@ import { Badge } from "../ui/atoms/Badge";
 import { cn } from "../ui/cn";
 import { useApi, useQuery } from "../api/client";
 import { HealthMenu } from "../ui/organisms/HealthMenu";
-import { useLiveStatus } from "../api/live";
+import { useLiveStatus, type LiveStatus } from "../api/live";
+import { MAIN_CI_DOT, MAIN_CI_LABEL } from "../ui/atoms/MainCiBadge";
+import type { MainCiState } from "../api/types";
 import { zoneName } from "../lib/format";
 import { UnlinkDiscordDialog } from "./UnlinkDiscord";
 import { LinkDiscordDialog } from "./LinkDiscord";
@@ -90,7 +92,8 @@ export function AppShell() {
           </button>
           <Wordmark />
           <div className="flex-1" />
-          <ReconnectMark />
+          <MainCiDots />
+          <LiveDot />
           <HealthMenu />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
             <MagnifyingGlassIcon className="text-[18px]" />
@@ -141,7 +144,8 @@ export function AppShell() {
           <div className="mx-auto w-full max-w-[440px]">
             <SearchBox />
           </div>
-          <ReconnectMark />
+          <MainCiDots />
+          <LiveDot />
           <HealthMenu />
           <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />
         </header>
@@ -452,14 +456,36 @@ function NoRoute({ hidden }: { hidden: { path: string; permission: Permission }[
 }
 
 
-/** Shown only while the live connection is down. */
-function ReconnectMark() {
-  const status = useLiveStatus();
-  if (status === "open") return null;
+const LIVE_DOT: Record<LiveStatus, [label: string, color: string]> = {
+  open: ["Live", "bg-[#22e05a]"],
+  connecting: ["Reconnecting", "bg-warn"],
+  down: ["Offline", "bg-bad"],
+};
+
+/** The state of the server's event stream, as a colour and a tooltip. */
+function LiveDot() {
+  const [label, color] = LIVE_DOT[useLiveStatus()];
+  return <span role="img" aria-label={label} title={label} className={cn("mx-1 inline-block size-2 shrink-0 rounded-full", color)} />;
+}
+
+const CI_ORDER: MainCiState[] = ["green", "red", "running", "optional"];
+
+/** Main CI of every repo at a glance: one dot and count per state, linking to the Main CI page. */
+function MainCiDots() {
+  const { data } = useQuery("progress", (api) => api.progress());
+  const summary = data?.mainCi;
+  if (!summary) return null;
+  const shown = CI_ORDER.filter((s) => s === "green" || summary[s] > 0);
   return (
-    <span role="status" className="flex shrink-0 items-center gap-1.5 px-2 text-xs text-warn">
-      <span className="size-2 rounded-full bg-warn" /> {status === "down" ? "Offline" : "Reconnecting"}
-    </span>
+    <Link to="/main-ci" className="flex shrink-0 items-center gap-1.5 px-1 text-xs text-ink/60 hover:text-ink" aria-label="Main CI" title="Main CI">
+      <HeartbeatIcon className="text-sm" />
+      {shown.map((s) => (
+        <span key={s} className="flex items-center gap-0.5" title={`${MAIN_CI_LABEL[s]}: ${summary[s]}`}>
+          <span className={cn("size-1.5 rounded-full", MAIN_CI_DOT[s])} />
+          <span className="num font-medium text-ink">{summary[s]}</span>
+        </span>
+      ))}
+    </Link>
   );
 }
 
