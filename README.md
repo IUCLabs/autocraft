@@ -214,4 +214,4 @@ The mock API serves fixture data; pick the role with `?as=operator|maintainer|vi
 
 ## License
 
-AutoCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+AutoCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. The ArtCraft mark in `web/public` is not covered; see [LICENSE-brand.txt](LICENSE-brand.txt).
