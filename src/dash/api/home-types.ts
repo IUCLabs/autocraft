@@ -7,7 +7,7 @@ export const ITEM_PHASES: readonly ItemPhase[] = ["Triage", "Waiting for a perso
 
 export type ProblemKind = "stopped" | "health" | "stuck" | "gave-up";
 export interface HomeProblem { kind: ProblemKind; title: string; detail: string; to: string }
-export type NeedKind = DecisionKind | "security";
+export type NeedKind = DecisionKind | "security" | "feedback" | "stopped";
 export interface HomeNeed { id: string; kind: NeedKind; repo: RepoName; number: number | null; title: string; recommendation: string | null; askedAt: string; itemKind: ItemKind | null; to: string }
 export interface HomeDone { at: string; what: "merged" | "closed" | "review posted"; repo: RepoName; number: number; title: string; kind: ItemKind }
 export interface Home {

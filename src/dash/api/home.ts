@@ -7,7 +7,7 @@ import { SNOOZED_SQL, optionsOf, type DecisionRow } from "../../decisions.ts";
 import type { Req } from "../types.ts";
 import { inRepos, withoutHidden } from "./decisions.ts";
 import { healthOf } from "./now.ts";
-import { stopped } from "./needs.ts";
+import { needs as needsPage, stopped } from "./needs.ts";
 import { canSeeInternals } from "./staff.ts";
 import { excludeHidden, hiddenRepos } from "./visible.ts";
 import { ITEM_PHASES, PHASE_SQL, type Home, type HomeDone, type HomeNeed, type HomeProblem, type ItemPhase, type NeedKind } from "./home-types.ts";
@@ -28,17 +28,18 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
   return out;
 }
 
-/** Open decisions and high or critical findings still new, as the needs list shows them. `total` and `byKind` of decisions equal the Needs page's decision count. */
+/** `total` is the nav badge's number: decisions, unanswered feedback and stopped items. `oldest` lists decisions and, for staff, high or critical findings still new (not in the total). */
 async function needs(db: DatabaseSync, req: Req, hidden: string[], staff: boolean, deps: Deps): Promise<Home["needs"]> {
   const params: Record<string, string> = {};
   const hide = withoutHidden(hidden, params);
   const where = `answer IS NULL AND NOT ${SNOOZED_SQL}${hide ? ` AND ${hide}` : ""}`;
   const byKind: Partial<Record<NeedKind, number>> = {};
-  let total = 0;
-  for (const r of db.prepare(`SELECT kind, COUNT(*) AS n FROM decisions WHERE ${where} GROUP BY kind`).all(params) as { kind: NeedKind; n: number }[]) {
-    byKind[r.kind] = r.n;
-    total += r.n;
-  }
+  for (const r of db.prepare(`SELECT kind, COUNT(*) AS n FROM decisions WHERE ${where} GROUP BY kind`).all(params) as { kind: NeedKind; n: number }[]) byKind[r.kind] = r.n;
+  // The Needs page's own counts, so the total is the nav badge's number for this user.
+  const { counts } = await needsPage(db, req);
+  const total = counts.decisions + counts.feedback + counts.stopped;
+  if (counts.feedback) byKind.feedback = counts.feedback;
+  if (counts.stopped) byKind.stopped = counts.stopped;
   if (!staff) return { total, byKind, oldest: [] };
 
   // Maintainers are asked for the decisions they may give feedback on or settle.
