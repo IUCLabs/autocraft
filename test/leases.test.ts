@@ -32,7 +32,7 @@ test("fixup and cifix on one PR: the second job skips it, and a lease of an ende
   as(cifix, "cifix");
   assert.equal(leaseItem(db, "pr:r#1", (l) => lines.push(l)), null);
   assert.equal(lines.length, 1);
-  assert.equal(leaseSkips(), 1, "a lease skip is counted, so the job is not recorded as idle");
+  assert.equal(leaseSkips(), 1, "a lease skip is counted for the job record");
   assert.ok(leaseItem(db, "pr:r#2", () => {}), "another PR is free");
   as(fixup, "fixup");
   assert.ok(take(db, "pr:r#1", fixup, "fixup"), "the holder may take it again");

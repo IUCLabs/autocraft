@@ -85,8 +85,8 @@ export async function execJob(id: number): Promise<number> {
   try {
     const summary = await step.run(ctx);
     saveUsage();
-    // Items skipped for a lease are work left for a later job: the job is not idle, so the planner tries again once the holder ends.
-    if (leaseSkips()) db.prepare("UPDATE jobs SET acted = COALESCE(acted, 0) + ? WHERE id = ?").run(leaseSkips(), id);
+    // Items skipped for a lease are work left for a later job: the planner retries once no job holds a lease (unchangedSinceIdle).
+    if (leaseSkips()) db.prepare("UPDATE jobs SET lease_skips = ? WHERE id = ?").run(leaseSkips(), id);
     db.prepare("UPDATE jobs SET summary = ? WHERE id = ?").run(oneLine(summary), id);
     console.log(`${new Date().toISOString()} done: ${summary}`);
     return 0;

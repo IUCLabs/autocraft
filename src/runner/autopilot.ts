@@ -168,10 +168,10 @@ const limitsSig = (db: DatabaseSync): string =>
 
 const repoOf = (c: Candidate): string | null => (typeof c.params.repo === "string" ? c.params.repo : null);
 
-type JobEnd = { id: number; endedAt: string; state: string; items: number | null; acted: number | null };
+type JobEnd = { id: number; endedAt: string; state: string; items: number | null; acted: number | null; lease_skips: number | null };
 
 function lastJobEnd(db: DatabaseSync, step: string, repo: string | null, requestedBy?: string): JobEnd | undefined {
-  return db.prepare(`SELECT id, ended_at AS endedAt, state, items, acted FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?)
+  return db.prepare(`SELECT id, ended_at AS endedAt, state, items, acted, lease_skips FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?)
     AND ended_at IS NOT NULL AND (? IS NULL OR requested_by = ?) AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT 1`)
     .get(step, repo, repo, requestedBy ?? null, requestedBy ?? null, RUNNER_STOPPED) as JobEnd | undefined;
 }
@@ -903,6 +903,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
 function unchangedSinceIdle(db: DatabaseSync, step: string, repo: string | null, fp: string): boolean {
   const last = lastJobEnd(db, step, repo, AUTOPILOT_USER);
   if (!last || last.state !== "done" || !wasIdle(last)) return false;
+  // A job that skipped items another job was working retries once no running job holds a lease. While one does, the step stays parked, so the planner does not queue it in a loop.
+  if (last.lease_skips && !db.prepare("SELECT 1 FROM work_leases l JOIN jobs j ON j.id = l.job_id WHERE j.state = 'running' LIMIT 1").get()) return false;
   const rec = fpRecord(db, step, repo);
   if (!rec || rec.job !== last.id || rec.fp !== fp) return false;
   return !((releasedAt(db, step) ?? "") > last.endedAt);
