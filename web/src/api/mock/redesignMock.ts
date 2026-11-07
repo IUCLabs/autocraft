@@ -3,6 +3,8 @@ import type { Api } from "../client";
 import type { ChoiceCore, ConversationCard, Decision, DecisionChoices, FindingAction, FindingRow, FindingSummary, FindingView, Home, ItemPhase, ItemStatusRow, SecurityGroup, User } from "../types";
 import { findingActions } from "../../lib/security";
 import { decisionPath } from "../../lib/links";
+import { setClock } from "../../lib/format";
+import { realData } from "./realStore";
 import { FINDING_HISTORY_11, FIX_ROUNDS_11, at, findingStatus, itemPageFor, statusRows } from "./redesignData";
 
 const wait = <T,>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -20,6 +22,8 @@ export type RedesignApi = Pick<Api, "home" | "itemPage" | "itemStatusList" | "se
 
 export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "security" | "item">): RedesignApi {
   const staff = me.role !== "viewer";
+  const real = realData();
+  if (real) setClock(() => Date.parse(real.exportedAt));
   const rowOf = (f: FindingSummary, note: string | null): FindingRow => {
     const attempts = ATTEMPTS[f.number] ?? 0;
     return { repo: f.repo, number: f.number, title: f.title, severity: f.severity, state: f.state, urgent: f.urgent, area: f.area, attempts, status: findingStatus(f.state, attempts, note), updatedAt: f.updatedAt };
@@ -76,7 +80,7 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       });
     },
     itemPage: async (repo, number) => {
-      const p = itemPageFor(repo, number);
+      const p = real?.pages.find((x) => x.repo === repo && x.number === number) ?? itemPageFor(repo, number);
       if (p) return wait(me.role === "viewer" ? { ...p, reviews: { latest: p.reviews.latest && { ...p.reviews.latest, fixes: [], risks: [], claims: [] }, earlier: [] }, history: p.history.map((h) => ({ ...h, calls: [] })) } : p);
       const it = await base.item(repo, number);
       return wait({
@@ -87,11 +91,15 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       });
     },
     async itemStatusList(f) {
-      const all: ItemStatusRow[] = statusRows();
+      const all: ItemStatusRow[] = [
+        ...(real?.rows ?? []),
+        ...statusRows().filter((r) => !real?.rows.some((x) => x.repo === r.repo && x.number === r.number)),
+      ];
       const q = f.q?.trim().toLowerCase();
       const base1 = all.filter((r) => (!f.kind || r.kind === f.kind) && (!f.repo?.length || f.repo.includes(r.repo)) && (!q || `${r.repo}#${r.number} ${r.title}`.toLowerCase().includes(q)));
       const byPhase = Object.fromEntries(PHASES.map((p) => [p, base1.filter((r) => r.status.phase === p).length])) as Record<ItemPhase, number>;
-      const rows = base1.filter((r) => !f.phase || r.status.phase === f.phase).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const isReal = (r: ItemStatusRow) => !!real?.rows.some((x) => x.repo === r.repo && x.number === r.number);
+      const rows = base1.filter((r) => !f.phase || r.status.phase === f.phase).sort((a, b) => Number(isReal(b)) - Number(isReal(a)) || b.updatedAt.localeCompare(a.updatedAt));
       return wait({ rows, byPhase, total: rows.length });
     },
     async securityList() {
@@ -100,6 +108,8 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       return wait({ groups: GROUPS.map((group) => ({ group, rows: rows.filter((r) => GROUP[r.state] === group).sort((a, b) => rank[a.severity] - rank[b.severity] || a.number - b.number) })).filter((g) => g.rows.length) });
     },
     async findingPage(repo, number) {
+      const rf = staff ? real?.findings.get(`${repo}#${number}`) : undefined;
+      if (rf) return wait(rf);
       const finding = await base.security.finding(repo, number);
       const attempts = ATTEMPTS[number] ?? 0;
       const failed = attempts > 0;
