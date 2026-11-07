@@ -1,7 +1,12 @@
 # One image for the dashboard, the runner and the one-shot sync and backup commands.
 # Build from the repository root:  docker build -f deploy/container/Dockerfile -t autocraft .
 # The command picks the process: dashboard | runner | sync | backup | (any `autocraft` subcommand).
-ARG NODE_IMAGE=node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
+# Base image: a Docker Hardened Image for Node 24 on Debian 13. The dev variant is
+# deliberate: this image ships bash, installs the pipeline's tools (git, gh,
+# bubblewrap, sqlite3, zstd) with apt, and starts every process through a bash
+# entrypoint, none of which the runtime variant carries. Pulling it needs a
+# `docker login dhi.io`; CI passes Docker Hub credentials to do that.
+ARG NODE_IMAGE=dhi.io/node:24-debian-dev
 
 FROM ${NODE_IMAGE} AS web
 RUN npm install -g pnpm@11.28.10

@@ -26,6 +26,8 @@ jobs:
         registry.digitalocean.com/artcraft/autocraft
         ghcr.io/storytold/autocraft
       dockerfile: deploy/container/Dockerfile
+      # The image is based on dhi.io/node, which needs a Docker Hub login.
+      dhi-login: true
       # The dashboard shows this commit on its prompts page; there is no .git in
       # the image.
       build-args: |
