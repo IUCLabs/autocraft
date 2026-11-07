@@ -14,9 +14,10 @@ import { useUser } from "../../shell/UserContext";
 import { KIND_ICON } from "../decisions/parts";
 import type { ViewProps } from "../../registry/types";
 
-const NEED_LABEL: Record<NeedKind, string> = { merge: "Merge?", scope: "Scope", duplicate: "Duplicates", close: "Close", split: "Split", other: "Other", security: "Security" };
-const NEED_ICON: Record<NeedKind, Icon> = { ...KIND_ICON, security: ShieldWarningIcon };
-const KIND_ORDER: NeedKind[] = ["merge", "security", "scope", "duplicate", "close", "split", "other"];
+const NEED_LABEL: Record<NeedKind, string> = { merge: "Merge?", scope: "Scope", duplicate: "Duplicates", close: "Close", split: "Split", other: "Other", security: "Security", feedback: "Feedback", stopped: "Stopped" };
+const NEED_ICON: Record<NeedKind, Icon> = { ...KIND_ICON, security: ShieldWarningIcon, feedback: ChatTeardropTextIcon, stopped: XCircleIcon };
+const KIND_ORDER: NeedKind[] = ["merge", "security", "scope", "duplicate", "close", "split", "other", "feedback", "stopped"];
+const NEED_TO: Partial<Record<NeedKind, string>> = { security: "/security", feedback: "/needs?tab=feedback", stopped: "/needs?tab=stopped" };
 const SHOWN: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed"];
 const PHASE_LABEL: Partial<Record<ItemPhase, string>> = { "Waiting for a person": "Waiting", Merged: "Merged today", Closed: "Closed today" };
 const DONE_LABEL: Record<HomeDone["what"], string> = { merged: "Merged", closed: "Closed", "review posted": "Review posted" };
@@ -66,7 +67,7 @@ export function HomeView(_: ViewProps) {
                 const rows = needs.oldest.filter((n) => n.kind === k);
                 return (
                   <div key={k}>
-                    <Link to={k === "security" ? "/security" : `/needs?kind=${k}`} className="flex min-h-9 items-center gap-2 border-t border-line text-xs text-ink/60 hover:text-ink max-md:min-h-11">
+                    <Link to={NEED_TO[k] ?? `/needs?kind=${k}`} className="flex min-h-9 items-center gap-2 border-t border-line text-xs text-ink/60 hover:text-ink max-md:min-h-11">
                       {NEED_LABEL[k]} <span className="num font-medium text-ink">{needs.byKind[k]}</span>
                       <CaretRightIcon className="ml-auto text-ink/30" />
                     </Link>
