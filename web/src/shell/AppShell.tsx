@@ -90,7 +90,7 @@ export function AppShell() {
           <button id="nav-toggle" aria-label="Open navigation" onClick={() => setNavOpen(true)} className="flex size-11 shrink-0 items-center justify-center text-ink/70">
             <ListIcon className="text-[20px]" />
           </button>
-          <Wordmark />
+          <NavLink to="/" aria-label="AutoCraft home" className="flex size-11 shrink-0 items-center justify-center"><Logo size={20} /></NavLink>
           <div className="flex-1" />
           <MainCiDots />
           <LiveDot />
