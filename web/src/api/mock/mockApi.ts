@@ -13,6 +13,8 @@ import { createConversationMock } from "./conversationMock";
 import { createSecurityMock } from "./securityMock";
 import { createRedesignMock, withFindingChoices, type RedesignApi } from "./redesignMock";
 import { createBuildMock } from "./buildMock";
+import { realData } from "./realStore";
+import { withRealDecisions } from "./realDecisions";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
 import { semanticHits, similarFor } from "./similarFixtures";
@@ -340,5 +342,6 @@ export function createMockApi(): Api {
     semanticSearch: (q) => wait(semanticHits(q), 90),
     work: (f) => wait(workList(f), 60),
   };
-  return { ...api, ...createRedesignMock(me, api), conversations: withFindingChoices(api.conversations, api, me, changed) };
+  const full = { ...api, ...createRedesignMock(me, api), conversations: withFindingChoices(api.conversations, api, me, changed) };
+  return withRealDecisions(full, realData());
 }

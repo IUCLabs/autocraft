@@ -1,6 +1,7 @@
 // Maps real dashboard payloads (the item API, its trace, review history, plan rows) to the redesign's item page shapes.
 // This is the derivation the server will do once `item_plans.view.status`, review triggers and write records exist;
 // every rule that guesses is marked. Pure TypeScript: it runs in the browser on a JSON export.
+import type { RealDecision } from "./realDecisions";
 import type {
   FindingPageData, GithubEvent, GithubSide, HistoryCall, HistoryEntry, HistoryKind, ItemPageData, ItemPhase, ItemState, ItemStatus, ItemStatusRow,
   OpusReviewEntry, ResultCard, ResultTone, ReviewTrigger, ReviewVerdict, CiState, FindingView,
@@ -11,10 +12,11 @@ interface TraceEv { id: string; kind: string; at: string; head: string | null; a
 export interface RealItem {
   repo: string; number: number;
   item: Json; trace: { events: TraceEv[] };
+  decision?: Json; choices?: Json | null; conversation?: { turns?: Json[] };
   plan: Json[]; planHistory: Json[]; reviewHistory: Json[]; verifications: Json[];
 }
 export interface RealExport { exportedAt: string; items: RealItem[]; findings: { repo: string; number: number; finding: FindingView }[] }
-export interface RealPages { exportedAt: string; pages: ItemPageData[]; rows: ItemStatusRow[]; findings: Map<string, FindingPageData> }
+export interface RealPages { exportedAt: string; pages: ItemPageData[]; rows: ItemStatusRow[]; findings: Map<string, FindingPageData>; decisionOf: Map<string, RealDecision> }
 
 const short = (s: string | null | undefined) => (s ?? "").slice(0, 7);
 const json = <T,>(s: unknown, fallback: T): T => { if (typeof s !== "string") return (s as T) ?? fallback; try { return JSON.parse(s) as T; } catch { return fallback; } };
@@ -238,7 +240,7 @@ export function findingPageOf(f: FindingView, now: string): FindingPageData {
   const [phase, w, next] = waiting[f.state] ?? ["Closed", null, null];
   const kinds: Record<string, string> = { area: "Area scan", verify: "Verification", model: "Threat model", fix: "Fix" };
   return {
-    finding: f, attempts: 0, rounds: [], costUsd: f.timeline.reduce((s, c) => s + (c.costUsd ?? 0), 0),
+    finding: f, decision: null, choices: null, attempts: 0, rounds: [], costUsd: f.timeline.reduce((s, c) => s + (c.costUsd ?? 0), 0),
     status: { phase, waiting: w, next, since: f.updatedAt ?? now },
     history: f.timeline.map((c, i) => ({ id: `t${i}`, at: c.at, step: kinds[c.kind] ?? c.kind, outcome: c.ok ? "done" : "failed", model: "Opus", costUsd: c.costUsd, kind: "model" as const, calls: [], writeId: null })),
   };
@@ -249,5 +251,12 @@ export function convertReal(x: RealExport): RealPages {
   const pages = ok.map(pageOf);
   const rows = pages.map((p, i): ItemStatusRow => ({ repo: p.repo, number: p.number, kind: p.kind, state: p.state, title: p.title, status: p.status, updatedAt: ok[i]!.item.updatedAt }));
   const findings = new Map(x.findings.filter((f) => f.finding && !("error" in f.finding)).map((f) => [`${f.repo}#${f.number}`, findingPageOf(f.finding, x.exportedAt)]));
-  return { exportedAt: x.exportedAt, pages, rows, findings };
+  // Open questions: the decision (only when it has an id; answered items export an empty object), its choices and the conversation.
+  const decisionOf = new Map<string, RealDecision>();
+  for (const i of ok) {
+    const d = i.decision && i.decision.id ? (i.decision as unknown as RealDecision["decision"]) : null;
+    const turns = (i.conversation?.turns ?? []) as RealDecision["turns"];
+    if (d || i.choices || turns.length) decisionOf.set(`${i.repo}#${i.number}`, { decision: d, choices: (i.choices && !i.choices.error ? i.choices : null) as RealDecision["choices"], turns });
+  }
+  return { exportedAt: x.exportedAt, pages, rows, findings, decisionOf };
 }

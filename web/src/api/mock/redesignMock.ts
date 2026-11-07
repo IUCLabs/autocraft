@@ -109,7 +109,7 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
     },
     async findingPage(repo, number) {
       const rf = staff ? real?.findings.get(`${repo}#${number}`) : undefined;
-      if (rf) return wait(rf);
+      if (rf) return wait({ ...rf, ...(await decide(rf.finding, 0)) });
       const finding = await base.security.finding(repo, number);
       const attempts = ATTEMPTS[number] ?? 0;
       const failed = attempts > 0;
