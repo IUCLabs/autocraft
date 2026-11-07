@@ -62,6 +62,8 @@ const OBJECTS: [string, string[]][] = [
   ["/api/classifiers", ["runs", "run", "overall", "confusion"]],
   ["/api/build/summary", ["queued", "running", "slots", "free", "online"]],
   ["/api/repos/all", ["name", "tracked", "openPrs", "openIssues", "pipeline", "merging", "pushing", "commenting"]],
+  ["/api/home", ["needs", "problems", "phases", "running", "progress", "done"]],
+  ["/api/items/status", ["rows", "byPhase", "total", "nextCursor"]],
   ["/api/search?q=PR", ["repo", "number", "kind", "title", "state"]],
 ];
 

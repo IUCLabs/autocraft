@@ -14,6 +14,8 @@ import { itemState } from "./decisions.ts";
 import { flowMembers } from "./flow.ts";
 import { queueSlots } from "../../rank/position.ts";
 import { excludeHidden, hiddenRepos, visibleRepos } from "./visible.ts";
+import { statusFromItem } from "../../core/item-status.ts";
+import { ITEM_PHASES, PHASE_SQL, type ItemPhase, type ItemStatus, type ItemStatusList, type ItemStatusRow } from "./home-types.ts";
 
 const HAS_WORD = /[\p{L}\p{N}]/u;
 const quote = (s: string) => `"${s.replace(/"/g, "")}"`;
@@ -374,4 +376,60 @@ export async function quickSearch(db: DatabaseSync, req: Req): Promise<SearchHit
     rows = [...rows, ...text.filter((r) => !have.has(`${r.repo}#${r.number}`))].slice(0, 20);
   }
   return rows.map(hitOf);
+}
+
+// ---- the Items status list ----------------------------------------------------
+
+type StatusRowRaw = { repo: string; number: number; kind: string; state: string; title: string | null; updated_at: string | null; merged_at: string | null; closed_at: string | null; view: string | null };
+
+/** `GET /api/items/status`: every item with its status line, newest update first. Filters: q, repo, kind (as /api/items), phase, cursor, limit. `byPhase` and `total` count every match except the phase filter. */
+export async function statusList(db: DatabaseSync, req: Req): Promise<ItemStatusList> {
+  const phase = req.query.get("phase");
+  if (phase && !(ITEM_PHASES as readonly string[]).includes(phase)) throw new HttpError(400, "unknown phase");
+  const only = new URLSearchParams();
+  for (const k of ["q", "kind"]) if (req.query.get(k)) only.set(k, req.query.get(k)!);
+  for (const r of list(req, "repo")) only.append("repo", r);
+  only.set("state", "all");
+  const b = build(db, { ...req, query: only }, await hiddenRepos(db, req));
+  const limit = Math.min(100, Math.max(1, Number(req.query.get("limit")) || 50));
+  const from = (cols: string) => (b.text ? `WITH ${HIT_IDS} SELECT ${cols} FROM hits h JOIN items i ON i.rowid = h.rid` : `SELECT ${cols} FROM items i`) +
+    " LEFT JOIN main.item_plans p ON p.repo = i.repo AND p.number = i.number";
+  const whereSql = (w: string[]) => (w.length ? ` WHERE ${w.join(" AND ")}` : "");
+
+  const byPhase = Object.fromEntries(ITEM_PHASES.map((x) => [x, 0])) as Record<ItemPhase, number>;
+  for (const r of db.prepare(from(`${PHASE_SQL} AS phase, COUNT(*) AS n`) + whereSql(b.where) + " GROUP BY 1").all(b.params) as { phase: ItemPhase; n: number }[])
+    if (r.phase in byPhase) byPhase[r.phase] += r.n;
+  const total = ITEM_PHASES.reduce((a, x) => a + byPhase[x], 0);
+
+  const where = [...b.where];
+  const params: Record<string, SQLInputValue> = { ...b.params, limit: limit + 1 };
+  if (phase) {
+    where.push(`${PHASE_SQL} = :phase`);
+    params.phase = phase;
+  }
+  const cursor = req.query.get("cursor");
+  if (cursor) {
+    const m = /^(.*)\|(.+)\|(\d+)$/.exec(cursor);
+    if (!m) throw new HttpError(400, "bad cursor");
+    where.push("(COALESCE(i.updated_at, '') < :cu OR (COALESCE(i.updated_at, '') = :cu AND (i.repo > :cr OR (i.repo = :cr AND i.number < :cn))))");
+    params.cu = m[1]!;
+    params.cr = m[2]!;
+    params.cn = Number(m[3]);
+  }
+  const got = db.prepare(from("i.repo, i.number, i.kind, i.state, i.title, i.updated_at, i.merged_at, i.closed_at, p.view") + whereSql(where) +
+    " ORDER BY COALESCE(i.updated_at, '') DESC, i.repo, i.number DESC LIMIT :limit").all(params) as StatusRowRaw[];
+  const page = got.slice(0, limit);
+  const last = page[page.length - 1];
+  return {
+    total, byPhase,
+    rows: page.map((r): ItemStatusRow => {
+      let status: ItemStatus | undefined;
+      try { status = r.view ? (JSON.parse(r.view) as { status?: ItemStatus }).status : undefined; } catch { /* a malformed view counts as none */ }
+      return {
+        repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state), title: r.title ?? "",
+        status: status ?? statusFromItem(r, r.updated_at ?? ""), updatedAt: r.updated_at ?? "",
+      };
+    }),
+    nextCursor: got.length > limit && last ? `${last.updated_at ?? ""}|${last.repo}|${last.number}` : null,
+  };
 }
