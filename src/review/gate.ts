@@ -56,7 +56,7 @@ export function headCi(db: DatabaseSync, repo: string, number: number, head: str
   return o === "pending" ? "pending" : o === "failure" ? "failure" : "ok";
 }
 
-const nextMidnight = (ms: number): number => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1); };
+export const nextUtcMidnight = (ms: number): number => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1); };
 
 /**
  * The hold check of every PR of one planning pass: statements are prepared once. A hold is what keeps the next review of a PR at `head`
@@ -105,7 +105,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
     if (ours?.complete && ours.commits.length) return null;
     const h = history.get({ today, repo, number }) as { n: number; last: string | null };
     const r = runs.get({ today, repo, number }) as { n: number; last: string | null };
-    if (Math.max(h.n, r.n) >= MAX_REVIEWS_PER_DAY) return { kind: "cap", wait: "review cap for today reached; next on a maintainer's request or tomorrow", until: nextMidnight(nowMs) };
+    if (Math.max(h.n, r.n) >= MAX_REVIEWS_PER_DAY) return { kind: "cap", wait: "review cap for today reached; next on a maintainer's request or tomorrow", until: nextUtcMidnight(nowMs) };
     if (interval) {
       // Successful reviews only: failed calls count toward the cap, and the failure backoff spaces their retries.
       const until = h.last ? Date.parse(h.last) + interval : 0;

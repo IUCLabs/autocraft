@@ -17,6 +17,7 @@ import { headWasUnsure, mergeDecisionId } from "../merge/queue.ts";
 import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
+import { reviewAfterBaseMerge } from "./own-diff.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { carriedOutcome, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
@@ -153,15 +154,20 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   }
   let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
   const earlier = earlierOpus(db, c);
-  // A merge commit of ours carries the base branch's changes since the earlier head; the PR's own diff excludes them, so a delta would show unrelated changes.
-  const ourMerge = !!db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged'").get(repo, c.number, c.head_oid);
-  if (earlier && !ourMerge) {
+  // A merge commit of ours carries the base branch's changes since the earlier head, so a delta of the heads would show unrelated changes: the delta is taken between the PR's own diffs.
+  const merged = db.prepare("SELECT from_head, own_diff, own_delta FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' ORDER BY rowid DESC").get(repo, c.number, c.head_oid) as { from_head: string; own_diff: string | null; own_delta: string | null } | undefined;
+  if (earlier && !merged) {
     const delta = await deps.fetchDelta(repo, earlier.head, c.head_oid);
     if (delta.ok) {
       let dd = codeDiff(delta.text);
       if (!dd.files.length && dd.testsOmitted.length) dd = codeDiff(delta.text, true);
       mode = "delta"; diff = dd.text; base = earlier.head;
     } else log(`  ${refOf(c)}: delta since ${earlier.head.slice(0, 7)} unavailable (${delta.error}); full diff`);
+  } else if (earlier && merged?.own_delta && reviewAfterBaseMerge(merged.own_diff) === "delta" && merged.from_head === earlier.head && earlier.sure && (earlier.verdict === "take" || earlier.verdict === "take-fix")) {
+    // The delta was computed from the local commits when the merge was made; the diff of the earlier head is never fetched by number.
+    let dd = codeDiff(merged.own_delta);
+    if (!dd.files.length && dd.testsOmitted.length) dd = codeDiff(merged.own_delta, true);
+    if (dd.text) { mode = "delta"; diff = dd.text; base = earlier.head; }
   }
   if (diff.length > deps.maxChars) return { kind: "large", mode, base };
   let discussion: DiscussionEntry[], snap: Snapshot;

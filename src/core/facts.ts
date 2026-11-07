@@ -40,7 +40,7 @@ import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
 import { postSource } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
-import { reviewHolds } from "../review/gate.ts";
+import { nextUtcMidnight, reviewHolds } from "../review/gate.ts";
 import { scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
 import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf } from "./rules.ts";
@@ -144,6 +144,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const brokeAt = brokeHeads(db, opts.repo);
   // carriedReview only carries our own plain fix-up (no carry or pre-merge source) as the head: skip its compiles for other PRs.
   const ourFixupHead = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' AND source IS NULL LIMIT 1");
+  const ourSameDiffMerge = db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' AND own_diff = 'same' LIMIT 1");
   // A head we pushed, or the head our push moved off (the mirror may still show it, and our own comment makes its review stale).
   const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND (to_oid = ?3 OR from_oid = ?3)");
   const pushedOffRows = db.prepare("SELECT at FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND from_oid = ?3 AND to_oid <> ?3");
@@ -302,7 +303,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
     };
     base.pushChain = chain;
-    if (r.state === "OPEN" && head && head !== r.r_head && ourFixupHead.get(r.repo, r.number, head) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
+    if (r.state === "OPEN" && head && head !== r.r_head && (ourFixupHead.get(r.repo, r.number, head) || ourSameDiffMerge.get(r.repo, r.number, head)) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     base.sensitive = sensitiveAt(r.repo, r.number, r.r_head);
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
@@ -359,7 +360,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       if (defects.length) base.premergeFixUsed = premergeFixUsed(db, r.repo, r.number);
     }
     if (base.mergeable === "CONFLICTING" && r.base_ref) {
-      base.conflict = { bucket: conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: base.pushable }, { push: rf.f.pushApproved, comment: rf.f.commentApproved }), base: r.base_ref, baseOk: BASE_NAME.test(r.base_ref) };
+      const bucket = conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: base.pushable }, { push: rf.f.pushApproved, comment: rf.f.commentApproved }, now);
+      base.conflict = { bucket, base: r.base_ref, baseOk: BASE_NAME.test(r.base_ref), ...(bucket === "capped" ? { until: nextUtcMidnight(now) } : {}) };
     }
     if (r.r_verdict === "take-fix") {
       base.fixup = { fixes: parseFixes(r.r_fixes).length, attempts: attemptsOf(db, r.repo, r.number), recorded: (fixupRows.all(r.repo, r.number, r.r_head) as { state: string }[]).map((x) => x.state) };
