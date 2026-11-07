@@ -40,9 +40,9 @@ export function conflictBucket(db: DatabaseSync, p: { repo: string; number: numb
   const stuck = () => (has("asked") ? "asked" : has("comment-failed") ? "held" : approvals.comment ? "ask" : "held");
   if (has("skipped") || has("push-denied")) return stuck();
   if (has("linting")) return "linting";
-  if (conflictMergesToday(db, p.repo, p.number, nowMs) >= CONFLICT_MAX_MERGES_PER_PR_PER_DAY) return "capped";
   if (!p.pushable || has("cannot-push")) return stuck();
   if (conflictTries(db, p.repo, p.number, p.head) >= MAX_CONFLICT_TRIES) return stuck();
+  if (conflictMergesToday(db, p.repo, p.number, nowMs) >= CONFLICT_MAX_MERGES_PER_PR_PER_DAY) return "capped";
   return approvals.push ? "merge" : "unapproved";
 }
 

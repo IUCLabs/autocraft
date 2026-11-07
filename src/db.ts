@@ -160,6 +160,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conflict_merges", "lint_round", "INTEGER"],
   // Whether the PR's own diff (the lines it adds and removes) is the same before and after the merge: same | changed; NULL when unknown.
   ["conflict_merges", "own_diff", "TEXT"],
+  // With own_diff = changed: the PR's changed and dropped hunks, as diff text, for a delta review.
+  ["conflict_merges", "own_delta", "TEXT"],
   ["main_fixes", "pr_number", "INTEGER"],
   ["main_fixes", "pr_url", "TEXT"],
   // A model patch waiting for its lint task (state linting): the patch, the files (JSON), the task, the round and `pending` | `requeued`.

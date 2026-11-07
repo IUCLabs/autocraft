@@ -16,7 +16,7 @@ import { ghAskComment, ghComment, ghEditComment, pushBranch, type Writer } from 
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { cachedDiff } from "../review/diff.ts";
-import { ownDiffKey } from "../review/own-diff.ts";
+import { changedHunks, hasBinary, ownDiffKey } from "../review/own-diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
@@ -86,12 +86,18 @@ function record(db: DatabaseSync, at: string, c: ConflictCandidate, state: strin
     .run(c.repo, c.number, at, state === "merged" ? `merged ${c.base} at ${short(c.head)}: ${files.length ? files.join(", ") : "no conflicts"}` : state === "asked" ? `asked the contributor to merge ${c.base} at ${short(c.head)}` : `conflict merge ${state} at ${short(c.head)}: ${reason}`);
 }
 
-/** Whether the PR's own diff (against the merge base) is the same lines before and after the merge, read from the local commits: no GitHub call, and no wait for GitHub to show the new head. Null when git cannot say. */
-async function ownDiffAfterMerge(git: Git, head: string, baseSha: string, commit: string): Promise<"same" | "changed" | null> {
+/**
+ * Whether the PR's own diff is unchanged by the merge, read from the local commits (no GitHub call, and no wait for GitHub to show the new head).
+ * Only a clean git merge is `same`: the key ignores line positions, so a model resolution may have moved PR lines. A binary file is `changed`.
+ * `delta` is what changed, for the review. Both are null when git cannot say.
+ */
+async function ownDiffAfterMerge(git: Git, head: string, baseSha: string, commit: string, resolved: boolean): Promise<{ ownDiff: "same" | "changed" | null; delta: string | null }> {
   try {
     const mb = (await git.must(["merge-base", head, baseSha])).trim();
-    return ownDiffKey(await git.diffText(mb, head)) === ownDiffKey(await git.diffText(baseSha, commit)) ? "same" : "changed";
-  } catch { return null; }
+    const before = await git.diffText(mb, head), after = await git.diffText(baseSha, commit);
+    if (!resolved && !hasBinary(before) && !hasBinary(after) && ownDiffKey(before) === ownDiffKey(after)) return { ownDiff: "same", delta: null };
+    return { ownDiff: "changed", delta: changedHunks(before, after) || null };
+  } catch { return { ownDiff: null, delta: null }; }
 }
 
 async function live(db: DatabaseSync, x: ConflictRun, c: ConflictCandidate): Promise<PrNode | null> {
@@ -336,7 +342,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       }
     }
     const commit = await git.commitMerge(tree, [head, baseSha], mergeMessage(c.base, pr.headRefName), { name: who.login, email: who.email });
-    const ownDiff = await ownDiffAfterMerge(git, head, baseSha, commit);
+    const own = await ownDiffAfterMerge(git, head, baseSha, commit, files.length > 0);
     const g = await guard(db, { repo: x.repo, number: c.number }, c.lint ? { kind: "lint", bucket: "conflict", head: c.head, source: "review" } : { kind: "conflict", bucket: "merge", head: c.head }, x.by, liveOf(db, x.d.querier));
     if ("refused" in g) { x.log(`  ${ref}: skipped: ${g.refused}`); return; }
     recordPushing(db, x.at(), c, files, baseSha, commit);
@@ -349,7 +355,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       return;
     }
     record(db, x.at(), c, "merged", null, files, baseSha, commit);
-    if (ownDiff) db.prepare("UPDATE conflict_merges SET own_diff = ? WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged'").run(ownDiff, x.repo, c.number, commit);
+    if (own.ownDiff) db.prepare("UPDATE conflict_merges SET own_diff = ?, own_delta = ? WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged'").run(own.ownDiff, own.delta, x.repo, c.number, commit);
     x.summary.pushed.push(ref);
     x.log(`  ${ref}: merged ${c.base} into the branch: ${short(commit)} on ${short(head)}${files.length ? `, resolved ${files.join(", ")}` : ""}`);
     const note: Note = files.length ? { by: "model", kind: "comment", model: CONFLICT.models[0] } : { by: "fixed" };

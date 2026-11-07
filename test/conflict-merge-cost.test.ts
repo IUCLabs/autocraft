@@ -5,7 +5,10 @@ import { connect } from "../src/db.ts";
 import { tmpdir } from "./world-db.ts";
 import { carriedReview } from "../src/review/carry.ts";
 import { changedHunks, ownDiffKey } from "../src/review/own-diff.ts";
+import { prepareOpusInput, type OpusDeps } from "../src/review/opus.ts";
 import { conflictBucket } from "../src/fixup/conflict-state.ts";
+
+process.env.AUTOCRAFT_DIFF_CACHE = join(tmpdir("conflict-cost-diffs"), "cache");
 
 const diff = (ctx: string, add: string) => `diff --git a/src/a.rs b/src/a.rs
 index 1111111..2222222 100644
@@ -49,4 +52,23 @@ test("a third merge of the base into one PR in a UTC day waits for the next day"
   ins("c", "d", "2026-11-04T02:00:00Z");
   assert.equal(p("d"), "capped");
   assert.equal(conflictBucket(db, { repo: "app", number: 1, head: "d", pushable: true }, { push: true, comment: true }, now + 5 * 3600_000), "merge", "next UTC day");
+});
+
+test("the review after our resolution reads the changed and dropped PR hunks, and a head with no recorded delta is reviewed in full", async () => {
+  const db = connect(join(tmpdir("conflict-delta"), "t.db"));
+  const at = "2026-11-04T10:00:00.000Z";
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, at, model, mode, verdict, sure, reason, seen_at) VALUES ('app', 1, 'E', ?, 'opus', 'full', 'take', 1, 'r', ?)`).run(at, at);
+  const before = `${diff("x", "let kept = 1;")}diff --git a/src/b.rs b/src/b.rs\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-old\n+dropped line\n`;
+  const after = diff("x", "let kept = 1;");
+  const delta = changedHunks(before, after);
+  assert.match(delta, /dropped line/, "the dropped hunk is shown");
+  db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, state, attempt, created_at, own_diff, own_delta) VALUES ('app', 1, 'E', 'H', 'merged', 1, ?, 'changed', ?)").run(at, delta);
+  db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, state, attempt, created_at, own_diff, own_delta) VALUES ('app', 1, 'E', 'H2', 'merged', 1, ?, 'changed', NULL)").run(at);
+  const deps: OpusDeps = { fetchDiff: async () => ({ ok: true, text: after }), fetchDelta: async () => ({ ok: false, tooLarge: false, error: "unused" }), model: "opus", maxChars: 120_000 };
+  const c = (head_oid: string) => ({ repo: "app", number: 1, title: "t", body: "b", author_association: null, head_oid, lines_changed: 2, size: "S" as const, score: null });
+  const d = await prepareOpusInput(db, "app", c("H"), deps, () => {});
+  assert.equal(d.kind === "ready" && d.mode, "delta");
+  assert.ok(d.kind === "ready" && d.input.diff.includes("dropped line"));
+  const f = await prepareOpusInput(db, "app", c("H2"), deps, () => {});
+  assert.equal(f.kind === "ready" && f.mode, "full", "an empty delta is not a delta");
 });
