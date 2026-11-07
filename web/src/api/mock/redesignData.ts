@@ -10,7 +10,7 @@ const status = (phase: ItemPhase, since: number, waiting: string | null, next: s
 
 const HEADER_1484: Partial<ItemPageHeader> = {
   labels: ["enhancement", "i18n", "needs-decision"], assignees: ["rhea-m"], autocraftAssigned: true,
-  discord: { count: 2, links: [{ url: "https://discord.example/channels/1/2/3", at: at(3 * H) }] },
+  discord: { count: 2, links: [{ url: "https://discord.example/channels/1/2/3", at: at(3 * H) }], signals: 1, signalLinks: [{ url: "https://discord.example/channels/1/2/3", at: at(3 * H) }] },
   queue: { stage: "Merge", tab: "merge", place: 3 }, tier: "whitelisted", size: "XL",
   releases: { reviewAgain: true, verifyAgain: true, fixAgain: false, batchAgain: true },
   preapproval: { id: 7, by: "rhea-m", at: at(4 * H), instructions: "Use load_pack for the dictionary, then merge when CI is green.", state: "ci", fromHead: "e6a09b1", head: "f21c0aa", reason: null, updatedAt: at(3 * H) },

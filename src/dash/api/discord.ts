@@ -9,6 +9,7 @@ import { HttpError } from "../server/util.ts";
 import { DISCORD_PRIVACY_PATH } from "../server/discord-privacy.ts";
 import { readKeyFile, type DiscordKeys } from "../../discord/keys.ts";
 import { countOf, linksOf } from "../../discord/store.ts";
+import { signalCountOf, signalLinks } from "../../discord/signals.ts";
 import { createLinkCode, linkedSince, listLinks, unlinkLogin, unlinkRow } from "../../discord/links.ts";
 import type { Req } from "../types.ts";
 
@@ -34,7 +35,8 @@ export const contactOf = (db: DatabaseSync): string =>
 
 /** Count for everyone who sees the item; message links only with the key. */
 export function discordOf(db: DatabaseSync, repo: string, n: number): DiscordInfo {
-  return { count: countOf(db, repo, n), links: linksOf(db, discordKeys(), repo, n) };
+  const keys = discordKeys();
+  return { count: countOf(db, repo, n), links: linksOf(db, keys, repo, n), signals: signalCountOf(db, repo, n), signalLinks: signalLinks(db, keys, repo, n) };
 }
 
 const operator = (req: Req): void => {

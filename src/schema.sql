@@ -1747,6 +1747,7 @@ CREATE TABLE IF NOT EXISTS discord_mentions (
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,
   sealed TEXT NOT NULL,
+  signal INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (msg_hash, repo, number)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS discord_mentions_item ON discord_mentions (repo, number);

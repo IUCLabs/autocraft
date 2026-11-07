@@ -126,6 +126,11 @@ function Header({ d }: { d: ItemPageData }) {
                 {h.discord.links[0] ? <a href={h.discord.links[0].url} target="_blank" rel="noopener noreferrer" className="hover:underline">Discord {h.discord.count}</a> : <>Discord {h.discord.count}</>}
               </Badge>
             )}
+            {h.discord && !!h.discord.signals && (
+              <Badge tone="accent" icon={<ChatsCircleIcon className="text-[12px]" />}>
+                {h.discord.signalLinks?.[0] ? <a href={h.discord.signalLinks[0].url} target="_blank" rel="noopener noreferrer" className="hover:underline">Asked about on Discord ×{h.discord.signals}</a> : <>Asked about on Discord ×{h.discord.signals}</>}
+              </Badge>
+            )}
           </div>
           {h.labels.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1.5">{h.labels.map((l) => <Badge key={l}>{l}</Badge>)}</div>}
         </div>
