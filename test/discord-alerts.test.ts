@@ -45,7 +45,8 @@ test("alerts: opt-in, a new decision reaches only people who may settle it, a pr
   // Mia may settle while maintainer writes are on, the app acts for her on the repo and her write permission is fresh.
   setMaintainerWrites(db, true);
   db.prepare("INSERT INTO settings (key, value) VALUES ('repo_identity:app', 'app')").run();
-  db.prepare("INSERT INTO repo_permissions (login, repo, permission, checked_at) VALUES ('mia', 'app', 'write', ?)").run(new Date().toISOString());
+  // The permission was read hours ago: it still counts, so alerts do not flap between dashboard visits.
+  db.prepare("INSERT INTO repo_permissions (login, repo, permission, checked_at) VALUES ('mia', 'app', 'write', ?)").run(new Date(Date.now() - 3 * 3_600_000).toISOString());
 
   const keys = new DiscordKeys("k".repeat(40));
   const rest = new FakeRest();

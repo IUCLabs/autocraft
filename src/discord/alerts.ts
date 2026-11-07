@@ -13,7 +13,7 @@ import type { Req, Role, User } from "../dash/types.ts";
 import { BACKLOG, HANDLED, WITHDRAWN_OPTION, getDecision, itemsOf, optionsOf, reposOf, SNOOZED_SQL, type DecisionRow } from "../decisions.ts";
 import { readSeqs } from "../live.ts";
 import { trackedNames } from "../repos.ts";
-import { canSettleCached, maintainerWritesOn } from "../settlers.ts";
+import { allAppIdentity, maintainerWritesOn } from "../settlers.ts";
 import type { ActDeps } from "../conversations/act.ts";
 import type { DiscordKeys } from "./keys.ts";
 import { loginOf } from "./links.ts";
@@ -56,11 +56,22 @@ const roleOf = (db: DatabaseSync, login: string): Role | null => {
 };
 
 /** The same rule as the dashboard's: an operator, or a maintainer while maintainer_writes is on, with write permission where the app acts for them. Read from cached permissions. */
+/**
+ * Who receives and keeps alerts: an operator, or a maintainer while maintainer_writes is on, the app acts for them on every repo and their last
+ * known permission on each is write or better. The permission has no age limit here (the cache is refreshed only by dashboard visits, and a
+ * message must not flap); a press checks it live.
+ */
+export function mayReceive(db: DatabaseSync, login: string, role: Role, repos: string[]): boolean {
+  if (role === "operator") return true;
+  if (role !== "maintainer" || !maintainerWritesOn(db) || !allAppIdentity(db, repos)) return false;
+  return repos.every((r) => !!db.prepare("SELECT 1 FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ('write', 'maintain', 'admin')").get(login, r));
+}
+
 export function mayAlert(db: DatabaseSync, login: string): boolean {
   const role = roleOf(db, login);
   if (role === "operator") return true;
   if (role !== "maintainer" || !maintainerWritesOn(db)) return false;
-  return trackedNames(db).some((r) => canSettleCached(db, login, role, [r]));
+  return trackedNames(db).some((r) => mayReceive(db, login, role, [r]));
 }
 
 export function setAlerts(db: DatabaseSync, keys: DiscordKeys, userId: string, channelId: string | null): void {
@@ -204,7 +215,7 @@ export class DecisionAlerts {
     for (const p of people) {
       const open = db.prepare(`SELECT * FROM decisions WHERE answer IS NULL AND NOT ${SNOOZED_SQL} AND asked_at >= (SELECT created_at FROM discord_alerts WHERE user_hash = ?) ORDER BY asked_at`).all(p.userHash) as DecisionRow[];
       const have = new Set((db.prepare("SELECT decision_id FROM discord_alert_msgs WHERE user_hash = ?").all(p.userHash) as { decision_id: string }[]).map((r) => r.decision_id));
-      const fresh = open.filter((d) => !have.has(d.id) && itemsOf(d).length > 0 && canSettleCached(db, p.login, p.role, reposOf(d)));
+      const fresh = open.filter((d) => !have.has(d.id) && itemsOf(d).length > 0 && mayReceive(db, p.login, p.role, reposOf(d)));
       if (!fresh.length) continue;
       let room = (this.#d.perHour ?? PER_HOUR) - Number((db.prepare("SELECT COUNT(*) AS n FROM discord_alert_msgs WHERE user_hash = ? AND (sealed IS NOT NULL OR decision_id LIKE 'summary:%') AND sent_at > ?").get(p.userHash, new Date(now - HOUR_MS).toISOString()) as { n: number }).n);
       const overflow: DecisionRow[] = [];
@@ -249,7 +260,10 @@ export class DecisionAlerts {
   /** Brings one message up to date: answered or withdrawn decisions lose their buttons; prepared or replaced choices change them. */
   async #refresh(m: MsgRow, p: Alerter): Promise<void> {
     const { db, keys, rest, log } = this.#d;
-    const forget = (): void => void db.prepare("DELETE FROM discord_alert_msgs WHERE decision_id = ? AND user_hash = ?").run(m.decision_id, m.user_hash);
+    const forget = (): void => {
+      this.#seen.delete(`${m.decision_id}|${m.user_hash}`);
+      db.prepare("DELETE FROM discord_alert_msgs WHERE decision_id = ? AND user_hash = ?").run(m.decision_id, m.user_hash);
+    };
     if (m.decision_id.startsWith("summary:")) return Date.parse(m.sent_at) < (this.#d.now ?? Date.now)() - 2 * HOUR_MS ? forget() : undefined;
     const d = getDecision(db, m.decision_id);
     const open = d && d.answer === null;
@@ -263,7 +277,7 @@ export class DecisionAlerts {
     let gone = false;
     if (open) {
       // Nothing to redo while the decision and its choices are as they were at the last pass.
-      const may = canSettleCached(db, p.login, p.role, reposOf(d));
+      const may = mayReceive(db, p.login, p.role, reposOf(d));
       const key = [may, d.answer, d.question, currentChoices(db, d.id)?.id, decisionStamp(db, d), m.choices_id, coresFor(db, d).map((c) => c.key).join()].join("|");
       const k = `${m.decision_id}|${m.user_hash}`;
       if (this.#seen.get(k) === key) return;
