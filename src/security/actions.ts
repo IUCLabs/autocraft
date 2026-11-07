@@ -182,6 +182,7 @@ async function startStep(db: DatabaseSync, repo: string, n: number, login: strin
   // Land after the advisory route starts over on the public fork: the advisory's private fork and its pull request are forgotten (ghsa_id stays).
   const reset: Record<string, null> = action === "land" && row.state === "awaiting-admin" ? { fork: null, fix_pr: null } : {};
   if (s.to && !advance(db, repo, n, s.from, s.to, { note: null, ...reset }, login)) throw new SecurityError(409, "the finding changed; reload and try again");
+  if (action === "fix") db.prepare("UPDATE security_findings SET fix_attempts = fix_attempts + 1, last_failure = NULL WHERE repo = ? AND number = ?").run(repo, n);
   try {
     const params: Record<string, string | number> = { repo, number: n, ...(action === "publish" && { cve: b.cve === true ? 1 : 0 }) };
     const job = await enqueue(db, s.step, params, login);
@@ -189,6 +190,7 @@ async function startStep(db: DatabaseSync, repo: string, n: number, login: strin
     db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(repo), job.id);
   } catch (e) {
     if (s.to) advance(db, repo, n, [s.to], row.state, { fork: row.fork, fix_pr: row.fix_pr });
+    if (action === "fix") db.prepare("UPDATE security_findings SET fix_attempts = ?, last_failure = ? WHERE repo = ? AND number = ?").run(row.fix_attempts, row.last_failure, repo, n);
     if (e instanceof JobError) throw new SecurityError(e.status, e.message);
     throw e;
   }

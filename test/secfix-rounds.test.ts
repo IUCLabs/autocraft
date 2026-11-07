@@ -123,6 +123,7 @@ describe("security fix rounds", () => {
     assert.ok(w.calls.some((c) => c.includes("update-ref") && c.includes(row.fix_ref!)));
     assert.ok(!w.calls.some((c) => /(^| )(push|send-pack)( |$)/.test(c)), "nothing is pushed");
     assert.deepEqual(rounds(n), [], "the rounds are forgotten when the fix ends");
+    assert.deepEqual((db.prepare("SELECT round, state FROM security_fix_log WHERE repo = 'photocraft' AND number = ?").all(n) as { round: number; state: string }[]).map((r) => `${r.round}:${r.state}`), ["1:passed"], "the log keeps the round");
   });
 
   test("a failed word check never queues a build", async () => {
@@ -136,6 +137,7 @@ describe("security fix rounds", () => {
     const row = rawFinding(db, "photocraft", n)!;
     assert.equal(row.state, "new");
     assert.match(row.note ?? "", /attacker/);
+    assert.match(row.last_failure ?? "", /attacker/);
   });
 
   test("a round building past 4 hours is cancelled and read; a pipeline fix waits for the switch, an operator's does not", async () => {

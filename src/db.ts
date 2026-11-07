@@ -166,6 +166,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["main_fixes", "lint_task", "INTEGER"],
   ["main_fixes", "lint_round", "INTEGER"],
   ["main_fixes", "lint_state", "TEXT"],
+  ["security_findings", "fix_attempts", "INTEGER NOT NULL DEFAULT 0"],
+  ["security_findings", "last_failure", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

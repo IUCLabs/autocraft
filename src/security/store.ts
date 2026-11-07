@@ -64,7 +64,7 @@ const parse = <T>(s: string | null, fallback: T): T => {
 
 export type FindingRow = {
   repo: string; number: number; scan_id: number; area: string; title: string; severity: FindingSeverity; urgent: number; state: FindingState; refs: string;
-  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; fork: string | null; fix_patch: string | null; fix_title: string | null; fix_summary: string | null; fix_branch: string | null; fix_files: string | null; fix_ref: string | null; note: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string;
+  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; fork: string | null; fix_patch: string | null; fix_title: string | null; fix_summary: string | null; fix_branch: string | null; fix_files: string | null; fix_ref: string | null; note: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string; fix_attempts: number; last_failure: string | null;
 };
 
 export const findingKey = (repo: string, n: number): string => `${repo}:finding:${n}`;

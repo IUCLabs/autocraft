@@ -86,7 +86,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   discord: [{ table: "discord_mentions" }, { table: "discord_channels" }, { table: "discord_status" }],
   "discord-links": [{ table: "discord_links" }],
   // Operator and maintainer pages only; not planner input.
-  security: [{ table: "security_scans" }, { table: "security_areas" }, { table: "security_findings" }, { table: "security_calls" }],
+  security: [{ table: "security_scans" }, { table: "security_areas" }, { table: "security_findings" }, { table: "security_calls" }, { table: "security_fix_rounds" }, { table: "security_fix_log" }],
   postmerge: [{ table: "postmerge_reviews" }, { table: "postmerge_followups" }, { table: "premerge_reviews" }],
   // Sessions change on every request (last_seen); only sign-ins and revocations matter.
   access: [{ table: "access" }, { table: "sessions", ops: ["INSERT", "DELETE"] }, { table: "audit" }],
