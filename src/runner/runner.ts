@@ -21,7 +21,9 @@ import { checkPendingUpdate } from "../build/worker-update.ts";
 import { endJob, JOB_KEEP_MS, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { advanceSecurityFixes, autoFixConfirmed } from "../security/actions.ts";
 import { OffThread } from "./offthread.ts";
-import { loadSteps } from "./steps.ts";
+import { loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
+import { jobBlock } from "./concurrency.ts";
+import { queueRoom } from "../agents/call.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
 import { envVar } from "../env.ts";
 
@@ -37,15 +39,15 @@ export const HEARTBEAT_KEY = "runner_heartbeat";
 export const FLOW_EVERY_MS = 20_000;
 const CLI = new URL("../cli.ts", import.meta.url).pathname;
 
-/** Enough for every concurrency group to have a job running. */
-export const DEFAULT_MAX_JOBS = 16;
+/** Job processes at once. A job that calls Claude also waits for a free account slot (see startJobs). */
+export const DEFAULT_MAX_JOBS = 32;
 
 export type RunnerOptions = {
   db: DatabaseSync;
   /** Database file the children open; default AUTOCRAFT_DB or the default path. */
   dbFile?: string;
   logs?: string;
-  /** Most jobs running at once (each concurrency group still runs one at a time). */
+  /** Most job processes running at once. */
   maxJobs?: number;
   /** Time a job gets to stop after SIGTERM before SIGKILL. */
   killAfterMs?: number;
@@ -63,7 +65,7 @@ export type RunnerOptions = {
   graceMs?: number;
 };
 
-type Running = { child: ChildProcess; group: string; termAt: number | null; exited: Promise<void>; startedAt: number; deadlineMin: number; logPath: string; /** When the job was told to finish its current item and stop. */ flaggedAt: number | null; noProgressMin: number; /** Why it was told to stop. */ stopMsg: string | null };
+type Running = { child: ChildProcess; termAt: number | null; exited: Promise<void>; startedAt: number; deadlineMin: number; logPath: string; /** When the job was told to finish its current item and stop. */ flaggedAt: number | null; noProgressMin: number; /** Why it was told to stop. */ stopMsg: string | null };
 
 /** The error of a job the runner stopped for running past its step's limit. */
 export const deadlineError = (min: number): string => `stopped: ran past ${min} min`;
@@ -295,11 +297,17 @@ export class Runner {
     }
   }
 
+  /**
+   * Starts queued jobs: security first (priority 2), then by id. A job whose step calls Claude starts only while the
+   * model queue has room for its class, so processes do not sit waiting for slots, unless no job of its step runs.
+   */
   private async startJobs(): Promise<void> {
     const steps = await loadSteps();
-    const queued = this.db.prepare("SELECT id, step, requested_by FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string; requested_by: string }[];
+    const queued = (this.db.prepare("SELECT id, step, params, requested_by FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string; params: string; requested_by: string }[])
+      .sort((a, b) => (steps.get(b.step)?.priority ?? 0) - (steps.get(a.step)?.priority ?? 0) || a.id - b.id);
     // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off. While it drains, nothing new starts.
     const on = isEnabled(this.db), draining = isDraining(this.db);
+    const room = new Map<number, number>();
     for (const q of queued) {
       if (draining || (q.requested_by === AUTOPILOT_USER && !on)) continue;
       if (this.running.size >= this.o.maxJobs) return;
@@ -308,15 +316,24 @@ export class Runner {
         this.db.prepare("UPDATE jobs SET state = 'failed', ended_at = ?, error = ? WHERE id = ? AND state = 'queued'").run(now(), "This step does not exist in this build.", q.id);
         continue;
       }
-      if ([...this.running.values()].some((r) => r.group === step.group)) continue;
-      this.start(q.id, step.group, step.name, steps);
+      if (this.blocked(steps, q.id)) continue;
+      let claude = false;
+      try { claude = usesClaude(modelsOf(step, JSON.parse(q.params) as Params)); } catch { /* params are checked when the job runs */ }
+      const cls = step.priority ?? 0;
+      if (claude && !this.db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state = 'running' LIMIT 1").get(step.name)) {
+        // Nothing of the step runs: it starts anyway, and takes a slot of the room.
+      } else if (claude) {
+        if (!room.has(cls)) room.set(cls, queueRoom(this.db, cls));
+        if (room.get(cls)! <= 0) continue;
+      }
+      if (this.start(q.id, step.name, steps) && claude) room.set(cls, (room.get(cls) ?? queueRoom(this.db, cls)) - 1);
     }
   }
 
-  /** Groups of jobs running that this runner did not start (a command-line run), which also hold their group. */
-  private outsideRunning(steps: Awaited<ReturnType<typeof loadSteps>>): Set<string> {
-    const rows = this.db.prepare("SELECT id, step FROM jobs WHERE state = 'running'").all() as { id: number; step: string }[];
-    return new Set(rows.filter((r) => !this.running.has(r.id)).map((r) => steps.get(r.step)?.group ?? r.step));
+  /** Why the queued job cannot start: a running job (of this runner or a command-line run) of the same step and repo, a full step, or a held mutex. */
+  private blocked(steps: Awaited<ReturnType<typeof loadSteps>>, id: number): string | null {
+    const r = this.db.prepare("SELECT step, repo, json_extract(params, '$.number') AS number FROM jobs WHERE id = ?").get(id) as { step: string; repo: string | null; number: number | null } | undefined;
+    return r ? jobBlock(this.db, steps, r, { states: ["running"], mutex: true }) : "gone";
   }
 
   /** The job's `limit` param (its items), when it has one. */
@@ -327,20 +344,20 @@ export class Runner {
     } catch { return undefined; }
   }
 
-  private start(id: number, group: string, stepName: string, steps: Awaited<ReturnType<typeof loadSteps>>): void {
+  private start(id: number, stepName: string, steps: Awaited<ReturnType<typeof loadSteps>>): boolean {
     const logPath = join(this.o.logs, `job-${id}.log`);
-    // The group check and the claim are one write transaction, so a command-line run cannot take the group in between.
+    // The check and the claim are one write transaction, so a command-line run cannot take the step in between.
     this.db.exec("BEGIN IMMEDIATE");
     let claimed: number | bigint;
     try {
-      claimed = this.outsideRunning(steps).has(group) ? 0
+      claimed = this.blocked(steps, id) ? 0
         : this.db.prepare("UPDATE jobs SET state = 'running', started_at = ?, log_path = ? WHERE id = ? AND state = 'queued'").run(now(), logPath, id).changes;
       this.db.exec("COMMIT");
     } catch (e) {
       this.db.exec("ROLLBACK");
       throw e;
     }
-    if (!claimed) return;
+    if (!claimed) return false;
     const fd = openSync(logPath, "a");
     let child: ChildProcess;
     try {
@@ -363,7 +380,8 @@ export class Runner {
         resolve();
       });
     });
-    this.running.set(id, { child, group, termAt: null, exited, startedAt: Date.now(), deadlineMin: this.maxMin(stepName, this.limitOf(id)), logPath, flaggedAt: null, noProgressMin: this.noProgressMin(stepName), stopMsg: null });
+    this.running.set(id, { child, termAt: null, exited, startedAt: Date.now(), deadlineMin: this.maxMin(stepName, this.limitOf(id)), logPath, flaggedAt: null, noProgressMin: this.noProgressMin(stepName), stopMsg: null });
+    return true;
   }
 
   private finish(id: number, code: number | null, signal: NodeJS.Signals | null, spawnError: string | null): void {

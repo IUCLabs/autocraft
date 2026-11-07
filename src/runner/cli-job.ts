@@ -1,5 +1,5 @@
 // Command-line runs of pipeline steps go through the job path: the same checks as a queued job and the planner's
-// gate() rules that are not pacing (a job of the step or of its group is running, the daily limit, a pause), a jobs row
+// gate() rules that are not pacing (a job of the step for the same repo is queued or running, the daily limit, a pause), a jobs row
 // (requested by `cli`, so counted toward the limits and visible on the Pipeline page), and the runner's exec child, whose
 // output is shown here. The writer is an operator (CLI_BY): the guard skips the global switch, the approvals still apply.
 // Commands not listed in CLI_STEPS, and runs with options a step has no parameter for, keep their own direct path.
@@ -56,7 +56,7 @@ export async function runCliJob(db: DatabaseSync, req: CliRequest): Promise<numb
     // The gate and the insert are one write transaction, so two CLI runs cannot both pass the gate.
     db.exec("BEGIN IMMEDIATE");
     try {
-      const why = cliGate(db, step, (n) => steps.get(n)?.group ?? n);
+      const why = cliGate(db, step, steps, params);
       if (why) throw new JobError(409, why);
       const lim = jobLimit(db, step, Date.now(), typeof params.limit === "number" ? params.limit : undefined);
       if (!lim) throw new JobError(409, `the daily limit of ${step.name} leaves too little for a run`);

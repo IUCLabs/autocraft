@@ -29,7 +29,7 @@ export async function nextPage(db: DatabaseSync, visibleNames: string[], opts: {
     const kept = stored[lane.name]?.items ?? [];
     const items: NextItem[] = kept.filter((i) => visible.has(i.repo)).map((i) => ({ ...i, ...shown(i.repo, i.number), why: why(i.repo, i.number, i.action) }));
     const total = (stored[lane.name]?.total ?? 0) - (kept.length - items.length);
-    const gate = laneGate(db, lane, ms);
+    const gate = laneGate(db, lane, stepDefs, ms);
     const open = items.filter((i) => !i.blocked);
     // Every item blocked by a repo approval: the step cannot do its work although it could start.
     const refused = !open.length && items.length ? items[0]!.blocked : null;

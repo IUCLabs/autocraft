@@ -74,8 +74,7 @@ function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
 }
 
 /** How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter of the current call's class. */
-export function queueRoom(db: DatabaseSync): number {
-  const cls = currentClass();
+export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass()): number {
   const ahead = (db.prepare("SELECT COUNT(*) AS n FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ? AND class >= ?").get(Date.now() - allocation.staleMs, cls) as { n: number }).n;
   return Math.max(0, freeSlots(db) - Number(ahead));
 }

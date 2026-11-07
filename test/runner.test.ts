@@ -1,6 +1,6 @@
 // The runner on fake steps: it runs queued jobs in child processes, records
 // success, failure and usage, honours cancels, recovers jobs an earlier runner
-// left running, runs one job per group at a time.
+// left running, runs one job per step and repo at a time.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";

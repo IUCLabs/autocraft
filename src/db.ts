@@ -42,6 +42,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["decision_comments", "via", "TEXT"],
   ["jobs", "acted", "INTEGER"],
   ["jobs", "lease_skips", "INTEGER"],
+  ["jobs", "lease_skip_keys", "TEXT"],
   ["job_items", "ref", "TEXT"],
   ["pr_commits", "first_seen_at", "TEXT"],
   ["activity_sync", "error", "TEXT"],

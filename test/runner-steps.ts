@@ -12,7 +12,7 @@ export const steps: StepDef[] = [
     description: "Test step: records one fake model call and echoes its number.",
     stage: 2,
     requires: "operator",
-    group: "test-a",
+    exclusive: "test-a",
     params: [
       { name: "n", label: "Number", kind: "int", min: 0, max: 100, default: 1 },
       { name: "mode", label: "Mode", kind: "enum", options: ["ok", "fail"], default: "ok" },
@@ -35,7 +35,7 @@ export const steps: StepDef[] = [
     description: "Test step: sleeps, reporting progress.",
     stage: 2,
     requires: "operator",
-    group: "test-a",
+    exclusive: "test-a",
     params: [{ name: "ms", label: "Milliseconds", kind: "int", min: 0, max: 600000, default: 200 }],
     run: async (ctx) => {
       const ms = Number(ctx.params.ms);
@@ -52,11 +52,29 @@ export const steps: StepDef[] = [
     description: "Test step in a second concurrency group.",
     stage: 4,
     requires: "operator",
-    group: "test-b",
     params: [{ name: "ms", label: "Milliseconds", kind: "int", min: 0, max: 600000, default: 200 }],
     run: async (ctx) => {
       await sleep(Number(ctx.params.ms));
       return "other done";
     },
+  },
+  {
+    name: "test-repo",
+    title: "Repo work",
+    description: "Test step: sleeps for one repo.",
+    stage: 6,
+    requires: "operator",
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }, { name: "ms", label: "Milliseconds", kind: "int", min: 0, max: 600000, default: 300 }],
+    run: async (ctx) => { await sleep(Number(ctx.params.ms)); return "repo done"; },
+  },
+  {
+    name: "test-urgent",
+    title: "Urgent repo work",
+    description: "Test step in the security class.",
+    stage: 6,
+    requires: "operator",
+    priority: 2,
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }, { name: "ms", label: "Milliseconds", kind: "int", min: 0, max: 600000, default: 300 }],
+    run: async (ctx) => { await sleep(Number(ctx.params.ms)); return "urgent done"; },
   },
 ];

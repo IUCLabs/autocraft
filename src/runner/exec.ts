@@ -7,7 +7,7 @@ import { setCallContext } from "../agents/call.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
 import { AUTOPILOT_USER, isEnabled } from "./autopilot.ts";
-import { leaseSkips } from "./leases.ts";
+import { leaseSkipKeys, leaseSkips } from "./leases.ts";
 import { DEADLINE_ERROR, jobRow, scrub } from "./jobs.ts";
 import { loadSteps, validateParams, type StepContext } from "./steps.ts";
 
@@ -86,7 +86,7 @@ export async function execJob(id: number): Promise<number> {
     const summary = await step.run(ctx);
     saveUsage();
     // Items skipped for a lease are work left for a later job: the planner retries once no job holds a lease (unchangedSinceIdle).
-    if (leaseSkips()) db.prepare("UPDATE jobs SET lease_skips = ? WHERE id = ?").run(leaseSkips(), id);
+    if (leaseSkips()) db.prepare("UPDATE jobs SET lease_skips = ?, lease_skip_keys = ? WHERE id = ?").run(leaseSkips(), JSON.stringify(leaseSkipKeys()), id);
     db.prepare("UPDATE jobs SET summary = ? WHERE id = ?").run(oneLine(summary), id);
     console.log(`${new Date().toISOString()} done: ${summary}`);
     return 0;

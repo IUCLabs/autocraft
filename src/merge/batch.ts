@@ -37,6 +37,7 @@ import { PIPELINE_LOGIN_KEY, buildQueue, type QueueEntry } from "./queue.ts";
 import { planned } from "../core/select.ts";
 import { envVar } from "../env.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { leaseItem } from "../runner/leases.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 
 const ACTOR = "batch";
@@ -351,25 +352,37 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     // Holds and controls may have changed during the calls above: look again right before merging.
     if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; not merged`); return; }
     if (members.some((m) => mergeHeld(db, repo, m.number))) { log(`  ${b.branch}: a PR in the batch was held meanwhile; not merged`); s.waiting.push(b.branch); return; }
-    let after: Awaited<ReturnType<typeof refreshChecks>>[number] | undefined;
-    // Every member must still hold at its batched head, and the batch PR at the batch tip.
-    const g = await guardBatchMerge(db, { repo, number: b.pr_number!, head: b.commit_sha }, members.map((m) => ({ number: m.number, head: m.head_oid })), by, liveRead);
-    if ("refused" in g) { log(`  ${b.branch}: not merged: ${g.refused}`); s.waiting.push(b.branch); return; }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method: "merge", extra: allowFailedArgs(db, repo, d.mergeCommand) }, { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
-      after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
-      return after?.state === "MERGED";
-    });
-    if (r.code !== 0) {
-      // The merge may have gone through although the command failed afterwards.
-      if (after?.state === "MERGED") return recordLanded(b, members, q);
-      const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
-      updateBatch(db, b.id, at(), { summary: `${d.mergeCommand}: ${why}`.slice(0, 400) });
-      log(`  ${b.branch}: refused: ${why}`);
-      s.waiting.push(b.branch);
-      return;
+    // A fix-up or CI fix pushing to a member would move its head under the merge: hold the members' leases until it ends.
+    const leases: (() => void)[] = [];
+    for (const m of members) {
+      const release = leaseItem(db, `pr:${repo}#${m.number}`, log);
+      if (!release) { for (const f of leases) f(); log(`  ${b.branch}: a PR in the batch is being worked; not merged this pass`); s.waiting.push(b.branch); return; }
+      leases.push(release);
     }
-    // The merge command prints `<repo>#<pr> MERGED <merge commit>`.
-    recordLanded(b, members, q, /\bMERGED ([0-9a-f]{7,40})\b/.exec(r.stdout)?.[1] ?? null);
+    try {
+      let after: Awaited<ReturnType<typeof refreshChecks>>[number] | undefined;
+      // Every member must still hold at its batched head, and the batch PR at the batch tip.
+      const g = await guardBatchMerge(db, { repo, number: b.pr_number!, head: b.commit_sha }, members.map((m) => ({ number: m.number, head: m.head_oid })), by, liveRead);
+      if ("refused" in g) { log(`  ${b.branch}: not merged: ${g.refused}`); s.waiting.push(b.branch); return; }
+      const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method: "merge", extra: allowFailedArgs(db, repo, d.mergeCommand) }, { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
+        after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
+        return after?.state === "MERGED";
+      });
+      if (r.code !== 0) {
+        // The merge may have gone through although the command failed afterwards.
+        if (after?.state === "MERGED") return recordLanded(b, members, q);
+        const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
+        updateBatch(db, b.id, at(), { summary: `${d.mergeCommand}: ${why}`.slice(0, 400) });
+        log(`  ${b.branch}: refused: ${why}`);
+        s.waiting.push(b.branch);
+        return;
+      }
+      // The merge command prints `<repo>#<pr> MERGED <merge commit>`.
+      recordLanded(b, members, q, /\bMERGED ([0-9a-f]{7,40})\b/.exec(r.stdout)?.[1] ?? null);
+
+    } finally {
+      for (const f of leases) f();
+    }
   }
 
   async function advance(id: number): Promise<void> {
