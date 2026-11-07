@@ -46,12 +46,19 @@ export function recordMessage(db: DatabaseSync, keys: DiscordKeys, m: DiscordMes
 export function forgetMessages(db: DatabaseSync, keys: DiscordKeys, ids: string[]): number {
   const del = db.prepare("DELETE FROM discord_mentions WHERE msg_hash = ?");
   let n = 0;
-  for (const id of ids) n += Number(del.run(keys.hash("message", id)).changes);
+  const reply = db.prepare("DELETE FROM discord_replies WHERE ping_hash = ? OR quoted_hash = ?");
+  for (const id of ids) {
+    const h = keys.hash("message", id);
+    n += Number(del.run(h).changes);
+    reply.run(h, h);
+  }
   return n;
 }
 
 export function forgetChannel(db: DatabaseSync, keys: DiscordKeys, channelId: string): number {
-  return Number(db.prepare("DELETE FROM discord_mentions WHERE channel_hash = ?").run(keys.hash("channel", channelId)).changes);
+  const h = keys.hash("channel", channelId);
+  db.prepare("DELETE FROM discord_replies WHERE channel_hash = ?").run(h);
+  return Number(db.prepare("DELETE FROM discord_mentions WHERE channel_hash = ?").run(h).changes);
 }
 
 /** Opens every row to find the author's: slow, and rare enough (a deletion request) not to need a column that would name a person. */

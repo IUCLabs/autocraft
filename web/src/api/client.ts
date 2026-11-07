@@ -256,6 +256,7 @@ export interface Api {
   discord: {
     setup(): Promise<DiscordSetup>;
     setChannel(channelId: string, watched: boolean): Promise<DiscordSetup>;
+    setChannelRepo(channelId: string, repo: string | null): Promise<DiscordSetup>;
     setContact(contact: string): Promise<DiscordSetup>;
   };
   classifiers: {

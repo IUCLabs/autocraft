@@ -6,6 +6,7 @@ import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
+import { Select } from "../../ui/atoms/Select";
 import { Switch } from "../../ui/atoms/Switch";
 import { TextLink } from "../../ui/atoms/TextLink";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -48,11 +49,22 @@ export function DiscordView(_: ViewProps) {
                 </div>
                 <ul>
                   {data.channels.filter((c) => c.guildId === g).map((c) => (
-                    <li key={c.channelId} className="flex min-h-11 items-center gap-3 border-t border-line px-4 py-1.5 first:border-0">
-                      <div className="min-w-0 flex-1">
+                    <li key={c.channelId} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-1.5 first:border-0">
+                      <div className="min-w-0 max-md:basis-full md:flex-1">
                         <div className="truncate text-sm">#{c.name ?? "unnamed"}</div>
                         <div className="num truncate text-2xs text-ink/45">{c.channelId}</div>
                       </div>
+                      <Select
+                        size="sm"
+                        value={c.defaultRepo ?? ""}
+                        disabled={write.busy === `repo:${c.channelId}`}
+                        aria-label={`Default repo for new issues from #${c.name ?? c.channelId}`}
+                        onChange={(e) => void write.run(`repo:${c.channelId}`, () => api.discord.setChannelRepo(c.channelId, e.target.value || null)).then(() => refetch())}
+                        className="max-md:flex-1 md:max-w-40"
+                      >
+                        <option value="">No default repo</option>
+                        {data.repos.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </Select>
                       <Switch on={c.watched} label={`Watch #${c.name ?? c.channelId}`} busy={write.busy === c.channelId} onChange={(on) => void write.run(c.channelId, () => api.discord.setChannel(c.channelId, on)).then(() => refetch())} />
                     </li>
                   ))}

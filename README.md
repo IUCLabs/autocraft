@@ -164,10 +164,10 @@ Maintainers (and operators) can work the Inbox from their own agent: from the us
 
 ### Discord mentions (optional)
 
-AutoCraft can count how often tracked items are mentioned in Discord channels you choose. It reads new messages only, keeps no text and no names, and never posts. See [Discord mentions](docs/pipeline.md#discord-mentions).
+AutoCraft can count how often tracked items are mentioned in Discord channels you choose, and answer people who mention the bot or use its `/issue search` command with matching public issues. It reads new messages only and keeps no text and no names. See [Discord mentions, replies and search](docs/pipeline.md#discord-mentions-replies-and-search).
 
 1. In the Discord developer portal, create an application and add a bot. Under Bot, turn on the Message Content intent.
-2. Invite the bot with the `bot` scope and only the View Channel permission. Leave Read Message History and everything else off.
+2. Invite the bot with the `bot` and `applications.commands` scopes and the View Channels, Send Messages and Read Message History permissions. Leave everything else off.
 3. Save the bot token in a file readable by the runner only (mode 600), and make a second file of at least 32 random characters for the key that encrypts stored message references (for example `openssl rand -base64 48`). Keep the key file: without it the stored links cannot be opened.
 4. Set `AUTOCRAFT_DISCORD_TOKEN_FILE` and `AUTOCRAFT_DISCORD_KEY_FILE` for the runner. Set `AUTOCRAFT_DISCORD_KEY_FILE` for the dashboard too if it should show message links; without it the dashboard shows counts only.
 5. Restart the runner. On the Discord page, switch on the channels to watch and enter the contact for deletion requests. The public notice is at `/discord-privacy`.

@@ -74,12 +74,12 @@ export function createMockApi(): Api {
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
   const discord: DiscordSetup = {
-    state: "connected", detail: null, at: nowIso(), contact: "discord-privacy@example.org", privacyPath: "/discord-privacy",
+    state: "connected", detail: null, at: nowIso(), repos: ["photocraft", "pdfcraft", "wordcraft"], contact: "discord-privacy@example.org", privacyPath: "/discord-privacy",
     channels: [
-      { channelId: "9000000000000002", guildId: "9000000000000001", guildName: "Glasswing Community", name: "dev-chat", watched: true },
-      { channelId: "9000000000000003", guildId: "9000000000000001", guildName: "Glasswing Community", name: "support", watched: true },
-      { channelId: "9000000000000004", guildId: "9000000000000001", guildName: "Glasswing Community", name: "general", watched: false },
-      { channelId: "9000000000000005", guildId: "9000000000000001", guildName: "Glasswing Community", name: "announcements", watched: false },
+      { channelId: "9000000000000002", guildId: "9000000000000001", guildName: "Glasswing Community", name: "dev-chat", watched: true, defaultRepo: "photocraft" },
+      { channelId: "9000000000000003", guildId: "9000000000000001", guildName: "Glasswing Community", name: "support", watched: true, defaultRepo: null },
+      { channelId: "9000000000000004", guildId: "9000000000000001", guildName: "Glasswing Community", name: "general", watched: false, defaultRepo: null },
+      { channelId: "9000000000000005", guildId: "9000000000000001", guildName: "Glasswing Community", name: "announcements", watched: false, defaultRepo: null },
     ],
   };
   const find = (id: string) => {
@@ -240,6 +240,12 @@ export function createMockApi(): Api {
       setChannel(channelId, watched) {
         if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");
         discord.channels.find((c) => c.channelId === channelId)!.watched = watched;
+        changed();
+        return wait(structuredClone(discord));
+      },
+      setChannelRepo(channelId, repo) {
+        if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");
+        discord.channels.find((c) => c.channelId === channelId)!.defaultRepo = repo;
         changed();
         return wait(structuredClone(discord));
       },

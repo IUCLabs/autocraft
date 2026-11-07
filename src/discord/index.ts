@@ -1,10 +1,17 @@
-// Optional Discord mention counting. It runs only when AUTOCRAFT_DISCORD_TOKEN_FILE and AUTOCRAFT_DISCORD_KEY_FILE
+// Optional Discord mention counting, ping replies and issue search. It runs only when AUTOCRAFT_DISCORD_TOKEN_FILE and AUTOCRAFT_DISCORD_KEY_FILE
 // are set; the runner starts it next to the worker server. See docs/pipeline.md.
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
 import { envVar } from "../env.ts";
+import { localEmbedder } from "../embed/model.ts";
+import { VectorIndex } from "../embed/vectors.ts";
 import { Gateway } from "./gateway.ts";
+import { Interactions } from "./interactions.ts";
+import { Pings } from "./pings.ts";
+import { RestClient } from "./rest.ts";
+import { Search, dropTexts } from "./search.ts";
+import { installSearchCommands } from "./search-commands.ts";
 import { DiscordConfigError, readKeyFile, readTokenFile, type DiscordKeys } from "./keys.ts";
 import { forgetAuthor, forgetMessages, handleDispatch, setStatus, upsertChannel } from "./store.ts";
 
@@ -49,6 +56,15 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
     setStatus(db, "failed", (e as Error).message);
     return;
   }
+  // The embedding model loads on the first question and the vector index on its first search; nothing here waits for them.
+  const rest = new RestClient({ token });
+  const embedder = localEmbedder({ threads: 2 });
+  const search = new Search({ db, embedder, index: new VectorIndex(embedder), log });
+  const interactions = new Interactions(rest, log);
+  installSearchCommands(interactions, { db, keys, search });
+  const pings = new Pings({ db, keys, rest, search, log });
+  // A crash during a call can leave the question in a recorded prompt.
+  try { dropTexts(db); } catch (e) { log(`runner: removing search texts failed: ${(e as Error).message}`); }
   const gw = new Gateway({
     token,
     log,
@@ -56,9 +72,11 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
     onDispatch: (type, d) => {
       handleDispatch(db, keys, type, d);
       handleMeta(db, type, d);
+      interactions.dispatch(type, d);
+      pings.dispatch(type, d);
     },
   });
-  log("runner: Discord mention counting started");
+  log("runner: Discord mention counting, pings and search started");
   void gw.run(signal).catch((e: Error) => log(`runner: Discord stopped: ${e.message}`));
 }
 

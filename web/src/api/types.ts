@@ -872,6 +872,8 @@ export interface DiscordChannel {
   guildName: string | null;
   name: string | null;
   watched: boolean;
+  /** Tracked repo whose new-issue page the bot's "File a new issue" button opens; null uses the top search result's repo. */
+  defaultRepo: string | null;
 }
 
 export interface DiscordSetup {
@@ -880,6 +882,8 @@ export interface DiscordSetup {
   detail: string | null;
   at: string | null;
   channels: DiscordChannel[];
+  /** Tracked repos a channel's default can be. */
+  repos: string[];
   contact: string;
   /** The public privacy page. */
   privacyPath: string;

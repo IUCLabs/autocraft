@@ -42,11 +42,12 @@ const body = (req: Req): Record<string, unknown> => (req.json && typeof req.json
 
 function setupOf(db: DatabaseSync): DiscordSetup {
   const st = db.prepare("SELECT state, detail, at FROM discord_status WHERE id = 1").get() as { state: DiscordSetup["state"]; detail: string | null; at: string } | undefined;
-  const channels = db.prepare("SELECT channel_id AS channelId, guild_id AS guildId, guild_name AS guildName, name, watched FROM discord_channels WHERE parent_id IS NULL ORDER BY guild_name, name, channel_id").all() as
-    { channelId: string; guildId: string; guildName: string | null; name: string | null; watched: number }[];
+  const channels = db.prepare("SELECT channel_id AS channelId, guild_id AS guildId, guild_name AS guildName, name, watched, default_repo AS defaultRepo FROM discord_channels WHERE parent_id IS NULL ORDER BY guild_name, name, channel_id").all() as
+    { channelId: string; guildId: string; guildName: string | null; name: string | null; watched: number; defaultRepo: string | null }[];
   return {
     state: st?.state ?? "off", detail: st?.detail ?? null, at: st?.at ?? null,
     channels: channels.map((c) => ({ ...c, watched: !!c.watched })),
+    repos: (db.prepare("SELECT name FROM main.tracked_repos ORDER BY name").all() as { name: string }[]).map((r) => r.name),
     contact: contactOf(db), privacyPath: PRIVACY_PATH,
   };
 }
@@ -63,6 +64,17 @@ export function putChannel(db: DatabaseSync, req: Req): DiscordSetup {
   const r = db.prepare("UPDATE discord_channels SET watched = ? WHERE channel_id = ?").run(watched ? 1 : 0, id);
   if (!r.changes) throw new HttpError(404, "the bot has not reported that channel");
   audit(db, req.user.login, watched ? "discord-watch" : "discord-unwatch", id);
+  return setupOf(db);
+}
+
+export function putChannelRepo(db: DatabaseSync, req: Req): DiscordSetup {
+  operator(req);
+  const id = body(req).channelId, repo = body(req).repo;
+  if (typeof id !== "string" || (repo !== null && typeof repo !== "string")) throw new HttpError(400, "channelId and repo (a tracked repo or null) are required");
+  if (repo !== null && !db.prepare("SELECT 1 FROM main.tracked_repos WHERE name = ?").get(repo)) throw new HttpError(400, "repo is not tracked");
+  const r = db.prepare("UPDATE discord_channels SET default_repo = ? WHERE channel_id = ?").run(repo, id);
+  if (!r.changes) throw new HttpError(404, "the bot has not reported that channel");
+  audit(db, req.user.login, "discord-default-repo", id, { repo });
   return setupOf(db);
 }
 
