@@ -55,6 +55,8 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
 import { leaseItem } from "../runner/leases.ts";
+import { queueRoom } from "../agents/call.ts";
+import { pool } from "../classify/run.ts";
 
 export { MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 export { selectFixups } from "./select.ts";
@@ -336,14 +338,14 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     }
   };
   /** Runs `fn` on the PR under its lease, unless the run is stopping or another job holds it. */
-  const leased = async (c: { number: number }, fn: () => Promise<void>): Promise<boolean> => {
-    if (params.stopping?.()) return false;
+  const leased = async (c: { number: number }, fn: () => Promise<void>): Promise<void> => {
+    if (params.stopping?.()) return;
     const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
-    if (!release) return true;
+    if (!release) return;
     try { await fn(); } finally { release(); }
-    return true;
   };
-  for (const c of asks) if (!(await leased(c, () => askOne(c)))) break;
+  const room = () => queueRoom(db);
+  await pool(asks.map((c) => () => leased(c, () => askOne(c))), room);
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
   let identP: Promise<CommitIdentity> | undefined;
@@ -361,19 +363,25 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
     who: ident, onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
   };
-  for (const c of cAsks) if (!(await leased(c, () => askConflict(db, conflictRun, c)))) break;
+  await pool(cAsks.map((c) => () => leased(c, () => askConflict(db, conflictRun, c))), room);
   if (!picks.length && !cMerges.length) return summary;
 
   const who = await ident();
   mkdirSync(d.root, { recursive: true });
-  let worked = 0;
-  for (const c of picks) {
-    if (params.stopping?.()) { log(`fixup ${repo}: stopping, no new PRs started`); break; }
-    if (worked >= budget) break;
+  let worked = 0, stoppedLogged = false;
+  let inflight = 0;
+  let wake: (() => void)[] = [];
+  /** Fix-up of one PR: takes its lease and one unit of the limit before its first await, so concurrent items count exactly. */
+  const fixOne = async (c: FixCandidate): Promise<void> => {
+    // While the limit is spent but other items are still running, one of them may give its unit back (not worked): wait for it.
+    while (worked >= budget && inflight > 0) await new Promise<void>((r) => wake.push(r));
+    if (params.stopping?.()) { if (!stoppedLogged) { stoppedLogged = true; log(`fixup ${repo}: stopping, no new PRs started`); } return; }
+    if (worked >= budget) return;
     const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
-    if (!release) continue;
+    if (!release) return;
     // The item takes its budget before its first await; it is given back below when the item ends without being worked.
     worked++;
+    inflight++;
     let counted = false;
     const ref = refOf(c);
     let files = [...new Set(c.fixes.map((f) => f.file))];
@@ -390,36 +398,36 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       jobItem(db, repo, c.number, `held: ${reason}`, log);
     };
     try {
-      if (!c.carry && files.some((f) => !fixupEditable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
+      if (!c.carry && files.some((f) => !fixupEditable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); return; }
       const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       noteLive(db, repo, c.number, pr, at());
-      if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
-      if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
+      if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); return; }
+      if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); return; }
       // GitHub says UNKNOWN while it recomputes: the value stored at this head (kept by the mirror) decides.
-      if (pr.mergeable === "CONFLICTING" || (pr.mergeable !== "MERGEABLE" && storedMergeable(db, repo, c.number, c.head) === "CONFLICTING")) { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
+      if (pr.mergeable === "CONFLICTING" || (pr.mergeable !== "MERGEABLE" && storedMergeable(db, repo, c.number, c.head) === "CONFLICTING")) { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); return; }
       counted = true;
       params.onHandled?.(++handled.n);
       if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule)) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
         if (c.carry && commentApprovalOf(db, repo)) await askOne(c, false);
         else hold("cannot-push", HOLD_CANNOT_PUSH);
-        continue;
+        return;
       }
       let carried: FixupPr["carried_from"];
       if (c.carry) {
         const w = await carryWork(c, d.fetchDiff);
-        if (!w.ok) { fail("refused", w.reason); continue; }
+        if (!w.ok) { fail("refused", w.reason); return; }
         c.fixes = w.fixes;
         carried = w.carried;
         files = [...new Set(c.fixes.map((f) => f.file))];
       }
       const head = await git.fetchPr(ownerOf(repo), repo, c.number);
-      if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
+      if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); return; }
 
       const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
-      if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
-      if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
+      if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); return; }
+      if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); return; }
       // An operator's fix-up may edit any file of the repository a fix-up may touch: the instructions name no file. The PR's own files are the ones shown.
       if (c.operator) {
         files = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(operatorEditable);
@@ -440,29 +448,29 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         if (total > TOTAL_CAP) { tooBig = `the files named in the fixes are over the ${TOTAL_CAP} character limit`; break; }
         shown.push(v.file);
       }
-      if (bad) { fail("refused", bad); continue; }
-      if (tooBig) { hold("too-large", tooBig); continue; }
+      if (bad) { fail("refused", bad); return; }
+      if (tooBig) { hold("too-large", tooBig); return; }
       if (!c.carry) await claim(c);
       // A stored patch: the lint task's outcome decides whether it is pushed (clean), asked for again (findings) or queued again (lost task).
       let findings: string[] = [];
       let folded: string | null = null;
       if (c.lint) {
         const res = readLint(db, c.lint.task ?? -1);
-        if (res.kind === "pending") { log(`  ${ref}: the lint task is still running`); continue; }
+        if (res.kind === "pending") { log(`  ${ref}: the lint task is still running`); return; }
         if (res.kind === "infra-failed") {
-          if (c.lint.state === "requeued") { fail("failed", `lint: ${res.reason}`); continue; }
+          if (c.lint.state === "requeued") { fail("failed", `lint: ${res.reason}`); return; }
           const again = queueLint(db, { step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, patch: c.lint.patch });
-          if (again === null) { fail("failed", `lint: ${res.reason}`); continue; }
+          if (again === null) { fail("failed", `lint: ${res.reason}`); return; }
           rec.linting(c, c.lint.patch, files, again, "requeued", c.lint.round, c.lint.session, c.lint.changes);
           log(`  ${ref}: lint task failed (${res.reason}); queued again as task ${again}`);
-          continue;
+          return;
         }
         if (res.findings.length) {
-          if (c.lint.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${c.lint.round} rounds: ${oneLine(res.findings[0]!.message)}`); continue; }
+          if (c.lint.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${c.lint.round} rounds: ${oneLine(res.findings[0]!.message)}`); return; }
           findings = res.findings.map((x) => x.rendered);
         } else {
           const fold = await foldFormat(git, head, c.lint.patch, res.formatDiff ?? "", d.root);
-          if (!fold.ok) { fail("refused", fold.reason); continue; }
+          if (!fold.ok) { fail("refused", fold.reason); return; }
           folded = fold.patch;
         }
       }
@@ -474,14 +482,14 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(c.operator ? validatePatch(splitChanges(p).diff, null, operatorEditable) : validatePatch(p, files, fixupEditable))) }), ses);
       ledger.hold(ses.kept);
       if (c.lint && folded === null) dropSessions(c.lint.session, ses.kept ? { "": ses.kept } : {});
-      if (raw === null) { fail("failed", "the model gave no answer"); continue; }
+      if (raw === null) { fail("failed", "the model gave no answer"); return; }
       // An operator fix-up's reply ends with the model's list of what it changed; a stored patch keeps the list in its row.
       const split = c.operator && folded === null ? splitChanges(raw, c.operator.instructions) : { diff: raw, changes: c.lint?.changes ?? [] };
       const reply = split.diff;
       const v = c.operator ? validatePatch(reply, null, operatorEditable) : validatePatch(reply, files, fixupEditable);
-      if (!v.ok) { fail("refused", v.reason); continue; }
+      if (!v.ok) { fail("refused", v.reason); return; }
       const word = quiet ? patchGiveaway(v.patch) : null;
-      if (word) { fail("refused", QUIET_PATCH_REFUSAL); continue; }
+      if (word) { fail("refused", QUIET_PATCH_REFUSAL); return; }
 
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;
@@ -490,39 +498,39 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
-      if (!applied.ok) { fail("refused", applied.reason); continue; }
+      if (!applied.ok) { fail("refused", applied.reason); return; }
       const commit = await git.commit(applied.tree, head, commitMessage(v.files, !!c.operator), { name: who.login, email: who.email });
       const changes = await git.rawChanges(head, commit);
       const touched = changes.map((x) => x[3]!).sort().join("\n");
       if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...v.files].sort().join("\n")) {
         fail("refused", "the commit would change files or modes outside the validated diff");
-        continue;
+        return;
       }
 
       const outside = outsideShown(shown, await git.diffText(head, commit));
-      if (outside) { fail("refused", outside); continue; }
+      if (outside) { fail("refused", outside); return; }
 
       // Opus checks the validated patch; only an approve goes on. A stored patch that came back clean was checked already (the format changes are whitespace only).
       if (folded === null) {
-        if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
+        if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
         const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, ...(c.operator ? { operator: c.operator.instructions } : {}), diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
-        if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
+        if (checkReply === null) { fail("failed", "the patch check gave no answer"); return; }
         const verdict = parseCheck(checkReply);
-        if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }
+        if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); return; }
         recordCheck(db, { kind: "fixup", repo, number: c.number, subject: head, patch: v.patch, round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: at() });
         audit(db, ACTOR, "fixup-check", ref, { run: runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
-        if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the patch: ${checkLine(verdict.check)}`); continue; }
+        if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the patch: ${checkLine(verdict.check)}`); return; }
       }
 
       // The model calls took minutes: read the PR again before pushing.
       const again = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const now = again.repository?.pullRequest;
       noteLive(db, repo, c.number, now, at());
-      if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
-      if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
+      if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); return; }
+      if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); return; }
 
       const g = await guard(db, { repo, number: c.number }, c.lint ? { kind: "lint", bucket: "fixup", head: c.head, source: sourceOf(c) } : { kind: "fixup", bucket: "fix", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY, liveOf(db, d.querier));
-      if ("refused" in g) { log(`  ${ref}: skipped: ${g.refused}`); continue; }
+      if ("refused" in g) { log(`  ${ref}: skipped: ${g.refused}`); return; }
       // A model patch is stored and linted before it is pushed (the collect step above pushes it); a patch without a Rust file needs no lint.
       if (folded === null) {
         const round = c.lint ? c.lint.round + 1 : 1;
@@ -531,7 +539,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
           rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null, split.changes);
           if (ses.kept) ledger.stored({ "": ses.kept });
           jobItem(db, repo, c.number, `patch stored; lint task ${task} queued (round ${round})`, log);
-          continue;
+          return;
         }
       }
       // The planner may have released the PR while the model worked (our own unassign is no one's final word).
@@ -543,7 +551,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         if (/stale info|rejected|fetch first/i.test(err)) fail("refused", "the branch moved since the review");
         else if (/denied|403|permission|not allowed|protected branch|declined|GH013/i.test(err)) hold("push-denied", HOLD_CANNOT_PUSH);
         else fail("failed", `push failed: ${err}`);
-        continue;
+        return;
       }
       rec.fixup(c, "pushed", null, v.files, commit);
       summary.pushed.push(ref);
@@ -563,9 +571,14 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     } finally {
       release();
       if (!counted) worked--;
+      inflight--;
+      const w = wake;
+      wake = [];
+      for (const r of w) r();
     }
-  }
-  for (const c of cMerges) if (!(await leased(c, () => mergeConflict(db, conflictRun, c)))) break;
+  };
+  await pool(picks.map((c) => () => fixOne(c)), () => queueRoom(db));
+  await pool(cMerges.map((c) => () => leased(c, () => mergeConflict(db, conflictRun, c))), room);
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }

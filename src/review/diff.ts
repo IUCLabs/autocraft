@@ -40,8 +40,9 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
   const r = await fetch(repo, number);
   if (r.ok) {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(`${file}.tmp`, r.text);
-    renameSync(`${file}.tmp`, file);
+    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    writeFileSync(tmp, r.text);
+    renameSync(tmp, file);
   }
   return r;
 }
