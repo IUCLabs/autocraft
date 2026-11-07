@@ -171,6 +171,10 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["opus_review_history", "job_id", "INTEGER"],
   ["security_findings", "fix_attempts", "INTEGER NOT NULL DEFAULT 0"],
   ["security_findings", "last_failure", "TEXT"],
+  // Permalink of the comment or review on GitHub; joins AutoCraft's audit rows to the comment they wrote.
+  ["comments", "url", "TEXT"],
+  // First line of the commit message.
+  ["pr_commits", "message", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

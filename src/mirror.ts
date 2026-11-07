@@ -55,13 +55,13 @@ query($login: String!, $after: String) {
 export const COMMON = `number title body url author { login } authorAssociation createdAt updatedAt closedAt state
   labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } }
   commentCount: comments { totalCount }`;
-export const COMMENTS = "comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body } }";
+export const COMMENTS = "comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body url } }";
 export const PR_EXTRA = `isDraft mergedAt mergedBy { login } additions deletions changedFiles
   headRefName headRefOid headRepository { nameWithOwner } baseRefName
   closingIssuesReferences(first: 10) { nodes { number } }`;
 export const PR_FULL = `maintainerCanModify mergeable reviewDecision
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-  reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state commit { oid } comments { totalCount } } }`;
+  reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body url state commit { oid } comments { totalCount } } }`;
 
 export function itemsQuery(kind: Kind, detail: Detail): string {
   const [conn, stateType] = kind === "issue" ? ["issues", "IssueState"] : ["pullRequests", "PullRequestState"];
@@ -258,11 +258,11 @@ function commentRows(repo: string, kind: Kind, n: Node, own: string[]): SQLInput
   // `counted`: whether the entry counts as new discussion for the review stage (src/review/discussion.ts).
   const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body, inline: c.comments?.totalCount }));
   const rows = n.comments.nodes.map((c: Node) =>
-    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c), c.authorAssociation ?? null, mentions(c.body, own)]);
+    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c), c.authorAssociation ?? null, mentions(c.body, own), c.url ?? null]);
   if (kind === "pr") {
     for (const c of n.reviews.nodes) {
       // A review without a body still counts: its inline threads are the discussion, and it makes earlier reviews stale.
-      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c), c.authorAssociation ?? null, mentions(c.body, own)]);
+      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c), c.authorAssociation ?? null, mentions(c.body, own), c.url ?? null]);
     }
   }
   return rows;
@@ -278,9 +278,9 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => c === "mergeable" ? `mergeable=${KEEP_KNOWN_MERGEABLE("items")}` : `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
   const del = db.prepare("DELETE FROM main.comments WHERE repo=? AND number=?");
-  const insComment = db.prepare(`INSERT INTO main.comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+  const insComment = db.prepare(`INSERT INTO main.comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
-    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association, mentions_pipeline=excluded.mentions_pipeline`);
+    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association, mentions_pipeline=excluded.mentions_pipeline, url=excluded.url`);
   const live = appSlug();
   if (live) { try { rememberSlug(db, live); } catch { /* read-only connection */ } }
   const own = mentionNames(db, live);
