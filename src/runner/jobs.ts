@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobDetail,  JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
 import { trackedNames } from "../repos.ts";
 import { accountLabelsByJob, failRunning } from "../agents/runs.ts";
+import { releaseJob } from "./leases.ts";
 import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
 import { shownLookup } from "../dash/api/shown.ts";
 
@@ -111,8 +112,12 @@ export async function checkRequest(db: DatabaseSync, stepName: unknown, rawParam
 }
 
 /** Queues a job. The same step with the same params already waiting is refused. */
-export async function enqueue(db: DatabaseSync, stepName: unknown, rawParams: unknown, by: string): Promise<Job> {
-  const { step, params } = await checkRequest(db, stepName, rawParams);
+/** `settle` runs after the request is checked and before the insert, with no await between: it may change the params (a recomputed limit) or return null to refuse. */
+export async function enqueue(db: DatabaseSync, stepName: unknown, rawParams: unknown, by: string, settle?: (step: StepDef, params: Record<string, unknown>) => Record<string, unknown> | null): Promise<Job> {
+  const checked = await checkRequest(db, stepName, rawParams);
+  const { step } = checked;
+  const params = settle ? settle(step, checked.params) : checked.params;
+  if (!params) throw new JobError(409, `the daily limit of ${step.name} leaves too little for a job`);
   const json = JSON.stringify(params);
   if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND params = ? AND state = 'queued'").get(step.name, json)) {
     throw new JobError(409, `${step.name} with these settings is already queued`);
@@ -224,6 +229,7 @@ export function endJob(db: DatabaseSync, id: number, code: number | null, signal
   }
   failRunning(db, "The job ended during this call.", id);
   db.prepare("DELETE FROM model_waits WHERE job_id = ?").run(id);
+  releaseJob(db, id);
   db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = ?, progress = CASE WHEN ? = 'done' THEN NULL ELSE progress END WHERE id = ?")
     .run(state, now(), state === "failed" ? error : null, state, id);
   return { state, error: state === "failed" ? error : null };

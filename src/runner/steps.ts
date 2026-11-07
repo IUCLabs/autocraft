@@ -39,6 +39,8 @@ export type StepContext = {
   acted(n: number): void;
   /** Set when a cancel was requested; long loops should stop between units of work. */
   cancelled(): boolean;
+  /** True when no new item should start: a cancel was requested, the deadline passed, or a pipeline job runs while the pipeline is not on. The current item finishes. */
+  stopping(): boolean;
 };
 
 export type StepDef = {
@@ -379,7 +381,7 @@ export const STEPS: StepDef[] = [
       const { runFixup } = await import("../fixup/index.ts");
       const refused = await checkPushApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runFixup(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      const r = await runFixup(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.pushed.length + r.asked.length + r.failed.length + r.held.length);
       return `${r.repo}: pushed ${r.pushed.length}, ${r.asked.length} asked, ${r.failed.length} failed or refused, ${r.held.length} held`;
     },
@@ -399,7 +401,7 @@ export const STEPS: StepDef[] = [
     ],
     run: async (ctx) => {
       const { runVerify } = await import("../verify/index.ts");
-      const r = await runVerify(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      const r = await runVerify(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled, stopping: ctx.stopping }, ctx.log);
       ctx.usageRun(r.runId);
       const k = Object.entries(r.kinds).map(([x, n]) => `${n} ${x}`).join(", ");
       return `${r.repo}: planned ${r.handled} of ${r.candidates} candidates${k ? ` (${k})` : ""}; ${r.errors} errors, ${r.tasks.length} tasks queued`;
@@ -417,7 +419,7 @@ export const STEPS: StepDef[] = [
     params: [],
     run: async (ctx) => {
       const { runCollect } = await import("../verify/results.ts");
-      const r = await runCollect(ctx.db, {}, ctx.log);
+      const r = await runCollect(ctx.db, { stopping: ctx.stopping }, ctx.log);
       ctx.usageRun(r.runId);
       ctx.handled(r.changed);
       return `${r.looked} pending: ${r.passed} passed, ${r.failed} failed, ${r.errors} errors, ${r.retried} retried, ${r.stale} stale, ${r.running} running; ${r.warmCancelled} warm builds cancelled`;
@@ -473,7 +475,7 @@ export const STEPS: StepDef[] = [
       const { runFixIssue } = await import("../fixissue/index.ts");
       const refused = await checkFixIssueApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runFixIssue(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      const r = await runFixIssue(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.usageRun(r.runId);
       return `${r.repo}: ${r.started.length} started, ${r.skipped.length} not a clear fix, ${r.queued.length} further rounds queued`;
     },
@@ -490,7 +492,7 @@ export const STEPS: StepDef[] = [
     params: [],
     run: async (ctx) => {
       const { runFixIssueCollect } = await import("../fixissue/index.ts");
-      const r = await runFixIssueCollect(ctx.db, { by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      const r = await runFixIssueCollect(ctx.db, { stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.usageRun(r.runId);
       ctx.handled(r.changed);
       return `${r.looked} pending: ${r.passed} passed, ${r.opened} PRs opened, ${r.failedRounds} failed rounds, ${r.failed} failed, ${r.retried} retried`;
@@ -542,7 +544,12 @@ export const STEPS: StepDef[] = [
       const repo = String(ctx.params.repo), n = Number(ctx.params.number);
       const scan = rawFinding(ctx.db, repo, n)!.scan_id;
       ctx.usageRun(usageRunId(scan));
-      return runFix(ctx.db, repo, n, defaultFixDeps(ctx.db, scan, { cancelled: ctx.cancelled, log: ctx.log }));
+      const { leaseItem } = await import("./leases.ts");
+      const release = leaseItem(ctx.db, `finding:${repo}#${n}`, ctx.log);
+      if (!release) return `${repo}#${n}: another job is working this finding`;
+      try {
+        return await runFix(ctx.db, repo, n, defaultFixDeps(ctx.db, scan, { cancelled: ctx.cancelled, log: ctx.log }));
+      } finally { release(); }
     },
   },
   {
@@ -898,7 +905,7 @@ export const STEPS: StepDef[] = [
       const { runCifix } = await import("../cifix/index.ts");
       const refused = await checkPushApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runCifix(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      const r = await runCifix(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.pushed.length + r.asked.length + r.queued.length + r.failed.length + r.held.length + r.infra.length);
       return `${r.repo}: pushed ${r.pushed.length}, ${r.asked.length} commented, ${r.queued.length} formatter runs queued, ${r.infra.length} infrastructure failures, ${r.failed.length} failed or refused, ${r.held.length} held`;
     },
@@ -919,7 +926,7 @@ export const STEPS: StepDef[] = [
       const { runRerun } = await import("../cifix/index.ts");
       const refused = await checkCiApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       return `${r.repo}: reran ${r.reran.length} PRs, ${r.skipped.length} skipped`;
     },
   },
@@ -938,7 +945,7 @@ export const STEPS: StepDef[] = [
       const { runMainFix } = await import("../mainfix/index.ts");
       const refused = await checkMainFixApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runMainFix(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      const r = await runMainFix(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled, stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.reran + r.asked + r.needsFix + r.issues + r.prs);
       return `${r.repo}: classified ${r.classified} heads, reran ${r.reran}, asked ${r.asked}, ${r.needsFix} need a fix, ${r.issues} issues opened, ${r.prs} fix PRs opened`;
     },

@@ -56,6 +56,7 @@ import type { LintPrevious } from "../fixup/patch.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf, slugOf } from "../owners.ts";
+import { leaseItem } from "../runner/leases.ts";
 
 export { MAX_TRIES, type CifixCandidate } from "./candidates.ts";
 export { selectCifix } from "./select.ts";
@@ -130,7 +131,7 @@ export function defaultDeps(): CifixDeps {
   };
 }
 
-export type CifixParams = { repo: string; limit?: number; /** Default true. */ dryRun?: boolean; onHandled?: (n: number) => void; /** Who asked; default: an operator at the command line. */ by?: By };
+export type CifixParams = { repo: string; limit?: number; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean; /** Default true. */ dryRun?: boolean; onHandled?: (n: number) => void; /** Who asked; default: an operator at the command line. */ by?: By };
 export type CifixSummary = {
   runId: string; repo: string; dryRun: boolean;
   pushed: string[]; asked: string[]; queued: string[]; infra: string[]; skipped: string[];
@@ -694,9 +695,17 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     rec.set(c, "code", "capped", reason);
     log(`  ${refOf(c)}: ${reason}`);
   }
+  const stopped = (): boolean => {
+    if (!params.stopping?.()) return false;
+    log(`cifix ${repo}: stopping, no new PRs started`);
+    return true;
+  };
   // A fix capped or given up at this head: one comment naming the failing checks, then the PR waits on the contributor.
   for (const c of sel.ask) {
+    if (stopped()) break;
     const ref = refOf(c);
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
     try {
       const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
       if (reading.kind === "skip") { rec.set(c, "code", "skipped", reading.why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${reading.why}`); continue; }
@@ -718,25 +727,36 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       log(`  ${ref}: asked the contributor about the failing CI at ${short(c.head)}`);
     } catch (e) {
       log(`  ${ref}: not asked: ${scrubReason(oneLine(String((e as Error).message ?? e)), d.root)}`);
-    }
+    } finally { release(); }
   }
   for (const x of collect) {
+    if (stopped()) break;
+    const release = leaseItem(db, `pr:${repo}#${x.c.number}`, log);
+    if (!release) continue;
     try { await collectFormat(x.c, x.task); }
     catch (e) {
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(x.c, "format", "failed", reason);
       summary.failed.push({ ref: refOf(x.c), reason });
-    }
+    } finally { release(); }
   }
   for (const c of sel.lint) {
+    if (stopped()) break;
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
     try { await collectLint(c); }
     catch (e) {
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(c, "code", "failed", reason);
       summary.failed.push({ ref: refOf(c), reason });
-    }
+    } finally { release(); }
   }
-  for (const c of work) await workOne(c);
+  for (const c of work) {
+    if (stopped()) break;
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
+    try { await workOne(c); } finally { release(); }
+  }
   log(`cifix ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} commented, ${summary.queued.length} formatter runs queued, ${summary.infra.length} infra, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }
@@ -759,7 +779,10 @@ export async function runRerun(db: DatabaseSync, params: CifixParams, log: (line
   const w: Writer = { db, login: RERUN_ACTOR };
   let n = 0;
   for (const { c, runs } of picks) {
+    if (params.stopping?.()) { log(`cifix-rerun ${repo}: stopping, no new PRs started`); break; }
     const ref = refOf(c);
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
     try {
       const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
@@ -783,7 +806,7 @@ export async function runRerun(db: DatabaseSync, params: CifixParams, log: (line
       log(`  ${ref}: reran ${runs.length} runs${errors.length ? ` (${errors.length} refused)` : ""}`);
     } catch (e) {
       log(`  ${ref}: not rerun: ${oneLine(String((e as Error).message ?? e))}`);
-    }
+    } finally { release(); }
   }
   return out;
 }

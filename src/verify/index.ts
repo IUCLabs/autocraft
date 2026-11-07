@@ -9,6 +9,7 @@
 // Part 2 (results) belongs in ./results.ts: it reads the finished tasks of each `planned` or `running`
 // verification, sets the state, summary and finished_at, writes the failure summary and cancels the
 // queued tasks of a verification whose PR head moved on (state `stale`).
+import { leaseItem } from "../runner/leases.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { BuildError } from "../build/envs.ts";
 import { connect } from "../db.ts";
@@ -63,7 +64,7 @@ export function defaultDeps(): VerifyDeps {
   };
 }
 
-export type VerifyParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void };
+export type VerifyParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean };
 export type VerifySummary = {
   runId: string; repo: string; candidates: number; handled: number;
   kinds: Record<string, number>; errors: number; tasks: number[]; warm: number | null; skipped: string[];
@@ -122,74 +123,79 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
   const ci = !repoHasNoCi(db, repo);
 
   for (const c of cands) {
-    const ref = refOf(c);
-    const handle = (): void => { summary.handled++; params.onHandled?.(summary.handled); };
-    const byCi = (): void => {
-      saveVerification(db, c, { kind: "ci-enough", reason: CI_REASON, plan: null, model: null, headTask: null, baseTask: null, baseSha: null, state: "ci-enough", summary: CI_REASON });
-      summary.kinds["ci-enough"] = (summary.kinds["ci-enough"] ?? 0) + 1;
-      handle();
-    };
-    if (ci) {
-      // Only a bugfix that adds or changes a test file may get a regression test; everything else is covered by CI.
-      if (c.label !== "bugfix") { byCi(); continue; }
-      const pre = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
-      // Without a readable diff there is no test file to find, so CI is the verification.
-      if (!pre.ok || !codeDiff(pre.text).testsOmitted.length) { byCi(); continue; }
-    }
-    const cr = await cachedCrates(repo, c.head_oid, deps.fetchCrates);
-    if (!cr.ok) { log(`  ${ref}: no crate list: ${cr.error}`); summary.skipped.push(ref); continue; }
-    if (!cr.rust) {
-      saveVerification(db, c, unavailableRow(NOT_RUST_REASON));
-      log(`  ${ref}: verification unavailable: ${NOT_RUST_REASON}`);
-      handle();
-      continue;
-    }
-    const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
-    if (!d.ok) {
-      if (d.tooLarge) { saveVerification(db, c, errorRow("GitHub refuses the diff: too large to plan")); summary.errors++; handle(); }
-      else { log(`  ${ref}: no diff: ${d.error}`); summary.skipped.push(ref); }
-      continue;
-    }
-    let cd = codeDiff(d.text);
-    if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
-    if (cd.text.length > MAX_DIFF_CHARS) { saveVerification(db, c, errorRow(`code diff of ${cd.text.length} characters is too large to plan`)); summary.errors++; handle(); continue; }
-    const base = await deps.baseOf(repo, c.number);
-    if (!base) { log(`  ${ref}: no base commit`); summary.skipped.push(ref); continue; }
-
-    const input = planInput(c, cr.crates, cd, ci);
-    const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
-    if (checkout) input.repo_dir = REPO_PATH;
-    const start = now();
-    const planned = await runModelStep(db, VERIFY_PLAN, input, {
-      model: deps.model, checkout, ctx: { ref, crates: cr.crates, label: c.label, ci },
-      usage: { run: runId, agent: `verify-${c.number}`, stage: "verify", items: (ok) => (ok ? 1 : 0) },
-    });
-    const result = planned.ok ? planned.value : null;
-    if (!result) { log(`  ${ref}: no answer from the planner`); summary.skipped.push(ref); handle(); continue; }
-    handle();
-    if (!result.ok) {
-      log(`  ${ref}: invalid plan: ${result.error}`);
-      saveVerification(db, c, { ...errorRow(result.error), model: deps.model });
-      summary.errors++;
-      continue;
-    }
-    const plan = result.plan;
-    summary.kinds[plan.kind] = (summary.kinds[plan.kind] ?? 0) + 1;
-    if (plan.kind === "ci-enough") {
-      saveVerification(db, c, { kind: plan.kind, reason: plan.reason, plan: null, model: deps.model, headTask: null, baseTask: null, baseSha: base, state: "ci-enough", summary: plan.reason });
-      continue;
-    }
+    if (params.stopping?.()) { log(`verify ${repo}: stopping, no new PRs started`); break; }
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
     try {
-      const ids = queueTasks(db, plan, { repo, number: c.number, head: c.head_oid, base });
-      summary.tasks.push(...ids);
-      queued = true;
-      saveVerification(db, c, { kind: plan.kind, reason: plan.reason, plan: storedPlan(plan), model: deps.model, headTask: ids[0] ?? null, baseTask: ids[1] ?? null, baseSha: base, state: "planned", summary: plan.reason });
-    } catch (e) {
-      if (!(e instanceof BuildError)) throw e;
-      log(`  ${ref}: tasks not queued: ${e.message}`);
-      saveVerification(db, c, { ...errorRow(`tasks not queued: ${e.message}`), model: deps.model });
-      summary.errors++;
-    }
+      const ref = refOf(c);
+      const handle = (): void => { summary.handled++; params.onHandled?.(summary.handled); };
+      const byCi = (): void => {
+        saveVerification(db, c, { kind: "ci-enough", reason: CI_REASON, plan: null, model: null, headTask: null, baseTask: null, baseSha: null, state: "ci-enough", summary: CI_REASON });
+        summary.kinds["ci-enough"] = (summary.kinds["ci-enough"] ?? 0) + 1;
+        handle();
+      };
+      if (ci) {
+        // Only a bugfix that adds or changes a test file may get a regression test; everything else is covered by CI.
+        if (c.label !== "bugfix") { byCi(); continue; }
+        const pre = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
+        // Without a readable diff there is no test file to find, so CI is the verification.
+        if (!pre.ok || !codeDiff(pre.text).testsOmitted.length) { byCi(); continue; }
+      }
+      const cr = await cachedCrates(repo, c.head_oid, deps.fetchCrates);
+      if (!cr.ok) { log(`  ${ref}: no crate list: ${cr.error}`); summary.skipped.push(ref); continue; }
+      if (!cr.rust) {
+        saveVerification(db, c, unavailableRow(NOT_RUST_REASON));
+        log(`  ${ref}: verification unavailable: ${NOT_RUST_REASON}`);
+        handle();
+        continue;
+      }
+      const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
+      if (!d.ok) {
+        if (d.tooLarge) { saveVerification(db, c, errorRow("GitHub refuses the diff: too large to plan")); summary.errors++; handle(); }
+        else { log(`  ${ref}: no diff: ${d.error}`); summary.skipped.push(ref); }
+        continue;
+      }
+      let cd = codeDiff(d.text);
+      if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
+      if (cd.text.length > MAX_DIFF_CHARS) { saveVerification(db, c, errorRow(`code diff of ${cd.text.length} characters is too large to plan`)); summary.errors++; handle(); continue; }
+      const base = await deps.baseOf(repo, c.number);
+      if (!base) { log(`  ${ref}: no base commit`); summary.skipped.push(ref); continue; }
+
+      const input = planInput(c, cr.crates, cd, ci);
+      const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
+      if (checkout) input.repo_dir = REPO_PATH;
+      const start = now();
+      const planned = await runModelStep(db, VERIFY_PLAN, input, {
+        model: deps.model, checkout, ctx: { ref, crates: cr.crates, label: c.label, ci },
+        usage: { run: runId, agent: `verify-${c.number}`, stage: "verify", items: (ok) => (ok ? 1 : 0) },
+      });
+      const result = planned.ok ? planned.value : null;
+      if (!result) { log(`  ${ref}: no answer from the planner`); summary.skipped.push(ref); handle(); continue; }
+      handle();
+      if (!result.ok) {
+        log(`  ${ref}: invalid plan: ${result.error}`);
+        saveVerification(db, c, { ...errorRow(result.error), model: deps.model });
+        summary.errors++;
+        continue;
+      }
+      const plan = result.plan;
+      summary.kinds[plan.kind] = (summary.kinds[plan.kind] ?? 0) + 1;
+      if (plan.kind === "ci-enough") {
+        saveVerification(db, c, { kind: plan.kind, reason: plan.reason, plan: null, model: deps.model, headTask: null, baseTask: null, baseSha: base, state: "ci-enough", summary: plan.reason });
+        continue;
+      }
+      try {
+        const ids = queueTasks(db, plan, { repo, number: c.number, head: c.head_oid, base });
+        summary.tasks.push(...ids);
+        queued = true;
+        saveVerification(db, c, { kind: plan.kind, reason: plan.reason, plan: storedPlan(plan), model: deps.model, headTask: ids[0] ?? null, baseTask: ids[1] ?? null, baseSha: base, state: "planned", summary: plan.reason });
+      } catch (e) {
+        if (!(e instanceof BuildError)) throw e;
+        log(`  ${ref}: tasks not queued: ${e.message}`);
+        saveVerification(db, c, { ...errorRow(`tasks not queued: ${e.message}`), model: deps.model });
+        summary.errors++;
+      }
+    } finally { release(); }
   }
 
   if (queued) {

@@ -125,6 +125,7 @@ export class Runner {
     const orphans = failRunning(this.db, "The runner stopped during this call.");
     if (orphans) this.o.log(`${orphans} agent runs left running by an earlier runner, marked failed`);
     this.db.prepare("DELETE FROM model_waits").run();
+    this.db.prepare("DELETE FROM work_leases").run();
     const rows = this.db.prepare("SELECT id, pid, cancel_requested_at FROM jobs WHERE state = 'running'").all() as { id: number; pid: number | null; cancel_requested_at: string | null }[];
     for (const r of rows) {
       if (this.running.has(r.id)) continue;

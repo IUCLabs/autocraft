@@ -1,6 +1,7 @@
 // Part 2 of the Verify stage: result collection from finished tasks, the failure summary, the retry of
 // an infrastructure error and the cancel of tasks whose PR moved on. Part 1 (index.ts) only plans and queues.
 // Pass or fail comes from the tasks' exit codes, never from a model; Haiku only describes a failure.
+import { leaseItem } from "../runner/leases.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { BuildTask, TaskResult, TaskStep } from "../../web/src/api/types.ts";
 import { BuildError } from "../build/envs.ts";
@@ -203,7 +204,7 @@ function cancelOpen(db: DatabaseSync, ids: (number | null)[]): void {
 const retriesOf = (db: DatabaseSync, v: Row): number =>
   (db.prepare("SELECT COUNT(*) AS n FROM build_tasks WHERE step = 'verify' AND repo = ? AND number = ? AND head_sha = ? AND warm_role = 'use'").get(v.repo, v.number, v.head_sha) as { n: number }).n - 1;
 
-export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {
+export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean } = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {
   const d: CollectDeps = deps ?? { model: PROMPT.models[0]!, mainHead: (await import("./index.ts")).defaultDeps().mainHead };
   const runId = `verify-collect-${now().replace(/[-:]/g, "").slice(0, 15)}`;
   const s: CollectSummary = { runId, looked: 0, passed: 0, failed: 0, errors: 0, retried: 0, stale: 0, running: 0, warmCancelled: 0, changed: 0 };
@@ -215,68 +216,74 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } 
   if (params.dryRun) { log(`verify-collect: ${rows.length} pending; dry run`); return s; }
 
   for (const v of rows) {
-    const ref = `${v.repo}#${v.number}`;
-    const finish = (state: string, summary: string | null, note: string | null): boolean => {
-      const r = db.prepare("UPDATE verifications SET state = ?, summary = ?, note = ?, finished_at = ? WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')")
-        .run(state, summary, note, now(), v.repo, v.number, v.head_sha);
-      return Number(r.changes) > 0;
-    };
+    if (params.stopping?.()) { log("verify-collect: stopping, no new PRs started"); break; }
+    const release = leaseItem(db, `pr:${v.repo}#${v.number}`, log);
+    if (!release) continue;
+    try {
+      if (params.stopping?.()) { log("verify-collect: stopping, no new PRs started"); break; }
+      const ref = `${v.repo}#${v.number}`;
+      const finish = (state: string, summary: string | null, note: string | null): boolean => {
+        const r = db.prepare("UPDATE verifications SET state = ?, summary = ?, note = ?, finished_at = ? WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')")
+          .run(state, summary, note, now(), v.repo, v.number, v.head_sha);
+        return Number(r.changes) > 0;
+      };
 
-    if (v.item_state !== "OPEN" || v.item_head !== v.head_sha) {
-      cancelOpen(db, [v.head_task_id, v.base_task_id]);
-      if (finish("stale", v.summary, v.note)) { s.stale++; s.changed++; jobItem(db, v.repo, v.number, `stale (${v.item_state === "OPEN" ? "head moved" : "no longer open"})`, log); }
-      continue;
-    }
-
-    const head = v.head_task_id === null ? null : getTask(db, v.head_task_id);
-    const base = v.base_task_id === null ? null : getTask(db, v.base_task_id);
-    const tasks = [head, base].filter((t): t is BuildTask => t !== null);
-    if (!head) {
-      if (finish("error", "the build task is gone", null)) { s.errors++; s.changed++; stageRow(db, v, "verify-error", now(), `${v.kind} at ${v.head_sha.slice(0, 7)}: the build task is gone`); }
-      continue;
-    }
-    if (tasks.some((t) => !TERMINAL.includes(t.state))) {
-      if (v.state === "planned" && tasks.some((t) => t.state === "claimed" || t.state === "running")) {
-        db.prepare("UPDATE verifications SET state = 'running' WHERE repo = ? AND number = ? AND head_sha = ? AND state = 'planned'").run(v.repo, v.number, v.head_sha);
-        s.running++; s.changed++;
-      }
-      continue;
-    }
-
-    const verdict = verdictOf(outcomeOf(head), base ? outcomeOf(base) : null);
-    const at = now();
-    const sha7 = v.head_sha.slice(0, 7);
-
-    if (verdict.state === "error" && retriesOf(db, v) < MAX_RETRIES) {
-      try {
-        const ids = [v.head_task_id, v.base_task_id].map((id) => (id === null ? null : cloneTask(db, id)));
-        db.prepare("UPDATE verifications SET head_task_id = ?, base_task_id = ?, state = 'planned' WHERE repo = ? AND number = ? AND head_sha = ?").run(ids[0], ids[1], v.repo, v.number, v.head_sha);
-        s.retried++; s.changed++;
-        jobItem(db, v.repo, v.number, `${verdict.reason}; queued the tasks again`, log);
+      if (v.item_state !== "OPEN" || v.item_head !== v.head_sha) {
+        cancelOpen(db, [v.head_task_id, v.base_task_id]);
+        if (finish("stale", v.summary, v.note)) { s.stale++; s.changed++; jobItem(db, v.repo, v.number, `stale (${v.item_state === "OPEN" ? "head moved" : "no longer open"})`, log); }
         continue;
-      } catch (e) {
-        if (!(e instanceof BuildError)) throw e;
-        verdict.reason = `${verdict.reason}; tasks not queued again: ${e.message}`;
       }
-    }
 
-    if (verdict.state === "passed") {
-      if (finish("passed", null, verdict.note ?? null)) {
-        s.passed++; s.changed++;
-        stageRow(db, v, "verified", at, `${v.kind} at ${sha7} passed${verdict.note ? `: ${verdict.note}` : ""}`);
+      const head = v.head_task_id === null ? null : getTask(db, v.head_task_id);
+      const base = v.base_task_id === null ? null : getTask(db, v.base_task_id);
+      const tasks = [head, base].filter((t): t is BuildTask => t !== null);
+      if (!head) {
+        if (finish("error", "the build task is gone", null)) { s.errors++; s.changed++; stageRow(db, v, "verify-error", now(), `${v.kind} at ${v.head_sha.slice(0, 7)}: the build task is gone`); }
+        continue;
       }
-    } else if (verdict.state === "error") {
-      const why = oneLine(verdict.reason ?? "error");
-      if (finish("error", why, null)) { s.errors++; s.changed++; stageRow(db, v, "verify-error", at, `${v.kind} at ${sha7}: ${why}`); }
-    } else {
-      const summary = verdict.failed ? await summariseFailure(db, v, v.head_task_id!, verdict.failed, d, runId) : oneLine(verdict.reason ?? "failed");
-      if (finish("failed", summary, null)) {
-        s.failed++; s.changed++;
-        stageRow(db, v, "verify-failed", at, `${v.kind} at ${sha7}: ${summary}`);
-        stageRow(db, v, "hold", at, `verify failed: ${summary}`);
+      if (tasks.some((t) => !TERMINAL.includes(t.state))) {
+        if (v.state === "planned" && tasks.some((t) => t.state === "claimed" || t.state === "running")) {
+          db.prepare("UPDATE verifications SET state = 'running' WHERE repo = ? AND number = ? AND head_sha = ? AND state = 'planned'").run(v.repo, v.number, v.head_sha);
+          s.running++; s.changed++;
+        }
+        continue;
       }
-    }
-    log(`  ${ref}: ${verdict.state}`);
+
+      const verdict = verdictOf(outcomeOf(head), base ? outcomeOf(base) : null);
+      const at = now();
+      const sha7 = v.head_sha.slice(0, 7);
+
+      if (verdict.state === "error" && retriesOf(db, v) < MAX_RETRIES) {
+        try {
+          const ids = [v.head_task_id, v.base_task_id].map((id) => (id === null ? null : cloneTask(db, id)));
+          db.prepare("UPDATE verifications SET head_task_id = ?, base_task_id = ?, state = 'planned' WHERE repo = ? AND number = ? AND head_sha = ?").run(ids[0], ids[1], v.repo, v.number, v.head_sha);
+          s.retried++; s.changed++;
+          jobItem(db, v.repo, v.number, `${verdict.reason}; queued the tasks again`, log);
+          continue;
+        } catch (e) {
+          if (!(e instanceof BuildError)) throw e;
+          verdict.reason = `${verdict.reason}; tasks not queued again: ${e.message}`;
+        }
+      }
+
+      if (verdict.state === "passed") {
+        if (finish("passed", null, verdict.note ?? null)) {
+          s.passed++; s.changed++;
+          stageRow(db, v, "verified", at, `${v.kind} at ${sha7} passed${verdict.note ? `: ${verdict.note}` : ""}`);
+        }
+      } else if (verdict.state === "error") {
+        const why = oneLine(verdict.reason ?? "error");
+        if (finish("error", why, null)) { s.errors++; s.changed++; stageRow(db, v, "verify-error", at, `${v.kind} at ${sha7}: ${why}`); }
+      } else {
+        const summary = verdict.failed ? await summariseFailure(db, v, v.head_task_id!, verdict.failed, d, runId) : oneLine(verdict.reason ?? "failed");
+        if (finish("failed", summary, null)) {
+          s.failed++; s.changed++;
+          stageRow(db, v, "verify-failed", at, `${v.kind} at ${sha7}: ${summary}`);
+          stageRow(db, v, "hold", at, `verify failed: ${summary}`);
+        }
+      }
+      log(`  ${ref}: ${verdict.state}`);
+    } finally { release(); }
   }
 
   s.warmCancelled = await cancelMovedWarmBuilds(db, d, log);

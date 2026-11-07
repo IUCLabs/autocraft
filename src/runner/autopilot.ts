@@ -168,10 +168,10 @@ const limitsSig = (db: DatabaseSync): string =>
 
 const repoOf = (c: Candidate): string | null => (typeof c.params.repo === "string" ? c.params.repo : null);
 
-type JobEnd = { id: number; endedAt: string; state: string; items: number | null; acted: number | null };
+type JobEnd = { id: number; endedAt: string; state: string; items: number | null; acted: number | null; lease_skips: number | null };
 
 function lastJobEnd(db: DatabaseSync, step: string, repo: string | null, requestedBy?: string): JobEnd | undefined {
-  return db.prepare(`SELECT id, ended_at AS endedAt, state, items, acted FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?)
+  return db.prepare(`SELECT id, ended_at AS endedAt, state, items, acted, lease_skips FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?)
     AND ended_at IS NOT NULL AND (? IS NULL OR requested_by = ?) AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT 1`)
     .get(step, repo, repo, requestedBy ?? null, requestedBy ?? null, RUNNER_STOPPED) as JobEnd | undefined;
 }
@@ -567,12 +567,24 @@ export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now
   return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, reset && reset > day ? reset : day) as { n: number }).n;
 }
 
+/** The part of its `limit` that each queued or running job of the step has not used yet: the day's limit keeps it for them. */
+export function reservedByJobs(db: DatabaseSync, step: string): number {
+  const rows = db.prepare("SELECT params, items FROM jobs WHERE step = ? AND state IN ('queued', 'running')").all(step) as { params: string; items: number | null }[];
+  let n = 0;
+  for (const r of rows) {
+    let limit: unknown;
+    try { limit = (JSON.parse(r.params) as { limit?: unknown }).limit; } catch { continue; }
+    if (typeof limit === "number") n += Math.max(0, limit - (r.items ?? 0));
+  }
+  return n;
+}
+
 /** The `limit` a job of the step may get (undefined when the step has none), or null when the day's limit leaves less than the step's minimum. `wanted` is a limit asked for (default: the step's). */
 export function jobLimit(db: DatabaseSync, step: StepDef, ms: number = Date.now(), wanted?: number): { limit?: number } | null {
   const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
   if (!lp || lp.kind !== "int") return {};
   const perDay = limitRow(db, step.name).per_day;
-  const limit = Math.min(wanted ?? lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, step.name, ms));
+  const limit = Math.min(wanted ?? lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, step.name, ms) - reservedByJobs(db, step.name));
   return limit < lp.min ? null : { limit };
 }
 
@@ -891,6 +903,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
 function unchangedSinceIdle(db: DatabaseSync, step: string, repo: string | null, fp: string): boolean {
   const last = lastJobEnd(db, step, repo, AUTOPILOT_USER);
   if (!last || last.state !== "done" || !wasIdle(last)) return false;
+  // A job that skipped items another job was working retries once no running job holds a lease. While one does, the step stays parked, so the planner does not queue it in a loop.
+  if (last.lease_skips && !db.prepare("SELECT 1 FROM work_leases l JOIN jobs j ON j.id = l.job_id WHERE j.state = 'running' LIMIT 1").get()) return false;
   const rec = fpRecord(db, step, repo);
   if (!rec || rec.job !== last.id || rec.fp !== fp) return false;
   return !((releasedAt(db, step) ?? "") > last.endedAt);
@@ -913,7 +927,12 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
     try {
       // The detection ran a moment ago: a job of the same step may have been queued since.
       if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running')").get(p.step)) continue;
-      const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER);
+      // The limit is what is left now, so two proposals of one step cannot both carry the whole remainder.
+      const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER, (step, params) => {
+        if (typeof params.limit !== "number") return params;
+        const lim = jobLimit(db, step, Date.now(), params.limit);
+        return lim ? { ...params, ...lim } : null;
+      });
       queued.push(job.id);
       done.add(p.lane);
       if (p.fp !== undefined) setSetting(db, fpKey(p.step, typeof p.params.repo === "string" ? p.params.repo : null), JSON.stringify({ job: job.id, fp: p.fp } satisfies FpRecord));
