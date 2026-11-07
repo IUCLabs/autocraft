@@ -6,7 +6,7 @@ import { cifixBucket, fixupOf, queueEntry } from "./decide.ts";
 import { nextStep } from "./decide-item.ts";
 import { mergeDecisionId } from "./rules.ts";
 import { isWork } from "./assignment.ts";
-import type { ItemFacts, Plan, PrFacts } from "./plan.ts";
+import type { ItemFacts, Plan, PrFacts, WaitKind } from "./plan.ts";
 import { isQueueState } from "./plan.ts";
 import { statusOf, type ItemStatus } from "./item-status.ts";
 import { loadPlanSet, type PlanSet, type PlanSetOptions } from "./plan-set.ts";
@@ -68,7 +68,7 @@ function queueViewOf(f: PrFacts, plan: Plan): QueueView {
   };
 }
 
-function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFacts; plan: Parameters<typeof nextStep>[0] } | null, wait: string | null, plannedAt: string): PlanView {
+function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFacts; plan: Parameters<typeof nextStep>[0] } | null, wait: string | null, waitKind: WaitKind | null, plannedAt: string): PlanView {
   const v = { status: { phase: "Triage", waiting: null, next: null, since: plannedAt } } as PlanView;
   if (item) {
     v.next = nextStep(item.plan, item.facts, pr?.facts ?? null);
@@ -84,7 +84,7 @@ function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFa
     if (isQueueState(pr.plan.state) && pr.facts.review) v.queue = queueViewOf(pr.facts, pr.plan);
   }
   v.status = {
-    ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked" }),
+    ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, waitKind, scopeAnswered: pr?.facts.scopeAnswer != null, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked" }),
     since: plannedAt,
   };
   return v;
@@ -99,16 +99,18 @@ export function planRows(plans: PlanSet, plannedAt: string = new Date().toISOStr
     const pr = prs.get(ref) ?? null;
     prs.delete(ref);
     const actions = [...item.actions, ...(pr?.plan.actions ?? [])];
-    const wait = actions.some(isWork) ? null : pr?.plan.wait ?? item.wait;
+    const work = actions.some(isWork);
+    const wait = work ? null : pr?.plan.wait ?? item.wait;
+    const waitKind = work ? null : pr?.plan.wait != null ? pr.plan.waitKind : item.waitKind;
     rows.push({
       repo: f.repo, number: f.number, kind: f.kind, head: pr?.facts.head ?? null, state: pr ? pr.plan.state : item.state, item_state: item.state,
       actions: JSON.stringify(actions), wait, reasons: JSON.stringify(pr?.plan.reasons ?? []), note: pr?.plan.note ?? null,
-      view: JSON.stringify(viewOf(pr, { facts: f, plan: item }, wait, plannedAt)),
+      view: JSON.stringify(viewOf(pr, { facts: f, plan: item }, wait, waitKind, plannedAt)),
     });
   }
   // PRs outside the item facts: merged ones with a take review, and PRs of repos that are not tracked.
   for (const { facts: f, plan } of prs.values()) {
-    rows.push({ repo: f.repo, number: f.number, kind: "pr", head: f.head, state: plan.state, item_state: null, actions: JSON.stringify(plan.actions), wait: plan.wait, reasons: JSON.stringify(plan.reasons), note: plan.note, view: JSON.stringify(viewOf({ facts: f, plan }, null, plan.wait, plannedAt)) });
+    rows.push({ repo: f.repo, number: f.number, kind: "pr", head: f.head, state: plan.state, item_state: null, actions: JSON.stringify(plan.actions), wait: plan.wait, reasons: JSON.stringify(plan.reasons), note: plan.note, view: JSON.stringify(viewOf({ facts: f, plan }, null, plan.wait, plan.waitKind, plannedAt)) });
   }
   return rows;
 }
