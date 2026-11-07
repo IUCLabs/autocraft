@@ -110,10 +110,10 @@ describe("ping replies", () => {
     assert.deepEqual(body.message_reference, { message_id: "p1", fail_if_not_exists: false });
     assert.match(body.content!, /photocraft#1 Export to WebP ignores the quality setting\n> Same WebP quality problem/);
     assert.match(body.content!, /photocraft#3 Add WebP export \(closed\)/);
-    const buttons = (body.components![0] as { components: { style: number; label: string; url: string }[] }).components;
+    const buttons = (body.components![0] as { components: { style: number; label: string; url?: string; custom_id?: string }[] }).components;
     assert.deepEqual(buttons.map((b) => b.label), ["photocraft#1", "photocraft#3", "File a new issue"]);
-    assert.ok(buttons.every((b) => b.style === 5));
-    assert.equal(buttons[2]!.url, `https://github.com/storytold/photocraft/issues/new?title=${encodeURIComponent(QUESTION)}`);
+    assert.ok(buttons.slice(0, 2).every((b) => b.style === 5));
+    assert.match(buttons[2]!.custom_id!, /^inewi:open:photocraft:/);
     // The model saw the quoted text, not the ping, and only public open issues and recently completed ones.
     const input = asked[0] as { question: string; candidates: { ref: string; closed: boolean }[] };
     assert.equal(input.question, QUESTION);

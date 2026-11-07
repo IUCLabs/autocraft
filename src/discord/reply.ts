@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Match } from "./search.ts";
 import { publicRepoNames } from "../public/status.ts";
+import { formButtonId } from "./issue-draft.ts";
 import { trackedRepos } from "./store.ts";
 
 const TITLE_CHARS = 80;
@@ -43,7 +44,7 @@ export function renderMatches(db: DatabaseSync, matches: Match[], question: stri
   const lines = matches.map((m) => `${m.repo}#${m.number} ${oneLine(plain(m.title), TITLE_CHARS)}${m.closed ? " (closed)" : ""}${m.reason ? `\n> ${plain(m.reason)}` : ""}`);
   const buttons: unknown[] = matches.map((m) => ({ type: 2, style: 5, label: `${m.repo}#${m.number}`.slice(0, 80), url: m.url }));
   const repo = fileRepoUrl(db, channelId, matches);
-  if (repo) buttons.push({ type: 2, style: 5, label: "File a new issue", url: newIssueUrl(repo, question) });
+  if (repo) buttons.push({ type: 2, style: 2, label: "File a new issue", custom_id: formButtonId(repo.split("/").pop()!, question) });
   return {
     content: lines.length ? lines.join("\n") : "No matching issue found.",
     components: buttons.length ? [{ type: 1, components: buttons }] : [],

@@ -23,7 +23,9 @@ export const EPHEMERAL = 64;
 export const CALLBACK_MESSAGE = 4;
 export const CALLBACK_DEFERRED = 5;
 export const CALLBACK_CHOICES = 8;
-export type CallbackData = { content?: string; components?: unknown[]; ephemeral?: boolean; choices?: { name: string; value: string }[] };
+/** A modal form, shown instead of a message; only as the first answer to an interaction. */
+export const CALLBACK_MODAL = 9;
+export type CallbackData = { custom_id?: string; title?: string; content?: string; components?: unknown[]; ephemeral?: boolean; choices?: { name: string; value: string }[] };
 
 export type CommandDef = { name: string; type: 1 | 2 | 3; description?: string; options?: unknown[]; dm_permission?: boolean };
 
@@ -33,7 +35,7 @@ export interface DiscordRest {
   editMessage(channelId: string, messageId: string, body: EditBody): Promise<void>;
   deleteMessage(channelId: string, messageId: string): Promise<void>;
   /** Answers an interaction: a message (type 4), a deferral (type 5) or autocomplete choices (type 8); `ephemeral` shows a message to the caller only. */
-  interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8, data?: CallbackData): Promise<void>;
+  interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8 | 9, data?: CallbackData): Promise<void>;
   /** Replaces the deferred or first response of an interaction. */
   editInteractionResponse(applicationId: string, token: string, body: EditBody): Promise<void>;
   /** Makes the guild's commands exactly `commands`. */
@@ -84,9 +86,9 @@ export class RestClient implements DiscordRest {
     }
   }
 
-  async interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8, data?: CallbackData): Promise<void> {
+  async interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8 | 9, data?: CallbackData): Promise<void> {
     const { ephemeral, ...rest } = data ?? {};
-    const payload = { type, data: { ...rest, allowed_mentions: { parse: [] }, ...(ephemeral && { flags: EPHEMERAL }) } };
+    const payload = { type, data: type === 9 ? rest : { ...rest, allowed_mentions: { parse: [] }, ...(ephemeral && { flags: EPHEMERAL }) } };
     const path = `/interactions/${interactionId}/${token}/callback`;
     await this.#send("POST", path, routeKey("POST", path), payload, false);
   }

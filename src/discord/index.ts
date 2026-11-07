@@ -15,6 +15,7 @@ import { forgetLink } from "./links.ts";
 import { Search, dropTexts } from "./search.ts";
 import { installAccountCommands } from "./commands.ts";
 import { installSearchCommands } from "./search-commands.ts";
+import { dropIssueTexts, installIssueNew } from "./issue-new.ts";
 import { DiscordConfigError, readKeyFile, readTokenFile, type DiscordKeys } from "./keys.ts";
 import { forgetAuthor, forgetMessages, handleDispatch, setStatus, upsertChannel } from "./store.ts";
 
@@ -79,9 +80,10 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
   const interactions = new Interactions(rest, log);
   installSearchCommands(interactions, { db, keys, search });
   installAccountCommands(interactions, { db, keys });
+  installIssueNew(interactions, { db, keys, search, log });
   const pings = new Pings({ db, keys, rest, search, log });
   // A crash during a call can leave the question in a recorded prompt.
-  try { dropTexts(db, true); } catch (e) { log(`runner: removing search texts failed: ${(e as Error).message}`); }
+  try { dropTexts(db, true); dropIssueTexts(db, true); } catch (e) { log(`runner: removing search texts failed: ${(e as Error).message}`); }
   const gw = new Gateway({
     token,
     log,
