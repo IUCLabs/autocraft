@@ -12,6 +12,7 @@ import type { Writer } from "../github/write.ts";
 import { viewerOf } from "../merge/index.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { leaseItem } from "../runner/leases.ts";
 import { ownerOf } from "../owners.ts";
 
 export const ACTOR = "unassign";
@@ -40,12 +41,17 @@ export async function runUnassign(db: DatabaseSync, p: UnassignParams): Promise<
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(PIPELINE_LOGIN_KEY, me.login);
   for (const d of due) {
     const ref = `${p.repo}#${d.number}`;
+    // A running job works the item (it may have just claimed it): leave the claim alone.
+    const release = leaseItem(db, `${d.pr ? "pr" : "issue"}:${ref}`, log);
+    if (!release) continue;
     try {
       const info = await (d.pr ? pullRequestInfo(q, ownerOf(p.repo), p.repo, d.number) : issueInfo(q, ownerOf(p.repo), p.repo, d.number));
       if (info && await releaseItem(w, g, q, p.repo, d.number, info, me, { run: p.runId })) { out.unassigned.push(ref); jobItem(db, p.repo, d.number, `unassigned from ${me.login}`, log); }
     } catch (e) {
       out.failed.push(ref);
       jobItem(db, p.repo, d.number, `could not unassign: ${oneLine(String((e as Error).message ?? e))}`, log);
+    } finally {
+      release();
     }
   }
   return out;

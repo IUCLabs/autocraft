@@ -52,25 +52,25 @@ export type Want = { step: string; repo: string | null; number?: number | null }
 
 /**
  * Why the job cannot be queued or started now, or null. `states` are the jobs that count: queued and running for
- * queueing, running alone for starting. `extra` are jobs about to be queued. `mutex` also checks StepDef.exclusive
+ * queueing, running alone for starting. `extra` are proposals of the same pass: they only count as the same work (a duplicate), so a fallback proposal for another repo can still be made. `reserved` are jobs this pass already queued or gated: they count for the same work and for the repo capacity. `mutex` also checks StepDef.exclusive
  * against running jobs. With `precheck` (a planner check before any repo is known) only the repo capacity is checked.
  */
-export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Want, o: { states?: ("queued" | "running")[]; extra?: Active[]; mutex?: boolean; precheck?: boolean } = {}): string | null {
-  const jobs = [...activeJobs(db, o.states), ...(o.extra ?? [])];
-  const same = jobs.filter((j) => j.step === want.step);
+export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Want, o: { states?: ("queued" | "running")[]; extra?: Active[]; reserved?: Active[]; mutex?: boolean; precheck?: boolean } = {}): string | null {
+  const held = [...activeJobs(db, o.states), ...(o.reserved ?? [])].filter((j) => j.step === want.step);
+  const same = [...held, ...(o.extra ?? []).filter((j) => j.step === want.step)];
   if (!o.precheck) {
     const clash = same.find((j) => sameWork(want.step, j, { repo: want.repo, number: want.number ?? null }));
     if (clash) return `job ${clash.id} of ${want.step} is ${clash.state}`;
   }
   const cap = stepParallel(db);
   if (cap !== Infinity) {
-    const repos = new Set(same.map((j) => j.repo ?? ""));
+    const repos = new Set(held.map((j) => j.repo ?? ""));
     if (repos.size >= cap && (o.precheck || !repos.has(want.repo ?? ""))) return `${want.step} is working ${repos.size} repo${repos.size === 1 ? "" : "s"}, the most at once (step_parallel)`;
   }
   const mutex = steps.get(want.step)?.exclusive;
   if (o.mutex && mutex) {
-    const held = activeJobs(db, ["running"]).find((j) => steps.get(j.step)?.exclusive === mutex);
-    if (held) return `job ${held.id} (${held.step}) is running with the same mutex (${mutex})`;
+    const other = activeJobs(db, ["running"]).find((j) => steps.get(j.step)?.exclusive === mutex);
+    if (other) return `job ${other.id} (${other.step}) is running with the same mutex (${mutex})`;
   }
   return null;
 }

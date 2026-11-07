@@ -62,3 +62,17 @@ test("at the process cap a queued security-class job starts before an older norm
   await settle(r, [busy.id, normal.id, urgent.id]);
   assert.ok(getJob(db, urgent.id).startedAt! <= getJob(db, normal.id).startedAt!, "the security job started first");
 });
+
+test("a proposal reserves the step it is gated on: at step_parallel 1 another repo's job of that step waits", async () => {
+  const { applyProposals, detectAutopilot } = await import("../src/runner/autopilot.ts");
+  db.exec("DELETE FROM jobs");
+  setStepParallel(db, 1, "test");
+  const lanes = [
+    { name: "first", steps: ["test-repo"], detect: () => [{ step: "test-repo", params: { repo: "a" }, gate: { step: "test-urgent", params: { repo: "a" } } }] },
+    { name: "second", steps: ["test-urgent"], detect: () => [{ step: "test-urgent", params: { repo: "b" } }] },
+  ];
+  const found = await detectAutopilot(db, { lanes });
+  const ids = await applyProposals(db, found.proposals, { lanes });
+  assert.deepEqual((db.prepare("SELECT step, repo FROM jobs WHERE id IN (" + ids.join(",") + ")").all() as { step: string; repo: string }[]).map((j) => `${j.step}:${j.repo}`), ["test-repo:a"]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM jobs").get()!.n, 1);
+});

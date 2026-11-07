@@ -47,7 +47,7 @@ import { claudePauseReason } from "../agents/accounts.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
 import { jobBlock, stepParallel, type Active } from "./concurrency.ts";
-import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
+import { knownStep, loadSteps, STEPS, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
 import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
 import { FAST_FLOOR, fastFirst, fastScoreOf } from "../fasttrack.ts";
@@ -782,7 +782,7 @@ export type Detected = {
   timing?: { loadMs: number; lanesMs: number; cacheMs: number; written: number; deleted: number };
 };
 
-/** The fewest proposals one lane hands to apply, in case the first ones are refused at enqueue; the proposals of a lane are for different repos. */
+/** The fewest proposals one lane hands to apply: one per repo, in order, so that when the first is refused at enqueue (or the step is full at step_parallel) the next repo's goes in. */
 const PROPOSALS_PER_LANE = 3;
 
 const nextUtcMidnight = (ms: number): number => Date.parse(dayStart(ms)) + 86_400_000;
@@ -924,6 +924,9 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
   const lanes = opts.lanes ?? LANES, log = opts.log ?? (() => {});
   const queued: number[] = [];
   const done = new Set<string>();
+  // Jobs queued in this pass and the steps their proposals gate: they hold a repo of the step, so with step_parallel 1 no other repo takes it.
+  const reserved: Active[] = [];
+  const asActive = (step: string, params: Params, state: string): Active => ({ id: 0, step, state, repo: typeof params.repo === "string" ? params.repo : null, number: typeof params.number === "number" ? params.number : null });
   const steps = await loadSteps();
   try { applyUsedAnswers(db); } catch (e) { log(`autopilot: answers: ${(e as Error).message}`); }
   // Marks the next planner pass wants: when a wait ends, and why stages are not starting.
@@ -935,7 +938,8 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
     if (done.has(slot)) continue;
     try {
       // The detection ran a moment ago: a job of the same step and repo may have been queued since.
-      if (jobBlock(db, steps, { step: p.step, repo: typeof p.params.repo === "string" ? p.params.repo : null, number: typeof p.params.number === "number" ? p.params.number : null })) continue;
+      if (jobBlock(db, steps, { step: p.step, repo: typeof p.params.repo === "string" ? p.params.repo : null, number: typeof p.params.number === "number" ? p.params.number : null }, { reserved })) continue;
+      if (p.gate && jobBlock(db, steps, { step: p.gate.step, repo: typeof p.gate.params.repo === "string" ? p.gate.params.repo : null }, { reserved })) continue;
       // The limit is what is left now, so two proposals of one step cannot both carry the whole remainder.
       const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER, (step, params) => {
         if (typeof params.limit !== "number") return params;
@@ -943,6 +947,8 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
         return lim ? { ...params, ...lim } : null;
       });
       queued.push(job.id);
+      reserved.push(asActive(p.step, p.params, "queued"));
+      if (p.gate) reserved.push(asActive(p.gate.step, p.gate.params, "gated"));
       done.add(slot);
       if (p.fp !== undefined) setSetting(db, fpKey(p.step, typeof p.params.repo === "string" ? p.params.repo : null), JSON.stringify({ job: job.id, fp: p.fp } satisfies FpRecord));
       const c: Candidate = { step: p.step, params: Object.fromEntries(Object.entries(p.params).filter(([k]) => k !== "limit")) };
@@ -1100,7 +1106,7 @@ export function heldLookup(db: DatabaseSync): (repo: string, number: number, dec
   const laneHold = (name: string): Held | null => {
     if (!gateOf.has(name)) {
       const lane = LANES.find((l) => l.name === name);
-      const g = lane ? laneGate(db, lane) : null;
+      const g = lane ? laneGate(db, lane, new Map(STEPS.map((x) => [x.name, x]))) : null;
       gateOf.set(name, g && !g.canRun && g.kind !== "running" && g.why ? { reason: plain(g.why), approval: false } : null);
     }
     return gateOf.get(name)!;
@@ -1124,13 +1130,14 @@ export function heldLookup(db: DatabaseSync): (repo: string, number: number, dec
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };
 
 /** Whether a job of the lane can start now, from the same checks the planner's gate() makes. */
-export function laneGate(db: DatabaseSync, lane: Pick<Lane, "steps">, ms: number = Date.now()): LaneGate {
+export function laneGate(db: DatabaseSync, lane: Pick<Lane, "steps">, allSteps: Map<string, StepDef>, ms: number = Date.now()): LaneGate {
   if (!isEnabled(db)) return { canRun: false, kind: "off", why: isDraining(db) ? "The pipeline is draining" : "The pipeline is off" };
   const steps = lane.steps ?? [];
   let blocked: LaneGate | null = null;
   for (const s of steps) {
-    const j = db.prepare("SELECT id, state FROM jobs WHERE step = ? AND state IN ('queued', 'running') ORDER BY state = 'running' DESC LIMIT 1").get(s) as { id: number; state: string } | undefined;
-    if (j) { blocked ??= { canRun: false, kind: "running", why: `Job ${j.id} of ${s} is ${j.state}` }; continue; }
+    // Blocked only when no repo can start: the step already works its most repos.
+    const full = jobBlock(db, allSteps, { step: s, repo: null }, { precheck: true });
+    if (full) { blocked ??= { canRun: false, kind: "running", why: full.replace(/ \(step_parallel\)$/, "") }; continue; }
     const why = pauseReason(db, s, ms);
     if (!why) return { canRun: true, kind: "ok", why: null };
     const kind = /^tripped/.test(why) ? "breaker" : /daily limit/.test(why) ? "limit" : /^failed/.test(why) ? "backoff" : "account";
