@@ -9,6 +9,7 @@ import { forgetLink, redeemLinkCode } from "./links.ts";
 import { plain } from "./reply.ts";
 
 const ATTEMPTS = { n: 5, ms: 60_000 };
+const READ_LIMIT = { n: 10, ms: 60_000 };
 const REF = /^\s*([\w.-]+)#(\d+)\s*$/;
 
 export function formatStats(s: PublicStats): string {
@@ -31,14 +32,20 @@ export function formatStatus(s: PublicStatus): string {
 export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSync; keys: DiscordKeys; now?: () => number }): void {
   const { db, keys } = deps;
   const tries = new Map<string, number[]>();
-  /** Code entries per Discord user, so a code cannot be guessed by repeating the command. */
-  const mayTry = (user: string): boolean => {
+  /** Sliding window per key: false when `lim.n` uses are already inside it. Keys whose uses have all expired are dropped. */
+  const allow = (key: string, lim: { n: number; ms: number }): boolean => {
     const now = (deps.now ?? Date.now)();
-    const live = (tries.get(user) ?? []).filter((t) => now - t < ATTEMPTS.ms);
-    if (live.length >= ATTEMPTS.n) { tries.set(user, live); return false; }
-    tries.set(user, [...live, now]);
+    for (const [k, v] of tries) if (now - v[v.length - 1]! >= (k.startsWith("read:") ? READ_LIMIT.ms : ATTEMPTS.ms)) tries.delete(k);
+    const live = (tries.get(key) ?? []).filter((t) => now - t < lim.ms);
+    if (live.length >= lim.n) return false;
+    tries.set(key, [...live, now]);
     return true;
   };
+  /** Code entries per Discord user, so a code cannot be guessed by repeating the command. */
+  const mayTry = (user: string): boolean => allow(`link:${user}`, ATTEMPTS);
+  /** Stats and status lookups per Discord user. */
+  const mayRead = (call: Call): boolean => allow(`read:${keys.hash("author", call.userId ?? "?")}`, READ_LIMIT);
+  const TOO_MANY = "Too many requests just now. Try again in a minute.";
   const def = {
     name: "autocraft", type: 1 as const, description: "AutoCraft", dm_permission: false,
     options: [
@@ -62,6 +69,7 @@ export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSyn
     await call.edit({ content: n ? "Link removed." : "This Discord account is not linked." });
   });
   ix.command("autocraft stats", null, async (call: Call) => {
+    if (!mayRead(call)) return void (await call.edit({ content: TOO_MANY }));
     const repo = call.option("repo")?.trim();
     const s = publicStats(db, repo || undefined);
     await call.edit({ content: s ? formatStats(s) : "No public repo by that name." });
@@ -71,6 +79,7 @@ export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSyn
     return publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
   });
   ix.command("autocraft status", null, async (call) => {
+    if (!mayRead(call)) return void (await call.edit({ content: TOO_MANY }));
     const m = REF.exec(call.option("item") ?? "");
     const s = m ? publicStatus(db, m[1]!, Number(m[2])) : null;
     if (!s) return void (await call.edit({ content: "No item found. Use the form repo#123." }));

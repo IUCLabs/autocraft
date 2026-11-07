@@ -89,10 +89,10 @@ export function putContact(db: DatabaseSync, req: Req): DiscordSetup {
   return setupOf(db);
 }
 
-/** Whether the signed-in user has a Discord account linked. */
+/** Whether the signed-in user has a Discord account linked, and whether this server can make link codes (it has the key file). */
 export const account = (db: DatabaseSync, req: Req): DiscordAccount => {
   const at = linkedSince(db, req.user.login);
-  return { linked: at !== null, at };
+  return { linked: at !== null, at, configured: discordKeys() !== null };
 };
 
 /** A single-use code, valid for 10 minutes, that links a Discord account to the signed-in login when typed into the bot's `/autocraft link`. */

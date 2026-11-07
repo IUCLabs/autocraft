@@ -15,7 +15,7 @@ import { DiscordKeys } from "../src/discord/keys.ts";
 import { installAccountCommands } from "../src/discord/commands.ts";
 import { createLinkCode, loginOf } from "../src/discord/links.ts";
 import { Pings } from "../src/discord/pings.ts";
-import type { CommandDef, DiscordRest, EditBody, MessageBody } from "../src/discord/rest.ts";
+import { RestClient, callbackPayload, type CommandDef, type DiscordRest, type EditBody, type MessageBody } from "../src/discord/rest.ts";
 import { Search, dropTexts, type Ask } from "../src/discord/search.ts";
 import { installSearchCommands } from "../src/discord/search-commands.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
@@ -244,5 +244,45 @@ describe("commands", () => {
     call("i6", "unlink", []);
     await settle();
     assert.equal(loginOf(db, keys, "u50"), null);
+  });
+});
+
+describe("account command limits", () => {
+  test("stats and status allow 10 a minute per person; the window slides", async () => {
+    let now = 1_000_000;
+    const ix = new Interactions(rest, (l) => assert.fail(l));
+    installAccountCommands(ix, { db, keys, now: () => now });
+    const status = (id: string, user: string) =>
+      ix.dispatch("INTERACTION_CREATE", { id, token: "t", type: 2, application_id: "app1", channel_id: "c1", member: { user: { id: user } }, data: { name: "autocraft", type: 1, options: [{ name: "status", type: 1, options: [{ name: "item", type: 3, value: "photocraft#2" }] }] } });
+    const settle = () => new Promise((r) => setTimeout(r, 5));
+    for (let i = 0; i < 10; i++) { status(`s${i}`, "u60"); await settle(); assert.match(rest.edits.at(-1)!.content!, /photocraft#2/); }
+    status("s10", "u60"); await settle();
+    assert.match(rest.edits.at(-1)!.content!, /Too many requests/);
+    status("s11", "u61"); await settle();
+    assert.match(rest.edits.at(-1)!.content!, /photocraft#2/);
+    now += 61_000;
+    status("s12", "u60"); await settle();
+    assert.match(rest.edits.at(-1)!.content!, /photocraft#2/);
+  });
+});
+
+describe("rest", () => {
+  test("a used-up bucket delays only its own channel; autocomplete results carry only choices", async () => {
+    let now = 0;
+    const sleeps: number[] = [];
+    const seen: string[] = [];
+    const fetcher = (async (url: string) => {
+      seen.push(url);
+      return new Response("{}", { status: 200, headers: { "x-ratelimit-bucket": "b1", "x-ratelimit-remaining": "0", "x-ratelimit-reset-after": "5" } });
+    }) as unknown as typeof fetch;
+    const client = new RestClient({ token: "t", fetch: fetcher, now: () => now, sleep: async (ms) => { sleeps.push(ms); } });
+    await client.createMessage("111", { content: "a", allowed_mentions: { parse: [] } });
+    await client.createMessage("222", { content: "b", allowed_mentions: { parse: [] } });
+    assert.deepEqual(sleeps, []);
+    await client.createMessage("111", { content: "c", allowed_mentions: { parse: [] } });
+    assert.deepEqual(sleeps, [5000]);
+    assert.deepEqual(callbackPayload(8, { choices: [{ name: "a", value: "a" }], content: "x", components: [] }, false), { type: 8, data: { choices: [{ name: "a", value: "a" }] } });
+    assert.deepEqual(callbackPayload(5, {}, true), { type: 5, data: { flags: 64 } });
+    assert.deepEqual(callbackPayload(4, { content: "hi" }, true), { type: 4, data: { content: "hi", allowed_mentions: { parse: [] }, flags: 64 } });
   });
 });

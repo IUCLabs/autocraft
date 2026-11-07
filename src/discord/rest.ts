@@ -50,11 +50,26 @@ export class RestError extends Error {
 
 export type RestDeps = { token: string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>; now?: () => number };
 
+export function callbackPayload(type: 4 | 5 | 8, data: Omit<CallbackData, "ephemeral">, ephemeral: boolean): { type: number; data: Record<string, unknown> } {
+  const flags = ephemeral ? { flags: EPHEMERAL } : {};
+  if (type === CALLBACK_CHOICES) return { type, data: { choices: data.choices ?? [] } };
+  if (type === CALLBACK_DEFERRED) return { type, data: flags };
+  return { type, data: { ...(data.content !== undefined && { content: data.content }), ...(data.components && { components: data.components }), allowed_mentions: { parse: [] }, ...flags } };
+}
+
 /** Requests that share a limit share a key: ids are replaced, except the channel, guild or webhook id Discord limits per resource. */
 export function routeKey(method: string, path: string): string {
   const parts = path.split("/").filter(Boolean);
   const major = new Set(["channels", "guilds", "webhooks", "interactions"]);
   return `${method} ${parts.map((p, i) => (/^\d+$/.test(p) && !major.has(parts[i - 1] ?? "") ? ":id" : /^[\w-]{40,}$/.test(p) ? ":token" : p)).join("/")}`;
+}
+
+/** The resource Discord scopes a bucket to: channel_id, guild_id, or webhook_id with its token. Empty for other routes. */
+export function majorOf(path: string): string {
+  const parts = path.split("/").filter(Boolean);
+  const i = parts.findIndex((p) => p === "channels" || p === "guilds" || p === "webhooks");
+  if (i < 0 || !parts[i + 1]) return "";
+  return parts[i] === "webhooks" ? `webhooks/${parts[i + 1]}/${parts[i + 2] ?? ""}` : `${parts[i]}/${parts[i + 1]}`;
 }
 
 export class RestClient implements DiscordRest {
@@ -86,7 +101,8 @@ export class RestClient implements DiscordRest {
 
   async interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8, data?: CallbackData): Promise<void> {
     const { ephemeral, ...rest } = data ?? {};
-    const payload = { type, data: { ...rest, allowed_mentions: { parse: [] }, ...(ephemeral && { flags: EPHEMERAL }) } };
+    // Autocomplete results (type 8) take only `choices`; a deferral (type 5) takes flags only; a message (type 4) also takes content, components and allowed_mentions.
+    const payload = callbackPayload(type, rest, !!ephemeral);
     const path = `/interactions/${interactionId}/${token}/callback`;
     await this.#send("POST", path, routeKey("POST", path), payload, false);
   }
@@ -102,7 +118,7 @@ export class RestClient implements DiscordRest {
   #queue(method: string, path: string, body: unknown, auth: boolean): Promise<unknown> {
     const key = routeKey(method, path);
     // The chain is per bucket once Discord has named it, else per route.
-    const chain = this.#bucketOf.get(key) ?? key;
+    const chain = this.#stateKey(key, path);
     const run = (this.#chains.get(chain) ?? Promise.resolve()).then(() => this.#send(method, path, key, body, auth));
     const tail = run.catch(() => undefined);
     this.#chains.set(chain, tail);
@@ -110,12 +126,18 @@ export class RestClient implements DiscordRest {
     return run;
   }
 
+  /** Limit state is kept per Discord bucket and major parameter, so one channel's limit does not delay another's; per route until a bucket is named. */
+  #stateKey(key: string, path: string): string {
+    const b = this.#bucketOf.get(key);
+    return b ? `${b}|${majorOf(path)}` : `${key}|${majorOf(path)}`;
+  }
+
   async #send(method: string, path: string, key: string, body: unknown, auth: boolean): Promise<unknown> {
     const f = this.#d.fetch ?? fetch;
     const now = this.#d.now ?? Date.now;
     const sleep = this.#d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     for (let attempt = 1; ; attempt++) {
-      const stateKey = this.#bucketOf.get(key) ?? key;
+      const stateKey = this.#stateKey(key, path);
       const gap = Math.max(this.#globalUntil, this.#notBefore.get(stateKey) ?? 0) - now();
       if (gap > 0) await sleep(Math.min(gap, MAX_WAIT_MS));
       const r = await f(`${API}${path}`, {
@@ -125,7 +147,7 @@ export class RestClient implements DiscordRest {
       });
       const bucket = r.headers.get("x-ratelimit-bucket");
       if (bucket) this.#bucketOf.set(key, bucket);
-      const owner = bucket ?? stateKey;
+      const owner = bucket ? `${bucket}|${majorOf(path)}` : stateKey;
       if (r.status === 429) {
         const j = (await r.json().catch(() => ({}))) as { retry_after?: number; global?: boolean };
         const given = j.retry_after ?? Number(r.headers.get("retry-after"));
