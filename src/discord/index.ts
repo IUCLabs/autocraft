@@ -5,8 +5,7 @@ import { connect } from "../db.ts";
 import { loadConfig, type Config } from "../dash/server/config.ts";
 import { TokenBox } from "../dash/server/crypto.ts";
 import { providerFor } from "../dash/server/provider.ts";
-import { PERM_READ_TTL, PERM_WRITE_TTL, userForLogin } from "../dash/server/sessions.ts";
-import type { Role, User } from "../dash/types.ts";
+import { userForLogin } from "../dash/server/sessions.ts";
 import { audit } from "../dash/audit.ts";
 import { envVar } from "../env.ts";
 import { localEmbedder } from "../embed/model.ts";
@@ -67,18 +66,12 @@ export function dispatcher(db: DatabaseSync, keys: DiscordKeys, interactions: In
 function installDecisionAlerts(db: DatabaseSync, keys: DiscordKeys, rest: RestClient, interactions: Interactions, signal: AbortSignal, log: (l: string) => void): void {
   let config: Config | null = null;
   try { config = loadConfig(process.env); } catch (e) { log(`runner: Discord alerts use cached permissions only: ${(e as Error).message}`); }
-  const cached = (login: string, role: Role, forWrite: boolean): User => {
-    const perm = (repo: string): string | null => {
-      const r = db.prepare("SELECT permission, checked_at FROM repo_permissions WHERE login = ? AND repo = ?").get(login, repo) as { permission: string; checked_at: string } | undefined;
-      return r && Date.now() - Date.parse(r.checked_at) < (forWrite ? PERM_WRITE_TTL : PERM_READ_TTL) ? r.permission : null;
-    };
-    return { login, role, canWrite: async (repo) => ["write", "maintain", "admin"].includes(perm(repo) ?? ""), canRead: async (repo) => { const p = perm(repo); return p !== null && p !== "none"; } };
-  };
   const box = config ? new TokenBox(config.secrets.sessionKey) : null;
   const provider = config ? providerFor(config) : null;
   const alerts = new DecisionAlerts({
     db, keys, rest, log, baseUrl: config?.baseUrl ?? envVar("BASE_URL") ?? null,
-    userFor: (login, role, forWrite) => (box && provider ? userForLogin(db, box, provider, login, role, forWrite) : cached(login, role, forWrite)),
+    // Without the dashboard configuration there is no token box: userForLogin then answers from cached permissions, as it does for agent tokens.
+    userFor: (login, role, forWrite) => userForLogin(db, box as never, provider as never, login, role, forWrite),
   });
   installAlertCommands(interactions, alerts);
   alerts.start(signal);

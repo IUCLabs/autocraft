@@ -9,7 +9,7 @@ import { decisionStamp } from "../src/conversations/cards.ts";
 import { writeChoices } from "../src/decide/choices.ts";
 import { connect } from "../src/db.ts";
 import { ask, getDecision } from "../src/decisions.ts";
-import { DecisionAlerts, installAlertCommands, type DmRest } from "../src/discord/alerts.ts";
+import { DecisionAlerts, coreId, installAlertCommands, type DmRest } from "../src/discord/alerts.ts";
 import { installAccountCommands } from "../src/discord/commands.ts";
 import { Interactions } from "../src/discord/interactions.ts";
 import { DiscordKeys } from "../src/discord/keys.ts";
@@ -23,12 +23,13 @@ class FakeRest implements DmRest {
   sent: { channelId: string; id: string; body: MessageBody }[] = [];
   edited: { channelId: string; id: string; body: EditBody }[] = [];
   responses: string[] = [];
+  bodies: EditBody[] = [];
   async createDm(userId: string) { return { id: `dm-${userId}` }; }
   async createMessage(channelId: string, body: MessageBody) { const id = `m${this.sent.length + 1}`; this.sent.push({ channelId, id, body }); return { id }; }
   async editMessage(channelId: string, id: string, body: EditBody) { this.edited.push({ channelId, id, body }); }
   async deleteMessage() {}
   async interactionCallback() {}
-  async editInteractionResponse(_a: string, _t: string, body: EditBody) { this.responses.push(body.content ?? ""); }
+  async editInteractionResponse(_a: string, _t: string, body: EditBody) { this.responses.push(body.content ?? ""); this.bodies.push(body); }
   async overwriteGuildCommands() {}
 }
 
@@ -39,7 +40,7 @@ test("alerts: opt-in, a new decision reaches only people who may settle it, a pr
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   db.prepare("INSERT INTO repos (name, visibility) VALUES ('app', 'public')").run();
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, head_oid, created_at, updated_at, labels) VALUES ('app', ?, 'pr', 'OPEN', ?, 'Body', 'someone', 'sha', '${T0}', '${T0}', '[]')`);
-  for (const n of [2, 3, 4]) item.run(n, `PR ${n}`);
+  for (const n of [2, 3, 4, 5]) item.run(n, `PR ${n}`);
   for (const [login, role] of [["op", "operator"], ["mia", "maintainer"], ["vi", "viewer"]]) db.prepare("INSERT INTO access (login, role) VALUES (?, ?)").run(login, role);
   // Mia may settle while maintainer writes are on, the app acts for her on the repo and her write permission is fresh.
   setMaintainerWrites(db, true);
@@ -87,22 +88,34 @@ test("alerts: opt-in, a new decision reaches only people who may settle it, a pr
   await alerts.sync();
   assert.equal(rest.edited.length, 2);
   const edit = rest.edited.find((e) => e.channelId === "dm-1")!;
-  assert.deepEqual(comps(edit.body).map((c) => c.custom_id ?? "link"), [`dc:${row.id}:0`, `dc:${row.id}:1`, `dc:${row.id}:3`, "link"]);
+  assert.deepEqual(comps(edit.body).map((c) => c.custom_id ?? "link"), [`dc:${row.id}:${coreId("o:merge")}`, `dc:${row.id}:${coreId("o:hold")}`, `dc:${row.id}:${coreId("backlog")}`, "link"]);
   assert.match(edit.body.content ?? "", /Opus: Wait for CI/);
 
-  // Mia loses the right to settle: her press is refused with the dashboard's error and the decision stays open.
+  // A core that writes to GitHub asks for a second press and names what it will do; a stale or unknown key is refused.
+  const hold = `dc:${row.id}:${coreId("o:hold")}`;
+  assert.match(await run("1", { custom_id: `dc:${row.id}:${coreId("o:merge")}` }), /Merge: merge/);
+  assert.deepEqual(comps(rest.bodies.at(-1)!).map((c) => c.custom_id), [`dcc:${row.id}:${coreId("o:merge")}`]);
+  assert.equal(getDecision(db, "app#2:merge")!.answer, null);
+  assert.match(await run("1", { custom_id: `dc:${row.id}:${coreId("x:close:completed")}` }), /replaced by newer choices/);
+
+  // Mia loses the right to settle: her message becomes "No longer available", her press is refused with the dashboard's error.
   setMaintainerWrites(db, false);
-  assert.match(await run("2", { custom_id: `dc:${row.id}:1` }), /only an operator/);
+  await alerts.sync();
+  const gone = rest.edited.at(-1)!;
+  assert.equal(gone.channelId, "dm-2");
+  assert.equal(gone.body.content, "No longer available");
+  assert.match(await run("2", { custom_id: hold }), /only an operator/);
   assert.equal(getDecision(db, d.id)!.answer, null);
 
-  // Op presses Hold: the decision is answered with op's login, and both messages lose their buttons.
-  assert.match(await run("1", { custom_id: `dc:${row.id}:1` }), /Done: Hold/);
+  // Op presses Hold (no write: one press): the decision is answered with op's login, and the message loses its buttons.
+  assert.match(await run("1", { custom_id: hold }), /Done: Hold/);
   assert.equal(getDecision(db, d.id)!.answer, "hold");
   assert.equal(getDecision(db, d.id)!.answered_by, "op");
   await alerts.sync();
-  const last = rest.edited.slice(-2);
-  assert.deepEqual(last.map((e) => e.channelId).sort(), ["dm-1", "dm-2"]);
-  for (const e of last) { assert.deepEqual(e.body.components, []); assert.match(e.body.content ?? "", /Answered by op: Hold/); }
+  const last = rest.edited.at(-1)!;
+  assert.equal(last.channelId, "dm-1");
+  assert.deepEqual(last.body.components, []);
+  assert.match(last.body.content ?? "", /Answered by op: Hold/);
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM discord_alert_msgs").get() as { n: number }).n, 0);
 
   // Over the hourly limit the new questions come as one summary message.
@@ -113,6 +126,11 @@ test("alerts: opt-in, a new decision reaches only people who may settle it, a pr
   const fresh = rest.sent.slice(before).filter((m) => m.channelId === "dm-1");
   assert.equal(fresh.length, 2, "one message, then one summary");
   assert.match(fresh[1]!.body.content ?? "", /^1 new question/);
+  // Only one summary an hour.
+  ask(db, [{ id: "app#5:merge", kind: "merge", repo: "app", number: 5, question: "Again?", options: [{ key: "merge", label: "Merge" }, { key: "hold", label: "Hold" }] }]);
+  const n = rest.sent.length;
+  await limited.sync();
+  assert.equal(rest.sent.length, n);
 
   // Off: the account's rows are gone.
   assert.match(await alertsCmd("1", "off"), /off/);

@@ -2,9 +2,11 @@
 // with one button per prepared core choice; a press runs the dashboard's "Do it" for that choice as the linked login. After an
 // answer from anywhere the message is edited: buttons removed, the answer named. Stored per message: the channel and message ids
 // (sealed), nothing else about the content. Free text (notes, extras, messages to Opus) stays on the dashboard.
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { applyDrafts, choicesById, coresFor, type Core } from "../decide/choices.ts";
+import { applyDrafts, choicesById, coresFor, currentChoices, type Core } from "../decide/choices.ts";
 import type { ActionTag } from "../decide/choices-types.ts";
+import { decisionStamp } from "../conversations/cards.ts";
 import { choicesView, doChoice } from "../dash/api/conversations.ts";
 import { HttpError } from "../dash/server/util.ts";
 import type { Req, Role, User } from "../dash/types.ts";
@@ -25,7 +27,10 @@ export const PER_HOUR = 20;
 const HOUR_MS = 3_600_000;
 const POLL_MS = 2000;
 /** The topics a decision alert depends on: the decisions, their prepared choices, snoozes, who may settle, and item activity that wakes a snooze. */
-const TOPICS = ["decisions", "decision-choices", "decision-snooze", "access", "items"];
+const TOPICS = ["decisions", "decision-choices", "decision-snooze"];
+/** Who may settle and the activity that wakes a snooze change often and matter less: looked at this rarely. */
+const SLOW_TOPICS = ["access", "items"];
+const SLOW_MS = 60_000;
 const MAX_BUTTONS = 24;
 const WORDS: Record<ActionTag, string> = {
   merge: "merge", close: "close", reopen: "reopen", comment: "comment", open_issue: "open issue", label: "label", unlabel: "remove label",
@@ -77,6 +82,9 @@ type Built = { content: string; components: unknown[]; choicesId: string | null 
 const itemTitle = (db: DatabaseSync, repo: string, n: number): string =>
   (db.prepare("SELECT title FROM main.items WHERE repo = ? AND number = ?").get(repo, n) as { title: string | null } | undefined)?.title ?? "";
 
+/** A button names its core by a short hash of the core key, so a changed list of choices never runs another core. */
+export const coreId = (key: string): string => createHash("sha256").update(key).digest("base64url").slice(0, 8);
+
 /** The ticked extras the dashboard would send with a plain press: Opus's own ticks that have their text. */
 const sendable = (core: Core) => core.extras.filter((e) => e.on && !(e.kind === "comment" && !e.text?.trim()) && !(e.kind === "open_issue" && !e.title?.trim()));
 
@@ -96,17 +104,20 @@ export function buildMessage(db: DatabaseSync, d: DecisionRow, baseUrl: string |
   const buttons: unknown[] = [];
   if (view) {
     const pick = view.pick?.core;
-    view.cores.forEach((c, i) => {
+    view.cores.forEach((c) => {
       if (!pressable(c as Core) || buttons.length >= MAX_BUTTONS) return;
       const w = writesOf(c as Core);
       lines.push(`${soft(c.label, 80)}: ${w.length ? w.map((t) => WORDS[t]).join(", ") : "no GitHub write"}; AutoCraft ${soft(c.autocraft, 80)}`);
-      buttons.push({ type: 2, style: c.key === pick ? 1 : 2, label: soft(c.label, 80) || "Choose", custom_id: `dc:${view.id}:${i}` });
+      buttons.push({ type: 2, style: c.key === pick ? 1 : 2, label: soft(c.label, 80) || "Choose", custom_id: `dc:${view.id}:${coreId(c.key)}` });
     });
   }
   if (baseUrl) buttons.push({ type: 2, style: 5, label: "Open in AutoCraft", url: `${baseUrl.replace(/\/+$/, "")}/items/${encodeURIComponent(first.repo)}/${first.number}#decision-${encodeURIComponent(d.id)}` });
   const rows: unknown[] = [];
   for (let k = 0; k < buttons.length; k += 5) rows.push({ type: 1, components: buttons.slice(k, k + 5) });
-  return { content: lines.join("\n").slice(0, 1990), components: rows, choicesId: view?.id ?? null };
+  const content = lines.join("\n").slice(0, 1990);
+  // What the message shows, so it is edited when the choices or their list change, not only when their id does.
+  const sig = view ? createHash("sha256").update(JSON.stringify([content, rows])).digest("base64url").slice(0, 22) : null;
+  return { content, components: rows, choicesId: sig };
 }
 
 export type AlertDeps = {
@@ -124,6 +135,9 @@ export class DecisionAlerts {
   #busy = false;
   #again = false;
   #last = "";
+  #lastSlow = "";
+  #slowAt = 0;
+  #seen = new Map<string, string>();
 
   constructor(d: AlertDeps) {
     this.#d = d;
@@ -136,7 +150,15 @@ export class DecisionAlerts {
       try {
         const seqs = readSeqs(this.#d.db);
         const sig = TOPICS.map((k) => seqs[k] ?? 0).join(",");
-        if (sig !== this.#last) { this.#last = sig; void this.sync(); }
+        let changed = sig !== this.#last;
+        this.#last = sig;
+        if (Date.now() - this.#slowAt >= SLOW_MS) {
+          this.#slowAt = Date.now();
+          const slow = SLOW_TOPICS.map((k) => seqs[k] ?? 0).join(",");
+          changed ||= slow !== this.#lastSlow;
+          this.#lastSlow = slow;
+        }
+        if (changed) void this.sync();
       } catch (e) {
         this.#d.log(`discord: alert poll failed: ${(e as Error).message}`);
       }
@@ -176,15 +198,15 @@ export class DecisionAlerts {
     const people = this.#alerters();
     // Messages first: an answer or new choices change what is shown.
     for (const m of db.prepare("SELECT decision_id, user_hash, sealed, choices_id, sent_at FROM discord_alert_msgs").all() as MsgRow[]) {
-      if (!people.some((x) => x.userHash === m.user_hash)) continue;
-      await this.#refresh(m);
+      const owner = people.find((x) => x.userHash === m.user_hash);
+      if (owner) await this.#refresh(m, owner);
     }
     for (const p of people) {
       const open = db.prepare(`SELECT * FROM decisions WHERE answer IS NULL AND NOT ${SNOOZED_SQL} AND asked_at >= (SELECT created_at FROM discord_alerts WHERE user_hash = ?) ORDER BY asked_at`).all(p.userHash) as DecisionRow[];
       const have = new Set((db.prepare("SELECT decision_id FROM discord_alert_msgs WHERE user_hash = ?").all(p.userHash) as { decision_id: string }[]).map((r) => r.decision_id));
       const fresh = open.filter((d) => !have.has(d.id) && itemsOf(d).length > 0 && canSettleCached(db, p.login, p.role, reposOf(d)));
       if (!fresh.length) continue;
-      let room = (this.#d.perHour ?? PER_HOUR) - Number((db.prepare("SELECT COUNT(*) AS n FROM discord_alert_msgs WHERE user_hash = ? AND sealed IS NOT NULL AND sent_at > ?").get(p.userHash, new Date(now - HOUR_MS).toISOString()) as { n: number }).n);
+      let room = (this.#d.perHour ?? PER_HOUR) - Number((db.prepare("SELECT COUNT(*) AS n FROM discord_alert_msgs WHERE user_hash = ? AND (sealed IS NOT NULL OR decision_id LIKE 'summary:%') AND sent_at > ?").get(p.userHash, new Date(now - HOUR_MS).toISOString()) as { n: number }).n);
       const overflow: DecisionRow[] = [];
       for (const d of fresh) {
         if (room <= 0) { overflow.push(d); continue; }
@@ -207,6 +229,8 @@ export class DecisionAlerts {
 
   async #summary(p: Alerter, ds: DecisionRow[], now: number): Promise<void> {
     const { db, rest, log } = this.#d;
+    // One summary per person per hour; the questions it would have named wait for the next pass after that.
+    if (db.prepare("SELECT 1 FROM discord_alert_msgs WHERE user_hash = ? AND decision_id LIKE 'summary:%' AND sent_at > ?").get(p.userHash, new Date(now - HOUR_MS).toISOString())) return;
     const base = this.#d.baseUrl?.replace(/\/+$/, "");
     const lines = ds.slice(0, 10).map((d) => {
       const f = itemsOf(d)[0]!;
@@ -216,15 +240,17 @@ export class DecisionAlerts {
       await rest.createMessage(p.channelId, { content: `${ds.length} new ${ds.length === 1 ? "question" : "questions"}\n${lines.join("\n")}${ds.length > 10 ? `\nand ${ds.length - 10} more` : ""}`.slice(0, 1990), allowed_mentions: { parse: [] } });
       const ins = db.prepare("INSERT OR IGNORE INTO discord_alert_msgs (decision_id, user_hash, sealed, choices_id, sent_at) VALUES (?, ?, NULL, NULL, ?)");
       for (const d of ds) ins.run(d.id, p.userHash, new Date(now).toISOString());
+      ins.run(`summary:${now}`, p.userHash, new Date(now).toISOString());
     } catch (e) {
       log(`discord: alert summary not sent: ${(e as Error).message}`);
     }
   }
 
   /** Brings one message up to date: answered or withdrawn decisions lose their buttons; prepared or replaced choices change them. */
-  async #refresh(m: MsgRow): Promise<void> {
+  async #refresh(m: MsgRow, p: Alerter): Promise<void> {
     const { db, keys, rest, log } = this.#d;
     const forget = (): void => void db.prepare("DELETE FROM discord_alert_msgs WHERE decision_id = ? AND user_hash = ?").run(m.decision_id, m.user_hash);
+    if (m.decision_id.startsWith("summary:")) return Date.parse(m.sent_at) < (this.#d.now ?? Date.now)() - 2 * HOUR_MS ? forget() : undefined;
     const d = getDecision(db, m.decision_id);
     const open = d && d.answer === null;
     if (open && m.sealed === null) return;
@@ -234,17 +260,30 @@ export class DecisionAlerts {
     if (!at) return forget();
     let body: EditBody;
     let choicesId: string | null = null;
+    let gone = false;
     if (open) {
+      // Nothing to redo while the decision and its choices are as they were at the last pass.
+      const may = canSettleCached(db, p.login, p.role, reposOf(d));
+      const key = [may, d.answer, d.question, currentChoices(db, d.id)?.id, decisionStamp(db, d), m.choices_id, coresFor(db, d).map((c) => c.key).join()].join("|");
+      const k = `${m.decision_id}|${m.user_hash}`;
+      if (this.#seen.get(k) === key) return;
+      this.#seen.set(k, key);
+      if (!may) {
+        gone = true;
+        body = { content: "No longer available", components: [] };
+      } else {
       const b = buildMessage(db, d, this.#d.baseUrl);
       if (b.choicesId === m.choices_id) return;
       choicesId = b.choicesId;
       body = { content: b.content, components: b.components };
+      }
     } else {
       body = { content: this.#settledText(d), components: [] };
     }
     try {
       await rest.editMessage(at.channelId, at.messageId, body);
-      if (open) db.prepare("UPDATE discord_alert_msgs SET choices_id = ? WHERE decision_id = ? AND user_hash = ?").run(choicesId, m.decision_id, m.user_hash);
+      if (gone) forget();
+      else if (open) db.prepare("UPDATE discord_alert_msgs SET choices_id = ? WHERE decision_id = ? AND user_hash = ?").run(choicesId, m.decision_id, m.user_hash);
       else forget();
     } catch (e) {
       // A deleted message cannot be edited and need not be.
@@ -293,9 +332,10 @@ export function installAlertCommands(ix: Interactions, alerts: DecisionAlerts): 
     void alerts.sync();
   });
 
-  ix.component("dc", async (call: Call) => {
-    const [, choicesId, index] = (call.interaction.data?.custom_id ?? "").split(":");
-    if (!call.userId || !choicesId || index === undefined) return void (await call.edit({ content: "This button is not valid." }));
+  /** Runs the core named by the button. The first press of a core that writes to GitHub shows what will happen and asks for a second press. */
+  const press = async (call: Call, confirmed: boolean): Promise<void> => {
+    const [, choicesId, id] = (call.interaction.data?.custom_id ?? "").split(":");
+    if (!call.userId || !choicesId || !id) return void (await call.edit({ content: "This button is not valid." }));
     const login = loginOf(db, keys, call.userId);
     if (!login) return void (await call.edit({ content: "Link your account first with /autocraft link." }));
     const role = roleOf(db, login);
@@ -304,20 +344,32 @@ export function installAlertCommands(ix: Interactions, alerts: DecisionAlerts): 
       const row = choicesById(db, choicesId);
       const d = row && getDecision(db, row.decisionId);
       if (!row || !d) throw new HttpError(404, `no choices ${choicesId}`);
-      // Same list the dashboard shows for these choices, so the index names the button that was pressed.
-      const core = applyDrafts(db, d, coresFor(db, d), row)[Number(index)];
+      // The same list the dashboard shows for these choices; the core is found by its key, never by position.
+      const core = applyDrafts(db, d, coresFor(db, d), row).find((c) => coreId(c.key) === id);
       if (!core) throw new HttpError(409, "replaced by newer choices");
+      const writes = writesOf(core);
+      if (!confirmed && writes.length) {
+        const shown = sendable(core).flatMap((e) => (e.kind === "comment" ? [`Comment: ${soft(e.text ?? "", 500)}`] : e.kind === "open_issue" ? [`Issue: ${soft(e.title ?? "", 120)} ${soft(e.body ?? "", 300)}`] : []));
+        const reason = core.params && "reason" in core.params && core.params.reason?.trim() ? [`Reason: ${soft(core.params.reason, 300)}`] : [];
+        const words = writes.map((t) => WORDS[t]).join(", ");
+        return void (await call.edit({
+          content: [`${soft(core.label, 80)}: ${words}; AutoCraft ${soft(core.autocraft, 80)}`, ...reason, ...shown].join("\n").slice(0, 1990),
+          components: [{ type: 1, components: [{ type: 2, style: 4, label: `Confirm: ${words}`.slice(0, 80), custom_id: `dcc:${choicesId}:${id}` }] }],
+        }));
+      }
       const user = alerts.deps.userFor(login, role, true);
       const req = {
         method: "POST", path: `/api/decision-choices/${choicesId}/do`, params: { id: choicesId }, query: new URLSearchParams(), form: new URLSearchParams(), csrf: "", nonce: "",
         json: { core: core.key, params: {}, extras: sendable(core).map((e) => ({ id: e.id })) }, user,
       } as Req;
       const card = await doChoice(db, req, alerts.deps.act);
-      await call.edit({ content: card.state === "failed" ? `Failed: ${soft(card.error ?? "the choice did not run", 300)}` : `${card.state === "done" ? "Done" : "Started"}: ${soft(core.label, 80)}` });
+      await call.edit({ content: card.state === "failed" ? `Failed: ${soft(card.error ?? "the choice did not run", 300)}` : `${card.state === "done" ? "Done" : "Started"}: ${soft(core.label, 80)}`, components: [] });
     } catch (e) {
-      await call.edit({ content: e instanceof HttpError ? e.message : "Something went wrong. Try again in a moment." });
+      await call.edit({ content: e instanceof HttpError ? e.message : "Something went wrong. Try again in a moment.", components: [] });
       if (!(e instanceof HttpError)) alerts.deps.log(`discord: alert press failed: ${(e as Error).message}`);
     }
     void alerts.sync();
-  });
+  };
+  ix.component("dc", (call) => press(call, false));
+  ix.component("dcc", (call) => press(call, true));
 }
