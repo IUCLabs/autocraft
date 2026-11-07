@@ -36,38 +36,40 @@ export const hasBinary = (diff: string): boolean => /^(Binary files |GIT binary 
  * What the PR's diff changed from `before` to `after`, as diff text: the hunks of `after` that are not in `before` (with their file headers, which also
  * shows a mode or rename change), then a section of the PR's earlier hunks that `after` no longer has. Empty when nothing changed.
  */
-export function changedHunks(before: string, after: string): string {
+export function changedHunks(before: string, after: string, touched: readonly string[] = []): string {
+  const all = new Set(touched);
   const was = parse(before), now = parse(after);
-  const out: string[] = [];
-  let file: string | null = null, header: string[] = [], hunk: string[] = [], shown = false;
+  // One block per path, so a path's header appears once and its dropped hunks sit inside its own block.
+  const blocks = new Map<string, string[]>();
+  let file: string | null = null, header: string[] = [], hunk: string[] = [];
   const body = (h: string[]) => h.filter((l) => l.startsWith("+") || l.startsWith("-")).join("\n");
-  const show = () => { if (!shown) { out.push(...header); shown = true; } };
+  const block = (path: string, head: string[]) => { let b = blocks.get(path); if (!b) blocks.set(path, (b = [...head])); return b; };
   const endHunk = () => {
-    if (file && hunk.length && !(was.get(file) ?? []).includes(body(hunk))) { show(); out.push(...hunk); }
+    if (file && hunk.length && (all.has(file) || !(was.get(file) ?? []).includes(body(hunk)))) block(file, header).push(...hunk);
     hunk = [];
   };
   const endFile = () => {
     endHunk();
     if (!file) return;
     const metaOf = (m: string[]) => m.filter((h) => h.startsWith("# ")).sort().join("\n");
-    if (metaOf(was.get(file) ?? []) !== metaOf(now.get(file) ?? [])) show();
+    if (all.has(file) || metaOf(was.get(file) ?? []) !== metaOf(now.get(file) ?? [])) block(file, header);
   };
   for (const line of after.split("\n")) {
     const m = /^diff --git a\/.+? b\/(.+)$/.exec(line);
-    if (m) { endFile(); file = m[1]!; header = [line]; shown = false; continue; }
+    if (m) { endFile(); file = m[1]!; header = [line]; continue; }
     if (!file) continue;
     if (line.startsWith("@@")) { endHunk(); hunk = [line]; continue; }
     if (hunk.length) hunk.push(line);
     else header.push(line);
   }
   endFile();
-  const gone: string[] = [];
+  // The PR's earlier hunks that `after` no longer has; every line is marked so none reads as an addition.
   for (const [path, hunks] of was) {
     const kept = new Set(now.get(path) ?? []);
     const lost = hunks.filter((h) => !h.startsWith("# ") && !kept.has(h));
-    if (lost.length) gone.push(`diff --git a/${path} b/${path}`, ...lost.flatMap((h) => ["@@ PR change no longer in the diff @@", h]));
+    if (lost.length) block(path, [`diff --git a/${path} b/${path}`]).push(...lost.flatMap((h) => ["@@ PR change no longer in the diff @@", ...h.split("\n").map((l) => `(gone) ${l}`)]));
   }
-  if (gone.length) out.push(...gone);
+  const out = [...blocks.values()].flat();
   return out.length ? `${out.join("\n")}\n` : "";
 }
 

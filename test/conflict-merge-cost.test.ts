@@ -61,7 +61,14 @@ test("the review after our resolution reads the changed and dropped PR hunks, an
   const before = `${diff("x", "let kept = 1;")}diff --git a/src/b.rs b/src/b.rs\n--- a/src/b.rs\n+++ b/src/b.rs\n@@ -1 +1 @@\n-old\n+dropped line\n`;
   const after = diff("x", "let kept = 1;");
   const delta = changedHunks(before, after);
-  assert.match(delta, /dropped line/, "the dropped hunk is shown");
+  assert.match(delta, /\(gone\) \+dropped line/, "the dropped hunk is shown, marked");
+  assert.doesNotMatch(delta, /^\+dropped line/m);
+  assert.equal(delta.match(/^diff --git a\/src\/b\.rs/gm)?.length, 1, "a path's header appears once");
+  // A file the resolver touched shows every hunk, including one whose text did not change.
+  const two = `${diff("x", "let kept = 1;")}@@ -50,2 +51,3 @@\n y\n+let moved = 1;\n z\n`;
+  assert.equal(changedHunks(two, two), "");
+  assert.match(changedHunks(two, two, ["src/a.rs"]), /let moved = 1;/);
+  assert.match(changedHunks(two, two, ["src/a.rs"]), /let kept = 1;/);
   db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, state, attempt, created_at, own_diff, own_delta) VALUES ('app', 1, 'E', 'H', 'merged', 1, ?, 'changed', ?)").run(at, delta);
   db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, state, attempt, created_at, own_diff, own_delta) VALUES ('app', 1, 'E', 'H2', 'merged', 1, ?, 'changed', NULL)").run(at);
   const deps: OpusDeps = { fetchDiff: async () => ({ ok: true, text: after }), fetchDelta: async () => ({ ok: false, tooLarge: false, error: "unused" }), model: "opus", maxChars: 120_000 };
