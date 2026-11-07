@@ -17,7 +17,9 @@ export function discordPrivacyPage(nonce: string, contact: string): string {
 <li>The message's server, channel, ID and time, encrypted.</li></ul>
 <h2>What it never keeps</h2>
 <ul><li>Message text.</li><li>Names, avatars or profiles of people.</li><li>Counts or lists per person.</li></ul>
-<p>It never posts in Discord.</p>
+<p>It never posts in Discord on its own.</p>
+<h2>Linking your account</h2>
+<p>If you link your Discord account to your GitHub login, the bot keeps a keyed hash of your Discord user ID (not the ID itself) and your GitHub login, with the time you linked. It is used only to know which dashboard user is asking. To remove it, choose Unlink Discord in the dashboard's account menu, or send a deletion request below.</p>
 <h2>Deleting a record</h2>
 <p>Deleting a message in Discord removes its record, and so does deleting its channel. Editing a message so it no longer names the item removes it too. If a message is deleted while the bot is offline, its record can remain until a deletion request removes it.</p>
 ${who}`);

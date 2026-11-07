@@ -883,6 +883,14 @@ export interface DiscordSetup {
   contact: string;
   /** The public privacy page. */
   privacyPath: string;
+  /** Linked Discord accounts: the opaque row id, the dashboard login and when. */
+  links: { id: string; login: string; linkedAt: string }[];
+}
+
+/** Whether the signed-in user has linked a Discord account. */
+export interface DiscordAccount {
+  linked: boolean;
+  at: string | null;
 }
 
 /** A live agent token of any login (operators see all of them). */

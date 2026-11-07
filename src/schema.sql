@@ -1718,3 +1718,20 @@ CREATE TABLE IF NOT EXISTS discord_mentions (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS discord_mentions_item ON discord_mentions (repo, number);
 CREATE INDEX IF NOT EXISTS discord_mentions_channel ON discord_mentions (channel_hash);
+
+-- Discord accounts linked to dashboard logins (src/discord/links.ts). `user_hash` is a keyed hash of the Discord user id; the id
+-- itself is never stored. `discord_link_nonces` makes a link token single use; rows are dropped once the token has expired.
+CREATE TABLE IF NOT EXISTS discord_links (
+  user_hash TEXT PRIMARY KEY,
+  login TEXT NOT NULL,
+  linked_at TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS discord_links_login ON discord_links (login);
+CREATE TABLE IF NOT EXISTS discord_link_nonces (
+  nonce TEXT PRIMARY KEY,
+  expires_at TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Reads of the public status layer (src/public/status.ts): merged and posted in the last days.
+CREATE INDEX IF NOT EXISTS items_merged_at ON items(merged_at);
+CREATE INDEX IF NOT EXISTS review_posts_posted ON review_posts(posted_at);

@@ -1,13 +1,14 @@
 // Discord mentions: the admin page's data and writes, and what the item page shows. The channel list and the
 // connection state are written by the runner's gateway client (src/discord/); this file only reads them.
 import type { DatabaseSync } from "node:sqlite";
-import type { DiscordInfo, DiscordSetup } from "../../../web/src/api/types.ts";
+import type { DiscordAccount, DiscordInfo, DiscordSetup } from "../../../web/src/api/types.ts";
 import { envVar } from "../../env.ts";
 import { audit } from "../audit.ts";
 import { HttpError } from "../server/util.ts";
 import { DISCORD_PRIVACY_PATH } from "../server/discord-privacy.ts";
 import { readKeyFile, type DiscordKeys } from "../../discord/keys.ts";
 import { countOf, linksOf } from "../../discord/store.ts";
+import { linkedSince, listLinks, unlinkLogin, unlinkRow } from "../../discord/links.ts";
 import type { Req } from "../types.ts";
 
 const PRIVACY_PATH = DISCORD_PRIVACY_PATH;
@@ -47,7 +48,7 @@ function setupOf(db: DatabaseSync): DiscordSetup {
   return {
     state: st?.state ?? "off", detail: st?.detail ?? null, at: st?.at ?? null,
     channels: channels.map((c) => ({ ...c, watched: !!c.watched })),
-    contact: contactOf(db), privacyPath: PRIVACY_PATH,
+    contact: contactOf(db), privacyPath: PRIVACY_PATH, links: listLinks(db),
   };
 }
 
@@ -72,5 +73,27 @@ export function putContact(db: DatabaseSync, req: Req): DiscordSetup {
   if (typeof c !== "string" || c.length > 300) throw new HttpError(400, "contact must be text of at most 300 characters");
   db.prepare("INSERT INTO settings (key, value) VALUES ('discord_contact', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(c.trim());
   audit(db, req.user.login, "discord-contact", null);
+  return setupOf(db);
+}
+
+/** Whether the signed-in user has a Discord account linked. */
+export const account = (db: DatabaseSync, req: Req): DiscordAccount => {
+  const at = linkedSince(db, req.user.login);
+  return { linked: at !== null, at };
+};
+
+export function unlinkOwn(db: DatabaseSync, req: Req): DiscordAccount {
+  const n = unlinkLogin(db, req.user.login);
+  if (n) audit(db, req.user.login, "discord-unlink", req.user.login, { links: n });
+  return account(db, req);
+}
+
+export function removeLink(db: DatabaseSync, req: Req): DiscordSetup {
+  operator(req);
+  const id = body(req).id;
+  if (typeof id !== "string") throw new HttpError(400, "id is required");
+  const login = unlinkRow(db, id);
+  if (login === null) throw new HttpError(404, "no such link");
+  audit(db, req.user.login, "discord-unlink", login, { by: "operator" });
   return setupOf(db);
 }
