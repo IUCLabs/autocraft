@@ -205,6 +205,7 @@ function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "ask" | 
 /** What a PR waits on when its conflict or CI fix is left to the contributor. */
 const stuckWait = (f: PrFacts): string | null => {
   const approval = "comment approval for the repo";
+  if (f.mergeable === "CONFLICTING" && f.conflict?.bucket === "capped") return "conflict merge cap for today reached; next merge tomorrow";
   if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return f.conflict.bucket === "held" ? (f.repoFacts.commentApproved ? "a person to resolve the conflict" : approval) : "the contributor to resolve the conflict";
   const cf = cifixBucket(f);
   if (cf === "done" && f.cifix?.states.includes("asked")) return "the contributor to fix CI";
@@ -237,7 +238,7 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
   const waitingToReview = (f.reviewHold?.kind === "ci" && !f.reviewHold.red) || f.reviewHold?.kind === "interval";
   const working = actions.some(worksOn) || inBatch || flying;
   // A conflicting PR whose conflict step has nothing to do (asked, held, not approved, done) waits on its author, whatever the queue state says.
-  const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting";
+  const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting" && f.conflict.bucket !== "capped";
   const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || conflictStuck
     || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push" || cf === "done"
     || f.mergeHeld || (state === "ci-approval" && !f.repoFacts.ciApproved);

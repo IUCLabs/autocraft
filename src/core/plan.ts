@@ -203,7 +203,7 @@ export type PrFacts = {
   /** Heads the PR was pushed from by AutoCraft, newest first, starting with the reviewed head. */
   pushChain: string[];
   /** For a conflicting open PR: what fix-up does and the base branch. */
-  conflict: { bucket: string; base: string; /** The base branch name is one fix-up may merge. */ baseOk: boolean } | null;
+  conflict: { bucket: string; base: string; /** The base branch name is one fix-up may merge. */ baseOk: boolean; /** When a capped bucket ends (ms). */ until?: number } | null;
   /** Member of a merge batch that is checking or open, at any head. */
   inActiveBatch: boolean;
   /** Fix-up of a take-fix review at the current head: its usable fixes, the tries used and the final rows recorded at the head (fixups.state, no source). */

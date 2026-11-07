@@ -63,6 +63,7 @@ export function conflictNote(bucket: string, base: string): string | null {
     case "merge": case "linting": return `conflict: merging ${base}`;
     case "ask": case "asked": return "conflict: asked the contributor";
     case "held": return "conflict: held";
+    case "capped": return "conflict: merge cap for today reached";
     default: return null;
   }
 }
@@ -78,6 +79,8 @@ export const BASE_NAME = /^[A-Za-z0-9._/-]+$/;
 export const CIFIX_MAX_TRIES = 2;
 export const CIFIX_MAX_PUSHES_PER_PR = 2;
 export const CIFIX_MAX_TRIES_PER_PR = 4;
+/** Merges of the base branch into one PR per UTC day (pushed ones, over all heads); a busy base branch otherwise keeps a PR in a merge, check and review loop. */
+export const CONFLICT_MAX_MERGES_PER_PR_PER_DAY = 2;
 export const CIFIX_TRY_STATES = ["formatting", "linting", "superseded", "pushing", "pushed", "failed", "refused", "rejected"];
 export const CIFIX_PUSH_STATES = ["pushing", "pushed"];
 /** States that end the CI fix step's work at a head. */

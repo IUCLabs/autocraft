@@ -1,6 +1,6 @@
 // The conflict step's candidate shape, tries and per-head bucket (the PRs come from their Plans, fixup/select.ts).
 import type { DatabaseSync } from "node:sqlite";
-import { BASE_NAME, conflictNote as coreConflictNote } from "../core/rules.ts";
+import { BASE_NAME, CONFLICT_MAX_MERGES_PER_PR_PER_DAY, conflictNote as coreConflictNote } from "../core/rules.ts";
 
 /** Base branch names the merge accepts as a fetch ref. */
 export { BASE_NAME };
@@ -18,15 +18,21 @@ export type ConflictCandidate = {
   /** A model resolution stored and linted: the collect step pushes it, or gives it up. */
   lint?: { rowid: number; round: number; task: number | null; baseSha: string; resolved: string; files: string[]; /** The kept resolver sessions by file (src/prepush/resume.ts). */ session: string | null };
 };
-/** merge: we will merge the base in; ask: comment once asking the contributor; asked: that comment is posted; held: nothing to do without a person and no comment approval to ask (two tries used, a deterministic skip recorded at this head, or a branch we can't push to); unapproved: pushable but the repo has no push approval; done: merged at this head already. */
-export type ConflictBucket = "merge" | "ask" | "asked" | "held" | "unapproved" | "linting" | "done";
+/** capped: the PR already had its merges of the base branch for the UTC day. merge: we will merge the base in; ask: comment once asking the contributor; asked: that comment is posted; held: nothing to do without a person and no comment approval to ask (two tries used, a deterministic skip recorded at this head, or a branch we can't push to); unapproved: pushable but the repo has no push approval; done: merged at this head already. */
+export type ConflictBucket = "merge" | "ask" | "asked" | "held" | "unapproved" | "linting" | "capped" | "done";
 
 export function conflictTries(db: DatabaseSync, repo: string, number: number, head: string): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state IN (${TRY_STATES.map(() => "?").join(",")})`)
     .get(repo, number, head, ...TRY_STATES) as { n: number }).n;
 }
 
-export function conflictBucket(db: DatabaseSync, p: { repo: string; number: number; head: string; pushable: boolean }, approvals: { push: boolean; comment: boolean }): ConflictBucket {
+/** Merges of the base branch pushed into the PR since the start of the UTC day of `nowMs`, over all its heads. */
+export function conflictMergesToday(db: DatabaseSync, repo: string, number: number, nowMs: number = Date.now()): number {
+  return (db.prepare("SELECT COUNT(*) AS n FROM conflict_merges WHERE repo = ? AND number = ? AND state IN ('merged', 'pushing') AND created_at >= ?")
+    .get(repo, number, new Date(nowMs).toISOString().slice(0, 10)) as { n: number }).n;
+}
+
+export function conflictBucket(db: DatabaseSync, p: { repo: string; number: number; head: string; pushable: boolean }, approvals: { push: boolean; comment: boolean }, nowMs: number = Date.now()): ConflictBucket {
   const has = (state: string) => !!db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = ?").get(p.repo, p.number, p.head, state);
   if (has("merged")) return "done";
   // Nothing more can be done by a merge at this head: the contributor is asked once (a comment needs approval).
@@ -34,6 +40,7 @@ export function conflictBucket(db: DatabaseSync, p: { repo: string; number: numb
   const stuck = () => (has("asked") ? "asked" : has("comment-failed") ? "held" : approvals.comment ? "ask" : "held");
   if (has("skipped") || has("push-denied")) return stuck();
   if (has("linting")) return "linting";
+  if (conflictMergesToday(db, p.repo, p.number, nowMs) >= CONFLICT_MAX_MERGES_PER_PR_PER_DAY) return "capped";
   if (!p.pushable || has("cannot-push")) return stuck();
   if (conflictTries(db, p.repo, p.number, p.head) >= MAX_CONFLICT_TRIES) return stuck();
   return approvals.push ? "merge" : "unapproved";
