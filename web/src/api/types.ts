@@ -2338,6 +2338,8 @@ export interface OpusReviewEntry {
   fixes: string[];
   risks: string[];
   claims: ReviewClaim[];
+  /** Items this review says must land first; empty when none. */
+  blockedBy: ItemRef[];
   costUsd: number;
 }
 export interface ReviewHistory { latest: OpusReviewEntry | null; earlier: OpusReviewEntry[] }
@@ -2346,13 +2348,15 @@ export type ResultTone = "ok" | "warn" | "bad" | "neutral" | "accent";
 /** A compact result card of the AutoCraft side: Verify, Fix-ups, Pre-merge review, Classifiers, Duplicates. `earlier` holds older results of the same kind. */
 export interface ResultCard {
   id: string;
-  kind: "verify" | "fixup" | "premerge" | "postmerge" | "classifiers" | "duplicates" | "security";
+  kind: "verify" | "fixup" | "premerge" | "postmerge" | "classifiers" | "duplicates" | "security" | "patch-checks" | "actions";
   title: string;
   outcome: string;
   tone: ResultTone;
   at: string;
   detail: string | null;
   earlier: { at: string; outcome: string }[];
+  /** Post-merge cards: the follow-up issues or PRs it opened. */
+  followups?: ItemRef[];
 }
 
 export type HistoryKind = "model" | "write" | "decision" | "event";
@@ -2390,6 +2394,23 @@ export interface GithubSide {
   url: string;
 }
 
+/** What the item page header and its overflow menu need: labels, people, queue place and the operator's controls. */
+export interface ItemPageHeader {
+  labels: string[];
+  assignees: string[];
+  autocraftAssigned: boolean;
+  pipelineOn: boolean;
+  discord: DiscordInfo | null;
+  queue: QueueSlot | null;
+  fastTracked: boolean;
+  held: boolean;
+  preapproval: Preapproval | null;
+  releases: ItemReleases;
+  tier: Tier;
+  /** PRs: size from changed lines; null for issues. */
+  size: "S" | "M" | "L" | "XL" | null;
+}
+
 export interface ItemPageData {
   repo: RepoName;
   number: number;
@@ -2397,6 +2418,9 @@ export interface ItemPageData {
   state: ItemState;
   title: string;
   author: string;
+  /** Changes when anything the page shows changes; send it back as `since`. */
+  stamp: string;
+  header: ItemPageHeader;
   status: ItemStatus;
   costUsd: number;
   reviews: ReviewHistory;
@@ -2404,8 +2428,10 @@ export interface ItemPageData {
   history: HistoryEntry[];
   github: GithubSide;
 }
+/** The answer to `since=<stamp>` when nothing on the item page has changed. */
+export type ItemPageUnchanged = { unchanged: true; stamp: string };
 
-/** One row of the Items list; findings are rows for staff. */
+/** One row of the Items list. */
 export interface ItemStatusRow {
   repo: RepoName;
   number: number;
@@ -2415,8 +2441,9 @@ export interface ItemStatusRow {
   status: ItemStatus;
   updatedAt: string;
 }
-export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind; repo?: RepoName[] }
-export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number }
+export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind; repo?: RepoName[]; cursor?: string }
+/** `byPhase` and `total` count every row that matches the filter except `phase`; `nextCursor` is null on the last page. */
+export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number; nextCursor: string | null }
 
 /** A finding's status line, on the shape items use. */
 export interface FindingRow { repo: RepoName; number: number; title: string; severity: FindingSeverity; state: FindingState; urgent: boolean; area: string; status: ItemStatus; attempts: number; updatedAt: string }

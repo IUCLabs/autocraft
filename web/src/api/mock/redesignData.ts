@@ -1,5 +1,5 @@
 // Mock content for the redesign: the curated items, their status lines, reviews, results, history and GitHub sides, and findings.
-import type { FixRound, GithubEvent, GithubSide, HistoryEntry, ItemPageData, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ResultCard } from "../types";
+import type { FixRound, GithubEvent, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ResultCard } from "../types";
 import { NOW } from "./fixtures";
 
 export const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -42,8 +42,16 @@ export function statusRows(): ItemStatusRow[] {
   return seeds.map((s) => ({ repo: s.repo, number: s.number, kind: s.kind, state: s.state, title: s.title, status: s.status, updatedAt: at(s.updated) }));
 }
 
+/** A plain header for mock pages: open, nothing queued or held. */
+export function mockHeader(kind: ItemKind, labels: string[] = []): ItemPageHeader {
+  return {
+    labels, assignees: [], autocraftAssigned: false, pipelineOn: true, discord: null, queue: null, fastTracked: false, held: false, preapproval: null,
+    releases: { reviewAgain: false, verifyAgain: false, fixAgain: false, batchAgain: false }, tier: "not", size: kind === "pr" ? "S" : null,
+  };
+}
+
 const review = (p: Partial<OpusReviewEntry> & Pick<OpusReviewEntry, "id" | "head" | "at" | "trigger" | "why" | "verdict" | "summary">): OpusReviewEntry => ({
-  current: false, sure: true, fixes: [], risks: [], claims: [], costUsd: 0.8, ...p,
+  current: false, sure: true, fixes: [], risks: [], claims: [], blockedBy: [], costUsd: 0.8, ...p,
 });
 
 const REVIEWS_1484: { latest: OpusReviewEntry; earlier: OpusReviewEntry[] } = {
@@ -192,7 +200,7 @@ const RESULTS_9981: ResultCard[] = [
   { id: "c3", kind: "classifiers", title: "Classifiers", outcome: "Bug fix, 3 of 3 agree", tone: "neutral", at: at(5 * H), detail: null, earlier: [] },
 ];
 
-const FULL: Record<string, Omit<ItemPageData, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd">> = {
+const FULL: Record<string, Omit<ItemPageData, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header">> = {
   "designcraft#1484": { reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
   "photocraft#9981": { reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981 },
   "wordcraft#2214": {
@@ -218,7 +226,7 @@ export function itemPageFor(repo: string, number: number): ItemPageData | null {
   const s = seeds.find((x) => x.repo === repo && x.number === number);
   if (!s) return null;
   const full = FULL[`${repo}#${number}`];
-  const base = { repo, number, kind: s.kind, state: s.state, title: s.title, author: s.author, status: s.status };
+  const base = { repo, number, kind: s.kind, state: s.state, title: s.title, author: s.author, status: s.status, stamp: "mock", header: mockHeader(s.kind) };
   if (full) return { ...base, ...full, costUsd: total(full.history) };
   const history = [hist("h1", s.updated + 20, "Classify", "classified", "Jev", 0), hist("h2", s.updated, s.status.phase, s.status.waiting ?? "done", null, null, "event")];
   return {

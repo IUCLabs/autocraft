@@ -31,6 +31,7 @@ import type {
   ItemTraceDetail,
   ItemTraceQuery,
   ItemTraceUnchanged,
+  ItemPageUnchanged,
   AgentRunFilter,
   AgentRunPage,
   ClaudeAccount,
@@ -186,9 +187,9 @@ export interface Api {
   progress(): Promise<Progress>;
   /** Home: needs, problems, phase counts, progress and what was done today, in one payload. */
   home(): Promise<Home>;
-  /** The item page's AutoCraft and GitHub sides: status, reviews with earlier ones, result cards, history, GitHub's own sections. */
-  itemPage(repo: RepoName, number: number): Promise<ItemPageData>;
-  /** The Items list with a status per row; findings are rows for staff. */
+  /** The item page's AutoCraft and GitHub sides: status, reviews with earlier ones, result cards, history, GitHub's own sections. `since` as for `itemTrace`. */
+  itemPage(repo: RepoName, number: number, since?: string): Promise<ItemPageData | ItemPageUnchanged>;
+  /** The Items list with a status per row, one page at a time. */
   itemStatusList(filter: ItemStatusFilter): Promise<ItemStatusList>;
   /** Staff: all findings grouped by what they need. */
   securityList(): Promise<SecurityList>;

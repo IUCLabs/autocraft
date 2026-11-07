@@ -3,7 +3,7 @@
 // every rule that guesses is marked. Pure TypeScript: it runs in the browser on a JSON export.
 import type { RealDecision } from "./realDecisions";
 import type {
-  FindingPageData, GithubEvent, GithubSide, HistoryCall, HistoryEntry, HistoryKind, ItemPageData, ItemPhase, ItemState, ItemStatus, ItemStatusRow,
+  FindingPageData, ItemPageHeader, GithubEvent, GithubSide, HistoryCall, HistoryEntry, HistoryKind, ItemPageData, ItemPhase, ItemState, ItemStatus, ItemStatusRow,
   OpusReviewEntry, ResultCard, ResultTone, ReviewTrigger, ReviewVerdict, CiState, FindingView,
 } from "../types";
 
@@ -95,6 +95,7 @@ export function reviewsOf(r: RealItem): ItemPageData["reviews"] {
       id: `r${i}`, head: short(row.head_oid), current: row.head_oid === curHead, at: row.at, trigger, why,
       verdict: VERDICT[row.verdict] ?? "hold", sure: row.sure === 1, summary: row.summary || row.reason || "",
       fixes, risks: json<string[]>(row.risks, []), claims, costUsd: costOf(row),
+      blockedBy: json<{ repo: string; number: number }[]>(row.blocked_by, []).map((b) => ({ repo: b.repo, number: b.number })),
     };
   });
   return { latest: all[0] ?? null, earlier: all.slice(1) };
@@ -221,11 +222,22 @@ export function githubOf(r: RealItem): GithubSide {
   };
 }
 
+function headerOf(r: RealItem): ItemPageHeader {
+  const it = r.item;
+  const lines = (it.additions ?? 0) + (it.deletions ?? 0);
+  return {
+    labels: it.labels ?? [], assignees: [], autocraftAssigned: false, pipelineOn: it.pipelineOn ?? true, discord: it.discord ?? null,
+    queue: it.queue ?? null, fastTracked: false, held: false, preapproval: it.preapproval ?? null,
+    releases: it.releases ?? { reviewAgain: false, verifyAgain: false, fixAgain: false, batchAgain: false }, tier: it.tier ?? "not",
+    size: it.kind !== "pr" ? null : lines < 50 ? "S" : lines < 300 ? "M" : lines < 1000 ? "L" : "XL",
+  };
+}
+
 export function pageOf(r: RealItem): ItemPageData {
   const history = historyOf(r);
   return {
     repo: r.repo, number: r.number, kind: r.item.kind, state: r.item.state, title: r.item.title, author: r.item.author,
-    status: statusOf(r), costUsd: r.trace.events.reduce((s, e) => s + (e.kind === "model-call" ? (e.call?.costUsd ?? 0) : 0), 0),
+    stamp: r.repo + "#" + r.number, header: headerOf(r), status: statusOf(r), costUsd: r.trace.events.reduce((s, e) => s + (e.kind === "model-call" ? (e.call?.costUsd ?? 0) : 0), 0),
     reviews: reviewsOf(r), results: resultsOf(r), history, github: githubOf(r),
   };
 }

@@ -1,5 +1,5 @@
 // The item page: a status line, then "In AutoCraft" and "On GitHub" side by side (a segmented control on phones).
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeftIcon, ArrowSquareOutIcon, DotsThreeIcon } from "@phosphor-icons/react";
 import { DropdownMenu } from "radix-ui";
@@ -32,7 +32,17 @@ export function ItemPageView({ params }: ViewProps) {
   const number = Number(params.number);
   const user = useUser();
   const phone = useIsPhone();
-  const { data, error } = useQuery(`item-page:${repo}#${number}`, (a) => a.itemPage(repo, number));
+  // A `since` that still matches returns the last page, so a pushed refresh of an unchanged item costs one small reply.
+  const key = `item-page:${repo}#${number}`;
+  const last = useRef<{ key: string; page: ItemPageData } | null>(null);
+  const { data, error } = useQuery<ItemPageData>(key, async (a) => {
+    const prev = last.current?.key === key ? last.current.page : null;
+    const r = await a.itemPage(repo, number, prev?.stamp);
+    if ("unchanged" in r && prev) return prev;
+    if ("unchanged" in r) throw new Error("unexpected empty answer");
+    last.current = { key, page: r };
+    return r;
+  });
   const [side, setSide] = useState<Side>(user.role === "viewer" ? "github" : "autocraft");
   const [flash, setFlash] = useState<string | null>(null);
   const to = useCallback((s: Side, anchor: string) => {
