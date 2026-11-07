@@ -78,13 +78,15 @@ const SEVERITY_ORDER = "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 
 
 /**
  * A finding that is `fixing`, or `landing` without a pull request, while no step job of it is queued or running (the job was
- * killed or cancelled) goes back to where an operator can act again.
+ * killed or cancelled) goes back to where an operator can act again. A fixing finding with a round in the build has no job
+ * on purpose: advanceSecurityFixes queues one when the round's tasks end.
  */
 export function reconcileFindings(db: DatabaseSync, repo: string): void {
   const grace = new Date(Date.now() - 60_000).toISOString();
   const rows = db.prepare(`SELECT number, state FROM security_findings WHERE repo = ? AND updated_at < ? AND (state = 'fixing' OR (state = 'landing' AND fix_pr IS NULL))
     AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.step IN ('security-fix', 'security-land', 'security-advisory') AND j.state IN ('queued', 'running')
-      AND json_extract(j.params, '$.repo') = security_findings.repo AND json_extract(j.params, '$.number') = security_findings.number)`).all(repo, grace) as { number: number; state: FindingState }[];
+      AND json_extract(j.params, '$.repo') = security_findings.repo AND json_extract(j.params, '$.number') = security_findings.number)
+    AND NOT EXISTS (SELECT 1 FROM security_fix_rounds r WHERE r.repo = security_findings.repo AND r.number = security_findings.number AND r.state = 'building')`).all(repo, grace) as { number: number; state: FindingState }[];
   for (const r of rows) {
     advance(db, repo, r.number, [r.state], r.state === "fixing" ? "new" : "ready", { note: "The job ended before it finished. Try again." });
   }

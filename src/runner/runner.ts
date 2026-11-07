@@ -19,7 +19,7 @@ import { pruneTasks, reapLost } from "../build/tasks.ts";
 import { prunePlanHistory } from "../core/plan-cache.ts";
 import { checkPendingUpdate } from "../build/worker-update.ts";
 import { endJob, JOB_KEEP_MS, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
-import { autoFixConfirmed } from "../security/actions.ts";
+import { advanceSecurityFixes, autoFixConfirmed } from "../security/actions.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
@@ -188,6 +188,11 @@ export class Runner {
         this.o.log(`autopilot: ${(e as Error).message}`);
       }
     }
+    // A private fix waits for its build without a job; the next job starts when the build tasks end, for operator-started fixes with the pipeline off too.
+    try {
+      const next = await advanceSecurityFixes(this.db, isEnabled(this.db));
+      if (next) this.o.log(`security: continued the private fix of ${next} findings after their builds`);
+    } catch (e) { this.o.log(`security fixes: ${(e as Error).message}`); }
     // Pre-approved merges move on rows other steps wrote; they are read here, not on a timer of their own.
     try { advancePreapprovals(this.db, this.o.log); } catch (e) { this.o.log(`preapprovals: ${(e as Error).message}`); }
     if (this.planning || !planDue(this.db)) return;
