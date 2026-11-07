@@ -186,6 +186,8 @@ test("a review records why it ran: new head, same head again, same head after an
   review(w, 1, "h1", "hold");
   review(w, 1, "h2", "hold");
   review(w, 1, "h2", "hold");
+  // The mark must be later than the review it follows; on a fast machine both can land in the same millisecond.
+  for (const t = Date.now(); Date.now() === t; );
   markReviewsStale(w.db, "test", "app", 1);
   review(w, 1, "h2", "hold");
   assert.deepEqual(triggers(), ["new-head", "new-head", "discussion", "operator"]);
