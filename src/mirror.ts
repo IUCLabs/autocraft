@@ -284,14 +284,20 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const live = appSlug();
   if (live) { try { rememberSlug(db, live); } catch { /* read-only connection */ } }
   const own = mentionNames(db, live);
+  const readAt = iso(new Date());
+  const touch = db.prepare("UPDATE main.items SET synced_at = ? WHERE repo = ? AND number = ?");
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const n of nodes) {
       const row = toRow(repo, kind, n, detail);
       // A row identical to the stored one (overlapping reads re-fetch many) writes nothing.
       const old = stored.get(repo, n.number) as Record<string, SQLInputValue> | undefined;
-      if (old && COLUMNS.every((c) => old[c] === row[c])) continue;
+      if (old && COLUMNS.every((c) => old[c] === row[c])) {
+        touch.run(readAt, repo, n.number);
+        continue;
+      }
       insert.run(row);
+      touch.run(readAt, repo, n.number);
       if (detail === "full") {
         del.run(repo, n.number);
         for (const row of commentRows(repo, kind, n, own)) insComment.run(...row);
@@ -723,6 +729,13 @@ query($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }`;
+
+/** Writes one item read by number (a webhook re-read) like the sync does. False for a null, deleted or transferred item: the daily reconcile handles those. */
+export function writeItemNode(db: DatabaseSync, repo: string, n: Node | null | undefined): boolean {
+  if (!n || n.repository?.name !== repo || !ownedBy(n, repo)) return false;
+  writePage(db, repo, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n]);
+  return true;
+}
 
 // Lists a repo's open issues and PRs and reconciles the mirror with them. Mirror rows that are
 // open here but not listed as open on GitHub are read one by one: closed or merged ones are

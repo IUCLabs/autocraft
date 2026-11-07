@@ -37,6 +37,8 @@ export function runnerLockPath(): string {
 export const HEARTBEAT_KEY = "runner_heartbeat";
 /** How often the runner brings the flowchart summary up to date (src/flow/summary.ts). */
 export const FLOW_EVERY_MS = 20_000;
+/** How often queued webhook items are read again from GitHub. */
+export const WEBHOOK_DRAIN_MS = 5_000;
 const CLI = new URL("../cli.ts", import.meta.url).pathname;
 
 /** Job processes at once. A job that calls Claude also waits for a free account slot (see startJobs). */
@@ -93,6 +95,8 @@ export class Runner {
   readonly running = new Map<number, Running>();
   private stopping = false;
   private flowAt = 0;
+  private webhookAt = 0;
+  private webhooking: Promise<void> | null = null;
   private planning: Promise<void> | null = null;
   private detected: Detected | null = null;
   private flowing: Promise<void> | null = null;
@@ -159,6 +163,7 @@ export class Runner {
     } catch (e) {
       this.o.log(`build tasks: ${(e as Error).message}`);
     }
+    this.webhookTick();
     this.usageTick();
     this.workerUpdateTick();
     await this.autopilot();
@@ -167,6 +172,20 @@ export class Runner {
       this.flowAt = Date.now();
       this.flowing = this.refreshFlow().then(() => undefined, (e) => this.o.log(`flowchart summary: ${(e as Error).message}`)).finally(() => (this.flowing = null));
     }
+  }
+
+  /** Reads the items GitHub App webhooks named again from GitHub, off the tick, while no sync run holds its lock. The poll covers any that fail. */
+  private webhookTick(): void {
+    if (this.webhooking || Date.now() - this.webhookAt < WEBHOOK_DRAIN_MS) return;
+    this.webhookAt = Date.now();
+    if (!this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
+    this.webhooking = (async () => {
+      const { lockHeld, lockPath, Client } = await import("../mirror.ts");
+      if (lockHeld(lockPath())) return;
+      const { drainSyncRequests } = await import("../github/webhooks.ts");
+      const n = await drainSyncRequests(this.db, new Client(1000), { limit: 10, log: this.o.log });
+      if (n) this.o.log(`webhooks: read ${n} items again`);
+    })().catch((e) => this.o.log(`webhooks: ${(e as Error).message}`)).finally(() => (this.webhooking = null));
   }
 
   /**

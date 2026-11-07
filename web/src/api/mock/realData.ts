@@ -219,6 +219,7 @@ export function githubOf(r: RealItem): GithubSide {
     description: clean(it.body ?? ""), events, checks, commits,
     files: (it.files ?? []).map((f: Json) => ({ path: f.path, additions: f.additions, deletions: f.deletions })),
     url: `https://github.com/storytold/${r.repo}/${kind}/${r.number}`,
+    syncedAt: null,
   };
 }
 

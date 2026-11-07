@@ -6,7 +6,7 @@ import { Avatar } from "../../../ui/atoms/Avatar";
 import { TimeAgo } from "../../../ui/atoms/TimeAgo";
 import { Markdown } from "../../../ui/molecules/Markdown";
 import { cn } from "../../../ui/cn";
-import { num } from "../../../lib/format";
+import { clock, num } from "../../../lib/format";
 import { useJump } from "./ItemPage";
 
 const TABS: [GithubTab, string][] = [["conversation", "Conversation"], ["commits", "Commits"], ["checks", "Checks"], ["files", "Files"]];
@@ -22,6 +22,7 @@ export function GithubSide({ d, flash }: { d: ItemPageData; flash: string | null
     <div className="pb-6">
       <div className="px-4 pt-3 text-xs font-semibold text-ink/55 md:px-6">
         <span className="inline-flex items-center gap-1.5"><GithubLogoIcon className="text-[14px]" /> On GitHub</span>
+        {g.syncedAt && <span className="num ml-2 font-normal text-ink/45">updated {clock(g.syncedAt)}</span>}
       </div>
       <div role="tablist" className="mt-2 flex gap-1 overflow-x-auto border-b border-line px-4 scrollbar-none md:px-6">
         {tabs.map(([k, l]) => (

@@ -112,7 +112,7 @@ Sign-in and the GitHub App are tied to the public origin. Do these in order. `AU
 2. Update the GitHub App (an app manager does this in the app's GitHub settings, under General):
    - Callback URL: `https://new.example.com/auth/callback`
    - Setup URL: `https://new.example.com/auth/github-app/setup`
-   - Webhook: stays off. Its URL field holds `https://<origin>/github-app/hook`; nothing serves that path.
+   - Webhook URL: `https://new.example.com/webhooks/github` (see "Webhooks" in `docs/operations.md` for the events and the secret). A webhook that is off or fails leaves the minute poll in charge.
 
    While both domains are live, the app can list the old and new callback URLs together. `/auth/github-app/callback` is used only while registering a new app from the dashboard (it is the manifest's redirect and GitHub does not store it).
 3. Update the OAuth app (Settings, Developer settings, OAuth Apps): Authorization callback URL `https://new.example.com/auth/callback`. An OAuth app accepts one URL, so the old origin stops working at that moment. This step is needed only while sign-in still uses the OAuth app.

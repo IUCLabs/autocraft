@@ -405,6 +405,14 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS sync_runs_started ON sync_runs(started_at);
+-- Items a verified GitHub App webhook named, for the runner to re-read. One row per item, so a burst collapses. Bookkeeping: no live topic.
+CREATE TABLE IF NOT EXISTS sync_requests (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  event TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+) WITHOUT ROWID;
 -- A tracked repo the last sync could not read: skipped for the run, retried by the next. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS sync_repo_errors (
   repo TEXT PRIMARY KEY,
