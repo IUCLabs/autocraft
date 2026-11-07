@@ -18,7 +18,7 @@ import { ownLogins } from "../../github/identity.ts";
 
 export type Ev = TraceEvent & { detail?: Record<string, unknown> };
 /** `staff`: operators and maintainers; `hidden`: repos the viewer may not see, whose runs are left out like getRun does. */
-type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: Set<string>; box: string; staff: boolean; /** A quiet pull request seen by a viewer: model output stays out of the trace. */ veiled: boolean; operator: boolean; hidden: string[] };
+export type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: Set<string>; box: string; staff: boolean; /** A quiet pull request seen by a viewer: model output stays out of the trace. */ veiled: boolean; operator: boolean; hidden: string[] };
 type Source = { kinds: TraceKind[]; run: (c: Ctx) => Ev[] };
 
 export const TRACE_PAGE_DEFAULT = 100, TRACE_PAGE_MAX = 500;
@@ -403,7 +403,7 @@ function veilEvent(e: Ev): Ev {
   return { ...e, summary, ...(detail ? { detail } : {}) };
 }
 
-function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
+export function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   const all: Ev[] = [];
   for (const e of SOURCES.flatMap((s) => s.run(c))) {
     if (c.veiled && VEILED_KINDS.includes(e.kind)) continue;
@@ -480,7 +480,7 @@ const FINGERPRINT = [
   "SELECT held_at FROM merge_holds WHERE repo = ? AND number = ?",
 ];
 
-function fingerprint(c: Ctx, qkey: string): string {
+export function fingerprint(c: Ctx, qkey: string): string {
   const { db, repo, n, ref } = c;
   const parts: unknown[] = [qkey, c.staff, c.operator, c.hidden];
   for (const sql of FINGERPRINT) parts.push(Object.values((db.prepare(sql).get(repo, n) ?? {}) as object));
@@ -490,7 +490,7 @@ function fingerprint(c: Ctx, qkey: string): string {
   return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
 }
 
-async function context(db: DatabaseSync, req: Req): Promise<Ctx> {
+export async function context(db: DatabaseSync, req: Req): Promise<Ctx> {
   const repo = req.params.repo!;
   const n = Number(req.params.n);
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
