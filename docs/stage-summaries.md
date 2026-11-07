@@ -74,7 +74,7 @@
 
 **What.** Opus reviews every wanted pull request at its current head and gives a verdict with the full fix list.
 
-**When.** Once per head, highest rank first, within a daily limit.
+**When.** After CI is green on the head, highest rank first. New commits or discussion bring a pull request back, at most every two hours (a setting) and three times a day; a maintainer's comment or Review again lifts the wait.
 
 **Model.** Opus, with read-only tools in a sandboxed checkout.
 

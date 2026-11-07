@@ -28,7 +28,7 @@ Writes each settled type and flag to GitHub as a label. A label a person set is 
 
 ## Review
 
-Opus reads every wanted pull request at its current head, with read access to the repo. It gives a verdict and the complete list of fixes. A new push brings the pull request back for another review. The item page shows the review and its reasons.
+Opus reads every wanted pull request at its current head, with read access to the repo. It gives a verdict and the complete list of fixes. It runs once CI is green. New commits or discussion bring it back for another review, at most every two hours and three times a day per pull request. The item page shows the review and its reasons.
 
 ## Fix
 
