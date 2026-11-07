@@ -207,4 +207,12 @@ describe("repo visibility", () => {
     db.prepare("DELETE FROM patch_checks").run();
   });
 
+  test("Home gives viewers counts and no named needs; staff get the oldest ones", async () => {
+    const viewer = await (await signedIn("reader")).get<{ needs: { total: number; oldest: unknown[] } }>("/api/home");
+    const maint = await (await signedIn("boss")).get<{ needs: { total: number; oldest: unknown[] } }>("/api/home");
+    assert.deepEqual(viewer.needs.oldest, []);
+    assert.ok(maint.needs.oldest.length > 0);
+    assert.equal(viewer.needs.total, maint.needs.total);
+  });
+
 });

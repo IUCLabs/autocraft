@@ -49,6 +49,7 @@ import { isQuiet } from "../../security/quiet.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
 import { needs } from "./needs.ts";
+import { home } from "./home.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
 import { batchOne } from "./batch-page.ts";
@@ -546,5 +547,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/now", now),
     get("/api/now/feed", nowFeed),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
+    get("/api/home", (db, req) => home(db, req, { writeRepos: () => writeRepos(db, req), progress: (hidden) => progress(db, hidden) })),
+    get("/api/items/status", items.statusList),
   ];
 }
