@@ -1,4 +1,4 @@
-import { BookOpenIcon, BrainIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
+import { BookOpenIcon, BroadcastIcon, FlowArrowIcon, BrainIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
 import { modules } from "../../registry";
 import { can } from "../../registry/permissions";
 import type { User } from "../../api/types";
@@ -6,6 +6,7 @@ import type { User } from "../../api/types";
 export interface Entry { label: string; to: string; icon: Icon; path: string }
 
 export const REPORTS: Entry[] = [
+  { label: "Now feed", to: "/now", path: "now", icon: BroadcastIcon },
   { label: "Progress", to: "/progress", path: "progress", icon: ChartLineUpIcon },
   { label: "Activity", to: "/activity", path: "activity", icon: ClockCounterClockwiseIcon },
   { label: "Cost", to: "/cost", path: "cost", icon: CoinsIcon },
@@ -17,6 +18,7 @@ export const REPORTS: Entry[] = [
 
 export const SETTINGS: Entry[] = [
   { label: "Pipeline", to: "/pipeline", path: "pipeline", icon: TreeStructureIcon },
+  { label: "Pipeline flow", to: "/flow", path: "flow", icon: FlowArrowIcon },
   { label: "Repos", to: "/repos", path: "repos", icon: FolderSimpleIcon },
   { label: "Contributors", to: "/contributors", path: "contributors", icon: UsersIcon },
   { label: "Build environments", to: "/envs", path: "envs", icon: StackIcon },

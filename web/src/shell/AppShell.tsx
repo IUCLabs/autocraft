@@ -68,6 +68,7 @@ export function AppShell() {
       {routes.map((r) => (
         <Route key={r.path} path={r.path} element={r.path === "/" ? <OldFlowLink route={r} /> : <RouteView route={r} />} />
       ))}
+      <Route path="item/:repo/:number" element={<ItemRedirect />} />
       <Route path="decisions/*" element={<RedirectTo from="/decisions" to="/needs/decisions" />} />
       <Route path="decisions" element={<RedirectTo to="/needs" />} />
       <Route path="queue/merge" element={<RedirectTo to="/next/merge" />} />
@@ -302,6 +303,13 @@ function OldFlowLink({ route }: { route: RouteDef }) {
   const loc = useLocation();
   if (new URLSearchParams(loc.search).has("node")) return <Navigate to={`/flow${loc.search}`} replace />;
   return <RouteView route={route} />;
+}
+
+/** The old two-panel item page path opens the item page. */
+function ItemRedirect() {
+  const { repo, number } = useParams();
+  const loc = useLocation();
+  return <Navigate to={`/items/${repo}/${number}${loc.search}`} replace />;
 }
 
 /** Sends an old path to its new place. `from` is the prefix to swap, so `/decisions/a/1` becomes `/needs/decisions/a/1`; `search` replaces the query. */
