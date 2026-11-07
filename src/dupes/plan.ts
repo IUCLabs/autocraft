@@ -44,16 +44,16 @@ export function duplicateGroups(db: DatabaseSync, repo?: string): Group[] {
 }
 
 export type Kind = "pr" | "issue";
-export type Member = { number: number; kind: Kind; state: string; title: string | null; head_oid: string | null; embed_hash: string | null; comments_count: number | null; additions: number | null; deletions: number | null };
+export type Member = { number: number; kind: Kind; state: string; title: string | null; head_oid: string | null; embed_hash: string | null; comments_count: number | null; additions: number | null; deletions: number | null; closing_issues: string | null };
 
 /** The members of one kind of a group: what one comparison covers. */
 export type KindSet = { repo: string; kind: Kind; key: string; members: Member[]; hash: string };
 
 export const setKey = (kind: Kind, numbers: number[]): string => `${kind}:${[...numbers].sort((a, b) => a - b).join(",")}`;
 
-/** Changes whenever a member's state does, and an issue's text; a PR's head and text are left out (its diff size is checked on its own). */
+/** Changes whenever a member's state does, an issue's text, or the issues a PR closes; a PR's head and other text are left out (its diff size is checked on its own). */
 export function setHash(members: Member[]): string {
-  const rows = [...members].sort((a, b) => a.number - b.number).map((m) => (m.kind === "pr" ? [m.number, m.state] : [m.number, m.state, m.embed_hash]));
+  const rows = [...members].sort((a, b) => a.number - b.number).map((m) => (m.kind === "pr" ? [m.number, m.state, m.closing_issues] : [m.number, m.state, m.embed_hash]));
   return createHash("sha1").update(JSON.stringify(rows)).digest("hex");
 }
 
@@ -67,7 +67,7 @@ export const DIFF_SIZE_CHANGE = 0.2;
 const sizeOf = (m: { additions: number | null; deletions: number | null }): number | null => (m.additions === null || m.deletions === null ? null : m.additions + m.deletions);
 
 export function kindSetsOf(db: DatabaseSync, g: Group): KindSet[] {
-  const get = db.prepare("SELECT number, kind, state, title, head_oid, embed_hash, comments_count, additions, deletions FROM items WHERE repo = ? AND number = ?");
+  const get = db.prepare("SELECT number, kind, state, title, head_oid, embed_hash, comments_count, additions, deletions, closing_issues FROM items WHERE repo = ? AND number = ?");
   // Left out: a rejected (closed, unmerged) PR; an item already closed as a duplicate, or whose pair decision is answered close (the act step closes it).
   const gone = db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND id LIKE '%:duplicate@%' AND answer = 'close'`);
   // A member our own group Act closed can never become a kept item later.
@@ -108,9 +108,12 @@ export function storedComparison(db: DatabaseSync, repo: string, key: string): S
   return { ...r, members: JSON.parse(r.members) as number[], result };
 }
 
-export function saveComparison(db: DatabaseSync, c: StoredComparison): void {
+/** `set` is the compared snapshot: its members' sizes are stored, not whatever the items hold by now. */
+export function saveComparison(db: DatabaseSync, c: StoredComparison, set?: KindSet): void {
   const sizes: Record<number, number> = {};
-  if (c.kind === "pr") {
+  if (c.kind === "pr" && set) {
+    for (const m of set.members) { const z = sizeOf(m); if (z !== null) sizes[m.number] = z; }
+  } else if (c.kind === "pr") {
     const get = db.prepare("SELECT additions, deletions FROM items WHERE repo = ? AND number = ?");
     for (const n of c.members) { const z = sizeOf((get.get(c.repo, n) as { additions: number | null; deletions: number | null } | undefined) ?? { additions: null, deletions: null }); if (z !== null) sizes[n] = z; }
   }
@@ -124,7 +127,9 @@ function diffMoved(c: StoredComparison, members: Member[]): boolean {
   try { at = JSON.parse(c.sizes ?? "{}") as Record<string, number>; } catch { return false; }
   return members.some((m) => {
     const then = at[m.number], now = sizeOf(m);
-    return then !== undefined && now !== null && Math.abs(now - then) > DIFF_SIZE_CHANGE * Math.max(then, 1);
+    // A size unknown at compare time counts as moved once it is known.
+    if (now === null) return false;
+    return then === undefined || Math.abs(now - then) > DIFF_SIZE_CHANGE * Math.max(then, 1);
   });
 }
 
