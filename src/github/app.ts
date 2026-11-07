@@ -34,8 +34,8 @@ export function appManifest(name: string, baseUrl: string): Manifest {
   return {
     name,
     url: REPO_URL,
-    // Webhooks stay off (the mirror polls); GitHub still wants a URL in the field.
-    hook_attributes: { url: `${baseUrl}/github-app/hook`, active: false },
+    // Webhooks start off; an app manager turns them on in the app's settings (docs/operations.md, Webhooks). The URL is the one the server answers.
+    hook_attributes: { url: `${baseUrl}/webhooks/github`, active: false },
     redirect_url: `${baseUrl}/auth/github-app/callback`,
     setup_url: `${baseUrl}/auth/github-app/setup`,
     callback_urls: [`${baseUrl}/auth/callback`],

@@ -1,7 +1,7 @@
 // Mirror of every issue and PR of the tracked owners (storytold and any other owner of a tracked repo) into SQLite, via `gh api graphql`.
 import { refreshSnapshot } from "./itemtools/snapshot.ts";
 import { isCounted } from "./review/discussion.ts";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
@@ -113,11 +113,22 @@ export class Client {
     this.remaining = null;
   }
 
-  private run(query: string, variables: object): { data?: Node; errors: Node[]; text: string; failed: boolean; stderr: string } {
-    const p = spawnSync("gh", ["api", "graphql", "--input", "-"], {
-      input: JSON.stringify({ query, variables }), encoding: "utf8", timeout: 120_000, maxBuffer: 256 << 20, ...(this.env ? { env: this.env } : {}),
+  /** Runs gh without blocking the event loop (the runner's tick must keep its heartbeat and cancels). A timeout or spawn error is Transient. */
+  private async run(query: string, variables: object): Promise<{ data?: Node; errors: Node[]; text: string; failed: boolean; stderr: string }> {
+    const p = await new Promise<{ stdout: string; stderr: string; status: number | null }>((resolve, reject) => {
+      const child = spawn("gh", ["api", "graphql", "--input", "-"], { stdio: ["pipe", "pipe", "pipe"], ...(this.env ? { env: this.env } : {}) });
+      const out: Buffer[] = [];
+      const err: Buffer[] = [];
+      let size = 0;
+      const fail = (): void => { clearTimeout(timer); child.kill("SIGKILL"); reject(new Transient("timeout")); };
+      const timer = setTimeout(fail, 120_000);
+      child.stdout.on("data", (c: Buffer) => { size += c.length; if (size > (256 << 20)) fail(); else out.push(c); });
+      child.stderr.on("data", (c: Buffer) => err.push(c));
+      child.on("error", fail);
+      child.on("close", (status) => { clearTimeout(timer); resolve({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), status }); });
+      child.stdin.on("error", () => {});
+      child.stdin.end(JSON.stringify({ query, variables }));
     });
-    if (p.error) throw new Transient("timeout");
     let json: Node = {};
     try {
       json = JSON.parse(p.stdout);
@@ -139,7 +150,7 @@ export class Client {
     if (this.remaining !== null && this.remaining < this.reserve) {
       await this.sleepUntilReset(`${this.remaining} points left, reserve ${this.reserve}`);
     }
-    const r = this.run(query, variables);
+    const r = await this.run(query, variables);
     if (r.text.includes("secondary rate limit") || r.text.includes("abuse")) {
       console.log("  secondary rate limit: sleeping 90s");
       await sleep(90_000);
@@ -272,7 +283,8 @@ function commentRows(repo: string, kind: Kind, n: Node, own: string[]): SQLInput
 export const KEEP_KNOWN_MERGEABLE = (table: string): string =>
   `CASE WHEN ${table}.head_oid IS excluded.head_oid AND ${table}.mergeable IN ('CONFLICTING','MERGEABLE') AND excluded.mergeable IS NOT 'CONFLICTING' AND excluded.mergeable IS NOT 'MERGEABLE' THEN ${table}.mergeable ELSE excluded.mergeable END`;
 
-function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[]): void {
+/** `force` rewrites an item and its comments even when the row is unchanged (a comment edit leaves the item row as it was). */
+function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[], force = false): void {
   // Upserts keep each row's rowid, which the full-text index (schema.sql) is keyed on.
   const insert = db.prepare(`INSERT INTO main.items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => c === "mergeable" ? `mergeable=${KEEP_KNOWN_MERGEABLE("items")}` : `${c}=excluded.${c}`).join(",")}`);
@@ -284,18 +296,26 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const live = appSlug();
   if (live) { try { rememberSlug(db, live); } catch { /* read-only connection */ } }
   const own = mentionNames(db, live);
+  const readAt = iso(new Date());
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const n of nodes) {
       const row = toRow(repo, kind, n, detail);
       // A row identical to the stored one (overlapping reads re-fetch many) writes nothing.
       const old = stored.get(repo, n.number) as Record<string, SQLInputValue> | undefined;
-      if (old && COLUMNS.every((c) => old[c] === row[c])) continue;
+      if (!force && old && COLUMNS.every((c) => old[c] === row[c])) continue;
       insert.run(row);
       if (detail === "full") {
-        del.run(repo, n.number);
-        for (const row of commentRows(repo, kind, n, own)) insComment.run(...row);
+        const rows = commentRows(repo, kind, n, own);
+        // A forced re-read of an unchanged item upserts in place: an identical comment bumps no topic. Comments past the newest 20 go.
+        if (!force) del.run(repo, n.number);
+        for (const row of rows) insComment.run(...row);
+        if (force) db.prepare(`DELETE FROM main.comments WHERE repo = ? AND number = ? AND id NOT IN (${rows.map(() => "?").join(",") || "''"})`).run(repo, n.number, ...rows.map((r) => r[2] as string));
       }
+    }
+    if (nodes.length) {
+      db.prepare(`INSERT INTO main.item_reads (repo, number, synced_at) VALUES ${nodes.map(() => "(?,?,?)").join(",")}
+        ON CONFLICT (repo, number) DO UPDATE SET synced_at = excluded.synced_at`).run(...nodes.flatMap((n) => [repo, n.number, readAt]));
     }
     db.exec("COMMIT");
   } catch (e) {
@@ -723,6 +743,13 @@ query($owner: String!, $name: String!, $number: Int!) {
     }
   }
 }`;
+
+/** Writes one item read by number (a webhook re-read) like the sync does. False for a null, deleted or transferred item: the daily reconcile handles those. */
+export function writeItemNode(db: DatabaseSync, repo: string, n: Node | null | undefined): boolean {
+  if (!n || n.repository?.name !== repo || !ownedBy(n, repo)) return false;
+  writePage(db, repo, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n], true);
+  return true;
+}
 
 // Lists a repo's open issues and PRs and reconciles the mirror with them. Mirror rows that are
 // open here but not listed as open on GitHub are read one by one: closed or merged ones are

@@ -29,6 +29,7 @@ import { retryWaiting } from "../../github/user-lane.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, writes as mcpWrites, type Msg as McpMsg } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
+import { handleDelivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH } from "../../github/webhooks.ts";
 import { esc, HttpError, parseCookies, plainPage, previewTags, RateLimiter, safeReturnTo } from "./util.ts";
 
 export const SESSION_COOKIE = "__Host-craft_session";
@@ -106,14 +107,14 @@ function match(routes: Compiled[], method: string, path: string): { route?: Comp
   return { other };
 }
 
-async function readRaw(req: IncomingMessage): Promise<Buffer> {
+async function readRaw(req: IncomingMessage, limit: number = BODY_LIMIT): Promise<Buffer> {
   const declared = Number(req.headers["content-length"] ?? 0);
-  if (declared > BODY_LIMIT) throw new HttpError(413, "Request too large");
+  if (declared > limit) throw new HttpError(413, "Request too large");
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req as AsyncIterable<Buffer>) {
     size += c.length;
-    if (size > BODY_LIMIT) throw new HttpError(413, "Request too large");
+    if (size > limit) throw new HttpError(413, "Request too large");
     chunks.push(c);
   }
   return Buffer.concat(chunks);
@@ -474,6 +475,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return send(res, nonce, r, set);
       }
       if (url.pathname === "/mcp") return await handleMcpHttp(req, res);
+      if (url.pathname === WEBHOOK_PATH) return await handleWebhook(req, res);
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
       if (method === "GET" && url.pathname === DISCORD_PRIVACY_PATH) return send(res, nonce, { html: discordPrivacyPage(nonce, contactOf(db)) });
@@ -509,6 +511,25 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // POST /mcp: one JSON-RPC message, authenticated by an agent token (Authorization: Bearer), never by the session
   // cookie, so a browser page cannot make a signed-in user's browser call it. A request from a browser
   // context on another site (Origin or Sec-Fetch-Site) is refused, which also covers DNS rebinding.
+  // GitHub App deliveries: no session and no CSRF check; the HMAC signature over the raw body is the authentication.
+  async function handleWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const reply = (status: number, allow?: string): void => {
+      res.writeHead(status, secure({ "cache-control": "no-store", "content-type": "text/plain; charset=utf-8", ...(allow ? { allow } : {}) }, "default-src 'none'"));
+      res.end("");
+    };
+    if (req.method !== "POST") return reply(405, "POST");
+    let raw: Buffer;
+    try {
+      raw = await readRaw(req, WEBHOOK_BODY_LIMIT);
+    } catch (e) {
+      if (e instanceof HttpError) return reply(e.status);
+      throw e;
+    }
+    const one = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v);
+    const v = handleDelivery(db, config.secrets.app?.webhookSecret ?? null, { signature: one(req.headers["x-hub-signature-256"]), event: one(req.headers["x-github-event"]) }, raw, safeEqual);
+    return reply(v.status);
+  }
+
   async function handleMcpHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const reply = (status: number, body: unknown, headers: Record<string, string> = {}): void => {
       res.writeHead(status, secure({ "cache-control": "no-store", ...(body === null ? {} : { "content-type": "application/json; charset=utf-8" }), ...headers }, "default-src 'none'"));

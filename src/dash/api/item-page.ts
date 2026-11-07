@@ -45,6 +45,8 @@ export interface GithubSide {
   description: string; events: GithubEvent[]; checks: { name: string; state: CiState }[];
   commits: { sha: string; message: string; author: string; at: string; byAutoCraft: boolean }[];
   files: { path: string; additions: number; deletions: number }[]; url: string;
+  /** When AutoCraft last read the item from GitHub (poll or webhook re-read); null before the first read since this was recorded. */
+  syncedAt: string | null;
 }
 export interface ItemPageHeader {
   labels: string[]; assignees: string[]; autocraftAssigned: boolean; pipelineOn: boolean; discord: DiscordInfo | null; queue: QueueSlot | null;
@@ -73,6 +75,7 @@ const clean = (s: string, max = 1500): string => {
 /** What the page reads beyond the trace's fingerprint: header parts, comment edits, commits, checks, files and the plan view. */
 const EXTRA = [
   "SELECT title, labels, LENGTH(COALESCE(body, '')), ci_state, mergeable, additions, deletions, url, closing_issues FROM items WHERE repo = ?1 AND number = ?2",
+  "SELECT synced_at FROM item_reads WHERE repo = ?1 AND number = ?2",
   "SELECT view FROM item_plans WHERE repo = ?1 AND number = ?2",
   "SELECT COUNT(*), SUM(LENGTH(COALESCE(body, ''))), SUM(url IS NOT NULL), group_concat(COALESCE(review_state, '')) FROM comments WHERE repo = ?1 AND number = ?2",
   "SELECT COUNT(*), MAX(first_seen_at), SUM(LENGTH(COALESCE(message, ''))) FROM pr_commits WHERE repo = ?1 AND number = ?2",
@@ -272,7 +275,7 @@ const asOf = (w: WriteRow | undefined): string => IDENTITY[w?.identity ?? "legac
 const writeType = (action: string): GithubEvent["type"] =>
   action === "merge" ? "merged" : /-push$/.test(action) ? "push" : /^(labels-apply|act-unlabel|assign|unassign|label-create)$/.test(action) ? "label" : /^review-/.test(action) ? "review" : /close/.test(action) ? "closed" : "comment";
 
-function githubOf(c: Ctx, it: Item, ev: Ev[], url: string): GithubSide {
+function githubOf(c: Ctx, it: Item, ev: Ev[], url: string, syncedAt: string | null): GithubSide {
   const { db, repo, n } = c;
   const events: GithubEvent[] = [];
   const writes = writesOf(db, repo, n).filter((w) => w.state !== "failed");
@@ -320,7 +323,7 @@ function githubOf(c: Ctx, it: Item, ev: Ev[], url: string): GithubSide {
     .map((m) => ({ sha: short(m.oid), message: clean(m.message ?? "", 500), author: m.author ?? "unknown", at: m.at, byAutoCraft: (!!m.author && own.has(m.author)) || pushedByAutoCraft(db, repo, n, m.oid) }));
   return {
     description: clean(it.body, 6000), events, checks: it.ciChecks.filter((x) => x.state !== "none").map((x) => ({ name: x.name, state: x.state })), commits,
-    files: it.files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions })), url,
+    files: it.files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions })), url, syncedAt,
   };
 }
 
@@ -332,13 +335,13 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
   if (req.query.get("since") === stamp) return { unchanged: true, stamp };
   const it = await itemCore(db, req);
   const ev = gather(c, null);
-  const row = db.prepare("SELECT url, head_oid FROM items WHERE repo = ? AND number = ?").get(c.repo, c.n) as { url: string | null; head_oid: string | null };
+  const row = db.prepare("SELECT url, head_oid, (SELECT synced_at FROM item_reads r WHERE r.repo = items.repo AND r.number = items.number) AS synced_at FROM items WHERE repo = ? AND number = ?").get(c.repo, c.n) as { url: string | null; head_oid: string | null; synced_at: string | null };
   const cost = (db.prepare(`SELECT COALESCE(SUM(r.cost_usd), 0) AS cost FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ?${hiddenSql(c.hidden)}`)
     .get(c.repo, c.n, ...c.hidden) as { cost: number }).cost;
   return {
     repo: c.repo, number: c.n, kind: it.kind, state: it.state, title: it.title, author: it.author, stamp,
     header: headerOf(c, it, it.queue ?? null), status: statusOf(c, it), costUsd: cost,
     reviews: it.kind === "pr" ? reviewsOf(c, row.head_oid, ev) : { latest: null, earlier: [] }, results: resultsOf(c, it), history: historyOf(c, ev),
-    github: githubOf(c, it, ev, row.url ?? ""),
+    github: githubOf(c, it, ev, row.url ?? "", row.synced_at),
   };
 }

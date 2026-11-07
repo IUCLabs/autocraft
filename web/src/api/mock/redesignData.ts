@@ -137,6 +137,7 @@ const gh = (id: string, type: GithubEvent["type"], minAgo: number, actor: string
 const AC_APP = "kiri-n via the App";
 
 const GITHUB_1484: GithubSide = {
+  syncedAt: at(1),
   description: "Adds Hungarian spellchecking and the nonstandard hyphenation cases (ccs, ggy, sz+sz) that the pattern file lacks.\n\nThe dictionary and the pattern file come from the Magyar Ispell project under its permissive licence.",
   url: "https://github.com/storytold/designcraft/pull/1484",
   events: [
@@ -170,6 +171,7 @@ const HISTORY_9981: HistoryEntry[] = [
   hist("h8", 46, "Queued", "In batch #41, waiting for CI", null, null, "event"),
 ];
 const GITHUB_9981: GithubSide = {
+  syncedAt: at(1),
   description: "Crop handles drift when the layer is rotated. They are placed with the unrotated bounds.\n\nFixes #9940.",
   url: "https://github.com/storytold/photocraft/pull/9981",
   events: [
@@ -193,6 +195,7 @@ const HISTORY_2214: HistoryEntry[] = [
   hist("h6", 70, "Fix-up", "Round 2 started on wordcraft#2231", "Sonnet", null, "model", [{ label: "Edit crates/export/src/pdf/links.rs", kind: "tool", costUsd: null }]),
 ];
 const GITHUB_2214: GithubSide = {
+  syncedAt: at(1),
   description: "When a paragraph ends with a hyperlink, the exported PDF has the text but the link area is missing.\n\nSteps: type a paragraph, make the last words a link, export to PDF, click the link in a viewer.",
   url: "https://github.com/storytold/wordcraft/issues/2214",
   events: [
@@ -211,6 +214,7 @@ const HISTORY_9970: HistoryEntry[] = [
   hist("h4", 95, "Post-merge review", "No issues found", "Opus", 0.6, "model"),
 ];
 const GITHUB_9970: GithubSide = {
+  syncedAt: at(1),
   description: "Keeps the endpoint handles inside the plot area when the curve is steep.",
   url: "https://github.com/storytold/photocraft/pull/9970",
   events: [
@@ -261,7 +265,7 @@ export function itemPageFor(repo: string, number: number): ItemPageData | null {
   const history = [hist("h1", s.updated + 20, "Classify", "classified", "Jev", 0), hist("h2", s.updated, s.status.phase, s.status.waiting ?? "done", null, null, "event")];
   return {
     ...base, reviews: { latest: null, earlier: [] }, results: [{ id: "c1", kind: "classifiers", title: "Classifiers", outcome: "3 of 3 agree", tone: "neutral", at: at(s.updated + 20), detail: null, earlier: [] }], history, costUsd: 0,
-    github: { description: s.title, url: `https://github.com/storytold/${repo}/${s.kind === "pr" ? "pull" : "issues"}/${number}`, events: [gh("g1", "opened", s.updated + 60, s.author, s.title)], checks: [], commits: [], files: [] },
+    github: { description: s.title, url: `https://github.com/storytold/${repo}/${s.kind === "pr" ? "pull" : "issues"}/${number}`, events: [gh("g1", "opened", s.updated + 60, s.author, s.title)], checks: [], commits: [], files: [], syncedAt: at(3) },
   };
 }
 

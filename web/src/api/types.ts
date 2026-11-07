@@ -2393,6 +2393,8 @@ export interface GithubSide {
   commits: { sha: string; message: string; author: string; at: string; byAutoCraft: boolean }[];
   files: { path: string; additions: number; deletions: number }[];
   url: string;
+  /** When AutoCraft last read the item from GitHub. */
+  syncedAt: string | null;
 }
 
 /** What the item page header and its overflow menu need: labels, people, queue place and the operator's controls. */

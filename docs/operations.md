@@ -22,6 +22,19 @@ Once a day per tracked repo (`repos.reconciled_at`; each run takes the repo with
 
 Each run stores `sync_points_last_run` (a full run: `sync_full_points_last_run`) and `sync_rate_remaining` in `settings`.
 
+#### Webhooks
+
+The poll stays the backup and serves repos without the GitHub App. With webhooks on, a change reaches the dashboard in seconds instead of up to a minute. Setup, in the app's GitHub settings under General (an app manager does this):
+
+- Webhook: Active. Webhook URL `<AUTOCRAFT_BASE_URL>/webhooks/github`, content type `application/json`, secret: the value of `github_app_webhook_secret` in the secrets file (GitHub returns it when the app is registered from the dashboard; if the key is empty, set a secret in the app's settings and store the same value as `github_app_webhook_secret` in the secrets file). The dashboard reads the secret at start, so restart it after the secret changes.
+- Permissions (Permissions & events): read access to Issues, Pull requests and Checks (and Commit statuses if `status` is wanted; AutoCraft ignores it).
+- Subscribe to events: Issues, Issue comment, Pull request, Pull request review, Pull request review comment, Check suite. A check suite counts when its action is `completed`; a fork's pull request, which GitHub lists no pull requests for, is found through the event's head commit.
+- Check Recent Deliveries after saving: the `ping` delivery answers 200.
+
+`POST /webhooks/github` needs no session. It checks `X-Hub-Signature-256` (HMAC-SHA256 of the raw body, constant-time compare) before parsing and answers 401 for a wrong signature or when no secret is set, 413 over 1 MB. From a verified delivery it takes only the repository's full name and the item number (for completed check suites, the pull requests the event lists whose base repository is this one, or the open ones at its head commit), and only for tracked repos. It writes one row per item to `sync_requests`, so a burst of events collapses, and answers 202. Payload text is neither stored nor logged and never reaches a prompt.
+
+The runner drains `sync_requests` every 5 seconds while rows exist (`webhookTick` in `src/runner/runner.ts`). It skips a pass while a sync run holds its lock and stops when fewer than 1,000 rate-limit points are left. Each item is read with the sync's single-item document and written by the sync's writer, so the live topics update open pages. A failed read stays queued until it is 6 hours old; the next poll reads the item anyway. Both the poll and the re-read write `item_reads.synced_at` (one statement per page), and a re-read rewrites the item's comments even when the item row is unchanged. The runner uses one GitHub client seeded from the last sync's rate-limit reading and also skips a pass while the full-sync lock is held. A read that fails for a reason other than a transient one is dropped from the queue and logged. The item page shows it as "updated hh:mm" beside "On GitHub".
+
 Sync also stores the hashes the planner compares, on the item row: `embed_hash` (the embedded text, `src/embed/text.ts`) and `class_hash` with `class_scheme` (the classifier's input hash, `src/itemhash.ts`). `classify-new` and `embed` select changed items from these columns on covering indexes instead of hashing every body. The first `connect()` after an upgrade fills them for existing rows (about 6 s for 56,000 items). An edit of title, body or size outside sync clears the row's hashes, and the readers fill them again.
 
 Schema: `src/schema.sql`. Full-text search uses the FTS5 tables `items_fts` and `comments_fts`, kept current by triggers; the first `connect()` after an upgrade builds them (about 16 s for 56k items and 65k comments). Mirror tables are overwritten by sync; work tables (classifications, stages, whitelist overrides, token use) are ours.
