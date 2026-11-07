@@ -12,3 +12,9 @@ export function isBotLogin(login: string): boolean {
   const l = login.toLowerCase();
   return l.endsWith("[bot]") || list.includes(l.replace(/\[bot\]$/, ""));
 }
+
+/** A one-line comment that only addresses a bot ("@coderabbitai resume", "@dependabot rebase"): a command, not discussion. */
+export function isBotCommand(body: string): boolean {
+  const m = /^@([\w-]+(?:\[bot\])?)(?:\s.*)?$/.exec(body.trim());
+  return !!m && !body.trim().includes("\n") && (isBotLogin(m[1]!) || /(?:ai|bot|\[bot\])$/i.test(m[1]!));
+}

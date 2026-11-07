@@ -323,8 +323,15 @@ export function decidePr(f: PrFacts): Plan {
 
   // Review: no review at the head, or one made stale (a PR at its re-review cap waits).
   // A head whose earlier review carries over our checked fix-up is carried, not reviewed.
-  if (!held && reviewable && f.carriable) actions.push(act("carry", f.head));
-  else if (!held && reviewable && !(r && r.head === f.head && !r.staleActionable)) actions.push(act("review", f.head));
+  // A due review waits while another item blocks the PR, CI at the head has not passed, or the day's review cap is used (src/review/gate.ts); a carry only waits for CI.
+  let reviewWait: string | null = null;
+  if (!held && reviewable && f.carriable) {
+    if (f.reviewHold?.kind === "ci") reviewWait = f.reviewHold.wait;
+    else actions.push(act("carry", f.head));
+  } else if (!held && reviewable && !(r && r.head === f.head && !r.staleActionable)) {
+    if (f.reviewHold) reviewWait = f.reviewHold.wait;
+    else actions.push(act("review", f.head));
+  }
 
   // Post the review.
   if (!held && !f.authorIsPipeline && !f.batchPr && r && f.post.postable && r.head === f.head) {
@@ -393,5 +400,5 @@ export function decidePr(f: PrFacts): Plan {
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? "merge held by an operator" : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : WAITS[e.state] ?? null)) : null;
-  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: wait ?? (f.operator?.hold && !main ? "its pre-approved merge" : null) });
+  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: wait ?? (f.operator?.hold && !main ? "its pre-approved merge" : null) ?? (!main ? reviewWait : null) });
 }

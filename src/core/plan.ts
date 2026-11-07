@@ -98,6 +98,8 @@ export type PrFacts = {
   brokeByUs?: boolean;
   /** The head has no review, but the review of the earlier head carries to it (src/review/carry.ts): the Carry step stores it and no model reviews the head. */
   carriable?: boolean;
+  /** Why a due review waits (src/review/gate.ts): an open blocker, CI at the head not finished or not passed, the PR's daily review cap, or the minimum time since its last review. */
+  reviewHold?: { kind: "blocked" | "ci" | "cap" | "interval"; wait: string; /** When an interval wait ends (ms). */ until?: number };
   /** AutoCraft has its own work on this PR: one of its pushes (fix-up, CI fix, base merge) at or since the reviewed head, a stored lint patch, or the PR is our own fix PR. It ends when the PR is closed; selection also drops it while the plan waits on a person (see inFlightNow). */
   inFlight?: boolean;
   /** Our push moved this open PR off its mirrored head and no sync has run since (the mirror's updatedAt is not after the push). */

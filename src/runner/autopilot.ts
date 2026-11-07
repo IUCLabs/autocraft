@@ -295,6 +295,8 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => {
       const out: Candidate[] = [];
       const top = firstByRepo(planned(db, "review", { plans: plansOf(db, ctx) }));
+      // A PR waiting out the minimum time between reviews is planned again when it ends.
+      for (const p of plansOf(db, ctx).prs) if (p.facts.reviewHold?.until) ctx.wake?.push(p.facts.reviewHold.until);
       for (const repo of flightFirst(plansOf(db, ctx), fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number))) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);

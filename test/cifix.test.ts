@@ -306,7 +306,7 @@ describe("infrastructure failure", () => {
 });
 
 describe("unsure carries across the pushed head", () => {
-  const review = (sure: boolean) => ({ ref: "x", verdict: "take" as const, sure, reason: sure ? "sure" : "unsure", fixes: [], risks: ["r"], summary: null, why: null, public: null, conflicts: [], claims: [] });
+  const review = (sure: boolean) => ({ ref: "x", verdict: "take" as const, sure, reason: sure ? "sure" : "unsure", fixes: [], risks: ["r"], summary: null, why: null, public: null, conflicts: [], claims: [], blocked_by: [] });
   const save = (db: DatabaseSync, head: string, sure: boolean) => saveOpus(db, null, { repo: "app", number: 1, head_oid: head }, { mode: "full", base: null, model: "m", review: review(sure) });
 
 });

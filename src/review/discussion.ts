@@ -5,7 +5,8 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { isBotLogin } from "./bots.ts";
+import { isBotCommand, isBotLogin } from "./bots.ts";
+import { openBlockers, storedBlockedBy } from "./blockers.ts";
 import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
@@ -62,6 +63,7 @@ export function isCounted(w: Written): boolean {
   if (w.state === "APPROVED" && !inline && body.length < 40) return false;
   const login = w.author ?? "";
   if (!login || w.bot || isBotLogin(login)) return false;
+  if (isBotCommand(body)) return false;
   return login === w.prAuthor || COUNTED_ASSOCIATIONS.includes(w.association ?? "");
 }
 
@@ -220,7 +222,9 @@ export function discussionOf(db: DatabaseSync, repo: string, number: number, liv
 
 const staleKey = (repo: string, number: number) => `${STALE_KEY}${repo}#${number}`;
 
-type DiscussionState = Map<string, { newest: string; hash: string }>;
+type DiscussionState = Map<string, { newest: string; hash: string; /** Newest counted entry by a maintainer (OWNER, MEMBER, COLLABORATOR or a dashboard user); "" when none. */ maint: string }>;
+
+const MAINTAINER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
 
 // The queue recomputes on every `steps` change, which comment writes don't move. Comments bump `items`, our posts
 // bump `reviews`, and the pipeline login is part of the key, so an unchanged signature means unchanged input.
@@ -241,8 +245,9 @@ export function discussionState(db: DatabaseSync, repo?: string): DiscussionStat
 }
 
 function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionState {
-  const rows = db.prepare(`SELECT c.repo, c.number, c.id, c.body, c.created_at FROM comments c
-    WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: ownJson(repo ? ownLogins(db, repo) : allOwnLogins(db)) }) as { repo: string; number: number; id: string; body: string | null; created_at: string }[];
+  const rows = db.prepare(`SELECT c.repo, c.number, c.id, c.body, c.created_at, c.author_association AS assoc,
+      EXISTS (SELECT 1 FROM main.access a WHERE a.login = c.author AND a.role IN ('operator', 'maintainer')) AS dash FROM comments c
+    WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: ownJson(repo ? ownLogins(db, repo) : allOwnLogins(db)) }) as { repo: string; number: number; id: string; body: string | null; created_at: string; assoc: string | null; dash: number }[];
   const by = new Map<string, typeof rows>();
   for (const r of rows) {
     const k = `${r.repo}#${r.number}`;
@@ -250,7 +255,20 @@ function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionStat
     if (list) list.push(r);
     else by.set(k, [r]);
   }
-  return new Map([...by].map(([k, v]) => [k, { newest: v.reduce((m, r) => (r.created_at > m ? r.created_at : m), ""), hash: discussionHash(v) }]));
+  return new Map([...by].map(([k, v]) => [k, { newest: v.reduce((m, r) => (r.created_at > m ? r.created_at : m), ""), hash: discussionHash(v), maint: v.filter((r) => r.dash || MAINTAINER_ASSOCIATIONS.includes(r.assoc ?? "")).reduce((m, r) => (r.created_at > m ? r.created_at : m), "") }]));
+}
+
+/** A maintainer's counted entry newer than a review's snapshot that the review did not read; PR author comments do not count. */
+function maintainerSince(state: { newest: string; hash: string; maint: string } | undefined, seen: string, hash: string | null): boolean {
+  return !!state && !!state.maint && sec(state.maint) > sec(seen) && state.hash !== hash;
+}
+
+/**
+ * Whether a maintainer or an operator asked for a new review of the PR after `since` (the latest review's time): "Review again",
+ * a merge-time check that found new discussion, or a maintainer's comment. Such a request skips the blocker, CI and daily-cap waits.
+ */
+export function reviewRequestedSince(db: DatabaseSync, repo: string, number: number, since: string, seen: string | null, hash: string | null): boolean {
+  return markedStaleSince(db, repo, number, since) || maintainerSince(discussionState(db, repo).get(`${repo}#${number}`), seen ?? since, hash);
 }
 
 /** True when the discussion has a counted entry newer than a review's snapshot and differs from what that review read (no hash: any newer entry). */
@@ -281,8 +299,8 @@ export function countRerun(db: DatabaseSync, repo: string, number: number): void
  * discussion-triggered re-reviews today are left out (an operator mark is never capped).
  */
 export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false): Set<string> {
-  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash FROM opus_reviews r WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
-    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null }[];
+  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash, r.blocked_by FROM opus_reviews r WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
+    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null; blocked_by: string | null }[];
   const state = discussionState(db, repo);
   const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key.slice(STALE_KEY.length), m.value]));
   const out = new Set<string>();
@@ -295,8 +313,11 @@ export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false
   for (const r of rows) {
     const ref = `${r.repo}#${r.number}`;
     const marked = (marks.get(ref) ?? "") > r.at;
-    const talked = changedSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
-    if (!marked && !(talked && !(respectCap && capped(r)))) continue;
+    // On a head that has a review, only a maintainer's words (or an operator's request) make it stale: the PR author's comments feed the next review but do not start one.
+    const talked = maintainerSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
+    // A hold that waited for other items is reviewed once when none is open any more.
+    const unblocked = !!r.blocked_by && storedBlockedBy(r.blocked_by).length > 0 && openBlockers(db, storedBlockedBy(r.blocked_by)).length === 0;
+    if (!marked && !unblocked && !(talked && !(respectCap && capped(r)))) continue;
     out.add(`${ref}@${r.head_oid}`);
   }
   return out;

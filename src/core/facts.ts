@@ -40,6 +40,7 @@ import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
 import { postSource } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
+import { reviewHold } from "../review/gate.ts";
 import { scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
 import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf } from "./rules.ts";
@@ -289,6 +290,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
         if (hasPoints) base.carry.push({ attempts: k.attempts });
       }
     }
+    if (r.state === "OPEN" && head && !base.draft) { const hold = reviewHold(db, r.repo, r.number, head, now); if (hold) base.reviewHold = hold; }
     if (!r.r_head || !r.r_verdict || !r.r_at) { out.push(base); continue; }
 
     const take = r.r_verdict === "take" || r.r_verdict === "take-fix";
