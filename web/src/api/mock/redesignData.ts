@@ -36,7 +36,7 @@ const seeds: Seed[] = [
 ];
 
 export const findingStatus = (state: string, attempts: number, note: string | null): ItemStatus => {
-  if (state === "new" && attempts > 0) return status("Waiting for a person", 40, `a decision: fix failed after ${attempts} rounds, ${note ?? "see the rounds"}`, "Fix again with a note, Backlog or Dismiss");
+  if (state === "new" && attempts > 0) return status("Waiting for a person", 40, `a decision: ${note ?? "see the rounds"}`, "Fix again with a note, Backlog or Dismiss");
   if (state === "new") return status("Waiting for a person", 9 * D, "a decision to fix", "Fix opens a private fix");
   if (state === "fixing") return status("Fixing", 25, "round 2 of 3 building", "Opus review of the patch");
   if (state === "ready") return status("Waiting for a person", 3 * H, "Land or an advisory", "Land opens a quiet pull request");
@@ -46,7 +46,25 @@ export const findingStatus = (state: string, attempts: number, note: string | nu
   return status("Closed", 3 * D, null, null);
 };
 
+/** Quieter rows from many repos, so the list runs past one page. */
+function fillerRows(): ItemStatusRow[] {
+  const repos = ["designcraft", "photocraft", "wordcraft", "pdfcraft", "gridcraft", "vectorcraft", "lightcraft", "filmcraft"];
+  const titles = ["Tooltip clips at the window edge", "Add a keyboard shortcut for zoom to selection", "Crash when the recent list is empty", "Panel resize handle flickers", "Update the French strings", "Undo skips the last brush stroke", "Rulers show the wrong unit after import", "Typo in the export dialog"];
+  const phases: [ItemPhase, string | null, string | null][] = [["Triage", "classification", null], ["Review", "an Opus review", "post the review"], ["Fixing", "fix-up round 1", "verify"], ["Merged", null, null], ["Closed", null, null], ["Out of scope", null, null], ["In queue", "CI", "merge by rule"], ["Verifying", "a build worker", "merge queue"]];
+  return Array.from({ length: 44 }, (_, i) => {
+    const [phase, waiting, next] = phases[i % phases.length]!;
+    const kind = i % 3 === 0 ? "issue" : "pr";
+    const state = phase === "Merged" ? "merged" : phase === "Closed" || phase === "Out of scope" ? "closed" : "open";
+    const m = 8 * H + i * 37;
+    return { repo: repos[i % repos.length]!, number: 3100 + i * 7, kind, state: kind === "issue" && state === "merged" ? "closed" : state, title: titles[(i * 5) % titles.length]!, status: status(phase, m, waiting, next), updatedAt: at(m) } as ItemStatusRow;
+  });
+}
+
 export function statusRows(): ItemStatusRow[] {
+  return [...seedRows(), ...fillerRows()];
+}
+
+function seedRows(): ItemStatusRow[] {
   return seeds.map((s) => ({ repo: s.repo, number: s.number, kind: s.kind, state: s.state, title: s.title, status: s.status, updatedAt: at(s.updated) }));
 }
 
@@ -251,6 +269,13 @@ export const FIX_ROUNDS_11: FixRound[] = [
   { round: 1, outcome: "failed", why: "The patch does not compile: fs::metadata returns a Result that is not handled.", at: at(3 * H), costUsd: 1.84 },
   { round: 2, outcome: "failed", why: "Opus review: the check runs after the path is opened, so the defect remains.", at: at(2 * H), costUsd: 2.1 },
   { round: 3, outcome: "failed", why: "The regression test passes without the fix, so it does not show the defect.", at: at(40), costUsd: 2.4 },
+];
+
+/** A fix that failed twice and passed on the third round. */
+export const FIX_ROUNDS_4: FixRound[] = [
+  { round: 1, outcome: "failed", why: "The new test did not run: the module is not part of the test target.", at: at(2 * D), costUsd: 1.52 },
+  { round: 2, outcome: "failed", why: "Opus review: redirects to the same host are still refused, which breaks updates behind a proxy.", at: at(2 * D - 50), costUsd: 1.97 },
+  { round: 3, outcome: "passed", why: "The regression test fails before the fix and passes after; Opus review found nothing.", at: at(3 * H), costUsd: 2.05 },
 ];
 
 export const FINDING_HISTORY_11: HistoryEntry[] = [

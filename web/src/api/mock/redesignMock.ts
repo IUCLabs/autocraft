@@ -5,7 +5,7 @@ import { findingActions } from "../../lib/security";
 import { decisionPath } from "../../lib/links";
 import { setClock } from "../../lib/format";
 import { realData } from "./realStore";
-import { FINDING_HISTORY_11, FIX_ROUNDS_11, at, findingStatus, itemPageFor, mockHeader, statusRows } from "./redesignData";
+import { FINDING_HISTORY_11, FIX_ROUNDS_11, FIX_ROUNDS_4, at, findingStatus, itemPageFor, mockHeader, statusRows } from "./redesignData";
 
 const wait = <T,>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope"];
@@ -15,8 +15,10 @@ const GROUP: Record<string, SecurityGroup> = {
 };
 const GROUPS: SecurityGroup[] = ["Needs a person", "Fixing", "Ready to land", "Landing", "Landed or published", "Dismissed or backlog"];
 /** Findings whose fix gave up after rounds: number to attempts. */
-const ATTEMPTS: Record<number, number> = { 11: 3 };
+const ATTEMPTS: Record<number, number> = { 11: 3, 4: 3 };
 const NOTE_11 = "the regression test still passes without the fix";
+
+const PAGE = 20;
 
 export type RedesignApi = Pick<Api, "home" | "itemPage" | "itemStatusList" | "securityList" | "findingPage">;
 
@@ -28,10 +30,11 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
     const attempts = ATTEMPTS[f.number] ?? 0;
     return { repo: f.repo, number: f.number, title: f.title, severity: f.severity, state: f.state, urgent: f.urgent, area: f.area, attempts, status: findingStatus(f.state, attempts, note), updatedAt: f.updatedAt };
   };
+  const ROUNDS: Record<number, typeof FIX_ROUNDS_11> = { 11: FIX_ROUNDS_11, 4: FIX_ROUNDS_4 };
   const findings = async (): Promise<FindingRow[]> => {
     if (!staff) return [];
     const ov = await base.security.overview("designcraft");
-    return Promise.all(ov.findings.map(async (f) => rowOf(f, f.number in ATTEMPTS ? NOTE_11 : null)));
+    return Promise.all(ov.findings.map(async (f) => rowOf(f, f.number === 11 ? NOTE_11 : null)));
   };
   // A finding's open question has the shape decisions use, so the page shows the same choice cards.
   const decide = async (f: FindingView, attempts: number): Promise<{ decision: Decision | null; choices: DecisionChoices | null }> => {
@@ -100,7 +103,9 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       const byPhase = Object.fromEntries(PHASES.map((p) => [p, base1.filter((r) => r.status.phase === p).length])) as Record<ItemPhase, number>;
       const isReal = (r: ItemStatusRow) => !!real?.rows.some((x) => x.repo === r.repo && x.number === r.number);
       const rows = base1.filter((r) => !f.phase || r.status.phase === f.phase).sort((a, b) => Number(isReal(b)) - Number(isReal(a)) || b.updatedAt.localeCompare(a.updatedAt));
-      return wait({ rows, byPhase, total: rows.length, nextCursor: null });
+      const start = Number(f.cursor ?? 0) || 0;
+      const page = rows.slice(start, start + PAGE);
+      return wait({ rows: page, byPhase, total: base1.length, nextCursor: start + PAGE < rows.length ? String(start + PAGE) : null });
     },
     async securityList() {
       const rows = await findings();
@@ -112,10 +117,10 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       if (rf) return wait({ ...rf, ...(await decide(rf.finding, 0)) });
       const finding = await base.security.finding(repo, number);
       const attempts = ATTEMPTS[number] ?? 0;
-      const failed = attempts > 0;
-      const { decision, choices } = await decide(finding, attempts);
+      const failed = attempts > 0 && finding.state === "new";
+      const { decision, choices } = await decide(finding, failed ? attempts : 0);
       return wait({
-        finding, decision, choices, attempts, status: findingStatus(finding.state, attempts, failed ? NOTE_11 : null), rounds: failed ? FIX_ROUNDS_11 : [],
+        finding, decision, choices, attempts, status: findingStatus(finding.state, failed ? attempts : 0, failed ? NOTE_11 : null), rounds: ROUNDS[number] ?? [],
         history: failed ? FINDING_HISTORY_11 : finding.timeline.map((c, i) => ({ id: `t${i}`, at: c.at, step: c.kind === "area" ? "Area scan" : c.kind === "verify" ? "Verification" : c.kind === "model" ? "Threat model" : "Fix", outcome: c.ok ? "done" : "failed", model: "Opus", costUsd: c.costUsd, kind: "model" as const, calls: [], writeId: null })),
         costUsd: failed ? 10.4 : finding.timeline.reduce((s, c) => s + (c.costUsd ?? 0), 0),
       });
