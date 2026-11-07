@@ -3,7 +3,7 @@ import type { DecisionKind, ItemKind, ItemState, RepoName } from "../../../web/s
 import type { ItemPhase, ItemStatus } from "../../core/item-status.ts";
 
 export type { ItemPhase, ItemStatus };
-export const ITEM_PHASES: readonly ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope"];
+export const ITEM_PHASES: readonly ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope", "Pipeline off"];
 
 export type ProblemKind = "stopped" | "health" | "stuck" | "gave-up";
 export interface HomeProblem { kind: ProblemKind; title: string; detail: string; to: string }
