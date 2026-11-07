@@ -7,7 +7,7 @@ import { setCallContext } from "../src/agents/call.ts";
 import { connect } from "../src/db.ts";
 import { jobLimit } from "../src/runner/autopilot.ts";
 import { endJob } from "../src/runner/jobs.ts";
-import { leaseItem, take } from "../src/runner/leases.ts";
+import { leaseItem, leaseSkips, take } from "../src/runner/leases.ts";
 import type { StepDef } from "../src/runner/steps.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -32,6 +32,7 @@ test("fixup and cifix on one PR: the second job skips it, and a lease of an ende
   as(cifix, "cifix");
   assert.equal(leaseItem(db, "pr:r#1", (l) => lines.push(l)), null);
   assert.equal(lines.length, 1);
+  assert.equal(leaseSkips(), 1, "a lease skip is counted, so the job is not recorded as idle");
   assert.ok(leaseItem(db, "pr:r#2", () => {}), "another PR is free");
   as(fixup, "fixup");
   assert.ok(take(db, "pr:r#1", fixup, "fixup"), "the holder may take it again");

@@ -335,7 +335,15 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       log(`  ${ref}: not asked: ${oneLine(String((e as Error).message ?? e))}`);
     }
   };
-  for (const c of asks) await askOne(c);
+  /** Runs `fn` on the PR under its lease, unless the run is stopping or another job holds it. */
+  const leased = async (c: { number: number }, fn: () => Promise<void>): Promise<boolean> => {
+    if (params.stopping?.()) return false;
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) return true;
+    try { await fn(); } finally { release(); }
+    return true;
+  };
+  for (const c of asks) if (!(await leased(c, () => askOne(c)))) break;
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
   let identP: Promise<CommitIdentity> | undefined;
@@ -353,7 +361,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
     who: ident, onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
   };
-  for (const c of cAsks) await askConflict(db, conflictRun, c);
+  for (const c of cAsks) if (!(await leased(c, () => askConflict(db, conflictRun, c)))) break;
   if (!picks.length && !cMerges.length) return summary;
 
   const who = await ident();
@@ -557,12 +565,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       if (!counted) worked--;
     }
   }
-  for (const c of cMerges) {
-    if (params.stopping?.()) { log(`fixup ${repo}: stopping, no new conflict merges started`); break; }
-    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
-    if (!release) continue;
-    try { await mergeConflict(db, conflictRun, c); } finally { release(); }
-  }
+  for (const c of cMerges) if (!(await leased(c, () => mergeConflict(db, conflictRun, c)))) break;
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }

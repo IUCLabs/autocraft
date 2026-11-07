@@ -158,6 +158,13 @@ function candidateOf(db: DatabaseSync, repo: string, number: number, score: numb
 export const attemptOf = (db: DatabaseSync, repo: string, number: number): AttemptRow | null =>
   (db.prepare("SELECT * FROM fix_attempts WHERE repo = ? AND number = ?").get(repo, number) as AttemptRow | undefined) ?? null;
 
+/** Whether the issue's attempt is still as selected: another job may have changed it before this one took the lease. */
+function unchanged(db: DatabaseSync, repo: string, number: number, before: string | null, log: (line: string) => void): boolean {
+  if ((attemptOf(db, repo, number)?.updated_at ?? null) === before) return true;
+  log(`  ${repo}#${number}: skipped: the attempt changed since it was selected`);
+  return false;
+}
+
 function update(db: DatabaseSync, d: FixIssueDeps, r: { repo: string; number: number }, set: Record<string, string | number | null>): void {
   const keys = Object.keys(set);
   db.prepare(`UPDATE fix_attempts SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE repo = ? AND number = ?`)
@@ -427,11 +434,13 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
   if (!fixIssueApprovalOf(db, repo)) throw new Error(`fixing issues in ${repo} is not approved`);
   mkdirSync(d.root, { recursive: true });
   const x: Ctx = { db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } };
+  const before = new Map(picks.map((c) => [c.number, attemptOf(db, repo, c.number)?.updated_at ?? null]));
   for (const r of retries) {
     if (params.stopping?.()) { log(`fixissue ${repo}: stopping, no new rounds started`); break; }
     const release = leaseItem(db, `issue:${repo}#${r.number}`, log);
     if (!release) continue;
     try {
+      if (!unchanged(db, repo, r.number, r.updated_at, log)) continue;
       if (await patchRound(x, r)) s.queued.push(refOf(r));
     } catch (e) {
       log(`  ${refOf(r)}: ${oneLine(String((e as Error).message ?? e))}`);
@@ -443,6 +452,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     const release = leaseItem(db, `issue:${repo}#${c.number}`, log);
     if (!release) continue;
     try {
+      if (!unchanged(db, repo, c.number, before.get(c.number) ?? null, log)) continue;
       params.onHandled?.(++handled);
       const o = await startAttempt(x, c);
       if (o === "started") { s.started.push(refOf(c)); await claimIssue(x, c); }
@@ -502,6 +512,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
     const release = leaseItem(db, `issue:${r.repo}#${r.number}`, log);
     if (!release) continue;
     try {
+      if (!unchanged(db, r.repo, r.number, r.updated_at, log)) continue;
       if (r.state === "passed") { if (await openPr(x(r.repo), r)) { s.opened++; s.changed++; } continue; }
       const item = db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { state: string } | undefined;
       const head = r.head_task_id === null ? null : getTask(db, r.head_task_id);

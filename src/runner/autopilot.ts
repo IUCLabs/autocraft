@@ -925,7 +925,12 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
     try {
       // The detection ran a moment ago: a job of the same step may have been queued since.
       if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running')").get(p.step)) continue;
-      const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER);
+      // The limit is what is left now, so two proposals of one step cannot both carry the whole remainder.
+      const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER, (step, params) => {
+        if (typeof params.limit !== "number") return params;
+        const lim = jobLimit(db, step, Date.now(), params.limit);
+        return lim ? { ...params, ...lim } : null;
+      });
       queued.push(job.id);
       done.add(p.lane);
       if (p.fp !== undefined) setSetting(db, fpKey(p.step, typeof p.params.repo === "string" ? p.params.repo : null), JSON.stringify({ job: job.id, fp: p.fp } satisfies FpRecord));

@@ -695,9 +695,17 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     rec.set(c, "code", "capped", reason);
     log(`  ${refOf(c)}: ${reason}`);
   }
+  const stopped = (): boolean => {
+    if (!params.stopping?.()) return false;
+    log(`cifix ${repo}: stopping, no new PRs started`);
+    return true;
+  };
   // A fix capped or given up at this head: one comment naming the failing checks, then the PR waits on the contributor.
   for (const c of sel.ask) {
+    if (stopped()) break;
     const ref = refOf(c);
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
     try {
       const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
       if (reading.kind === "skip") { rec.set(c, "code", "skipped", reading.why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${reading.why}`); continue; }
@@ -719,13 +727,8 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       log(`  ${ref}: asked the contributor about the failing CI at ${short(c.head)}`);
     } catch (e) {
       log(`  ${ref}: not asked: ${scrubReason(oneLine(String((e as Error).message ?? e)), d.root)}`);
-    }
+    } finally { release(); }
   }
-  const stopped = (): boolean => {
-    if (!params.stopping?.()) return false;
-    log(`cifix ${repo}: stopping, no new PRs started`);
-    return true;
-  };
   for (const x of collect) {
     if (stopped()) break;
     const release = leaseItem(db, `pr:${repo}#${x.c.number}`, log);
@@ -776,7 +779,10 @@ export async function runRerun(db: DatabaseSync, params: CifixParams, log: (line
   const w: Writer = { db, login: RERUN_ACTOR };
   let n = 0;
   for (const { c, runs } of picks) {
+    if (params.stopping?.()) { log(`cifix-rerun ${repo}: stopping, no new PRs started`); break; }
     const ref = refOf(c);
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
     try {
       const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
@@ -800,7 +806,7 @@ export async function runRerun(db: DatabaseSync, params: CifixParams, log: (line
       log(`  ${ref}: reran ${runs.length} runs${errors.length ? ` (${errors.length} refused)` : ""}`);
     } catch (e) {
       log(`  ${ref}: not rerun: ${oneLine(String((e as Error).message ?? e))}`);
-    }
+    } finally { release(); }
   }
   return out;
 }

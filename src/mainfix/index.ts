@@ -9,6 +9,7 @@
 //
 //   autocraft main-fix --repo R [--apply]
 //   autocraft main-fix-approval [--repo R]
+import { leaseItem } from "../runner/leases.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -308,9 +309,17 @@ export async function runMainFix(db: DatabaseSync, params: { repo: string; onHan
   const cur = currentOf(db, repo);
   if (!cur) return s;
   settleReruns(db, repo, cur, deps, s);
-  if (cur.state === "red" && rowsAt(db, repo, cur.headSha).length === 0) {
-    bump();
-    await classifyHead(db, repo, cur, deps, log, s, params.by ?? CLI_BY);
+  if (cur.state === "red" && rowsAt(db, repo, cur.headSha).length === 0 && !params.stopping?.()) {
+    const release = leaseItem(db, `head:${repo}@${cur.headSha}`, log);
+    // Another job may have classified the head before the lease was taken.
+    if (release) {
+      try {
+        if (rowsAt(db, repo, cur.headSha).length === 0) {
+          bump();
+          await classifyHead(db, repo, cur, deps, log, s, params.by ?? CLI_BY);
+        }
+      } finally { release(); }
+    }
   }
   if (deps.fix) {
     const asHead = (c: Current | null) => (c ? { headSha: c.headSha, branch: c.branch, state: c.state, redSince: c.redSince, culprit: c.culprit, culpritPr: c.culpritPr } : null);

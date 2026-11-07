@@ -926,7 +926,7 @@ export const STEPS: StepDef[] = [
       const { runRerun } = await import("../cifix/index.ts");
       const refused = await checkCiApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       return `${r.repo}: reran ${r.reran.length} PRs, ${r.skipped.length} skipped`;
     },
   },

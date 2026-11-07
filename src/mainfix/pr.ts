@@ -5,6 +5,7 @@
 // folded in, findings go back to the model (at most LINT_MAX_ROUNDS lint rounds). The clean commit is pushed to the
 // pipeline account's fork on `autocraft/main-ci-<check>-<sha7>` and a PR is opened against the default branch.
 // The log, the files and other PRs are untrusted data; nothing from them is run here.
+import { leaseItem } from "../runner/leases.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardRepo } from "../core/guard.ts";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
@@ -290,10 +291,17 @@ export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ open
     sweepSessions(c.db, c.now());
     for (const group of byHead.values()) {
       if (c.stopping?.()) { c.log(`  ${c.repo}: stopping, no new heads started`); break; }
-      // Rows that turned red after the patch was stored wait until it is collected.
-      const stored = group.filter((r) => r.state === "linting");
-      const o = await attempt(c, stored.length ? stored : group, () => onHandled?.(), ledger);
-      if (o !== "waiting") out[o]++;
+      const release = leaseItem(c.db, `head:${c.repo}@${group[0]!.head_sha}`, c.log);
+      if (!release) continue;
+      try {
+        // Another job may have moved the rows on before the lease was taken.
+        const now = c.db.prepare("SELECT * FROM main_fixes WHERE repo = ? AND head_sha = ? AND state IN ('needs-fix', 'linting') AND verdict = 'code' ORDER BY created_at, \"check\"").all(c.repo, group[0]!.head_sha) as FixRow[];
+        if (!now.length) continue;
+        // Rows that turned red after the patch was stored wait until it is collected.
+        const stored = now.filter((r) => r.state === "linting");
+        const o = await attempt(c, stored.length ? stored : now, () => onHandled?.(), ledger);
+        if (o !== "waiting") out[o]++;
+      } finally { release(); }
     }
   } finally {
     ledger.release();

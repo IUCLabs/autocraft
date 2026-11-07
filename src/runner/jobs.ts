@@ -112,8 +112,12 @@ export async function checkRequest(db: DatabaseSync, stepName: unknown, rawParam
 }
 
 /** Queues a job. The same step with the same params already waiting is refused. */
-export async function enqueue(db: DatabaseSync, stepName: unknown, rawParams: unknown, by: string): Promise<Job> {
-  const { step, params } = await checkRequest(db, stepName, rawParams);
+/** `settle` runs after the request is checked and before the insert, with no await between: it may change the params (a recomputed limit) or return null to refuse. */
+export async function enqueue(db: DatabaseSync, stepName: unknown, rawParams: unknown, by: string, settle?: (step: StepDef, params: Record<string, unknown>) => Record<string, unknown> | null): Promise<Job> {
+  const checked = await checkRequest(db, stepName, rawParams);
+  const { step } = checked;
+  const params = settle ? settle(step, checked.params) : checked.params;
+  if (!params) throw new JobError(409, `the daily limit of ${step.name} leaves too little for a job`);
   const json = JSON.stringify(params);
   if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND params = ? AND state = 'queued'").get(step.name, json)) {
     throw new JobError(409, `${step.name} with these settings is already queued`);
