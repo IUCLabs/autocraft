@@ -66,7 +66,11 @@ RUN set -eux; \
       bwrap --version; \
       zstd --version >/dev/null; \
       tini --version'; \
-    rm -rf /rootfs/dev
+    rm -rf /rootfs/dev; \
+    # Volatile mount points and package-manager state do not belong in the layer,
+    # and a symlinked /var/lock cannot be merged onto the base image's directory.
+    rm -rf /rootfs/var/lock /rootfs/var/run /rootfs/var/cache /rootfs/var/lib/apt \
+      /rootfs/run /rootfs/tmp/*
 
 # Certificate bundle, account entries and the writable roots. `dpkg -x` runs no
 # postinst scripts, so the CA bundle is copied from this stage rather than
