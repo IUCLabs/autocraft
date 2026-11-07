@@ -567,12 +567,24 @@ export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now
   return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, reset && reset > day ? reset : day) as { n: number }).n;
 }
 
+/** The part of its `limit` that each queued or running job of the step has not used yet: the day's limit keeps it for them. */
+export function reservedByJobs(db: DatabaseSync, step: string): number {
+  const rows = db.prepare("SELECT params, items FROM jobs WHERE step = ? AND state IN ('queued', 'running')").all(step) as { params: string; items: number | null }[];
+  let n = 0;
+  for (const r of rows) {
+    let limit: unknown;
+    try { limit = (JSON.parse(r.params) as { limit?: unknown }).limit; } catch { continue; }
+    if (typeof limit === "number") n += Math.max(0, limit - (r.items ?? 0));
+  }
+  return n;
+}
+
 /** The `limit` a job of the step may get (undefined when the step has none), or null when the day's limit leaves less than the step's minimum. `wanted` is a limit asked for (default: the step's). */
 export function jobLimit(db: DatabaseSync, step: StepDef, ms: number = Date.now(), wanted?: number): { limit?: number } | null {
   const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
   if (!lp || lp.kind !== "int") return {};
   const perDay = limitRow(db, step.name).per_day;
-  const limit = Math.min(wanted ?? lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, step.name, ms));
+  const limit = Math.min(wanted ?? lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, step.name, ms) - reservedByJobs(db, step.name));
   return limit < lp.min ? null : { limit };
 }
 

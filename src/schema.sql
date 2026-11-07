@@ -626,6 +626,15 @@ CREATE TABLE IF NOT EXISTS model_waits (
 );
 CREATE INDEX IF NOT EXISTS model_waits_seen ON model_waits(seen_at);
 
+-- Who is working a PR, issue or finding right now: bookkeeping for src/runner/leases.ts. A lease whose job is not
+-- running is free; runner start and a job's end delete its rows.
+CREATE TABLE IF NOT EXISTS work_leases (
+  key TEXT PRIMARY KEY,               -- pr:<repo>#<n> | issue:<repo>#<n> | finding:<repo>#<n>
+  job_id INTEGER NOT NULL,
+  step TEXT NOT NULL,
+  taken_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_run_items (
   run_id INTEGER NOT NULL,
   repo TEXT NOT NULL,

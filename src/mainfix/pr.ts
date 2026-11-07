@@ -55,6 +55,8 @@ export type Head = { headSha: string; branch: string; state: string; redSince: s
 
 type Ctx = {
   by?: By;
+  /** True when no new head should be started (cancel, deadline, pipeline off). */
+  stopping?: () => boolean;
   db: DatabaseSync; repo: string; gh: Gh; exec: Exec; fix: FixPrDeps; now: () => Date; log: (line: string) => void;
   /** The rows' state writer of the caller. */
   setState: (r: FixRow, state: string, reason: string | null, at: string, extra?: Partial<FixRow>) => FixRow;
@@ -287,6 +289,7 @@ export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ open
   try {
     sweepSessions(c.db, c.now());
     for (const group of byHead.values()) {
+      if (c.stopping?.()) { c.log(`  ${c.repo}: stopping, no new heads started`); break; }
       // Rows that turned red after the patch was stored wait until it is collected.
       const stored = group.filter((r) => r.state === "linting");
       const o = await attempt(c, stored.length ? stored : group, () => onHandled?.(), ledger);

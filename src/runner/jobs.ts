@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobDetail,  JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
 import { trackedNames } from "../repos.ts";
 import { accountLabelsByJob, failRunning } from "../agents/runs.ts";
+import { releaseJob } from "./leases.ts";
 import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
 import { shownLookup } from "../dash/api/shown.ts";
 
@@ -224,6 +225,7 @@ export function endJob(db: DatabaseSync, id: number, code: number | null, signal
   }
   failRunning(db, "The job ended during this call.", id);
   db.prepare("DELETE FROM model_waits WHERE job_id = ?").run(id);
+  releaseJob(db, id);
   db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = ?, progress = CASE WHEN ? = 'done' THEN NULL ELSE progress END WHERE id = ?")
     .run(state, now(), state === "failed" ? error : null, state, id);
   return { state, error: state === "failed" ? error : null };

@@ -63,7 +63,7 @@ export function defaultDeps(): VerifyDeps {
   };
 }
 
-export type VerifyParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void };
+export type VerifyParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean };
 export type VerifySummary = {
   runId: string; repo: string; candidates: number; handled: number;
   kinds: Record<string, number>; errors: number; tasks: number[]; warm: number | null; skipped: string[];
@@ -122,6 +122,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
   const ci = !repoHasNoCi(db, repo);
 
   for (const c of cands) {
+    if (params.stopping?.()) { log(`verify ${repo}: stopping, no new PRs started`); break; }
     const ref = refOf(c);
     const handle = (): void => { summary.handled++; params.onHandled?.(summary.handled); };
     const byCi = (): void => {

@@ -54,6 +54,7 @@ import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage
 import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
+import { leaseItem } from "../runner/leases.ts";
 
 export { MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 export { selectFixups } from "./select.ts";
@@ -101,6 +102,8 @@ export type FixupParams = {
   /** Default true. */
   dryRun?: boolean;
   onHandled?: (n: number) => void;
+  /** True when no new item should start (cancel, deadline, pipeline off). */
+  stopping?: () => boolean;
   /** Who asked; default: an operator at the command line. */
   by?: By;
 };
@@ -357,7 +360,13 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   mkdirSync(d.root, { recursive: true });
   let worked = 0;
   for (const c of picks) {
+    if (params.stopping?.()) { log(`fixup ${repo}: stopping, no new PRs started`); break; }
     if (worked >= budget) break;
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
+    // The item takes its budget before its first await; it is given back below when the item ends without being worked.
+    worked++;
+    let counted = false;
     const ref = refOf(c);
     let files = [...new Set(c.fixes.map((f) => f.file))];
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
@@ -381,7 +390,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
       // GitHub says UNKNOWN while it recomputes: the value stored at this head (kept by the mirror) decides.
       if (pr.mergeable === "CONFLICTING" || (pr.mergeable !== "MERGEABLE" && storedMergeable(db, repo, c.number, c.head) === "CONFLICTING")) { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
-      worked++;
+      counted = true;
       params.onHandled?.(++handled.n);
       if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule)) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
@@ -543,9 +552,17 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));
+    } finally {
+      release();
+      if (!counted) worked--;
     }
   }
-  for (const c of cMerges) await mergeConflict(db, conflictRun, c);
+  for (const c of cMerges) {
+    if (params.stopping?.()) { log(`fixup ${repo}: stopping, no new conflict merges started`); break; }
+    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
+    if (!release) continue;
+    try { await mergeConflict(db, conflictRun, c); } finally { release(); }
+  }
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }

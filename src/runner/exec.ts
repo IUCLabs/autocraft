@@ -6,6 +6,7 @@ import type { JobUsage } from "../../web/src/api/types.ts";
 import { setCallContext } from "../agents/call.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
+import { AUTOPILOT_USER, isEnabled } from "./autopilot.ts";
 import { DEADLINE_ERROR, jobRow, scrub } from "./jobs.ts";
 import { loadSteps, validateParams, type StepContext } from "./steps.ts";
 
@@ -77,6 +78,7 @@ export async function execJob(id: number): Promise<number> {
       const r = db.prepare("SELECT cancel_requested_at, error FROM jobs WHERE id = ?").get(id) as { cancel_requested_at: string | null; error: string | null };
       return !!r.cancel_requested_at || DEADLINE_ERROR.test(r.error ?? "");
     },
+    stopping: () => ctx.cancelled() || (row.requested_by === AUTOPILOT_USER && !isEnabled(db)),
   };
   setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled });
   try {

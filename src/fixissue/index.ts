@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, w
 import { join } from "node:path";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import type { DatabaseSync } from "node:sqlite";
+import { leaseItem } from "../runner/leases.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
 import { type Usage } from "../classify/run.ts";
@@ -211,7 +212,7 @@ export function tasksFor(r: { repo: string; number: number | null; main_sha: str
 
 // ---- running: triage and patch rounds -------------------------------------------
 
-export type FixIssueParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void; by?: By };
+export type FixIssueParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean; by?: By };
 export type FixIssueSummary = { runId: string; repo: string; dryRun: boolean; started: string[]; queued: string[]; skipped: string[]; failed: string[] };
 
 export const branchOf = (db: DatabaseSync, repo: string): string =>
@@ -427,14 +428,20 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
   mkdirSync(d.root, { recursive: true });
   const x: Ctx = { db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } };
   for (const r of retries) {
+    if (params.stopping?.()) { log(`fixissue ${repo}: stopping, no new rounds started`); break; }
+    const release = leaseItem(db, `issue:${repo}#${r.number}`, log);
+    if (!release) continue;
     try {
       if (await patchRound(x, r)) s.queued.push(refOf(r));
     } catch (e) {
       log(`  ${refOf(r)}: ${oneLine(String((e as Error).message ?? e))}`);
-    }
+    } finally { release(); }
   }
   let handled = 0;
   for (const c of picks) {
+    if (params.stopping?.()) { log(`fixissue ${repo}: stopping, no new issues started`); break; }
+    const release = leaseItem(db, `issue:${repo}#${c.number}`, log);
+    if (!release) continue;
     try {
       params.onHandled?.(++handled);
       const o = await startAttempt(x, c);
@@ -443,7 +450,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
       if (attemptOf(db, c.repo, c.number)?.state === "failed") s.failed.push(refOf(c));
     } catch (e) {
       log(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
-    }
+    } finally { release(); }
   }
   await unclaimHeld(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
@@ -452,7 +459,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
 
 // ---- collecting ------------------------------------------------------------------
 
-export type CollectParams = { dryRun?: boolean; onHandled?: (n: number) => void; by?: By };
+export type CollectParams = { dryRun?: boolean; onHandled?: (n: number) => void; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean; by?: By };
 export type CollectDeps = FixIssueDeps & {
   /** Haiku's account of a failed step. */
   summarise: (db: DatabaseSync, repo: string, number: number, taskId: number, step: string) => Promise<string>;
@@ -490,7 +497,10 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
   const x = (repo: string): Ctx => ({ db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId: s.runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } });
 
   for (const r of rows) {
+    if (params.stopping?.()) { log("fixissue-collect: stopping, no new attempts started"); break; }
     const ref = refOf(r);
+    const release = leaseItem(db, `issue:${r.repo}#${r.number}`, log);
+    if (!release) continue;
     try {
       if (r.state === "passed") { if (await openPr(x(r.repo), r)) { s.opened++; s.changed++; } continue; }
       const item = db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { state: string } | undefined;
@@ -542,7 +552,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       if (after?.state === "failed") s.failed++;
     } catch (e) {
       log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
-    }
+    } finally { release(); }
   }
   for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(x(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);

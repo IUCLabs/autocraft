@@ -203,7 +203,7 @@ function cancelOpen(db: DatabaseSync, ids: (number | null)[]): void {
 const retriesOf = (db: DatabaseSync, v: Row): number =>
   (db.prepare("SELECT COUNT(*) AS n FROM build_tasks WHERE step = 'verify' AND repo = ? AND number = ? AND head_sha = ? AND warm_role = 'use'").get(v.repo, v.number, v.head_sha) as { n: number }).n - 1;
 
-export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {
+export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean } = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {
   const d: CollectDeps = deps ?? { model: PROMPT.models[0]!, mainHead: (await import("./index.ts")).defaultDeps().mainHead };
   const runId = `verify-collect-${now().replace(/[-:]/g, "").slice(0, 15)}`;
   const s: CollectSummary = { runId, looked: 0, passed: 0, failed: 0, errors: 0, retried: 0, stale: 0, running: 0, warmCancelled: 0, changed: 0 };
@@ -215,6 +215,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } 
   if (params.dryRun) { log(`verify-collect: ${rows.length} pending; dry run`); return s; }
 
   for (const v of rows) {
+    if (params.stopping?.()) { log("verify-collect: stopping, no new PRs started"); break; }
     const ref = `${v.repo}#${v.number}`;
     const finish = (state: string, summary: string | null, note: string | null): boolean => {
       const r = db.prepare("UPDATE verifications SET state = ?, summary = ?, note = ?, finished_at = ? WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')")

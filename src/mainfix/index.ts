@@ -294,7 +294,7 @@ async function applyAnswers(db: DatabaseSync, repo: string, deps: MainFixDeps, l
 }
 
 /** One repo: nothing without the approval; then answers, rerun results and, for a red head with no rows, the reading and sorting. */
-export async function runMainFix(db: DatabaseSync, params: { repo: string; onHandled?: (n: number) => void; by?: By }, log: (line: string) => void = console.log, deps: MainFixDeps = defaultDeps()): Promise<MainFixSummary> {
+export async function runMainFix(db: DatabaseSync, params: { repo: string; onHandled?: (n: number) => void; stopping?: () => boolean; by?: By }, log: (line: string) => void = console.log, deps: MainFixDeps = defaultDeps()): Promise<MainFixSummary> {
   const { repo } = params;
   const s: MainFixSummary = { repo, classified: 0, reran: 0, asked: 0, needsFix: 0, issues: 0, prs: 0, note: null };
   if (!mainFixApprovalOf(db, repo)) {
@@ -314,7 +314,7 @@ export async function runMainFix(db: DatabaseSync, params: { repo: string; onHan
   }
   if (deps.fix) {
     const asHead = (c: Current | null) => (c ? { headSha: c.headSha, branch: c.branch, state: c.state, redSince: c.redSince, culprit: c.culprit, culpritPr: c.culpritPr } : null);
-    const r = await openFixPrs({ db, repo, gh: deps.gh, exec: deps.exec, fix: deps.fix, now: deps.now, log, by: params.by, setState: (r, state, reason, at, extra) => setState(db, r, state, reason, at, extra), current: () => asHead(currentOf(db, repo)) }, bump);
+    const r = await openFixPrs({ db, repo, gh: deps.gh, exec: deps.exec, fix: deps.fix, now: deps.now, log, by: params.by, ...(params.stopping && { stopping: params.stopping }), setState: (r, state, reason, at, extra) => setState(db, r, state, reason, at, extra), current: () => asHead(currentOf(db, repo)) }, bump);
     s.prs = r.opened;
   }
   log(`main-fix ${repo}: classified ${s.classified}, reran ${s.reran}, asked ${s.asked}, needs fix ${s.needsFix}, issues ${s.issues}, fix PRs ${s.prs}`);
