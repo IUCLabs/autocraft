@@ -1,6 +1,6 @@
 // Minimal Discord gateway client on Node's WebSocket and fetch. It identifies with the GUILDS, GUILD_MESSAGES and
-// MESSAGE_CONTENT intents, heartbeats, resumes or reconnects with backoff, and passes only guild, channel and message
-// events on. It never reads message history and never sends a message.
+// MESSAGE_CONTENT intents, heartbeats, resumes or reconnects with backoff, and passes guild, channel, message and
+// interaction events on. It never reads message history; the bot sends through rest.ts only.
 const API = "https://discord.com/api/v10";
 export const INTENTS = (1 << 0) | (1 << 9) | (1 << 15);
 
@@ -18,7 +18,7 @@ export type Socket = {
 
 export type GatewayDeps = {
   token: string;
-  /** Called for every dispatch: READY, GUILD_CREATE, CHANNEL_*, MESSAGE_* and GUILD_DELETE. */
+  /** Called for every dispatch: READY, GUILD_CREATE, GUILD_ROLE_*, CHANNEL_*, MESSAGE_*, INTERACTION_CREATE and GUILD_DELETE. */
   onDispatch: (type: string, data: unknown) => void;
   onState: (state: "connecting" | "connected" | "reconnecting" | "failed", detail: string | null) => void;
   log: (line: string) => void;

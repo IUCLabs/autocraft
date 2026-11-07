@@ -183,6 +183,11 @@ describe("sign-in", () => {
   });
 });
 
+// Writes that only touch the signed-in user's own record, open to every role.
+const SELF_SERVICE = new Set(["/api/account/discord/unlink"])
+// Open to every role too; refused with 503 here because no Discord key file is configured.
+const SELF_SERVICE_NEEDS_DISCORD = "/api/account/discord/code";
+
 describe("permissions", () => {
   test("a viewer can read, but every write returns 403", async () => {
     let c = await signedIn("viewer1");
@@ -195,7 +200,9 @@ describe("permissions", () => {
       // A new session every 50 routes stays under the per-session write limit.
       if (i && i % 50 === 0) { c = await signedIn("viewer1"); csrf = await c.csrf(); }
       const status = (await c.post(sample(r.pattern), { csrf, login: "viewer1", role: "operator", repos: "photocraft", id: "1" })).status;
-      if (r.operator) assert.equal(status, 403, r.pattern);
+      if (SELF_SERVICE.has(r.pattern)) assert.equal(status, 200, r.pattern);
+      else if (r.pattern === SELF_SERVICE_NEEDS_DISCORD) assert.equal(status, 503, r.pattern);
+      else if (r.operator) assert.equal(status, 403, r.pattern);
       else assert.ok(status >= 400, `${r.pattern}: ${status}`);
     }
     assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 403);

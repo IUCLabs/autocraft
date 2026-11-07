@@ -1,13 +1,15 @@
 // Discord mentions: the admin page's data and writes, and what the item page shows. The channel list and the
 // connection state are written by the runner's gateway client (src/discord/); this file only reads them.
 import type { DatabaseSync } from "node:sqlite";
-import type { DiscordInfo, DiscordSetup } from "../../../web/src/api/types.ts";
+import type { DiscordAccount, DiscordLinkCode, DiscordInfo, DiscordSetup } from "../../../web/src/api/types.ts";
 import { envVar } from "../../env.ts";
 import { audit } from "../audit.ts";
+import { isPublicRepo, publicRepoNames } from "../../public/status.ts";
 import { HttpError } from "../server/util.ts";
 import { DISCORD_PRIVACY_PATH } from "../server/discord-privacy.ts";
 import { readKeyFile, type DiscordKeys } from "../../discord/keys.ts";
 import { countOf, linksOf } from "../../discord/store.ts";
+import { createLinkCode, linkedSince, listLinks, unlinkLogin, unlinkRow } from "../../discord/links.ts";
 import type { Req } from "../types.ts";
 
 const PRIVACY_PATH = DISCORD_PRIVACY_PATH;
@@ -42,12 +44,13 @@ const body = (req: Req): Record<string, unknown> => (req.json && typeof req.json
 
 function setupOf(db: DatabaseSync): DiscordSetup {
   const st = db.prepare("SELECT state, detail, at FROM discord_status WHERE id = 1").get() as { state: DiscordSetup["state"]; detail: string | null; at: string } | undefined;
-  const channels = db.prepare("SELECT channel_id AS channelId, guild_id AS guildId, guild_name AS guildName, name, watched FROM discord_channels WHERE parent_id IS NULL ORDER BY guild_name, name, channel_id").all() as
-    { channelId: string; guildId: string; guildName: string | null; name: string | null; watched: number }[];
+  const channels = db.prepare("SELECT channel_id AS channelId, guild_id AS guildId, guild_name AS guildName, name, watched, default_repo AS defaultRepo FROM discord_channels WHERE parent_id IS NULL ORDER BY guild_name, name, channel_id").all() as
+    { channelId: string; guildId: string; guildName: string | null; name: string | null; watched: number; defaultRepo: string | null }[];
   return {
     state: st?.state ?? "off", detail: st?.detail ?? null, at: st?.at ?? null,
     channels: channels.map((c) => ({ ...c, watched: !!c.watched })),
-    contact: contactOf(db), privacyPath: PRIVACY_PATH,
+    repos: publicRepoNames(db),
+    contact: contactOf(db), privacyPath: PRIVACY_PATH, links: listLinks(db),
   };
 }
 
@@ -66,11 +69,53 @@ export function putChannel(db: DatabaseSync, req: Req): DiscordSetup {
   return setupOf(db);
 }
 
+export function putChannelRepo(db: DatabaseSync, req: Req): DiscordSetup {
+  operator(req);
+  const id = body(req).channelId, repo = body(req).repo;
+  if (typeof id !== "string" || (repo !== null && typeof repo !== "string")) throw new HttpError(400, "channelId and repo (a tracked repo or null) are required");
+  if (repo !== null && !isPublicRepo(db, repo)) throw new HttpError(400, "repo is not a public tracked repo");
+  const r = db.prepare("UPDATE discord_channels SET default_repo = ? WHERE channel_id = ?").run(repo, id);
+  if (!r.changes) throw new HttpError(404, "the bot has not reported that channel");
+  audit(db, req.user.login, "discord-default-repo", id, { repo });
+  return setupOf(db);
+}
+
 export function putContact(db: DatabaseSync, req: Req): DiscordSetup {
   operator(req);
   const c = body(req).contact;
   if (typeof c !== "string" || c.length > 300) throw new HttpError(400, "contact must be text of at most 300 characters");
   db.prepare("INSERT INTO settings (key, value) VALUES ('discord_contact', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(c.trim());
   audit(db, req.user.login, "discord-contact", null);
+  return setupOf(db);
+}
+
+/** Whether the signed-in user has a Discord account linked. */
+export const account = (db: DatabaseSync, req: Req): DiscordAccount => {
+  const at = linkedSince(db, req.user.login);
+  return { linked: at !== null, at };
+};
+
+/** A single-use code, valid for 10 minutes, that links a Discord account to the signed-in login when typed into the bot's `/autocraft link`. */
+export function linkCode(db: DatabaseSync, req: Req): DiscordLinkCode {
+  const keys = discordKeys();
+  if (!keys) throw new HttpError(503, "Discord is not set up on this server");
+  const c = createLinkCode(db, keys, req.user.login);
+  audit(db, req.user.login, "discord-link-code", req.user.login);
+  return c;
+}
+
+export function unlinkOwn(db: DatabaseSync, req: Req): DiscordAccount {
+  const n = unlinkLogin(db, req.user.login);
+  if (n) audit(db, req.user.login, "discord-unlink", req.user.login, { links: n });
+  return account(db, req);
+}
+
+export function removeLink(db: DatabaseSync, req: Req): DiscordSetup {
+  operator(req);
+  const id = body(req).id;
+  if (typeof id !== "string") throw new HttpError(400, "id is required");
+  const login = unlinkRow(db, id);
+  if (login === null) throw new HttpError(404, "no such link");
+  audit(db, req.user.login, "discord-unlink", login, { by: "operator" });
   return setupOf(db);
 }

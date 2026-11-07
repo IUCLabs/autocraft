@@ -215,7 +215,12 @@ export function createHttpApi(): Api {
     discord: {
       setup: () => get("/api/admin/discord"),
       setChannel: (channelId, watched) => put("/api/admin/discord/channel", { channelId, watched }),
+      setChannelRepo: (channelId, repo) => put("/api/admin/discord/channel-repo", { channelId, repo }),
       setContact: (contact) => put("/api/admin/discord/contact", { contact }),
+      removeLink: (id) => post("/api/admin/discord/unlink", { id }),
+      account: () => get("/api/account/discord"),
+      unlinkOwn: () => post("/api/account/discord/unlink", {}),
+      linkCode: () => post("/api/account/discord/code", {}),
     },
     classifiers: {
       report: (sel) => get(`/api/classifiers${qs(sel)}`),

@@ -872,6 +872,8 @@ export interface DiscordChannel {
   guildName: string | null;
   name: string | null;
   watched: boolean;
+  /** Tracked repo whose new-issue page the bot's "File a new issue" button opens; null uses the top search result's repo. */
+  defaultRepo: string | null;
 }
 
 export interface DiscordSetup {
@@ -880,9 +882,25 @@ export interface DiscordSetup {
   detail: string | null;
   at: string | null;
   channels: DiscordChannel[];
+  /** Tracked repos a channel's default can be. */
+  repos: string[];
   contact: string;
   /** The public privacy page. */
   privacyPath: string;
+  /** Linked Discord accounts: the opaque row id, the dashboard login and when. */
+  links: { id: string; login: string; linkedAt: string }[];
+}
+
+/** A single-use code to type into the bot in Discord, and when it stops working. */
+export interface DiscordLinkCode {
+  code: string;
+  expiresAt: string;
+}
+
+/** Whether the signed-in user has linked a Discord account. */
+export interface DiscordAccount {
+  linked: boolean;
+  at: string | null;
 }
 
 /** A live agent token of any login (operators see all of them). */

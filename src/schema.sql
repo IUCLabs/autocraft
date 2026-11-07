@@ -1697,7 +1697,8 @@ CREATE TABLE IF NOT EXISTS discord_channels (
   guild_name TEXT,
   name TEXT,
   watched INTEGER NOT NULL DEFAULT 0,
-  parent_id TEXT
+  parent_id TEXT,
+  default_repo TEXT                   -- tracked repo whose new-issue page the bot's "File a new issue" button opens
 );
 -- Gateway connection state, one row.
 CREATE TABLE IF NOT EXISTS discord_status (
@@ -1718,3 +1719,31 @@ CREATE TABLE IF NOT EXISTS discord_mentions (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS discord_mentions_item ON discord_mentions (repo, number);
 CREATE INDEX IF NOT EXISTS discord_mentions_channel ON discord_mentions (channel_hash);
+-- The bot's replies to pings, kept to delete a reply when the ping or the quoted message is deleted. `sealed` holds the
+-- reply's guild, channel and message id; the hashes are keyed. No message text.
+CREATE TABLE IF NOT EXISTS discord_replies (
+  ping_hash TEXT PRIMARY KEY,
+  quoted_hash TEXT,
+  channel_hash TEXT NOT NULL,
+  sealed TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS discord_replies_quoted ON discord_replies (quoted_hash) WHERE quoted_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS discord_replies_channel ON discord_replies (channel_hash);
+
+-- Discord accounts linked to dashboard logins (src/discord/links.ts). `user_hash` is a keyed hash of the Discord user id; the id
+-- itself is never stored. `discord_link_codes` holds the keyed hash of each unused link code (one per login) until it is used or expires.
+CREATE TABLE IF NOT EXISTS discord_links (
+  user_hash TEXT PRIMARY KEY,
+  login TEXT NOT NULL,
+  linked_at TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS discord_links_login ON discord_links (login);
+CREATE TABLE IF NOT EXISTS discord_link_codes (
+  code_hash TEXT PRIMARY KEY,
+  login TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- Reads of the public status layer (src/public/status.ts): merged and posted in the last days.
+CREATE INDEX IF NOT EXISTS items_merged_at ON items(merged_at);
+CREATE INDEX IF NOT EXISTS review_posts_posted ON review_posts(posted_at);

@@ -2,6 +2,8 @@ import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from
 import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
+  DiscordAccount,
+  DiscordLinkCode,
   DiscordSetup,
   CardEdit,
   DoChoiceBody,
@@ -256,7 +258,12 @@ export interface Api {
   discord: {
     setup(): Promise<DiscordSetup>;
     setChannel(channelId: string, watched: boolean): Promise<DiscordSetup>;
+    setChannelRepo(channelId: string, repo: string | null): Promise<DiscordSetup>;
     setContact(contact: string): Promise<DiscordSetup>;
+    removeLink(id: string): Promise<DiscordSetup>;
+    account(): Promise<DiscordAccount>;
+    unlinkOwn(): Promise<DiscordAccount>;
+    linkCode(): Promise<DiscordLinkCode>;
   };
   classifiers: {
     /** `run`, `a` and `b` default to the latest run and its first pair. */

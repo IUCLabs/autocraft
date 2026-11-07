@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, ListIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon, PlugsConnectedIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, ListIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon, PlugsConnectedIcon, LinkBreakIcon, LinkIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -23,6 +23,8 @@ import { useApi, useQuery } from "../api/client";
 import { HealthMenu } from "../ui/organisms/HealthMenu";
 import { useLiveStatus, type LiveStatus } from "../api/live";
 import { num, zoneName } from "../lib/format";
+import { UnlinkDiscordDialog } from "./UnlinkDiscord";
+import { LinkDiscordDialog } from "./LinkDiscord";
 
 // Mockup builds only; a normal build drops this branch and the fixture data with it.
 const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../api/mock/MockRoleMenu")) : null;
@@ -369,7 +371,13 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
   const user = useUser();
   const api = useApi();
   const navigate = useNavigate();
+  const discord = useQuery("discord-account", (a) => a.discord.account());
+  const [unlinking, setUnlinking] = useState(false);
+  const [linking, setLinking] = useState(false);
   return (
+    <>
+    <LinkDiscordDialog open={linking} linked={!!discord.data?.linked} onClose={() => setLinking(false)} />
+    <UnlinkDiscordDialog open={unlinking} onClose={() => setUnlinking(false)} onDone={() => discord.refetch()} />
     <DropdownMenu.Root>
       <DropdownMenu.Trigger className="flex size-9 items-center justify-center rounded-full hover:bg-ink/[0.06]" aria-label={`Signed in as ${user.login}`}>
         <Avatar login={user.login} size={24} />
@@ -411,12 +419,21 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
           <DropdownMenu.Item onSelect={() => onHelp?.()} className={itemCls}>
             <KeyboardIcon className="text-ink/55" /> <span className="flex-1">Keyboard shortcuts</span> <Kbd keys="?" />
           </DropdownMenu.Item>
+          <DropdownMenu.Item onSelect={() => setLinking(true)} className={itemCls}>
+            <LinkIcon className="text-ink/55" /> Link Discord
+          </DropdownMenu.Item>
+          {discord.data?.linked && (
+            <DropdownMenu.Item onSelect={() => setUnlinking(true)} className={itemCls}>
+              <LinkBreakIcon className="text-ink/55" /> Unlink Discord
+            </DropdownMenu.Item>
+          )}
           <DropdownMenu.Item onSelect={() => void api.signOut()} className={itemCls}>
             <SignOutIcon className="text-ink/55" /> Sign out
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+    </>
   );
 }
 

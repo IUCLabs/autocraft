@@ -27,7 +27,7 @@ const PROMPT_STEP: Record<string, { step: string; stage: number }> = {
   "conversation.turn": { step: "conversation", stage: 3 },
   "areas.jev": { step: "classify-new", stage: 2 }, "areas.haiku": { step: "classify-new", stage: 2 },
   "areas.propose": { step: "areas-propose", stage: 2 }, "areas.suggest": { step: "areas-suggest", stage: 2 },
-  "fixup.conflict": { step: "fixup", stage: 6 },
+  "fixup.conflict": { step: "fixup", stage: 6 }, "discord.search": { step: "discord-search", stage: 3 },
   "cifix.patch": { step: "cifix", stage: 6 }, "mainfix.classify": { step: "main-fix", stage: 6 },
   "lint.reference.jev": { step: "opus-review", stage: 5 }, "lint.reference.haiku": { step: "opus-review", stage: 5 },
 };

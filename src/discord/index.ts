@@ -1,10 +1,20 @@
-// Optional Discord mention counting. It runs only when AUTOCRAFT_DISCORD_TOKEN_FILE and AUTOCRAFT_DISCORD_KEY_FILE
+// Optional Discord mention counting, ping replies and issue search. It runs only when AUTOCRAFT_DISCORD_TOKEN_FILE and AUTOCRAFT_DISCORD_KEY_FILE
 // are set; the runner starts it next to the worker server. See docs/pipeline.md.
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
 import { envVar } from "../env.ts";
+import { localEmbedder } from "../embed/model.ts";
+import { VectorIndex } from "../embed/vectors.ts";
 import { Gateway } from "./gateway.ts";
+import { Interactions } from "./interactions.ts";
+import { Pings } from "./pings.ts";
+import { deleteRepliesOf } from "./replies.ts";
+import { RestClient } from "./rest.ts";
+import { forgetLink } from "./links.ts";
+import { Search, dropTexts } from "./search.ts";
+import { installAccountCommands } from "./commands.ts";
+import { installSearchCommands } from "./search-commands.ts";
 import { DiscordConfigError, readKeyFile, readTokenFile, type DiscordKeys } from "./keys.ts";
 import { forgetAuthor, forgetMessages, handleDispatch, setStatus, upsertChannel } from "./store.ts";
 
@@ -34,6 +44,19 @@ export function handleMeta(db: DatabaseSync, type: string, d: unknown): void {
   }
 }
 
+/**
+ * The one handler of gateway events. Order matters: the mention rows and channel list change first; the pings then see
+ * `discord_replies` intact, so a deleted ping or quoted message finds our reply and deletes it in Discord.
+ */
+export function dispatcher(db: DatabaseSync, keys: DiscordKeys, interactions: Interactions, pings: Pings): (type: string, d: unknown) => void {
+  return (type, d) => {
+    handleDispatch(db, keys, type, d);
+    handleMeta(db, type, d);
+    interactions.dispatch(type, d);
+    pings.dispatch(type, d);
+  };
+}
+
 /** Starts the gateway when configured. A bad configuration or a failed connection is logged and never stops the caller. */
 export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: string) => void): void {
   const tokenFile = envVar("DISCORD_TOKEN_FILE");
@@ -49,16 +72,23 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
     setStatus(db, "failed", (e as Error).message);
     return;
   }
+  // The embedding model loads on the first question and the vector index on its first search; nothing here waits for them.
+  const rest = new RestClient({ token });
+  const embedder = localEmbedder({ threads: 2 });
+  const search = new Search({ db, embedder, index: new VectorIndex(embedder), log });
+  const interactions = new Interactions(rest, log);
+  installSearchCommands(interactions, { db, keys, search });
+  installAccountCommands(interactions, { db, keys });
+  const pings = new Pings({ db, keys, rest, search, log });
+  // A crash during a call can leave the question in a recorded prompt.
+  try { dropTexts(db, true); } catch (e) { log(`runner: removing search texts failed: ${(e as Error).message}`); }
   const gw = new Gateway({
     token,
     log,
     onState: (state, detail) => setStatus(db, state, detail),
-    onDispatch: (type, d) => {
-      handleDispatch(db, keys, type, d);
-      handleMeta(db, type, d);
-    },
+    onDispatch: dispatcher(db, keys, interactions, pings),
   });
-  log("runner: Discord mention counting started");
+  log("runner: Discord mention counting, pings and search started");
   void gw.run(signal).catch((e: Error) => log(`runner: Discord stopped: ${e.message}`));
 }
 
@@ -82,15 +112,32 @@ function keysOrDie(): DiscordKeys {
 }
 
 // Recorded in the audit log as `cli`: only someone with a shell on the host can run this.
-function discord(args: string[]): void {
+async function discord(args: string[]): Promise<void> {
   const [sub, a, b] = args;
   const db = connect();
   if (sub === "forget" && (a === "--message" || a === "--user") && b) {
     const keys = keysOrDie();
     const id = a === "--message" ? (/\/channels\/\d+\/\d+\/(\d+)\/?(?:[?#].*)?$/.exec(b)?.[1] ?? (/^\d+$/.test(b) ? b : die("not a Discord message link or id"))) : /^\d+$/.test(b) ? b : die("not a Discord user id");
-    const n = a === "--message" ? forgetMessages(db, keys, [id]) : forgetAuthor(db, keys, id);
-    audit(db, "cli", "discord-forget", a === "--message" ? "message" : "user", { rows: n });
-    console.log(`deleted ${n} mention ${n === 1 ? "row" : "rows"}`);
+    if (a === "--message") {
+      const n = forgetMessages(db, keys, [id]);
+      // Our reply to the message goes too: deleted in Discord first, then its row.
+      const tokenFile = envVar("DISCORD_TOKEN_FILE");
+      let replies = 0;
+      if (tokenFile) {
+        try {
+          replies = await deleteRepliesOf(db, keys, new RestClient({ token: readTokenFile(tokenFile) }), [id], (l) => console.error(l));
+        } catch (e) {
+          console.error((e as Error).message);
+        }
+      }
+      audit(db, "cli", "discord-forget", "message", { rows: n, replies });
+      console.log(`deleted ${n} mention ${n === 1 ? "row" : "rows"} and ${replies} ${replies === 1 ? "reply" : "replies"}`);
+    } else {
+      const n = forgetAuthor(db, keys, id);
+      const links = forgetLink(db, keys, id);
+      audit(db, "cli", "discord-forget", "user", { rows: n, links });
+      console.log(`deleted ${n} mention ${n === 1 ? "row" : "rows"} and ${links} ${links === 1 ? "link" : "links"}`);
+    }
   } else if (sub === "channels") {
     for (const c of db.prepare("SELECT channel_id, guild_name, name, watched FROM discord_channels ORDER BY guild_name, name").all() as { channel_id: string; guild_name: string | null; name: string | null; watched: number }[])
       console.log(`${c.watched ? "watched " : "-       "} ${c.channel_id} ${c.guild_name ?? "?"} / #${c.name ?? "?"}`);

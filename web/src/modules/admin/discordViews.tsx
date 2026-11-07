@@ -6,9 +6,12 @@ import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
+import { Select } from "../../ui/atoms/Select";
 import { Switch } from "../../ui/atoms/Switch";
 import { TextLink } from "../../ui/atoms/TextLink";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
+import { Avatar } from "../../ui/atoms/Avatar";
+import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Block } from "../../ui/molecules/Block";
 import { Facts } from "../../ui/molecules/Facts";
 import { Page } from "../../ui/organisms/Page";
@@ -48,11 +51,22 @@ export function DiscordView(_: ViewProps) {
                 </div>
                 <ul>
                   {data.channels.filter((c) => c.guildId === g).map((c) => (
-                    <li key={c.channelId} className="flex min-h-11 items-center gap-3 border-t border-line px-4 py-1.5 first:border-0">
-                      <div className="min-w-0 flex-1">
+                    <li key={c.channelId} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-1.5 first:border-0">
+                      <div className="min-w-0 max-md:basis-full md:flex-1">
                         <div className="truncate text-sm">#{c.name ?? "unnamed"}</div>
                         <div className="num truncate text-2xs text-ink/45">{c.channelId}</div>
                       </div>
+                      <Select
+                        size="sm"
+                        value={c.defaultRepo ?? ""}
+                        disabled={write.busy === `repo:${c.channelId}`}
+                        aria-label={`Default repo for new issues from #${c.name ?? c.channelId}`}
+                        onChange={(e) => void write.run(`repo:${c.channelId}`, () => api.discord.setChannelRepo(c.channelId, e.target.value || null)).then(() => refetch())}
+                        className="max-md:flex-1 md:max-w-40"
+                      >
+                        <option value="">No default repo</option>
+                        {data.repos.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </Select>
                       <Switch on={c.watched} label={`Watch #${c.name ?? c.channelId}`} busy={write.busy === c.channelId} onChange={(on) => void write.run(c.channelId, () => api.discord.setChannel(c.channelId, on)).then(() => refetch())} />
                     </li>
                   ))}
@@ -60,6 +74,7 @@ export function DiscordView(_: ViewProps) {
               </div>
             ))}
           </Block>
+          <LinksBlock links={data.links} busy={write.busy} onRemove={(id) => write.run(id, () => api.discord.removeLink(id)).then(() => refetch())} />
           <ContactBlock contact={data.contact} onSave={(c) => write.run("contact", () => api.discord.setContact(c)).then(() => refetch())} busy={write.busy === "contact"} />
         </>
       )}
@@ -78,6 +93,24 @@ function ContactBlock({ contact, onSave, busy }: { contact: string; onSave: (c: 
           Save
         </Button>
       </form>
+    </Block>
+  );
+}
+
+function LinksBlock({ links, busy, onRemove }: { links: DiscordSetup["links"]; busy: string | null; onRemove: (id: string) => void }) {
+  return (
+    <Block className="mt-4" title="Linked accounts" aside={`${links.length}`} flush>
+      {links.length === 0 && <div className="px-4 py-3 text-sm text-ink/55">No Discord account is linked.</div>}
+      <ul>
+        {links.map((l) => (
+          <li key={l.id} className="flex min-h-11 items-center gap-3 border-t border-line px-4 py-1.5 first:border-0">
+            <Avatar login={l.login} size={20} />
+            <span className="min-w-0 flex-1 truncate text-sm">{l.login}</span>
+            <span className="text-2xs text-ink/45"><TimeAgo iso={l.linkedAt} /></span>
+            <ConfirmButton label="Remove" confirmLabel="Confirm remove" loading={busy === l.id} onConfirm={() => onRemove(l.id)} />
+          </li>
+        ))}
+      </ul>
     </Block>
   );
 }

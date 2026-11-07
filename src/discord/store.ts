@@ -43,6 +43,7 @@ export function recordMessage(db: DatabaseSync, keys: DiscordKeys, m: DiscordMes
   return refs.length;
 }
 
+/** Mention rows only: our replies live in Discord and are deleted with it (src/discord/replies.ts). */
 export function forgetMessages(db: DatabaseSync, keys: DiscordKeys, ids: string[]): number {
   const del = db.prepare("DELETE FROM discord_mentions WHERE msg_hash = ?");
   let n = 0;
@@ -50,8 +51,11 @@ export function forgetMessages(db: DatabaseSync, keys: DiscordKeys, ids: string[
   return n;
 }
 
+/** For a channel that is gone (deleted, or its server removed the bot): its replies went with it, so only the rows are removed. */
 export function forgetChannel(db: DatabaseSync, keys: DiscordKeys, channelId: string): number {
-  return Number(db.prepare("DELETE FROM discord_mentions WHERE channel_hash = ?").run(keys.hash("channel", channelId)).changes);
+  const h = keys.hash("channel", channelId);
+  db.prepare("DELETE FROM discord_replies WHERE channel_hash = ?").run(h);
+  return Number(db.prepare("DELETE FROM discord_mentions WHERE channel_hash = ?").run(h).changes);
 }
 
 /** Opens every row to find the author's: slow, and rare enough (a deletion request) not to need a column that would name a person. */
