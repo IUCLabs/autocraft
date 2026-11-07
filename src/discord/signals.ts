@@ -14,8 +14,13 @@ import { parseRefs } from "./refs.ts";
 
 export const SIGNAL_CAP_KEY = "discord_signal_daily_usd";
 export const DEFAULT_SIGNAL_CAP_USD = 1;
-/** Items of one message that are asked about; a message that lists more is not a request about any one of them. */
+/** A message that names more items than this is not a request about any one of them: it is not checked. */
 const MAX_ITEMS = 5;
+/** Checks per minute per author and per channel (keyed hashes, in memory); a message over a limit stays a plain mention. */
+const AUTHOR_LIMIT = { n: 10, ms: 60_000 };
+const CHANNEL_LIMIT = { n: 30, ms: 60_000 };
+/** Model calls at once; later checks wait their turn. */
+const MAX_CALLS = 2;
 /** Longest the Haiku call waits for a Claude account. */
 const MODEL_WAIT_MS = 20_000;
 
@@ -72,6 +77,9 @@ type Msg = { id: string; channel_id: string; content?: string; type?: number; we
 export class Signals {
   #d: SignalDeps;
   #chain = new Map<string, Promise<void>>();
+  #hits = new Map<string, number[]>();
+  #running = 0;
+  #waiting: (() => void)[] = [];
 
   constructor(deps: SignalDeps) {
     this.#d = deps;
@@ -91,6 +99,7 @@ export class Signals {
     // An update without an edit time is Discord adding a link preview: the text is the same.
     if (type === "MESSAGE_UPDATE" && !m.edited_timestamp) return;
     if (!isWatched(this.#d.db, m.channel_id)) return;
+    if (!this.#allow(m.author?.id ? this.#d.keys.hash("author", m.author.id) : "", this.#d.keys.hash("channel", m.channel_id))) return;
     const hash = this.#d.keys.hash("message", m.id);
     // An edit that arrives during a call waits for it, so the later text decides.
     const run = (this.#chain.get(hash) ?? Promise.resolve()).then(() => this.#check(hash, m.content!)).catch((e: Error) => this.#d.log(`discord: signal check failed: ${e.message.slice(0, 200)}`));
@@ -98,9 +107,32 @@ export class Signals {
     this.#chain.set(hash, tail);
   }
 
+  /** Sliding-window limits per author and channel; a refused message is not counted. */
+  #allow(author: string, channel: string): boolean {
+    const now = (this.#d.now ?? Date.now)();
+    const live = (k: string, ms: number): number[] => (this.#hits.get(k) ?? []).filter((t) => now - t < ms);
+    const a = live(`a:${author}`, AUTHOR_LIMIT.ms), c = live(`c:${channel}`, CHANNEL_LIMIT.ms);
+    const pass = a.length < AUTHOR_LIMIT.n && c.length < CHANNEL_LIMIT.n;
+    if (pass) { a.push(now); c.push(now); }
+    this.#hits.set(`a:${author}`, a);
+    this.#hits.set(`c:${channel}`, c);
+    for (const [k, v] of this.#hits) if (!v.length) this.#hits.delete(k);
+    return pass;
+  }
+
+  async #slot<T>(f: () => Promise<T>): Promise<T> {
+    if (this.#running >= MAX_CALLS) await new Promise<void>((r) => this.#waiting.push(r));
+    else this.#running++;
+    try { return await f(); } finally {
+      const next = this.#waiting.shift();
+      if (next) next(); else this.#running--;
+    }
+  }
+
   async #check(hash: string, text: string): Promise<void> {
     const { db } = this.#d;
-    const refs = parseRefs(text, trackedRepos(db)).slice(0, MAX_ITEMS);
+    const refs = parseRefs(text, trackedRepos(db));
+    if (refs.length > MAX_ITEMS) return;
     const title = db.prepare("SELECT title FROM main.items WHERE repo = ? AND number = ?");
     const rows = db.prepare("SELECT 1 FROM discord_mentions WHERE msg_hash = ? AND repo = ? AND number = ?");
     const set = db.prepare("UPDATE discord_mentions SET signal = ? WHERE msg_hash = ? AND repo = ? AND number = ?");
@@ -116,6 +148,10 @@ export class Signals {
 
   /** True when the message asks for attention, false when it does not, null when no model answered (the flag stays as it was). */
   async #asks(a: SignalAsk): Promise<boolean | null> {
+    return this.#slot(() => this.#decide(a));
+  }
+
+  async #decide(a: SignalAsk): Promise<boolean | null> {
     const { db, log } = this.#d;
     const judge = this.#d.judge ?? modelJudge;
     try {

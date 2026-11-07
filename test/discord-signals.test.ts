@@ -91,4 +91,25 @@ describe("attention signals", () => {
     assert.deepEqual(await rows(""), [1, 2, 3, 4]);
     assert.equal((await statusList(db, req("asked=1"))).total, 2);
   });
+
+  test("limits per author and channel, two calls at a time, and a message naming many items is skipped", async () => {
+    let now = 1_000_000, live = 0, peak = 0;
+    const slow: Judge = { jev: async () => { peak = Math.max(peak, ++live); await new Promise((r) => setTimeout(r, 10)); live--; return 0.9; }, haiku: async () => true };
+    const s = new Signals({ db, keys, log: () => {}, judge: slow, now: () => now });
+    const from = (id: string, user: string, content: string) => ({ ...msg(id, content), author: { id: user } });
+    db.prepare("UPDATE discord_mentions SET signal = 0").run();
+    const run = async (m: ReturnType<typeof from>) => { handleDispatch(db, keys, "MESSAGE_CREATE", m); s.dispatch("MESSAGE_CREATE", m); };
+    for (let i = 0; i < 12; i++) await run(from(`a${i}`, "u9", "review photocraft#1 please"));
+    await s.idle();
+    const rows = db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE signal = 1").get() as { n: number };
+    assert.equal(rows.n, 10, "10 per author per minute; the other two stay plain mentions");
+    assert.ok(peak <= 2, `peak concurrent calls ${peak}`);
+    now += 61_000;
+    await run(from("b0", "u9", "review photocraft#1"));
+    await s.idle();
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE signal = 1").get() as { n: number }).n, 11, "the window slides");
+    await run(from("c0", "u8", "photocraft#1 photocraft#2 photocraft#3 photocraft#4 photocraft#5 photocraft#6 review"));
+    await s.idle();
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE signal = 1").get() as { n: number }).n, 11, "six items: not checked");
+  });
 });
