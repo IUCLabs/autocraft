@@ -19,4 +19,22 @@ test("a duplicate comparison survives head pushes and small diff changes, and is
   assert.ok(currentComparison(w.db, set()));
   w.db.prepare("UPDATE items SET state = 'MERGED' WHERE repo = 'app' AND number = 2").run();
   assert.equal(currentComparison(w.db, set()), null, "a state change makes it stale");
+  w.db.prepare("UPDATE items SET state = 'OPEN' WHERE repo = 'app' AND number = 2").run();
+  w.db.prepare("UPDATE items SET closing_issues = '[34]' WHERE repo = 'app' AND number = 2").run();
+  assert.equal(currentComparison(w.db, set()), null, "a changed closing-issue link makes it stale");
+});
+
+test("the stored sizes are those of the compared snapshot, and a size unknown then makes the result stale once known", () => {
+  const w = world().repo().pr(1, { lines: 100 }).pr(2, { lines: 100 });
+  w.db.prepare("UPDATE items SET additions = NULL WHERE repo = 'app' AND number = 2").run();
+  const group = { repo: "app", canonical: 1, why: "", members: [1, 2], edges: [] };
+  const set = () => kindSetsOf(w.db, group)[0]!;
+  const snap = set();
+  w.db.prepare("UPDATE items SET additions = 500 WHERE repo = 'app' AND number = 1").run();
+  saveComparison(w.db, { repo: "app", key: snap.key, kind: "pr", members: [1, 2], hash: snap.hash, kept: 1, source: "model", model: "m", reason: null, result: null, error: null, attempts: 0, at: T0 }, snap);
+  assert.equal(currentComparison(w.db, set()), null, "PR 1 grew after the snapshot");
+  w.db.prepare("UPDATE items SET additions = 100 WHERE repo = 'app' AND number = 1").run();
+  assert.ok(currentComparison(w.db, set()));
+  w.db.prepare("UPDATE items SET additions = 100 WHERE repo = 'app' AND number = 2").run();
+  assert.equal(currentComparison(w.db, set()), null, "PR 2's size became known");
 });
