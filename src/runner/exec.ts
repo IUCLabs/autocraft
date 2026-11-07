@@ -3,7 +3,7 @@
 // usage; the runner sets the final state from the exit code.
 import type { DatabaseSync } from "node:sqlite";
 import type { JobUsage } from "../../web/src/api/types.ts";
-import { setCallContext } from "../agents/call.ts";
+import { setCallContext, StoppedError } from "../agents/call.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
 import { AUTOPILOT_USER, isEnabled } from "./autopilot.ts";
@@ -81,7 +81,7 @@ export async function execJob(id: number): Promise<number> {
     },
     stopping: () => ctx.cancelled() || (row.requested_by === AUTOPILOT_USER && !isEnabled(db)),
   };
-  setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled });
+  setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled, stopping: ctx.stopping });
   try {
     const summary = await step.run(ctx);
     saveUsage();
@@ -91,6 +91,13 @@ export async function execJob(id: number): Promise<number> {
     console.log(`${new Date().toISOString()} done: ${summary}`);
     return 0;
   } catch (e) {
+    if (e instanceof StoppedError) {
+      saveUsage();
+      const summary = "stopped: the pipeline was switched off";
+      db.prepare("UPDATE jobs SET summary = ? WHERE id = ?").run(summary, id);
+      console.log(`${new Date().toISOString()} done: ${summary}`);
+      return 0;
+    }
     console.error((e as Error).stack ?? e);
     return fail((e as Error).message ?? String(e));
   }

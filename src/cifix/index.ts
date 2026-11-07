@@ -14,7 +14,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { absolute } from "../build/artifacts.ts";
 import { createTask, getTask, TERMINAL, warmKeyOf } from "../build/tasks.ts";
-import { askClaude } from "../classify/run.ts";
+import { askClaude, POOL_MAX, pool } from "../classify/run.ts";
+import { isHalt, queueRoom } from "../agents/call.ts";
+import { pushesUnsettled } from "../push-outcomes.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { optionalChecks } from "../optional-checks.ts";
@@ -373,14 +375,14 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   let whoP: ReturnType<typeof whoAmI> | undefined;
   let handled = 0;
 
-  /** Why the last `readPr` returned null. */
-  let gone = "";
+  /** Why `readPr` returned null for a PR; items run at once, so it is kept per PR. */
+  const gone = new Map<number, string>();
   const readPr = async (c: CifixCandidate): Promise<PrNode | null> => {
     const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
     const pr = r.repository?.pullRequest;
     noteLive(db, repo, c.number, pr, at());
-    if (!pr || pr.state !== "OPEN" || pr.isDraft) { gone = "no longer an open, non-draft PR"; log(`  ${refOf(c)}: skipped: ${gone}`); return null; }
-    if (pr.headRefOid !== c.head) { gone = `head moved to ${short(pr.headRefOid)} since the checks ran`; log(`  ${refOf(c)}: skipped: ${gone}`); return null; }
+    if (!pr || pr.state !== "OPEN" || pr.isDraft) { const why = "no longer an open, non-draft PR"; gone.set(c.number, why); log(`  ${refOf(c)}: skipped: ${why}`); return null; }
+    if (pr.headRefOid !== c.head) { const why = `head moved to ${short(pr.headRefOid)} since the checks ran`; gone.set(c.number, why); log(`  ${refOf(c)}: skipped: ${why}`); return null; }
     return pr;
   };
 
@@ -446,7 +448,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     }
     // The model calls took minutes: read the PR again before writing.
     const now = await readPr(c);
-    if (!now) { fail("failed", gone); return; }
+    if (!now) { fail("failed", gone.get(c.number) ?? ""); return; }
     // A maintainer's changes request may have come in during the model calls; an unreadable answer counts as blocked.
     const blocked = await readGate(db, d.querier, ownerOf(repo), repo, c.number, log);
     if (blocked !== null) {
@@ -538,7 +540,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     const v = validatePatch(text, allowed);
     if (!v.ok) { fail("refused", v.reason); return; }
     const pr = await readPr(c);
-    if (!pr) { fail("failed", gone); return; }
+    if (!pr) { fail("failed", gone.get(c.number) ?? ""); return; }
     params.onHandled?.(++handled);
     await deliver(c, "format", pr, v, "format", undefined);
   };
@@ -680,8 +682,10 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
         log(`  ${ref}: formatter task ${id} queued for ${names.join(", ")}`);
         return;
       }
+      if (pushesUnsettled(db, repo, log)) return;
       await fixCode(c, pr, failure);
     } catch (e) {
+      if (isHalt(e)) throw e;
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(c, "code", "failed", reason);
       summary.failed.push({ ref, reason });
@@ -695,10 +699,20 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     rec.set(c, "code", "capped", reason);
     log(`  ${refOf(c)}: ${reason}`);
   }
+  let stopLogged = false;
   const stopped = (): boolean => {
     if (!params.stopping?.()) return false;
-    log(`cifix ${repo}: stopping, no new PRs started`);
+    if (!stopLogged) { stopLogged = true; log(`cifix ${repo}: stopping, no new PRs started`); }
     return true;
+  };
+  /** Runs the items as a pool that starts one more only while the model queue has room; each takes its lease and gives it back. */
+  const each = async <T>(items: T[], numberOf: (x: T) => number, run: (x: T) => Promise<void>): Promise<void> => {
+    await pool(items.map((x) => async () => {
+      if (stopped()) return;
+      const release = leaseItem(db, `pr:${repo}#${numberOf(x)}`, log);
+      if (!release) return;
+      try { await run(x); } finally { release(); }
+    }), () => queueRoom(db), { max: POOL_MAX.cifix });
   };
   // A fix capped or given up at this head: one comment naming the failing checks, then the PR waits on the contributor.
   for (const c of sel.ask) {
@@ -729,34 +743,25 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       log(`  ${ref}: not asked: ${scrubReason(oneLine(String((e as Error).message ?? e)), d.root)}`);
     } finally { release(); }
   }
-  for (const x of collect) {
-    if (stopped()) break;
-    const release = leaseItem(db, `pr:${repo}#${x.c.number}`, log);
-    if (!release) continue;
+  await each(collect, (x) => x.c.number, async (x) => {
     try { await collectFormat(x.c, x.task); }
     catch (e) {
+      if (isHalt(e)) throw e;
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(x.c, "format", "failed", reason);
       summary.failed.push({ ref: refOf(x.c), reason });
-    } finally { release(); }
-  }
-  for (const c of sel.lint) {
-    if (stopped()) break;
-    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
-    if (!release) continue;
+    }
+  });
+  await each(sel.lint, (c) => c.number, async (c) => {
     try { await collectLint(c); }
     catch (e) {
+      if (isHalt(e)) throw e;
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(c, "code", "failed", reason);
       summary.failed.push({ ref: refOf(c), reason });
-    } finally { release(); }
-  }
-  for (const c of work) {
-    if (stopped()) break;
-    const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
-    if (!release) continue;
-    try { await workOne(c); } finally { release(); }
-  }
+    }
+  });
+  await each(work, (c) => c.number, workOne);
   log(`cifix ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} commented, ${summary.queued.length} formatter runs queued, ${summary.infra.length} infra, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }

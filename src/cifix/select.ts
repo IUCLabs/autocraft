@@ -22,6 +22,7 @@ export function selectCifix(db: DatabaseSync, repo: string, run?: string | null,
   const row = db.prepare("SELECT rowid AS id, attempt, patch, files, lint_task, lint_round, lint_state, session FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'linting' ORDER BY rowid DESC");
   for (const { facts: f, action } of planned(db, "lint", { repo, bucket: "cifix", ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) })) {
     const head = action.head!, r = f.review!;
+    if (out.lint.some((x) => x.number === f.number)) continue;
     const w = row.get(repo, f.number, head) as { id: number; attempt: number; patch: string | null; files: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; session: string | null } | undefined;
     if (!w || !w.patch) continue;
     let files: string[] = [];

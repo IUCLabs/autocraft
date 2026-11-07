@@ -6,7 +6,8 @@ import type { DatabaseSync } from "node:sqlite";
 import type { BuildTask, TaskResult, TaskStep } from "../../web/src/api/types.ts";
 import { BuildError } from "../build/envs.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
-import { add, askClaude, saveUsage, type Usage } from "../classify/run.ts";
+import { add, askClaude, POOL_MAX, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { queueRoom } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { cloneTask } from "./tasks.ts";
@@ -215,12 +216,19 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
   s.looked = rows.length;
   if (params.dryRun) { log(`verify-collect: ${rows.length} pending; dry run`); return s; }
 
-  for (const v of rows) {
-    if (params.stopping?.()) { log("verify-collect: stopping, no new PRs started"); break; }
+  let stoppedLogged = false;
+  const stopped = (): boolean => {
+    if (!params.stopping?.()) return false;
+    if (!stoppedLogged) log("verify-collect: stopping, no new PRs started");
+    stoppedLogged = true;
+    return true;
+  };
+  const one = async (v: (typeof rows)[number]): Promise<void> => {
+    if (stopped()) return;
     const release = leaseItem(db, `pr:${v.repo}#${v.number}`, log);
-    if (!release) continue;
+    if (!release) return;
     try {
-      if (params.stopping?.()) { log("verify-collect: stopping, no new PRs started"); break; }
+      if (stopped()) return;
       const ref = `${v.repo}#${v.number}`;
       const finish = (state: string, summary: string | null, note: string | null): boolean => {
         const r = db.prepare("UPDATE verifications SET state = ?, summary = ?, note = ?, finished_at = ? WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')")
@@ -231,7 +239,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
       if (v.item_state !== "OPEN" || v.item_head !== v.head_sha) {
         cancelOpen(db, [v.head_task_id, v.base_task_id]);
         if (finish("stale", v.summary, v.note)) { s.stale++; s.changed++; jobItem(db, v.repo, v.number, `stale (${v.item_state === "OPEN" ? "head moved" : "no longer open"})`, log); }
-        continue;
+        return;
       }
 
       const head = v.head_task_id === null ? null : getTask(db, v.head_task_id);
@@ -239,14 +247,14 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
       const tasks = [head, base].filter((t): t is BuildTask => t !== null);
       if (!head) {
         if (finish("error", "the build task is gone", null)) { s.errors++; s.changed++; stageRow(db, v, "verify-error", now(), `${v.kind} at ${v.head_sha.slice(0, 7)}: the build task is gone`); }
-        continue;
+        return;
       }
       if (tasks.some((t) => !TERMINAL.includes(t.state))) {
         if (v.state === "planned" && tasks.some((t) => t.state === "claimed" || t.state === "running")) {
           db.prepare("UPDATE verifications SET state = 'running' WHERE repo = ? AND number = ? AND head_sha = ? AND state = 'planned'").run(v.repo, v.number, v.head_sha);
           s.running++; s.changed++;
         }
-        continue;
+        return;
       }
 
       const verdict = verdictOf(outcomeOf(head), base ? outcomeOf(base) : null);
@@ -259,7 +267,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
           db.prepare("UPDATE verifications SET head_task_id = ?, base_task_id = ?, state = 'planned' WHERE repo = ? AND number = ? AND head_sha = ?").run(ids[0], ids[1], v.repo, v.number, v.head_sha);
           s.retried++; s.changed++;
           jobItem(db, v.repo, v.number, `${verdict.reason}; queued the tasks again`, log);
-          continue;
+          return;
         } catch (e) {
           if (!(e instanceof BuildError)) throw e;
           verdict.reason = `${verdict.reason}; tasks not queued again: ${e.message}`;
@@ -284,7 +292,11 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
       }
       log(`  ${ref}: ${verdict.state}`);
     } finally { release(); }
-  }
+  };
+  // Rows of one PR (an older head still pending) run one after the other; PRs run side by side.
+  const byPr = new Map<string, typeof rows>();
+  for (const v of rows) byPr.set(`${v.repo}#${v.number}`, [...(byPr.get(`${v.repo}#${v.number}`) ?? []), v]);
+  await pool([...byPr.values()].map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), () => queueRoom(db), { max: POOL_MAX.verifyCollect });
 
   s.warmCancelled = await cancelMovedWarmBuilds(db, d, log);
   s.changed += s.warmCancelled;

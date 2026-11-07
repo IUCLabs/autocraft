@@ -10,6 +10,13 @@ const skippedKeys = new Set<string>();
 /** The lease keys this process skipped, at most 500. */
 export const leaseSkipKeys = (): string[] => [...skippedKeys];
 
+/** Counts an item left for a later job (like a held lease) so the planner retries it, and logs why. */
+export function skipItem(key: string, log: (line: string) => void, why: string): void {
+  skipped++;
+  if (skippedKeys.size < 500) skippedKeys.add(key);
+  log(`  ${key}: skipped: ${why}`);
+}
+
 /** Takes the lease for the job. False when another running job holds it. */
 export function take(db: DatabaseSync, key: string, jobId: number, step: string): boolean {
   db.exec("BEGIN IMMEDIATE");
@@ -45,9 +52,7 @@ export function leaseItem(db: DatabaseSync, key: string, log: (line: string) => 
   const job = currentJob();
   if (!job) return () => {};
   if (!take(db, key, job.id, job.step)) {
-    skipped++;
-    if (skippedKeys.size < 500) skippedKeys.add(key);
-    log(`  ${key}: skipped: another job is working it`);
+    skipItem(key, log, "another job is working it");
     return null;
   }
   return () => release(db, key, job.id);

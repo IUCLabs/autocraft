@@ -32,6 +32,9 @@ import { cleanLine } from "../review/post-template.ts";
 import type { FixRow } from "./index.ts";
 import { optionalChecks } from "../optional-checks.ts";
 import { ownerOf, slugOf } from "../owners.ts";
+import { POOL_MAX, pool } from "../classify/run.ts";
+import { isHalt, queueRoom } from "../agents/call.ts";
+import { pushesUnsettled } from "../push-outcomes.ts";
 
 export const PR_ACTOR = "main-fix";
 /** Open PRs read for overlap with the failure. */
@@ -276,6 +279,7 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
     c.log(`  ${c.repo}: ${names.join(", ")}: opened ${url}`);
     return "opened";
   } catch (e) {
+    if (isHalt(e)) throw e;
     return done("fix-failed", String((e as Error).message ?? e));
   }
 }
@@ -289,20 +293,26 @@ export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ open
   for (const r of rows) (byHead.get(r.head_sha) ?? byHead.set(r.head_sha, []).get(r.head_sha)!).push(r);
   try {
     sweepSessions(c.db, c.now());
-    for (const group of byHead.values()) {
-      if (c.stopping?.()) { c.log(`  ${c.repo}: stopping, no new heads started`); break; }
+    let stopLogged = false;
+    // One group per head, run at once while the model queue has room; the rows of a head stay in one attempt.
+    await pool([...byHead.values()].map((group) => async () => {
+      if (c.stopping?.()) {
+        if (!stopLogged) { stopLogged = true; c.log(`  ${c.repo}: stopping, no new heads started`); }
+        return;
+      }
+      if (pushesUnsettled(c.db, c.repo, c.log)) return;
       const release = leaseItem(c.db, `head:${c.repo}@${group[0]!.head_sha}`, c.log);
-      if (!release) continue;
+      if (!release) return;
       try {
         // Another job may have moved the rows on before the lease was taken.
         const now = c.db.prepare("SELECT * FROM main_fixes WHERE repo = ? AND head_sha = ? AND state IN ('needs-fix', 'linting') AND verdict = 'code' ORDER BY created_at, \"check\"").all(c.repo, group[0]!.head_sha) as FixRow[];
-        if (!now.length) continue;
+        if (!now.length) return;
         // Rows that turned red after the patch was stored wait until it is collected.
         const stored = now.filter((r) => r.state === "linting");
         const o = await attempt(c, stored.length ? stored : now, () => onHandled?.(), ledger);
         if (o !== "waiting") out[o]++;
       } finally { release(); }
-    }
+    }), () => queueRoom(c.db), { max: POOL_MAX.mainfix });
   } finally {
     ledger.release();
   }

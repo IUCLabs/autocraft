@@ -300,6 +300,7 @@ export const STAGES: StageDef[] = [
     promptIds: ["fixup.patch", "fixup.check", "fixup.conflict", "cifix.patch", "mainfix.classify"], promptStage: "Integrate (fix-ups)",
     waits: [
       { name: "Lint task", why: "A model patch is stored while a build worker formats it and runs clippy on the patched tree; the result is collected when the task ends", howLong: "Until the build task ends (minutes); a lost task is queued once more, then the patch is given up", showsAs: "Builds page; the PR's fix-up or CI fix row is linting", kind: "external" },
+      { name: "CI results of earlier pushes", why: "A repository with 3 pushes of ours whose required checks are not final yet gets no further push from Fix-up, CI fix or the default-branch fix", howLong: "Until the checks of those pushes end (a push without a result is settled as unknown after 3 days)", showsAs: "Items skipped for another job or run; no state change", kind: "external" },
     ],
     writes: [{ what: "Push to the PR branch", approval: "push" }, { what: "Comment with the fixes", approval: "comment" }, { what: "Rerun failed CI jobs", approval: "ci" }, { what: "Rerun a red default branch's failed jobs; open a fix PR from the pipeline account's fork; open an issue on an operator's answer", approval: "main-fix" }],
     person: "Per-repo approval",
