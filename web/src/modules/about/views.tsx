@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeftIcon, CaretDownIcon, CaretRightIcon, ListIcon } from "@phosphor-icons/react";
+import { ArrowLeftIcon, CaretRightIcon } from "@phosphor-icons/react";
 import type { ViewProps } from "../../registry/types";
 import { Markdown } from "../../ui/molecules/Markdown";
 import { cn } from "../../ui/cn";
@@ -26,23 +26,6 @@ function Toc({ close }: { close?: () => void }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-function PhoneToc() {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="mb-4 rounded-md border border-line-strong bg-panel md:hidden">
-      <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex w-full items-center gap-2 px-3 py-2.5 text-sm font-medium">
-        <ListIcon /> Stages
-        <CaretDownIcon className={cn("ml-auto transition-transform", open && "rotate-180")} />
-      </button>
-      {open && (
-        <div className="border-t border-line p-1">
-          <Toc close={() => setOpen(false)} />
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -96,7 +79,6 @@ function Overview() {
       <div className="min-w-0 flex-1">
         <h1 className="text-2xl font-semibold">How AutoCraft works</h1>
         <Markdown source={OVERVIEW_INTRO} className={cn(PROSE, "mt-2 text-md")} />
-        <PhoneToc />
         <StagePath />
         <div className="mt-2 divide-y divide-line">
           {STAGES.map((st) => (
