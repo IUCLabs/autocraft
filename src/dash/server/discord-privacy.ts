@@ -2,9 +2,8 @@
 // operators' contact text, and no external request.
 import { esc, plainPage } from "./util.ts";
 
-// Discord refuses app URLs that contain its name, so the notice lives at /privacy; the first path redirects there.
+// Discord refuses app URLs that contain its name.
 export const DISCORD_PRIVACY_PATH = "/privacy";
-export const OLD_PRIVACY_PATH = "/discord-privacy";
 
 export function discordPrivacyPage(nonce: string, contact: string): string {
   const who = contact.trim()
