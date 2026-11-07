@@ -23,7 +23,9 @@ export type StoredSession = KeptSession & { at: string };
 /** Passed to a patch call: `resume` continues a kept session with a message; the call reports the session it ends with in `kept`. */
 export type SessionAsk = { resume?: { session: KeptSession; message: string }; kept?: KeptSession };
 
-export const SESSION_TABLES = ["fixups", "ci_fixes", "conflict_merges", "main_fixes"] as const;
+/** The tables whose rows keep a session, and the state in which a row waits for its result (lint or build). */
+export const SESSION_TABLES = ["fixups", "ci_fixes", "conflict_merges", "main_fixes", "security_fix_rounds"] as const;
+const WAITING: Record<(typeof SESSION_TABLES)[number], string> = { fixups: "linting", ci_fixes: "linting", conflict_merges: "linting", main_fixes: "linting", security_fix_rounds: "building" };
 
 export function resumeMessage(findings: string[]): string {
   return `The harness linted your answer. Rustfmt and clippy report these findings on lines it changed:\n\n${findings.map((f) => f.trim()).join("\n\n")}\n\nFix them. Reply with your corrected answer in the same reply format as before: complete, not a change to your earlier answer.`;
@@ -69,7 +71,11 @@ export function dropSessions(stored: string | null | undefined, keep: Kept = {})
 export class SessionLedger {
   private held = new Set<KeptSession>();
   hold(k: KeptSession | undefined): void { if (k) this.held.add(k); }
-  stored(kept: Kept): void { for (const k of Object.values(kept)) this.held.delete(k); }
+  /** Stores a row now keeps, whether or not it is the object held: a resumed call's store is the one it continued. */
+  stored(kept: Kept): void {
+    const dirs = new Set(Object.values(kept).map((k) => k.dir));
+    for (const h of [...this.held]) if (dirs.has(h.dir)) this.held.delete(h);
+  }
   release(): void {
     for (const k of this.held) remove(k.dir);
     this.held.clear();
@@ -82,7 +88,7 @@ export function sweepSessions(db: DatabaseSync, now: Date): number {
   // A store that a row still waiting on its lint references stays, even when a sibling row (same head) left that state.
   const live = new Set<string>();
   for (const t of SESSION_TABLES) {
-    for (const r of db.prepare(`SELECT session FROM ${t} WHERE session IS NOT NULL AND state = 'linting'`).all() as { session: string }[]) {
+    for (const r of db.prepare(`SELECT session FROM ${t} WHERE session IS NOT NULL AND state = '${WAITING[t]}'`).all() as { session: string }[]) {
       for (const s of Object.values(parseSessions(r.session))) if (now.getTime() - Date.parse(s.at) <= RESUME_WINDOW_MS + LONGEST_CALL_MS) live.add(s.dir);
     }
   }
@@ -90,7 +96,7 @@ export function sweepSessions(db: DatabaseSync, now: Date): number {
     const rows = db.prepare(`SELECT rowid AS id, state, session FROM ${t} WHERE session IS NOT NULL`).all() as { id: number; state: string; session: string }[];
     for (const r of rows) {
       const all = Object.values(parseSessions(r.session));
-      if (all.length && r.state === "linting" && all.every((s) => live.has(s.dir))) continue;
+      if (all.length && r.state === WAITING[t] && all.every((s) => live.has(s.dir))) continue;
       for (const s of all) if (!live.has(s.dir)) remove(s.dir);
       db.prepare(`UPDATE ${t} SET session = NULL WHERE rowid = ?`).run(r.id);
       n++;

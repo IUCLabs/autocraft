@@ -1662,6 +1662,24 @@ CREATE TABLE IF NOT EXISTS security_calls (
 );
 CREATE INDEX IF NOT EXISTS security_calls_scan ON security_calls(scan_id, id);
 
+-- The build rounds of a finding's private fix. A job queues a round's build tasks and ends; the job that follows reads the
+-- result. state: building | failed | passed. session: the kept model session (JSON), while the round is building.
+CREATE TABLE IF NOT EXISTS security_fix_rounds (
+  repo TEXT NOT NULL, number INTEGER NOT NULL, round INTEGER NOT NULL,
+  patch TEXT NOT NULL,                -- the validated patch
+  test_patch TEXT NOT NULL,
+  title TEXT NOT NULL,                -- the commit's title and summary, kept for the commit a passed round becomes
+  summary TEXT NOT NULL,
+  head_task INTEGER NOT NULL,
+  base_task INTEGER NOT NULL,
+  retried INTEGER NOT NULL DEFAULT 0, -- 1 once the tasks were queued again after an environment error
+  session TEXT,
+  state TEXT NOT NULL DEFAULT 'building',
+  failure TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number, round)
+);
+
 -- Discord mentions (optional feature, see docs/pipeline.md). Channels are what the bot reports; `watched` is the operators' choice.
 -- A thread or forum post has `parent_id` set and counts under its parent's `watched`; the admin page lists parents only.
 CREATE TABLE IF NOT EXISTS discord_channels (

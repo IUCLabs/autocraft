@@ -102,7 +102,6 @@ describe("private fix and landing", () => {
       exec: fake().exec, root: SCRATCH, log: () => {}, cancelled: () => false,
       fetchCrates: async () => ({ ok: true, rust: true, crates: [{ name: "psd", dir: "crates/psd" }] }) as never,
       checkout: async () => "/checkout",
-      build: async () => { throw new Error("no round gets as far as the build"); },
       who: async () => ({ login: "pipeline-bot", email: "bot@example.com" }),
       ask: async (_id, input, o) => {
         const r = o.session?.resume;

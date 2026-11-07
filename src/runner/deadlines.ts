@@ -36,6 +36,7 @@ export const STEP_PLANS: Record<string, Plan> = {
   "verify-collect": { calls: [item("verify.summary")], items: 10 },
   // One threat model, then per area an audit and a verify of each finding it may report.
   "security-scan": { calls: [item("security.model"), ...Array.from({ length: AREAS_MAX }, () => item("security.area")), ...Array.from({ length: AREAS_MAX * FINDINGS_PER_AREA_MAX }, () => item("security.verify"))], items: 1 },
+  // A job holds one round: the review of a passed build and the next patch, or one patch. The build runs between jobs.
   "security-fix": { calls: [item("security.fix", true), item("security.fixcheck")], items: 1 },
 };
 

@@ -19,7 +19,7 @@ import { pruneTasks, reapLost } from "../build/tasks.ts";
 import { prunePlanHistory } from "../core/plan-cache.ts";
 import { checkPendingUpdate } from "../build/worker-update.ts";
 import { endJob, JOB_KEEP_MS, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
-import { autoFixConfirmed } from "../security/actions.ts";
+import { advanceSecurityFixes, autoFixConfirmed } from "../security/actions.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
@@ -182,6 +182,9 @@ export class Runner {
           // A private fix that a switch-off cancelled is queued again once the pipeline is on.
           const fixes = await autoFixConfirmed(this.db);
           if (fixes) this.o.log(`autopilot: started the private fix of ${fixes} confirmed security findings`);
+          // A fix waits for its build without a job; the next one starts when the build tasks end.
+          const next = await advanceSecurityFixes(this.db);
+          if (next) this.o.log(`autopilot: continued the private fix of ${next} security findings after their builds`);
         }
       } catch (e) {
         this.o.log(`autopilot: ${(e as Error).message}`);

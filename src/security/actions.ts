@@ -134,6 +134,29 @@ export async function autoFixConfirmed(db: DatabaseSync, repo?: string, n?: numb
   return queued;
 }
 
+/**
+ * Queues a fix job for each fixing finding whose build round has ended and that has no fix job queued or running: the job
+ * reads the result and writes the next round or the commit. Returns how many jobs it queued.
+ */
+export async function advanceSecurityFixes(db: DatabaseSync): Promise<number> {
+  const rows = db.prepare(`SELECT f.repo, f.number FROM security_findings f WHERE f.state = 'fixing'
+      AND EXISTS (SELECT 1 FROM security_fix_rounds r WHERE r.repo = f.repo AND r.number = f.number AND r.state = 'building'
+        AND NOT EXISTS (SELECT 1 FROM build_tasks t WHERE t.id IN (r.head_task, r.base_task) AND t.state NOT IN ('done', 'failed', 'cancelled', 'lost')))
+      AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.step = 'security-fix' AND j.state IN ('queued', 'running') AND json_extract(j.params, '$.repo') = f.repo AND json_extract(j.params, '$.number') = f.number)
+      ORDER BY f.repo, f.number`).all() as { repo: string; number: number }[];
+  let queued = 0;
+  for (const r of rows) {
+    try {
+      const job = await enqueue(db, STEPS.fix!.step, { repo: r.repo, number: r.number }, "pipeline");
+      db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(r.repo), job.id);
+      queued++;
+    } catch (e) {
+      if (!(e instanceof JobError)) throw e;
+    }
+  }
+  return queued;
+}
+
 /** Moves the finding to the state the step works in, then queues the step; the state goes back when the queue refuses. */
 async function startStep(db: DatabaseSync, repo: string, n: number, login: string, action: FindingAction, s: NonNullable<(typeof STEPS)[FindingAction]>, b: Record<string, unknown>, extra: AuditExtra): Promise<FindingView> {
   const row = findingRow(db, repo, n);
