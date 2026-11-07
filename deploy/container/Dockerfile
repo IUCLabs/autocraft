@@ -41,19 +41,29 @@ ARG TARGETARCH
 
 RUN set -eux; \
     apt-get update; \
+    # curl only exists in this stage to fetch the GitHub CLI below;
+    apt-get install -y --no-install-recommends curl; \
     packages="bash bubblewrap ca-certificates curl git sqlite3 tini zstd"; \
+    # The full dependency closure, flattened from apt-cache's indented tree;
+    # `apt-get download` fetches them whether or not this stage already has them.
     apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
       --no-breaks --no-replaces --no-enhances $packages \
+      | sed -e 's/^[[:space:]|]*//' -e 's/^[A-Za-z-]*: //' \
       | grep -E '^[a-z0-9][a-z0-9.+-]*(:[a-z0-9]+)?$' | sort -u > /tmp/packages; \
     mkdir -p /rootfs /tmp/debs; \
     cd /tmp/debs; \
-    xargs -r apt-get download < /tmp/packages || true; \
+    xargs -r -n1 sh -c 'apt-get download "$0" || true' < /tmp/packages; \
     for deb in *.deb; do dpkg -x "$deb" /rootfs; done; \
     rm -rf /var/lib/apt/lists/* /tmp/debs /tmp/packages; \
-    test -x /rootfs/bin/bash; \
-    test -x /rootfs/usr/bin/git; \
-    test -x /rootfs/usr/bin/bwrap; \
-    test -x /rootfs/usr/bin/tini
+    # Prove the unpacked tree runs on its own libraries before it is copied into
+    # the runtime base, which has no shell to debug it with later.
+    chroot /rootfs /bin/bash -c 'export PATH=/usr/local/bin:/usr/bin:/bin; \
+      git --version; \
+      curl --version >/dev/null; \
+      sqlite3 --version >/dev/null; \
+      bwrap --version; \
+      zstd --version >/dev/null; \
+      tini --version'
 
 # Certificate bundle, account entries and the writable roots. `dpkg -x` runs no
 # postinst scripts, so the CA bundle is copied from this stage rather than
