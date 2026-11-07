@@ -31,7 +31,7 @@ function trackedName(db: DatabaseSync, payload: Obj): string | null {
 }
 
 /**
- * The item numbers an event names. A check event counts when it completes and names the pull requests of its head;
+ * The item numbers an event names. A completed check suite counts and names the pull requests of its head;
  * GitHub lists none for a fork's pull request, so the head commit is matched to this repository's open pull requests.
  */
 export function itemNumbers(db: DatabaseSync, repo: string, event: string, payload: Obj): number[] {
@@ -42,9 +42,8 @@ export function itemNumbers(db: DatabaseSync, repo: string, event: string, paylo
     case "pull_request":
     case "pull_request_review":
     case "pull_request_review_comment": return one(obj(payload.pull_request).number);
-    case "check_suite":
-    case "check_run": {
-      const body = obj(payload[event]);
+    case "check_suite": {
+      const body = obj(payload.check_suite);
       if (payload.action !== "completed") return [];
       const repoId = obj(payload.repository).id;
       const listed = Array.isArray(body.pull_requests) ? body.pull_requests : [];

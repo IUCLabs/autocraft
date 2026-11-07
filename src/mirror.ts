@@ -306,8 +306,11 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
       if (!force && old && COLUMNS.every((c) => old[c] === row[c])) continue;
       insert.run(row);
       if (detail === "full") {
-        del.run(repo, n.number);
-        for (const row of commentRows(repo, kind, n, own)) insComment.run(...row);
+        const rows = commentRows(repo, kind, n, own);
+        // A forced re-read of an unchanged item upserts in place: an identical comment bumps no topic. Comments past the newest 20 go.
+        if (!force) del.run(repo, n.number);
+        for (const row of rows) insComment.run(...row);
+        if (force) db.prepare(`DELETE FROM main.comments WHERE repo = ? AND number = ? AND id NOT IN (${rows.map(() => "?").join(",") || "''"})`).run(repo, n.number, ...rows.map((r) => r[2] as string));
       }
     }
     if (nodes.length) {

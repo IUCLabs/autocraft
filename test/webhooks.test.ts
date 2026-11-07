@@ -70,3 +70,23 @@ test("a request that fails for a reason other than a transient one is dropped so
   assert.equal(calls, 2);
   assert.deepEqual(queued(db), []);
 });
+
+test("re-reading an unchanged item bumps no items topic and keeps its newest comments", async () => {
+  const db = scratch();
+  const comment = (i: number) => ({ id: `c${i}`, author: { login: "x", __typename: "User" }, authorAssociation: "NONE", createdAt: "2026-01-02T00:00:00Z", body: `b${i}`, url: "u" });
+  const node = {
+    __typename: "Issue", repository: { name: "a", owner: { login: "storytold" } }, number: 5, title: "t", body: "", url: "u", author: { login: "x" },
+    authorAssociation: "NONE", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-11-02T10:00:00Z", closedAt: null, state: "OPEN",
+    labels: { nodes: [] }, assignees: { nodes: [] }, commentCount: { totalCount: 2 }, stateReason: null, comments: { nodes: [comment(1), comment(2)] },
+  };
+  const c = validating({ spent: 0, remaining: 4000 as number | null, async query() { return { repository: { issueOrPullRequest: node } }; } });
+  const read = async () => { deliver(db, "issues", { repository: { full_name: "storytold/a", name: "a" }, issue: { number: 5 } }); await drainSyncRequests(db, c); };
+  const seq = () => (db.prepare("SELECT seq FROM change_seq WHERE topic = 'items'").get() as { seq: number }).seq;
+  await read();
+  const before = seq();
+  await read();
+  assert.equal(seq(), before);
+  node.comments = { nodes: [comment(2)] };
+  await read();
+  assert.deepEqual(db.prepare("SELECT id FROM comments WHERE repo = 'a' AND number = 5").all().map((r) => r.id), ["c2"]);
+});
