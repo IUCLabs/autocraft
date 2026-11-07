@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { PaperPlaneRightIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
-import type { Decision, RepoName } from "../../api/types";
+import type { Decision, DecisionChoices, RepoName } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { FeedbackBox } from "../decisions/FeedbackBox";
+import { localActions } from "../decisions/state";
 
+export const COMPOSER_ID = "opus-composer";
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * The thread's one input, stuck to the bottom of the page (above the phone tab bar): operators write to Opus,
  * maintainers who cannot act leave feedback on the open question, viewers get nothing.
  */
-export function Composer({ repo, number, operator, commenter, exists, pending, feedbackOn }: {
+export function Composer({ repo, number, operator, commenter, exists, pending, feedbackOn, choices, opusTurns }: {
   repo: RepoName;
   number: number;
   operator: boolean;
@@ -20,6 +22,9 @@ export function Composer({ repo, number, operator, commenter, exists, pending, f
   pending: boolean;
   /** The open decision the feedback box belongs to. */
   feedbackOn?: Decision;
+  /** The item's current choices: a message to Opus folds them at once, since Opus is about to change them. */
+  choices?: DecisionChoices | null;
+  opusTurns?: number;
 }) {
   const api = useApi();
   const [draft, setDraft] = useState("");
@@ -30,10 +35,14 @@ export function Composer({ repo, number, operator, commenter, exists, pending, f
     if (!text || sending) return;
     setSending(true);
     setError(undefined);
+    const item = `${repo}#${number}`;
+    if (ask && choices) localActions.startUpdating(item, { decisionId: choices.decisionId, choicesId: choices.id, opusTurns: opusTurns ?? 0 });
     try {
       await api.conversations.say(repo, number, text, ask ? undefined : false);
       setDraft("");
     } catch (e) {
+      // Nothing was sent: the old choices come back.
+      localActions.stopUpdating(item);
       setError(message(e));
     } finally {
       setSending(false);
@@ -45,6 +54,7 @@ export function Composer({ repo, number, operator, commenter, exists, pending, f
       <div className={shell}>
         <div className="flex flex-col gap-2 md:flex-row md:items-end">
           <textarea
+            id={COMPOSER_ID}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {

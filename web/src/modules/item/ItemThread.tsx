@@ -19,7 +19,7 @@ import { useUser } from "../../shell/UserContext";
 import { canAct, canComment } from "../../registry/permissions";
 import { canActOn } from "../decisions/DecisionDetail";
 import { useNow } from "../../lib/useNow";
-import { localActions } from "../decisions/state";
+import { localActions, useLocal } from "../decisions/state";
 import { ActionCard, Progress } from "./OpusCards";
 import { Composer } from "./Composer";
 import { OpenQuestions, useItemDecisions } from "./ItemDecisions";
@@ -73,7 +73,18 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
     },
     (p) => p.nextCursor,
   );
-  const { data: conv } = useQuery(`conversation:${repo}#${number}`, (a) => a.conversations.get(repo, number), { pollMs: (d) => (d?.pending ? 4000 : false) });
+  const { data: conv, error: convError } = useQuery(`conversation:${repo}#${number}`, (a) => a.conversations.get(repo, number), { pollMs: (d) => (d?.pending ? 4000 : false) });
+  // undefined: not loaded yet (no answer form until it is, so the plain options never flash before the choices); null: none.
+  const choices = conv ? conv.choices ?? null : convError ? null : undefined;
+  const item = `${repo}#${number}`;
+  const updating = useLocal().updating[item];
+  const opusTurns = conv?.turns.filter((t) => t.kind === "opus").length ?? 0;
+  // The folded choices come back once Opus's reply (a new set, a reply without one, or its failure) is in.
+  useEffect(() => {
+    if (!updating || !conv || conv.pending) return;
+    const failed = [...conv.turns].reverse().find((t) => t.kind === "operator")?.status === "failed";
+    if (opusTurns > updating.opusTurns || conv.choices?.id !== updating.choicesId || failed) localActions.stopUpdating(item);
+  }, [updating, conv, opusTurns, item]);
   const { data: listed } = useItemDecisions(repo, number);
   const ds = listed && decision ? [decision, ...listed.filter((d) => d.id !== decision.id)] : decision ? [decision] : listed;
   const ids = ds?.map((d) => d.id).join(",") ?? "";
@@ -219,8 +230,8 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
         <ErrorLine error={q.error?.message} className="mt-2" />
       </section>
       {it.preapproval && <PreapprovalPart it={it} operator={operator} />}
-      <OpenQuestions ds={ds ?? []} focus={decision} choices={conv?.choices} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
-      {suggestions.some((a) => a.canSettle) && (
+      <OpenQuestions ds={ds ?? []} focus={decision} choices={choices} updating={updating?.decisionId} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
+      {!updating && suggestions.some((a) => a.canSettle) && (
         <div className="mt-3 space-y-2">
           {suggestions.filter((a) => a.canSettle).map((a) => (
             <ActionCard key={a.id} a={a} operator={canAct(user, [it.repo])} editInstructions={user.role === "operator"} className="" />
@@ -235,6 +246,8 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
         exists={!!conv?.exists}
         pending={!!conv?.pending}
         feedbackOn={decision && !decision.answer ? decision : openDecisions.length === 1 ? openDecisions[0] : undefined}
+        choices={choices}
+        opusTurns={opusTurns}
       />
     </>
   );
