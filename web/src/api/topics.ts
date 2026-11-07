@@ -34,6 +34,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["item-decisions:", withSlot("decisions", "items", "decision-snooze")],
   ["items:", withSlot("items", "stages", "classify", "decisions", "discord")],
   ["discord-setup", ["discord"]],
+  ["discord-account", ["discord"]],
   ["similar:", ["items"]],
   ["work:", ["items", "ranks", "classify", "checks", "decisions", "reviews", "verify", "fixes"]],
   ["cost:", ["usage", "agents"]],

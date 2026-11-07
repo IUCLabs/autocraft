@@ -17,6 +17,10 @@ export class DiscordKeys {
   hash(kind: "message" | "author" | "channel", id: string): string {
     return createHmac("sha256", this.#mac).update(`${kind}:${id}`).digest("base64url");
   }
+  /** Signature for short-lived signed values (link tokens); `purpose` keeps the uses apart. */
+  sign(purpose: string, data: string): string {
+    return createHmac("sha256", this.#mac).update(`sign:${purpose}:${data}`).digest("base64url");
+  }
   seal(ref: MessageRef, aad: string): string {
     const iv = randomBytes(12);
     const c = createCipheriv("aes-256-gcm", this.#enc, iv);

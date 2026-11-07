@@ -73,8 +73,13 @@ export function createMockApi(): Api {
   const choicesHooks: { reprepare?: (decisionId: string) => void } = {};
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
+  let discordLinked = true;
   const discord: DiscordSetup = {
     state: "connected", detail: null, at: nowIso(), repos: ["photocraft", "pdfcraft", "wordcraft"], contact: "discord-privacy@example.org", privacyPath: "/discord-privacy",
+    links: [
+      { id: "l1", login: "mira-anders", linkedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
+      { id: "l2", login: "tomas-vale", linkedAt: new Date(Date.now() - 40 * 3_600_000).toISOString() },
+    ],
     channels: [
       { channelId: "9000000000000002", guildId: "9000000000000001", guildName: "Glasswing Community", name: "dev-chat", watched: true, defaultRepo: "photocraft" },
       { channelId: "9000000000000003", guildId: "9000000000000001", guildName: "Glasswing Community", name: "support", watched: true, defaultRepo: null },
@@ -248,6 +253,18 @@ export function createMockApi(): Api {
         discord.channels.find((c) => c.channelId === channelId)!.defaultRepo = repo;
         changed();
         return wait(structuredClone(discord));
+      },
+      removeLink(id) {
+        if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");
+        discord.links = discord.links.filter((l) => l.id !== id);
+        changed();
+        return wait(structuredClone(discord));
+      },
+      account: () => wait({ linked: discordLinked, at: nowIso() }),
+      unlinkOwn() {
+        discordLinked = false;
+        changed();
+        return wait({ linked: false, at: null });
       },
       setContact(contact) {
         if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");

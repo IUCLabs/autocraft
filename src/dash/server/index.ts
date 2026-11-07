@@ -18,7 +18,9 @@ import { TokenBucket } from "./limits.ts";
 import { dbReady, serveHealth } from "../../health.ts";
 import { serveChecks } from "../../health-checks.ts";
 import { discordPrivacyPage, DISCORD_PRIVACY_PATH } from "./discord-privacy.ts";
-import { contactOf } from "../api/discord.ts";
+import { contactOf, discordKeys } from "../api/discord.ts";
+import { LINK_PATH } from "../../discord/links.ts";
+import { linkConfirmPage, linkSubmit } from "./discord-link.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
 import { OrgSetup } from "./github-setup.ts";
@@ -490,6 +492,15 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
             `<meta http-equiv="refresh" content="0;url=${esc(to)}">${previewTags(config.baseUrl, url.pathname)}`) });
         }
         return send(res, nonce, { status: 401, json: { error: "sign-in required" } });
+      }
+      if (url.pathname === LINK_PATH) {
+        if (method === "GET") return send(res, nonce, linkConfirmPage(db, discordKeys(), nonce, session.login, session.csrf, url.searchParams.get("t")));
+        if (method === "POST") {
+          if (!sameOrigin(req)) return send(res, nonce, errorPage(nonce, 403, "Refused", "This form was sent from another site."));
+          const form = await readBody(req);
+          if (!safeEqual(form.get("csrf") ?? "", session.csrf)) return send(res, nonce, errorPage(nonce, 403, "Refused", "The form expired. Reload the page and try again."));
+          return send(res, nonce, linkSubmit(db, discordKeys(), nonce, session.login, form.get("t") ?? ""));
+        }
       }
       if (method === "GET" && url.pathname === "/api/live") return handleLive(req, res, nonce, session);
       if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, nonce, session);
