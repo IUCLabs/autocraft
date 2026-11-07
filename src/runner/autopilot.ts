@@ -46,6 +46,7 @@ import { DEADLINE_ERROR, enqueue, JobError, now, requestCancel, RUNNER_STOPPED }
 import { claudePauseReason } from "../agents/accounts.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
+import { jobBlock, stepParallel, type Active } from "./concurrency.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
 import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
@@ -164,14 +165,14 @@ const tasksSig = (db: DatabaseSync): string =>
 /** Daily limits are not a topic of their own (they share `jobs`). */
 const limitsSig = (db: DatabaseSync): string =>
   String((db.prepare("SELECT group_concat(step || '=' || COALESCE(per_day, 'n'), ',') AS s FROM (SELECT step, per_day FROM stage_limits ORDER BY step)").get() as { s: string | null }).s ?? "")
-  + String((db.prepare(`SELECT group_concat(key || '=' || value, ',') AS s FROM (SELECT key, value FROM settings WHERE key LIKE '${KEY_RESET}%' ORDER BY key)`).get() as { s: string | null }).s ?? "");
+  + String((db.prepare(`SELECT group_concat(key || '=' || value, ',') AS s FROM (SELECT key, value FROM settings WHERE key LIKE '${KEY_RESET}%' OR key = 'step_parallel' ORDER BY key)`).get() as { s: string | null }).s ?? "");
 
 const repoOf = (c: Candidate): string | null => (typeof c.params.repo === "string" ? c.params.repo : null);
 
-type JobEnd = { id: number; endedAt: string; state: string; items: number | null; acted: number | null; lease_skips: number | null };
+type JobEnd = { id: number; endedAt: string; state: string; items: number | null; acted: number | null; lease_skips: number | null; lease_skip_keys: string | null };
 
 function lastJobEnd(db: DatabaseSync, step: string, repo: string | null, requestedBy?: string): JobEnd | undefined {
-  return db.prepare(`SELECT id, ended_at AS endedAt, state, items, acted, lease_skips FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?)
+  return db.prepare(`SELECT id, ended_at AS endedAt, state, items, acted, lease_skips, lease_skip_keys FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?)
     AND ended_at IS NOT NULL AND (? IS NULL OR requested_by = ?) AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT 1`)
     .get(step, repo, repo, requestedBy ?? null, requestedBy ?? null, RUNNER_STOPPED) as JobEnd | undefined;
 }
@@ -590,14 +591,12 @@ export function jobLimit(db: DatabaseSync, step: StepDef, ms: number = Date.now(
 
 /**
  * Why a command-line run of the step cannot start now, or null: the gate() rules of the planner that are not pacing
- * (a job of the step is queued or running, a job of its concurrency group is running, the daily limit, a pause).
+ * (a job of the step for the same repo is queued or running, the step already works its most repos, a running job
+ * holds the step's mutex, the daily limit, a pause).
  */
-export function cliGate(db: DatabaseSync, step: { name: string; group: string }, groupOf: (name: string) => string, ms: number = Date.now()): string | null {
-  const busy = db.prepare("SELECT id, step, state FROM jobs WHERE state IN ('queued', 'running')").all() as { id: number; step: string; state: string }[];
-  const same = busy.find((j) => j.step === step.name);
-  if (same) return `job ${same.id} of ${step.name} is ${same.state}`;
-  const group = busy.find((j) => j.state === "running" && groupOf(j.step) === step.group);
-  if (group) return `job ${group.id} (${group.step}) is running in the same group (${step.group})`;
+export function cliGate(db: DatabaseSync, step: { name: string }, steps: Map<string, StepDef>, params: Params = {}, ms: number = Date.now()): string | null {
+  const busy = jobBlock(db, steps, { step: step.name, repo: typeof params.repo === "string" ? params.repo : null, number: typeof params.number === "number" ? params.number : null }, { mutex: true });
+  if (busy) return busy;
   return pauseReason(db, step.name, ms, { backoff: false });
 }
 
@@ -783,7 +782,7 @@ export type Detected = {
   timing?: { loadMs: number; lanesMs: number; cacheMs: number; written: number; deleted: number };
 };
 
-/** The most proposals one lane hands to apply, in case the first ones are refused at enqueue. */
+/** The fewest proposals one lane hands to apply, in case the first ones are refused at enqueue; the proposals of a lane are for different repos. */
 const PROPOSALS_PER_LANE = 3;
 
 const nextUtcMidnight = (ms: number): number => Date.parse(dayStart(ms)) + 86_400_000;
@@ -809,6 +808,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   const scope = scopeRepos(db);
   const seqs = readSeqs(db);
   const status: Record<string, string> = {};
+  const perLane = Math.max(PROPOSALS_PER_LANE, Math.min(stepParallel(db), 16));
   // Pause and limit do not change during the pass: one answer per step.
   const paused = new Map<string, string | null>();
   const limitLeft = new Map<string, { limit?: number } | null>();
@@ -827,10 +827,12 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
    * The job's `limit` (undefined when the step has none), or null when it cannot start now. With `lane`, the
    * input checks apply too: failure backoff and "nothing changed since a job that handled nothing".
    */
-  const gate = (stepName: string, params: Params, lane?: Lane, poll = false): { limit?: number } | null => {
+  const gate = (stepName: string, params: Params, lane?: Lane, poll = false, precheck = false): { limit?: number } | null => {
     const step = steps.get(stepName);
     if (!step) return null;
-    if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running')").get(stepName)) return null;
+    const pending: Active[] = proposals.filter((p) => p.step === stepName).map((p) => ({ id: 0, step: p.step, state: "proposed", repo: typeof p.params.repo === "string" ? p.params.repo : null, number: typeof p.params.number === "number" ? p.params.number : null }));
+    const repo0 = typeof params.repo === "string" ? params.repo : null;
+    if (jobBlock(db, steps, { step: stepName, repo: repo0, number: typeof params.number === "number" ? params.number : null }, { extra: pending, precheck })) return null;
     const reason = pausedWhy(stepName);
     if (reason) { note(stepName, reason); return null; }
     if (lane) {
@@ -863,7 +865,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   for (const lane of orderLanes(lanes, tops)) {
     try {
       // A lane whose steps cannot start is not worth detecting.
-      if (lane.steps && !lane.steps.some((s) => gate(s, {}))) continue;
+      if (lane.steps && !lane.steps.some((s) => gate(s, {}, undefined, false, true))) continue;
       const candidates = lane.detect(db, ctx);
       if (!candidates.length) { for (const s of lane.steps ?? []) note(s, "nothing to do"); continue; }
       let taken = 0;
@@ -875,7 +877,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
         if (!g) continue;
         const params: Params = { ...c.params, ...(g.limit === undefined ? {} : { limit: g.limit }) };
         proposals.push({ lane: lane.name, step: c.step, params, fp: fingerprintOf(db, lane, c.step, c.params, seqs), ...(c.gate ? { gate: c.gate } : {}) });
-        if (++taken >= PROPOSALS_PER_LANE) break;
+        if (++taken >= perLane) break;
       }
     } catch (e) {
       log(`autopilot: ${lane.name}: ${(e as Error).message}`);
@@ -899,12 +901,17 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   return { proposals, logs, wakeAt: wakes.length ? Math.min(...wakes) : null, status, timing: { loadMs, lanesMs, cacheMs, ...cache } };
 }
 
+/** True when a running job holds a lease on one of the keys a job skipped (a job from before the keys were recorded: on any lease). */
+function skippedLeaseHeld(db: DatabaseSync, keys: string | null): boolean {
+  return !!db.prepare(`SELECT 1 FROM work_leases l JOIN jobs j ON j.id = l.job_id WHERE j.state = 'running'${keys ? " AND l.key IN (SELECT value FROM json_each(?))" : ""} LIMIT 1`).get(...(keys ? [keys] : []));
+}
+
 /** True when the last autopilot job of the step (and repo) handled nothing and saw the input `fp` still describes. An operator release since then ends it. */
 function unchangedSinceIdle(db: DatabaseSync, step: string, repo: string | null, fp: string): boolean {
   const last = lastJobEnd(db, step, repo, AUTOPILOT_USER);
   if (!last || last.state !== "done" || !wasIdle(last)) return false;
-  // A job that skipped items another job was working retries once no running job holds a lease. While one does, the step stays parked, so the planner does not queue it in a loop.
-  if (last.lease_skips && !db.prepare("SELECT 1 FROM work_leases l JOIN jobs j ON j.id = l.job_id WHERE j.state = 'running' LIMIT 1").get()) return false;
+  // A job that skipped items another job was working retries once no running job holds a lease on any of them. While one does, the step stays parked, so the planner does not queue it in a loop.
+  if (last.lease_skips && !skippedLeaseHeld(db, last.lease_skip_keys)) return false;
   const rec = fpRecord(db, step, repo);
   if (!rec || rec.job !== last.id || rec.fp !== fp) return false;
   return !((releasedAt(db, step) ?? "") > last.endedAt);
@@ -912,21 +919,23 @@ function unchangedSinceIdle(db: DatabaseSync, step: string, repo: string | null,
 
 const warned = new Set<string>();
 
-/** Queues the proposals: per lane the first one that is accepted. Returns the queued job ids. */
+/** Queues the proposals: per lane and repo the first one that is accepted. Returns the queued job ids. */
 export async function applyProposals(db: DatabaseSync, proposals: Proposal[], opts: PlanOptions & { wakeAt?: number | null; status?: Record<string, string> } = {}): Promise<number[]> {
   const lanes = opts.lanes ?? LANES, log = opts.log ?? (() => {});
   const queued: number[] = [];
   const done = new Set<string>();
+  const steps = await loadSteps();
   try { applyUsedAnswers(db); } catch (e) { log(`autopilot: answers: ${(e as Error).message}`); }
   // Marks the next planner pass wants: when a wait ends, and why stages are not starting.
   if (opts.wakeAt) setSetting(db, KEY_WAKE_AT, new Date(opts.wakeAt).toISOString());
   else db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_WAKE_AT);
   if (opts.status) setSetting(db, KEY_STATUS, JSON.stringify(opts.status));
   for (const p of proposals) {
-    if (done.has(p.lane)) continue;
+    const slot = `${p.lane}\0${typeof p.params.repo === "string" ? p.params.repo : ""}`;
+    if (done.has(slot)) continue;
     try {
-      // The detection ran a moment ago: a job of the same step may have been queued since.
-      if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running')").get(p.step)) continue;
+      // The detection ran a moment ago: a job of the same step and repo may have been queued since.
+      if (jobBlock(db, steps, { step: p.step, repo: typeof p.params.repo === "string" ? p.params.repo : null, number: typeof p.params.number === "number" ? p.params.number : null })) continue;
       // The limit is what is left now, so two proposals of one step cannot both carry the whole remainder.
       const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER, (step, params) => {
         if (typeof params.limit !== "number") return params;
@@ -934,7 +943,7 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
         return lim ? { ...params, ...lim } : null;
       });
       queued.push(job.id);
-      done.add(p.lane);
+      done.add(slot);
       if (p.fp !== undefined) setSetting(db, fpKey(p.step, typeof p.params.repo === "string" ? p.params.repo : null), JSON.stringify({ job: job.id, fp: p.fp } satisfies FpRecord));
       const c: Candidate = { step: p.step, params: Object.fromEntries(Object.entries(p.params).filter(([k]) => k !== "limit")) };
       lanes.find((l) => l.name === p.lane)?.chosen?.(db, c);
@@ -942,7 +951,7 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
     } catch (e) {
       if (!(e instanceof JobError)) {
         log(`autopilot: ${p.lane}: ${(e as Error).message}`);
-        done.add(p.lane);
+        done.add(slot);
       } else log(`autopilot: ${p.step}: not queued: ${e.message}`);
     }
   }

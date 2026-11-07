@@ -88,7 +88,7 @@ export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOver
   const repos = await visibleRepos(db, req);
   const hidden = await hiddenRepos(db, req);
   const steps: PipelineStep[] = all.map((s) => ({
-    name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires, group: s.group,
+    name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires,
     params: wireParams(s, repos), unavailable: s.available?.() ?? null,
     lastJob: lastJob(db, s.name, forViewer(req), hidden),
   }));

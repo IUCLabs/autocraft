@@ -10,7 +10,7 @@ Local mirror of every storytold issue and PR, the triage pipeline's state, and t
 - `autocraft runner serve` runs the pipeline: while the pipeline is On (switch on the dashboard's Pipeline page, or `autocraft pipeline on`), it queues and runs the steps that have work, within each stage's daily limit. Turning it Off cancels queued automatic jobs; running ones finish, but their GitHub writes are refused. `autocraft pipeline drain` also cancels queued automatic jobs and starts and plans nothing new, while jobs already running finish and keep their writes (the dashboard shows Draining; `pipeline on` ends it). `pipeline drain` is refused while the pipeline is Off. A deploy runs `pipeline drain`, waits for the running jobs, deploys, then runs `pipeline on --if-draining`, which switches on only a pipeline that is still draining, so an operator's Off stays Off.
 - `autocraft opus-review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `autocraft checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, Review.
 - `autocraft merge --repo R [--limit N] [--apply]` merges the repo's queued PRs that may merge, through the built-in `autocraft safe-merge` (`$AUTOCRAFT_MERGE_CMD` overrides it with another command that takes `OWNER/REPO PR --squash|--merge --head <sha>` and refuses when the head differs), and asks a Merge? decision for the other taken PRs; without `--apply` it is a dry run. `autocraft queue [--repo R]` prints the merge queue. The runner's `merge` step and the autopilot merge only in repos an operator approved for merging on the Repos page. See docs/pipeline.md, Merge queue.
-- Runner steps (`autocraft runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `opus-review`, `checks` and `merge` (operator only, group `github-write`, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
+- Runner steps (`autocraft runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `opus-review`, `checks` and `merge` (operator only, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
 
 ### Sync
 
@@ -120,7 +120,7 @@ It reads the same variables as the CLI (`AUTOCRAFT_DB` and the rest), plus:
 | Variable | Meaning |
 |---|---|
 | `AUTOCRAFT_RUNNER_LOGS` | Directory of the per-job log files. Default `~/.cache/autocraft-logs/jobs`. The dashboard reads each job's log from the path recorded in its row, so it must run as a user who can read this directory. |
-| `AUTOCRAFT_RUNNER_JOBS` | Most jobs running at once. Default 8, enough for every concurrency group to have a job running; jobs of one group always run one at a time. |
+| `AUTOCRAFT_RUNNER_JOBS` | Most jobs running at once. Default 32. A job whose step calls Claude also waits for a free account slot before it starts. Jobs of one step run together only for different repos, within the `step_parallel` setting (`autocraft pipeline parallel [N|none]`, default 1). |
 | `AUTOCRAFT_RUNNER_POLL_MS` | Poll interval. Default 2000. |
 | `AUTOCRAFT_CALL_IDLE_MIN` | Minutes a Claude call may produce no output (no assistant text, tool use, tool result or progress line) before its process group is stopped (SIGTERM, then SIGKILL after 10 s) and the call fails with `no output for <n> min; stopped`. Default 15. Time spent inside a pending build-tool call (it waits on a worker, up to 45 minutes in all) does not count. |
 | `AUTOCRAFT_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/autocraft-logs`. |
@@ -196,7 +196,7 @@ A step is one entry in `STEPS` in `src/runner/steps.ts`:
   description: "Opus reviews, one pull request per call, the wanted pull requests of one repo that have no review at their current head. After a new push it reads only the changes since the head it reviewed before.",
   stage: 5,                      // docs/pipeline.md stage
   requires: "operator",
-  group: "review",               // one job of a group at a time; groups: classify, decide, review, github-write, github-read, local
+  // exclusive: "name",         // optional mutex for steps on shared run tables; otherwise one job per step and repo
   models: ["opus"],
   params: [
     { name: "repo", label: "Repo", kind: "repo", required: true },

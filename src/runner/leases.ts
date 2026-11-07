@@ -6,6 +6,9 @@ import { currentJob } from "../agents/call.ts";
 let skipped = 0;
 /** Items this process skipped because another job held their lease. */
 export const leaseSkips = (): number => skipped;
+const skippedKeys = new Set<string>();
+/** The lease keys this process skipped, at most 500. */
+export const leaseSkipKeys = (): string[] => [...skippedKeys];
 
 /** Takes the lease for the job. False when another running job holds it. */
 export function take(db: DatabaseSync, key: string, jobId: number, step: string): boolean {
@@ -43,6 +46,7 @@ export function leaseItem(db: DatabaseSync, key: string, log: (line: string) => 
   if (!job) return () => {};
   if (!take(db, key, job.id, job.step)) {
     skipped++;
+    if (skippedKeys.size < 500) skippedKeys.add(key);
     log(`  ${key}: skipped: another job is working it`);
     return null;
   }

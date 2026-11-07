@@ -12,6 +12,7 @@ import { execJob } from "./exec.ts";
 import { isDraining, isEnabled, LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "./autopilot.ts";
 import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
+import { ParallelError, setStepParallel, stepParallelSetting } from "./concurrency.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
 import { dbReady, startHealthServer } from "../health.ts";
@@ -159,6 +160,7 @@ export const commands = {
 const PIPELINE_USAGE = `usage: autocraft pipeline on [--if-draining] | off | drain | status
        autocraft pipeline limit <step> --per-day <N|none>
        autocraft pipeline limit reset <step>|--all
+       autocraft pipeline parallel [<N|none>]
        autocraft pipeline resume <fixup|cifix|fixissue|merge>
        autocraft pipeline pilot set <repo#number>... | show | clear`;
 
@@ -177,6 +179,16 @@ async function pipeline(args: string[]): Promise<void> {
     setEnabled(db, sub === "on", "cli", sub === "drain" ? "drain" : "off");
     audit(db, "cli", "pipeline-switch", "pipeline", { enabled: sub === "on", ...(sub === "drain" && { draining: true }) });
     console.log(`pipeline ${sub}`);
+  } else if (sub === "parallel") {
+    if (rest.length > 1) die(PIPELINE_USAGE);
+    try {
+      if (rest[0] !== undefined) setStepParallel(db, rest[0], "cli");
+    } catch (e) {
+      if (e instanceof ParallelError) die(e.message);
+      throw e;
+    }
+    console.log(`step_parallel ${stepParallelSetting(db)}`);
+    return;
   } else if (sub === "resume") {
     if (rest.length !== 1) die(PIPELINE_USAGE);
     try {

@@ -1137,7 +1137,6 @@ export interface PipelineStep {
   description: string;
   stage: number;
   requires: "operator";
-  group: string;
   params: StepParam[];
   /** null when the step can run; otherwise why not. */
   unavailable: string | null;

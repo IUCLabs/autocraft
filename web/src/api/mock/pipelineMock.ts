@@ -8,12 +8,12 @@ const iso = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
 
 const STEPS: Omit<PipelineStep, "lastJob">[] = [
   {
-    name: "classify-new", title: "Classify new and changed items", stage: 2, requires: "operator", group: "models", unavailable: null,
+    name: "classify-new", title: "Classify new and changed items", stage: 2, requires: "operator", unavailable: null,
     description: "Jev labels open items that have no verdict in the current classification run, or whose text changed since; Haiku gives a second opinion where Jev is under 90 % sure.",
     params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 5000, default: 500, required: false, help: "items per model in this job" }],
   },
   {
-    name: "classify-all", title: "Classification pass", stage: 2, requires: "operator", group: "models", unavailable: null,
+    name: "classify-all", title: "Classification pass", stage: 2, requires: "operator", unavailable: null,
     description: "Jev labels every open item of the tracked repos into the given run, then Haiku the ones Jev is unsure of. A stopped pass continues where it left off when started again with the same run id; once complete, the run becomes the current one.",
     params: [
       { name: "run", label: "Run id", kind: "run-id", required: true, help: "lowercase letters, digits and dashes" },
@@ -21,33 +21,33 @@ const STEPS: Omit<PipelineStep, "lastJob">[] = [
     ],
   },
   {
-    name: "embed", title: "Embed items", stage: 1, requires: "operator", group: "local", unavailable: null,
+    name: "embed", title: "Embed items", stage: 1, requires: "operator", unavailable: null,
     description: "Computes local sentence embeddings of new and changed items for similar items and semantic search. Runs on this machine; no model quota.",
     params: [{ name: "scope", label: "Items", kind: "enum", options: ["changed", "all"], default: "changed", required: false }],
   },
   {
-    name: "labels-apply", title: "Apply labels on GitHub", stage: 4, requires: "operator", group: "github-write",
+    name: "labels-apply", title: "Apply labels on GitHub", stage: 4, requires: "operator",
     unavailable: "Not available yet: the labels command is not in this build.",
     description: "Puts the settled type label and flags onto the open items of one repo on GitHub. Refused unless the operator has approved labelling for that repo.",
     params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }],
   },
   {
-    name: "fixup", title: "Fix up take-fix pull requests", stage: 6, requires: "operator", group: "github-write", unavailable: null,
+    name: "fixup", title: "Fix up take-fix pull requests", stage: 6, requires: "operator", unavailable: null,
     description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, pushed to the contributor's branch and noted with one short comment. The new head is reviewed again.",
     params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }, { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, required: false, help: "pull requests to fix up in this job" }],
   },
   {
-    name: "verify", title: "Plan verification of taken pull requests", stage: 6, requires: "operator", group: "verify", unavailable: null,
+    name: "verify", title: "Plan verification of taken pull requests", stage: 6, requires: "operator", unavailable: null,
     description: "Sonnet decides per taken pull request of one repo whether CI is enough, or which crates and tests a build machine should run, or (bug fixes) a regression test that fails before the change. Queues the build tasks; reads GitHub, writes nothing to it.",
     params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }, { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, required: false, help: "PRs to plan in this job" }],
   },
   {
-    name: "verify-collect", title: "Collect verification results", stage: 6, requires: "operator", group: "verify", unavailable: null,
+    name: "verify-collect", title: "Collect verification results", stage: 6, requires: "operator", unavailable: null,
     description: "Reads the finished build tasks of each pending verification and sets passed, failed or error from their exit codes. For a failure, Haiku summarises the log; the failure becomes a hold.",
     params: [],
   },
   {
-    name: "act", title: "Comment and close", stage: 6, requires: "operator", group: "github-write", unavailable: null,
+    name: "act", title: "Comment and close", stage: 6, requires: "operator", unavailable: null,
     description: "Posts one short comment and closes the items an operator answered Out of scope or Close. Skips an item that already closed or whose PR head moved. Calls no model.",
     params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }, { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 20, required: false, help: "items to act on in this job" }],
   },
