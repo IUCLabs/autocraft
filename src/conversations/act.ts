@@ -16,7 +16,7 @@ import type { CardEdit } from "../../web/src/api/types.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { closeRefusal, decisionStamp, isSettling, openDecision, otherTypeLabel, PUBLIC_TEXT_STEPS, settleLine, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
+import { closeRefusal, decisionStamp, dependsOnCode, isSettling, openDecision, otherTypeLabel, PUBLIC_TEXT_STEPS, settleLine, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { ConversationError, insertTurn, staleOf, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, NOTE_MAX, type CloseReason } from "./types.ts";
@@ -471,10 +471,10 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, boxQ
 export async function doCard(db: DatabaseSync, id: number, by: string, deps: ActDeps = {}): Promise<{ card: CardRow; ran: boolean }> {
   const c = need(db, id);
   if (c.state === "replaced") throw new ConversationError(409, "replaced by a later reply");
-  if (c.state === "proposed" && staleOf(db, c.repo, c.number, c.seen) === "pr-changed") throw new ConversationError(409, "the PR changed since this was proposed");
+  let params = JSON.parse(c.params) as CardParams;
+  if (c.state === "proposed" && staleOf(db, c.repo, c.number, c.seen) === "pr-changed" && dependsOnCode(params, c.text)) throw new ConversationError(409, "the PR changed since this was proposed");
   const note = deps.note?.trim() || undefined;
   if (note && note.length > NOTE_MAX) throw new ConversationError(400, `the note is longer than ${NOTE_MAX} characters`);
-  let params = JSON.parse(c.params) as CardParams;
   const skipped: string[] = [];
   let noteIsSummary = false;
   // A card drafted before the PR became quiet (a security fix not yet published) must not post model-written text any more.

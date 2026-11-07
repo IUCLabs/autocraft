@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { pilotSql } from "../pilot.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
+import { OWN_NOTE_PREFIXES } from "../conversations/store.ts";
 import { RECOMMEND_MAX_FAILURES, RECOMMEND_RETRY_MS } from "../core/item-rules.ts";
 
 /** The columns of a decision that say what its prepare step did. */
@@ -10,52 +11,73 @@ export type PrepareColumns = {
   recommend_failures: number | null; recommend_failed_at: string | null; prepare_failed_head: string | null;
   /** Without `kind` a prepare is tied to the head, as a Merge? decision's is. */
   kind?: string; id?: string;
-  /** Newest counted comment or operator message on the item (`discussedAtSql`). */
-  discussed_at?: string | null;
+  /** The newest counted comment now (`discussionKeySql`), and the one the prepare read ('' none; null: prepared before this was stored, taken as unchanged). */
+  discussion_key?: string | null; prepared_discussion?: string | null;
+  /** When the newest Opus review at the item's current head was stored (`reviewedAtSql`). */
+  reviewed_at?: string | null;
   /** Set by an operator's Re-prepare; such a prepare is exempt from the daily cap. */
   prepare_requested_at?: string | null;
-  /** Automatic prepares of this decision since UTC midnight. */
+  /** Automatic prepares of this decision since UTC midnight (`preparesTodaySql`). */
   prepares_today?: number;
 };
 
 /** Automatic prepares per decision per UTC day; an operator's Re-prepare is exempt. */
 export const PREPARE_DAILY_CAP = 3;
 
-/** SQL for the newest counted comment (src/review/discussion.ts isCounted, stored as `comments.counted`) or operator message of decision alias `d`'s item. */
-export const discussedAtSql = (d: string): string => `(SELECT max(m) FROM (
-  SELECT max(c.created_at) AS m FROM comments c WHERE c.repo = ${d}.repo AND c.number = ${d}.number AND c.counted = 1
-  UNION ALL SELECT max(t.at) FROM conversation_turns t WHERE t.repo = ${d}.repo AND t.number = ${d}.number AND t.kind = 'operator'))`;
+/** The newest comment the item's discussion counts (src/review/discussion.ts isCounted, stored as `comments.counted`), without our own posts (app accounts, note lines). Alias `d`: a decision row. */
+export const discussionKeySql = (d: string): string => `(SELECT c.id FROM comments c WHERE c.repo = ${d}.repo AND c.number = ${d}.number AND c.counted = 1
+  AND COALESCE(c.author, '') NOT IN (SELECT value FROM json_each(COALESCE((SELECT value FROM main.settings WHERE key = 'app_slugs'), '[]')))
+  AND NOT (${OWN_NOTE_PREFIXES.map((x) => `ltrim(COALESCE(c.body, '')) LIKE '${x.replace(/_/g, "\\_")}%' ESCAPE '\\'`).join(" OR ")})
+  ORDER BY c.created_at DESC, c.id DESC LIMIT 1)`;
 
-/** SQL for the automatic prepares of decision alias `d` since the UTC day start bound to `?`. */
+/** When the newest finished Opus review at the item's current head was stored. */
+export const reviewedAtSql = (d: string): string => `(SELECT max(r.at) FROM opus_reviews r JOIN items ri ON ri.repo = r.repo AND ri.number = r.number AND ri.head_oid = r.head_oid
+  WHERE r.repo = ${d}.repo AND r.number = ${d}.number AND r.verdict IS NOT NULL)`;
+
+/** Automatic prepares of decision alias `d` since the UTC day start bound to `?`. */
 export const preparesTodaySql = (d: string): string => `(SELECT count(*) FROM decision_prepares p WHERE p.decision_id = ${d}.id AND p.manual = 0 AND p.at >= ?)`;
+
+/** The select list for the columns above, for open decisions only; binds one `?` (the UTC day start). */
+export const prepareStateSql = (d: string): string => `CASE WHEN ${d}.answer IS NULL THEN ${discussionKeySql(d)} END AS discussion_key,
+  CASE WHEN ${d}.answer IS NULL THEN ${reviewedAtSql(d)} END AS reviewed_at, CASE WHEN ${d}.answer IS NULL THEN ${preparesTodaySql(d)} END AS prepares_today`;
 
 export const utcDayStart = (nowMs: number): string => `${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00.000Z`;
 
+/** A Merge? or Close? decision is made for one head commit: its id ends in `@<sha>`. */
+const idHead = (d: PrepareColumns): string | null => {
+  const m = d.id === undefined || (d.kind !== "merge" && d.kind !== "close") ? null : /:(?:merge|close)@(.+)$/.exec(d.id);
+  return m ? m[1]! : null;
+};
+
 /**
  * A prepare covers the decision's current state. A Merge? decision (or one of unknown kind) is tied to the PR head it was prepared for.
- * Any other kind stays prepared across head pushes until the discussion changes; a change of the decision itself or an operator's
- * Re-prepare clears `prepared_at`.
+ * Any other kind stays prepared across head pushes until the discussion changes (a new counted comment), a new Opus review
+ * is stored at the current head, or the decision itself changes or an operator asks again (both clear `prepared_at`).
  */
 export const isPrepared = (d: PrepareColumns, head: string | null): boolean => {
   if (d.prepared_at === null) return false;
   if (d.kind === undefined || d.kind === "merge") return (d.prepared_head ?? null) === (head ?? null);
-  return !(d.discussed_at && d.discussed_at > d.prepared_at);
+  if (d.prepared_discussion != null && (d.discussion_key ?? "") !== d.prepared_discussion) return false;
+  return !(d.reviewed_at && d.reviewed_at > d.prepared_at);
+};
+
+/** Why an automatic prepare is not due: the decision is for an older head (it is about to be withdrawn), or it used its prepares of the day. An operator's Re-prepare lifts the cap. */
+export const prepareHeld = (d: PrepareColumns, head: string | null): "old-head" | "capped" | null => {
+  const h = idHead(d);
+  if (h !== null && h !== head) return "old-head";
+  if (!d.prepare_requested_at && (d.prepares_today ?? 0) >= PREPARE_DAILY_CAP) return "capped";
+  return null;
 };
 
 /** Failed tries at the current head; a new head starts again. */
 const triesAt = (d: PrepareColumns, head: string | null): number => ((d.prepare_failed_head ?? null) === (head ?? null) ? d.recommend_failures ?? 0 : 0);
 
-/** The decision is open, has no prepare for its current state and has tries left. */
-export const isPreparing = (d: PrepareColumns, head: string | null): boolean => !isPrepared(d, head) && triesAt(d, head) < RECOMMEND_MAX_FAILURES;
+/** The decision is open, has no prepare for its current state, has tries left and is not held. */
+export const isPreparing = (d: PrepareColumns, head: string | null): boolean => !isPrepared(d, head) && triesAt(d, head) < RECOMMEND_MAX_FAILURES && prepareHeld(d, head) === null;
 
 /** Preparing, and the wait after the last failed try is over. */
-export const prepareDue = (d: PrepareColumns, head: string | null, nowMs: number): boolean => {
-  // A Merge? decision for an older head is about to be withdrawn.
-  const at = d.kind === "merge" ? d.id?.indexOf(":merge@") ?? -1 : -1;
-  if (at >= 0 && d.id!.slice(at + ":merge@".length) !== head) return false;
-  if (!d.prepare_requested_at && (d.prepares_today ?? 0) >= PREPARE_DAILY_CAP) return false;
-  return isPreparing(d, head) && (triesAt(d, head) === 0 || d.recommend_failed_at === null || Date.parse(d.recommend_failed_at) < nowMs - RECOMMEND_RETRY_MS);
-};
+export const prepareDue = (d: PrepareColumns, head: string | null, nowMs: number): boolean =>
+  isPreparing(d, head) && (triesAt(d, head) === 0 || d.recommend_failed_at === null || Date.parse(d.recommend_failed_at) < nowMs - RECOMMEND_RETRY_MS);
 
 /** Whether the decision is open and waits for its prepare (the dashboard's `preparing`). */
 /**
@@ -65,10 +87,25 @@ export const prepareDue = (d: PrepareColumns, head: string | null, nowMs: number
 export const openSubjectSql = (d: string, i: string): string => `(${i}.state = 'OPEN' OR (${d}.id LIKE '%:dupegroup:%' AND EXISTS (SELECT 1 FROM dupe_group_items gi
   JOIN items m ON m.repo = ${d}.repo AND m.number = gi.number WHERE gi.decision_id = ${d}.id AND gi.role = 'close' AND m.state = 'OPEN')))`;
 
-export function preparing(db: DatabaseSync, d: Partial<PrepareColumns> & { id: string; answer: string | null; repo: string | null; number: number | null }): boolean {
-  if (d.answer !== null || d.number === null) return false;
-  const it = db.prepare(`SELECT i.kind, i.head_oid, d.kind AS dkind, ${discussedAtSql("d")} AS discussed_at FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.id = ? AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`).get(d.id) as { kind: string; head_oid: string | null; dkind: string; discussed_at: string | null } | undefined;
-  if (!it) return false;
-  return isPreparing({ prepared_at: d.prepared_at ?? null, prepared_head: d.prepared_head ?? null, prepare_failed_head: d.prepare_failed_head ?? null, recommend_failures: d.recommend_failures ?? null, recommend_failed_at: d.recommend_failed_at ?? null, kind: it.dkind, discussed_at: it.discussed_at }, it.kind === "pr" ? it.head_oid : null);
+type Subject = { dkind: string; kind: string; head_oid: string | null } & Pick<PrepareColumns, "discussion_key" | "reviewed_at" | "prepares_today">;
+
+function columnsOf(db: DatabaseSync, d: Partial<PrepareColumns> & { id: string; answer: string | null; repo: string | null; number: number | null }): { cols: PrepareColumns; head: string | null; open: true } | null {
+  if (d.answer !== null || d.number === null) return null;
+  const it = db.prepare(`SELECT i.kind, i.head_oid, d.kind AS dkind, ${prepareStateSql("d")} FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
+    WHERE d.id = ? AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`).get(utcDayStart(Date.now()), d.id) as Subject | undefined;
+  if (!it) return null;
+  const cols: PrepareColumns = { id: d.id, kind: it.dkind, prepared_at: d.prepared_at ?? null, prepared_head: d.prepared_head ?? null, prepare_failed_head: d.prepare_failed_head ?? null, recommend_failures: d.recommend_failures ?? null, recommend_failed_at: d.recommend_failed_at ?? null,
+    prepared_discussion: d.prepared_discussion ?? null, discussion_key: it.discussion_key ?? null, reviewed_at: it.reviewed_at ?? null, prepare_requested_at: d.prepare_requested_at ?? null, prepares_today: Number(it.prepares_today ?? 0) };
+  return { cols, head: it.kind === "pr" ? it.head_oid : null, open: true };
+}
+
+export function preparing(db: DatabaseSync, d: Parameters<typeof columnsOf>[1]): boolean {
+  const x = columnsOf(db, d);
+  return !!x && isPreparing(x.cols, x.head);
+}
+
+/** The decision keeps choices from an earlier prepare because its prepares of the day are used up; an operator's Re-prepare updates them. */
+export function preparedEarlier(db: DatabaseSync, d: Parameters<typeof columnsOf>[1]): boolean {
+  const x = columnsOf(db, d);
+  return !!x && x.cols.prepared_at !== null && !isPrepared(x.cols, x.head) && prepareHeld(x.cols, x.head) === "capped";
 }

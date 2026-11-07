@@ -129,6 +129,8 @@ export interface Decision {
   canSettle: boolean;
   /** The prepare step is writing this decision's options and recommendation (asked, or the PR got a push since the last prepare). */
   preparing: boolean;
+  /** The choices are from an earlier prepare and the decision's prepares of the day are used up; Re-prepare updates them. */
+  preparedEarlier?: boolean;
   /** Open and snoozed: out of the inbox until new activity on the item (a GitHub comment or push, a feedback post, an operator message), which clears it. */
   snoozed: { by: string; at: string } | null;
   publicText: string | null;

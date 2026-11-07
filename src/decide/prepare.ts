@@ -26,7 +26,7 @@ import { pilotSql } from "../pilot.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { judgementModel } from "./judgement.ts";
 import { loadSummaryItems } from "./index.ts";
-import { discussedAtSql, openSubjectSql, prepareDue, preparesTodaySql, utcDayStart, type PrepareColumns } from "./prepared.ts";
+import { discussionKeySql, openSubjectSql, prepareDue, prepareStateSql, utcDayStart, type PrepareColumns } from "./prepared.ts";
 import { PREPARE_DIFF_LIMIT, PREPARE_MEMBERS, PREPARE_STOPPED_LIMIT, PREPARE_SUMMARY_MAX, PREPARE_TURNS_LIMIT, type PrepareInput } from "./prepare-types.ts";
 
 export const PREPARE_PROMPT = CLAUDE_PROMPTS["decide.prepare"];
@@ -96,7 +96,7 @@ const headOf = (r: { item_kind: string | null; head_oid: string | null }): strin
 
 /** Ids of the open decisions whose prepare is due (no prepare for the current state, tries left, backoff over), those an operator asked to prepare again first, then oldest decision first. The item's Plan says whether the decide step has work; this reads the decisions themselves. */
 export function prepareIds(db: DatabaseSync, repos?: string[], nowMs: number = Date.now()): string[] {
-  const rows = db.prepare(`SELECT d.id, d.repo, d.asked_at, d.number, d.prepare_requested_at, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind AS item_kind, i.head_oid, d.kind, ${discussedAtSql("d")} AS discussed_at, ${preparesTodaySql("d")} AS prepares_today
+  const rows = db.prepare(`SELECT d.id, d.repo, d.asked_at, d.number, d.prepare_requested_at, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind AS item_kind, i.head_oid, d.kind, d.prepared_discussion, ${prepareStateSql("d")}
     FROM decisions d LEFT JOIN items i ON i.repo = d.repo AND i.number = d.number
     WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} ORDER BY d.prepare_requested_at IS NULL, d.prepare_requested_at, d.asked_at, d.id`).all(utcDayStart(nowMs)) as DueRow[];
   return rows.filter((r) => !repos?.length || repos.includes(r.repo)).filter((r) => prepareDue(r, headOf(r), nowMs)).map((r) => r.id);
@@ -178,7 +178,7 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
   const failed = db.prepare(`UPDATE main.decisions SET recommend_failures = CASE WHEN prepare_failed_head IS ? THEN COALESCE(recommend_failures, 0) + 1 ELSE 1 END,
     recommend_failed_at = ?, prepare_failed_head = ? WHERE id = ?`);
   const store = db.prepare(`UPDATE main.decisions SET recommended = ?, recommended_reason = ?, recommended_by = ?, summary = ?, summary_by = ?, summary_at = ?,
-    prepared_at = ?, prepared_head = ?, recommend_failures = NULL, recommend_failed_at = NULL, prepare_failed_head = NULL, prepare_requested_at = NULL
+    prepared_at = ?, prepared_head = ?, prepared_discussion = ?, recommend_failures = NULL, recommend_failed_at = NULL, prepare_failed_head = NULL, prepare_requested_at = NULL
     WHERE id = ? AND answer IS NULL AND question = ? AND options = ?`);
   const res: PrepareResult = { stored: 0, failed: 0 };
   await pool(ids.map((id, k) => async () => {
@@ -199,8 +199,6 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     const members = group ? loadSummaryItems(db, (db.prepare("SELECT number FROM dupe_group_items WHERE decision_id = ? ORDER BY number LIMIT ?").all(d.id, PREPARE_MEMBERS) as { number: number }[]).map((m) => ({ repo, number: m.number }))) : [];
     const start = now();
     p.onSent?.();
-    // The call is counted against the decision's daily cap unless an operator asked for it.
-    db.prepare("INSERT INTO main.decision_prepares (decision_id, at, manual) VALUES (?, ?, ?)").run(d.id, start, d.prepare_requested_at ? 1 : 0);
     let prDiff: string | null = null;
     if (isPr && head) {
       const raw = await p.diff(repo, n, head).catch(() => null);
@@ -231,6 +229,9 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     if (checkout) input.repo_dir = REPO_PATH;
     const dir = referenceDir(repo);
     const semantic = p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`);
+    // What the call reads of the discussion, kept with the prepare; the call counts against the decision's daily cap unless an operator asked for it.
+    const readKey = (db.prepare(`SELECT ${discussionKeySql("d")} AS k FROM decisions d WHERE d.id = ?`).get(d.id) as { k: string | null }).k ?? "";
+    db.prepare("INSERT INTO main.decision_prepares (decision_id, at, manual) VALUES (?, ?, ?)").run(d.id, now(), d.prepare_requested_at ? 1 : 0);
     const r = await runModelStep(db, PREPARE, input, {
       model, checkout: checkout ?? undefined, reference: checkout ? dir : undefined,
       ctx: { db, subject: { repo, n, d, single }, dir, semantic },
@@ -262,7 +263,9 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
         const cards = got.ask ? [got.ask] : [];
         insertTurn(db, repo, n, { kind: "opus", login: "opus", body: got.text, block: opusBlock(got.text, cards, got.choices), notes: got.notes, cards, ...(got.choices && { choices: { decision: d, parsed: got.choices, source: "prepare" as const, by: model } }) }, { diff: p.diff });
       }
-      store.run(got.pick, got.pick ? got.reason || null : null, model, got.summary, model, at, at, head, d.id, d.question, d.options);
+      store.run(got.pick, got.pick ? got.reason || null : null, model, got.summary, model, at, at, head, readKey, d.id, d.question, d.options);
+      // A non-merge prepare is not tied to the head, but a push during the call means the choices describe older code: due again at once.
+      if (isPr && d.kind !== "merge" && after.head_oid !== head) db.prepare("UPDATE main.decisions SET prepared_at = NULL WHERE id = ? AND answer IS NULL").run(d.id);
       res.stored++;
     } catch (e) {
       p.log(`decide: could not store the prepare of ${d.id}: ${(e as Error).message}`);
