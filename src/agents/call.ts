@@ -7,7 +7,7 @@ import { insertRun, onRunEnd, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
-export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean };
+export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
 let context: CallContext | null = null;
 export const setCallContext = (c: CallContext | null): void => void (context = c);
 /** The job this process runs, or null outside a job. */
@@ -150,6 +150,7 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
   let claimed = false;
   try {
     for (;;) {
+      if (context?.cancelled() || context?.stopping?.()) throw new CancelledError("cancelled while waiting for a Claude account");
       const r = pollClaude(db, w, s, minTokenMs);
       if ("started" in r) {
         claimed = true; // the claim transaction deleted the row
@@ -162,9 +163,7 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
         lastLog = Date.now();
         log(`waiting for a Claude account: ${scrubError(c.wait)}`);
       }
-      if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
       await sleepOrWake(allocation.pollMs);
-      if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
     }
   } finally {
     if (!claimed) db.prepare("DELETE FROM model_waits WHERE id = ?").run(w.id);

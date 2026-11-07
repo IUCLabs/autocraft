@@ -20,7 +20,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { leaseItem } from "../runner/leases.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
-import { pool, type Usage } from "../classify/run.ts";
+import { POOL_MAX, pool, type Usage } from "../classify/run.ts";
 import { queueRoom } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
 import { textStep } from "../agents/steps.ts";
@@ -161,7 +161,10 @@ export const attemptOf = (db: DatabaseSync, repo: string, number: number): Attem
 
 /** Whether the issue's attempt is still as selected: another job may have changed it before this one took the lease. */
 /** A log that names the item on every line, so lines of items running side by side stay readable. */
-const logFor = (log: (line: string) => void, ref: string): ((line: string) => void) => (line) => log(line.includes(ref) ? line : `  ${ref}: ${line.trim()}`);
+const logFor = (log: (line: string) => void, ref: string): ((line: string) => void) => {
+  const named = new RegExp(`${ref.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`);
+  return (line) => log(named.test(line) ? line : `  ${ref}: ${line.trim()}`);
+};
 
 /** Notes the first stop in a run once, however many items see it. */
 function stopNote(stopping: (() => boolean) | undefined, log: (line: string) => void, text: string): () => boolean {
@@ -462,7 +465,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     } catch (e) {
       ilog(`  ${refOf(r)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db));
+  }), () => queueRoom(db), { max: POOL_MAX.fixissue });
   let handled = 0;
   const stopNew = stopNote(params.stopping, log, `fixissue ${repo}: stopping, no new issues started`);
   await pool(picks.map((c) => async (): Promise<void> => {
@@ -481,7 +484,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     } catch (e) {
       ilog(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db));
+  }), () => queueRoom(db), { max: POOL_MAX.fixissue });
   await unclaimHeld(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
   return s;
@@ -587,7 +590,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
     } catch (e) {
       ilog(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db));
+  }), () => queueRoom(db), { max: POOL_MAX.fixissueCollect });
   for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(xOf(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
@@ -757,7 +760,8 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);
-    const pr = await ghOpenPr({ db, login: ACTOR }, g, d.exec, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { by: "model", kind: "pull request", model: PATCH.models[0] }, { run: x.runId, branch });
+    // The audit row is written before the command runs and counts from then on, so the reservation ends there.
+    const pr = await ghOpenPr({ db, login: ACTOR }, g, (...a: Parameters<typeof d.exec>) => { giveBack(); return d.exec(...a); }, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { by: "model", kind: "pull request", model: PATCH.models[0] }, { run: x.runId, branch });
     giveBack();
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     if (pr.code !== 0 || !urlOk(url, r.repo)) { log(`  ${ref}: PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); tried(); return false; }

@@ -14,8 +14,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { absolute } from "../build/artifacts.ts";
 import { createTask, getTask, TERMINAL, warmKeyOf } from "../build/tasks.ts";
-import { askClaude, pool } from "../classify/run.ts";
-import { queueRoom } from "../agents/call.ts";
+import { askClaude, POOL_MAX, pool } from "../classify/run.ts";
+import { CancelledError, queueRoom } from "../agents/call.ts";
+import { pushesUnsettled } from "../push-outcomes.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { optionalChecks } from "../optional-checks.ts";
@@ -504,6 +505,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     }
     const outside = outsideShown(shown, await git.diffText(head, commit));
     if (outside) { fail("refused", outside); return; }
+    if (pushesUnsettled(db, repo, log)) return;
     rec.pushing(c, kind, commit, v.files);
     const push = await pushBranch(gw, git, "cifix-push", g, { remote: pr.headRepository!.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed, kind });
     if (push.code !== 0) {
@@ -681,8 +683,10 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
         log(`  ${ref}: formatter task ${id} queued for ${names.join(", ")}`);
         return;
       }
+      if (pushesUnsettled(db, repo, log)) return;
       await fixCode(c, pr, failure);
     } catch (e) {
+      if (e instanceof CancelledError) throw e;
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(c, "code", "failed", reason);
       summary.failed.push({ ref, reason });
@@ -709,7 +713,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       const release = leaseItem(db, `pr:${repo}#${numberOf(x)}`, log);
       if (!release) return;
       try { await run(x); } finally { release(); }
-    }), () => queueRoom(db));
+    }), () => queueRoom(db), { max: POOL_MAX.cifix });
   };
   // A fix capped or given up at this head: one comment naming the failing checks, then the PR waits on the contributor.
   for (const c of sel.ask) {

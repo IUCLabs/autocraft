@@ -55,8 +55,9 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
 import { leaseItem } from "../runner/leases.ts";
-import { queueRoom } from "../agents/call.ts";
-import { pool } from "../classify/run.ts";
+import { CancelledError, queueRoom } from "../agents/call.ts";
+import { pushesUnsettled } from "../push-outcomes.ts";
+import { POOL_MAX, pool } from "../classify/run.ts";
 
 export { MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 export { selectFixups } from "./select.ts";
@@ -377,6 +378,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     while (worked >= budget && inflight > 0) await new Promise<void>((r) => wake.push(r));
     if (params.stopping?.()) { if (!stoppedLogged) { stoppedLogged = true; log(`fixup ${repo}: stopping, no new PRs started`); } return; }
     if (worked >= budget) return;
+    if (pushesUnsettled(db, repo, log)) return;
     const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
     if (!release) return;
     // The item takes its budget before its first await; it is given back below when the item ends without being worked.
@@ -543,6 +545,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         }
       }
       // The planner may have released the PR while the model worked (our own unassign is no one's final word).
+      if (pushesUnsettled(db, repo, log)) return;
       if (!c.carry) await claim(c);
       rec.pushing(c, commit, v.files);
       const push = await pushBranch(gw, git, "fixup-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
@@ -567,6 +570,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         : await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, note, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
+      if (e instanceof CancelledError) throw e;
       fail("failed", oneLine(String((e as Error).message ?? e)));
     } finally {
       release();
@@ -577,8 +581,10 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       for (const r of w) r();
     }
   };
-  await pool(picks.map((c) => () => fixOne(c)), () => queueRoom(db));
-  await pool(cMerges.map((c) => () => leased(c, () => mergeConflict(db, conflictRun, c))), room);
+  // Items of one PR run one after the other inside one pool item; PRs run side by side.
+  const byPr = <T extends { number: number }>(items: T[]): T[][] => [...Map.groupBy(items, (c) => c.number).values()];
+  await pool(byPr(picks).map((group) => async () => { for (const c of group) await fixOne(c); }), () => queueRoom(db), { max: POOL_MAX.fixup });
+  await pool(byPr(cMerges).map((group) => async () => { for (const c of group) await leased(c, () => mergeConflict(db, conflictRun, c)); }), room, { max: POOL_MAX.fixup });
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }

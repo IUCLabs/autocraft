@@ -34,7 +34,7 @@ new file mode 100644
 +}
 `;
 
-test("fixissue-collect opens the PR of each of two passed attempts once when they run at the same time", async () => {
+async function collect(perDay?: number) {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(join(work, "crates/app/src"), { recursive: true });
@@ -54,6 +54,7 @@ test("fixissue-collect opens the PR of each of two passed attempts once when the
   db.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')").run();
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   setFixIssueApproval(db, "op", "app", true);
+  if (perDay !== undefined) db.prepare("INSERT OR REPLACE INTO stage_limits (step, per_day) VALUES ('fixissue', ?)").run(perDay);
   for (const n of [5, 6]) {
     db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at) VALUES ('app', ?, 'issue', 'OPEN', ?, 'b', 'someone', ?, ?)").run(n, `Panic ${n}`, T0, T0);
     db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, 'bugfix', '[]', '{\"top\":0.97}')").run(n, T0);
@@ -74,7 +75,7 @@ test("fixissue-collect opens the PR of each of two passed attempts once when the
       if (args[0] === "pr" && args[1] === "list") return out("");
       if (args[0] === "pr") {
         created.push(args.join(" "));
-        if (++arrived === 2) release();
+        if (++arrived === 2 || perDay !== undefined) release();
         await Promise.race([both, new Promise((_, no) => setTimeout(() => no(new Error("the second PR was never opened at the same time")), 5000))]);
         return out("https://github.com/storytold/app/pull/12\n");
       }
@@ -95,7 +96,18 @@ test("fixissue-collect opens the PR of each of two passed attempts once when the
     fetchPaths: async () => [LIB], ask: async () => null, summarise: async () => "",
   };
   const s = await runFixIssueCollect(db, {}, () => {}, deps);
+  return { s, created, db };
+}
+
+test("fixissue-collect opens the PR of each of two passed attempts once when they run at the same time", async () => {
+  const { s, created, db } = await collect();
   assert.equal(s.opened, 2);
   assert.equal(created.length, 2);
   assert.deepEqual([5, 6].map((n) => attemptOf(db, "app", n)!.state), ["pr-opened", "pr-opened"]);
+});
+
+test("with one PR a day, two attempts that run at the same time open exactly one", async () => {
+  const { s, created } = await collect(1);
+  assert.equal(s.opened, 1);
+  assert.equal(created.length, 1);
 });

@@ -81,7 +81,7 @@ export async function execJob(id: number): Promise<number> {
     },
     stopping: () => ctx.cancelled() || (row.requested_by === AUTOPILOT_USER && !isEnabled(db)),
   };
-  setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled });
+  setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled, stopping: ctx.stopping });
   try {
     const summary = await step.run(ctx);
     saveUsage();

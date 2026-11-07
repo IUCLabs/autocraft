@@ -107,11 +107,16 @@ export function exec(cmd: string, args: string[], input: string, cwd?: string, t
 
 export const POOL_POLL_MS = 500;
 
+/** Most items the pushing and verifying steps run at once, whatever the model queue has free. */
+export const POOL_MAX = { fixup: 3, cifix: 3, mainfix: 2, fixissue: 3, fixissueCollect: 3, verify: 4, verifyCollect: 4 } as const;
+
 export type PoolOptions = {
   /** Run the first job alone and the rest after it returns, so the rest read the prompt cache the first one wrote. */
   first?: boolean;
   /** How long to wait before asking `room` again when nothing finished (default POOL_POLL_MS). */
   pollMs?: number;
+  /** Upper bound on running jobs, also when `width` is a function. */
+  max?: number;
 };
 
 /**
@@ -134,7 +139,7 @@ export async function pool<T>(jobs: (() => Promise<T>)[], width: number | (() =>
   };
   if (opts.first && jobs.length > 1) await launch();
   while (next < jobs.length && !failed) {
-    const room = typeof width === "number" ? width - running.size : width();
+    const room = Math.min(typeof width === "number" ? width : width(), opts.max ?? Infinity) - running.size;
     if (room > 0 || !running.size) {
       launch();
       continue;

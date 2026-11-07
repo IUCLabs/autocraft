@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { BuildTask, TaskResult, TaskStep } from "../../web/src/api/types.ts";
 import { BuildError } from "../build/envs.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
-import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { add, askClaude, POOL_MAX, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { queueRoom } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
@@ -296,7 +296,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
   // Rows of one PR (an older head still pending) run one after the other; PRs run side by side.
   const byPr = new Map<string, typeof rows>();
   for (const v of rows) byPr.set(`${v.repo}#${v.number}`, [...(byPr.get(`${v.repo}#${v.number}`) ?? []), v]);
-  await pool([...byPr.values()].map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), () => queueRoom(db));
+  await pool([...byPr.values()].map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), () => queueRoom(db), { max: POOL_MAX.verifyCollect });
 
   s.warmCancelled = await cancelMovedWarmBuilds(db, d, log);
   s.changed += s.warmCancelled;

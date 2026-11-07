@@ -2,6 +2,7 @@
 // Recording happens where the push is audited (github/write.ts); the outcome is computed where the checks are stored (review/checks.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
+import { skipItem } from "./runner/leases.ts";
 import { optionalChecks } from "./optional-checks.ts";
 import {
   breakerTripped, classifyPush, PUSH_STAGE, requiredResult, STEP_STAGE, TRIP_STAGES,
@@ -10,6 +11,17 @@ import {
 
 /** Unresolved pushes older than this get the outcome `unknown` (the head moved on, or the checks never ran). */
 const EXPIRE_MS = 3 * 24 * 3_600_000;
+
+/** Pushes of a repo whose checks are not final yet: at most this many before the pushing steps wait for their results. */
+export const UNSETTLED_PUSHES_MAX = 3;
+
+/** True (one skip counted and logged) when the repo already has UNSETTLED_PUSHES_MAX pushes without an outcome. */
+export function pushesUnsettled(db: DatabaseSync, repo: string, log: (line: string) => void): boolean {
+  const n = (db.prepare("SELECT COUNT(*) AS n FROM push_outcomes WHERE repo = ? AND outcome IS NULL").get(repo) as { n: number }).n;
+  if (n < UNSETTLED_PUSHES_MAX) return false;
+  skipItem(`pushes:${repo}`, log, `${n} earlier pushes have no CI result yet`);
+  return true;
+}
 
 type CheckRow = { name: string; state: string }[];
 const parse = (s: string | null | undefined): CheckRow => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as CheckRow) : []; } catch { return []; } };
