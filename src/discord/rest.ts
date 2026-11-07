@@ -138,6 +138,7 @@ export class RestClient implements DiscordRest {
     const sleep = this.#d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     for (let attempt = 1; ; attempt++) {
       const stateKey = this.#stateKey(key, path);
+      for (const [k, t] of this.#notBefore) if (t <= now()) this.#notBefore.delete(k);
       const gap = Math.max(this.#globalUntil, this.#notBefore.get(stateKey) ?? 0) - now();
       if (gap > 0) await sleep(Math.min(gap, MAX_WAIT_MS));
       const r = await f(`${API}${path}`, {
