@@ -12,7 +12,7 @@ import { accountConfigDir, queueRoom, startClaudeRun, startJevRun, tryStartFollo
 import { touchStore, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
 import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
-import { fixTurnMessage, type Lint, type LintProblem } from "../replylint.ts";
+import { fixTurnMessage, mergeFixFields, needsFixTurn, type Lint, type LintProblem } from "../replylint.ts";
 import { coalesce, lineFeed } from "./progress.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
@@ -340,6 +340,17 @@ export function setWorkspace(f: WorkspaceFn): () => void {
  * start to end (src/agents).
  */
 export type Reply = { text: string; usage: Usage; turns?: number };
+/** The arguments of a fix turn: one turn and no permission for any tool. The tool list itself stays, so the resumed session's prompt cache still matches. */
+export function noToolArgs(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--allowedTools") { i++; continue; }
+    out.push(args[i]!);
+    if (args[i] === "--max-turns") { out.push("1"); i++; }
+  }
+  return out;
+}
+
 /** `problems` are what the lint still found in `text` (absent when there was no lint or the reply could not be linted); `fixTurn` is true when a follow-up message was sent. */
 export type LintedReply = Reply & { problems?: LintProblem[]; fixTurn?: boolean };
 
@@ -427,7 +438,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     }
 
     /** One `claude -p` process on the run `runId`: the first message, or with `resume` a follow-up on the same session. Never throws for a failed call. */
-    const turn = async (runId: number, stdin: string, resume?: string): Promise<(Reply & { sessionId?: string }) | null> => {
+    const turn = async (runId: number, stdin: string, resume?: string, lean = false): Promise<(Reply & { sessionId?: string }) | null> => {
       const finish = (e: Parameters<typeof finishRun>[2]) => finishRun(db, runId, e);
       const extra = resume ? ["--resume", resume] : [];
       const usedToken = withToken();
@@ -441,7 +452,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       }
       if (spec) {
         const tok = usedToken ? readToken(run.configDir) : null;
-        const c = sandboxCommand({ ...spec, ...(tok && { oauthToken: tok }), claudeArgs: [...args, ...extra] });
+        const c = sandboxCommand({ ...spec, ...(tok && { oauthToken: tok }), claudeArgs: [...(lean ? noToolArgs(args) : args), ...extra] });
         const runProgress = coalesce((line: string) => setRunProgress(db, runId, line));
         const progress = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
         const feed = (raw: string) => { clockLine(clock, raw); progress(raw); };
@@ -522,6 +533,8 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     if (problems === null) return reply;
     if (!problems.length) return { ...reply, problems };
     if (!sessions || !sessionId) return { ...reply, problems };
+    // Problems only in text nobody sees are recorded; a model turn for them would cost more than they matter.
+    if (!needsFixTurn(problems)) return { ...reply, problems };
     // The fix turn can run as long as the call's own limit; with less token life than that (plus the sandbox's margin) it is skipped, because the sandbox never refreshes the token.
     if (spec && credentialsNearExpiry(db, run.accountId, run.configDir, Date.now(), timeoutMs + TOKEN_MARGIN_MS)) {
       console.log("fix turn skipped: token near expiry");
@@ -544,17 +557,20 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     }
     let fix: (Reply & { sessionId?: string }) | null = null;
     try {
-      fix = await turn(fixRun, message, sessionId);
+      fix = await turn(fixRun, message, sessionId, true);
     } catch (e) {
       finishRun(db, fixRun, { state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
     }
     if (!fix) return { ...reply, problems, fixTurn: true };
     const total = add(reply.usage, fix.usage);
+    // The fix reply holds only the corrected fields; they are put into the first reply, which stays as it was otherwise.
+    const merged = mergeFixFields(reply.text, fix.text, problems);
+    if (merged === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems, fixTurn: true };
     let after: LintProblem[] | null = null;
-    try { after = await opts.lint(fix.text, "fix"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
-    // A fix reply the lint cannot read (or that is not in the format) is not used; the first reply stands.
+    try { after = await opts.lint(merged, "fix"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
+    // A merged reply the lint cannot read is not used; the first reply stands.
     if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems, fixTurn: true };
-    return { text: fix.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
+    return { text: merged, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
   } catch (e) {
     end({ state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
     throw e;

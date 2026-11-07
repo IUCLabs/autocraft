@@ -279,7 +279,7 @@ export function lintOpusReply(text: string, ref: string, unapplied: readonly Una
   if (parsed.verdict === "take" && !parsed.fixes.length) {
     unapplied.forEach((u, i) => {
       if (carriedOutcome({ ...parsed, reason: String(r.reason) }, u) === "unaddressed") {
-        out.push({ field: `unapplied_fixes[${i}]`, message: `(${u.file}) is neither in fixes nor explained in reason; if the change is still needed, answer take-fix and list it; otherwise say in reason why it is no longer needed` });
+        out.push({ field: `unapplied_fixes[${i}]`, message: `(${u.file}) is neither in fixes nor explained in reason; if the change is still needed, answer take-fix and list it; otherwise say in reason why it is no longer needed`, fix: ["verdict", "fixes", "reason"] });
       }
     });
   }
