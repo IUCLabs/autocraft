@@ -169,6 +169,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // Why the review ran (src/review/trigger.ts) and the job that ran it; null on rows from before they were recorded.
   ["opus_review_history", "trigger", "TEXT"],
   ["opus_review_history", "job_id", "INTEGER"],
+  ["security_findings", "fix_attempts", "INTEGER NOT NULL DEFAULT 0"],
+  ["security_findings", "last_failure", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

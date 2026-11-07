@@ -1694,6 +1694,18 @@ CREATE TABLE IF NOT EXISTS security_fix_rounds (
   PRIMARY KEY (repo, number, round)
 );
 
+-- The history of those rounds, kept when a fix ends (ready or given up), without the patches. attempt is the finding's
+-- fix_attempts at that time, so one finding's rounds group by attempt.
+CREATE TABLE IF NOT EXISTS security_fix_log (
+  repo TEXT NOT NULL, number INTEGER NOT NULL, attempt INTEGER NOT NULL, round INTEGER NOT NULL,
+  state TEXT NOT NULL,                -- failed | passed | building (a round cut short)
+  failure TEXT,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number, attempt, round)
+);
+
 -- Discord mentions (optional feature, see docs/pipeline.md). Channels are what the bot reports; `watched` is the operators' choice.
 -- A thread or forum post has `parent_id` set and counts under its parent's `watched`; the admin page lists parents only.
 CREATE TABLE IF NOT EXISTS discord_channels (
