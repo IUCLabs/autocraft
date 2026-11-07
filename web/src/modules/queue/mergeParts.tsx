@@ -101,7 +101,7 @@ export function StateChip({ row }: { row: QueueRow }) {
 function DecisionLink({ row }: { row: QueueRow }) {
   if (!row.decisionId) return row.state === "needs-decision" ? <span className="text-2xs text-ink/45">asked on the next run</span> : <span className="text-ink/30">–</span>;
   return (
-    <Link to={decisionPath({ id: row.decisionId, repo: row.repo, number: row.number, kind: "merge" })} className="relative z-10 text-xs text-accent-ink hover:underline">
+    <Link to={decisionPath({ id: row.decisionId, repo: row.repo, number: row.number })} className="relative z-10 text-xs text-accent-ink hover:underline">
       {row.answer ? `Answered ${row.answer}` : "Open decision"}
     </Link>
   );
@@ -308,7 +308,7 @@ export function PrCard({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) 
       <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
         <Why row={r} />
         {r.decisionId && (
-          <Link to={decisionPath({ id: r.decisionId, repo: r.repo, number: r.number, kind: "merge" })} className="relative z-10 inline-flex h-11 items-center text-xs text-accent-ink">
+          <Link to={decisionPath({ id: r.decisionId, repo: r.repo, number: r.number })} className="relative z-10 inline-flex h-11 items-center text-xs text-accent-ink">
             {r.answer ? `Answered ${r.answer}` : "Open decision"}
           </Link>
         )}

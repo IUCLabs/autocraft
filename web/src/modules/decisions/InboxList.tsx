@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useNavigate } from "react-router-dom";
 import { CheckIcon, ArrowUUpLeftIcon, UsersIcon } from "@phosphor-icons/react";
@@ -12,22 +12,23 @@ import { ago, ageDays, when } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { ClaimPill, KIND_ICON } from "./parts";
-import { canTakeBack } from "./DecisionDetail";
+import { canTakeBack } from "./access";
 import { AnswerNotice } from "./AnswerNotice";
 import { ExecLine } from "./ExecLine";
-import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useReselectOnFilter, useSelection, useUndo } from "./state";
+import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useUndo } from "./state";
 import { useNow } from "../../lib/useNow";
-import { itemPath } from "../../lib/links";
+import { decisionPath } from "../../lib/links";
+import { MultiAnswer } from "./MultiAnswer";
 
 const SHORTCUTS: Command[] = [
   { id: "d-next", keys: "j", label: "Next decision", group: "Decisions" },
   { id: "d-prev", keys: "k", label: "Previous decision", group: "Decisions" },
-  { id: "d-answer", keys: "1 – 4", label: "Select an option in Answer directly (only after you opened the decision; it never submits)", group: "Decisions" },
+  { id: "d-answer", keys: "1 – 4", label: "Select an option in Answer directly in a batch answer (it never submits)", group: "Decisions" },
   { id: "d-confirm", keys: "1 – 4 again, Enter", label: "Confirm an option that writes to GitHub (Esc cancels)", group: "Decisions" },
   { id: "d-note", keys: "n", label: "Write the answer note", group: "Decisions" },
   { id: "d-check", keys: "x", label: "Check for a batch answer", group: "Decisions" },
   { id: "d-undo", keys: "u", label: "Undo last answer", group: "Decisions" },
-  { id: "d-open", keys: "o", label: "Open the item page", group: "Decisions" },
+  { id: "d-open", keys: "o", label: "Open the item page of the highlighted decision", group: "Decisions" },
   { id: "d-tab", keys: "g a", label: "Waiting / answered tab", group: "Decisions" },
 ];
 
@@ -37,8 +38,8 @@ export function summaryLine(data: DecisionList | undefined) {
   return parts.join(" · ");
 }
 
-export function useInboxKeys(list: Decision[]) {
-  const { id, go } = useSelection();
+/** j/k move the cursor over the rows; o opens the cursor row's item page. */
+export function useInboxKeys(list: Decision[], id: string | undefined, setId: (id: string) => void) {
   const { filter, update } = useDecisionFilter();
   const undo = useUndo();
   const navigate = useNavigate();
@@ -46,11 +47,11 @@ export function useInboxKeys(list: Decision[]) {
   const cur = list[idx];
   useShortcutHelp(SHORTCUTS);
   useHotkeys({
-    j: () => go(list[Math.min(idx + 1, list.length - 1)]),
-    k: () => go(list[Math.max(idx - 1, 0)]),
+    j: () => list.length && setId(list[Math.min(idx + 1, list.length - 1)].id),
+    k: () => list.length && setId(list[Math.max(idx - 1, 0)].id),
     x: () => cur && localActions.toggle(cur.id),
     u: () => void undo(),
-    o: () => cur?.number != null && navigate(itemPath(cur.repo, cur.number)),
+    o: () => cur && navigate(decisionPath(cur)),
     escape: () => localActions.clearChecked(),
     "g a": () => update({ tab: filter.status === "answered" ? null : "answered" }),
   });
@@ -62,10 +63,12 @@ let phoneListScroll = 0;
 export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
   useNow();
   const { data, loading, hasMore, loadMore, loadingMore } = useDecisionList();
-  const { id, go, byLink } = useSelection();
+  const navigate = useNavigate();
+  const [id, setId] = useState<string>();
   const loc = useLocal();
   const list = ordered(data?.decisions ?? []);
-  useInboxKeys(list);
+  const checked = list.filter((d) => loc.checked.has(d.id));
+  useInboxKeys(list, id, setId);
   const activeRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
@@ -74,12 +77,6 @@ export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
   useEffect(() => {
     if (phone && scroller.current) scroller.current.scrollTop = phoneListScroll;
   }, [phone]);
-  useReselectOnFilter(list, loading, id, loc.justAnswered.some((a) => a.id === id), go, phone ? "off" : "desktop");
-  // Open the oldest decision when nothing is selected, so the detail pane is never empty on arrival.
-  useEffect(() => {
-    if (!phone && !id && !byLink && list.length && !loc.justAnswered.length) go(list[0], true);
-  }, [id, byLink, list.length]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const groups: { kind: Decision["kind"]; items: Decision[] }[] = [];
   for (const d of list) {
     const g = groups.find((x) => x.kind === d.kind);
@@ -108,7 +105,7 @@ export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
                 <Count n={g.items.length} />
               </div>
               {g.items.map((d) => (
-                <Row key={d.id} phone={phone} d={d} canUndo={canTakeBack(user, d)} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
+                <Row key={d.id} phone={phone} d={d} canUndo={canTakeBack(user, d)} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => navigate(decisionPath(d))} activeRef={d.id === id ? activeRef : undefined} />
               ))}
             </div>
           );
@@ -125,6 +122,11 @@ export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
           </div>
         )}
       </div>
+      {!phone && checked.length > 1 && (
+        <div className="max-h-[60%] shrink-0 overflow-y-auto border-t border-line-strong bg-panel">
+          <MultiAnswer ds={checked} user={user} />
+        </div>
+      )}
     </div>
   );
 }

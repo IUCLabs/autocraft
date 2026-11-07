@@ -6,7 +6,6 @@ import type { HistoryEntry, ItemPageData, OpusReviewEntry, ResultCard, ReviewVer
 import { Badge, type Tone } from "../../../ui/atoms/Badge";
 import { Chip } from "../../../ui/atoms/Chip";
 import { TimeAgo } from "../../../ui/atoms/TimeAgo";
-import { Markdown } from "../../../ui/molecules/Markdown";
 import { cn } from "../../../ui/cn";
 import { formatCost } from "../../../lib/trace";
 import { githubBlobUrl } from "../../../lib/links";
@@ -15,6 +14,7 @@ import { canComment } from "../../../registry/permissions";
 import { ClockCounterClockwiseIcon } from "@phosphor-icons/react";
 import { OpenQuestions, useItemDecisions } from "../ItemDecisions";
 import { Composer } from "../Composer";
+import { Conversation } from "../Conversation";
 import { ItemRef } from "../../../ui/molecules/ItemRef";
 import { useJump } from "./ItemPage";
 import { PreapprovalCard } from "./PreapprovalCard";
@@ -36,7 +36,7 @@ export function Heading({ children, aside }: { children: ReactNode; aside?: Reac
 export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | null }) {
   const user = useUser();
   const { data: ds } = useItemDecisions(d.repo, d.number);
-  const { data: conv } = useQuery(`conversation:${d.repo}#${d.number}`, (a) => a.conversations.get(d.repo, d.number));
+  const { data: conv } = useQuery(`conversation:${d.repo}#${d.number}`, (a) => a.conversations.get(d.repo, d.number), { pollMs: (x) => (x?.pending ? 4000 : false) });
   const choices = conv ? (conv.choices ?? null) : undefined;
   const open = (ds ?? []).filter((x) => !x.answer);
   const item = `${d.repo}#${d.number}`;
@@ -76,17 +76,10 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
           {d.results.map((r) => <ResultRow key={r.id} r={r} />)}
         </section>
       )}
-      {staff && conv && conv.turns.length > 0 && (
+      {staff && conv && (conv.turns.length > 0 || conv.pending || (ds ?? []).some((d) => d.opinions.length > 0)) && (
         <section className={sectionCls} aria-label="Conversation with Opus">
           <Heading aside={user.role === "operator" ? undefined : "Read only"}>Conversation with Opus</Heading>
-          <ol className="space-y-2.5">
-            {conv.turns.map((t) => (
-              <li key={t.id} className={cn("rounded px-3 py-2 text-sm", t.kind === "opus" ? "bg-ink/[0.04]" : t.kind === "operator" ? "border border-line" : "text-xs text-ink/55")}>
-                {t.kind !== "system" && <div className="mb-0.5 flex gap-2 text-xs text-ink/55"><span className="font-medium text-ink/80">{t.kind === "opus" ? "Opus" : t.login}</span><TimeAgo iso={t.at} /></div>}
-                {t.kind === "system" ? <p>{t.body} <TimeAgo iso={t.at} className="text-ink/40" /></p> : <Markdown source={t.body} />}
-              </li>
-            ))}
-          </ol>
+          <Conversation repo={d.repo} number={d.number} conv={conv} ds={ds ?? []} updating={!!updating} />
         </section>
       )}
       <SimilarCard repo={d.repo} number={d.number} />

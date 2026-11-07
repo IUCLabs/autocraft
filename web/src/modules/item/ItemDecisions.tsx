@@ -1,6 +1,6 @@
-import { Link } from "react-router-dom";
-import { ArrowRightIcon, ChatCircleIcon } from "@phosphor-icons/react";
-import { useQuery } from "../../api/client";
+import { useEffect } from "react";
+import { ChatCircleIcon } from "@phosphor-icons/react";
+import { useApi, useQuery } from "../../api/client";
 import type { Decision, DecisionChoices } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
 import { KindTag } from "../decisions/parts";
@@ -10,11 +10,12 @@ import { ChoiceGroup } from "./ChoiceGroup";
 import { canComment } from "../../registry/permissions";
 import { FeedbackBox } from "../decisions/FeedbackBox";
 import { useFolded, useLocal } from "../decisions/state";
-import { AnsweredState, canActOn, canTakeBack } from "../decisions/DecisionDetail";
+import { canActOn } from "../decisions/access";
+import { DecisionChips, DecisionDetails, DecisionSummary } from "../decisions/DecisionBlocks";
+import { DuplicateGroup, RiskList } from "../decisions/Group";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { OpusWorking } from "../../ui/molecules/OpusWorking";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
-import { decisionPath } from "../../lib/links";
 
 /** Every decision about one item (its own, or a group that lists it), open first. The key is a live topic prefix. */
 export function useItemDecisions(repo: string, number: number) {
@@ -27,38 +28,37 @@ export function useItemDecisions(repo: string, number: number) {
   return { ...q, data };
 }
 
-export const THREAD_END_ID = "thread-end";
-
-/** Phone bar button: brings the end of the thread (question, options, composer) into view. */
-export const scrollToThreadEnd = () => document.getElementById(THREAD_END_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
-
 /**
- * The item's open questions at the end of the thread: the question and its answer choices (`choices`, those of the first question), answerable in place with the Decisions page's controls and permission rules.
- * On a decision page, `focus` comes first, shows its answer with Undo once answered, and has no link to itself.
+ * The item's open decisions at the top of its AutoCraft side: each with its question, summary, answer choices (`choices`, those of the first decision), facts and details,
+ * answerable in place with the Decisions controls and permission rules. A just-answered decision shows its answer notice until the record is in History.
  */
-export function OpenQuestions({ ds, focus, choices, updating, onAnswered, boxes }: { ds: Decision[]; focus?: Decision; choices?: DecisionChoices | null; updating?: string; onAnswered?: () => void; boxes?: boolean }) {
+export function OpenQuestions({ ds, choices, updating, boxes }: { ds: Decision[]; choices?: DecisionChoices | null; updating?: string; boxes?: boolean }) {
   const loc = useLocal();
-  const user = useUser();
   const open = ds.filter((d) => !d.answer);
-  const notices = focus ? [] : loc.justAnswered.filter((a) => ds.some((d) => d.id === a.id));
-  if (!open.length && !notices.length && !focus) return null;
+  const notices = loc.justAnswered.filter((a) => ds.some((d) => d.id === a.id));
+  if (!open.length && !notices.length) return null;
   return (
-    <section id={THREAD_END_ID} className="mt-6 scroll-mt-3 space-y-3" aria-label="Open question">
+    <section className="mt-3 space-y-3" aria-label="Open decisions">
       {notices.map((a) => (
         <AnswerNotice key={a.id} entry={a} className="rounded-md border border-line px-3" />
       ))}
-      {focus?.answer && <AnsweredState d={focus} canUndo={canTakeBack(user, focus)} />}
       {open.map((d) => (
-        <Question key={d.id} d={d} siblings={ds} choices={choices === undefined ? undefined : choices?.decisionId === d.id ? choices : null} updating={updating === d.id} here={d.id === focus?.id} onAnswered={onAnswered} feedback={!!boxes && d.id !== focus?.id} />
+        <Question key={d.id} d={d} choices={choices === undefined ? undefined : choices?.decisionId === d.id ? choices : null} updating={updating === d.id} feedback={!!boxes} />
       ))}
     </section>
   );
 }
 
-function Question({ d, siblings, choices, updating, here, onAnswered, feedback }: { d: Decision; siblings: Decision[]; choices?: DecisionChoices | null; updating: boolean; here: boolean; onAnswered?: () => void; feedback: boolean }) {
+function Question({ d, choices, updating, feedback }: { d: Decision; choices?: DecisionChoices | null; updating: boolean; feedback: boolean }) {
   const user = useUser();
+  const api = useApi();
+  const commenter = canComment(user);
+  // Opening a decision marks it as being looked at by this person.
+  useEffect(() => {
+    if (!d.answer && commenter) void api.decisions.claim(d.id);
+  }, [api, d.id, d.answer, commenter]);
   return (
-    <article className="rounded-md border border-line-strong px-3 py-3 md:px-4">
+    <article id={`decision-${d.id}`} className="scroll-mt-3 rounded-md border border-line-strong px-3 py-3 md:px-4">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/55">
         <KindTag kind={d.kind} batch={d.number === null ? d.items.length : undefined} />
         <span>asked <TimeAgo iso={d.askedAt} /></span>
@@ -67,15 +67,14 @@ function Question({ d, siblings, choices, updating, here, onAnswered, feedback }
             <ChatCircleIcon className="text-[12px]" /> {d.commentCount}
           </span>
         )}
-        {!here && (
-          <Link to={decisionPath(d, { siblings })} className="ml-auto inline-flex items-center gap-1 text-accent-ink hover:underline max-md:h-11 max-md:items-center">
-            Open decision <ArrowRightIcon className="text-[12px]" />
-          </Link>
-        )}
+        <DecisionChips d={d} />
       </div>
       <p className="mt-2 text-pretty text-[15px] font-semibold leading-6">
         <Refs text={d.question} repo={d.repo} />
       </p>
+      {d.group.length > 0 && <DuplicateGroup d={d} />}
+      <DecisionSummary d={d} />
+      {d.risks.length > 0 && <RiskList risks={d.risks} />}
       {/* While Opus prepares or answers a message, the earlier choices are about to be replaced, so only the progress line shows. */}
       {(d.preparing || updating) && !d.answer ? (
         <OpusWorking text={d.preparing ? "Opus is preparing options…" : "Opus is updating the choices…"} className="mt-2" />
@@ -83,9 +82,10 @@ function Question({ d, siblings, choices, updating, here, onAnswered, feedback }
         <>
           {d.preparedEarlier && !d.answer && <p className="mt-2 text-xs text-ink/55">Prepared earlier. Re-prepare to update the choices.</p>}
           {!choices && <div className="mt-2"><RecommendationLine d={d} /></div>}
-          <ChoiceGroup d={d} user={user} choices={choices} onAnswered={onAnswered} />
+          <ChoiceGroup d={d} user={user} choices={choices} />
         </>
       )}
+      <DecisionDetails d={d} />
       {/* With several open questions the composer serves one; the others get their own box. */}
       {feedback && canComment(user) && !canActOn(user, [d]) && <FeedbackBox d={d} className="mt-3" />}
     </article>

@@ -3,10 +3,10 @@ import type { Decision, User } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
-import { canActOn } from "./DecisionDetail";
+import { canActOn } from "./access";
 import { OpusWorking } from "../../ui/molecules/OpusWorking";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
-import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";
+import { localActions, useAnswer, useArmed, useLocal } from "./state";
 
 /** Key under which the picked option of one decision, or of a batch of checked decisions, is kept. */
 const pickKey = (ds: Decision[]) => ds.map((d) => d.id).join("+");
@@ -69,14 +69,14 @@ export function WorkflowBox({
   const rec = ds.every((x) => x.recommended === d.recommended) ? d.recommended : "";
   const operator = canActOn(user, ds);
 
-  // Digits select an option on a decision the user opened themselves; they never submit.
+  // Digits select an option of a batch answer; they never submit.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (!operator || d.answer || e.repeat || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(t.tagName) || t.isContentEditable || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "Escape" && armed) return setArmed(null);
       const n = Number(e.key);
-      if ((many || userSelection.id === d.id) && n >= 1 && n <= d.options.length) {
+      if (many && n >= 1 && n <= d.options.length) {
         e.preventDefault();
         choose(d.options[n - 1].key);
       }

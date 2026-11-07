@@ -27,28 +27,18 @@ export const batchPath = (id: number): string => `/batches/${id}`;
 /** `owner/designcraft` and `designcraft` name the same repo. */
 export const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf("/") + 1);
 
-type DecisionRef = Pick<Decision, "id" | "repo" | "number">;
-type Sibling = Pick<Decision, "id" | "repo" | "number" | "kind">;
+type DecisionRef = Pick<Decision, "id" | "repo" | "number"> & { items?: { repo: string; number: number }[] };
 
 /**
- * The link to a decision about one item. `/needs/decisions/<repo>/<n>` opens the item's first open decision,
- * `/needs/decisions/<repo>/<n>/<kind>` its open decision of that kind. The id form stays for batches
- * (number null) and when a kind does not identify the decision: `siblings` (the decisions known
- * for the item) hold another one of its kind. Without `kind` the plain form is used; with it, the kind form.
+ * The link to a decision: the page of its item, scrolled to the decision's block. A batch opens its first item.
+ * Only a decision without any item uses the id form, which `/needs/decisions/:id` resolves.
  */
-export function decisionPath(d: (DecisionRef & { kind?: string; answer?: string | null }) | undefined, opts: { search?: string; siblings?: Sibling[] } = {}): string {
-  const tail = opts.search ? `?${opts.search}` : "";
-  const root = "/needs/decisions";
-  if (!d) return `${root}${tail}`;
-  const idForm = `${root}/${encodeURIComponent(d.id)}${tail}`;
-  if (d.number == null) return idForm;
-  const base = `${root}/${encodeURIComponent(shortRepo(d.repo))}/${d.number}`;
-  const others = (opts.siblings ?? []).filter((x) => x.id !== d.id && x.repo === d.repo && x.number === d.number);
-  if (d.kind && others.some((x) => x.kind === d.kind)) return idForm;
-  if (!d.kind) return `${base}${tail}`;
-  // The plain form opens the first open decision, so it is only safe for the sole, open one.
-  if (opts.siblings && !others.length && !d.answer) return `${base}${tail}`;
-  return `${base}/${d.kind}${tail}`;
+export function decisionPath(d: DecisionRef | undefined): string {
+  if (!d) return "/needs";
+  const anchor = `#decision-${encodeURIComponent(d.id)}`;
+  if (d.number != null) return `${itemPath(d.repo, d.number)}${anchor}`;
+  const first = d.items?.[0];
+  return first ? `${itemPath(first.repo, first.number)}${anchor}` : `/needs/decisions/${encodeURIComponent(d.id)}`;
 }
 
 export type DecisionRoute = { by: "id"; id: string } | { by: "item"; repo: string; number: number; kind?: string } | { by: "none" };
