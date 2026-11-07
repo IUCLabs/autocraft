@@ -9,7 +9,7 @@ import { CheckRow } from "../../ui/molecules/CheckRow";
 import { RadioRow } from "../../ui/molecules/RadioRow";
 import { StepDraft } from "../../ui/molecules/StepDraft";
 import { cn } from "../../ui/cn";
-import { canActOn } from "../decisions/DecisionDetail";
+import { canActOn } from "../decisions/access";
 import { localActions, useAnswer, useLocal } from "../decisions/state";
 import { useWorkflow } from "../decisions/Workflow";
 import { COMPOSER_ID } from "./Composer";

@@ -1,6 +1,7 @@
 import { HandWavingIcon } from "@phosphor-icons/react";
 import type { FeatureModule, RouteDef, ViewDef } from "../../registry/types";
 import { lazyView } from "../../registry/lazyView";
+import { decisionRedirectView } from "../decisions/DecisionRedirect";
 import { useSummary } from "./state";
 
 const Tabs = lazyView(() => import("./views"), "Tabs");
@@ -13,7 +14,7 @@ const view: ViewDef = {
   panels: [{ id: "body", title: "Needs you", component: Body, defaultSize: 100 }],
 };
 
-const route = (path: string): RouteDef => ({ path, view });
+const route = (path: string, v: ViewDef = view): RouteDef => ({ path, view: v });
 
 function useBadge() {
   const c = useSummary().data?.counts;
@@ -25,5 +26,5 @@ export const needsModule: FeatureModule = {
   permission: "viewer",
   nav: { label: "Needs you", icon: HandWavingIcon, to: "/needs", useBadge },
   commands: [{ id: "go-needs", keys: "g d", label: "Go to needs you", group: "Go to" }],
-  routes: [route("needs"), route("needs/decisions/:id?"), route("needs/decisions/:repo/:n"), route("needs/decisions/:repo/:n/:kind")],
+  routes: [route("needs"), route("needs/decisions/:id?", decisionRedirectView), route("needs/decisions/:repo/:n", decisionRedirectView), route("needs/decisions/:repo/:n/:kind", decisionRedirectView)],
 };

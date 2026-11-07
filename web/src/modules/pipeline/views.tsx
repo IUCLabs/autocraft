@@ -229,7 +229,7 @@ function JobItems({ items }: { items: JobItem[] }) {
             <span className="flex flex-wrap items-center gap-x-2 text-xs text-ink/65 sm:max-w-[45%] sm:justify-end">
               {i.outcome}
               {i.decision && (
-                <Link to={decisionPath({ id: i.decision, repo: i.repo, number: null })} className="font-medium text-accent-ink hover:underline max-md:py-2">
+                <Link to={decisionPath({ id: i.decision, repo: i.repo, number: i.number })} className="font-medium text-accent-ink hover:underline max-md:py-2">
                   Decision
                 </Link>
               )}

@@ -1,4 +1,4 @@
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type { ViewProps } from "../../registry/types";
 import { Workspace } from "../../shell/Workspace";
 import { Segmented } from "../../ui/molecules/Segmented";
@@ -12,10 +12,9 @@ const TABS: Tab[] = ["decisions", "feedback", "stopped"];
 const LABEL: Record<Tab, string> = { decisions: "Decisions", feedback: "Feedback", stopped: "Stopped" };
 
 function useTab(): Tab {
-  const { pathname } = useLocation();
   const [sp] = useSearchParams();
   const t = sp.get("tab");
-  return !pathname.startsWith("/needs/decisions") && TABS.includes(t as Tab) ? (t as Tab) : "decisions";
+  return TABS.includes(t as Tab) ? (t as Tab) : "decisions";
 }
 
 export function Tabs() {

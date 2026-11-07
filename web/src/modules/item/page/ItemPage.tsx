@@ -1,6 +1,6 @@
 // The item page: a status line, then "In AutoCraft" and "On GitHub" side by side (a segmented control on phones).
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ArrowLeftIcon, ArrowSquareOutIcon, ChatsCircleIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../../api/client";
 import type { ItemPageData, Tier } from "../../../api/types";
@@ -55,6 +55,25 @@ export function ItemPageView({ params }: ViewProps) {
   }, []);
   // The phone default is the AutoCraft side for staff and when a question is open; viewers start on GitHub.
   useEffect(() => setSide(user.role === "viewer" ? "github" : "autocraft"), [repo, number, user.role]);
+  // A link to one decision (`#decision-<id>`) shows the AutoCraft side and scrolls to that block once the page has it.
+  const { hash } = useLocation();
+  const anchor = hash.startsWith("#decision-") ? decodeURIComponent(hash.slice(1)) : null;
+  useEffect(() => {
+    if (anchor) setSide("autocraft");
+  }, [anchor]);
+  const [scrolled, setScrolled] = useState<string | null>(null);
+  useEffect(() => {
+    if (!anchor || !data || scrolled === anchor || (phone && side !== "autocraft")) return;
+    const t = setInterval(() => {
+      const el = document.getElementById(anchor);
+      if (!el) return;
+      clearInterval(t);
+      setScrolled(anchor);
+      el.scrollIntoView({ block: "start" });
+    }, 120);
+    const stop = setTimeout(() => clearInterval(t), 4000);
+    return () => { clearInterval(t); clearTimeout(stop); };
+  }, [anchor, data, scrolled, phone, side]);
   if (!data) return <Pending error={error} />;
   return (
     <JumpContext.Provider value={{ to }}>

@@ -1,47 +1,26 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Dialog } from "radix-ui";
-import { CaretLeftIcon, SlidersHorizontalIcon, XIcon } from "@phosphor-icons/react";
+import { SlidersHorizontalIcon, XIcon } from "@phosphor-icons/react";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
 import { AnswerNotice } from "./AnswerNotice";
-import { DecisionBody, NoDecision } from "./DecisionDetail";
 import { InboxList, summaryLine } from "./InboxList";
 import { DecisionsToolbar } from "./Toolbar";
-import { ordered, useDecisionFilter, useDecisionList, useLocal, usePinned, useReselectOnFilter, useSelection } from "./state";
+import { useDecisionFilter, useDecisionList, useLocal } from "./state";
 
-/** Phone flow: one decision per screen with previous/next, filters in a sheet. An answered decision stays on screen. */
+/** Phone flow: the list of decisions, filters in a sheet. A row opens the decision's item page. */
 export function PhoneInbox(props: ViewProps) {
   const { data, loading } = useDecisionList();
   const { filter } = useDecisionFilter();
-  const { id, go, byLink, item, missing } = useSelection();
   const loc = useLocal();
   const [sheet, setSheet] = useState(false);
-  const list = ordered(data?.decisions ?? []);
-  const idx = list.findIndex((d) => d.id === id);
-  const pinned = usePinned(id, idx >= 0);
-  const d = list[idx] ?? pinned;
   const active = (filter.kind?.length ?? 0) + (filter.repo?.length ?? 0) + (filter.minAge ? 1 : 0) + (filter.mine ? 1 : 0);
-
-  useReselectOnFilter(list, loading, id, loc.justAnswered.some((a) => a.id === id), go, "phone");
-  const detail = !!id || byLink;
-  useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [id]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4">
-        {detail ? (
-          <button onClick={() => go(undefined, true)} className="chip h-8 min-w-0 flex-1 justify-start" aria-label="Back to the list">
-            <CaretLeftIcon className="text-[11px]" />
-            <span className="num">{data?.total ?? "–"} decisions</span>
-          </button>
-        ) : (
-          <>
-            <span className="num shrink-0 text-sm font-semibold">{data?.total ?? "–"} decisions</span>
-            <span className="min-w-0 flex-1 truncate text-xs text-ink/50">{summaryLine(data) || (loading ? "loading…" : "nothing matches")}</span>
-          </>
-        )}
+        <span className="num shrink-0 text-sm font-semibold">{data?.total ?? "–"} decisions</span>
+        <span className="min-w-0 flex-1 truncate text-xs text-ink/50">{summaryLine(data) || (loading ? "loading…" : "nothing matches")}</span>
         <button onClick={() => setSheet(true)} className={cn("chip h-8", active > 0 && "border-accent/50 text-accent-ink")} aria-label="Filters">
           <SlidersHorizontalIcon className="text-[11px]" />
           {active > 0 ? active : "Filter"}
@@ -50,14 +29,9 @@ export function PhoneInbox(props: ViewProps) {
       {loc.justAnswered.map((a) => (
         <AnswerNotice key={a.id} entry={a} className="shrink-0 border-b border-line px-4" />
       ))}
-      {!detail && (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <InboxList {...props} phone />
-        </div>
-      )}
-      {detail && <div className="flex min-h-0 flex-1 flex-col">
-        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone pager={{ pos: idx >= 0 ? `${idx + 1} of ${list.length}` : "", prev: idx > 0 ? () => go(list[idx - 1]) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1]) : undefined }} /> : missing && item ? <NoDecision repo={item.repo} number={item.number} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
-      </div>}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <InboxList {...props} phone />
+      </div>
       <Dialog.Root open={sheet} onOpenChange={setSheet}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 animate-fadeIn" />

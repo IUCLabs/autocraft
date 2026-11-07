@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
-import { decisionPath, parseDecisionRoute } from "../../lib/links";
 import { useUser } from "../../shell/UserContext";
 import type { Decision, DecisionFilter, DecisionKind } from "../../api/types";
 
@@ -55,66 +54,6 @@ export function ordered(ds: Decision[]): Decision[] {
   return [...ds].sort(
     (a, b) => KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind) || a.repo.localeCompare(b.repo) || a.askedAt.localeCompare(b.askedAt),
   );
-}
-
-/**
- * The decision the user opened themselves (a click, j/k, the pager). Automatic selection
- * (the first one on arrival, the next one after an answer) does not count, so a digit key
- * never answers a decision the user has not chosen.
- */
-export const userSelection: { id: string | undefined } = { id: undefined };
-
-export function useSelection() {
-  const params = useParams();
-  const navigate = useNavigate();
-  const { search } = useDecisionFilter();
-  const { data: loaded } = useDecisionList();
-  const route = parseDecisionRoute({ id: params.id, repo: params.repo, n: params.n, kind: params.kind });
-  const byItem = route.by === "item" ? route : undefined;
-  const found = useQuery(`decision:for:${byItem ? `${byItem.repo}#${byItem.number}:${byItem.kind ?? ""}` : ""}`, (a) => (byItem ? a.decisions.forItem(byItem.repo, byItem.number, byItem.kind as DecisionKind | undefined) : Promise.resolve(null)), { enabled: !!byItem });
-  const id = route.by === "id" ? route.id : byItem && !found.loading ? found.data?.id : undefined;
-  const go = useCallback(
-    (next: Pick<Decision, "id" | "repo" | "number" | "kind" | "answer"> | undefined, auto = false) => {
-      userSelection.id = auto ? undefined : next?.id;
-      navigate(decisionPath(next, { search, siblings: loaded?.decisions }));
-    },
-    [navigate, search, loaded],
-  );
-  /** True while a repo/number link has not resolved yet, and when it resolved to nothing: the list must not pick another decision. */
-  const byLink = !!byItem;
-  return { id, go, byLink, item: byItem, missing: !!byItem && !found.loading && !found.data };
-}
-
-/** The decision with this id when the open list does not hold it (a link to an answered one, or to another tab's). */
-export function usePinned(id: string | undefined, inList: boolean) {
-  const d = useQuery(`decision:${id ?? ""}`, (a) => (id ? a.decisions.get(id) : Promise.reject(new Error("no decision"))), { enabled: !!id && !inList }).data;
-  const folded = useFoldedOne(d);
-  return folded && folded.id === id ? folded : undefined;
-}
-
-/**
- * After a filter change, leaves a selection that the new list does not hold: opens the new
- * list's first decision, or the empty page when there is none. On the phone any selection
- * gives way to the list. Runs once the new list has
- * loaded. A just-answered decision stays, and so does everything while the filter is unchanged
- * (direct links, answered decisions pinned on screen).
- */
-export function useReselectOnFilter(list: Decision[], loading: boolean, id: string | undefined, keep: boolean, go: ReturnType<typeof useSelection>["go"], mode: "desktop" | "phone" | "off" = "desktop") {
-  const phone = mode === "phone";
-  const { search } = useDecisionFilter();
-  const seen = useRef(search);
-  const pending = useRef(false);
-  if (seen.current !== search) {
-    seen.current = search;
-    pending.current = true;
-  }
-  useEffect(() => {
-    if (!pending.current || loading || mode === "off") return;
-    pending.current = false;
-    if (id && (keep || (!phone && list.some((d) => d.id === id)))) return;
-    // The phone returns to the list; the desktop opens the first decision beside it.
-    go(phone ? undefined : list[0], true);
-  }); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 // ---- view-local state shared by the list, detail and thread panels ----
