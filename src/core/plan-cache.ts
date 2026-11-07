@@ -8,6 +8,7 @@ import { mergeDecisionId } from "./rules.ts";
 import { isWork } from "./assignment.ts";
 import type { ItemFacts, Plan, PrFacts } from "./plan.ts";
 import { isQueueState } from "./plan.ts";
+import { statusOf, type ItemStatus } from "./item-status.ts";
 import { loadPlanSet, type PlanSet, type PlanSetOptions } from "./plan-set.ts";
 
 /** The merge-queue fields of a PR whose Plan is in a queue state: what the Queue page and the flow counts show besides the Plan's own state, reasons and note. */
@@ -35,6 +36,8 @@ export type PlanView = {
   fixup?: FixupBucket;
   cifix?: CifixBucket;
   queue?: QueueView;
+  /** Phase, wait and next step; `since` is when phase or wait last changed. */
+  status: ItemStatus;
 };
 
 export type PlanRow = {
@@ -65,8 +68,8 @@ function queueViewOf(f: PrFacts, plan: Plan): QueueView {
   };
 }
 
-function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFacts; plan: Parameters<typeof nextStep>[0] } | null): PlanView {
-  const v: PlanView = {};
+function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFacts; plan: Parameters<typeof nextStep>[0] } | null, wait: string | null, plannedAt: string): PlanView {
+  const v = { status: { phase: "Triage", waiting: null, next: null, since: plannedAt } } as PlanView;
   if (item) {
     v.next = nextStep(item.plan, item.facts, pr?.facts ?? null);
     if (item.facts.inScope && !item.facts.integration) v.scope = true;
@@ -80,11 +83,15 @@ function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFa
     if (cf && CIFIX_BUCKETS[cf]) v.cifix = CIFIX_BUCKETS[cf];
     if (isQueueState(pr.plan.state) && pr.facts.review) v.queue = queueViewOf(pr.facts, pr.plan);
   }
+  v.status = {
+    ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked" }),
+    since: plannedAt,
+  };
   return v;
 }
 
 /** One row per PR or item of the set. A PR with item facts gets both its plans in one row. */
-export function planRows(plans: PlanSet): PlanRow[] {
+export function planRows(plans: PlanSet, plannedAt: string = new Date().toISOString()): PlanRow[] {
   const prs = new Map(plans.prs.map((p) => [`${p.facts.repo}#${p.facts.number}`, p]));
   const rows: PlanRow[] = [];
   for (const { facts: f, plan: item } of plans.items) {
@@ -92,15 +99,16 @@ export function planRows(plans: PlanSet): PlanRow[] {
     const pr = prs.get(ref) ?? null;
     prs.delete(ref);
     const actions = [...item.actions, ...(pr?.plan.actions ?? [])];
+    const wait = actions.some(isWork) ? null : pr?.plan.wait ?? item.wait;
     rows.push({
       repo: f.repo, number: f.number, kind: f.kind, head: pr?.facts.head ?? null, state: pr ? pr.plan.state : item.state, item_state: item.state,
-      actions: JSON.stringify(actions), wait: actions.some(isWork) ? null : pr?.plan.wait ?? item.wait, reasons: JSON.stringify(pr?.plan.reasons ?? []), note: pr?.plan.note ?? null,
-      view: JSON.stringify(viewOf(pr, { facts: f, plan: item })),
+      actions: JSON.stringify(actions), wait, reasons: JSON.stringify(pr?.plan.reasons ?? []), note: pr?.plan.note ?? null,
+      view: JSON.stringify(viewOf(pr, { facts: f, plan: item }, wait, plannedAt)),
     });
   }
   // PRs outside the item facts: merged ones with a take review, and PRs of repos that are not tracked.
   for (const { facts: f, plan } of prs.values()) {
-    rows.push({ repo: f.repo, number: f.number, kind: "pr", head: f.head, state: plan.state, item_state: null, actions: JSON.stringify(plan.actions), wait: plan.wait, reasons: JSON.stringify(plan.reasons), note: plan.note, view: JSON.stringify(viewOf({ facts: f, plan }, null)) });
+    rows.push({ repo: f.repo, number: f.number, kind: "pr", head: f.head, state: plan.state, item_state: null, actions: JSON.stringify(plan.actions), wait: plan.wait, reasons: JSON.stringify(plan.reasons), note: plan.note, view: JSON.stringify(viewOf({ facts: f, plan }, null, plan.wait, plannedAt)) });
   }
   return rows;
 }
@@ -109,12 +117,20 @@ const sig = (r: PlanRow): string => JSON.stringify([r.kind, r.head, r.state, r.i
 
 /** Writes the rows that differ from the stored ones and deletes the stored rows with no Plan. Returns the numbers written and deleted. */
 export function writePlanCache(db: DatabaseSync, plans: PlanSet, plannedAt: string = new Date().toISOString()): { written: number; deleted: number } {
-  const rows = planRows(plans);
+  const rows = planRows(plans, plannedAt);
   const stored = new Map<string, string>();
+  const storedStatus = new Map<string, ItemStatus | undefined>();
   const storedState = new Map<string, { state: string; wait: string | null; head: string | null }>();
   for (const r of db.prepare("SELECT repo, number, kind, head, state, item_state, actions, wait, reasons, note, view FROM main.item_plans").all() as PlanRow[]) {
     stored.set(`${r.repo}#${r.number}`, sig(r));
+    storedStatus.set(`${r.repo}#${r.number}`, (JSON.parse(r.view) as Partial<PlanView>).status);
     storedState.set(`${r.repo}#${r.number}`, { state: r.state, wait: r.wait, head: r.head });
+  }
+  // `since` moves only when phase or wait does; recomputing it every pass would change every row's signature.
+  for (const r of rows) {
+    const old = storedStatus.get(`${r.repo}#${r.number}`);
+    const v = JSON.parse(r.view) as PlanView;
+    if (old && old.phase === v.status.phase && old.waiting === v.status.waiting && old.since !== v.status.since) r.view = JSON.stringify({ ...v, status: { ...v.status, since: old.since } });
   }
   const changed = rows.filter((r) => stored.get(`${r.repo}#${r.number}`) !== sig(r));
   const keep = new Set(rows.map((r) => `${r.repo}#${r.number}`));
