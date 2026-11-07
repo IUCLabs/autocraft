@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, DotsThreeIcon, ShieldWarningIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -11,6 +11,7 @@ import { useIsPhone } from "./useMedia";
 import { useTheme, type ThemePref } from "./theme";
 import { usePref } from "./layoutStorage";
 import { useHotkeys, useActiveShortcuts } from "./keyboard";
+import { REPORTS, SETTINGS, openEntries, type Entry } from "../modules/hub/entries";
 import { SearchBox } from "./SearchBox";
 import { Avatar } from "../ui/atoms/Avatar";
 import { Kbd } from "../ui/atoms/Kbd";
@@ -30,8 +31,8 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 // The rail is laid out here by path, so a module only declares its own entry. A path no module
 // registers (a page the reader's role cannot open) is left out.
 // The main list is laid out here by path, so a module only declares its own entry. A path no module
-// registers (a page the reader's role cannot open) is left out. Settings and How it works sit at the foot.
-const MAIN = ["/", "/needs", "/items", "/next", "/security", "/reports"];
+// registers (a page the reader's role cannot open) is left out. Reports and Settings follow as collapsible sections.
+const MAIN = ["/", "/needs", "/items", "/next", "/security"];
 const PHONE_TABS = ["/", "/needs", "/items", "/next"];
 
 export function AppShell() {
@@ -42,6 +43,7 @@ export function AppShell() {
   const [railOpen, setRailOpen] = usePref(user.login, "rail-open", true);
   const [help, setHelp] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
 
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
   const entries = visible.flatMap((m) => (m.nav ? [m.nav] : []));
@@ -81,7 +83,10 @@ export function AppShell() {
   if (phone) {
     return (
       <div className="flex h-full flex-col bg-panel">
-        <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-4 pr-1.5">
+        <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-1 pr-1.5">
+          <button id="nav-toggle" aria-label="Open navigation" onClick={() => setNavOpen(true)} className="flex size-11 shrink-0 items-center justify-center text-ink/70">
+            <ListIcon className="text-[20px]" />
+          </button>
           <Wordmark />
           <div className="flex-1" />
           <ReconnectMark />
@@ -92,7 +97,8 @@ export function AppShell() {
           <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />
         </header>
         <main className="min-h-0 flex-1">{content}</main>
-        <PhoneTabs rail={rail} staff={user.role !== "viewer"} />
+        <PhoneTabs rail={rail} />
+        <NavDrawer open={navOpen} onOpenChange={setNavOpen} rail={rail} />
         <Dialog.Root open={searchOpen} onOpenChange={setSearchOpen}>
           <Dialog.Portal>
             <Dialog.Content className="fixed inset-0 z-50 flex flex-col bg-panel animate-fadeIn" aria-describedby={undefined}>
@@ -116,7 +122,6 @@ export function AppShell() {
         <div className={cn("flex h-11 shrink-0 items-center px-4", !railOpen && "justify-center px-0")}>{railOpen ? <Wordmark /> : <Logo size={20} />}</div>
         <RailNav rail={rail} open={railOpen} className="flex-1" />
         <div className="px-2 pb-1">
-          <FootLink to="/settings" icon={GearSixIcon} label="Settings" open={railOpen} />
           <FootLink to="/about" icon={InfoIcon} label="How it works" open={railOpen} />
         </div>
         <div className={cn("flex items-center border-t border-line p-2", !railOpen && "justify-center")}>
@@ -194,50 +199,87 @@ function RailNav({ rail, open, className, tall }: { rail: RailGroup[]; open: boo
   return (
     <nav className={cn("overflow-y-auto px-2 pb-3 pt-1", className)} aria-label="Main">
       {rail.map((g) => (
-        <div key={g.label} className="mb-3">
-          {open && g.label && <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink/45">{g.label}</div>}
+        <div key={g.label} className="mb-1">
           {g.entries.map((n) => (
             <RailLink key={n.to} entry={n} open={open} tall={tall} />
           ))}
         </div>
       ))}
+      <RailSection id="reports" label="Reports" icon={ChartBarIcon} to="/reports" entries={REPORTS} open={open} tall={tall} />
+      <RailSection id="settings" label="Settings" icon={GearSixIcon} to="/settings" entries={SETTINGS} open={open} tall={tall} />
     </nav>
   );
 }
 
-function PhoneTabs({ rail, staff }: { rail: RailGroup[]; staff: boolean }) {
+/** A collapsible group of sub-items; the choice is remembered. The collapsed rail shows the section as one icon. */
+function RailSection({ id, label, icon: Icon, to, entries, open, tall }: { id: string; label: string; icon: typeof GearSixIcon; to: string; entries: Entry[]; open: boolean; tall?: boolean }) {
+  const user = useUser();
+  const { pathname } = useLocation();
+  const items = openEntries(user, entries);
+  const here = items.some((e) => pathname === e.to || pathname.startsWith(`${e.to}/`)) || pathname === to;
+  const [expanded, setExpanded] = usePref(user.login, `rail-section-${id}`, false);
+  const row = cn("flex items-center gap-2 rounded px-2 text-sm text-ink/70 hover:bg-ink/[0.06] hover:text-ink", tall ? "h-11" : "h-7");
+  if (!open)
+    return (
+      <NavLink to={to} title={label} className={cn(row, "justify-center px-0", here && "bg-ink/[0.08] text-ink")}>
+        <Icon className="text-[15px] opacity-80" />
+      </NavLink>
+    );
+  const show = expanded || here;
+  return (
+    <div className="mt-1">
+      <button onClick={() => setExpanded(!show)} aria-expanded={show} className={cn(row, "w-full text-left")}>
+        <Icon className="text-[15px] opacity-80" />
+        <span className="flex-1">{label}</span>
+        <CaretRightIcon className={cn("text-[11px] text-ink/40 transition-transform duration-fast", show && "rotate-90")} />
+      </button>
+      {show && (
+        <div className="ml-[15px] border-l border-line pl-1.5">
+          {items.map((e) => (
+            <NavLink key={e.to} to={e.to} className={({ isActive }) => cn("flex items-center rounded px-2 text-sm text-ink/65 hover:bg-ink/[0.06] hover:text-ink", tall ? "h-10" : "h-[26px]", isActive && "bg-ink/[0.08] font-medium text-ink")}>
+              {e.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Phone: the rail in a left drawer. Radix Dialog supplies the focus trap, Escape, scroll lock and focus return. */
+function NavDrawer({ open, onOpenChange, rail }: { open: boolean; onOpenChange: (o: boolean) => void; rail: RailGroup[] }) {
+  const { pathname } = useLocation();
+  useEffect(() => onOpenChange(false), [pathname, onOpenChange]);
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 animate-fadeIn" />
+        <Dialog.Content className="fixed inset-y-0 left-0 z-50 flex w-[280px] max-w-[85vw] flex-col border-r border-line bg-bg pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pt-[env(safe-area-inset-top)] animate-fadeIn" aria-describedby={undefined} onCloseAutoFocus={(e) => { e.preventDefault(); document.getElementById("nav-toggle")?.focus(); }}>
+          <Dialog.Title className="sr-only">Navigation</Dialog.Title>
+          <div className="flex h-12 shrink-0 items-center justify-between pl-4 pr-1.5">
+            <Wordmark />
+            <Dialog.Close className="flex size-11 items-center justify-center text-ink/70" aria-label="Close navigation">
+              <XIcon />
+            </Dialog.Close>
+          </div>
+          <RailNav rail={rail} open tall className="min-h-0 flex-1 overscroll-contain" />
+          <div className="border-t border-line px-2 py-1">
+            <FootLink to="/about" icon={InfoIcon} label="How it works" open tall />
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function PhoneTabs({ rail }: { rail: RailGroup[] }) {
   const all = rail.flatMap((g) => g.entries);
   const tabs = PHONE_TABS.flatMap((p) => all.filter((e) => e.to === p));
-  const [more, setMore] = useState(false);
-  const { pathname } = useLocation();
-  useEffect(() => setMore(false), [pathname]);
-  const inMore = ["/security", "/reports", "/settings", "/about"].some((p) => pathname.startsWith(p));
   return (
-    <nav aria-label="Primary" style={{ gridTemplateColumns: `repeat(${tabs.length + 1}, 1fr)` }} className="grid shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
+    <nav aria-label="Primary" style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }} className="grid shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
       {tabs.map((n) => (
         <PhoneTab key={n.to} entry={n} />
       ))}
-      <Dialog.Root open={more} onOpenChange={setMore}>
-        <Dialog.Trigger className={cn("flex h-14 flex-col items-center justify-center gap-0.5 text-2xs font-medium text-ink/55", (inMore || more) && "text-accent-ink")}>
-          <DotsThreeIcon weight="bold" className="text-[20px]" />
-          More
-        </Dialog.Trigger>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 animate-fadeIn" />
-          <Dialog.Content className="fixed inset-x-0 bottom-0 z-50 rounded-t-lg border-t border-line-strong bg-raised pb-[env(safe-area-inset-bottom)] animate-rise" aria-describedby={undefined}>
-            <Dialog.Title className="sr-only">More</Dialog.Title>
-            <ul className="p-2">
-              {[...(staff ? [{ to: "/security", label: "Security", icon: ShieldWarningIcon }] : []), { to: "/reports", label: "Reports", icon: ChartBarIcon }, { to: "/settings", label: "Settings", icon: GearSixIcon }, { to: "/about", label: "How it works", icon: InfoIcon }].map((e) => (
-                <li key={e.to}>
-                  <NavLink to={e.to} className="flex h-12 items-center gap-3 rounded px-3 text-base hover:bg-ink/[0.06]">
-                    <e.icon className="text-[20px] text-ink/60" /> {e.label}
-                  </NavLink>
-                </li>
-              ))}
-            </ul>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
     </nav>
   );
 }
@@ -413,9 +455,9 @@ function ReconnectMark() {
   );
 }
 
-function FootLink({ to, icon: Icon, label, open }: { to: string; icon: typeof GearSixIcon; label: string; open: boolean }) {
+function FootLink({ to, icon: Icon, label, open, tall }: { to: string; icon: typeof GearSixIcon; label: string; open: boolean; tall?: boolean }) {
   return (
-    <NavLink to={to} title={open ? undefined : label} className={({ isActive }) => cn("flex h-7 items-center gap-2 rounded px-2 text-sm text-ink/60 hover:bg-ink/[0.06] hover:text-ink", isActive && "bg-ink/[0.08] font-medium text-ink", !open && "justify-center px-0")}>
+    <NavLink to={to} title={open ? undefined : label} className={({ isActive }) => cn("flex items-center gap-2 rounded px-2 text-sm text-ink/60", tall ? "h-11" : "h-7", " hover:bg-ink/[0.06] hover:text-ink", isActive && "bg-ink/[0.08] font-medium text-ink", !open && "justify-center px-0")}>
       <Icon className="text-[15px] opacity-80" />
       {open && label}
     </NavLink>

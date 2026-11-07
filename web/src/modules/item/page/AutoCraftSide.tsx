@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { localActions, useLocal } from "../../decisions/state";
 import { CaretRightIcon, GithubLogoIcon, RobotIcon, WrenchIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../../api/client";
 import type { HistoryEntry, ItemPageData, OpusReviewEntry, ResultCard, ReviewVerdict } from "../../../api/types";
@@ -35,6 +36,15 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
   const { data: conv } = useQuery(`conversation:${d.repo}#${d.number}`, (a) => a.conversations.get(d.repo, d.number));
   const choices = conv ? (conv.choices ?? null) : undefined;
   const open = (ds ?? []).filter((x) => !x.answer);
+  const item = `${d.repo}#${d.number}`;
+  const updating = useLocal().updating[item];
+  const opusTurns = conv?.turns.filter((t) => t.kind === "opus").length ?? 0;
+  // The folded choices come back once Opus's reply (new choices, a reply without any, or a failure) is in.
+  useEffect(() => {
+    if (!updating || !conv || conv.pending) return;
+    const failed = [...conv.turns].reverse().find((t) => t.kind === "operator")?.status === "failed";
+    if (opusTurns > updating.opusTurns || conv.choices?.id !== updating.choicesId || failed) localActions.stopUpdating(item);
+  }, [updating, conv, opusTurns, item]);
   const staff = user.role !== "viewer";
   return (
     <div className="pb-2">
@@ -44,7 +54,7 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
       </div>
       {open.length > 0 && (
         <div className={cn(sectionCls, "pt-0")}>
-          <OpenQuestions ds={ds ?? []} choices={choices} boxes />
+          <OpenQuestions ds={ds ?? []} choices={choices} updating={updating?.decisionId} />
           {open[0]!.opinions.length > 0 && (
             <p className="mt-2 text-xs text-ink/60">
               {open[0]!.opinions.length} feedback: {open[0]!.opinions.slice(0, 2).map((o) => `${o.login}${o.option ? ` ${open[0]!.options.find((x) => x.key === o.option)?.label ?? o.option}` : ""}`).join(", ")}
@@ -62,8 +72,8 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
           {d.results.map((r) => <ResultRow key={r.id} r={r} />)}
         </section>
       )}
-      {staff && conv && (conv.exists || user.role === "operator") && (
-        <section className={cn(sectionCls, "pb-0")} aria-label="Conversation with Opus">
+      {staff && conv && conv.turns.length > 0 && (
+        <section className={sectionCls} aria-label="Conversation with Opus">
           <Heading aside={user.role === "operator" ? undefined : "Read only"}>Conversation with Opus</Heading>
           <ol className="space-y-2.5">
             {conv.turns.map((t) => (
@@ -73,10 +83,12 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
               </li>
             ))}
           </ol>
-          <Composer repo={d.repo} number={d.number} operator={user.role === "operator"} commenter={canComment(user)} exists={conv.exists} pending={conv.pending} feedbackOn={open[0]} choices={choices} opusTurns={conv.turns.filter((t) => t.kind === "opus").length} />
         </section>
       )}
       <History d={d} flash={flash} />
+      {conv && (
+        <Composer flush repo={d.repo} number={d.number} operator={user.role === "operator"} commenter={canComment(user)} exists={conv.exists} pending={conv.pending} feedbackOn={open.length === 1 ? open[0] : undefined} choices={choices} opusTurns={opusTurns} />
+      )}
     </div>
   );
 }

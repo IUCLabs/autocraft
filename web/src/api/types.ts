@@ -2409,14 +2409,13 @@ export interface ItemPageData {
 export interface ItemStatusRow {
   repo: RepoName;
   number: number;
-  kind: ItemKind | "finding";
+  kind: ItemKind;
   state: ItemState;
   title: string;
   status: ItemStatus;
   updatedAt: string;
-  severity?: FindingSeverity;
 }
-export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind | "finding"; repo?: RepoName[] }
+export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind; repo?: RepoName[] }
 export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number }
 
 /** A finding's status line, on the shape items use. */
@@ -2424,4 +2423,4 @@ export interface FindingRow { repo: RepoName; number: number; title: string; sev
 export type SecurityGroup = "Needs a person" | "Fixing" | "Ready to land" | "Landing" | "Landed or published" | "Dismissed or backlog";
 export interface SecurityList { groups: { group: SecurityGroup; rows: FindingRow[] }[] }
 export interface FixRound { round: number; outcome: "passed" | "failed"; why: string; at: string; costUsd: number }
-export interface FindingPageData { finding: FindingView; status: ItemStatus; attempts: number; rounds: FixRound[]; history: HistoryEntry[]; costUsd: number }
+export interface FindingPageData { finding: FindingView; /** The finding's open question and its choices, in the shape decisions use; null when nothing is open. */ decision: Decision | null; choices: DecisionChoices | null; status: ItemStatus; attempts: number; rounds: FixRound[]; history: HistoryEntry[]; costUsd: number }

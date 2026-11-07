@@ -1,5 +1,5 @@
 import type { Api } from "../client";
-import type { Decision, DecisionComment, DecisionFilter, Item, User } from "../types";
+import type { ActionTag, ChoiceCore, Decision, DecisionChoices, DecisionComment, DecisionFilter, Item, User } from "../types";
 import { canAct } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
@@ -11,7 +11,7 @@ import { createActivityMock } from "./activityMock";
 import { createAreasMock } from "./areasMock";
 import { createConversationMock } from "./conversationMock";
 import { createSecurityMock } from "./securityMock";
-import { createRedesignMock, type RedesignApi } from "./redesignMock";
+import { createRedesignMock, withFindingChoices, type RedesignApi } from "./redesignMock";
 import { createBuildMock } from "./buildMock";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
@@ -30,6 +30,19 @@ import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { mainCi } from "./mainCiMock";
 import { DECISIONS, MOCK_USERS, MOCK_REPO_OWNERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
+
+const WRITE_TAGS: [RegExp, ActionTag][] = [[/merge/, "merge"], [/clos/, "close"], [/label/, "label"], [/comment|post/, "comment"], [/push/, "push"]];
+
+/** Choice cards for an open decision, from its options: each option is a core, the recommended one is picked. */
+function derivedChoices(d: Decision): DecisionChoices {
+  const cores: ChoiceCore[] = d.options.map((o) => ({
+    key: o.key === "backlog" ? "backlog" : `o:${o.key}`, label: o.label, autocraft: o.hint ?? "records the answer", drafted: o.key === d.recommended,
+    writes: WRITE_TAGS.filter(([re]) => re.test(o.writes ?? "")).map(([, t]) => t),
+    extras: o.writes?.includes("comment") ? [{ id: "e1", kind: "comment" as const, tag: "comment" as const, on: o.key === d.recommended, text: `Thanks. ${o.label}: the details are in the review.` }] : [],
+  }));
+  if (!cores.some((c) => c.key === "backlog")) cores.push({ key: "backlog", label: "Later", autocraft: "moves it to the Backlog", writes: [], drafted: false, extras: [] });
+  return { id: `ch-d-${d.id}`, decisionId: d.id, pick: d.recommended ? { core: `o:${d.recommended}`, reason: d.recommendedReason || "Opus recommends this answer." } : null, cores, source: "prepare", at: d.askedAt };
+}
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const nowIso = () => new Date(NOW).toISOString();
@@ -291,7 +304,10 @@ export function createMockApi(): Api {
     ...createConversationMock(me, changed, (repo, number, option, note) => {
       const d = decisions.find((x) => !x.answer && x.repo === shortRepo(repo) && x.number === number);
       if (d) settle(d, option, note, null);
-    }, choicesHooks),
+    }, choicesHooks, (repo, number) => {
+      const d = decisions.find((x) => !x.answer && x.repo === repo && x.number === number && x.group.length === 0);
+      return d ? derivedChoices(d) : null;
+    }),
     ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),
     ...createMcpMock(me, changed),
@@ -324,5 +340,5 @@ export function createMockApi(): Api {
     semanticSearch: (q) => wait(semanticHits(q), 90),
     work: (f) => wait(workList(f), 60),
   };
-  return { ...api, ...createRedesignMock(me, api) };
+  return { ...api, ...createRedesignMock(me, api), conversations: withFindingChoices(api.conversations, api, me, changed) };
 }

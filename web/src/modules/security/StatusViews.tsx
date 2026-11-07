@@ -2,23 +2,20 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeftIcon, GithubLogoIcon, RobotIcon, ShieldWarningIcon, WarningCircleIcon } from "@phosphor-icons/react";
-import { useApi, useQuery } from "../../api/client";
-import type { FindingAction, FindingPageData, FindingRow } from "../../api/types";
+import { useQuery } from "../../api/client";
+import type { FindingPageData, FindingRow } from "../../api/types";
 import { Badge } from "../../ui/atoms/Badge";
-import { Button } from "../../ui/atoms/Button";
-import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Pending } from "../../ui/atoms/Pending";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { CodeBlock } from "../../ui/molecules/CodeBlock";
-import { RadioRow } from "../../ui/molecules/RadioRow";
+import { ChoiceGroup } from "../item/ChoiceGroup";
 import { Section } from "../../ui/molecules/Section";
 import { StatusLine } from "../../ui/molecules/StatusLine";
-import { Page } from "../../ui/organisms/Page";
+import { SecurityPage } from "./SecurityPage";
 import { cn } from "../../ui/cn";
-import { FINDING_STATE, SEVERITY, findingActions } from "../../lib/security";
+import { FINDING_STATE, SEVERITY } from "../../lib/security";
 import { formatCost } from "../../lib/trace";
 import { findingPath, githubBlobUrl } from "../../lib/links";
-import { useWrite } from "../../lib/hooks";
 import { useUser } from "../../shell/UserContext";
 import { useIsPhone } from "../../shell/useMedia";
 import type { ViewProps } from "../../registry/types";
@@ -45,11 +42,7 @@ function Row({ r }: { r: FindingRow }) {
 export function SecurityListView(_: ViewProps) {
   const { data, error } = useQuery("security-list", (a) => a.securityList());
   return (
-    <Page title="Security">
-      <div className="mt-3 flex gap-1 border-b border-line text-sm" role="tablist">
-        <span role="tab" aria-selected className="-mb-px inline-flex h-9 items-center border-b-2 border-accent px-2 font-medium max-md:h-11">Findings</span>
-        <Link role="tab" to="/security/scans" className="inline-flex h-9 items-center px-2 text-ink/60 hover:text-ink max-md:h-11">Scans</Link>
-      </div>
+    <SecurityPage tab="findings">
       {!data ? <Pending error={error} /> : (
         <div className="mt-5 space-y-7">
           {data.groups.map((g) => (
@@ -59,37 +52,19 @@ export function SecurityListView(_: ViewProps) {
           ))}
         </div>
       )}
-    </Page>
+    </SecurityPage>
   );
 }
 
-const LABEL: Record<FindingAction, string> = { fix: "Fix", dismiss: "Dismiss", backlog: "Backlog", reopen: "Reopen", land: "Land", advisory: "Advisory", publish: "Publish" };
-
-function Decide({ d }: { d: FindingPageData }) {
-  const api = useApi();
-  const write = useWrite();
-  const f = d.finding;
-  const actions = findingActions(f);
-  const again = d.attempts > 0;
-  const hint: Record<string, string> = { fix: again ? "Another three rounds, with your note passed to the model" : "Opens a private fix, up to three rounds", backlog: "Keep it for later", dismiss: "Not a vulnerability, or not worth fixing", land: "Opens a quiet pull request", advisory: "Private fix through a security advisory", publish: "Publish the advisory", reopen: "Back to a decision" };
-  const [pick, setPick] = useState<FindingAction | null>(actions[0] ?? null);
-  const [note, setNote] = useState("");
-  if (!actions.length) return null;
+function Question({ d }: { d: FindingPageData }) {
+  const user = useUser();
+  if (!d.decision || !d.choices) return null;
   return (
     <section className="border-b border-line px-4 pb-4 md:px-6" aria-label="Open question">
-      <div className="rounded-md border border-line-strong px-3 py-3 md:px-4">
-        <p className="text-[15px] font-semibold leading-6">{again ? "The fix gave up. What next?" : "What should happen to this finding?"}</p>
-        <div role="radiogroup" className="mt-2 space-y-0.5">
-          {actions.map((a, i) => (
-            <RadioRow key={a} selected={pick === a} onSelect={() => setPick(a)} title={<>{a === "fix" && again ? "Fix again with a note" : LABEL[a]} {i === 0 && <Badge tone="accent">Recommended</Badge>}</>}>
-              {pick === a && <p className="text-xs text-ink/60">{hint[a]}</p>}
-            </RadioRow>
-          ))}
-        </div>
-        <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Add a note (optional)" aria-label="Note" className="mt-2 block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm outline-none placeholder:text-ink/40 focus:border-accent/60" />
-        <Button variant="primary" className="mt-3 max-md:h-11 max-md:w-full" disabled={!pick || (pick === "dismiss" && !note.trim())} loading={!!write.busy} onClick={() => pick && void write.run(pick, () => api.security.act(f.repo, f.number, pick, note.trim() || undefined))}>Do it</Button>
-        <ErrorLine error={write.error} className="mt-2" />
-      </div>
+      <article className="rounded-md border border-line-strong px-3 py-3 md:px-4">
+        <p className="text-pretty text-[15px] font-semibold leading-6">{d.decision.question}</p>
+        <ChoiceGroup d={d.decision} user={user} choices={d.choices} />
+      </article>
     </section>
   );
 }
@@ -161,7 +136,7 @@ function FindingAutoCraft({ d }: { d: FindingPageData }) {
   return (
     <div>
       <div className="px-4 pt-3 text-xs font-semibold text-accent-ink md:px-6"><span className="inline-flex items-center gap-1.5"><RobotIcon /> In AutoCraft</span><span className="num float-right font-normal text-ink/55">{formatCost(d.costUsd)} in all</span></div>
-      <div className="pt-3"><Decide d={d} /></div>
+      <div className="pt-3"><Question d={d} /></div>
       {d.rounds.length > 0 && (
         <section className={sec}>
           <H aside={`${d.attempts} rounds`}>Fix rounds</H>

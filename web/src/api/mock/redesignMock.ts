@@ -1,6 +1,7 @@
 // Mock API for the redesign: Home, the item page, the status list and the security list.
 import type { Api } from "../client";
-import type { FindingRow, FindingSummary, Home, ItemPhase, ItemStatusRow, SecurityGroup, User } from "../types";
+import type { ChoiceCore, ConversationCard, Decision, DecisionChoices, FindingAction, FindingRow, FindingSummary, FindingView, Home, ItemPhase, ItemStatusRow, SecurityGroup, User } from "../types";
+import { findingActions } from "../../lib/security";
 import { decisionPath } from "../../lib/links";
 import { FINDING_HISTORY_11, FIX_ROUNDS_11, at, findingStatus, itemPageFor, statusRows } from "./redesignData";
 
@@ -27,6 +28,23 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
     if (!staff) return [];
     const ov = await base.security.overview("designcraft");
     return Promise.all(ov.findings.map(async (f) => rowOf(f, f.number in ATTEMPTS ? NOTE_11 : null)));
+  };
+  // A finding's open question has the shape decisions use, so the page shows the same choice cards.
+  const decide = async (f: FindingView, attempts: number): Promise<{ decision: Decision | null; choices: DecisionChoices | null }> => {
+    const actions = findingActions(f);
+    if (!actions.length) return { decision: null, choices: null };
+    const tmpl = (await base.decisions.list({ status: "open", limit: 1 })).decisions[0]!;
+    const again = attempts > 0;
+    const decision: Decision = {
+      ...tmpl, id: `${f.repo}:finding:${f.number}:security`, kind: "other", repo: f.repo, number: f.number, items: [], shown: null, title: f.title, group: [], risks: [], opinions: [], exceptions: [], commentCount: 0, related: [], classifications: [],
+      question: again ? "The fix gave up after 3 rounds. What next?" : "What should happen to this finding?", summary: "", body: null, context: [], facts: [], answer: null, answeredBy: null, answeredAt: null, answerNote: null, appliedAt: null, adoptedOpinion: null, exec: null, claim: null, snoozed: null, preparing: false, undoable: false,
+      options: actions.map((a) => ({ key: a, label: CORE[a].label })), recommended: actions[0]!, recommendedReason: again ? "The last round failed on the regression test, so another try with a sharper note is the best use of the next round." : "",
+      canSettle: me.role === "operator",
+    };
+    const cores: ChoiceCore[] = actions.map((a) => ({ key: a === "backlog" ? "backlog" : `o:${a}`, label: a === "fix" && again ? "Fix again with a note" : CORE[a].label, autocraft: CORE[a].autocraft, writes: CORE[a].writes, drafted: a === actions[0], extras: [],
+      ...(a === "fix" ? { params: { instructions: again ? "Write the regression test first and check that it fails on the unfixed code. The last round's test passed without the fix, so it did not show the defect." : "Fix the missing check, with a regression test that fails before the fix." } } : {}),
+      ...(a === "dismiss" ? { params: { reason: "Needs a local attacker who can already write to the user's files." } } : {}) }));
+    return { decision, choices: { id: `ch-f-${f.repo}-${f.number}-${f.state}`, decisionId: decision.id, pick: { core: cores[0]!.key, reason: decision.recommendedReason || "A fix is the usual next step for a verified finding." }, cores, source: "prepare", at: at(40) } };
   };
   return {
     async home(): Promise<Home> {
@@ -69,11 +87,7 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       });
     },
     async itemStatusList(f) {
-      const fr = await findings();
-      const all: ItemStatusRow[] = [
-        ...statusRows(),
-        ...fr.map((x): ItemStatusRow => ({ repo: x.repo, number: x.number, kind: "finding", state: "open", title: x.title, status: x.status, updatedAt: x.updatedAt, severity: x.severity })),
-      ];
+      const all: ItemStatusRow[] = statusRows();
       const q = f.q?.trim().toLowerCase();
       const base1 = all.filter((r) => (!f.kind || r.kind === f.kind) && (!f.repo?.length || f.repo.includes(r.repo)) && (!q || `${r.repo}#${r.number} ${r.title}`.toLowerCase().includes(q)));
       const byPhase = Object.fromEntries(PHASES.map((p) => [p, base1.filter((r) => r.status.phase === p).length])) as Record<ItemPhase, number>;
@@ -89,11 +103,40 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       const finding = await base.security.finding(repo, number);
       const attempts = ATTEMPTS[number] ?? 0;
       const failed = attempts > 0;
+      const { decision, choices } = await decide(finding, attempts);
       return wait({
-        finding, attempts, status: findingStatus(finding.state, attempts, failed ? NOTE_11 : null), rounds: failed ? FIX_ROUNDS_11 : [],
+        finding, decision, choices, attempts, status: findingStatus(finding.state, attempts, failed ? NOTE_11 : null), rounds: failed ? FIX_ROUNDS_11 : [],
         history: failed ? FINDING_HISTORY_11 : finding.timeline.map((c, i) => ({ id: `t${i}`, at: c.at, step: c.kind === "area" ? "Area scan" : c.kind === "verify" ? "Verification" : c.kind === "model" ? "Threat model" : "Fix", outcome: c.ok ? "done" : "failed", model: "Opus", costUsd: c.costUsd, kind: "model" as const, calls: [], writeId: null })),
         costUsd: failed ? 10.4 : finding.timeline.reduce((s, c) => s + (c.costUsd ?? 0), 0),
       });
+    },
+  };
+}
+
+const CORE: Record<FindingAction, { label: string; autocraft: string; writes: ChoiceCore["writes"] }> = {
+  fix: { label: "Fix", autocraft: "starts a private fix, up to three rounds", writes: [] },
+  dismiss: { label: "Dismiss", autocraft: "closes the finding with your reason", writes: [] },
+  backlog: { label: "Backlog", autocraft: "keeps it for later", writes: [] },
+  reopen: { label: "Reopen", autocraft: "puts it back to a decision", writes: [] },
+  land: { label: "Land", autocraft: "opens a quiet pull request with the fix", writes: ["push"] },
+  advisory: { label: "Advisory", autocraft: "opens a private fix in a security advisory", writes: [] },
+  publish: { label: "Publish", autocraft: "publishes the advisory", writes: [] },
+};
+
+/** Runs a finding's choice through the finding API; every other choice goes to the conversation mock. */
+export function withFindingChoices(conv: Api["conversations"], base: Pick<Api, "security">, me: User, changed: () => void): Api["conversations"] {
+  return {
+    ...conv,
+    async doChoice(id, body) {
+      const m = id.match(/^ch-f-(.+)-(\d+)-/);
+      if (!m) return conv.doChoice(id, body);
+      if (me.role !== "operator") throw new Error("not allowed");
+      const key = body.core === "backlog" ? "backlog" : (body.core.slice(2) as FindingAction);
+      await new Promise((r) => setTimeout(r, 1500));
+      await base.security.act(m[1]!, Number(m[2]), key, body.note ?? body.params?.reason);
+      changed();
+      const when = new Date().toISOString();
+      return { id: Date.now(), kind: "resolution", title: CORE[key].label, label: "Do it", headline: CORE[key].label, steps: [], canSettle: true, state: "done", fromChoice: true, by: me.login, at: when, done: { at: when, link: "", label: CORE[key].label } } as ConversationCard;
     },
   };
 }

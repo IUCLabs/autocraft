@@ -1,19 +1,15 @@
-// Items: every issue, PR and (for staff) security finding with one status line, filtered by phase.
-import { MagnifyingGlassIcon, ShieldWarningIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
+// Items: every issue and PR with one status line, filtered by phase.
+import { MagnifyingGlassIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import { useQuery } from "../../api/client";
 import type { ItemPhase, ItemStatusFilter, ItemStatusRow } from "../../api/types";
 import { Chip } from "../../ui/atoms/Chip";
-import { Badge } from "../../ui/atoms/Badge";
 import { Pending } from "../../ui/atoms/Pending";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { StatusLine } from "../../ui/molecules/StatusLine";
-import { SEVERITY } from "../../lib/security";
-import { findingPath } from "../../lib/links";
 import { Page } from "../../ui/organisms/Page";
 import { useUrlState } from "../admin/parts";
-import { useUser } from "../../shell/UserContext";
 import type { ViewProps } from "../../registry/types";
 
 const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope"];
@@ -21,17 +17,7 @@ const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing
 function Row({ r }: { r: ItemStatusRow }) {
   return (
     <li className="relative border-t border-line py-2.5 hover:bg-ink/[0.025] max-md:py-3">
-      {r.kind === "finding" ? (
-        <div className="flex items-start gap-2 text-sm">
-          <ShieldWarningIcon className="mt-[3px] shrink-0 text-bad" />
-          <Link to={findingPath(r.repo, r.number)} className="min-w-0 flex-1 break-words after:absolute after:inset-0 hover:underline">
-            <span className="code text-ink/60">{r.repo} finding {r.number}</span> {r.title}
-          </Link>
-          {r.severity && <Badge tone={SEVERITY[r.severity].tone}>{SEVERITY[r.severity].label}</Badge>}
-        </div>
-      ) : (
-        <ItemRef repo={r.repo} number={r.number} kind={r.kind} state={r.state} title={r.title} stretch />
-      )}
+      <ItemRef repo={r.repo} number={r.number} kind={r.kind} state={r.state} title={r.title} stretch />
       <div className="mt-1 flex items-start gap-2 pl-6">
         <StatusLine status={r.status} compact className="min-w-0 flex-1 text-xs" />
         <TimeAgo iso={r.updatedAt} className="num shrink-0 text-xs text-ink/45" />
@@ -41,13 +27,12 @@ function Row({ r }: { r: ItemStatusRow }) {
 }
 
 export function StatusItemsView(_: ViewProps) {
-  const staff = useUser().role !== "viewer";
   const { state, update } = useUrlState();
   const phase = PHASES.find((p) => p === state.phase);
-  const kind = state.kind === "pr" || state.kind === "issue" || (state.kind === "finding" && staff) ? state.kind : undefined;
+  const kind = state.kind === "pr" || state.kind === "issue" ? state.kind : undefined;
   const filter: ItemStatusFilter = { q: state.q?.trim() || undefined, phase, kind };
   const { data, error } = useQuery(`items-status:${JSON.stringify(filter)}`, (a) => a.itemStatusList(filter));
-  const kinds: [string, string | undefined][] = [["All", undefined], ["Pull requests", "pr"], ["Issues", "issue"], ...(staff ? ([["Findings", "finding"]] as [string, string][]) : [])];
+  const kinds: [string, string | undefined][] = [["All", undefined], ["Pull requests", "pr"], ["Issues", "issue"]];
   return (
     <Page title="Items">
       <div className="mt-4 flex items-center gap-2">
