@@ -3,7 +3,7 @@
 // the delta since the head it reviewed before. Reads GitHub (diffs); never writes to it.
 import type { DatabaseSync } from "node:sqlite";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { queueRoom } from "../agents/call.ts";
+import { currentJobId, queueRoom } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { REVIEW_OPUS } from "../agents/steps.ts";
@@ -82,8 +82,9 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   // Only open tracked items other than the PR can block it: a reference that is already closed would end the wait at once.
   const blockers = r.verdict === "hold" ? openBlockers(db, r.blocked_by.filter((x) => x !== `${c.repo}#${c.number}`)) : [];
   const blockedBy = blockers.length ? JSON.stringify(blockers) : null;
-  db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims, blockedBy);
+  db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, trigger, job_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims, blockedBy,
+    again ? (markedStaleSince(db, c.repo, c.number, again.at) ? "operator" : "discussion") : "new-head", currentJobId());
   db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims, blocked_by)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
     r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims, blockedBy);

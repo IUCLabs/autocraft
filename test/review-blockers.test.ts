@@ -179,3 +179,14 @@ test("a reply-fix turn does not count as a second review call", () => {
   run(3);
   assert.match(planOf(w, 1).wait ?? "", /review cap for today/);
 });
+
+test("a review records why it ran: new head, same head again, same head after an operator mark", () => {
+  const w = noGaps(world().repo().pr(1, { head: "h1", author: "regular" }));
+  const triggers = () => (w.db.prepare("SELECT trigger FROM opus_review_history WHERE repo = 'app' AND number = 1 ORDER BY rowid").all() as { trigger: string }[]).map((r) => r.trigger);
+  review(w, 1, "h1", "hold");
+  review(w, 1, "h2", "hold");
+  review(w, 1, "h2", "hold");
+  markReviewsStale(w.db, "test", "app", 1);
+  review(w, 1, "h2", "hold");
+  assert.deepEqual(triggers(), ["new-head", "new-head", "discussion", "operator"]);
+});
