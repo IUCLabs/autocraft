@@ -130,6 +130,20 @@ describe("repo visibility", () => {
     assert.equal(await c.status("/api/agents/2"), 404);
   });
 
+  test("the Security list and the finding page are staff only", async () => {
+    db.prepare("INSERT INTO security_scans (id, repo, state, started_by, started_at) VALUES (900, 'open-app', 'done', 'boss', '2026-01-01T00:00:00Z')").run();
+    db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, reach, impact, fingerprint, created_at, updated_at)
+      VALUES ('open-app', 1, 900, 'a', 't', 'high', 0, 'new', '[]', 'r', 'i', 'fp1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run();
+    for (const login of ["reader", "outsider"]) {
+      const c = await signedIn(login);
+      assert.equal(await c.status("/api/security/findings"), 404, login);
+      assert.equal(await c.status("/api/security/findings/open-app/1/page"), 404, login);
+    }
+    const c = await signedIn("maint");
+    assert.equal((await c.get<{ groups: { rows: unknown[] }[] }>("/api/security/findings")).groups[0]!.rows.length, 1);
+    assert.equal(await c.status("/api/security/findings/open-app/1/page"), 200);
+  });
+
   test("a viewer with read permission, and an operator, see it", async () => {
     for (const login of ["reader", "boss"]) {
       const c = await signedIn(login);

@@ -26,6 +26,7 @@ import * as conv from "./conversations.ts";
 import * as mcp from "./mcp.ts";
 import * as areas from "./areas.ts";
 import * as security from "./security.ts";
+import * as securityPage from "./security-page.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
@@ -546,5 +547,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/now", now),
     get("/api/now/feed", nowFeed),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
+    get("/api/security/findings", securityPage.securityFindings),
+    get("/api/security/findings/:repo/:n/page", securityPage.findingPage),
   ];
 }
