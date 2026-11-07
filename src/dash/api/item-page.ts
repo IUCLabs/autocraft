@@ -317,7 +317,7 @@ function githubOf(c: Ctx, it: Item, ev: Ev[], url: string): GithubSide {
   events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
   const commits = q<{ oid: string; message: string | null; author: string | null; at: string }>(db,
     "SELECT oid, message, author, MIN(committed_at, COALESCE(first_seen_at, committed_at)) AS at FROM pr_commits WHERE repo = ? AND number = ? ORDER BY at, oid", repo, n)
-    .map((m) => ({ sha: short(m.oid), message: clean(m.message ?? "", 500), author: m.author ?? "unknown", at: m.at, byAutoCraft: (!!m.author && own.has(m.author)) || pushedByAutoCraft(db, m.oid) }));
+    .map((m) => ({ sha: short(m.oid), message: clean(m.message ?? "", 500), author: m.author ?? "unknown", at: m.at, byAutoCraft: (!!m.author && own.has(m.author)) || pushedByAutoCraft(db, repo, n, m.oid) }));
   return {
     description: clean(it.body, 6000), events, checks: it.ciChecks.filter((x) => x.state !== "none").map((x) => ({ name: x.name, state: x.state })), commits,
     files: it.files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions })), url,
