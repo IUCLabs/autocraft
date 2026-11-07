@@ -14,7 +14,7 @@ export function discordPrivacyPage(nonce: string, contact: string): string {
 <h2>What is kept</h2>
 <p>References to GitHub issues and pull requests with the IDs of the messages that made them, and account links. Message text is not kept.</p>
 <h2>Sharing</h2>
-<p>Search text may be processed by an AI service provider to find matching issues. It is not stored or sold.</p>
+<p>Search text may be processed by an AI service provider to find matching issues. Issue drafts are processed by the AI provider and not kept. Nothing is stored or sold.</p>
 <h2>Deletion</h2>
 <p>Deleting a message removes its record. Unlink your account with <code>/autocraft unlink</code>. For other requests, contact ${who}.</p>`);
 }

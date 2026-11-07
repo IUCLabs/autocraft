@@ -11,6 +11,7 @@ export type Interaction = {
   member?: { user?: { id: string } }; user?: { id: string };
   data?: {
     name?: string; type?: number; custom_id?: string; target_id?: string;
+    components?: { components?: { custom_id?: string; value?: string }[] }[];
     options?: { name: string; type: number; value?: unknown; focused?: boolean; options?: { name: string; type: number; value?: unknown; focused?: boolean }[] }[];
     resolved?: { messages?: Record<string, { content?: string }> };
   };
@@ -28,13 +29,23 @@ export type Call = {
   targetText(): string | undefined;
   /** Replaces the deferred response. */
   edit(body: EditBody): Promise<void>;
+  /** The values of a submitted modal, by the custom_id of each text input. */
+  fields(): Record<string, string>;
+  /** For handlers added with `immediate`: shows a modal as the answer (it must come within 3 seconds). */
+  showModal(modal: { custom_id: string; title: string; components: unknown[] }): Promise<void>;
+  /** For handlers added with `immediate`: answers with a message only the caller sees. */
+  reply(body: { content: string; components?: unknown[] }): Promise<void>;
+  /** For handlers added with `immediate`: shows "thinking" so `edit` can answer later. */
+  defer(): Promise<void>;
 };
 
 export type Handler = (call: Call) => Promise<void>;
-type Entry = { handler: Handler; ephemeral: boolean };
+/** `immediate` handlers are not deferred first: they answer themselves with `showModal`, `reply` or `defer`. */
+type Entry = { handler: Handler; ephemeral: boolean; immediate: boolean };
+type EntryOpts = { ephemeral?: boolean; immediate?: boolean };
 
 export type Choice = { name: string; value: string };
-const COMMAND = 2, COMPONENT = 3, AUTOCOMPLETE = 4, MESSAGE_COMMAND = 3;
+const COMMAND = 2, COMPONENT = 3, AUTOCOMPLETE = 4, MODAL_SUBMIT = 5, MESSAGE_COMMAND = 3;
 
 export class Interactions {
   #rest: DiscordRest;
@@ -53,12 +64,20 @@ export class Interactions {
 
   /**
    * Adds a command. `key` is the command name, with the subcommand after a space ("issue search"); it is the
-   * definition's name for a command without subcommands. A definition may be given once per name: handlers of other
-   * subcommands of the same command pass `def` as null.
+   * definition's name for a command without subcommands. The definition of a command with subcommands may be given by each
+   * handler (their options are merged) or once, with null for the others.
    */
-  command(key: string, def: CommandDef | null, handler: Handler, opts: { ephemeral?: boolean } = {}): void {
-    this.#commands.set(key, { handler, ephemeral: opts.ephemeral ?? true });
-    if (def && !this.#defs.some((d) => d.name === def.name && d.type === def.type)) this.#defs.push(def);
+  command(key: string, def: CommandDef | null, handler: Handler, opts: EntryOpts = {}): void {
+    this.#commands.set(key, { handler, ephemeral: opts.ephemeral ?? true, immediate: opts.immediate ?? false });
+    if (!def) return;
+    const have = this.#defs.find((d) => d.name === def.name && d.type === def.type);
+    if (!have) this.#defs.push(def);
+    else if (def.options?.length) {
+      // Another subcommand of a command that is already defined: its options join the definition.
+      const names = new Set((have.options as { name: string }[] | undefined)?.map((o) => o.name));
+      const added = (def.options as { name: string }[]).filter((o) => !names.has(o.name));
+      if (added.length) have.options = [...(have.options ?? []), ...added];
+    }
   }
 
   /** Adds the choices of the focused option of a command (same key as `command`); at most 25 are sent. Answered at once, never deferred. */
@@ -66,9 +85,9 @@ export class Interactions {
     this.#completers.set(key, choices);
   }
 
-  /** Adds a handler for the buttons whose custom_id is `prefix` or starts with `prefix:`. */
-  component(prefix: string, handler: Handler, opts: { ephemeral?: boolean } = {}): void {
-    this.#components.set(prefix, { handler, ephemeral: opts.ephemeral ?? true });
+  /** Adds a handler for the buttons and submitted modals whose custom_id is `prefix` or starts with `prefix:`. */
+  component(prefix: string, handler: Handler, opts: EntryOpts = {}): void {
+    this.#components.set(prefix, { handler, ephemeral: opts.ephemeral ?? true, immediate: opts.immediate ?? false });
   }
 
   /** Gateway events: READY gives the application id, GUILD_CREATE registers the commands, INTERACTION_CREATE runs a handler. Returns at once. */
@@ -96,7 +115,7 @@ export class Interactions {
   }
 
   #entry(i: Interaction): Entry | undefined {
-    if (i.type === COMPONENT) {
+    if (i.type === COMPONENT || i.type === MODAL_SUBMIT) {
       const id = i.data?.custom_id ?? "";
       return this.#components.get(id.split(":")[0]!);
     }
@@ -111,7 +130,7 @@ export class Interactions {
     if (!find) return;
     try {
       const opts = sub?.options ?? i.data?.options ?? [];
-      const call = { interaction: i, userId: i.member?.user?.id ?? i.user?.id ?? null, option: () => undefined, targetText: () => undefined, edit: async () => {},
+      const call = { interaction: i, userId: i.member?.user?.id ?? i.user?.id ?? null, option: () => undefined, targetText: () => undefined, edit: async () => {}, fields: () => ({}), showModal: async () => {}, reply: async () => {}, defer: async () => {},
         focused: () => { const o = opts.find((x) => x.focused); return o ? { name: o.name, value: typeof o.value === "string" ? o.value : "" } : undefined; } } as Call;
       await this.#rest.interactionCallback(i.id, i.token, 8, { choices: find(call).slice(0, 25) });
     } catch (e) {
@@ -131,8 +150,12 @@ export class Interactions {
         await this.#rest.interactionCallback(i.id, i.token, 4, { content: failed, ephemeral: true });
         return;
       }
+      let answered = false;
       // Deferred first: a handler's own work never counts against the 3 seconds.
-      await this.#rest.interactionCallback(i.id, i.token, 5, { ephemeral: entry.ephemeral });
+      if (!entry.immediate) {
+        await this.#rest.interactionCallback(i.id, i.token, 5, { ephemeral: entry.ephemeral });
+        answered = true;
+      }
       const sub = i.data?.options?.find((o) => o.type === 1);
       const opts = sub?.options ?? i.data?.options ?? [];
       const call: Call = {
@@ -142,12 +165,16 @@ export class Interactions {
         focused: () => { const o = opts.find((x) => x.focused); return o ? { name: o.name, value: typeof o.value === "string" ? o.value : "" } : undefined; },
         targetText: () => (i.data?.type === MESSAGE_COMMAND && i.data.target_id ? i.data.resolved?.messages?.[i.data.target_id]?.content : undefined),
         edit: (body) => this.#rest.editInteractionResponse(appId, i.token, body),
+        fields: () => Object.fromEntries((i.data?.components ?? []).flatMap((r) => r.components ?? []).filter((c) => c.custom_id).map((c) => [c.custom_id!, c.value ?? ""])),
+        showModal: async (m) => { answered = true; await this.#rest.interactionCallback(i.id, i.token, 9, m); },
+        reply: async (b) => { answered = true; await this.#rest.interactionCallback(i.id, i.token, 4, { ...b, ephemeral: true }); },
+        defer: async () => { answered = true; await this.#rest.interactionCallback(i.id, i.token, 5, { ephemeral: true }); },
       };
       try {
         await entry.handler(call);
       } catch (e) {
         this.#log(`discord: command failed: ${(e as Error).message}`);
-        await call.edit({ content: failed }).catch(() => undefined);
+        await (answered ? call.edit({ content: failed }) : call.reply({ content: failed })).catch(() => undefined);
       }
     } catch (e) {
       this.#log(`discord: answering an interaction failed: ${(e as Error).message}`);
