@@ -41,8 +41,8 @@ ARG TARGETARCH
 
 RUN set -eux; \
     apt-get update; \
-    # curl only exists in this stage to fetch the GitHub CLI below;
-    apt-get install -y --no-install-recommends curl; \
+    # curl and gzip only exist in this stage, to fetch and unpack the GitHub CLI;
+    apt-get install -y --no-install-recommends curl gzip; \
     packages="bash bubblewrap ca-certificates curl git sqlite3 tini zstd"; \
     # The full dependency closure, flattened from apt-cache's indented tree;
     # `apt-get download` fetches them whether or not this stage already has them.
@@ -56,14 +56,17 @@ RUN set -eux; \
     for deb in *.deb; do dpkg -x "$deb" /rootfs; done; \
     rm -rf /var/lib/apt/lists/* /tmp/debs /tmp/packages; \
     # Prove the unpacked tree runs on its own libraries before it is copied into
-    # the runtime base, which has no shell to debug it with later.
-    chroot /rootfs /bin/bash -c 'export PATH=/usr/local/bin:/usr/bin:/bin; \
+    # the runtime base, which has no shell to debug it with later. A plain file
+    # stands in for /dev/null so git can open it inside the chroot.
+    mkdir -p /rootfs/dev; : > /rootfs/dev/null; \
+    chroot /rootfs /bin/bash -c 'export PATH=/usr/local/bin:/usr/bin:/bin LC_ALL=C; \
       git --version; \
       curl --version >/dev/null; \
       sqlite3 --version >/dev/null; \
       bwrap --version; \
       zstd --version >/dev/null; \
-      tini --version'
+      tini --version'; \
+    rm -rf /rootfs/dev
 
 # Certificate bundle, account entries and the writable roots. `dpkg -x` runs no
 # postinst scripts, so the CA bundle is copied from this stage rather than
