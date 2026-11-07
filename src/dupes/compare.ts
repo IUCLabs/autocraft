@@ -225,10 +225,10 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
   for (const set of sets) {
     const at = NOW_ISO(d);
     if (set.members.some((m) => m.state !== "OPEN")) {
-      saveComparison(db, viaRule(db, set, at, null, "closed"));
+      saveComparison(db, viaRule(db, set, at, null, "closed"), set);
       s.closedWins++;
     } else if (set.members.length < 2) {
-      saveComparison(db, viaRule(db, set, at, null, "single"));
+      saveComparison(db, viaRule(db, set, at, null, "single"), set);
       s.single++;
     } else calls.push(set);
   }
@@ -261,7 +261,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
       const prev = storedComparison(db, set.repo, set.key);
       r.attempts = (prev && prev.source === "rule" && prev.hash === set.hash ? prev.attempts : 0) + 1;
     }
-    saveComparison(db, r);
+    saveComparison(db, r, set);
     if (r.source === "rule") {
       s.byRule++;
       log(`  ${set.repo} ${set.key}: no valid answer; kept #${r.kept} by rule`);

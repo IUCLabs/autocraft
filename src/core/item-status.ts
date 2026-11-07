@@ -77,7 +77,10 @@ export function phaseOf(i: StatusInput): ItemPhase {
 
 /** The status without its `since`. */
 export function statusOf(i: StatusInput): Omit<ItemStatus, "since"> {
-  return { phase: phaseOf(i), waiting: i.wait, next: i.next };
+  const phase = phaseOf(i);
+  // Outside the pipeline nothing waits and nothing comes next; "Needs a person" only repeats the phase.
+  if (phase === "Pipeline off") return { phase, waiting: null, next: null };
+  return { phase, waiting: i.wait, next: i.next === "Needs a person" ? null : i.next };
 }
 
 /** The status of an item with no plan row. */

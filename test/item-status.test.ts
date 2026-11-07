@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
-import { phaseOf, statusFromItem, type StatusInput } from "../src/core/item-status.ts";
+import { phaseOf, statusFromItem, statusOf, type StatusInput } from "../src/core/item-status.ts";
 import { writePlanCache, type PlanView } from "../src/core/plan-cache.ts";
 import { loadPlanSet } from "../src/core/plan-set.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -25,6 +25,7 @@ describe("item status", () => {
     assert.equal(phaseOf(input({ state: "out-of-scope" })), "Pipeline off");
     assert.equal(phaseOf(input({ itemState: "classified", inPipeline: false })), "Pipeline off", "an issue in a repo with the pipeline off");
     assert.equal(phaseOf(input({ gh: "MERGED", inPipeline: false })), "Merged");
+    assert.deepEqual(statusOf(input({ state: "out-of-scope", wait: "not in scope", next: "Classify" })), { phase: "Pipeline off", waiting: null, next: null });
     assert.equal(phaseOf(input({ state: "scope", scopeAnswered: true })), "Out of scope", "an answer that keeps it out of core asks nobody");
     assert.equal(phaseOf(input({ state: "scope" })), "Waiting for a person");
     assert.equal(phaseOf(input({ state: "opus-close" })), "Out of scope");
