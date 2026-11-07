@@ -31,9 +31,9 @@ function finding(): number {
   return n;
 }
 const testNameOf = (n: number): string => regressionName(createHash("sha256").update(`photocraft#${n}`).digest("hex").slice(0, 10));
-const reply = (n: number, title = "Check layer length"): string => {
-  const edit = `diff --git a/${SRC} b/${SRC}\n--- a/${SRC}\n+++ b/${SRC}\n@@ -1,1 +1,2 @@\n fn read() {}\n+fn check() {}\n`;
-  return `TITLE: ${title}\nSUMMARY: Compare the length with the remaining data.\n---PATCH---\n${edit}${patchFor("crates/psd", testNameOf(n), "#[test]\nfn it_fails() {}\n")}`;
+const reply = (n: number, added = "fn check() {}"): string => {
+  const edit = `diff --git a/${SRC} b/${SRC}\n--- a/${SRC}\n+++ b/${SRC}\n@@ -1,1 +1,2 @@\n fn read() {}\n+${added}\n`;
+  return `TITLE: Check layer length\nSUMMARY: Compare the length with the remaining data.\n---PATCH---\n${edit}${patchFor("crates/psd", testNameOf(n), "#[test]\nfn it_fails() {}\n")}`;
 };
 
 type World = { calls: string[]; asks: { id: string; resume?: string; previous?: unknown }[]; deps: FixDeps; reviews: string[] };
@@ -128,13 +128,29 @@ describe("security fix rounds", () => {
   test("a failed word check never queues a build", async () => {
     const n = finding();
     const before = tasks();
-    const w = world(n, () => reply(n, "Fix buffer overflow in the PSD reader"));
+    const w = world(n, () => reply(n, "// block the attacker"));
     await runFix(db, "photocraft", n, w.deps);
     assert.equal(w.asks.length, 3, "every round fails before its build");
     assert.equal(tasks(), before);
     assert.deepEqual(rounds(n), []);
     const row = rawFinding(db, "photocraft", n)!;
     assert.equal(row.state, "new");
-    assert.match(row.note ?? "", /overflow/);
+    assert.match(row.note ?? "", /attacker/);
+  });
+
+  test("a round building past 4 hours is cancelled and read; a pipeline fix waits for the switch, an operator's does not", async () => {
+    const n = finding(), m = finding();
+    for (const [k, by] of [[n, "boss"], [m, "pipeline"]] as const) {
+      db.prepare("UPDATE security_findings SET decided_by = ? WHERE number = ?").run(by, k);
+      await runFix(db, "photocraft", k, world(k, () => reply(k)).deps);
+      db.prepare("UPDATE security_fix_rounds SET created_at = '2020-01-01T00:00:00Z' WHERE number = ?").run(k);
+    }
+    assert.equal(await advanceSecurityFixes(db, false), 1, "only the operator's fix continues with the pipeline off");
+    const job = db.prepare("SELECT requested_by FROM jobs WHERE step = 'security-fix' AND json_extract(params, '$.number') = ?").get(n) as { requested_by: string };
+    assert.equal(job.requested_by, "boss");
+    const r = rounds(n)[0]!;
+    assert.equal((db.prepare("SELECT state FROM build_tasks WHERE id = ?").get(r.head_task) as { state: string }).state, "cancelled");
+    assert.equal(fixJobs(m), 0);
+    assert.equal(await advanceSecurityFixes(db, true), 1);
   });
 });

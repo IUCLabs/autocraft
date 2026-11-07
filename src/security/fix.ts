@@ -125,7 +125,16 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     const git = new Git(d.exec, d.root, repo);
     const branch = branchOf(db, repo);
     await git.init();
-    if (!(await git.fetchBranch(ownerOf(repo), repo, branch, sha))) return giveUp(db, repo, n, "the pinned commit is no longer in the repository", log);
+    // A job that collects a round does not need the network when the commit is cached; a failed fetch there leaves the round building for the next pass.
+    const cached = (await git.git(["cat-file", "-e", `${sha}^{commit}`])).code === 0;
+    if (!cached) {
+      let have: boolean;
+      try { have = await git.fetchBranch(ownerOf(repo), repo, branch, sha); } catch (e) {
+        if (roundRows(db, repo, n).some((r) => r.state === "building")) { log(`${repo} finding ${n}: fetch failed (${oneLine((e as Error).message, 120)}); the round stays building`); return `${repo} finding ${n}: fetch failed; collected on the next pass`; }
+        throw e;
+      }
+      if (!have) return giveUp(db, repo, n, "the pinned commit is no longer in the repository", log);
+    }
     const refs = JSON.parse(row.refs) as { path: string; line: number; claim: string }[];
     const cr = await cachedCrates(repo, sha, d.fetchCrates);
     if (!cr.ok) return giveUp(db, repo, n, `no crate list: ${cr.error}`, log);
@@ -252,8 +261,6 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       if (!parsed) { failRound("the reply did not follow the form: TITLE line, SUMMARY line, the marker line and the diff"); continue; }
       const quiet = quietProblem(parsed.title, parsed.summary) ?? (patchGiveaway(parsed.patch) ? `the diff adds the word "${patchGiveaway(parsed.patch)}"; name things for what the code does` : null);
       if (quiet) { failRound(quiet, parsed.patch); continue; }
-      const worded = giveaway(`${parsed.title}\n\n${parsed.summary}\n`);
-      if (worded) { failRound(`the commit message says "${worded}"; describe only what the code does now`, parsed.patch); continue; }
       const v = validateFixPatch(parsed.patch, allowed, testPath, crate.dir, testName);
       if (!v.ok) { failRound(v.reason, parsed.patch); continue; }
       const scratch = mkdtempSync(join(d.root, ".index-"));

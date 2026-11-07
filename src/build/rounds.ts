@@ -35,14 +35,10 @@ export function queueRound(db: DatabaseSync, r: RoundRequest): [number, number] 
 /** Queues the round's tasks again after an environment error. */
 export const requeueRound = (db: DatabaseSync, ids: [number, number]): [number, number] => [cloneTask(db, ids[0]), cloneTask(db, ids[1])];
 
-/** Whether both tasks of the round ended. */
-export function roundEnded(db: DatabaseSync, ids: [number, number]): boolean {
-  return ids.every((id) => { const t = getTask(db, id); return !t || TERMINAL.includes(t.state); });
-}
-
 /** What the finished round says. `retried`: the tasks were already queued again once, so an environment error is a failure. */
 export function readRound(db: DatabaseSync, ids: [number, number], retried = false): RoundRead {
   const tasks = ids.map((id) => getTask(db, id));
+  if (tasks.some((t) => !t)) return { kind: "fail", reason: "the build task no longer exists" };
   if (!tasks.every((t) => t && TERMINAL.includes(t.state))) return { kind: "pending" };
   const head = tasks[0]!, base = tasks[1]!;
   const ho = outcomeOf(head), bo = outcomeOf(base);

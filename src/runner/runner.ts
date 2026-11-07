@@ -182,14 +182,16 @@ export class Runner {
           // A private fix that a switch-off cancelled is queued again once the pipeline is on.
           const fixes = await autoFixConfirmed(this.db);
           if (fixes) this.o.log(`autopilot: started the private fix of ${fixes} confirmed security findings`);
-          // A fix waits for its build without a job; the next one starts when the build tasks end.
-          const next = await advanceSecurityFixes(this.db);
-          if (next) this.o.log(`autopilot: continued the private fix of ${next} security findings after their builds`);
         }
       } catch (e) {
         this.o.log(`autopilot: ${(e as Error).message}`);
       }
     }
+    // A private fix waits for its build without a job; the next job starts when the build tasks end, for operator-started fixes with the pipeline off too.
+    try {
+      const next = await advanceSecurityFixes(this.db, isEnabled(this.db));
+      if (next) this.o.log(`security: continued the private fix of ${next} findings after their builds`);
+    } catch (e) { this.o.log(`security fixes: ${(e as Error).message}`); }
     // Pre-approved merges move on rows other steps wrote; they are read here, not on a timer of their own.
     try { advancePreapprovals(this.db, this.o.log); } catch (e) { this.o.log(`preapprovals: ${(e as Error).message}`); }
     if (this.planning || !planDue(this.db)) return;

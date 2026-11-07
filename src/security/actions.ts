@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { FindingAction, FindingState, FindingView, ScanView } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
+import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
 import { securityRepo, SECURITY_STEP, REASON_MAX, MIN_VERIFY_SCORE } from "./rules.ts";
 import { activeScan, ACTIVE_STATES, advance, finishScan, findingKey, findingRow, moveFinding, reconcileFindings, reconcileScans, reopenUnchecked, scanRow, toFinding, toScan, UNCHECKED_RESULT } from "./store.ts";
@@ -134,20 +135,32 @@ export async function autoFixConfirmed(db: DatabaseSync, repo?: string, n?: numb
   return queued;
 }
 
+/** The longest a round's build tasks may run before the round counts as ended and its tasks are cancelled. */
+export const ROUND_BUILD_LIMIT_MS = 4 * 3_600_000;
+
 /**
- * Queues a fix job for each fixing finding whose build round has ended and that has no fix job queued or running: the job
- * reads the result and writes the next round or the commit. Returns how many jobs it queued.
+ * Queues a fix job for each fixing finding whose build round has ended (its tasks are done, or it has been building past
+ * ROUND_BUILD_LIMIT_MS, when the tasks are cancelled) and that has no fix job queued or running: the job reads the result and
+ * writes the next round or the commit. The job is requested by whoever started the fix; fixes the pipeline started continue
+ * only while `pipelineOn`. Returns how many jobs it queued.
  */
-export async function advanceSecurityFixes(db: DatabaseSync): Promise<number> {
-  const rows = db.prepare(`SELECT f.repo, f.number FROM security_findings f WHERE f.state = 'fixing'
-      AND EXISTS (SELECT 1 FROM security_fix_rounds r WHERE r.repo = f.repo AND r.number = f.number AND r.state = 'building'
-        AND NOT EXISTS (SELECT 1 FROM build_tasks t WHERE t.id IN (r.head_task, r.base_task) AND t.state NOT IN ('done', 'failed', 'cancelled', 'lost')))
+export async function advanceSecurityFixes(db: DatabaseSync, pipelineOn = true): Promise<number> {
+  const rows = db.prepare(`SELECT f.repo, f.number, f.decided_by AS by, r.created_at, r.head_task, r.base_task FROM security_findings f
+      JOIN security_fix_rounds r ON r.repo = f.repo AND r.number = f.number AND r.state = 'building'
+      WHERE f.state = 'fixing'
       AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.step = 'security-fix' AND j.state IN ('queued', 'running') AND json_extract(j.params, '$.repo') = f.repo AND json_extract(j.params, '$.number') = f.number)
-      ORDER BY f.repo, f.number`).all() as { repo: string; number: number }[];
+      ORDER BY f.repo, f.number`).all() as { repo: string; number: number; by: string | null; created_at: string; head_task: number; base_task: number }[];
   let queued = 0;
   for (const r of rows) {
+    const by = r.by ?? "pipeline";
+    if (by === "pipeline" && !pipelineOn) continue;
+    const open = [r.head_task, r.base_task].filter((id) => { const t = getTask(db, id); return t && !TERMINAL.includes(t.state); });
+    if (open.length) {
+      if (Date.now() - Date.parse(r.created_at) <= ROUND_BUILD_LIMIT_MS) continue;
+      for (const id of open) cancelTask(db, id, "security-fix");
+    }
     try {
-      const job = await enqueue(db, STEPS.fix!.step, { repo: r.repo, number: r.number }, "pipeline");
+      const job = await enqueue(db, STEPS.fix!.step, { repo: r.repo, number: r.number }, by);
       db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(r.repo), job.id);
       queued++;
     } catch (e) {
