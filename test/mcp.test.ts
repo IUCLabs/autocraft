@@ -260,7 +260,7 @@ describe("tools", () => {
     assert.ok(data((await call(maint, "list_inbox")).text).decisions.some((d: { id: string }) => d.id === S7));
     const photo = data((await call(maint, "list_inbox", { repo: "storytold/photocraft", limit: 5 })).text);
     assert.deepEqual(photo.decisions.map((d: { id: string }) => d.id).sort(), [P1, P10, "photocraft#11:scope"].sort());
-    assert.match(photo.decisions.find((d: { id: string }) => d.id === P1).link, /^\/needs\/decisions\/photocraft\/1(\/scope)?$/);
+    assert.match(photo.decisions.find((d: { id: string }) => d.id === P1).link, /^\/items\/photocraft\/1#decision-/);
   });
 
   test("arguments are checked", async () => {
