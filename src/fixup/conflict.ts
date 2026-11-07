@@ -5,6 +5,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isHalt } from "../agents/call.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { audit } from "../dash/audit.ts";
 import type { By } from "../core/gates.ts";
@@ -347,6 +348,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       : await ghComment(x.gw, g, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, note, conflictCommentText(c.base), { run: x.runId });
     if (cm.code !== 0) x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   } catch (e) {
+    if (isHalt(e)) throw e;
     fail("failed", oneLine(String((e as Error).message ?? e)));
   }
 }

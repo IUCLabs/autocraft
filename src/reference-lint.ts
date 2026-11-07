@@ -5,7 +5,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { CancelledError } from "./agents/call.ts";
+import { isHalt } from "./agents/call.ts";
 import { jevAvailable } from "./agents/jev.ts";
 import { runModelStep } from "./agents/step.ts";
 import { REFERENCE_HAIKU, REFERENCE_JEV } from "./agents/steps.ts";
@@ -122,7 +122,7 @@ export function defaultSemanticDeps(db: DatabaseSync, ref: string): SemanticDeps
 export async function refersToDocumentation(text: string, deps: SemanticDeps): Promise<boolean> {
   // A failed call (no account, a wait that ran out) counts as no for this text; a cancel stops the whole lint.
   const guard = async <T>(f: () => Promise<T>): Promise<T | null> => {
-    try { return await f(); } catch (e) { if (e instanceof CancelledError) throw e; console.log(`reference check failed: ${(e as Error).message}`); return null; }
+    try { return await f(); } catch (e) { if (isHalt(e)) throw e; console.log(`reference check failed: ${(e as Error).message}`); return null; }
   };
   const p = (deps.jevUsable?.() ?? true) ? await guard(() => deps.jev(text)) : null;
   if (p !== null && p >= REFERENCE_JEV_ACCEPT) return true;

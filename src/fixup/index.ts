@@ -55,7 +55,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
 import { leaseItem } from "../runner/leases.ts";
-import { CancelledError, queueRoom } from "../agents/call.ts";
+import { isHalt, queueRoom } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
 
@@ -545,7 +545,6 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         }
       }
       // The planner may have released the PR while the model worked (our own unassign is no one's final word).
-      if (pushesUnsettled(db, repo, log)) return;
       if (!c.carry) await claim(c);
       rec.pushing(c, commit, v.files);
       const push = await pushBranch(gw, git, "fixup-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
@@ -570,7 +569,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         : await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, note, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
-      if (e instanceof CancelledError) throw e;
+      if (isHalt(e)) throw e;
       fail("failed", oneLine(String((e as Error).message ?? e)));
     } finally {
       release();

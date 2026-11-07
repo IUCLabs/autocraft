@@ -8,7 +8,7 @@ import type { Querier } from "../src/mirror.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import type { Exec, ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
-import { CancelledError } from "../src/agents/call.ts";
+import { CancelledError, StoppedError } from "../src/agents/call.ts";
 import { SCRATCH } from "./scratch.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { validating } from "./gql.ts";
@@ -89,5 +89,11 @@ test("at most max items of a pool run at once", async () => {
 test("a cancel during a waiting call records no failure", async () => {
   const r = await run(undefined, 1, { prs: 1, ask: async () => { throw new CancelledError("cancelled while waiting for a Claude account"); } });
   assert.ok(r.err instanceof CancelledError);
+  assert.equal(r.failures, 0);
+});
+
+test("a stop during a waiting call records no failure", async () => {
+  const r = await run(undefined, 1, { prs: 1, ask: async () => { throw new StoppedError("the pipeline was switched off"); } });
+  assert.ok(r.err instanceof StoppedError);
   assert.equal(r.failures, 0);
 });

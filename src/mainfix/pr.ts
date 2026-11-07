@@ -33,7 +33,7 @@ import type { FixRow } from "./index.ts";
 import { optionalChecks } from "../optional-checks.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
-import { CancelledError, queueRoom } from "../agents/call.ts";
+import { isHalt, queueRoom } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 
 export const PR_ACTOR = "main-fix";
@@ -267,7 +267,6 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
     const found = await c.exec("gh", ["pr", "list", "--repo", `${slugOf(c.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (!(url && urlOk(url, c.repo))) {
-      if (pushesUnsettled(c.db, c.repo, c.log)) return "waiting";
       const push = await pushOwnBranch({ db: c.db, login: PR_ACTOR }, g, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });
       if (push.code !== 0) return set(live, "fix-failed", `push failed: ${oneLine(push.stderr)}`);
       const body = prBody({ head, checks: live.map((r) => ({ name: r.check, runUrl: r.run_url })), culprit: now.culprit, culpritPr: now.culpritPr, files: patchFiles, changed });
@@ -280,7 +279,7 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
     c.log(`  ${c.repo}: ${names.join(", ")}: opened ${url}`);
     return "opened";
   } catch (e) {
-    if (e instanceof CancelledError) throw e;
+    if (isHalt(e)) throw e;
     return done("fix-failed", String((e as Error).message ?? e));
   }
 }

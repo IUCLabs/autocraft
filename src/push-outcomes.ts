@@ -2,7 +2,6 @@
 // Recording happens where the push is audited (github/write.ts); the outcome is computed where the checks are stored (review/checks.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
-import { skipItem } from "./runner/leases.ts";
 import { optionalChecks } from "./optional-checks.ts";
 import {
   breakerTripped, classifyPush, PUSH_STAGE, requiredResult, STEP_STAGE, TRIP_STAGES,
@@ -15,11 +14,25 @@ const EXPIRE_MS = 3 * 24 * 3_600_000;
 /** Pushes of a repo whose checks are not final yet: at most this many before the pushing steps wait for their results. */
 export const UNSETTLED_PUSHES_MAX = 3;
 
-/** True (one skip counted and logged) when the repo already has UNSETTLED_PUSHES_MAX pushes without an outcome. */
-export function pushesUnsettled(db: DatabaseSync, repo: string, log: (line: string) => void): boolean {
-  const n = (db.prepare("SELECT COUNT(*) AS n FROM push_outcomes WHERE repo = ? AND outcome IS NULL").get(repo) as { n: number }).n;
-  if (n < UNSETTLED_PUSHES_MAX) return false;
-  skipItem(`pushes:${repo}`, log, `${n} earlier pushes have no CI result yet`);
+/** Only pushes of the last 2 hours count: older ones are settled as unknown or will never settle. */
+const UNSETTLED_WINDOW_MS = 2 * 3_600_000;
+
+/**
+ * True when the repo has UNSETTLED_PUSHES_MAX pushes that still wait for their required checks: the PR is open, its head is
+ * still the pushed commit, and the repo has required checks (the commit's checks are pending, or none yet in a repo whose pushes
+ * have settled before). Items that find it true are not worked and nothing is counted, so the step ends idle.
+ */
+export function pushesUnsettled(db: DatabaseSync, repo: string, log: (line: string) => void, now = new Date()): boolean {
+  const rows = db.prepare(`SELECT p.to_oid AS oid, c.checks AS checks FROM push_outcomes p
+    JOIN items i ON i.repo = p.repo AND i.number = p.number AND i.state = 'OPEN' AND i.head_oid = p.to_oid
+    LEFT JOIN pr_checks c ON c.repo = p.repo AND c.number = p.number AND c.head_oid = p.to_oid
+    WHERE p.repo = ? AND p.outcome IS NULL AND p.number IS NOT NULL AND p.at >= ?`).all(repo, new Date(now.getTime() - UNSETTLED_WINDOW_MS).toISOString()) as { oid: string; checks: string | null }[];
+  if (rows.length < UNSETTLED_PUSHES_MAX) return false;
+  const optional = optionalChecks(db, repo);
+  const known = () => !!db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ? AND after_res IN ('green', 'red') LIMIT 1").get(repo);
+  const waiting = rows.filter((r) => { const res = requiredResult(parse(r.checks), optional); return res === "pending" || (res === "none" && known()); }).length;
+  if (waiting < UNSETTLED_PUSHES_MAX) return false;
+  log(`  ${repo}: waiting: ${waiting} earlier pushes have no CI result yet`);
   return true;
 }
 
@@ -67,6 +80,9 @@ export function resolvePushes(db: DatabaseSync, rows: { repo: string; number: nu
       if (outcome === "broke") broke.add(p.stage);
     }
   }
+  // A push whose PR is closed or merged, or whose head moved past the pushed commit (the mirror may still show the head before the push), will not get a result of its own.
+  db.prepare(`UPDATE push_outcomes SET outcome = 'unknown', resolved_at = ? WHERE outcome IS NULL AND number IS NOT NULL AND EXISTS
+    (SELECT 1 FROM items i WHERE i.repo = push_outcomes.repo AND i.number = push_outcomes.number AND (i.state <> 'OPEN' OR (i.head_oid IS NOT NULL AND i.head_oid <> push_outcomes.to_oid AND i.head_oid IS NOT push_outcomes.from_oid)))`).run(at);
   const old = new Date(Date.parse(at) - EXPIRE_MS).toISOString();
   if (db.prepare("SELECT 1 FROM push_outcomes WHERE outcome IS NULL AND at < ? LIMIT 1").get(old))
     db.prepare("UPDATE push_outcomes SET outcome = 'unknown', resolved_at = ? WHERE outcome IS NULL AND at < ?").run(at, old);

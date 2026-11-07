@@ -15,7 +15,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { absolute } from "../build/artifacts.ts";
 import { createTask, getTask, TERMINAL, warmKeyOf } from "../build/tasks.ts";
 import { askClaude, POOL_MAX, pool } from "../classify/run.ts";
-import { CancelledError, queueRoom } from "../agents/call.ts";
+import { isHalt, queueRoom } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
@@ -505,7 +505,6 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     }
     const outside = outsideShown(shown, await git.diffText(head, commit));
     if (outside) { fail("refused", outside); return; }
-    if (pushesUnsettled(db, repo, log)) return;
     rec.pushing(c, kind, commit, v.files);
     const push = await pushBranch(gw, git, "cifix-push", g, { remote: pr.headRepository!.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed, kind });
     if (push.code !== 0) {
@@ -686,7 +685,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       if (pushesUnsettled(db, repo, log)) return;
       await fixCode(c, pr, failure);
     } catch (e) {
-      if (e instanceof CancelledError) throw e;
+      if (isHalt(e)) throw e;
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(c, "code", "failed", reason);
       summary.failed.push({ ref, reason });
@@ -747,6 +746,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   await each(collect, (x) => x.c.number, async (x) => {
     try { await collectFormat(x.c, x.task); }
     catch (e) {
+      if (isHalt(e)) throw e;
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(x.c, "format", "failed", reason);
       summary.failed.push({ ref: refOf(x.c), reason });
@@ -755,6 +755,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   await each(sel.lint, (c) => c.number, async (c) => {
     try { await collectLint(c); }
     catch (e) {
+      if (isHalt(e)) throw e;
       const reason = scrubReason(oneLine(String((e as Error).message ?? e)), d.root);
       rec.set(c, "code", "failed", reason);
       summary.failed.push({ ref: refOf(c), reason });

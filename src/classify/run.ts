@@ -8,7 +8,7 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { accountConfigDir, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, CancelledError, type Started } from "../agents/call.ts";
+import { accountConfigDir, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
 import { touchStore, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
 import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
@@ -139,7 +139,7 @@ export async function pool<T>(jobs: (() => Promise<T>)[], width: number | (() =>
   };
   if (opts.first && jobs.length > 1) await launch();
   while (next < jobs.length && !failed) {
-    const room = Math.min(typeof width === "number" ? width : width(), opts.max ?? Infinity) - running.size;
+    const room = typeof width === "number" ? width - running.size : Math.min(width(), (opts.max ?? Infinity) - running.size);
     if (room > 0 || !running.size) {
       launch();
       continue;
@@ -518,7 +518,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     }
     if (!opts.lint) return reply;
     let problems: LintProblem[] | null = null;
-    try { problems = await opts.lint(reply.text, "first"); } catch (e) { if (e instanceof CancelledError) throw e; console.log(`lint failed: ${(e as Error).message}`); }
+    try { problems = await opts.lint(reply.text, "first"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
     if (problems === null) return reply;
     if (!problems.length) return { ...reply, problems };
     if (!sessions || !sessionId) return { ...reply, problems };
@@ -551,7 +551,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     if (!fix) return { ...reply, problems, fixTurn: true };
     const total = add(reply.usage, fix.usage);
     let after: LintProblem[] | null = null;
-    try { after = await opts.lint(fix.text, "fix"); } catch (e) { if (e instanceof CancelledError) throw e; console.log(`lint failed: ${(e as Error).message}`); }
+    try { after = await opts.lint(fix.text, "fix"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
     // A fix reply the lint cannot read (or that is not in the format) is not used; the first reply stands.
     if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems, fixTurn: true };
     return { text: fix.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
