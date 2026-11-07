@@ -84,7 +84,7 @@ function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFa
     if (isQueueState(pr.plan.state) && pr.facts.review) v.queue = queueViewOf(pr.facts, pr.plan);
   }
   v.status = {
-    ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, waitKind, scopeAnswered: pr?.facts.scopeAnswer != null, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked" }),
+    ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, waitKind, scopeAnswered: pr?.facts.scopeAnswer != null, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked", inPipeline: item?.facts.inScope ?? pr?.facts.inScope }),
     since: plannedAt,
   };
   return v;

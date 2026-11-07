@@ -21,7 +21,10 @@ describe("item status", () => {
     assert.equal(phaseOf(input({ state: "review-stale", reviewBlocked: true })), "Held");
     assert.equal(phaseOf(input({ state: "label-not-reviewed" })), "Held");
     assert.equal(phaseOf(input({ state: "opus-hold", reviewBlocked: true })), "Held", "a hold blocked by other items is parked");
-    assert.equal(phaseOf(input({ state: "opus-hold" })), "Waiting for a person");
+    assert.equal(phaseOf(input({ state: "opus-hold" })), "Held", "a hold review waits for the author's changes");
+    assert.equal(phaseOf(input({ state: "out-of-scope" })), "Pipeline off");
+    assert.equal(phaseOf(input({ itemState: "classified", inPipeline: false })), "Pipeline off", "an issue in a repo with the pipeline off");
+    assert.equal(phaseOf(input({ gh: "MERGED", inPipeline: false })), "Merged");
     assert.equal(phaseOf(input({ state: "scope", scopeAnswered: true })), "Out of scope", "an answer that keeps it out of core asks nobody");
     assert.equal(phaseOf(input({ state: "scope" })), "Waiting for a person");
     assert.equal(phaseOf(input({ state: "opus-close" })), "Out of scope");
