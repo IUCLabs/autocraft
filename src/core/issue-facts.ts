@@ -23,7 +23,7 @@ import { issuesWithOpenPr, notRustKey, textHash } from "../fixissue/candidates.t
 import { headOf, scopeAnswers } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql } from "../pilot.ts";
-import { isPreparing, type PrepareColumns } from "../decide/prepared.ts";
+import { discussedAtSql, isPreparing, type PrepareColumns } from "../decide/prepared.ts";
 import type { ItemFacts } from "./plan.ts";
 
 export type { ItemFacts } from "./plan.ts";
@@ -98,7 +98,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const latestScope = new Map<string, { answer: string | null; byOperator: boolean }>(), securityIds = new Set<string>();
   const head = db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?");
   const openScope = new Set<string>(), covered = new Set<string>(), recommend = new Map<string, { failures: number; failedAt: string | null }>();
-  for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, prepared_at, prepared_head, prepare_failed_head, recommend_failures, recommend_failed_at FROM decisions ORDER BY asked_at, id`).all() as
+  for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, prepared_at, prepared_head, prepare_failed_head, recommend_failures, recommend_failed_at, CASE WHEN answer IS NULL THEN ${discussedAtSql("decisions")} END AS discussed_at FROM decisions ORDER BY asked_at, id`).all() as
     (PrepareColumns & { id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null })[]) {
     const dupegroup = d.id.includes(":dupegroup:");
     if (d.kind === "scope" && d.number !== null && !(d.answer === "withdrawn" && d.answered_by === "pipeline")) latestScope.set(`${d.repo}#${d.number}`, { answer: d.answer, byOperator: settledBy(db, d, memo) });

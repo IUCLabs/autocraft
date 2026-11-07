@@ -121,6 +121,10 @@ CREATE TABLE IF NOT EXISTS token_usage (
   PRIMARY KEY (run_id, agent)
 );
 
+-- One row per prepare call of a decision; manual: an operator asked for it (exempt from the daily cap, src/decide/prepared.ts).
+CREATE TABLE IF NOT EXISTS decision_prepares (decision_id TEXT NOT NULL, at TEXT NOT NULL, manual INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS decision_prepares_decision ON decision_prepares(decision_id, at);
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 -- whitelist rule defaults; editable with `autocraft whitelist rule`
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merged', '5');
