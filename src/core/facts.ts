@@ -326,8 +326,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.runs = runsOf(wait, rf.f.ciApproved);
     // Our push to this head turned its required checks red: the CI fix works on it now, without waiting for a review of the new head.
     // A head that our own push or the review's CI gate (red CI at a new head, reviewed earlier) left red is repaired against that head.
-    const gateRed = !!base.reviewHold?.red && !!head && head !== r.r_head;
-    base.brokeByUs = (brokeAt.get(ref) === head || gateRed) && r.c_head === head && effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks) === "failure";
+    const redNow = r.c_head === head && effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks) === "failure";
+    base.brokeByUs = brokeAt.get(ref) === head && redNow;
+    base.gateRed = !base.brokeByUs && !!base.reviewHold?.red && !!head && head !== r.r_head && redNow;
     base.tier = (r.author ? tiers.get(r.author) : undefined) ?? "not";
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
     if (base.tier === "not" && r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref)) base.tier = "whitelisted";
@@ -368,12 +369,12 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       for (const x of lintFixup.all(r.repo, r.number, r.r_head) as { source: string | null; lint_task: number | null }[]) {
         base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" || x.source === "operator" ? x.source : "review", ended: ended(x.lint_task) });
       }
-      for (const x of lintCifix.all(r.repo, r.number, base.brokeByUs ? head : r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
+      for (const x of lintCifix.all(r.repo, r.number, base.brokeByUs || base.gateRed ? head : r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
       for (const x of lintConflict.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "conflict", source: "review", ended: ended(x.lint_task) });
       if (base.lint.length && r.state === "OPEN") base.inFlight = true;
     }
-    if (base.ci === "failure" || base.brokeByUs) {
-      const cfHead = base.brokeByUs ? head : r.r_head;
+    if (base.ci === "failure" || base.brokeByUs || base.gateRed) {
+      const cfHead = base.brokeByUs || base.gateRed ? head : r.r_head;
       const prior = cifixRows.all(r.repo, r.number, cfHead) as { state: string; created_at: string; task_id: number | null; runs: string | null }[];
       const totals = cifixTotals.get(...CIFIX_PUSH_STATES, ...CIFIX_TRY_STATES, r.repo, r.number) as { pushes: number; tries: number };
       const formatting = prior.find((x) => x.state === "formatting");

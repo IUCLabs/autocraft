@@ -96,6 +96,8 @@ export type PrFacts = {
   tripped?: Partial<Record<string, string>>;
   /** A push of ours made the required checks at this head go red: CI fix works on it ahead of other work, even before a review of this head. */
   brokeByUs?: boolean;
+  /** The head is new and its CI is red, and the PR has a take or take-fix review of an earlier head: CI fix works from that review and the contributor path is the normal one. */
+  gateRed?: boolean;
   /** The head has no review, but the review of the earlier head carries to it (src/review/carry.ts): the Carry step stores it and no model reviews the head. */
   carriable?: boolean;
   /** Why a due review waits (src/review/gate.ts): an open blocker, CI at the head not finished or not passed, the PR's daily review cap, or the minimum time since its last review. */

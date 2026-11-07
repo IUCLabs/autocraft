@@ -7,7 +7,7 @@ import { activeBlockers, storedBlockedBy } from "./blockers.ts";
 import { MAX_RERUNS_PER_DAY, discussionState, reviewRequestedSince, type DiscussionState } from "./discussion.ts";
 import { ourCommitsSince } from "./ours.ts";
 
-/** Opus review calls of one PR per UTC day, new heads, re-runs, failed calls and reply-fix turns together. */
+/** Opus review calls of one PR per UTC day, new heads, re-runs and failed calls together (a reply-fix turn is part of its review). */
 export const MAX_REVIEWS_PER_DAY = MAX_RERUNS_PER_DAY;
 
 /** Setting: least minutes between two Opus reviews of one PR; 0 turns the wait off. */
@@ -69,8 +69,10 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
   const lastReview = db.prepare(`SELECT head_oid, at, verdict, seen_at, disc_hash, blocked_by FROM main.opus_reviews WHERE repo = ? AND number = ? AND verdict IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1`);
   const history = db.prepare(`SELECT COUNT(CASE WHEN at >= :today THEN 1 END) AS n, MAX(at) AS last FROM main.opus_review_history
     WHERE repo = :repo AND number = :number AND model IS NOT NULL AND model <> 'carried' AND COALESCE(mode, '') <> 'carried'`);
-  const runs = db.prepare(`SELECT COUNT(CASE WHEN r.started_at >= :today THEN 1 END) AS n, MAX(r.started_at) AS last FROM main.agent_run_items i
-    JOIN main.agent_runs r ON r.id = i.run_id WHERE i.repo = :repo AND i.number = :number AND r.step = 'opus-review'`);
+  // One review call per job and PR: the reply-lint fix turn is a follow-up run of the same job, not another review.
+  const runs = db.prepare(`SELECT COUNT(CASE WHEN s >= :today THEN 1 END) AS n, MAX(s) AS last FROM (
+      SELECT MIN(r.started_at) AS s FROM main.agent_run_items i JOIN main.agent_runs r ON r.id = i.run_id
+      WHERE i.repo = :repo AND i.number = :number AND r.step = 'opus-review' GROUP BY COALESCE(r.job_id, -r.id))`);
   const failure = db.prepare("SELECT value FROM main.settings WHERE key = ?");
   const interval = reviewMinInterval(db) * 60_000;
   const today = new Date(nowMs).toISOString().slice(0, 10);

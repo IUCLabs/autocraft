@@ -114,6 +114,8 @@ test("red CI at a new head leaves the CI fix to work from the earlier review; th
   assert.equal(reviews(w, 1), 0);
   const facts = loadPlanSet(w.db).prs.find((p) => p.facts.number === 1)!.facts;
   assert.notEqual(cifixBucket(facts), null);
+  assert.equal(!!facts.brokeByUs, false);
+  assert.equal(facts.gateRed, true);
   w.db.prepare(red + "2").run();
   assert.equal(reviews(w, 2), 1);
 });
@@ -158,4 +160,19 @@ test("the merge-time check ignores the PR author's new comment", async () => {
   } }) as never;
   assert.equal((await liveGate(w.db, q("regular", "CONTRIBUTOR"), "app", 1, "h1")).moved, false);
   assert.equal((await liveGate(w.db, q("maint", "MEMBER"), "app", 1, "h1")).moved, true);
+});
+
+test("a reply-fix turn does not count as a second review call", () => {
+  const w = noGaps(world().repo().pr(1, { head: "h1" }));
+  review(w, 1, "h1", "take");
+  w.synced(1, "h2");
+  w.db.prepare("DELETE FROM opus_review_history").run();
+  const run = (job: number) => {
+    const id = Number(w.db.prepare("INSERT INTO agent_runs (job_id, step, stage, prompt_id, prompt_version, provider, model, state, started_at) VALUES (?, 'opus-review', 5, 'review.opus', '1', 'claude', 'opus', 'done', ?)").run(job, new Date().toISOString()).lastInsertRowid);
+    w.db.prepare("INSERT INTO agent_run_items (run_id, repo, number) VALUES (?, 'app', 1)").run(id);
+  };
+  run(1); run(1); run(2); // job 1: the review and its fix turn
+  assert.equal(reviews(w, 1), 1);
+  run(3);
+  assert.match(planOf(w, 1).wait ?? "", /review cap for today/);
 });

@@ -170,7 +170,7 @@ export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" |
 export function cifixBucket(f: PrFacts): CifixBucket | null {
   const r = f.review, c = f.cifix;
   // Our own push that turned the checks red is repaired against the pushed head, whose review is still the one of the head before.
-  const broke = !!f.brokeByUs;
+  const broke = !!f.brokeByUs || !!f.gateRed;
   if (declinedBy(f) || !r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || (r.head !== f.head && !broke) || f.ghState !== "OPEN" || (f.ci !== "failure" && !broke) || f.draft || !notHeld(f)) return null;
   if (f.mergeable === "CONFLICTING" || (r.stale && !broke) || f.changesRequested || f.mergeHeld) return null;
   if (r.verdict === "take-fix") {
@@ -367,7 +367,7 @@ export function decidePr(f: PrFacts): Plan {
   const cf = cifixOf(f);
   if (cf && cf !== "other") {
     // Repairing our own breakage comes before every other action of the PR.
-    if (f.brokeByUs && (cf === "work" || cf === "collect")) actions.unshift(act("cifix", f.head, { bucket: cf }));
+    if ((f.brokeByUs || f.gateRed) && (cf === "work" || cf === "collect")) actions.unshift(act("cifix", f.head, { bucket: cf }));
     else actions.push(act("cifix", f.head, { bucket: cf }));
   }
 
@@ -378,7 +378,7 @@ export function decidePr(f: PrFacts): Plan {
     const basic = l.ended && open && !f.draft && !declinedBy(f) && (conflicted ? f.mergeable === "CONFLICTING" && !!f.conflict?.baseOk && !f.inActiveBatch : f.mergeable !== "CONFLICTING") && !f.mergeHeld && !f.heldBacklog && !!f.head;
     // A carry-over needs no review at the head; every other patch needs a take review there that is not stale.
     // A CI fix of our own breakage is reviewed against the head before the push.
-    const reviewed = l.source === "carry" || l.source === "operator" || (l.step === "cifix" && !!f.brokeByUs && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
+    const reviewed = l.source === "carry" || l.source === "operator" || (l.step === "cifix" && (!!f.brokeByUs || !!f.gateRed) && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
     const approved = f.pushable ? f.repoFacts.pushApproved : l.step === "cifix" && f.repoFacts.commentApproved;
     if (basic && reviewed && approved) actions.push(act("lint", f.head, { bucket: l.step, source: l.source }));
   }
