@@ -170,7 +170,7 @@ export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" |
 export function cifixBucket(f: PrFacts): CifixBucket | null {
   const r = f.review, c = f.cifix;
   // Our own push that turned the checks red is repaired against the pushed head, whose review is still the one of the head before.
-  const broke = !!f.brokeByUs;
+  const broke = !!f.brokeByUs || !!f.gateRed;
   if (declinedBy(f) || !r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || (r.head !== f.head && !broke) || f.ghState !== "OPEN" || (f.ci !== "failure" && !broke) || f.draft || !notHeld(f)) return null;
   if (f.mergeable === "CONFLICTING" || (r.stale && !broke) || f.changesRequested || f.mergeHeld) return null;
   if (r.verdict === "take-fix") {
@@ -234,13 +234,14 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
   const fx = fixupOf(f), cf = cifixBucket(f);
   const inBatch = state === "in-batch" || state === "batch-checking" || f.inActiveBatch;
   const flying = inFlightNow(f, state);
+  const waitingToReview = (f.reviewHold?.kind === "ci" && !f.reviewHold.red) || f.reviewHold?.kind === "interval";
   const working = actions.some(worksOn) || inBatch || flying;
   // A conflicting PR whose conflict step has nothing to do (asked, held, not approved, done) waits on its author, whatever the queue state says.
   const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting";
   const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || conflictStuck
     || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push" || cf === "done"
     || f.mergeHeld || (state === "ci-approval" && !f.repoFacts.ciApproved);
-  const keep = working || (!gaveUp && PROGRESS_STATES.has(state));
+  const keep = working || (!gaveUp && (waitingToReview || PROGRESS_STATES.has(state)));
   return unassignActions(f.assignment, f.ghState === "OPEN", !keep);
 }
 
@@ -323,8 +324,15 @@ export function decidePr(f: PrFacts): Plan {
 
   // Review: no review at the head, or one made stale (a PR at its re-review cap waits).
   // A head whose earlier review carries over our checked fix-up is carried, not reviewed.
-  if (!held && reviewable && f.carriable) actions.push(act("carry", f.head));
-  else if (!held && reviewable && !(r && r.head === f.head && !r.staleActionable)) actions.push(act("review", f.head));
+  // A due review waits while another item blocks the PR, CI at the head has not passed, or the day's review cap is used (src/review/gate.ts); a carry only waits for CI.
+  let reviewWait: string | null = null;
+  if (!held && reviewable && f.carriable) {
+    if (f.reviewHold?.kind === "ci") reviewWait = f.reviewHold.wait;
+    else actions.push(act("carry", f.head));
+  } else if (!held && reviewable && !(r && r.head === f.head && !r.staleActionable)) {
+    if (f.reviewHold) reviewWait = f.reviewHold.wait;
+    else actions.push(act("review", f.head));
+  }
 
   // Post the review.
   if (!held && !f.authorIsPipeline && !f.batchPr && r && f.post.postable && r.head === f.head) {
@@ -359,7 +367,7 @@ export function decidePr(f: PrFacts): Plan {
   const cf = cifixOf(f);
   if (cf && cf !== "other") {
     // Repairing our own breakage comes before every other action of the PR.
-    if (f.brokeByUs && (cf === "work" || cf === "collect")) actions.unshift(act("cifix", f.head, { bucket: cf }));
+    if ((f.brokeByUs || f.gateRed) && (cf === "work" || cf === "collect")) actions.unshift(act("cifix", f.head, { bucket: cf }));
     else actions.push(act("cifix", f.head, { bucket: cf }));
   }
 
@@ -370,7 +378,7 @@ export function decidePr(f: PrFacts): Plan {
     const basic = l.ended && open && !f.draft && !declinedBy(f) && (conflicted ? f.mergeable === "CONFLICTING" && !!f.conflict?.baseOk && !f.inActiveBatch : f.mergeable !== "CONFLICTING") && !f.mergeHeld && !f.heldBacklog && !!f.head;
     // A carry-over needs no review at the head; every other patch needs a take review there that is not stale.
     // A CI fix of our own breakage is reviewed against the head before the push.
-    const reviewed = l.source === "carry" || l.source === "operator" || (l.step === "cifix" && !!f.brokeByUs && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
+    const reviewed = l.source === "carry" || l.source === "operator" || (l.step === "cifix" && (!!f.brokeByUs || !!f.gateRed) && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
     const approved = f.pushable ? f.repoFacts.pushApproved : l.step === "cifix" && f.repoFacts.commentApproved;
     if (basic && reviewed && approved) actions.push(act("lint", f.head, { bucket: l.step, source: l.source }));
   }
@@ -393,5 +401,5 @@ export function decidePr(f: PrFacts): Plan {
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? "merge held by an operator" : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : WAITS[e.state] ?? null)) : null;
-  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: wait ?? (f.operator?.hold && !main ? "its pre-approved merge" : null) });
+  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: wait ?? (f.operator?.hold && !main ? "its pre-approved merge" : null) ?? (!main ? reviewWait : null) });
 }

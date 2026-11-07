@@ -9,6 +9,8 @@ import { runModelStep } from "../agents/step.ts";
 import { REVIEW_OPUS } from "../agents/steps.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
+import { openBlockers } from "./blockers.ts";
+import { recordReviewFailure, reviewHolds } from "./gate.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { headWasUnsure, mergeDecisionId } from "../merge/queue.ts";
@@ -77,11 +79,15 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   // The row about to be replaced may predate the history: copy it first.
   db.prepare(`${HISTORY_COPY_SQL} AND o.repo = ? AND o.number = ? AND o.head_oid = ?`).run(c.repo, c.number, c.head_oid);
   const risks = JSON.stringify(r.risks), fixes = r.fixes.length ? JSON.stringify(r.fixes) : null, pub = r.public ? JSON.stringify(r.public) : null, claims = r.claims.length ? JSON.stringify(r.claims) : null;
-  db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims);
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
-    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims);
+  // Only open tracked items other than the PR can block it: a reference that is already closed would end the wait at once.
+  const blockers = r.verdict === "hold" ? openBlockers(db, r.blocked_by.filter((x) => x !== `${c.repo}#${c.number}`)) : [];
+  const blockedBy = blockers.length ? JSON.stringify(blockers) : null;
+  db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims, blockedBy);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims, blocked_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
+    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims, blockedBy);
+  db.prepare("DELETE FROM main.settings WHERE key = ?").run(`review_fail:${c.repo}#${c.number}@${c.head_oid}`);
   db.prepare("DELETE FROM opus_carried_fixes WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
   for (const u of s.unapplied ?? []) {
     db.prepare("INSERT INTO opus_carried_fixes (repo, number, head_oid, from_head, file, change, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -200,10 +206,14 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       return summary;
     }
     const asked = cands.length;
+    const holds = reviewHolds(db);
     const byNumber = new Map(live.map((l) => [l.number, l]));
     cands = cands.filter((c) => {
       const l = byNumber.get(c.number);
       const ok = !!l && l.state === "OPEN" && !l.is_draft && l.head_oid === c.head_oid;
+      // The checks were just read: a head whose CI is running or red waits for the next push or the finished run.
+      const hold = ok ? holds(c.repo, c.number, c.head_oid) : null;
+      if (hold) { log(`  ${refOf(c)}: not reviewed, waits for ${hold.wait}`); return false; }
       if (!ok) log(`  ${refOf(c)}: dropped, ${l ? `now ${l.state}${l.is_draft ? " draft" : ""} at ${l.head_oid.slice(0, 7)}` : "not found on GitHub"}`);
       return ok;
     });
@@ -222,7 +232,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       return;
     }
     if (p.kind === "large") {
-      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], summary: null, why: null, public: null, conflicts: [], claims: [] };
+      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], summary: null, why: null, public: null, conflicts: [], claims: [], blocked_by: [] };
       saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r });
       tally(c, r);
       params.onHandled?.(++handled);
@@ -259,6 +269,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: outcomes });
       tally(c, got);
     } else {
+      recordReviewFailure(db, c.repo, c.number, c.head_oid);
       jobItem(db, c.repo, c.number, "no valid Opus review", log);
       summary.missing.push(refOf(c));
     }

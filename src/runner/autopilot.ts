@@ -295,12 +295,30 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => {
       const out: Candidate[] = [];
       const top = firstByRepo(planned(db, "review", { plans: plansOf(db, ctx) }));
+      // A PR waiting out the minimum time between reviews is planned again when it ends.
+      for (const p of plansOf(db, ctx).prs) if (p.facts.reviewHold?.until) ctx.wake?.push(p.facts.reviewHold.until);
+      // No other stage re-reads the checks of a head that was stored as running or red: a PR whose review waits for CI has its repo's checks read again, at most once per WAITING_CI_RECHECK_MS.
+      const ciWait = new Set(plansOf(db, ctx).prs.filter((p) => p.facts.reviewHold?.kind === "ci" && !p.facts.reviewHold.red && p.plan.wait === p.facts.reviewHold.wait).map((p) => p.facts.repo));
       for (const repo of flightFirst(plansOf(db, ctx), fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number))) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
         const review = { step: "opus-review", params: { repo } };
         out.push(fresh ? review : { step: "checks", params: { repo }, poll: true, gate: review });
+      }
+      // A repo whose waiting heads have all been pending for more than an hour is read every 5 minutes instead.
+      const young = new Set(plansOf(db, ctx).prs.filter((p) => ciWait.has(p.facts.repo) && p.facts.reviewHold?.kind === "ci" && !p.facts.reviewHold.red)
+        .filter((p) => { const u = (db.prepare("SELECT updated_at FROM items WHERE repo = ? AND number = ?").get(p.facts.repo, p.facts.number) as { updated_at: string | null } | undefined)?.updated_at; return !!u && Date.now() - Date.parse(u) <= 3600_000; })
+        .map((p) => p.facts.repo));
+      for (const repo of [...ciWait].sort()) {
+        if (out.some((c) => c.params.repo === repo)) continue;
+        const last = lastJobEnd(db, "checks", repo);
+        const gap = young.has(repo) ? WAITING_CI_RECHECK_MS : 5 * 60_000;
+        if (last && Date.now() - Date.parse(last.endedAt) < gap) {
+          ctx.wake?.push(Date.parse(last.endedAt) + gap);
+          continue;
+        }
+        out.push({ step: "checks", params: { repo }, poll: true });
       }
       return out;
     },

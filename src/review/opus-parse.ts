@@ -75,6 +75,22 @@ export type OpusPr = {
   statements?: OwnerStatement[];
 };
 
+/** "repo#n", "#n" (a PR of the same repo) or "owner/repo#n" (the owner is dropped). */
+const BLOCKER_REF = /^(?:[\w.-]+\/)?([\w.-]*)#(\d+)$/;
+
+/** The `blocked_by` of a reply: refs normalised to "repo#n", other than the PR itself, one each, at most 5. Whether they are tracked is checked against the database (openBlockers). */
+export function parseBlockedBy(v: unknown, self: string): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) {
+    const m = BLOCKER_REF.exec(typeof x === "string" ? x.trim() : "");
+    if (!m) continue;
+    const ref = `${m[1] || self.split("#")[0]}#${m[2]}`;
+    if (ref !== self && !out.includes(ref)) out.push(ref);
+  }
+  return out.slice(0, 5);
+}
+
 export type OpusReview = {
   ref: string;
   verdict: ReviewVerdict;
@@ -92,6 +108,8 @@ export type OpusReview = {
   conflicts: StatementConflict[];
   /** The behavioural claims of the title and body, each checked against the code. */
   claims: Claim[];
+  /** Refs ("repo#n") of other items the hold is waiting for; empty unless the verdict is hold. Checked against the tracked open items when stored. */
+  blocked_by: string[];
 };
 
 export type ClaimStatus = "verified" | "contradicted" | "unverified";
@@ -245,7 +263,7 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
     sure = false;
     notes.push(parsed === null ? "the PR description's claims were not checked" : unknownClaim ? `claim ${unknownClaim.status}, impact unknown: ${unknownClaim.claim}`.slice(0, 300) : `${parsed.rejected} entries of the claims list were not read`);
   }
-  return { ref, verdict: outVerdict, sure, reason: words(outReason, OPUS_REASON_WORDS), fixes: outFixes, risks: [...risks, ...notes], summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), conflicts: parseStatementConflicts(r.conflicts, known), claims: listed };
+  return { ref, verdict: outVerdict, sure, reason: words(outReason, OPUS_REASON_WORDS), fixes: outFixes, risks: [...risks, ...notes], summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), conflicts: parseStatementConflicts(r.conflicts, known), claims: listed, blocked_by: outVerdict === "hold" ? parseBlockedBy(r.blocked_by, ref) : [] };
 }
 
 /** The reply's reason before the word cut that the stored review applies. */

@@ -1,4 +1,4 @@
-import { isBotLogin } from "./review/bots.ts";
+import { isBotCommand, isBotLogin } from "./review/bots.ts";
 import { loadOwners } from "./owners.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -104,6 +104,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // JSON [{claim, status, evidence}]: the behavioural claims of the title and body, each checked against the code.
   ["opus_reviews", "claims", "TEXT"],
   ["opus_review_history", "claims", "TEXT"],
+  // JSON [ref]: the open items a hold review named as its reason (src/review/blockers.ts); the PR is not reviewed again while any is open.
+  ["opus_reviews", "blocked_by", "TEXT"],
+  ["opus_review_history", "blocked_by", "TEXT"],
   ["dupe_comparisons", "summary", "TEXT"],
   ["dupe_comparisons", "why", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
@@ -193,12 +196,12 @@ const ADDED_INDEXES = [
 const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
 
 /** Appends the stored review rows that the history does not hold yet. */
-export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims)
-  SELECT repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims FROM main.opus_reviews o
+export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by)
+  SELECT repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by FROM main.opus_reviews o
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 13;
+const MIGRATION_VERSION = 14;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -208,6 +211,10 @@ function backfill(db: DatabaseSync): void {
   // Bot comments never count as new discussion; rows stored while they did are recomputed (a bot whose login is on no list is fixed when its PR next changes, or by `sync --full`).
   const bots = (db.prepare("SELECT DISTINCT author FROM main.comments WHERE counted = 1 AND author IS NOT NULL").all() as { author: string }[]).map((r) => r.author).filter(isBotLogin);
   for (const a of bots) db.prepare("UPDATE main.comments SET counted = 0 WHERE counted = 1 AND author = ?").run(a);
+  // Comments that only command another bot are no discussion either.
+  for (const r of db.prepare("SELECT id, body FROM main.comments WHERE counted = 1 AND body LIKE '@%' AND body NOT LIKE '%' || char(10) || '%'").all() as { id: string; body: string }[]) {
+    if (isBotCommand(r.body)) db.prepare("UPDATE main.comments SET counted = 0 WHERE id = ?").run(r.id);
+  }
   // The history starts with the stored rows, so an unsure review made before it existed is not lost by a re-review.
   db.exec(HISTORY_COPY_SQL);
   // Merge? questions of PRs that merged or closed before questions were closed on merge.

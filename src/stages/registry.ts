@@ -233,6 +233,11 @@ export const STAGES: StageDef[] = [
     promptIds: ["review.opus", "lint.reference.jev", "lint.reference.haiku"], promptStage: "Review",
     waits: [
       { name: "Checks before Review and Verify", why: "CI data younger than 5 minutes is reused", howLong: "5 minutes", showsAs: "Job list", kind: "backoff" },
+      { name: "Blocked by another item", why: "A hold review named an open item as its reason (for example the PR is stacked on another open PR); the PR is not reviewed again, on new commits or discussion, until that item is merged, closed or decided", howLong: "Until the blocker is merged, closed or decided; a maintainer's comment or Review again lifts it", showsAs: "Plan wait: the blocker's reference", kind: "external" },
+      { name: "CI on the latest commit", why: "A new head is reviewed only after its CI has finished and passed; a head whose CI runs or is red is skipped", howLong: "Until CI at the head finishes green, or a later push", showsAs: "Plan wait: CI on the latest commit", kind: "external" },
+      { name: "Failed review", why: "A review call that gave no valid review is not repeated at once: the failure is counted per head", howLong: "10 minutes after the first failure, 30 after the second, 2 hours after the third; a fourth holds the head until a new commit or Review again", showsAs: "Plan wait: the review after n failed tries", kind: "backoff" },
+      { name: "Review cap for today", why: "At most 3 Opus review calls per PR per UTC day, new commits, re-runs, and failed calls together (a reply-fix turn is part of its review)", howLong: "Until the next UTC day; a maintainer's comment or Review again lifts it", showsAs: "Plan wait: review cap for today reached", kind: "external" },
+      { name: "Minimum time between reviews", why: "Setting review_min_interval_minutes (default 120, 0 turns it off; `autocraft pipeline review-interval`): a PR reviewed less than that long ago waits, then the latest green head is reviewed", howLong: "The setting's minutes since the PR's last review; a maintainer's comment or Review again lifts it", showsAs: "Plan wait: next review after hh:mm", kind: "external" },
     ],
     writes: [{ what: "Final review comment", approval: "comment" }],
     person: "Hold, close and merge-outside-rule verdicts",

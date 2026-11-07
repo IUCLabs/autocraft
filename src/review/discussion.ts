@@ -5,7 +5,8 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { isBotLogin } from "./bots.ts";
+import { isBotCommand, isBotLogin } from "./bots.ts";
+import { activeBlockers, storedBlockedBy } from "./blockers.ts";
 import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
@@ -62,6 +63,7 @@ export function isCounted(w: Written): boolean {
   if (w.state === "APPROVED" && !inline && body.length < 40) return false;
   const login = w.author ?? "";
   if (!login || w.bot || isBotLogin(login)) return false;
+  if (!inline && isBotCommand(body)) return false;
   return login === w.prAuthor || COUNTED_ASSOCIATIONS.includes(w.association ?? "");
 }
 
@@ -135,7 +137,8 @@ type ThreadNode = {
   head?: { nodes?: Node[] }; tail?: { nodes?: Node[] };
 };
 
-export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null; /** Latest formal review of each reviewer with write access, for the changes-requested rule. */ formal: ReviewFact[]; reviewDecision: string | null };
+export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null; /** Latest formal review of each reviewer with write access, for the changes-requested rule. */ formal: ReviewFact[]; reviewDecision: string | null;
+  /** Newest counted entry written by a maintainer or dashboard user; the merge-time check goes by this, as stale reviews do. */ newestMaint: string | null };
 
 /**
  * Everything others wrote on the PR, read from GitHub (a read, never a write) in one query: comments, review
@@ -152,7 +155,9 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
   const prAuthor: string | null = pr.author?.login ?? null;
   const entries: DiscussionEntry[] = [];
   const counted: { id: string; body: string | null }[] = [];
-  let newest: string | null = null;
+  let newest: string | null = null, newestMaint: string | null = null;
+  const dash = new Set((db.prepare("SELECT login FROM main.access WHERE role IN ('operator', 'maintainer')").all() as { login: string }[]).map((r) => r.login.toLowerCase()));
+  const isMaint = (login: string | null | undefined, assoc: string | undefined) => MAINTAINER_ASSOCIATIONS.includes(assoc ?? "") || (!!login && dash.has(login.toLowerCase()));
   const take = (kind: "comment" | "review", n: Node) => {
     if (mine(n.author, n.id)) return;
     const body = cleanBody(n.body);
@@ -160,6 +165,7 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
     if (isCounted({ author: n.author?.login ?? null, association: n.authorAssociation, bot: n.author?.__typename === "Bot", prAuthor, state: n.state, body: n.body ?? null, inline: n.comments?.totalCount })) {
       counted.push({ id: n.id ?? "", body: n.body ?? null });
       if (n.createdAt && (!newest || n.createdAt > newest)) newest = n.createdAt;
+      if (n.createdAt && isMaint(n.author?.login, n.authorAssociation) && (!newestMaint || n.createdAt > newestMaint)) newestMaint = n.createdAt;
     }
   };
   for (const n of (pr.comments?.nodes ?? []) as Node[]) take("comment", n);
@@ -172,6 +178,7 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
     if (isCounted({ author: c.author?.login ?? null, association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor, body: c.body ?? null })) {
       counted.push({ id: c.id ?? "", body: c.body ?? null });
       if (c.createdAt && (!newest || c.createdAt > newest)) newest = c.createdAt;
+      if (c.createdAt && isMaint(c.author?.login, c.authorAssociation) && (!newestMaint || c.createdAt > newestMaint)) newestMaint = c.createdAt;
     }
     const replies = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
       .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2) })).filter((r) => r.body);
@@ -179,7 +186,7 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
   }
   const formal = ((pr.formal?.nodes ?? []) as Node[])
     .map((n) => ({ id: n.id ?? null, author: n.author?.login ?? null, association: n.authorAssociation ?? null, state: n.state ?? null, at: n.submittedAt ?? n.createdAt ?? null }));
-  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, formal, reviewDecision: pr.reviewDecision ?? null };
+  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, newestMaint, formal, reviewDecision: pr.reviewDecision ?? null };
 }
 
 /** Retries a read a few times: a failed read must not silently drop what reviewers wrote. */
@@ -220,7 +227,9 @@ export function discussionOf(db: DatabaseSync, repo: string, number: number, liv
 
 const staleKey = (repo: string, number: number) => `${STALE_KEY}${repo}#${number}`;
 
-type DiscussionState = Map<string, { newest: string; hash: string }>;
+export type DiscussionState = Map<string, { newest: string; hash: string; /** Newest counted entry by a maintainer (OWNER, MEMBER, COLLABORATOR or a dashboard user); "" when none. */ maint: string }>;
+
+const MAINTAINER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
 
 // The queue recomputes on every `steps` change, which comment writes don't move. Comments bump `items`, our posts
 // bump `reviews`, and the pipeline login is part of the key, so an unchanged signature means unchanged input.
@@ -241,8 +250,9 @@ export function discussionState(db: DatabaseSync, repo?: string): DiscussionStat
 }
 
 function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionState {
-  const rows = db.prepare(`SELECT c.repo, c.number, c.id, c.body, c.created_at FROM comments c
-    WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: ownJson(repo ? ownLogins(db, repo) : allOwnLogins(db)) }) as { repo: string; number: number; id: string; body: string | null; created_at: string }[];
+  const rows = db.prepare(`SELECT c.repo, c.number, c.id, c.body, c.created_at, c.author_association AS assoc,
+      EXISTS (SELECT 1 FROM main.access a WHERE a.login = c.author AND a.role IN ('operator', 'maintainer')) AS dash FROM comments c
+    WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: ownJson(repo ? ownLogins(db, repo) : allOwnLogins(db)) }) as { repo: string; number: number; id: string; body: string | null; created_at: string; assoc: string | null; dash: number }[];
   const by = new Map<string, typeof rows>();
   for (const r of rows) {
     const k = `${r.repo}#${r.number}`;
@@ -250,7 +260,20 @@ function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionStat
     if (list) list.push(r);
     else by.set(k, [r]);
   }
-  return new Map([...by].map(([k, v]) => [k, { newest: v.reduce((m, r) => (r.created_at > m ? r.created_at : m), ""), hash: discussionHash(v) }]));
+  return new Map([...by].map(([k, v]) => [k, { newest: v.reduce((m, r) => (r.created_at > m ? r.created_at : m), ""), hash: discussionHash(v), maint: v.filter((r) => r.dash || MAINTAINER_ASSOCIATIONS.includes(r.assoc ?? "")).reduce((m, r) => (r.created_at > m ? r.created_at : m), "") }]));
+}
+
+/** A maintainer's counted entry newer than a review's snapshot that the review did not read; PR author comments do not count. */
+function maintainerSince(state: { newest: string; hash: string; maint: string } | undefined, seen: string, hash: string | null): boolean {
+  return !!state && !!state.maint && sec(state.maint) > sec(seen) && state.hash !== hash;
+}
+
+/**
+ * Whether a maintainer or an operator asked for a new review of the PR after `since` (the latest review's time): "Review again",
+ * a merge-time check that found new discussion, or a maintainer's comment. Such a request skips the blocker, CI and daily-cap waits.
+ */
+export function reviewRequestedSince(db: DatabaseSync, repo: string, number: number, since: string, seen: string | null, hash: string | null, state: DiscussionState = discussionState(db, repo)): boolean {
+  return markedStaleSince(db, repo, number, since) || maintainerSince(state.get(`${repo}#${number}`), seen ?? since, hash);
 }
 
 /** True when the discussion has a counted entry newer than a review's snapshot and differs from what that review read (no hash: any newer entry). */
@@ -281,8 +304,8 @@ export function countRerun(db: DatabaseSync, repo: string, number: number): void
  * discussion-triggered re-reviews today are left out (an operator mark is never capped).
  */
 export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false): Set<string> {
-  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash FROM opus_reviews r WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
-    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null }[];
+  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash, r.blocked_by FROM opus_reviews r WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
+    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null; blocked_by: string | null }[];
   const state = discussionState(db, repo);
   const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key.slice(STALE_KEY.length), m.value]));
   const out = new Set<string>();
@@ -295,8 +318,11 @@ export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false
   for (const r of rows) {
     const ref = `${r.repo}#${r.number}`;
     const marked = (marks.get(ref) ?? "") > r.at;
-    const talked = changedSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
-    if (!marked && !(talked && !(respectCap && capped(r)))) continue;
+    // On a head that has a review, only a maintainer's words (or an operator's request) make it stale: the PR author's comments feed the next review but do not start one.
+    const talked = maintainerSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
+    // A hold that waited for other items is reviewed once when none is open any more.
+    const unblocked = !!r.blocked_by && storedBlockedBy(r.blocked_by).length > 0 && activeBlockers(db, ref, r.blocked_by, r.at).length === 0;
+    if (!marked && !unblocked && !(talked && !(respectCap && capped(r)))) continue;
     out.add(`${ref}@${r.head_oid}`);
   }
   return out;
@@ -311,7 +337,7 @@ export async function ensurePipelineLogin(db: DatabaseSync, q: Querier): Promise
 
 /**
  * Just before a merge: reads the PR's discussion and reviews live in one query. `moved`: a counted entry newer than
- * the final review's snapshot (and different from what it read) exists; the PR's reviews are then marked stale so the
+ * the final review's snapshot (and different from what it read) was written by a maintainer or operator (the PR author's comments are read by the next review without stopping the merge); the PR's reviews are then marked stale so the
  * pipeline reviews it again. `blocked`: a maintainer's changes-requested review stands. Either way the caller must
  * not merge. What the read saw of the formal reviews is stored in review_gates.
  */
@@ -319,7 +345,7 @@ export async function liveGate(db: DatabaseSync, q: Querier, repo: string, numbe
   const live = await liveDiscussion(q, db, repo, number);
   const blocked = recordGate(db, repo, number, live.formal, live.reviewDecision);
   const snap = db.prepare("SELECT COALESCE(seen_at, at) AS seen, disc_hash AS hash FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(repo, number, head) as { seen: string; hash: string | null } | undefined;
-  if (!snap || !live.newest || !changedSince({ newest: live.newest, hash: live.snap.hash! }, snap.seen, snap.hash)) return { moved: false, blocked };
+  if (!snap || !live.newestMaint || !changedSince({ newest: live.newestMaint, hash: live.snap.hash! }, snap.seen, snap.hash)) return { moved: false, blocked };
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), new Date().toISOString());
   return { moved: true, blocked };
 }
