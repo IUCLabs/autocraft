@@ -15,7 +15,10 @@ import { canComment } from "../../../registry/permissions";
 import { ClockCounterClockwiseIcon } from "@phosphor-icons/react";
 import { OpenQuestions, useItemDecisions } from "../ItemDecisions";
 import { Composer } from "../Composer";
+import { ItemRef } from "../../../ui/molecules/ItemRef";
 import { useJump } from "./ItemPage";
+import { PreapprovalCard } from "./PreapprovalCard";
+import { SimilarCard } from "./SimilarCard";
 
 const VERDICT: Record<ReviewVerdict, [string, Tone]> = { take: ["Take", "ok"], "take-fix": ["Take with fixes", "warn"], hold: ["Hold", "warn"], close: ["Close", "bad"] };
 const TRIGGER: Record<string, string> = { "new-head": "new head", discussion: "discussion", operator: "asked by an operator", "model-change": "model change" };
@@ -52,6 +55,7 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
         <span className="inline-flex items-center gap-1.5 text-accent-ink"><RobotIcon /> In AutoCraft</span>
         {formatCost(d.costUsd) && staff && <span className="num float-right font-normal text-ink/55">{formatCost(d.costUsd)} in all</span>}
       </div>
+      {d.header.preapproval && <PreapprovalCard repo={d.repo} number={d.number} p={d.header.preapproval} operator={user.role === "operator"} />}
       {open.length > 0 && (
         <div className={cn(sectionCls, "pt-0")}>
           <OpenQuestions ds={ds ?? []} choices={choices} updating={updating?.decisionId} />
@@ -85,6 +89,7 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
           </ol>
         </section>
       )}
+      <SimilarCard repo={d.repo} number={d.number} />
       <History d={d} flash={flash} />
       {conv && (
         <Composer flush repo={d.repo} number={d.number} operator={user.role === "operator"} commenter={canComment(user)} exists={conv.exists} pending={conv.pending} feedbackOn={open.length === 1 ? open[0] : undefined} choices={choices} opusTurns={opusTurns} />
@@ -133,8 +138,14 @@ function ReviewBody({ repo, r, viewer, head }: { repo: string; r: OpusReviewEntr
           {!head && <> · <TimeAgo iso={r.at} /></>}
         </span>
       </div>
-      <p className="mt-1.5 text-xs text-ink/55">Ran because: {r.why} ({TRIGGER[r.trigger]})</p>
-      <p className="mt-2 leading-6 text-ink/90">{r.summary}</p>
+      {r.why && <p className="mt-1.5 text-xs text-ink/55">Ran because: {r.why} ({TRIGGER[r.trigger]})</p>}
+      {r.summary && <p className="mt-2 leading-6 text-ink/90">{r.summary}</p>}
+      {r.blockedBy.length > 0 && (
+        <div className="mt-2.5">
+          <div className="text-xs font-medium text-ink/65">Must land first</div>
+          <ul className="mt-1 space-y-1">{r.blockedBy.map((b) => <li key={`${b.repo}#${b.number}`}><ItemRef repo={b.repo} number={b.number} title={null} size="sm" /></li>)}</ul>
+        </div>
+      )}
       {!viewer && r.fixes.length > 0 && <List title="Fixes" items={r.fixes} />}
       {!viewer && r.risks.length > 0 && <List title="Risks" items={r.risks} />}
       {!viewer && head && r.claims.length > 0 && (
@@ -170,6 +181,14 @@ function ResultRow({ r }: { r: ResultCard }) {
         <span className="min-w-0 flex-1 text-ink/80">{r.outcome}{r.detail && <span className="block text-xs text-ink/55">{r.detail}</span>}</span>
         <TimeAgo iso={r.at} className="num shrink-0 text-xs text-ink/45" />
       </div>
+      {r.followups && r.followups.length > 0 && (
+        <div className="pb-1 pl-[18px] pt-1">
+          <div className="text-xs text-ink/55">Follow-ups</div>
+          <ul className="mt-1 space-y-1">
+            {r.followups.map((f) => <li key={`${f.repo}#${f.number}`}><ItemRef repo={f.repo} number={f.number} title={null} size="sm" /></li>)}
+          </ul>
+        </div>
+      )}
       {r.earlier.length > 0 && (
         <div className="pl-[18px]">
           <button onClick={() => setMore(!more)} aria-expanded={more} className="inline-flex h-7 items-center gap-1 text-xs text-ink/55 hover:text-ink max-md:h-9">
@@ -182,12 +201,16 @@ function ResultRow({ r }: { r: ResultCard }) {
   );
 }
 
+const HISTORY_PAGE = 80;
 type Filter = "all" | "model" | "write" | "decision";
 
 function History({ d, flash }: { d: ItemPageData; flash: string | null }) {
   const [f, setF] = useState<Filter>("all");
   const user = useUser();
-  const rows = d.history.filter((h) => f === "all" || h.kind === f);
+  const [limit, setLimit] = useState(HISTORY_PAGE);
+  const all = d.history.filter((h) => f === "all" || h.kind === f);
+  // Oldest first: the newest rows show, and "Show earlier" reveals the rest in steps.
+  const rows = all.slice(Math.max(0, all.length - limit));
   return (
     <section className="px-4 py-4 md:px-6" aria-label="History">
       <Heading aside={user.role !== "viewer" && formatCost(d.costUsd) ? <span className="num">{formatCost(d.costUsd)}</span> : undefined}>
@@ -198,6 +221,9 @@ function History({ d, flash }: { d: ItemPageData; flash: string | null }) {
           <Chip key={k} active={f === k} onClick={() => setF(k)}>{l}</Chip>
         ))}
       </div>
+      {all.length > rows.length && (
+        <button onClick={() => setLimit(limit + HISTORY_PAGE)} className="mb-1 inline-flex h-8 items-center text-xs font-medium text-accent-ink hover:underline max-md:h-11">Show {Math.min(HISTORY_PAGE, all.length - rows.length)} earlier ({all.length - rows.length} more)</button>
+      )}
       <ol>{rows.map((h) => <HistoryRow key={h.id} h={h} itemId={`${d.repo}${d.number}`} flash={flash === `hist-${h.id}`} viewer={user.role === "viewer"} />)}</ol>
     </section>
   );
