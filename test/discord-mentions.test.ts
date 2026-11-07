@@ -122,7 +122,7 @@ describe("privacy page", () => {
   after(() => close());
 
   test("is readable without a session and names the contact; other pages still need one", async () => {
-    const r = await fetch(`${base}/discord-privacy`, { headers: { accept: "text/html" } });
+    const r = await fetch(`${base}/privacy`, { headers: { accept: "text/html" } });
     assert.equal(r.status, 200);
     assert.match(await r.text(), /ask-us@example\.org/);
     const other = await fetch(`${base}/items`, { headers: { accept: "text/html" }, redirect: "manual" });

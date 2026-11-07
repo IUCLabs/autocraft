@@ -91,7 +91,7 @@ export function createMockApi(): Api {
   const changed = () => listeners.forEach((fn) => fn());
   let discordLinked = true;
   const discord: DiscordSetup = {
-    state: "connected", detail: null, at: nowIso(), repos: ["photocraft", "pdfcraft", "wordcraft"], contact: "discord-privacy@example.org", privacyPath: "/discord-privacy",
+    state: "connected", detail: null, at: nowIso(), repos: ["photocraft", "pdfcraft", "wordcraft"], contact: "discord-privacy@example.org", privacyPath: "/privacy",
     links: [
       { id: "l1", login: "mira-anders", linkedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
       { id: "l2", login: "tomas-vale", linkedAt: new Date(Date.now() - 40 * 3_600_000).toISOString() },

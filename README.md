@@ -170,7 +170,7 @@ AutoCraft can count how often tracked items are mentioned in Discord channels yo
 2. Invite the bot with the `bot` and `applications.commands` scopes and the View Channels, Send Messages and Read Message History permissions. Leave everything else off.
 3. Save the bot token in a file readable by the runner only (mode 600), and make a second file of at least 32 random characters for the key that encrypts stored message references (for example `openssl rand -base64 48`). Keep the key file: without it the stored links cannot be opened.
 4. Set `AUTOCRAFT_DISCORD_TOKEN_FILE` and `AUTOCRAFT_DISCORD_KEY_FILE` for the runner. Set `AUTOCRAFT_DISCORD_KEY_FILE` for the dashboard too if it should show message links; without it the dashboard shows counts only.
-5. Restart the runner. On the Discord page, switch on the channels to watch and enter the contact for deletion requests. The public notice is at `/discord-privacy`.
+5. Restart the runner. On the Discord page, switch on the channels to watch and enter the contact for deletion requests. The public notice is at `/privacy`.
 
 ### Deployment
 
