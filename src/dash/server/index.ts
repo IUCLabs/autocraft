@@ -29,13 +29,14 @@ import { retryWaiting } from "../../github/user-lane.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, writes as mcpWrites, type Msg as McpMsg } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
-import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
+import { esc, HttpError, parseCookies, plainPage, previewTags, RateLimiter, safeReturnTo } from "./util.ts";
 
 export const SESSION_COOKIE = "__Host-craft_session";
 /** `oauth_states.return_to` of an "act as you" authorization, which the shared sign-in callback tells apart from a sign-in by this prefix. */
 const AUTHORIZE_PREFIX = "authorize:";
 const STATE_COOKIE = "__Host-craft_oauth";
 const BODY_LIMIT = 64 * 1024;
+const PUBLIC_FILES = new Set(["/artcraft-mark.svg", "/artcraft-mark.png"]);
 const FILE_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", svg: "image/svg+xml",
   png: "image/png", ico: "image/x-icon", woff2: "font/woff2", json: "application/json",
@@ -476,10 +477,18 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
       if (method === "GET" && url.pathname === DISCORD_PRIVACY_PATH) return send(res, nonce, { html: discordPrivacyPage(nonce, contactOf(db)) });
+      // Public: the favicon and the preview image, which sign-in pages and link-preview crawlers load without a session.
+      if (method === "GET" && PUBLIC_FILES.has(url.pathname)) return await sendWeb(res, nonce, url.pathname);
       const session = loadSession(db, cookies.get(SESSION_COOKIE));
       if (!session) {
         const wantsPage = method === "GET" && /text\/html/.test(String(req.headers.accept ?? ""));
-        if (wantsPage) return send(res, nonce, { redirect: `/auth/signin?${new URLSearchParams({ return_to: url.pathname + url.search })}` });
+        if (wantsPage) {
+          // A page with preview tags that moves on to sign-in at once: link-preview crawlers read the tags and stop here,
+          // where a redirect would take them to the identity provider's page and its preview.
+          const to = `/auth/signin?${new URLSearchParams({ return_to: url.pathname + url.search })}`;
+          return send(res, nonce, { html: plainPage(nonce, "Sign in", `<p><a class="button" href="${esc(to)}">Sign in with GitHub</a></p>`,
+            `<meta http-equiv="refresh" content="0;url=${esc(to)}">${previewTags(config.baseUrl, url.pathname)}`) });
+        }
         return send(res, nonce, { status: 401, json: { error: "sign-in required" } });
       }
       if (method === "GET" && url.pathname === "/api/live") return handleLive(req, res, nonce, session);

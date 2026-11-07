@@ -126,6 +126,6 @@ describe("privacy page", () => {
     assert.equal(r.status, 200);
     assert.match(await r.text(), /ask-us@example\.org/);
     const other = await fetch(`${base}/items`, { headers: { accept: "text/html" }, redirect: "manual" });
-    assert.equal(other.status, 303);
+    assert.match(await other.text(), /http-equiv="refresh" content="0;url=\/auth\/signin/);
   });
 });

@@ -125,13 +125,16 @@ const sample = (pattern: string) => pattern.replace(/:[a-z]+/gi, "x");
 const audits = (action: string) => db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = ?").get(action) as { n: number };
 
 describe("without a session", () => {
-  test("every page redirects to sign-in, everything else gets 401", async () => {
+  test("every page leads to sign-in, everything else gets 401", async () => {
     const c = new Client();
     const paths = [...allRoutes.filter((r) => r.method === "GET").map((r) => sample(r.pattern)), "/assets/app.css", "/no-such-page"];
     for (const p of paths) {
       const page = await c.get(p);
-      assert.equal(page.status, 303, p);
-      assert.equal(page.headers.get("location"), `/auth/signin?${new URLSearchParams({ return_to: p })}`);
+      // A page with link-preview tags that moves on to sign-in, so preview crawlers never land on the identity provider.
+      assert.equal(page.status, 200, p);
+      const html = await page.text();
+      assert.ok(html.includes(`<meta http-equiv="refresh" content="0;url=/auth/signin?${new URLSearchParams({ return_to: p }).toString().replaceAll("&", "&amp;")}">`), p);
+      assert.match(html, /<meta property="og:image" content="[^"]*\/artcraft-mark\.png">/);
       assert.equal((await c.get(p, false)).status, 401, p);
     }
     for (const r of allRoutes.filter((r) => r.method === "POST")) {
@@ -259,7 +262,7 @@ describe("tokens", () => {
     } finally {
       provider.rejectRefresh = false;
     }
-    assert.equal((await c.get("/")).status, 303);
+    assert.equal((await c.get("/")).status, 200);
   });
 });
 
@@ -268,7 +271,7 @@ describe("access changes", () => {
     addLogin(db, "cli", "promoted", "viewer", null);
     const c = await signedIn("promoted");
     setRole(db, "cli", "promoted", "operator");
-    assert.equal((await c.get("/")).status, 303);
+    assert.match(await (await c.get("/")).text(), /http-equiv="refresh" content="0;url=\/auth\/signin/);
     removeLogin(db, "cli", "promoted");
   });
 });
