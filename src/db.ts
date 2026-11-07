@@ -166,6 +166,10 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["main_fixes", "lint_task", "INTEGER"],
   ["main_fixes", "lint_round", "INTEGER"],
   ["main_fixes", "lint_state", "TEXT"],
+  // Permalink of the comment or review on GitHub; joins AutoCraft's audit rows to the comment they wrote.
+  ["comments", "url", "TEXT"],
+  // First line of the commit message.
+  ["pr_commits", "message", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

@@ -31,7 +31,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       ... on PullRequest {
         headRefOid
         files(first: 100) { nodes { path additions deletions changeType } }
-        commits(last: 100) { nodes { commit { oid committedDate author { user { login } } } } }
+        commits(last: 100) { nodes { commit { oid messageHeadline committedDate author { user { login } } } } }
         prTimeline: timelineItems(last: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]) {
           nodes { __typename ... on LabeledEvent { id createdAt actor { login } label { name } } ... on UnlabeledEvent { id createdAt actor { login } label { name } } ... on HeadRefForcePushedEvent { id createdAt actor { login } beforeCommit { oid } afterCommit { oid } } }
         }
@@ -57,9 +57,9 @@ export function saveActivity(db: DatabaseSync, repo: string, number: number, nod
       db.prepare("DELETE FROM pr_files WHERE repo = ? AND number = ?").run(repo, number);
       const insFile = db.prepare("INSERT OR REPLACE INTO pr_files (repo, number, head, path, additions, deletions, change_type) VALUES (?, ?, ?, ?, ?, ?, ?)");
       for (const f of node.files?.nodes ?? []) if (f?.path) insFile.run(repo, number, head, f.path, f.additions ?? 0, f.deletions ?? 0, f.changeType ?? "CHANGED");
-      const insCommit = db.prepare(`INSERT INTO pr_commits (repo, number, oid, committed_at, author, first_seen_at) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (repo, number, oid) DO UPDATE SET committed_at = excluded.committed_at, author = excluded.author`);
-      for (const c of node.commits?.nodes ?? []) if (c?.commit?.oid) insCommit.run(repo, number, c.commit.oid, c.commit.committedDate, c.commit.author?.user?.login ?? null, at);
+      const insCommit = db.prepare(`INSERT INTO pr_commits (repo, number, oid, committed_at, author, first_seen_at, message) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (repo, number, oid) DO UPDATE SET committed_at = excluded.committed_at, author = excluded.author, message = COALESCE(excluded.message, message)`);
+      for (const c of node.commits?.nodes ?? []) if (c?.commit?.oid) insCommit.run(repo, number, c.commit.oid, c.commit.committedDate, c.commit.author?.user?.login ?? null, at, c.commit.messageHeadline ?? null);
     }
     db.prepare("INSERT OR REPLACE INTO activity_sync (repo, number, head, updated_at, read_at) VALUES (?, ?, ?, ?, ?)").run(repo, number, item.head, item.updated_at, at);
     db.exec("COMMIT");
