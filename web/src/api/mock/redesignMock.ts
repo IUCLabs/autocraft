@@ -55,13 +55,13 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
       const d = await base.decisions.list({ status: "open", limit: 100 });
       const rec = (x: (typeof d.decisions)[number]) => x.options.find((o) => o.key === x.recommended)?.label ?? null;
       const problems: Home["problems"] = [
-        { kind: "stopped", title: "Fix-up stopped by the breaker", detail: "3 pushes in a row broke CI on photocraft; resume after a look.", to: "/needs/stopped" },
+        { kind: "stopped", title: "Fix-up stopped by the breaker", detail: staff ? "3 pushes in a row broke CI on photocraft; resume after a look." : "Fix-ups are stopped.", to: "/needs/stopped" },
         ...(staff ? [{ kind: "gave-up" as const, title: "designcraft finding 11: fix gave up after 3 rounds", detail: "The regression test passes without the fix.", to: "/security/designcraft/11" }] : []),
       ];
       return wait({
         needs: {
           total: d.total + (staff ? 1 : 0), byKind: staff ? { ...d.byKind, security: 1 } : d.byKind,
-          oldest: [
+          oldest: !staff ? [] : [
             ...(staff ? [{ id: "finding-11", kind: "security" as const, repo: "designcraft", number: 11, title: "Recent-files list opens paths without checking the file type", recommendation: "Fix again with a note", askedAt: at(40), itemKind: null, to: "/security/designcraft/11" }] : []),
             ...d.decisions.slice(0, staff ? 4 : 5).map((x) => ({ id: x.id, kind: x.kind, repo: x.repo, number: x.number, title: x.title, recommendation: rec(x), askedAt: x.askedAt, itemKind: x.shown?.kind ?? null, to: decisionPath(x) })),
           ],
