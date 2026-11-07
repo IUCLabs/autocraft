@@ -104,7 +104,10 @@ describe("attention signals", () => {
     const rows = db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE signal = 1").get() as { n: number };
     assert.equal(rows.n, 10, "10 per author per minute; the other two stay plain mentions");
     assert.ok(peak <= 2, `peak concurrent calls ${peak}`);
+    // Messages that name nothing, or too many items, use up no limit.
     now += 61_000;
+    for (let i = 0; i < 40; i++) await run(from(`n${i}`, "u7", "just chatting"));
+    for (let i = 0; i < 40; i++) await run(from(`x${i}`, "u7", "photocraft#1 photocraft#2 photocraft#3 photocraft#4 photocraft#5 photocraft#6"));
     await run(from("b0", "u9", "review photocraft#1"));
     await s.idle();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE signal = 1").get() as { n: number }).n, 11, "the window slides");
