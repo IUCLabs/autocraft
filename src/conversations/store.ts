@@ -157,7 +157,7 @@ function newerPersonComment(db: DatabaseSync, repo: string, n: number, seenId: s
 }
 
 // Openings of the note lines in src/github/note.ts.
-const OWN_NOTE_PREFIXES = ["_AI-generated ", "_Automated "];
+export const OWN_NOTE_PREFIXES = ["_AI-generated ", "_Automated "];
 
 const cut = (s: string | null, max: number): string => (s ?? "").slice(0, max);
 

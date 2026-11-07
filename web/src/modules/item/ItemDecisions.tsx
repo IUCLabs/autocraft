@@ -81,6 +81,7 @@ function Question({ d, siblings, choices, updating, here, onAnswered, feedback }
         <OpusWorking text={d.preparing ? "Opus is preparing options…" : "Opus is updating the choices…"} className="mt-2" />
       ) : choices === undefined && d.number !== null && d.group.length === 0 ? null : (
         <>
+          {d.preparedEarlier && !d.answer && <p className="mt-2 text-xs text-ink/55">Prepared earlier. Re-prepare to update the choices.</p>}
           {!choices && <div className="mt-2"><RecommendationLine d={d} /></div>}
           <ChoiceGroup d={d} user={user} choices={choices} onAnswered={onAnswered} />
         </>

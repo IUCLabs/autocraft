@@ -22,7 +22,7 @@ export type DecisionRow = {
   recommended: string | null; recommended_reason: string | null; recommended_by: string | null; public_text: string | null; asked_at: string; asked_by: string | null;
   docket: string | null; answer: string | null; answer_note: string | null; exceptions: string | null;
   answered_by: string | null; answered_at: string | null; applied_at: string | null;
-  prepared_at?: string | null; prepared_head?: string | null; prepare_failed_head?: string | null; recommend_failures?: number | null; recommend_failed_at?: string | null;
+  prepared_at?: string | null; prepared_head?: string | null; prepared_discussion?: string | null; prepare_requested_at?: string | null; prepare_failed_head?: string | null; recommend_failures?: number | null; recommend_failed_at?: string | null;
   summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null; snoozed_by: string | null; snoozed_at: string | null;
   exec_state?: string | null; exec_reason?: string | null;
 };

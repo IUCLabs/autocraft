@@ -402,6 +402,19 @@ export function pipelineStep(db: DatabaseSync, repo: string, n: number, st: Reco
 const MAX_STEPS = 8;
 
 /** Steps that post model-written text on GitHub: not offered on a quiet pull request, whose fix must not be described in public before the advisory is published. */
+/**
+ * Whether a card's effect rests on the PR's code at the head it was written for: it posts a drafted comment or issue, or pushes a fix-up.
+ * Other cards (answer, backlog, hold, label, close, review, reviewers) still run after a push; these are refused until the choices are written again.
+ */
+export function dependsOnCode(params: CardParams, text: string | null): boolean {
+  switch (params.kind) {
+    case "comment": return true;
+    case "close": return text !== null && text.trim() !== "";
+    case "resolution": return params.steps.some((x) => x.kind === "comment" || x.kind === "open_issue" || x.kind === "fixup") || (params.settle?.kind === "answer" && !!params.settle.reason?.trim());
+    default: return false;
+  }
+}
+
 export const PUBLIC_TEXT_STEPS: ReadonlySet<string> = new Set(["comment", "open_issue", "transfer"]);
 
 /** The step kinds that can validate for the item as it is now, from the same facts and refusals as validateResolution; "fixup with merge" is listed apart. */

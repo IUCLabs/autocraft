@@ -1,7 +1,7 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
 import type { CardEdit, Conversation, ConversationCard, ConversationTurn, DecisionChoices } from "../../../web/src/api/types.ts";
-import { buttonLabel, cardEffect, cardLines, decisionStamp, headline, isSettling, openDecision, stepLine, validateCard, type CardParams } from "../../conversations/cards.ts";
+import { buttonLabel, cardEffect, cardLines, decisionStamp, dependsOnCode, headline, isSettling, openDecision, stepLine, validateCard, type CardParams } from "../../conversations/cards.ts";
 import { applyDrafts, choicesById, compose, coresFor, currentChoices, seenJson, type ComposeExtra, type Core } from "../../decide/choices.ts";
 import { parseCoreKey, type ChoicesRow, type CoreKey } from "../../decide/choices-types.ts";
 import { getDecision } from "../../decisions.ts";
@@ -260,7 +260,6 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
   const d = getDecision(db, row.decisionId);
   if (!d || d.answer !== null) throw new HttpError(409, "the decision is already settled");
   if (decisionStamp(db, d) !== row.stamp || openDecision(db, row.repo, row.number)?.id !== d.id) throw new HttpError(409, "the decision changed since these choices were written");
-  if (staleOf(db, row.repo, row.number, seenJson(row.seen)) === "pr-changed") throw new HttpError(409, "the PR changed since these choices were written");
   const priorOf = (): CardRow | undefined => db.prepare("SELECT * FROM conversation_cards WHERE choice_id = ? ORDER BY id DESC LIMIT 1").get(row.id) as unknown as CardRow | undefined;
   // A card for these choices that is already running or done is returned as it is (a second press).
   const first = priorOf();
@@ -283,6 +282,8 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
   if ("note" in composed) throw new HttpError(400, composed.note);
   const v = validateCard(db, row.repo, row.number, composed.card);
   if (!("card" in v)) throw new HttpError(400, v.note);
+  // After a push only cards that do not rest on the code (backlog, hold, label, close, plain answers) run; a drafted text or a fix-up waits for the updated choices.
+  if (staleOf(db, row.repo, row.number, seenJson(row.seen)) === "pr-changed" && dependsOnCode(v.card.params, v.card.text)) throw new HttpError(409, "the PR changed since these choices were written; Opus is updating the choices");
 
   const probe = { repo: row.repo } as CardRow;
   if (isOperator(req)) {

@@ -121,6 +121,10 @@ CREATE TABLE IF NOT EXISTS token_usage (
   PRIMARY KEY (run_id, agent)
 );
 
+-- One row per prepare call of a decision; manual: an operator asked for it (exempt from the daily cap, src/decide/prepared.ts).
+CREATE TABLE IF NOT EXISTS decision_prepares (decision_id TEXT NOT NULL, at TEXT NOT NULL, manual INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS decision_prepares_decision ON decision_prepares(decision_id, at);
+
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 -- whitelist rule defaults; editable with `autocraft whitelist rule`
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merged', '5');
@@ -141,6 +145,7 @@ CREATE TABLE IF NOT EXISTS decisions (
   recommended TEXT,
   recommended_reason TEXT, recommended_by TEXT,
   prepared_at TEXT, prepared_head TEXT,  -- when the prepare step stored its summary, pick and drafts, and the PR head it prepared for
+  prepared_discussion TEXT,           -- id of the newest counted comment the prepare read ('' none)
   prepare_failed_head TEXT,           -- the PR head at the last failed prepare try (a new head starts the tries again)
   recommend_failures INTEGER, recommend_failed_at TEXT,  -- recommendation calls that gave no valid answer, and the last one  -- one-sentence reason and the model that gave the recommendation (null: none from a model)
   public_text TEXT,

@@ -294,8 +294,12 @@ describe("Do it", () => {
     await assert.rejects(() => doCard(db, ask, "op"), /replaced by a later reply/);
     assert.equal(db.prepare("SELECT state FROM conversation_cards WHERE id = ?").get(ask)!.state, "replaced");
 
-    const pr = await propose(db, 2, [{ kind: "label", label: "bugfix" }], null, null);
+    // After a push a card that does not rest on the code still runs; one with a drafted comment is refused.
+    const light = await propose(db, 2, [{ kind: "label", label: "bugfix" }], null, null);
     db.prepare("UPDATE items SET head_oid = 'sha3' WHERE number = 2").run();
+    assert.equal((await doCard(db, light, "op", { querier: g.querier as never })).card.state, "done");
+    const pr = await propose(db, 2, [{ kind: "comment" }], null, "Thanks.");
+    db.prepare("UPDATE items SET head_oid = 'sha4' WHERE number = 2").run();
     await assert.rejects(() => doCard(db, pr, "op", { querier: g.querier as never }), /PR changed since/);
     assert.equal(conv.cardView(db, db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(pr) as never).stale, "pr-changed");
   });
