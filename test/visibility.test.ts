@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import type { ItemPageData } from "../src/dash/api/item-page.ts";
 import type { AgentRunDetail, BuildTaskDetail, Item, JobDetail, Decision as DecisionOne, AgentRunPage, DecisionList, Flow, ItemList, Progress, QueueList, SearchHit } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { insertRun, finishRun } from "../src/agents/runs.ts";
@@ -111,6 +112,7 @@ describe("repo visibility", () => {
     assert.deepEqual(refs(await c.get<SearchHit[]>("/api/search?q=wave")), ["open-app#1"]);
     assert.deepEqual(refs(await c.get<SearchHit[]>("/api/search?q=vault%231")), []);
     assert.equal(await c.status("/api/items/vault/1"), 404);
+    assert.equal(await c.status("/api/items/vault/1/page"), 404);
     assert.equal(await c.status("/api/similar/vault/1"), 404);
     const decisions = await c.get<DecisionList>("/api/decisions");
     assert.deepEqual(decisions.decisions.map((d) => d.id), ["open-app#1:scope"]);
@@ -182,6 +184,27 @@ describe("repo visibility", () => {
     for (const path of ["/api/repos/all", "/api/audit"]) assert.equal(await reader.status(path), 403, path);
     db.prepare("DELETE FROM audit WHERE target IN ('someone', 'vault', 'account:a') AND login = 'boss' AND action IN ('access-add', 'repo-track', 'account-change')").run();
     db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, answered_by = NULL, answered_at = NULL WHERE id = 'vault#1:scope'").run();
+  });
+
+  test("the item page gives viewers verdicts without review text, and answers since with unchanged", async () => {
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, summary, risks, fixes, claims, trigger)
+      VALUES ('open-app', 1, 'h-open-app', ?, 'opus', 'full', 'take-fix', 1, 'quotes the patch', 'summary of the patch', '["a risk"]', '["fix one"]', '[{"claim":"it leaks","evidence":"src/a.ts:4"}]', 'operator')`).run(now);
+    const page = async (login: string) => (await signedIn(login)).get<ItemPageData>("/api/items/open-app/1/page");
+    for (const login of ["reader", "maint", "boss"]) {
+      const latest = (await page(login)).reviews.latest!;
+      const staff = login !== "reader";
+      assert.equal(latest.verdict, "take-fix", login);
+      assert.equal(latest.trigger, "operator", login);
+      assert.equal(latest.summary, staff ? "summary of the patch" : "", login);
+      assert.deepEqual(latest.fixes, staff ? ["fix one"] : [], login);
+      assert.deepEqual(latest.risks, staff ? ["a risk"] : [], login);
+      assert.deepEqual(latest.claims, staff ? [{ path: "src/a.ts", line: 4, text: "it leaks" }] : [], login);
+    }
+    const c = await signedIn("reader");
+    const first = await page("reader");
+    assert.deepEqual(await c.get(`/api/items/open-app/1/page?since=${first.stamp}`), { unchanged: true, stamp: first.stamp });
+    db.prepare("DELETE FROM opus_review_history WHERE repo = 'open-app'").run();
   });
 
   test("viewers get build tasks, jobs and patch reviews without log and patch bodies", async () => {

@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { AccessOverview, BatchList, CostReport, Flow, Item, MainCi, PipelineState, Progress, PromptsReport, QueuePage, User, WorkList } from "../web/src/api/types.ts";
+import type { ItemPageData } from "../src/dash/api/item-page.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
@@ -32,6 +33,7 @@ const OBJECTS: [string, string[]][] = [
   ["/api/me", keys<User>()("login", "role", "writeRepos")],
   ["/api/progress", keys<Progress>()("funnel", "repos", "decisionsOpen", "mainCi")],
   ["/api/items/app/1", keys<Item>()("repo", "number", "title", "state", "author", "additions", "deletions", "ci", "mergeable", "classifications", "reviews", "premerge", "stages", "queue")],
+  ["/api/items/app/1/page", keys<ItemPageData>()("repo", "number", "kind", "state", "title", "author", "stamp", "header", "status", "costUsd", "reviews", "results", "history", "github")],
   ["/api/items", ["total", "byStatus", "rows"]],
   ["/api/queue/page", keys<QueuePage>()("tab", "repos", "counts", "rows", "mergeRows", "batches", "total", "next")],
   ["/api/queue", ["rows", "counts", "total", "next"]],

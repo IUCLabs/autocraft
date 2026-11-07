@@ -37,6 +37,7 @@ import { now, nowFeed } from "./now.ts";
 import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
 import { activity } from "./activity.ts";
+import { itemPage } from "./item-page.ts";
 import { trace as itemTrace, traceDetail as itemTraceDetail } from "./trace.ts";
 import { postmergeOf } from "./postmerge.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -105,7 +106,7 @@ type ItemRow = {
   mergeable: string | null; ci_state: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null;
 };
 
-async function item(db: DatabaseSync, req: Req): Promise<Item> {
+export async function itemCore(db: DatabaseSync, req: Req): Promise<Item> {
   const repo = req.params.repo!;
   const n = Number(req.params.n);
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
@@ -395,7 +396,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/mcp/tokens", mcp.tokens),
     post("/api/mcp/tokens", mcp.create),
     post("/api/mcp/tokens/revoke", mcp.revoke),
-    get("/api/items/:repo/:n", item),
+    get("/api/items/:repo/:n", itemCore),
+    get("/api/items/:repo/:n/page", itemPage),
     get("/api/activity", activity),
     get("/api/items/:repo/:n/trace", itemTrace),
     get("/api/items/:repo/:n/trace/event", itemTraceDetail),
