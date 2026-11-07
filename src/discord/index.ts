@@ -2,6 +2,11 @@
 // are set; the runner starts it next to the worker server. See docs/pipeline.md.
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
+import { loadConfig, type Config } from "../dash/server/config.ts";
+import { TokenBox } from "../dash/server/crypto.ts";
+import { providerFor } from "../dash/server/provider.ts";
+import { PERM_READ_TTL, PERM_WRITE_TTL, userForLogin } from "../dash/server/sessions.ts";
+import type { Role, User } from "../dash/types.ts";
 import { audit } from "../dash/audit.ts";
 import { envVar } from "../env.ts";
 import { localEmbedder } from "../embed/model.ts";
@@ -14,6 +19,7 @@ import { RestClient } from "./rest.ts";
 import { forgetLink } from "./links.ts";
 import { Search, dropTexts } from "./search.ts";
 import { installAccountCommands } from "./commands.ts";
+import { DecisionAlerts, installAlertCommands } from "./alerts.ts";
 import { installSearchCommands } from "./search-commands.ts";
 import { DiscordConfigError, readKeyFile, readTokenFile, type DiscordKeys } from "./keys.ts";
 import { forgetAuthor, forgetMessages, handleDispatch, setStatus, upsertChannel } from "./store.ts";
@@ -57,6 +63,27 @@ export function dispatcher(db: DatabaseSync, keys: DiscordKeys, interactions: In
   };
 }
 
+/** Decision alerts by direct message. The GitHub permissions of a linked login are read as the dashboard reads them, from the dashboard's configuration when this process has it, else from the cached permissions only. */
+function installDecisionAlerts(db: DatabaseSync, keys: DiscordKeys, rest: RestClient, interactions: Interactions, signal: AbortSignal, log: (l: string) => void): void {
+  let config: Config | null = null;
+  try { config = loadConfig(process.env); } catch (e) { log(`runner: Discord alerts use cached permissions only: ${(e as Error).message}`); }
+  const cached = (login: string, role: Role, forWrite: boolean): User => {
+    const perm = (repo: string): string | null => {
+      const r = db.prepare("SELECT permission, checked_at FROM repo_permissions WHERE login = ? AND repo = ?").get(login, repo) as { permission: string; checked_at: string } | undefined;
+      return r && Date.now() - Date.parse(r.checked_at) < (forWrite ? PERM_WRITE_TTL : PERM_READ_TTL) ? r.permission : null;
+    };
+    return { login, role, canWrite: async (repo) => ["write", "maintain", "admin"].includes(perm(repo) ?? ""), canRead: async (repo) => { const p = perm(repo); return p !== null && p !== "none"; } };
+  };
+  const box = config ? new TokenBox(config.secrets.sessionKey) : null;
+  const provider = config ? providerFor(config) : null;
+  const alerts = new DecisionAlerts({
+    db, keys, rest, log, baseUrl: config?.baseUrl ?? envVar("BASE_URL") ?? null,
+    userFor: (login, role, forWrite) => (box && provider ? userForLogin(db, box, provider, login, role, forWrite) : cached(login, role, forWrite)),
+  });
+  installAlertCommands(interactions, alerts);
+  alerts.start(signal);
+}
+
 /** Starts the gateway when configured. A bad configuration or a failed connection is logged and never stops the caller. */
 export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: string) => void): void {
   const tokenFile = envVar("DISCORD_TOKEN_FILE");
@@ -79,6 +106,7 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
   const interactions = new Interactions(rest, log);
   installSearchCommands(interactions, { db, keys, search });
   installAccountCommands(interactions, { db, keys });
+  installDecisionAlerts(db, keys, rest, interactions, signal, log);
   const pings = new Pings({ db, keys, rest, search, log });
   // A crash during a call can leave the question in a recorded prompt.
   try { dropTexts(db, true); } catch (e) { log(`runner: removing search texts failed: ${(e as Error).message}`); }
