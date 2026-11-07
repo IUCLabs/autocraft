@@ -1,14 +1,14 @@
 // The item page: a status line, then "In AutoCraft" and "On GitHub" side by side (a segmented control on phones).
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowLeftIcon, ArrowSquareOutIcon, DotsThreeIcon } from "@phosphor-icons/react";
-import { DropdownMenu } from "radix-ui";
+import { ArrowLeftIcon, ArrowSquareOutIcon, ChatsCircleIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../../api/client";
-import type { ItemPageData } from "../../../api/types";
+import type { ItemPageData, Tier } from "../../../api/types";
 import type { ViewProps } from "../../../registry/types";
 import { Pending } from "../../../ui/atoms/Pending";
-import { Badge } from "../../../ui/atoms/Badge";
+import { Badge, type Tone } from "../../../ui/atoms/Badge";
 import { ItemIcon } from "../../../ui/atoms/ItemIcon";
+import { QueueBadge } from "../../../ui/molecules/QueueBadge";
 import { StatusLine } from "../../../ui/molecules/StatusLine";
 import { Segmented } from "../../../ui/molecules/Segmented";
 import { useIsPhone } from "../../../shell/useMedia";
@@ -16,6 +16,7 @@ import { useUser } from "../../../shell/UserContext";
 import { cn } from "../../../ui/cn";
 import { AutoCraftSide } from "./AutoCraftSide";
 import { GithubSide } from "./GithubSide";
+import { ItemMenu } from "./ItemMenu";
 
 type Side = "autocraft" | "github";
 
@@ -25,6 +26,7 @@ const JumpContext = createContext<Jump>({ to: () => {} });
 export const useJump = () => useContext(JumpContext);
 
 const STATE_LABEL = { open: "Open", closed: "Closed", merged: "Merged" } as const;
+const TIER: Record<Tier, [string, Tone]> = { whitelisted: ["Whitelisted", "ok"], not: ["Not whitelisted", "neutral"], "override-allow": ["Override: allow", "accent"], "override-deny": ["Override: deny", "bad"] };
 const STATE_TONE = { open: "ok", closed: "neutral", merged: "merged" } as const;
 
 export function ItemPageView({ params }: ViewProps) {
@@ -78,6 +80,7 @@ export function ItemPageView({ params }: ViewProps) {
 
 function Header({ d }: { d: ItemPageData }) {
   const user = useUser();
+  const h = d.header;
   return (
     <header className="shrink-0 border-b border-line px-4 pb-3 pt-3 md:px-6">
       <div className="flex items-center gap-2 text-xs text-ink/60">
@@ -93,23 +96,24 @@ function Header({ d }: { d: ItemPageData }) {
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/55">
             <Badge tone={STATE_TONE[d.state]}>{STATE_LABEL[d.state]}</Badge>
             <span>by {d.author}</span>
+            {h.assignees.length > 0 && <span>assigned to {h.assignees.join(", ")}</span>}
+            <QueueBadge slot={h.queue} />
+            {h.size && <Badge>{h.size}</Badge>}
+            {h.tier !== "not" && <Badge tone={TIER[h.tier][1]}>{TIER[h.tier][0]}</Badge>}
+            {h.autocraftAssigned && <Badge tone="accent">Assigned to AutoCraft</Badge>}
+            {!h.pipelineOn && <Badge>Pipeline off</Badge>}
+            {h.discord && h.discord.count > 0 && (
+              <Badge icon={<ChatsCircleIcon className="text-[12px]" />}>
+                {h.discord.links[0] ? <a href={h.discord.links[0].url} target="_blank" rel="noopener noreferrer" className="hover:underline">Discord {h.discord.count}</a> : <>Discord {h.discord.count}</>}
+              </Badge>
+            )}
           </div>
+          {h.labels.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1.5">{h.labels.map((l) => <Badge key={l}>{l}</Badge>)}</div>}
         </div>
         <a href={d.github.url} target="_blank" rel="noopener noreferrer" className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded border border-line-strong bg-raised px-2.5 text-xs font-medium hover:bg-ink/[0.06] max-md:h-11">
           See in GitHub <ArrowSquareOutIcon />
         </a>
-        {user.role === "operator" && (
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger aria-label="More actions" className="flex size-8 shrink-0 items-center justify-center rounded border border-line-strong hover:bg-ink/[0.06] max-md:size-11"><DotsThreeIcon weight="bold" /></DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content align="end" sideOffset={6} className="z-50 min-w-[190px] rounded-md border border-line-strong bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise">
-                {["Fast track", "Hold", "Review again", "Verify again"].map((l) => (
-                  <DropdownMenu.Item key={l} className="flex h-8 cursor-default items-center rounded px-2 text-sm outline-none data-[highlighted]:bg-ink/[0.07] max-md:h-11">{l}</DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-        )}
+        {user.role === "operator" && <ItemMenu d={d} />}
       </div>
       <StatusLine status={d.status} className="mt-2.5 rounded bg-ink/[0.04] px-3 py-2" />
     </header>

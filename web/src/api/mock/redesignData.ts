@@ -8,6 +8,14 @@ const D = 1440;
 
 const status = (phase: ItemPhase, since: number, waiting: string | null, next: string | null): ItemStatus => ({ phase, waiting, next, since: at(since) });
 
+const HEADER_1484: Partial<ItemPageHeader> = {
+  labels: ["enhancement", "i18n", "needs-decision"], assignees: ["rhea-m"], autocraftAssigned: true,
+  discord: { count: 2, links: [{ url: "https://discord.example/channels/1/2/3", at: at(3 * H) }] },
+  queue: { stage: "Merge", tab: "merge", place: 3 }, tier: "whitelisted", size: "XL",
+  releases: { reviewAgain: true, verifyAgain: true, fixAgain: false, batchAgain: true },
+  preapproval: { id: 7, by: "rhea-m", at: at(4 * H), instructions: "Use load_pack for the dictionary, then merge when CI is green.", state: "ci", fromHead: "e6a09b1", head: "f21c0aa", reason: null, updatedAt: at(3 * H) },
+};
+
 type Seed = { repo: string; number: number; kind: "pr" | "issue"; state: "open" | "closed" | "merged"; title: string; author: string; status: ItemStatus; updated: number };
 const seeds: Seed[] = [
   { repo: "designcraft", number: 1484, kind: "pr", state: "open", title: "Add Hungarian spellchecking and nonstandard hyphenation", author: "rhea-m", updated: 20, status: status("Waiting for a person", 5 * H, "a Merge? answer", "merge or fix-up on the answer") },
@@ -58,6 +66,7 @@ const REVIEWS_1484: { latest: OpusReviewEntry; earlier: OpusReviewEntry[] } = {
   latest: review({
     id: "r4", head: "e6a09b1", current: true, at: at(5 * H + 30), trigger: "discussion", why: "mosswood replied that the language pack loads, so the earlier finding was checked again", verdict: "take", sure: false,
     summary: "The spellchecker and hyphenation code are sound and well tested. Almost all of the diff is dictionary and pattern data that the language pack in craft-i18n already ships, so merging duplicates about 270,000 lines. Opus is unsure whether the team wants a second copy.",
+    blockedBy: [{ repo: "craft-i18n", number: 88 }],
     risks: ["Every clone grows by about 9 MB.", "The pack's hyphenation rules differ in 14 patterns, so two versions would be in use."],
     claims: [
       { path: "crates/spell/src/hu.rs", line: 41, text: "Loads the bundled dictionary with include_bytes!, not through load_pack" },
@@ -101,6 +110,9 @@ const RESULTS_1484: ResultCard[] = [
   { id: "c1", kind: "verify", title: "Verify", outcome: "Passed on e6a09b1", tone: "ok", at: at(2 * D), detail: "cargo test -p spell: 41 passed.", earlier: [{ at: at(3 * D + 4 * H), outcome: "Passed on b72c4d8" }] },
   { id: "c2", kind: "classifiers", title: "Classifiers", outcome: "Missing feature, 3 of 3 agree", tone: "neutral", at: at(4 * D + 3 * H), detail: null, earlier: [] },
   { id: "c3", kind: "duplicates", title: "Duplicates and links", outcome: "Related: craft-i18n#88, designcraft#1391", tone: "neutral", at: at(4 * D + 3 * H), detail: null, earlier: [] },
+  { id: "c4", kind: "patch-checks", title: "Patch checks", outcome: "Opus approved round 2", tone: "ok", at: at(2 * D + 20), detail: "Round 1 rejected: the test does not cover the ccs case.", earlier: [{ at: at(2 * D + 50), outcome: "Round 1 rejected" }] },
+  { id: "c5", kind: "actions", title: "Actions", outcome: "Comment posted, not closed", tone: "neutral", at: at(5 * H + 10), detail: "Merge? answered by rhea-m: hold for the pack decision.", earlier: [] },
+  { id: "c6", kind: "postmerge", title: "Post-merge review", outcome: "1 follow-up opened", tone: "warn", at: at(95), detail: "Earlier merge of the pack loader left a stale cache path.", earlier: [], followups: [{ repo: "designcraft", number: 1490 }, { repo: "craft-i18n", number: 91 }] },
 ];
 
 const gh = (id: string, type: GithubEvent["type"], minAgo: number, actor: string, body: string | null, autocraft: GithubEvent["autocraft"] = null): GithubEvent => ({ id, type, at: at(minAgo), actor, body, autocraft });
@@ -200,8 +212,8 @@ const RESULTS_9981: ResultCard[] = [
   { id: "c3", kind: "classifiers", title: "Classifiers", outcome: "Bug fix, 3 of 3 agree", tone: "neutral", at: at(5 * H), detail: null, earlier: [] },
 ];
 
-const FULL: Record<string, Omit<ItemPageData, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header">> = {
-  "designcraft#1484": { reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
+const FULL: Record<string, Omit<ItemPageData, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header"> & { header?: Partial<ItemPageHeader> }> = {
+  "designcraft#1484": { header: HEADER_1484, reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
   "photocraft#9981": { reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981 },
   "wordcraft#2214": {
     reviews: { latest: null, earlier: [] },
@@ -226,8 +238,8 @@ export function itemPageFor(repo: string, number: number): ItemPageData | null {
   const s = seeds.find((x) => x.repo === repo && x.number === number);
   if (!s) return null;
   const full = FULL[`${repo}#${number}`];
-  const base = { repo, number, kind: s.kind, state: s.state, title: s.title, author: s.author, status: s.status, stamp: "mock", header: mockHeader(s.kind) };
-  if (full) return { ...base, ...full, costUsd: total(full.history) };
+  const base = { repo, number, kind: s.kind, state: s.state, title: s.title, author: s.author, status: s.status, stamp: "mock", header: { ...mockHeader(s.kind), ...full?.header } };
+  if (full) return { ...base, ...full, header: base.header, costUsd: total(full.history) };
   const history = [hist("h1", s.updated + 20, "Classify", "classified", "Jev", 0), hist("h2", s.updated, s.status.phase, s.status.waiting ?? "done", null, null, "event")];
   return {
     ...base, reviews: { latest: null, earlier: [] }, results: [{ id: "c1", kind: "classifiers", title: "Classifiers", outcome: "3 of 3 agree", tone: "neutral", at: at(s.updated + 20), detail: null, earlier: [] }], history, costUsd: 0,
