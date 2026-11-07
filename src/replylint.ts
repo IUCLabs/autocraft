@@ -50,25 +50,49 @@ function setPath(target: Record<string, unknown>, path: string): ((v: unknown) =
   return (v) => { (node as Record<string, unknown>)[last] = v; };
 }
 
+const BLOCK = /```(choices|actions)([ \t]*\r?\n)([\s\S]*?)```/g;
+
+/** Which fenced block a field belongs to: `cards[...]` is the actions array (its root), cores/add/ask the choices object; anything else is the plain JSON reply. */
+const blockOfField = (field: string): { lang: "actions" | "choices"; path: string } | null =>
+  field.startsWith("cards[") ? { lang: "actions", path: field.slice("cards".length) } : /^(cores|add|ask)\b/.test(field) ? { lang: "choices", path: field } : null;
+
 /**
  * The first reply with the fix turn's corrected fields put in. Only the fields the problems asked for are taken, and only where they exist in the first reply
- * (or are new top-level fields); the rest stays as the first turn wrote it. Null when the fix reply is not a JSON object or nothing could be put in.
+ * (or are new top-level fields); the rest stays as the first turn wrote it. Fields in a fenced `choices` or `actions` block are patched inside that block, and all prose and
+ * other blocks stay; other fields are patched in the reply's JSON object. Null when the fix reply is not a JSON object or nothing could be put in.
  */
 export function mergeFixFields(original: string, fix: string, problems: readonly LintProblem[]): string | null {
-  const o = jsonRoot(original), f = jsonRoot(fix);
-  if (!o || !f || f.array || !isObj(f.root) || Array.isArray(f.root)) return null;
-  const target = o.array ? (o.root as unknown[])[0] : o.root;
-  if (!isObj(target) || Array.isArray(target)) return null;
+  const f = jsonRoot(fix);
+  if (!f || f.array || !isObj(f.root) || Array.isArray(f.root)) return null;
   const patch = f.root as Record<string, unknown>;
+  const blocks = new Map<string, { root: unknown; text: string }>();
+  for (const m of original.matchAll(BLOCK)) {
+    if (blocks.has(m[1]!)) continue;
+    try { blocks.set(m[1]!, { root: JSON.parse(m[3]!), text: m[0] }); } catch { /* an unreadable block takes no fields */ }
+  }
+  let plain: { root: unknown; array: boolean } | null = null;
   let put = 0;
+  const changed = new Set<string>();
   for (const field of fieldsOf(problems)) {
     if (!(field in patch)) continue;
-    const set = setPath(target as Record<string, unknown>, field);
+    const at = blockOfField(field);
+    let set: ((v: unknown) => void) | null = null;
+    if (at) {
+      const b = blocks.get(at.lang);
+      if (b && isObj(b.root)) set = setPath(b.root as Record<string, unknown>, at.path);
+      if (set) changed.add(at.lang);
+    } else {
+      plain ??= original.includes("```") ? null : jsonRoot(original);
+      const target = plain && (plain.array ? (plain.root as unknown[])[0] : plain.root);
+      if (isObj(target) && !Array.isArray(target)) set = setPath(target as Record<string, unknown>, field);
+    }
     if (!set) continue;
     set(patch[field]);
     put++;
   }
-  return put ? JSON.stringify(o.root) : null;
+  if (!put) return null;
+  if (plain && !changed.size) return JSON.stringify(plain.root);
+  return original.replace(BLOCK, (whole, lang: string, nl: string) => (changed.has(lang) && blocks.get(lang)?.text === whole ? `\`\`\`${lang}${nl}${JSON.stringify(blocks.get(lang)!.root)}\n\`\`\`` : whole));
 }
 
 /** The semantic reference check accepts a yes from Jev at this probability or more, and a no below the second one; Haiku decides in between. */

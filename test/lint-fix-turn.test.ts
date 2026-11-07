@@ -7,7 +7,7 @@ import { describe, test } from "node:test";
 import { askClaude, setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
-import type { Lint } from "../src/replylint.ts";
+import { mergeFixFields, type Lint } from "../src/replylint.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -68,5 +68,25 @@ describe("reply lint fix turn", () => {
     assert.equal(r.text, first);
     assert.equal(r.problems?.length, 1);
     assert.equal(r.fixTurn, undefined);
+  });
+});
+
+describe("mergeFixFields in fenced replies", () => {
+  const problems = (...fields: string[]) => fields.map((field) => ({ field, message: "m" }));
+  test("a prepare reply keeps its prose and gets the corrected field inside the choices block", () => {
+    const reply = 'Summary line.\n\n```choices\n{"cores":[{"id":"merge","reason":"leaky"}],"ask":{"text":"keep"}}\n```\n';
+    const out = mergeFixFields(reply, '{"cores[0].reason": "clean"}', problems("cores[0].reason"))!;
+    assert.ok(out.startsWith("Summary line.\n\n```choices\n"));
+    const block = JSON.parse(/```choices\n([\s\S]*?)\n```/.exec(out)![1]!);
+    assert.deepEqual(block, { cores: [{ id: "merge", reason: "clean" }], ask: { text: "keep" } });
+  });
+
+  test("a conversation reply with two fenced blocks patches each block and keeps the rest", () => {
+    const reply = 'Here is my answer.\n\n```choices\n{"ask":{"text":"leaky ask"}}\n```\n\nMore prose.\n\n```actions\n[{"kind":"resolution","text":"leaky card"},{"kind":"resolution","text":"fine"}]\n```';
+    const out = mergeFixFields(reply, '{"cards[0].text": "clean card", "ask.text": "clean ask"}', problems("cards[0].text", "ask.text"))!;
+    assert.ok(out.startsWith("Here is my answer.") && out.includes("\n\nMore prose.\n\n"));
+    assert.deepEqual(JSON.parse(/```choices\n([\s\S]*?)\n```/.exec(out)![1]!), { ask: { text: "clean ask" } });
+    assert.deepEqual(JSON.parse(/```actions\n([\s\S]*?)\n```/.exec(out)![1]!), [{ kind: "resolution", text: "clean card" }, { kind: "resolution", text: "fine" }]);
+    assert.equal(mergeFixFields(reply, '{"cards[7].text": "x"}', problems("cards[7].text")), null);
   });
 });
