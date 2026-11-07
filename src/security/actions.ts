@@ -6,7 +6,7 @@ import { audit } from "../dash/audit.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
 import { securityRepo, SECURITY_STEP, REASON_MAX, MIN_VERIFY_SCORE } from "./rules.ts";
-import { activeScan, ACTIVE_STATES, advance, finishScan, findingKey, findingRow, moveFinding, reconcileFindings, reconcileScans, reopenUnchecked, scanRow, toFinding, toScan, UNCHECKED_RESULT } from "./store.ts";
+import { activeScan, ACTIVE_STATES, advance, clearRounds, finishScan, findingKey, findingRow, moveFinding, reconcileFindings, reconcileScans, reopenUnchecked, scanRow, toFinding, toScan, UNCHECKED_RESULT } from "./store.ts";
 
 export class SecurityError extends Error {
   readonly status: number;
@@ -181,6 +181,7 @@ async function startStep(db: DatabaseSync, repo: string, n: number, login: strin
   if (action === "fix" && !row.verification) throw new SecurityError(409, "the finding has not been verified");
   // Land after the advisory route starts over on the public fork: the advisory's private fork and its pull request are forgotten (ghsa_id stays).
   const reset: Record<string, null> = action === "land" && row.state === "awaiting-admin" ? { fork: null, fix_pr: null } : {};
+  if (action === "fix") clearRounds(db, repo, n);
   if (s.to && !advance(db, repo, n, s.from, s.to, { note: null, ...reset }, login)) throw new SecurityError(409, "the finding changed; reload and try again");
   if (action === "fix") db.prepare("UPDATE security_findings SET fix_attempts = fix_attempts + 1, last_failure = NULL WHERE repo = ? AND number = ?").run(repo, n);
   try {
