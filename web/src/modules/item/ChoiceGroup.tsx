@@ -1,5 +1,5 @@
-import { useRef, useState, type KeyboardEvent } from "react";
-import { ArrowsClockwiseIcon, BellIcon, BellSlashIcon, RobotIcon } from "@phosphor-icons/react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { ArrowsClockwiseIcon, BellIcon, BellSlashIcon, RobotIcon, SpinnerIcon, WarningIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { ActionTag as Tag, ChoiceCore, ChoiceExtra, Decision, DecisionChoices, DoChoiceBody, User } from "../../api/types";
 import { ActionTag, tagWords } from "../../ui/atoms/ActionTag";
@@ -12,7 +12,14 @@ import { cn } from "../../ui/cn";
 import { canActOn } from "../decisions/DecisionDetail";
 import { localActions, useAnswer, useLocal } from "../decisions/state";
 import { useWorkflow } from "../decisions/Workflow";
+import { COMPOSER_ID } from "./Composer";
 
+/** The thread has one place to write to Opus: the composer at the bottom of the page. */
+const focusComposer = () => {
+  const el = document.getElementById(COMPOSER_ID);
+  el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  el?.focus({ preventScroll: true });
+};
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const NOTE_MAX = 500;
 const area = "block w-full [field-sizing:content] max-h-[60vh] min-h-24 resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60";
@@ -163,10 +170,14 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
   const [editing, setEditing] = useState<Set<string>>(new Set());
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const [error, setError] = useState<string>();
-  const [elsewhere, setElsewhere] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const doRef = useRef<HTMLButtonElement | null>(null);
+  // The confirming state must be seen: on a phone the button may sit below the fold.
+  useEffect(() => {
+    if (armed) doRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [armed]);
 
   // With no pick nothing is selected: the first core stands in for the hooks below, and the answer button waits for a choice.
   const picked = key !== "";
@@ -227,7 +238,8 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
     setError(undefined);
     if (writes.length && !armed) return setArmed(true);
     setArmed(false);
-    setBusy(true);
+    // The group folds into the running line in this render, before the request goes out.
+    setPressed(true);
     try {
       const params: NonNullable<DoChoiceBody["params"]> = {};
       if (core.params?.reason !== undefined) params.reason = reason;
@@ -248,6 +260,10 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
       };
       const ran = await api.conversations.doChoice(choices.id, body);
       // The server ran the action and settled the question: fold into the answer now, not after the refetch.
+      if (ran.state === "failed") {
+        setError(ran.error ?? "It did not run");
+        return;
+      }
       if (ran.state === "done") {
         const answer = core.key.startsWith("o:") ? core.key.slice(2) : core.key === "backlog" ? "backlog" : "handled";
         localActions.fold(d.id, { answer, answerNote: note.trim() || null, answeredBy: user.login, answeredAt: ran.at ?? new Date().toISOString(), undoable: false });
@@ -256,20 +272,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
     } catch (e) {
       setError(message(e));
     } finally {
-      setBusy(false);
-    }
-  };
-  const sayIt = async () => {
-    if (!elsewhere?.trim() || d.number === null) return;
-    setError(undefined);
-    setSending(true);
-    try {
-      await api.conversations.say(d.repo, d.number, elsewhere.trim());
-      setElsewhere(null);
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setSending(false);
+      setPressed(false);
     }
   };
   const params = (c: ChoiceCore) => (
@@ -343,6 +346,17 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
     );
   };
 
+  // Pressed: the whole group folds into one line naming what is being done. A failure reopens it with the same picks.
+  if (pressed || running)
+    return (
+      <div className="mt-3" role="status">
+        <p className="flex items-center gap-2 rounded-lg border border-accent/60 bg-accent/[0.05] px-3 py-3 text-sm font-medium">
+          <SpinnerIcon className="shrink-0 animate-spin text-accent-ink" />
+          <span className="min-w-0 break-words">{writes.length ? `Doing it: ${tagWords(writes)}…` : `Doing it: ${core.label}…`}</span>
+        </p>
+      </div>
+    );
+
   return (
     <div className="mt-3">
       {choices.pick?.reason && (
@@ -350,12 +364,13 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
           <span className="font-medium">Opus:</span> {choices.pick.reason}
         </p>
       )}
+      <ErrorLine error={error ?? (choices.run?.state === "failed" ? choices.run.error : undefined)} className="mb-2" />
       <div role="radiogroup" aria-label="What happens to it" onKeyDown={onKey} className="grid grid-cols-[minmax(0,1fr)] gap-2">
         {choices.cores.map((c, i) => {
           const sel = picked && c.key === core.key;
           const tags = writesOf(c);
           return (
-            <div key={c.key} className={cn("rounded-lg border", sel ? "border-accent/60 bg-accent/[0.05]" : "border-line")}>
+            <div key={c.key} className={cn("rounded-lg border", sel && armed ? "border-bad bg-bad/[0.06] ring-2 ring-bad/30" : sel ? "border-accent/60 bg-accent/[0.05]" : "border-line")}>
               <button
                 ref={(el) => void (refs.current[i] = el)}
                 type="button"
@@ -380,9 +395,10 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
                   <NoteField d={d} />
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
+                      ref={doRef}
                       variant="primary"
+                      icon={armed ? WarningIcon : undefined}
                       className={cn("max-md:h-11", armed && "border-bad bg-bad text-white hover:bg-bad/90")}
-                      loading={busy || running}
                       disabled={blank}
                       onClick={() => void run()}
                     >
@@ -400,17 +416,9 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
           );
         })}
       </div>
-      {elsewhere !== null && (
-        <div className="mt-3 space-y-2">
-          <textarea value={elsewhere} onChange={(e) => setElsewhere(e.target.value)} rows={3} maxLength={4000} aria-label="Tell Opus what else" placeholder="Tell Opus what to do instead" disabled={sending} className={area} />
-          <Button variant="secondary" className="max-md:h-11" loading={sending} disabled={!elsewhere.trim()} onClick={() => void sayIt()}>
-            Send to Opus
-          </Button>
-        </div>
-      )}
       <div className="mt-2 flex flex-wrap items-center gap-x-1">
         {operator && d.number !== null && (
-          <button type="button" className={textBtn} disabled={elsewhere !== null || busy} onClick={() => setElsewhere("")}>
+          <button type="button" className={textBtn} disabled={busy} onClick={focusComposer}>
             Something else…
           </button>
         )}
@@ -419,8 +427,6 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
           <SnoozeButton d={d} user={user} busy={busy} setBusy={setBusy} setError={setError} text />
         </span>
       </div>
-      <ErrorLine error={error} className="mt-2" />
-      {choices.run?.state === "failed" && choices.run.error && <ErrorLine error={choices.run.error} className="mt-2" />}
     </div>
   );
 }

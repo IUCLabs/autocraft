@@ -144,9 +144,17 @@ interface Local {
   overrides: Record<string, Record<string, string>>;
   /** The answer the server accepted, shown at once until the refetched decision carries it (dropped on Undo). */
   folded: Record<string, FoldedAnswer>;
+  /** Items whose message to Opus is out: its choices are about to be replaced, so they are folded until the new set (or Opus's failure) arrives. By "repo#number". */
+  updating: Record<string, Updating>;
+}
+/** `choicesId`: the set that was current when the message went out; `opusTurns`: Opus's turns so far. */
+export interface Updating {
+  decisionId: string;
+  choicesId: string;
+  opusTurns: number;
 }
 type FoldedAnswer = Pick<Decision, "answer" | "answerNote" | "answeredBy" | "answeredAt" | "undoable">;
-let local: Local = { checked: new Set(), justAnswered: [], undoError: null, notes: {}, picks: {}, overrides: {}, folded: {} };
+let local: Local = { checked: new Set(), justAnswered: [], undoError: null, notes: {}, picks: {}, overrides: {}, folded: {}, updating: {} };
 const subs = new Set<() => void>();
 const set = (fn: (l: Local) => Local) => {
   local = fn(local);
@@ -184,6 +192,12 @@ export const localActions = {
     noticeTimer = setTimeout(() => set((l) => ({ ...l, justAnswered: [] })), NOTICE_MS);
     set((l) => ({ ...l, justAnswered: entries, undoError: null, checked: new Set() }));
   },
+  startUpdating(item: string, u: Updating) {
+    // A reply that never comes must not keep the choices folded for good.
+    setTimeout(() => localActions.stopUpdating(item), 5 * 60_000);
+    set((l) => ({ ...l, updating: { ...l.updating, [item]: u } }));
+  },
+  stopUpdating: (item: string) => set((l) => (item in l.updating ? { ...l, updating: Object.fromEntries(Object.entries(l.updating).filter(([k]) => k !== item)) } : l)),
   fold: (id: string, a: FoldedAnswer) => set((l) => ({ ...l, folded: { ...l.folded, [id]: a } })),
   unfold: (ids: string[]) =>
     set((l) => (ids.some((id) => id in l.folded) ? { ...l, folded: Object.fromEntries(Object.entries(l.folded).filter(([id]) => !ids.includes(id))) } : l)),

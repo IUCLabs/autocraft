@@ -1,7 +1,7 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
 import type { CardEdit, Conversation, ConversationCard, ConversationTurn, DecisionChoices } from "../../../web/src/api/types.ts";
-import { buttonLabel, cardEffect, cardLines, decisionStamp, headline, openDecision, validateCard, type CardParams } from "../../conversations/cards.ts";
+import { buttonLabel, cardEffect, cardLines, decisionStamp, headline, isSettling, openDecision, stepLine, validateCard, type CardParams } from "../../conversations/cards.ts";
 import { applyDrafts, choicesById, compose, coresFor, currentChoices, seenJson, type ComposeExtra, type Core } from "../../decide/choices.ts";
 import { parseCoreKey, type ChoicesRow, type CoreKey } from "../../decide/choices-types.ts";
 import { getDecision } from "../../decisions.ts";
@@ -293,13 +293,15 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
 
   // The press is claimed here, with no await between the check and the insert: a second press that got this far sees the first one's card.
   let id = 0;
+  let failedBefore: CardRow | undefined;
   db.exec("BEGIN IMMEDIATE");
   try {
     if (choicesById(db, row.id)?.state !== "current") throw new HttpError(409, "replaced by newer choices");
     const prior = priorOf();
     if (prior && (prior.state === "running" || prior.state === "done")) { db.exec("COMMIT"); return cardView(db, prior, req.user); }
-    // A run that stopped after some steps would repeat them: the operator prepares again or says what else to do.
-    if (prior?.state === "failed" && /^(Already done:|outcome unknown)/.test(prior.error ?? "")) throw new HttpError(409, "the last run of these choices stopped after some of its steps; Re-prepare, or tell Opus what to do next");
+    // A run whose outcome is unknown may have repeated writes: the operator prepares again or says what else to do.
+    if (prior?.state === "failed" && /^outcome unknown/.test(prior.error ?? "")) throw new HttpError(409, "the last run of these choices stopped after some of its steps; Re-prepare, or tell Opus what to do next");
+    failedBefore = prior?.state === "failed" ? prior : undefined;
     db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE choice_id = ? AND state = 'proposed'").run(row.id);
     id = Number(db.prepare("INSERT INTO main.conversation_cards (turn_id, repo, number, kind, params, text, description, seen, choice_id) VALUES (?, ?, ?, 'resolution', ?, ?, ?, ?, ?)")
       .run(row.turnId ?? 0, row.repo, row.number, JSON.stringify(v.card.params), v.card.text, v.card.description, seenJson(row.seen), row.id).lastInsertRowid);
@@ -324,9 +326,14 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
     db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE id = ? AND state = 'proposed'").run(id);
     throw e;
   }
+  // Steps a failed earlier press of these choices completed (its error names them) are not run again.
+  const allSteps = v.card.params.kind === "resolution" ? v.card.params.steps : [];
+  const priorDone = failedBefore?.error?.startsWith("Already done:") ? failedBefore.error : "";
+  const doneAt = allSteps.flatMap((x, k) => (priorDone.includes(stepLine(x)) && !isSettling(x) ? [k] : []));
+  const alreadyDone = doneAt.length < allSteps.length || (v.card.params.kind === "resolution" && v.card.params.settle) ? doneAt : [];
   let ran;
   try {
-    ran = await guardAsync(() => doCard(db, id, req.user.login, { ...deps, note: body.note, noteStaysOut: !isOperator(req), role: req.user.role, canWrite: (r) => req.user.canWrite(r) }));
+    ran = await guardAsync(() => doCard(db, id, req.user.login, { ...deps, skip: alreadyDone, note: body.note, noteStaysOut: !isOperator(req), role: req.user.role, canWrite: (r) => req.user.canWrite(r) }));
   } catch (e) {
     // Refused before the claim (lane, approval): the card never ran and must not stay proposed.
     db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE id = ? AND state = 'proposed'").run(id);

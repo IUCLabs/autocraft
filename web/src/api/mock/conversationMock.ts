@@ -143,6 +143,7 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
   // The open choices by item; a run that settles the question removes them.
   const choices = new Map<string, DecisionChoices>([[REF, mergeChoices(1)], ["photocraft#4127", scopeChoices(1)], ["gridcraft#977", { ...mergeChoices(1), id: "ch-g1", decisionId: "gridcraft#977:merge", pick: null }]]);
   let epoch = 1;
+  const failedOnce = new Set<string>();
   if (hooks)
     hooks.reprepare = (decisionId) => {
       // Like the server: the old choices stay while Opus works, then a new set replaces them.
@@ -215,6 +216,9 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         setTimeout(() => {
           t.status = "answered";
           c.pending = false;
+          // Like the server: Opus's reply carries a new set that replaces the current one.
+          const cur = choices.get(`${repo}#${n}`);
+          if (cur) choices.set(`${repo}#${n}`, { ...(cur.decisionId.endsWith(":scope") ? scopeChoices(++epoch) : mergeChoices(++epoch)), pick: cur.pick && { core: cur.pick.core, reason: "Updated for your message." } });
           c.turns.push({ id: nextId++, kind: "opus", login: "opus", at: new Date().toISOString(), body: "I read that. The pack and the committed files carry the same patterns, so asking the author to load the pack still holds.", actions: [], notes: [] });
           changed();
         }, 5000);
@@ -286,7 +290,15 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         if (body.params?.instructions !== undefined && me.role !== "operator") throw new Error("only operators edit a fix-up's instructions");
         ch.run = { cardId: nextId, state: "running" };
         changed();
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, 1500));
+        // The first press on gridcraft#977 stops after its first step; pressing again runs the rest.
+        if (ref === "gridcraft#977" && !failedOnce.has(ref)) {
+          failedOnce.add(ref);
+          const error = 'Already done: Add the label "small extra". GitHub is not reachable. The question stays open';
+          ch.run = { cardId: nextId++, state: "failed", error };
+          changed();
+          return snap(card({ id: ch.run.cardId, kind: "resolution", title: core.label, state: "failed", fromChoice: true, error }));
+        }
         const at = new Date().toISOString();
         const did = [...core.writes, ...core.extras.filter((x) => body.extras.some((e) => e.id === x.id)).map((x) => x.tag)];
         const c = open(repo, Number(num));

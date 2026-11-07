@@ -36,7 +36,7 @@ export const scrollToThreadEnd = () => document.getElementById(THREAD_END_ID)?.s
  * The item's open questions at the end of the thread: the question and its answer choices (`choices`, those of the first question), answerable in place with the Decisions page's controls and permission rules.
  * On a decision page, `focus` comes first, shows its answer with Undo once answered, and has no link to itself.
  */
-export function OpenQuestions({ ds, focus, choices, onAnswered, boxes }: { ds: Decision[]; focus?: Decision; choices?: DecisionChoices | null; onAnswered?: () => void; boxes?: boolean }) {
+export function OpenQuestions({ ds, focus, choices, updating, onAnswered, boxes }: { ds: Decision[]; focus?: Decision; choices?: DecisionChoices | null; updating?: string; onAnswered?: () => void; boxes?: boolean }) {
   const loc = useLocal();
   const user = useUser();
   const open = ds.filter((d) => !d.answer);
@@ -48,14 +48,14 @@ export function OpenQuestions({ ds, focus, choices, onAnswered, boxes }: { ds: D
         <AnswerNotice key={a.id} entry={a} className="rounded-md border border-line px-3" />
       ))}
       {focus?.answer && <AnsweredState d={focus} canUndo={canTakeBack(user, focus)} />}
-      {open.map((d, i) => (
-        <Question key={d.id} d={d} siblings={ds} choices={i === 0 && choices?.decisionId === d.id ? choices : undefined} here={d.id === focus?.id} onAnswered={onAnswered} feedback={!!boxes && d.id !== focus?.id} />
+      {open.map((d) => (
+        <Question key={d.id} d={d} siblings={ds} choices={choices === undefined ? undefined : choices?.decisionId === d.id ? choices : null} updating={updating === d.id} here={d.id === focus?.id} onAnswered={onAnswered} feedback={!!boxes && d.id !== focus?.id} />
       ))}
     </section>
   );
 }
 
-function Question({ d, siblings, choices, here, onAnswered, feedback }: { d: Decision; siblings: Decision[]; choices?: DecisionChoices | null; here: boolean; onAnswered?: () => void; feedback: boolean }) {
+function Question({ d, siblings, choices, updating, here, onAnswered, feedback }: { d: Decision; siblings: Decision[]; choices?: DecisionChoices | null; updating: boolean; here: boolean; onAnswered?: () => void; feedback: boolean }) {
   const user = useUser();
   return (
     <article className="rounded-md border border-line-strong px-3 py-3 md:px-4">
@@ -76,10 +76,10 @@ function Question({ d, siblings, choices, here, onAnswered, feedback }: { d: Dec
       <p className="mt-2 text-pretty text-[15px] font-semibold leading-6">
         <Refs text={d.question} repo={d.repo} />
       </p>
-      {/* While Opus prepares, the earlier answers are about to be replaced, so only the progress line shows. */}
-      {d.preparing && !d.answer ? (
-        <OpusWorking text="Opus is preparing options…" className="mt-2" />
-      ) : (
+      {/* While Opus prepares or answers a message, the earlier choices are about to be replaced, so only the progress line shows. */}
+      {(d.preparing || updating) && !d.answer ? (
+        <OpusWorking text={d.preparing ? "Opus is preparing options…" : "Opus is updating the choices…"} className="mt-2" />
+      ) : choices === undefined && d.number !== null && d.group.length === 0 ? null : (
         <>
           {!choices && <div className="mt-2"><RecommendationLine d={d} /></div>}
           <ChoiceGroup d={d} user={user} choices={choices} onAnswered={onAnswered} />
