@@ -134,7 +134,7 @@ A setting; the pipeline does not depend on it. The bot's connection state, the s
 
 The item page shows a "Discord N" badge in its header and, in the details, a list of message links (`discord.com/channels/<server>/<channel>/<message>` with the time). Counts are visible to everyone who sees the item; the links are decrypted on the server and need the key file in the dashboard's environment, otherwise only the count shows. The Items page has a Discord column (a badge on phones), the sort "Discord mentions" and the filter "Mentioned on Discord".
 
-`/privacy` is the one page outside sign-in: what the bot reads, what it keeps, what it never keeps, and how to ask for deletion.
+`/privacy` and `/terms` are the pages outside sign-in: what the bot reads, what it keeps, what it never keeps, and how to ask for deletion.
 
 ### Audit (operators and maintainers)
 

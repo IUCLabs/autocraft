@@ -17,7 +17,8 @@ import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "
 import { TokenBucket } from "./limits.ts";
 import { dbReady, serveHealth } from "../../health.ts";
 import { serveChecks } from "../../health-checks.ts";
-import { discordPrivacyPage, DISCORD_PRIVACY_PATH, OLD_PRIVACY_PATH } from "./discord-privacy.ts";
+import { discordPrivacyPage, DISCORD_PRIVACY_PATH } from "./discord-privacy.ts";
+import { discordTermsPage, DISCORD_TERMS_PATH } from "./discord-terms.ts";
 import { contactOf } from "../api/discord.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
@@ -479,7 +480,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
       if (method === "GET" && url.pathname === DISCORD_PRIVACY_PATH) return send(res, nonce, { html: discordPrivacyPage(nonce, contactOf(db)) });
-      if (method === "GET" && url.pathname === OLD_PRIVACY_PATH) { res.writeHead(301, { location: DISCORD_PRIVACY_PATH }); res.end(); return; }
+      if (method === "GET" && url.pathname === DISCORD_TERMS_PATH) return send(res, nonce, { html: discordTermsPage(nonce, contactOf(db)) });
       // Public: the favicon and the preview image, which sign-in pages and link-preview crawlers load without a session.
       if (method === "GET" && PUBLIC_FILES.has(url.pathname)) return await sendWeb(res, nonce, url.pathname);
       const session = loadSession(db, cookies.get(SESSION_COOKIE));
