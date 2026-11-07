@@ -26,6 +26,7 @@ import * as conv from "./conversations.ts";
 import * as mcp from "./mcp.ts";
 import * as areas from "./areas.ts";
 import * as security from "./security.ts";
+import * as securityPage from "./security-page.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
@@ -37,6 +38,7 @@ import { now, nowFeed } from "./now.ts";
 import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
 import { activity } from "./activity.ts";
+import { itemPage } from "./item-page.ts";
 import { trace as itemTrace, traceDetail as itemTraceDetail } from "./trace.ts";
 import { postmergeOf } from "./postmerge.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -49,6 +51,7 @@ import { isQuiet } from "../../security/quiet.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
 import { needs } from "./needs.ts";
+import { home } from "./home.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
 import { batchOne } from "./batch-page.ts";
@@ -105,7 +108,7 @@ type ItemRow = {
   mergeable: string | null; ci_state: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null;
 };
 
-async function item(db: DatabaseSync, req: Req): Promise<Item> {
+export async function itemCore(db: DatabaseSync, req: Req): Promise<Item> {
   const repo = req.params.repo!;
   const n = Number(req.params.n);
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
@@ -395,7 +398,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/mcp/tokens", mcp.tokens),
     post("/api/mcp/tokens", mcp.create),
     post("/api/mcp/tokens/revoke", mcp.revoke),
-    get("/api/items/:repo/:n", item),
+    get("/api/items/:repo/:n", itemCore),
+    get("/api/items/:repo/:n/page", itemPage),
     get("/api/activity", activity),
     get("/api/items/:repo/:n/trace", itemTrace),
     get("/api/items/:repo/:n/trace/event", itemTraceDetail),
@@ -546,5 +550,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/now", now),
     get("/api/now/feed", nowFeed),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
+    get("/api/security/findings", securityPage.securityFindings),
+    get("/api/security/findings/:repo/:n/page", securityPage.findingPage),
+    get("/api/home", (db, req) => home(db, req, { writeRepos: () => writeRepos(db, req), progress: (hidden) => progress(db, hidden) })),
+    get("/api/items/status", items.statusList),
   ];
 }

@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { AccessOverview, BatchList, CostReport, Flow, Item, MainCi, PipelineState, Progress, PromptsReport, QueuePage, User, WorkList } from "../web/src/api/types.ts";
+import type { ItemPageData } from "../src/dash/api/item-page.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
@@ -14,6 +15,10 @@ import { tmpdir, world } from "./world-db.ts";
 const keys = <T>() => (...k: (keyof T & string)[]): string[] => k;
 
 const w = world().repo().pr(1).review(1).verified(1).premerge(1, "clean").pr(2, { ci: "failure" }).issue(3);
+w.db.prepare("INSERT INTO security_scans (id, repo, state, started_by, started_at) VALUES (900, 'app', 'done', 'op', '2026-01-01T00:00:00Z')").run();
+w.db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, reach, impact, fingerprint, fix_attempts, last_failure, created_at, updated_at)
+  VALUES ('app', 1, 900, 'a', 't', 'high', 0, 'new', '[]', 'r', 'i', 'fp1', 1, 'the test passes without the fix', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`).run();
+w.db.prepare("INSERT INTO security_fix_log (repo, number, attempt, round, state, failure, title, created_at, ended_at) VALUES ('app', 1, 1, 1, 'failed', 'the test passes without the fix', 't', '2026-01-01T00:00:00Z', '2026-01-01T00:10:00Z')").run();
 let base = "";
 let stop: () => Promise<void>;
 const jar = new Map<string, string>();
@@ -32,6 +37,9 @@ const OBJECTS: [string, string[]][] = [
   ["/api/me", keys<User>()("login", "role", "writeRepos")],
   ["/api/progress", keys<Progress>()("funnel", "repos", "decisionsOpen", "mainCi")],
   ["/api/items/app/1", keys<Item>()("repo", "number", "title", "state", "author", "additions", "deletions", "ci", "mergeable", "classifications", "reviews", "premerge", "stages", "queue")],
+  ["/api/security/findings", ["groups"]],
+  ["/api/security/findings/app/1/page", ["finding", "decision", "choices", "status", "attempts", "rounds", "history", "costUsd"]],
+  ["/api/items/app/1/page", keys<ItemPageData>()("repo", "number", "kind", "state", "title", "author", "stamp", "header", "status", "costUsd", "reviews", "results", "history", "github")],
   ["/api/items", ["total", "byStatus", "rows"]],
   ["/api/queue/page", keys<QueuePage>()("tab", "repos", "counts", "rows", "mergeRows", "batches", "total", "next")],
   ["/api/queue", ["rows", "counts", "total", "next"]],
@@ -54,6 +62,8 @@ const OBJECTS: [string, string[]][] = [
   ["/api/classifiers", ["runs", "run", "overall", "confusion"]],
   ["/api/build/summary", ["queued", "running", "slots", "free", "online"]],
   ["/api/repos/all", ["name", "tracked", "openPrs", "openIssues", "pipeline", "merging", "pushing", "commenting"]],
+  ["/api/home", ["needs", "problems", "phases", "running", "progress", "done"]],
+  ["/api/items/status", ["rows", "byPhase", "total", "nextCursor"]],
   ["/api/search?q=PR", ["repo", "number", "kind", "title", "state"]],
 ];
 

@@ -18,7 +18,7 @@ import { editable, validateFixPatch } from "../fixissue/parse.ts";
 import { parseCheck } from "../patchcheck/index.ts";
 import { CHECK_PATCH_CAP } from "../patchcheck/types.ts";
 import { foldFormat } from "../prepush/index.ts";
-import { RESUME_WINDOW_MS, SessionLedger, dropSessions, parseSessions, storeSessions, touchStore, type Kept, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
+import { RESUME_WINDOW_MS, SessionLedger, parseSessions, storeSessions, touchStore, type Kept, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
 import { ownerOf } from "../owners.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit } from "../sandbox/index.ts";
@@ -29,7 +29,7 @@ import {
   FIX_RUN_BASE, FIX_ROUNDS, fixBranch, giveaway, parseFixReply, patchGiveaway, quietProblem, securityRepo,
   type SecurityFixCheckInput, type SecurityFixInput,
 } from "./rules.ts";
-import { advance, rawFinding, recordFixCall, scanRow } from "./store.ts";
+import { advance, clearRounds, rawFinding, recordFixCall, scanRow } from "./store.ts";
 import { usageRunId } from "./real.ts";
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -87,20 +87,14 @@ export function resumeFixMessage(failure: string): string {
   return `The harness checked your diff and the round failed:\n\n${failure.trim()}\n\nFix it. Reply in the same format as before (TITLE line, SUMMARY line, the marker line, then the complete diff): the whole corrected diff, not a change to your earlier diff.`;
 }
 
-type RoundRow = { round: number; patch: string; test_patch: string; title: string; summary: string; head_task: number; base_task: number; retried: number; session: string | null; state: string; failure: string | null };
+type RoundRow = { round: number; patch: string; test_patch: string; title: string; summary: string; head_task: number; base_task: number; retried: number; session: string | null; state: string; failure: string | null; created_at: string };
 const roundRows = (db: DatabaseSync, repo: string, n: number): RoundRow[] =>
   db.prepare("SELECT * FROM security_fix_rounds WHERE repo = ? AND number = ? ORDER BY round").all(repo, n) as RoundRow[];
-
-/** Forgets the rounds of a finding's fix (it ended, ready or not) and removes the sessions they still keep. */
-function clearRounds(db: DatabaseSync, repo: string, n: number): void {
-  for (const r of roundRows(db, repo, n)) dropSessions(r.session);
-  db.prepare("DELETE FROM security_fix_rounds WHERE repo = ? AND number = ?").run(repo, n);
-}
 
 /** Puts the finding back where an operator can decide again, with the reason on it. */
 function giveUp(db: DatabaseSync, repo: string, n: number, why: string, log: (l: string) => void): string {
   clearRounds(db, repo, n);
-  advance(db, repo, n, ["fixing"], "new", { note: oneLine(why, 400) });
+  advance(db, repo, n, ["fixing"], "new", { note: oneLine(why, 400), last_failure: oneLine(why, 400) });
   log(`${repo} finding ${n}: no fix: ${oneLine(why, 200)}`);
   return `finding ${n}: no fix: ${oneLine(why, 120)}`;
 }

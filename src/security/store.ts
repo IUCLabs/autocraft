@@ -1,5 +1,6 @@
 // Rows of the security deep scan and their views for the API (web/src/api/types.ts).
 import type { DatabaseSync } from "node:sqlite";
+import { dropSessions } from "../prepush/resume.ts";
 import { slugOf } from "../owners.ts";
 import { securityRepo } from "./rules.ts";
 import type { FindingCall, FindingRef, FindingSeverity, FindingState, FindingSummary, FindingVerification, FindingView, ScanArea, ScanCall, ScanDetail, ScanEntryPoint, ScanState, ScanView, SecurityOverview } from "../../web/src/api/types.ts";
@@ -64,7 +65,7 @@ const parse = <T>(s: string | null, fallback: T): T => {
 
 export type FindingRow = {
   repo: string; number: number; scan_id: number; area: string; title: string; severity: FindingSeverity; urgent: number; state: FindingState; refs: string;
-  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; fork: string | null; fix_patch: string | null; fix_title: string | null; fix_summary: string | null; fix_branch: string | null; fix_files: string | null; fix_ref: string | null; note: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string;
+  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; fork: string | null; fix_patch: string | null; fix_title: string | null; fix_summary: string | null; fix_branch: string | null; fix_files: string | null; fix_ref: string | null; note: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string; fix_attempts: number; last_failure: string | null;
 };
 
 export const findingKey = (repo: string, n: number): string => `${repo}:finding:${n}`;
@@ -75,6 +76,19 @@ const summary = (r: FindingRow): FindingSummary => ({
 });
 
 const SEVERITY_ORDER = "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END";
+
+/** Forgets the rounds of a finding's fix (it ended, ready or not) and removes the sessions they still keep. The rounds stay in security_fix_log, without patches. */
+export function clearRounds(db: DatabaseSync, repo: string, n: number): void {
+  const f = db.prepare("SELECT fix_attempts, state FROM security_findings WHERE repo = ? AND number = ?").get(repo, n) as { fix_attempts: number; state: string } | undefined;
+  const attempt = f?.fix_attempts ?? 0;
+  const ended = new Date().toISOString();
+  for (const r of (db.prepare("SELECT * FROM security_fix_rounds WHERE repo = ? AND number = ? ORDER BY round").all(repo, n) as { round: number; session: string | null; state: string; failure: string | null; title: string; created_at: string }[])) {
+    dropSessions(r.session);
+    db.prepare("INSERT OR REPLACE INTO security_fix_log (repo, number, attempt, round, state, failure, title, created_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(repo, n, attempt, r.round, r.state === "building" && f?.state === "ready" ? "passed" : r.state, r.failure, r.title, r.created_at, ended);
+  }
+  db.prepare("DELETE FROM security_fix_rounds WHERE repo = ? AND number = ?").run(repo, n);
+}
 
 /**
  * A finding that is `fixing`, or `landing` without a pull request, while no step job of it is queued or running (the job was
@@ -88,7 +102,10 @@ export function reconcileFindings(db: DatabaseSync, repo: string): void {
       AND json_extract(j.params, '$.repo') = security_findings.repo AND json_extract(j.params, '$.number') = security_findings.number)
     AND NOT EXISTS (SELECT 1 FROM security_fix_rounds r WHERE r.repo = security_findings.repo AND r.number = security_findings.number AND r.state = 'building')`).all(repo, grace) as { number: number; state: FindingState }[];
   for (const r of rows) {
-    advance(db, repo, r.number, [r.state], r.state === "fixing" ? "new" : "ready", { note: "The job ended before it finished. Try again." });
+    const note = "The job ended before it finished. Try again.";
+    // The rounds a dead fix job left are logged under the attempt that made them, before the next Fix counts a new one.
+    if (r.state === "fixing") clearRounds(db, repo, r.number);
+    advance(db, repo, r.number, [r.state], r.state === "fixing" ? "new" : "ready", r.state === "fixing" ? { note, last_failure: note } : { note });
   }
 }
 

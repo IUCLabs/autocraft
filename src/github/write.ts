@@ -20,6 +20,7 @@ import { appChildEnv, AppNotInstalledError, installationToken, RepoNotInInstalla
 import { type Note, withNote } from "./note.ts";
 import { ownerOf, slugOf, splitSlug } from "../owners.ts";
 import { call, GITHUB_API } from "./app.ts";
+import { currentJobId } from "../agents/call.ts";
 import { giveaway } from "../security/rules.ts";
 
 export { GITHUB_ACTIONS } from "./actions.ts";
@@ -172,6 +173,9 @@ function tryBegin(w: Writer, action: string, target: string, details: Details, n
   }
 }
 
+/** The running job's id, joined to the audit row so a write can be traced to its job. Absent outside a job. */
+const jobOf = (): { jobId?: number } => { const j = currentJobId(); return j === null ? {} : { jobId: j }; };
+
 /** Adds the row before the write, so a crash during the call leaves a "started" row: an unknown outcome. Paces the write; throws WritePacedError when the wait would pass the bound. */
 async function begin(w: Writer, action: string, target: string, details: Details, owner?: string): Promise<number> {
   const clock = w.now ?? Date.now;
@@ -195,7 +199,7 @@ function finish(w: Writer, id: number, details: Details, error?: string): void {
 
 /** Records the row first, runs the write, then marks the row done with `view`'s extra details or failed with the error. */
 async function recorded<T>(w: Writer, identity: string, action: string, target: string, details0: Details, f: () => Promise<T>, view?: (r: T) => Details, failure?: (r: T) => string | null): Promise<T> {
-  const details = { ...details0, identity };
+  const details = { ...details0, identity, ...jobOf() };
   const id = await begin(w, action, target, details);
   let r: T;
   try {
@@ -373,7 +377,7 @@ export async function addLabels(w: Writer, q: Querier, repo: string, items: Labe
   if (app.length > 0) q = laneQuery(w, items[0]!.g, q);
   const vars: Record<string, unknown> = {};
   items.forEach((it, k) => { vars[`i${k}`] = it.id; vars[`l${k}`] = it.labelIds; });
-  const det = (it: LabelWrite): Details => ({ ...details, labels: it.names, identity: idOf(w, it.g) });
+  const det = (it: LabelWrite): Details => ({ ...details, labels: it.names, identity: idOf(w, it.g), ...jobOf() });
   const ids: number[] = [];
   try {
     for (const it of items) ids.push(await begin(w, "labels-apply", refOf(repo, it.number), det(it)));
@@ -676,7 +680,7 @@ export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string
   const args = [`${slugOf(g.repo)}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), "--head", g.head];
   const repo = g.repo;
   const method: string = o.method;
-  const base = { ...details, method, identity: idOf(w, g) };
+  const base = { ...details, method, identity: idOf(w, g), ...jobOf() };
   const target = refOf(repo, g.number);
   const id = await begin(w, "merge", target, base);
   let r: CommandResult;

@@ -18,10 +18,10 @@ export const snapshotFile = (): string => join(snapshotDir(), "items.db");
 const ITEM_COLUMNS = ["repo", "number", "kind", "state", "title", "body", "url", "author", "author_association", "created_at", "updated_at",
   "closed_at", "merged_at", "state_reason", "is_draft", "labels", "comments_count", "additions", "deletions", "changed_files",
   "head_ref", "head_oid", "head_repo", "base_ref", "review_decision", "mergeable", "ci_state"];
-const COMMENT_COLUMNS = ["id", "repo", "number", "kind", "author", "created_at", "body", "review_state", "commit_oid"];
+const COMMENT_COLUMNS = ["id", "repo", "number", "kind", "author", "created_at", "body", "review_state", "commit_oid", "url"];
 
 /** Bumped when the snapshot's tables change; a file with another version is rebuilt. */
-export const SCHEMA_VERSION = "2";
+export const SCHEMA_VERSION = "3";
 
 const cols = (names: string[], types: Record<string, string> = {}) => names.map((c) => `${c} ${types[c] ?? ""}`.trim()).join(", ");
 

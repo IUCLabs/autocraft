@@ -293,7 +293,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
 const list = (req: Req, key: string): string[] => req.query.getAll(key).flatMap((v) => v.split(",")).map((s) => s.trim()).filter(Boolean);
 
 // Decisions touching any of the given repos: the decision's own repo, or an item of a batch.
-function inRepos(prefix: string, repos: string[], params: Record<string, string>): string {
+export function inRepos(prefix: string, repos: string[], params: Record<string, string>): string {
   const names = repos.map((r, k) => {
     params[`${prefix}${k}`] = r;
     return `:${prefix}${k}`;

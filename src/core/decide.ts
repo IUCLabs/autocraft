@@ -7,7 +7,7 @@ import {
 } from "./rules.ts";
 import { UNCHECKED_REASON } from "./sensitive.ts";
 import { inFlightNow, unassignActions } from "./assignment.ts";
-import type { Action, Plan, PlanState, PrFacts, QueueState } from "./plan.ts";
+import type { Action, Plan, PlanState, PrFacts, QueueState, WaitKind } from "./plan.ts";
 
 /** The start of a statement for a reason line: one line, at most 80 characters. */
 const excerpt = (t: string): string => { const s = t.replace(/\s+/g, " ").trim(); return s.length > 80 ? `${s.slice(0, 79).trimEnd()}…` : s; };
@@ -135,6 +135,9 @@ const WAITS: Partial<Record<QueueState, string>> = {
   "batch-checking": "its batch", "batch-failed": "its batch", "changes-requested": "the maintainer's review", refused: "a change in CI or mergeable state",
 };
 
+/** Queue states whose WAITS text waits on a person. */
+const PERSON_WAITS: ReadonlySet<string> = new Set(["needs-decision", "ci-approval", "changes-requested"]);
+
 /** An operator's Hold or Close answer at the head: nothing is pushed or asked of the contributor, whatever the source. */
 const declinedBy = (f: PrFacts): boolean => f.decision.answer !== null && f.decision.answer !== "merge";
 
@@ -202,13 +205,18 @@ function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "ask" | 
   return b === "work" || b === "collect" || b === "capped" ? b : "other";
 }
 
+type Wait = { text: string; kind: WaitKind };
+const person = (text: string): Wait => ({ text, kind: "person" });
+const contributor = (text: string): Wait => ({ text, kind: "contributor" });
+const system = (text: string): Wait => ({ text, kind: "system" });
+
 /** What a PR waits on when its conflict or CI fix is left to the contributor. */
-const stuckWait = (f: PrFacts): string | null => {
-  const approval = "comment approval for the repo";
-  if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return f.conflict.bucket === "held" ? (f.repoFacts.commentApproved ? "a person to resolve the conflict" : approval) : "the contributor to resolve the conflict";
+const stuckWait = (f: PrFacts): Wait | null => {
+  const approval = person("comment approval for the repo");
+  if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return f.conflict.bucket === "held" ? (f.repoFacts.commentApproved ? person("a person to resolve the conflict") : approval) : contributor("the contributor to resolve the conflict");
   const cf = cifixBucket(f);
-  if (cf === "done" && f.cifix?.states.includes("asked")) return "the contributor to fix CI";
-  if (cf === "failed" || cf === "capped") return f.brokeByUs ? "a person to fix CI our push broke" : f.repoFacts.commentApproved ? "the contributor to fix CI" : approval;
+  if (cf === "done" && f.cifix?.states.includes("asked")) return contributor("the contributor to fix CI");
+  if (cf === "failed" || cf === "capped") return f.brokeByUs ? person("a person to fix CI our push broke") : f.repoFacts.commentApproved ? contributor("the contributor to fix CI") : approval;
   return cf === "cannot-push" ? approval : null;
 };
 
@@ -246,21 +254,21 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
 }
 
 /** Who a PR in needs-fix-up waits on. Null while a fix-up, conflict, CI-fix or lint action of the PR is due (the action is the next step). */
-function fixupWait(f: PrFacts, fx: { bucket: FixupBucket; done: boolean } | null, actions: Action[]): string | null {
+function fixupWait(f: PrFacts, fx: { bucket: FixupBucket; done: boolean } | null, actions: Action[]): Wait | null {
   if (actions.some((a) => ["fixup", "conflict", "cifix", "lint"].includes(a.kind))) return null;
-  if (f.mergeable === "CONFLICTING") return f.conflict?.bucket === "unapproved" ? "push approval for the repo" : "the contributor's merge of the base branch";
+  if (f.mergeable === "CONFLICTING") return f.conflict?.bucket === "unapproved" ? person("push approval for the repo") : contributor("the contributor's merge of the base branch");
   switch (fx?.bucket) {
-    case "asked": return "the contributor's fixes";
-    case "cannot-push": return f.fixup?.recorded.includes("comment-failed") ? "a person: the ask comment failed" : f.repoFacts.commentApproved ? "the contributor's fixes" : "comment approval for the repo";
-    case "hold": return fx.done ? "the new review of our pushed fix-up" : "comment approval for the repo";
-    case "unapproved": return "push approval for the repo";
+    case "asked": return contributor("the contributor's fixes");
+    case "cannot-push": return f.fixup?.recorded.includes("comment-failed") ? person("a person: the ask comment failed") : f.repoFacts.commentApproved ? contributor("the contributor's fixes") : person("comment approval for the repo");
+    case "hold": return fx.done ? system("the new review of our pushed fix-up") : person("comment approval for the repo");
+    case "unapproved": return person("push approval for the repo");
     case "ask": case "fix": return null;
-    default: return "the review's fixes to be applied";
+    default: return system("the review's fixes to be applied");
   }
 }
 
 export function decidePr(f: PrFacts): Plan {
-  const plan = (state: PlanState, p: Partial<Plan> = {}): Plan => ({ repo: f.repo, number: f.number, head: f.head, state, path: null, reasons: [], note: null, actions: [], wait: null, eligible: false, conflictNote: null, ...p });
+  const plan = (state: PlanState, p: Partial<Plan> = {}): Plan => ({ repo: f.repo, number: f.number, head: f.head, state, path: null, reasons: [], note: null, actions: [], wait: null, waitKind: null, eligible: false, conflictNote: null, ...p });
   const act = (kind: Action["kind"], head: string | null, params?: Record<string, unknown>): Action => ({ kind, head, ...(params ? { params } : {}) });
   const r = f.review;
   const open = f.ghState === "OPEN";
@@ -272,7 +280,7 @@ export function decidePr(f: PrFacts): Plan {
     return plan("integration", { actions: approve ? [act("approve-ci", f.head)] : [] });
   }
   // The mirror shows a head we already pushed off: anything planned or asked here would be about a commit that is gone, and the PR is still ours, so the assignment stays.
-  if (open && f.pushedOff) return plan("pushed", { wait: "the mirror to show our push" });
+  if (open && f.pushedOff) return plan("pushed", { wait: "the mirror to show our push", waitKind: "system" });
   const held = f.heldBacklog || f.heldDuplicate;
 
   // Actions that do not depend on the PR's place in the queue.
@@ -400,6 +408,8 @@ export function decidePr(f: PrFacts): Plan {
   actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
-  const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? "merge held by an operator" : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : WAITS[e.state] ?? null)) : null;
-  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: wait ?? (f.operator?.hold && !main ? "its pre-approved merge" : null) ?? (!main ? reviewWait : null) });
+  const queueWait = (st: QueueState): Wait | null => (WAITS[st] ? { text: WAITS[st]!, kind: PERSON_WAITS.has(st) ? "person" : "system" } : null);
+  const wait: Wait | null = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? person("merge held by an operator") : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : queueWait(e.state))) : null;
+  const finalWait: Wait | null = wait ?? (f.operator?.hold && !main ? system("its pre-approved merge") : null) ?? (!main && reviewWait ? system(reviewWait) : null);
+  return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: finalWait?.text ?? null, waitKind: finalWait?.kind ?? null });
 }

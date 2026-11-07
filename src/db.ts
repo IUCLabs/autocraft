@@ -166,6 +166,16 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["main_fixes", "lint_task", "INTEGER"],
   ["main_fixes", "lint_round", "INTEGER"],
   ["main_fixes", "lint_state", "TEXT"],
+  // Why the review ran (src/review/trigger.ts) and the job that ran it; null on rows from before they were recorded.
+  ["opus_review_history", "trigger", "TEXT"],
+  ["opus_review_history", "job_id", "INTEGER"],
+  ["security_findings", "fix_attempts", "INTEGER NOT NULL DEFAULT 0"],
+  ["security_findings", "last_failure", "TEXT"],
+  // Permalink of the comment or review on GitHub; joins AutoCraft's audit rows to the comment they wrote.
+  ["comments", "url", "TEXT"],
+  // First line of the commit message.
+  ["pr_commits", "message", "TEXT"],
+  ["dupe_comparisons", "sizes", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
@@ -197,8 +207,8 @@ const ADDED_INDEXES = [
 const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
 
 /** Appends the stored review rows that the history does not hold yet. */
-export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by)
-  SELECT repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by FROM main.opus_reviews o
+export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, trigger, job_id)
+  SELECT repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, NULL, NULL FROM main.opus_reviews o
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
