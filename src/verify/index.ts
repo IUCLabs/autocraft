@@ -10,6 +10,8 @@
 // verification, sets the state, summary and finished_at, writes the failure summary and cancels the
 // queued tasks of a verification whose PR head moved on (state `stale`).
 import { leaseItem } from "../runner/leases.ts";
+import { queueRoom } from "../agents/call.ts";
+import { pool } from "../classify/run.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { BuildError } from "../build/envs.ts";
 import { connect } from "../db.ts";
@@ -122,10 +124,15 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
   let queued = false;
   const ci = !repoHasNoCi(db, repo);
 
-  for (const c of cands) {
-    if (params.stopping?.()) { log(`verify ${repo}: stopping, no new PRs started`); break; }
+  let stoppedLogged = false;
+  await pool(cands.map((c) => async (): Promise<void> => {
+    if (params.stopping?.()) {
+      if (!stoppedLogged) log(`verify ${repo}: stopping, no new PRs started`);
+      stoppedLogged = true;
+      return;
+    }
     const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
-    if (!release) continue;
+    if (!release) return;
     try {
       const ref = refOf(c);
       const handle = (): void => { summary.handled++; params.onHandled?.(summary.handled); };
@@ -136,30 +143,30 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
       };
       if (ci) {
         // Only a bugfix that adds or changes a test file may get a regression test; everything else is covered by CI.
-        if (c.label !== "bugfix") { byCi(); continue; }
+        if (c.label !== "bugfix") { byCi(); return; }
         const pre = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
         // Without a readable diff there is no test file to find, so CI is the verification.
-        if (!pre.ok || !codeDiff(pre.text).testsOmitted.length) { byCi(); continue; }
+        if (!pre.ok || !codeDiff(pre.text).testsOmitted.length) { byCi(); return; }
       }
       const cr = await cachedCrates(repo, c.head_oid, deps.fetchCrates);
-      if (!cr.ok) { log(`  ${ref}: no crate list: ${cr.error}`); summary.skipped.push(ref); continue; }
+      if (!cr.ok) { log(`  ${ref}: no crate list: ${cr.error}`); summary.skipped.push(ref); return; }
       if (!cr.rust) {
         saveVerification(db, c, unavailableRow(NOT_RUST_REASON));
         log(`  ${ref}: verification unavailable: ${NOT_RUST_REASON}`);
         handle();
-        continue;
+        return;
       }
       const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
       if (!d.ok) {
         if (d.tooLarge) { saveVerification(db, c, errorRow("GitHub refuses the diff: too large to plan")); summary.errors++; handle(); }
         else { log(`  ${ref}: no diff: ${d.error}`); summary.skipped.push(ref); }
-        continue;
+        return;
       }
       let cd = codeDiff(d.text);
       if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
-      if (cd.text.length > MAX_DIFF_CHARS) { saveVerification(db, c, errorRow(`code diff of ${cd.text.length} characters is too large to plan`)); summary.errors++; handle(); continue; }
+      if (cd.text.length > MAX_DIFF_CHARS) { saveVerification(db, c, errorRow(`code diff of ${cd.text.length} characters is too large to plan`)); summary.errors++; handle(); return; }
       const base = await deps.baseOf(repo, c.number);
-      if (!base) { log(`  ${ref}: no base commit`); summary.skipped.push(ref); continue; }
+      if (!base) { log(`  ${ref}: no base commit`); summary.skipped.push(ref); return; }
 
       const input = planInput(c, cr.crates, cd, ci);
       const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
@@ -170,19 +177,19 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
         usage: { run: runId, agent: `verify-${c.number}`, stage: "verify", items: (ok) => (ok ? 1 : 0) },
       });
       const result = planned.ok ? planned.value : null;
-      if (!result) { log(`  ${ref}: no answer from the planner`); summary.skipped.push(ref); handle(); continue; }
+      if (!result) { log(`  ${ref}: no answer from the planner`); summary.skipped.push(ref); handle(); return; }
       handle();
       if (!result.ok) {
         log(`  ${ref}: invalid plan: ${result.error}`);
         saveVerification(db, c, { ...errorRow(result.error), model: deps.model });
         summary.errors++;
-        continue;
+        return;
       }
       const plan = result.plan;
       summary.kinds[plan.kind] = (summary.kinds[plan.kind] ?? 0) + 1;
       if (plan.kind === "ci-enough") {
         saveVerification(db, c, { kind: plan.kind, reason: plan.reason, plan: null, model: deps.model, headTask: null, baseTask: null, baseSha: base, state: "ci-enough", summary: plan.reason });
-        continue;
+        return;
       }
       try {
         const ids = queueTasks(db, plan, { repo, number: c.number, head: c.head_oid, base });
@@ -196,7 +203,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
         summary.errors++;
       }
     } finally { release(); }
-  }
+  }), () => queueRoom(db));
 
   if (queued) {
     const main = await deps.mainHead(repo, branch);

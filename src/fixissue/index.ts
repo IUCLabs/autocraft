@@ -20,7 +20,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { leaseItem } from "../runner/leases.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
-import { type Usage } from "../classify/run.ts";
+import { pool, type Usage } from "../classify/run.ts";
+import { queueRoom } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
 import { textStep } from "../agents/steps.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
@@ -159,6 +160,20 @@ export const attemptOf = (db: DatabaseSync, repo: string, number: number): Attem
   (db.prepare("SELECT * FROM fix_attempts WHERE repo = ? AND number = ?").get(repo, number) as AttemptRow | undefined) ?? null;
 
 /** Whether the issue's attempt is still as selected: another job may have changed it before this one took the lease. */
+/** A log that names the item on every line, so lines of items running side by side stay readable. */
+const logFor = (log: (line: string) => void, ref: string): ((line: string) => void) => (line) => log(line.includes(ref) ? line : `  ${ref}: ${line.trim()}`);
+
+/** Notes the first stop in a run once, however many items see it. */
+function stopNote(stopping: (() => boolean) | undefined, log: (line: string) => void, text: string): () => boolean {
+  let said = false;
+  return () => {
+    if (!stopping?.()) return false;
+    if (!said) log(text);
+    said = true;
+    return true;
+  };
+}
+
 function unchanged(db: DatabaseSync, repo: string, number: number, before: string | null, log: (line: string) => void): boolean {
   if ((attemptOf(db, repo, number)?.updated_at ?? null) === before) return true;
   log(`  ${repo}#${number}: skipped: the attempt changed since it was selected`);
@@ -435,33 +450,38 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
   mkdirSync(d.root, { recursive: true });
   const x: Ctx = { db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } };
   const before = new Map(picks.map((c) => [c.number, attemptOf(db, repo, c.number)?.updated_at ?? null]));
-  for (const r of retries) {
-    if (params.stopping?.()) { log(`fixissue ${repo}: stopping, no new rounds started`); break; }
-    const release = leaseItem(db, `issue:${repo}#${r.number}`, log);
-    if (!release) continue;
+  const stopRound = stopNote(params.stopping, log, `fixissue ${repo}: stopping, no new rounds started`);
+  await pool(retries.map((r) => async (): Promise<void> => {
+    if (stopRound()) return;
+    const ilog = logFor(log, refOf(r));
+    const release = leaseItem(db, `issue:${repo}#${r.number}`, ilog);
+    if (!release) return;
     try {
-      if (!unchanged(db, repo, r.number, r.updated_at, log)) continue;
-      if (await patchRound(x, r)) s.queued.push(refOf(r));
+      if (!unchanged(db, repo, r.number, r.updated_at, ilog)) return;
+      if (await patchRound({ ...x, log: ilog }, r)) s.queued.push(refOf(r));
     } catch (e) {
-      log(`  ${refOf(r)}: ${oneLine(String((e as Error).message ?? e))}`);
+      ilog(`  ${refOf(r)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }
+  }), () => queueRoom(db));
   let handled = 0;
-  for (const c of picks) {
-    if (params.stopping?.()) { log(`fixissue ${repo}: stopping, no new issues started`); break; }
-    const release = leaseItem(db, `issue:${repo}#${c.number}`, log);
-    if (!release) continue;
+  const stopNew = stopNote(params.stopping, log, `fixissue ${repo}: stopping, no new issues started`);
+  await pool(picks.map((c) => async (): Promise<void> => {
+    if (stopNew()) return;
+    const ilog = logFor(log, refOf(c));
+    const release = leaseItem(db, `issue:${repo}#${c.number}`, ilog);
+    if (!release) return;
     try {
-      if (!unchanged(db, repo, c.number, before.get(c.number) ?? null, log)) continue;
+      if (!unchanged(db, repo, c.number, before.get(c.number) ?? null, ilog)) return;
       params.onHandled?.(++handled);
-      const o = await startAttempt(x, c);
-      if (o === "started") { s.started.push(refOf(c)); await claimIssue(x, c); }
+      const xi: Ctx = { ...x, log: ilog };
+      const o = await startAttempt(xi, c);
+      if (o === "started") { s.started.push(refOf(c)); await claimIssue(xi, c); }
       else if (o === "skipped") s.skipped.push(refOf(c));
       if (attemptOf(db, c.repo, c.number)?.state === "failed") s.failed.push(refOf(c));
     } catch (e) {
-      log(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
+      ilog(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }
+  }), () => queueRoom(db));
   await unclaimHeld(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
   return s;
@@ -501,19 +521,22 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
     ...plannedItems(db, "fixissue-collect").map((p) => attemptOf(db, p.facts.repo, p.facts.number)!),
     ...(db.prepare(`SELECT a.* FROM fix_attempts a JOIN items i ON i.repo = a.repo AND i.number = a.number
       WHERE a.state = 'testing' AND i.state <> 'OPEN' AND ${pilotSqlFor("a.repo", "a.number")} AND NOT ${backlogHeldSql("a")}`).all() as AttemptRow[]),
-  ].sort(byUpdated);
+  ].sort(byUpdated).filter((r, i, all) => all.findIndex((o) => o.repo === r.repo && o.number === r.number) === i);
   s.looked = rows.length;
   if (params.dryRun) { log(`fixissue-collect: ${rows.length} pending; dry run`); return s; }
-  const x = (repo: string): Ctx => ({ db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId: s.runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } });
+  const xOf = (repo: string): Ctx => ({ db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId: s.runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } });
 
-  for (const r of rows) {
-    if (params.stopping?.()) { log("fixissue-collect: stopping, no new attempts started"); break; }
+  const stopped = stopNote(params.stopping, log, "fixissue-collect: stopping, no new attempts started");
+  await pool(rows.map((r) => async (): Promise<void> => {
+    if (stopped()) return;
     const ref = refOf(r);
-    const release = leaseItem(db, `issue:${r.repo}#${r.number}`, log);
-    if (!release) continue;
+    const ilog = logFor(log, ref);
+    const x = (repo: string): Ctx => ({ ...xOf(repo), log: ilog });
+    const release = leaseItem(db, `issue:${r.repo}#${r.number}`, ilog);
+    if (!release) return;
     try {
-      if (!unchanged(db, r.repo, r.number, r.updated_at, log)) continue;
-      if (r.state === "passed") { if (await openPr(x(r.repo), r)) { s.opened++; s.changed++; } continue; }
+      if (!unchanged(db, r.repo, r.number, r.updated_at, ilog)) return;
+      if (r.state === "passed") { if (await openPr(x(r.repo), r)) { s.opened++; s.changed++; } return; }
       const item = db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { state: string } | undefined;
       const head = r.head_task_id === null ? null : getTask(db, r.head_task_id);
       const base = r.base_task_id === null ? null : getTask(db, r.base_task_id);
@@ -521,10 +544,10 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
         for (const t of [head, base]) if (t && !TERMINAL.includes(t.state)) cancelTask(db, t.id, ACTOR);
         update(db, d, r, { state: "failed", reason: "the issue is closed" });
         s.failed++; s.changed++;
-        continue;
+        return;
       }
-      if (!head || !base) { fail(db, d, r, "the build task is gone"); s.failed++; s.changed++; continue; }
-      if (!TERMINAL.includes(head.state) || !TERMINAL.includes(base.state)) continue;
+      if (!head || !base) { fail(db, d, r, "the build task is gone"); s.failed++; s.changed++; return; }
+      if (!TERMINAL.includes(head.state) || !TERMINAL.includes(base.state)) return;
       const ho = outcomeOf(head), bo = outcomeOf(base);
       // The format and clippy steps ran in the head task; their result counts once everything else passed.
       const lint = ho.kind === "pass" && bo.kind !== "error" && head.plan.some((st) => st.name === "clippy") ? readLint(db, head.id) : null;
@@ -533,39 +556,39 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
         if (r.retries < 1) {
           update(db, d, r, { head_task_id: cloneTask(db, head.id), base_task_id: cloneTask(db, base.id), retries: r.retries + 1 });
           s.retried++; s.changed++;
-          jobItem(db, r.repo, r.number, `${why}; queued the tasks again`, log);
+          jobItem(db, r.repo, r.number, `${why}; queued the tasks again`, ilog);
         } else { fail(db, d, r, `build environment error: ${why}`); s.failed++; s.changed++; }
-        continue;
+        return;
       }
       s.changed++;
       if (ho.kind === "fail") {
         const summary = await d.summarise(db, r.repo, r.number, head.id, ho.step);
-        roundFailed(db, d, r, r.round, `head: ${summary}`, r.patch, log);
+        roundFailed(db, d, r, r.round, `head: ${summary}`, r.patch, ilog);
         s.failedRounds++;
       } else if (bo.kind === "pass") {
-        roundFailed(db, d, r, r.round, "the regression test passes without the fix, so it does not show the bug", r.patch, log);
+        roundFailed(db, d, r, r.round, "the regression test passes without the fix, so it does not show the bug", r.patch, ilog);
         s.failedRounds++;
       } else if (bo.kind === "fail" && (bo.step !== "test" || bo.timedOut)) {
-        roundFailed(db, d, r, r.round, bo.timedOut ? "the regression test timed out without the fix" : `the regression test did not build without the fix (${bo.step} failed)`, r.patch, log);
+        roundFailed(db, d, r, r.round, bo.timedOut ? "the regression test timed out without the fix" : `the regression test did not build without the fix (${bo.step} failed)`, r.patch, ilog);
         s.failedRounds++;
       } else if (lint?.kind === "result" && lint.findings.length) {
-        roundFailed(db, d, r, r.round, `clippy findings on the lines the patch changed:\n${lint.findings.slice(0, 5).map((f) => f.rendered).join("\n")}`, r.patch, log, 1500);
+        roundFailed(db, d, r, r.round, `clippy findings on the lines the patch changed:\n${lint.findings.slice(0, 5).map((f) => f.rendered).join("\n")}`, r.patch, ilog, 1500);
         s.failedRounds++;
       } else if (!(await checkPatch(x(r.repo), r))) {
         s.failedRounds++;
       } else {
         update(db, d, r, { state: "passed", format_diff: lint?.kind === "result" ? lint.formatDiff : null });
         s.passed++;
-        jobItem(db, r.repo, r.number, `round ${r.round} passed`, log);
+        jobItem(db, r.repo, r.number, `round ${r.round} passed`, ilog);
         if (await openPr(x(r.repo), { ...r, state: "passed" })) s.opened++;
       }
       const after = attemptOf(db, r.repo, r.number);
       if (after?.state === "failed") s.failed++;
     } catch (e) {
-      log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
+      ilog(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }
-  for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(x(repo), repo);
+  }), () => queueRoom(db));
+  for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(xOf(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
 }
@@ -610,6 +633,17 @@ export async function forkOf(w: Writer, g: GuardedRepo, run: Exec, login: string
   return made;
 }
 
+/** PRs being opened by this process: they count against the daily limit before their audit row exists. */
+let opening = 0;
+/** Forks being looked up or created, per repo: two attempts of one repo must not both create the fork. */
+const forkLocks = new Map<string, Promise<unknown>>();
+function forkOnce<T>(repo: string, work: () => Promise<T>): Promise<T> {
+  const run = (forkLocks.get(repo) ?? Promise.resolve()).then(work, work);
+  const tail = run.catch(() => {}).finally(() => { if (forkLocks.get(repo) === tail) forkLocks.delete(repo); });
+  forkLocks.set(repo, tail);
+  return run;
+}
+
 const urlOk = (url: string, repo: string): boolean => new RegExp(`^https://github\\.com/${slugOf(repo)}/pull/\\d+$`).test(url);
 
 /** The issue's state on GitHub now; null when the read fails, in which case the mirror's state stands. */
@@ -652,9 +686,11 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
   const permitted = (): boolean => {
     if (!inPilot(db, r.repo, r.number) || duplicateHeld(db, r.repo, r.number)) { log(`  ${ref}: waiting: the issue is outside the pilot or held`); return false; }
     if (!fixIssueApprovalOf(db, r.repo)) { log(`  ${ref}: waiting: fixing issues is not approved for ${r.repo}`); return false; }
-    if (openedToday(db, new Date()) >= perDay(db)) { log(`  ${ref}: waiting: the daily limit of opened PRs is reached`); return false; }
+    if (openedToday(db, new Date()) + opening >= perDay(db)) { log(`  ${ref}: waiting: the daily limit of opened PRs is reached`); return false; }
     return true;
   };
+  let reserved = false;
+  const giveBack = (): void => { if (reserved) opening--; reserved = false; };
   try {
     if (!permitted()) return false;
     const issueNow = db.prepare("SELECT state, title FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { state: string; title: string | null } | undefined;
@@ -710,16 +746,19 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
       return false;
     }
     if (!permitted()) return false;
+    opening++;   // taken before the next await; given back once the PR's audit row exists or the attempt ends
+    reserved = true;
     const g = await guardItem(db, { repo: r.repo, number: r.number }, { kind: "fixissue-collect" }, x.by ?? CLI_BY);
     if ("refused" in g) { log(`  ${ref}: waiting: ${g.refused}`); return false; }
     const rg = guardRepo(db, r.repo, "fix-issue", x.by ?? CLI_BY);
     if ("refused" in rg) { log(`  ${ref}: waiting: ${rg.refused}`); return false; }
-    const fork = await forkOf({ db, login: ACTOR }, rg, d.exec, who.login, r.repo, { run: x.runId });
+    const fork = await forkOnce(r.repo, () => forkOf({ db, login: ACTOR }, rg, d.exec, who.login, r.repo, { run: x.runId }));
     const push = await pushOwnBranch({ db, login: ACTOR }, g, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork, base: r.main_sha });
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);
     const pr = await ghOpenPr({ db, login: ACTOR }, g, d.exec, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { by: "model", kind: "pull request", model: PATCH.models[0] }, { run: x.runId, branch });
+    giveBack();
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     if (pr.code !== 0 || !urlOk(url, r.repo)) { log(`  ${ref}: PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); tried(); return false; }
     update(db, d, r, { state: "pr-opened", pr_url: url });
@@ -731,7 +770,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     tried();
     return false;
-  }
+  } finally { giveBack(); }
 }
 
 // ---- commands --------------------------------------------------------------------
