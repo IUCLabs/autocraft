@@ -25,6 +25,11 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
   const out = Object.fromEntries(ITEM_PHASES.map((x) => [x, 0])) as Record<ItemPhase, number>;
   for (const r of db.prepare(`SELECT ${PHASE_SQL} AS phase, COUNT(*) AS n FROM items i LEFT JOIN main.item_plans p ON p.repo = i.repo AND p.number = i.number${hide ? ` WHERE ${hide}` : ""} GROUP BY 1`).all(p) as { phase: ItemPhase; n: number }[])
     if (r.phase in out) out[r.phase] += r.n;
+  // Home's Merged and Closed tiles are today's (UTC), not every item ever closed.
+  const day = new Date().toISOString().slice(0, 10);
+  const t = db.prepare(`SELECT SUM(i.merged_at >= :day) AS merged, SUM(i.merged_at IS NULL AND i.closed_at >= :day) AS closed FROM items i WHERE (i.merged_at >= :day OR i.closed_at >= :day)${hide ? ` AND ${hide}` : ""}`).get({ ...p, day }) as { merged: number | null; closed: number | null };
+  out.Merged = t.merged ?? 0;
+  out.Closed = t.closed ?? 0;
   return out;
 }
 
