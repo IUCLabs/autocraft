@@ -20,6 +20,10 @@ import { useUser } from "../../shell/UserContext";
 import { useIsPhone } from "../../shell/useMedia";
 import type { ViewProps } from "../../registry/types";
 
+/** The fix ran out of rounds and the finding waits for a person again. */
+const gaveUp = (attempts: number, state: string) => attempts > 0 && state === "new";
+const failedText = (n: number) => `Fix failed after ${n} ${n === 1 ? "round" : "rounds"}`;
+
 function Row({ r }: { r: FindingRow }) {
   const sev = SEVERITY[r.severity];
   return (
@@ -32,8 +36,11 @@ function Row({ r }: { r: FindingRow }) {
         <TimeAgo iso={r.updatedAt} className="num shrink-0 pt-px text-xs text-ink/45" />
       </div>
       <div className="mt-1 flex items-start gap-1.5 text-xs leading-5 text-ink/65">
-        {r.attempts > 0 && <WarningCircleIcon weight="fill" className="mt-[3px] shrink-0 text-warn" />}
-        <StatusLine status={r.status} compact className="min-w-0 flex-1 text-xs" />
+        {gaveUp(r.attempts, r.state) && <WarningCircleIcon weight="fill" className="mt-[3px] shrink-0 text-warn" />}
+        <p className="min-w-0 flex-1">
+          {gaveUp(r.attempts, r.state) && <span className="font-medium text-warn">{failedText(r.attempts)} · </span>}
+          <StatusLine status={r.status} compact className="inline text-xs" />
+        </p>
       </div>
     </li>
   );
@@ -76,7 +83,7 @@ export function FindingPageView({ params }: ViewProps) {
   const phone = useIsPhone();
   const [side, setSide] = useState<"autocraft" | "github">("autocraft");
   const { data: d, error } = useQuery(`security-finding-page:${repo}#${n}`, (a) => a.findingPage(repo, n), { enabled: role !== "viewer" });
-  if (role === "viewer") return <div className="p-8 text-ink/60">Operators and maintainers only.</div>;
+  if (role === "viewer") return null;
   if (!d) return <Pending error={error} />;
   const f = d.finding;
   const sev = SEVERITY[f.severity];
@@ -109,7 +116,10 @@ export function FindingPageView({ params }: ViewProps) {
           {f.urgent && <Badge tone="bad">Urgent</Badge>}
           <span className="code">{f.area}</span>
         </div>
-        <StatusLine status={d.status} className="mt-2.5 rounded bg-ink/[0.04] px-3 py-2" />
+        <div className="mt-2.5 rounded bg-ink/[0.04] px-3 py-2">
+          {gaveUp(d.attempts, f.state) && <p className="flex items-center gap-1.5 text-sm font-medium text-warn"><WarningCircleIcon weight="fill" />{failedText(d.attempts)}</p>}
+          <StatusLine status={d.status} />
+        </div>
       </header>
       {phone ? (
         <>
@@ -139,12 +149,12 @@ function FindingAutoCraft({ d }: { d: FindingPageData }) {
       <div className="pt-3"><Question d={d} /></div>
       {d.rounds.length > 0 && (
         <section className={sec}>
-          <H aside={`${d.attempts} rounds`}>Fix rounds</H>
+          <H aside={`${d.rounds.length} ${d.rounds.length === 1 ? "round" : "rounds"}`}>Fix rounds</H>
           <ol className="space-y-2.5">
             {d.rounds.map((r) => (
               <li key={r.round} className="flex items-start gap-2.5 text-sm">
-                <Badge tone={r.outcome === "passed" ? "ok" : "bad"} className="mt-px">Round {r.round}</Badge>
-                <span className="min-w-0 flex-1 text-ink/85">{r.why}</span>
+                <Badge tone={r.outcome === "passed" ? "ok" : "bad"} className="mt-px shrink-0">Round {r.round} {r.outcome}</Badge>
+                <span className="min-w-0 flex-1 text-ink/85">{r.why}<TimeAgo iso={r.at} className="num mt-0.5 block text-xs text-ink/50" /></span>
                 <span className="num shrink-0 text-xs text-ink/50">{formatCost(r.costUsd)}</span>
               </li>
             ))}
