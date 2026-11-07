@@ -1731,15 +1731,16 @@ CREATE INDEX IF NOT EXISTS discord_replies_quoted ON discord_replies (quoted_has
 CREATE INDEX IF NOT EXISTS discord_replies_channel ON discord_replies (channel_hash);
 
 -- Discord accounts linked to dashboard logins (src/discord/links.ts). `user_hash` is a keyed hash of the Discord user id; the id
--- itself is never stored. `discord_link_nonces` makes a link token single use; rows are dropped once the token has expired.
+-- itself is never stored. `discord_link_codes` holds the keyed hash of each unused link code (one per login) until it is used or expires.
 CREATE TABLE IF NOT EXISTS discord_links (
   user_hash TEXT PRIMARY KEY,
   login TEXT NOT NULL,
   linked_at TEXT NOT NULL
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS discord_links_login ON discord_links (login);
-CREATE TABLE IF NOT EXISTS discord_link_nonces (
-  nonce TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS discord_link_codes (
+  code_hash TEXT PRIMARY KEY,
+  login TEXT NOT NULL,
   expires_at TEXT NOT NULL
 ) WITHOUT ROWID;
 

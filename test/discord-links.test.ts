@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { DiscordKeys } from "../src/discord/keys.ts";
-import { checkLinkToken, consumeLinkToken, createLinkToken, linkUrl, loginOf, TOKEN_TTL_MS } from "../src/discord/links.ts";
+import { CODE_TTL_MS, createLinkCode, forgetLink, loginOf, redeemLinkCode } from "../src/discord/links.ts";
 import { publicStats, publicStatus } from "../src/public/status.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -18,21 +18,26 @@ after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("link tokens", () => {
-  test("a token links once, expires, and rejects tampering", () => {
-    const t = createLinkToken(keys, "1234");
-    assert.ok(linkUrl("https://x.example/", t).startsWith("https://x.example/link/discord?t="));
+describe("link codes", () => {
+  test("a code links the redeemer to the login it was made for, once; it expires; forgetting removes the link", () => {
+    const { code } = createLinkCode(db, keys, "mira");
+    assert.match(code, /^[A-Z2-9]{8}$/);
     assert.equal(loginOf(db, keys, "1234"), null);
-    assert.equal(consumeLinkToken(db, keys, t, "mira").ok, true);
+    assert.equal(redeemLinkCode(db, keys, "nope1234", "1234"), null);
+    assert.equal(redeemLinkCode(db, keys, code.toLowerCase(), "1234"), "mira");
     assert.equal(loginOf(db, keys, "1234"), "mira");
-    assert.deepEqual(consumeLinkToken(db, keys, t, "other"), { ok: false, reason: "used" });
-    assert.equal(loginOf(db, keys, "1234"), "mira");
-    const old = createLinkToken(keys, "55", Date.now() - TOKEN_TTL_MS - 1000);
-    assert.deepEqual(checkLinkToken(db, keys, old), { ok: false, reason: "expired" });
-    const fresh = createLinkToken(keys, "66");
-    assert.deepEqual(checkLinkToken(db, keys, fresh.slice(0, -2) + "xx"), { ok: false, reason: "invalid" });
-    const stored = JSON.stringify(db.prepare("SELECT * FROM discord_links").all());
-    assert.ok(!stored.includes("1234"), "the Discord user id is not stored");
+    assert.equal(redeemLinkCode(db, keys, code, "5678"), null, "single use");
+    assert.equal(loginOf(db, keys, "5678"), null);
+    // A new code replaces the login's unused one; an expired code links nothing.
+    const first = createLinkCode(db, keys, "tomas").code;
+    const second = createLinkCode(db, keys, "tomas").code;
+    assert.equal(redeemLinkCode(db, keys, first, "77"), null);
+    assert.equal(redeemLinkCode(db, keys, second, "77", Date.now() + CODE_TTL_MS + 1000), null);
+    assert.equal(loginOf(db, keys, "77"), null);
+    const stored = JSON.stringify([db.prepare("SELECT * FROM discord_links").all(), db.prepare("SELECT * FROM discord_link_codes").all()]);
+    assert.ok(!stored.includes("1234") && !stored.includes(code) && !stored.includes(second), "neither the Discord user id nor a code is stored");
+    assert.equal(forgetLink(db, keys, "1234"), 1);
+    assert.equal(loginOf(db, keys, "1234"), null);
   });
 });
 
@@ -65,5 +70,8 @@ describe("public status", () => {
     const st = publicStats(db)!;
     assert.equal(st.queueLength, 2);
     assert.equal(st.openPrs, 2);
+    // The Queue page's order: a fast-tracked PR goes first whatever its rank.
+    db.prepare("INSERT INTO fast_track (repo, number, added_by, added_at) VALUES ('openrepo', 1, 'x', 'x')").run();
+    assert.deepEqual(publicStatus(db, "openrepo", 1)!.queue, { position: 1, of: 2 });
   });
 });

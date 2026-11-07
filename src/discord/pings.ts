@@ -4,6 +4,7 @@
 // the reply can be deleted when either message is deleted. See docs/pipeline.md.
 import type { DatabaseSync } from "node:sqlite";
 import type { DiscordKeys } from "./keys.ts";
+import { deleteRepliesOf } from "./replies.ts";
 import { renderMatches } from "./reply.ts";
 import type { DiscordRest } from "./rest.ts";
 import { QUESTION_CHARS, type Search } from "./search.ts";
@@ -15,7 +16,7 @@ export type PingMessage = {
   author?: { id: string; bot?: boolean };
   mentions?: Mentionable[]; mention_roles?: string[];
   message_reference?: { message_id?: string };
-  referenced_message?: { content?: string | null } | null;
+  referenced_message?: { content?: string | null; author?: { id?: string } } | null;
 };
 type Role = { id: string; tags?: { bot_id?: string } };
 
@@ -69,12 +70,18 @@ export class Pings {
     if (this.#botId && r.tags?.bot_id === this.#botId) this.#roles.add(r.id);
   }
 
-  /** A person's new message that mentions the bot, in a watched channel. Bots, webhooks, edits and system messages are not pings. */
+  /**
+   * A person's new message that names the bot in its text (`<@id>`, `<@!id>` or the bot's role), in a watched channel.
+   * Discord also lists the author of a replied-to message in `mentions`, so that list does not count, and a reply to one of
+   * the bot's own messages is not a ping. Bots, webhooks, edits and system messages are not pings.
+   */
   #isPing(m: PingMessage): boolean {
     if (!this.#botId || typeof m.id !== "string" || typeof m.channel_id !== "string") return false;
     if (!m.author?.id || m.author.bot || m.webhook_id) return false;
     if (m.type !== undefined && m.type !== 0 && m.type !== 19) return false;
-    if (!(m.mentions?.some((u) => u.id === this.#botId) || m.mention_roles?.some((r) => this.#roles.has(r)))) return false;
+    if (m.referenced_message?.author?.id === this.#botId) return false;
+    const text = m.content ?? "";
+    if (!(text.includes(`<@${this.#botId}>`) || text.includes(`<@!${this.#botId}>`) || [...this.#roles].some((r) => text.includes(`<@&${r}>`)))) return false;
     return isWatched(this.#d.db, m.channel_id);
   }
 
@@ -108,17 +115,8 @@ export class Pings {
   }
 
   async #deleted(ids: string[]): Promise<void> {
-    const { db, keys, rest } = this.#d;
-    const find = db.prepare("SELECT ping_hash, sealed FROM discord_replies WHERE ping_hash = ? OR quoted_hash = ?");
-    const del = db.prepare("DELETE FROM discord_replies WHERE ping_hash = ?");
-    for (const id of ids) {
-      const h = keys.hash("message", id);
-      if (this.#inflight.size) this.#deletedMeanwhile.add(h);
-      for (const r of find.all(h, h) as { ping_hash: string; sealed: string }[]) {
-        del.run(r.ping_hash);
-        const ref = keys.open(r.sealed, r.ping_hash);
-        if (ref) await rest.deleteMessage(ref.channelId, ref.messageId).catch((e: Error) => this.#d.log(`discord: deleting a reply failed: ${e.message}`));
-      }
-    }
+    const { db, keys, rest, log } = this.#d;
+    if (this.#inflight.size) for (const id of ids) this.#deletedMeanwhile.add(keys.hash("message", id));
+    await deleteRepliesOf(db, keys, rest, ids, log);
   }
 }

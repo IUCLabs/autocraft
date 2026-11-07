@@ -220,6 +220,7 @@ export function createHttpApi(): Api {
       removeLink: (id) => post("/api/admin/discord/unlink", { id }),
       account: () => get("/api/account/discord"),
       unlinkOwn: () => post("/api/account/discord/unlink", {}),
+      linkCode: () => post("/api/account/discord/code", {}),
     },
     classifiers: {
       report: (sel) => get(`/api/classifiers${qs(sel)}`),

@@ -26,7 +26,7 @@ export function discordPrivacyPage(nonce: string, contact: string): string {
 <h2>What it never keeps</h2>
 <ul><li>Message text or the text of a question.</li><li>Names, avatars or profiles of people.</li><li>Counts or lists per person.</li></ul>
 <h2>Linking your account</h2>
-<p>If you link your Discord account to your GitHub login, the bot keeps a keyed hash of your Discord user ID (not the ID itself) and your GitHub login, with the time you linked. It is used only to know which dashboard user is asking. To remove it, choose Unlink Discord in the dashboard's account menu, or send a deletion request below.</p>
+<p>To link your Discord account to your GitHub login, choose Link Discord in the dashboard&rsquo;s account menu and enter the code it shows with <code>/autocraft link</code> in Discord. The bot then keeps a keyed hash of your Discord user ID (not the ID itself) and your GitHub login, with the time you linked. It is used only to know which dashboard user is asking. The code is single use, expires after 10 minutes and is stored only as a keyed hash until then. To remove the link, run <code>/autocraft unlink</code>, choose Unlink Discord in the account menu, or send a deletion request below.</p>
 <h2>Deleting a record</h2>
 <p>Deleting a message in Discord removes its record, and so does deleting its channel. Editing a message so it no longer names the item removes it too. When a message that asked the bot, or the message it quoted, is deleted, the bot deletes its reply. If a message is deleted while the bot is offline, its record and reply can remain until a deletion request removes them.</p>
 ${who}`);

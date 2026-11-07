@@ -8,6 +8,7 @@ import { askClaude } from "../classify/run.ts";
 import type { Embedder } from "../embed/model.ts";
 import type { VectorIndex } from "../embed/vectors.ts";
 import { DEFAULT_OWNER } from "../owners.ts";
+import { hiddenSql, isPublicRepo } from "../public/status.ts";
 import { PICK_CANDIDATES, PICK_MAX, parsePicks, type PickInput } from "./pick.ts";
 
 const CLOSED_WINDOW_MS = 180 * 86_400_000;
@@ -54,9 +55,9 @@ export function spentTodayUsd(db: DatabaseSync, now: number): number {
   return Number((db.prepare("SELECT COALESCE(SUM(cost_usd), 0) AS c FROM agent_runs WHERE step = 'discord-search' AND started_at >= ?").get(day) as { c: number }).c);
 }
 
-/** The prompt and reply of a search call hold the question; the rows of finished calls are removed. */
-export function dropTexts(db: DatabaseSync): void {
-  db.prepare("DELETE FROM agent_run_texts WHERE run_id IN (SELECT id FROM agent_runs WHERE step = 'discord-search' AND state <> 'running')").run();
+/** The prompt and reply of a search call hold the question. After a call, the rows of finished calls are removed; `all` (at startup, when no call can be running) removes every row. */
+export function dropTexts(db: DatabaseSync, all = false): void {
+  db.prepare(`DELETE FROM agent_run_texts WHERE run_id IN (SELECT id FROM agent_runs WHERE step = 'discord-search'${all ? "" : " AND state <> 'running'"})`).run();
 }
 
 export class Search {
@@ -92,10 +93,13 @@ export class Search {
     await index.ready(db);
     const get = db.prepare(`SELECT i.title, i.body, i.state, i.state_reason, i.closed_at,
         COALESCE(i.url, 'https://github.com/' || COALESCE(r.owner, '${DEFAULT_OWNER}') || '/' || i.repo || '/issues/' || i.number) AS url
-      FROM main.items i JOIN main.repos r ON r.name = i.repo AND r.visibility = 'public' WHERE i.repo = ? AND i.number = ? AND i.kind = 'issue'`);
+      FROM main.items i JOIN main.repos r ON r.name = i.repo WHERE i.repo = ? AND i.number = ? AND i.kind = 'issue' AND NOT ${hiddenSql("i.repo", "i.number", "i.labels")}`);
+    const isPublic = new Map<string, boolean>();
     const now = (this.#d.now ?? Date.now)();
     const out: Candidate[] = [];
     for (const h of index.nearest(db, vec, SCAN)) {
+      if (!isPublic.has(h.repo)) isPublic.set(h.repo, isPublicRepo(db, h.repo));
+      if (!isPublic.get(h.repo)) continue;
       const r = get.get(h.repo, h.number) as { title: string | null; body: string | null; state: string; state_reason: string | null; closed_at: string | null; url: string } | undefined;
       if (!r) continue;
       const open = r.state === "OPEN";

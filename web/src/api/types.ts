@@ -891,6 +891,12 @@ export interface DiscordSetup {
   links: { id: string; login: string; linkedAt: string }[];
 }
 
+/** A single-use code to type into the bot in Discord, and when it stops working. */
+export interface DiscordLinkCode {
+  code: string;
+  expiresAt: string;
+}
+
 /** Whether the signed-in user has linked a Discord account. */
 export interface DiscordAccount {
   linked: boolean;

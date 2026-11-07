@@ -445,6 +445,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/admin/discord/unlink", operator: true, handler: ok(discord.removeLink) },
     get("/api/account/discord", discord.account),
     post("/api/account/discord/unlink", discord.unlinkOwn),
+    post("/api/account/discord/code", discord.linkCode),
     { method: "PUT", pattern: "/api/admin/discord/contact", operator: true, handler: ok(discord.putContact) },
     { method: "PUT", pattern: "/api/sandbox/workspace", operator: true, handler: ok(adm.setWorkspaceInfo) },
     get("/api/merge/single", adm.singleMerge),

@@ -1,0 +1,79 @@
+// `/autocraft link`, `unlink`, `stats` and `status`. Replies are visible to the caller only. Everything they say about
+// items and counts comes from the public status layer (src/public/status.ts).
+import type { DatabaseSync } from "node:sqlite";
+import { audit } from "../dash/audit.ts";
+import { publicRepoNames, publicStats, publicStatus, type PublicStats, type PublicStatus } from "../public/status.ts";
+import type { Call, Interactions } from "./interactions.ts";
+import type { DiscordKeys } from "./keys.ts";
+import { forgetLink, redeemLinkCode } from "./links.ts";
+import { plain } from "./reply.ts";
+
+const ATTEMPTS = { n: 5, ms: 60_000 };
+const REF = /^\s*([\w.-]+)#(\d+)\s*$/;
+
+export function formatStats(s: PublicStats): string {
+  const median = s.medianOpenToMergeHours30Days === null ? "no merges" : `${s.medianOpenToMergeHours30Days} h`;
+  return [
+    `Public repos: ${s.repo ?? "all"}`,
+    `Open issues: ${s.openIssues}, open pull requests: ${s.openPrs}`,
+    `Merged in the last 7 days: ${s.mergedLast7Days} (${s.mergedByAutoCraftLast7Days} by AutoCraft)`,
+    `Reviews posted in the last 7 days: ${s.reviewsPostedLast7Days}`,
+    `Median open-to-merge time, last 30 days: ${median}`,
+    `Merge queue: ${s.queueLength}`,
+  ].join("\n");
+}
+
+export function formatStatus(s: PublicStatus): string {
+  const place = s.queue ? ` (#${s.queue.position} of ${s.queue.of})` : "";
+  return `${s.ref} ${plain(s.title).slice(0, 100)}\n${s.step}${place}`;
+}
+
+export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSync; keys: DiscordKeys; now?: () => number }): void {
+  const { db, keys } = deps;
+  const tries = new Map<string, number[]>();
+  /** Code entries per Discord user, so a code cannot be guessed by repeating the command. */
+  const mayTry = (user: string): boolean => {
+    const now = (deps.now ?? Date.now)();
+    const live = (tries.get(user) ?? []).filter((t) => now - t < ATTEMPTS.ms);
+    if (live.length >= ATTEMPTS.n) { tries.set(user, live); return false; }
+    tries.set(user, [...live, now]);
+    return true;
+  };
+  const def = {
+    name: "autocraft", type: 1 as const, description: "AutoCraft", dm_permission: false,
+    options: [
+      { type: 1, name: "link", description: "Link this Discord account to your dashboard login", options: [{ type: 3, name: "code", description: "The code from Link Discord in the dashboard menu", required: true, max_length: 20 }] },
+      { type: 1, name: "unlink", description: "Remove the link between this Discord account and your dashboard login" },
+      { type: 1, name: "stats", description: "Counts for the public repos", options: [{ type: 3, name: "repo", description: "One repo; all public repos when left out", autocomplete: true }] },
+      { type: 1, name: "status", description: "Where an issue or pull request is in AutoCraft", options: [{ type: 3, name: "item", description: "For example photocraft#123", required: true, max_length: 100 }] },
+    ],
+  };
+  ix.command("autocraft link", def, async (call) => {
+    if (!call.userId) return void (await call.edit({ content: "This command needs a Discord user." }));
+    if (!mayTry(keys.hash("author", call.userId))) return void (await call.edit({ content: "Too many tries. Wait a minute." }));
+    const login = redeemLinkCode(db, keys, call.option("code") ?? "", call.userId);
+    if (!login) return void (await call.edit({ content: "That code is not valid, was already used, or has expired." }));
+    audit(db, login, "discord-link", login);
+    await call.edit({ content: `Linked to ${plain(login)}` });
+  });
+  ix.command("autocraft unlink", null, async (call) => {
+    const n = call.userId ? forgetLink(db, keys, call.userId) : 0;
+    if (n) audit(db, "discord", "discord-unlink", null, { by: "discord" });
+    await call.edit({ content: n ? "Link removed." : "This Discord account is not linked." });
+  });
+  ix.command("autocraft stats", null, async (call: Call) => {
+    const repo = call.option("repo")?.trim();
+    const s = publicStats(db, repo || undefined);
+    await call.edit({ content: s ? formatStats(s) : "No public repo by that name." });
+  });
+  ix.autocomplete("autocraft stats", (call) => {
+    const typed = (call.focused()?.value ?? "").toLowerCase();
+    return publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
+  });
+  ix.command("autocraft status", null, async (call) => {
+    const m = REF.exec(call.option("item") ?? "");
+    const s = m ? publicStatus(db, m[1]!, Number(m[2])) : null;
+    if (!s) return void (await call.edit({ content: "No item found. Use the form repo#123." }));
+    await call.edit({ content: formatStatus(s), components: [{ type: 1, components: [{ type: 2, style: 5, label: s.ref.slice(0, 80), url: s.url }] }] });
+  });
+}

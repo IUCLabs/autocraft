@@ -261,6 +261,7 @@ export function createMockApi(): Api {
         return wait(structuredClone(discord));
       },
       account: () => wait({ linked: discordLinked, at: nowIso() }),
+      linkCode: () => wait({ code: "K7Q4MX2P", expiresAt: new Date(Date.now() + 10 * 60_000).toISOString() }),
       unlinkOwn() {
         discordLinked = false;
         changed();

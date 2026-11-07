@@ -1,8 +1,8 @@
 // The one Discord REST client: sends and deletes the bot's messages, answers interactions and registers commands.
-// Requests of one rate-limit bucket run one at a time. A response that says the bucket is used up (X-RateLimit-Remaining
-// 0) delays the next request of that bucket until it resets; a 429 is retried after the delay Discord names, and a
-// global limit delays every request. Interaction callbacks take no bot token and run on their own queue, so a slow
-// message send never holds up the 3 second deadline of an interaction.
+// Requests of one rate-limit bucket run one at a time, and requests of different buckets run side by side. A response
+// that says the bucket is used up (X-RateLimit-Remaining 0) delays the next request of that bucket until it resets; a 429
+// is retried after the delay Discord names, and a global limit delays every request. Interaction callbacks are not
+// queued: they must arrive within 3 seconds of the interaction, so they are sent at once (a 429 is still retried).
 const API = "https://discord.com/api/v10";
 const MAX_WAIT_MS = 30_000;
 const MAX_TRIES = 4;
@@ -19,9 +19,11 @@ export type MessageBody = {
 export type EditBody = { content?: string; allowed_mentions?: AllowedMentions; components?: unknown[] };
 
 export const EPHEMERAL = 64;
-/** Callback types: a message now, or "thinking" now and an edit later. */
+/** Callback types: a message now, "thinking" now and an edit later, or the choices of an autocomplete option. */
 export const CALLBACK_MESSAGE = 4;
 export const CALLBACK_DEFERRED = 5;
+export const CALLBACK_CHOICES = 8;
+export type CallbackData = { content?: string; components?: unknown[]; ephemeral?: boolean; choices?: { name: string; value: string }[] };
 
 export type CommandDef = { name: string; type: 1 | 2 | 3; description?: string; options?: unknown[]; dm_permission?: boolean };
 
@@ -30,8 +32,8 @@ export interface DiscordRest {
   createMessage(channelId: string, body: MessageBody): Promise<{ id: string }>;
   editMessage(channelId: string, messageId: string, body: EditBody): Promise<void>;
   deleteMessage(channelId: string, messageId: string): Promise<void>;
-  /** Answers an interaction: a message (type 4) or a deferral (type 5); `ephemeral` shows it to the caller only. */
-  interactionCallback(interactionId: string, token: string, type: 4 | 5, data?: { content?: string; components?: unknown[]; ephemeral?: boolean }): Promise<void>;
+  /** Answers an interaction: a message (type 4), a deferral (type 5) or autocomplete choices (type 8); `ephemeral` shows a message to the caller only. */
+  interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8, data?: CallbackData): Promise<void>;
   /** Replaces the deferred or first response of an interaction. */
   editInteractionResponse(applicationId: string, token: string, body: EditBody): Promise<void>;
   /** Makes the guild's commands exactly `commands`. */
@@ -82,10 +84,11 @@ export class RestClient implements DiscordRest {
     }
   }
 
-  async interactionCallback(interactionId: string, token: string, type: 4 | 5, data?: { content?: string; components?: unknown[]; ephemeral?: boolean }): Promise<void> {
+  async interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8, data?: CallbackData): Promise<void> {
     const { ephemeral, ...rest } = data ?? {};
     const payload = { type, data: { ...rest, allowed_mentions: { parse: [] }, ...(ephemeral && { flags: EPHEMERAL }) } };
-    await this.#queue("POST", `/interactions/${interactionId}/${token}/callback`, payload, false);
+    const path = `/interactions/${interactionId}/${token}/callback`;
+    await this.#send("POST", path, routeKey("POST", path), payload, false);
   }
 
   async editInteractionResponse(applicationId: string, token: string, body: EditBody): Promise<void> {
@@ -98,9 +101,12 @@ export class RestClient implements DiscordRest {
 
   #queue(method: string, path: string, body: unknown, auth: boolean): Promise<unknown> {
     const key = routeKey(method, path);
-    const lane = auth ? "bot" : "interaction";
-    const run = (this.#chains.get(lane) ?? Promise.resolve()).then(() => this.#send(method, path, key, body, auth));
-    this.#chains.set(lane, run.catch(() => undefined));
+    // The chain is per bucket once Discord has named it, else per route.
+    const chain = this.#bucketOf.get(key) ?? key;
+    const run = (this.#chains.get(chain) ?? Promise.resolve()).then(() => this.#send(method, path, key, body, auth));
+    const tail = run.catch(() => undefined);
+    this.#chains.set(chain, tail);
+    void tail.then(() => { if (this.#chains.get(chain) === tail) this.#chains.delete(chain); });
     return run;
   }
 

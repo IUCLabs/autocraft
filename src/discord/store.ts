@@ -43,18 +43,15 @@ export function recordMessage(db: DatabaseSync, keys: DiscordKeys, m: DiscordMes
   return refs.length;
 }
 
+/** Mention rows only: our replies live in Discord and are deleted with it (src/discord/replies.ts). */
 export function forgetMessages(db: DatabaseSync, keys: DiscordKeys, ids: string[]): number {
   const del = db.prepare("DELETE FROM discord_mentions WHERE msg_hash = ?");
   let n = 0;
-  const reply = db.prepare("DELETE FROM discord_replies WHERE ping_hash = ? OR quoted_hash = ?");
-  for (const id of ids) {
-    const h = keys.hash("message", id);
-    n += Number(del.run(h).changes);
-    reply.run(h, h);
-  }
+  for (const id of ids) n += Number(del.run(keys.hash("message", id)).changes);
   return n;
 }
 
+/** For a channel that is gone (deleted, or its server removed the bot): its replies went with it, so only the rows are removed. */
 export function forgetChannel(db: DatabaseSync, keys: DiscordKeys, channelId: string): number {
   const h = keys.hash("channel", channelId);
   db.prepare("DELETE FROM discord_replies WHERE channel_hash = ?").run(h);

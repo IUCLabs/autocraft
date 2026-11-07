@@ -11,7 +11,7 @@ export type Interaction = {
   member?: { user?: { id: string } }; user?: { id: string };
   data?: {
     name?: string; type?: number; custom_id?: string; target_id?: string;
-    options?: { name: string; type: number; value?: unknown; options?: { name: string; type: number; value?: unknown }[] }[];
+    options?: { name: string; type: number; value?: unknown; focused?: boolean; options?: { name: string; type: number; value?: unknown; focused?: boolean }[] }[];
     resolved?: { messages?: Record<string, { content?: string }> };
   };
 };
@@ -22,6 +22,8 @@ export type Call = {
   userId: string | null;
   /** The value of an option of the invoked (sub)command, when it is text. */
   option(name: string): string | undefined;
+  /** The option being typed in an autocomplete interaction. */
+  focused(): { name: string; value: string } | undefined;
   /** The text of the message a message command was used on. */
   targetText(): string | undefined;
   /** Replaces the deferred response. */
@@ -31,13 +33,15 @@ export type Call = {
 export type Handler = (call: Call) => Promise<void>;
 type Entry = { handler: Handler; ephemeral: boolean };
 
-const COMMAND = 2, COMPONENT = 3, MESSAGE_COMMAND = 3;
+export type Choice = { name: string; value: string };
+const COMMAND = 2, COMPONENT = 3, AUTOCOMPLETE = 4, MESSAGE_COMMAND = 3;
 
 export class Interactions {
   #rest: DiscordRest;
   #log: (line: string) => void;
   #commands = new Map<string, Entry>();
   #components = new Map<string, Entry>();
+  #completers = new Map<string, (call: Call) => Choice[]>();
   #defs: CommandDef[] = [];
   #appId: string | null = null;
   #registered = new Map<string, string>();
@@ -57,6 +61,11 @@ export class Interactions {
     if (def && !this.#defs.some((d) => d.name === def.name && d.type === def.type)) this.#defs.push(def);
   }
 
+  /** Adds the choices of the focused option of a command (same key as `command`); at most 25 are sent. Answered at once, never deferred. */
+  autocomplete(key: string, choices: (call: Call) => Choice[]): void {
+    this.#completers.set(key, choices);
+  }
+
   /** Adds a handler for the buttons whose custom_id is `prefix` or starts with `prefix:`. */
   component(prefix: string, handler: Handler, opts: { ephemeral?: boolean } = {}): void {
     this.#components.set(prefix, { handler, ephemeral: opts.ephemeral ?? true });
@@ -67,7 +76,7 @@ export class Interactions {
     const x = d as { application?: { id?: string }; id?: string };
     if (type === "READY") this.#appId = x.application?.id ?? this.#appId;
     else if (type === "GUILD_CREATE" && typeof x.id === "string") void this.registerGuild(x.id);
-    else if (type === "INTERACTION_CREATE") void this.#run(d as Interaction);
+    else if (type === "INTERACTION_CREATE") void ((d as Interaction).type === AUTOCOMPLETE ? this.#complete(d as Interaction) : this.#run(d as Interaction));
   }
 
   /** Makes the guild's commands exactly the registered definitions. Does nothing when this process already sent the same set. */
@@ -96,20 +105,41 @@ export class Interactions {
     return this.#commands.get(sub ? `${i.data?.name} ${sub.name}` : (i.data?.name ?? ""));
   }
 
+  async #complete(i: Interaction): Promise<void> {
+    const sub = i.data?.options?.find((o) => o.type === 1);
+    const find = this.#completers.get(sub ? `${i.data?.name} ${sub.name}` : (i.data?.name ?? ""));
+    if (!find) return;
+    try {
+      const opts = sub?.options ?? i.data?.options ?? [];
+      const call = { interaction: i, userId: i.member?.user?.id ?? i.user?.id ?? null, option: () => undefined, targetText: () => undefined, edit: async () => {},
+        focused: () => { const o = opts.find((x) => x.focused); return o ? { name: o.name, value: typeof o.value === "string" ? o.value : "" } : undefined; } } as Call;
+      await this.#rest.interactionCallback(i.id, i.token, 8, { choices: find(call).slice(0, 25) });
+    } catch (e) {
+      this.#log(`discord: autocomplete failed: ${(e as Error).message}`);
+    }
+  }
+
   async #run(i: Interaction): Promise<void> {
     const entry = this.#entry(i);
     if (!entry) return;
     const appId = i.application_id ?? this.#appId;
+    const failed = "Something went wrong. Try again in a moment.";
     try {
+      // Without an application id a deferred response could never be edited, so the answer is a plain message.
+      if (!appId) {
+        this.#log("discord: no application id; answering with an error");
+        await this.#rest.interactionCallback(i.id, i.token, 4, { content: failed, ephemeral: true });
+        return;
+      }
       // Deferred first: a handler's own work never counts against the 3 seconds.
       await this.#rest.interactionCallback(i.id, i.token, 5, { ephemeral: entry.ephemeral });
-      if (!appId) throw new Error("no application id");
       const sub = i.data?.options?.find((o) => o.type === 1);
       const opts = sub?.options ?? i.data?.options ?? [];
       const call: Call = {
         interaction: i,
         userId: i.member?.user?.id ?? i.user?.id ?? null,
         option: (name) => { const v = opts.find((o) => o.name === name)?.value; return typeof v === "string" ? v : undefined; },
+        focused: () => { const o = opts.find((x) => x.focused); return o ? { name: o.name, value: typeof o.value === "string" ? o.value : "" } : undefined; },
         targetText: () => (i.data?.type === MESSAGE_COMMAND && i.data.target_id ? i.data.resolved?.messages?.[i.data.target_id]?.content : undefined),
         edit: (body) => this.#rest.editInteractionResponse(appId, i.token, body),
       };
@@ -117,7 +147,7 @@ export class Interactions {
         await entry.handler(call);
       } catch (e) {
         this.#log(`discord: command failed: ${(e as Error).message}`);
-        await call.edit({ content: "Something went wrong. Try again in a moment." }).catch(() => undefined);
+        await call.edit({ content: failed }).catch(() => undefined);
       }
     } catch (e) {
       this.#log(`discord: answering an interaction failed: ${(e as Error).message}`);

@@ -1,14 +1,15 @@
 // Discord mentions: the admin page's data and writes, and what the item page shows. The channel list and the
 // connection state are written by the runner's gateway client (src/discord/); this file only reads them.
 import type { DatabaseSync } from "node:sqlite";
-import type { DiscordAccount, DiscordInfo, DiscordSetup } from "../../../web/src/api/types.ts";
+import type { DiscordAccount, DiscordLinkCode, DiscordInfo, DiscordSetup } from "../../../web/src/api/types.ts";
 import { envVar } from "../../env.ts";
 import { audit } from "../audit.ts";
+import { isPublicRepo, publicRepoNames } from "../../public/status.ts";
 import { HttpError } from "../server/util.ts";
 import { DISCORD_PRIVACY_PATH } from "../server/discord-privacy.ts";
 import { readKeyFile, type DiscordKeys } from "../../discord/keys.ts";
 import { countOf, linksOf } from "../../discord/store.ts";
-import { linkedSince, listLinks, unlinkLogin, unlinkRow } from "../../discord/links.ts";
+import { createLinkCode, linkedSince, listLinks, unlinkLogin, unlinkRow } from "../../discord/links.ts";
 import type { Req } from "../types.ts";
 
 const PRIVACY_PATH = DISCORD_PRIVACY_PATH;
@@ -48,7 +49,7 @@ function setupOf(db: DatabaseSync): DiscordSetup {
   return {
     state: st?.state ?? "off", detail: st?.detail ?? null, at: st?.at ?? null,
     channels: channels.map((c) => ({ ...c, watched: !!c.watched })),
-    repos: (db.prepare("SELECT name FROM main.tracked_repos ORDER BY name").all() as { name: string }[]).map((r) => r.name),
+    repos: publicRepoNames(db),
     contact: contactOf(db), privacyPath: PRIVACY_PATH, links: listLinks(db),
   };
 }
@@ -72,7 +73,7 @@ export function putChannelRepo(db: DatabaseSync, req: Req): DiscordSetup {
   operator(req);
   const id = body(req).channelId, repo = body(req).repo;
   if (typeof id !== "string" || (repo !== null && typeof repo !== "string")) throw new HttpError(400, "channelId and repo (a tracked repo or null) are required");
-  if (repo !== null && !db.prepare("SELECT 1 FROM main.tracked_repos WHERE name = ?").get(repo)) throw new HttpError(400, "repo is not tracked");
+  if (repo !== null && !isPublicRepo(db, repo)) throw new HttpError(400, "repo is not a public tracked repo");
   const r = db.prepare("UPDATE discord_channels SET default_repo = ? WHERE channel_id = ?").run(repo, id);
   if (!r.changes) throw new HttpError(404, "the bot has not reported that channel");
   audit(db, req.user.login, "discord-default-repo", id, { repo });
@@ -93,6 +94,15 @@ export const account = (db: DatabaseSync, req: Req): DiscordAccount => {
   const at = linkedSince(db, req.user.login);
   return { linked: at !== null, at };
 };
+
+/** A single-use code, valid for 10 minutes, that links a Discord account to the signed-in login when typed into the bot's `/autocraft link`. */
+export function linkCode(db: DatabaseSync, req: Req): DiscordLinkCode {
+  const keys = discordKeys();
+  if (!keys) throw new HttpError(503, "Discord is not set up on this server");
+  const c = createLinkCode(db, keys, req.user.login);
+  audit(db, req.user.login, "discord-link-code", req.user.login);
+  return c;
+}
 
 export function unlinkOwn(db: DatabaseSync, req: Req): DiscordAccount {
   const n = unlinkLogin(db, req.user.login);

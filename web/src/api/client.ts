@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
   DiscordAccount,
+  DiscordLinkCode,
   DiscordSetup,
   CardEdit,
   DoChoiceBody,
@@ -262,6 +263,7 @@ export interface Api {
     removeLink(id: string): Promise<DiscordSetup>;
     account(): Promise<DiscordAccount>;
     unlinkOwn(): Promise<DiscordAccount>;
+    linkCode(): Promise<DiscordLinkCode>;
   };
   classifiers: {
     /** `run`, `a` and `b` default to the latest run and its first pair. */

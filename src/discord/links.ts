@@ -1,65 +1,58 @@
 // Links between a Discord account and a dashboard login. The Discord user id is never stored: a link holds its keyed hash.
-// The bot hands out a signed, single-use token; opening it while signed in to the dashboard and confirming stores the link.
-import { randomBytes } from "node:crypto";
+// A signed-in dashboard user asks for a short single-use code and types it into the bot in Discord (`/autocraft link`), so
+// the link is always made by the person who controls both accounts. Codes are stored as keyed hashes and expire.
+import { randomInt } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { safeEqual } from "../dash/server/crypto.ts";
 import type { DiscordKeys } from "./keys.ts";
 
-export const LINK_PATH = "/link/discord";
-export const TOKEN_TTL_MS = 10 * 60_000;
-
-type Claims = { u: string; e: number; n: string };
+export const CODE_TTL_MS = 10 * 60_000;
+const CODE_LENGTH = 8;
+/** No 0/O, 1/I/L: a code is read off one screen and typed into another. */
+const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 const userHash = (keys: DiscordKeys, discordUserId: string): string => keys.hash("author", discordUserId);
+const codeHash = (keys: DiscordKeys, code: string): string => keys.sign("link-code", code.toUpperCase().replace(/[^A-Z0-9]/g, ""));
 
-/** A token that lets whoever holds it link `discordUserId` to their login for ten minutes, once. */
-export function createLinkToken(keys: DiscordKeys, discordUserId: string, now = Date.now()): string {
-  const claims: Claims = { u: userHash(keys, discordUserId), e: now + TOKEN_TTL_MS, n: randomBytes(12).toString("base64url") };
-  const body = Buffer.from(JSON.stringify(claims)).toString("base64url");
-  return `${body}.${keys.sign("link", body)}`;
-}
-
-export const linkUrl = (baseUrl: string, token: string): string => `${baseUrl.replace(/\/+$/, "")}${LINK_PATH}?${new URLSearchParams({ t: token })}`;
-
-export type TokenCheck = { ok: true; claims: Claims } | { ok: false; reason: "invalid" | "expired" | "used" };
-
-/** Checks signature, expiry and that the token has not been used. Reads only. */
-export function checkLinkToken(db: DatabaseSync, keys: DiscordKeys, token: string, now = Date.now()): TokenCheck {
-  const [body, sig, extra] = token.split(".");
-  if (!body || !sig || extra !== undefined || !safeEqual(sig, keys.sign("link", body))) return { ok: false, reason: "invalid" };
-  let claims: Claims;
-  try {
-    claims = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as Claims;
-  } catch {
-    return { ok: false, reason: "invalid" };
-  }
-  if (typeof claims.u !== "string" || typeof claims.n !== "string" || typeof claims.e !== "number") return { ok: false, reason: "invalid" };
-  if (claims.e <= now) return { ok: false, reason: "expired" };
-  if (db.prepare("SELECT 1 FROM discord_link_nonces WHERE nonce = ?").get(claims.n)) return { ok: false, reason: "used" };
-  return { ok: true, claims };
-}
-
-/** Spends the token and links its Discord account to `login`; a Discord account has one login, so an earlier link of it is replaced. */
-export function consumeLinkToken(db: DatabaseSync, keys: DiscordKeys, token: string, login: string, now = Date.now()): TokenCheck {
-  const c = checkLinkToken(db, keys, token, now);
-  if (!c.ok) return c;
-  const at = new Date(now).toISOString();
+/** A new code for `login`; an earlier unused code of the login stops working. */
+export function createLinkCode(db: DatabaseSync, keys: DiscordKeys, login: string, now = Date.now()): { code: string; expiresAt: string } {
+  let code = "";
+  for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+  const expiresAt = new Date(now + CODE_TTL_MS).toISOString();
   db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare("DELETE FROM discord_link_nonces WHERE expires_at <= ?").run(at);
-    const spent = db.prepare("INSERT OR IGNORE INTO discord_link_nonces (nonce, expires_at) VALUES (?, ?)").run(c.claims.n, new Date(c.claims.e).toISOString());
-    if (!spent.changes) {
-      db.exec("ROLLBACK");
-      return { ok: false, reason: "used" };
-    }
-    db.prepare(`INSERT INTO discord_links (user_hash, login, linked_at) VALUES (?, ?, ?)
-      ON CONFLICT(user_hash) DO UPDATE SET login = excluded.login, linked_at = excluded.linked_at`).run(c.claims.u, login, at);
+    db.prepare("DELETE FROM discord_link_codes WHERE login = ? OR expires_at <= ?").run(login, new Date(now).toISOString());
+    db.prepare("INSERT INTO discord_link_codes (code_hash, login, expires_at) VALUES (?, ?, ?)").run(codeHash(keys, code), login, expiresAt);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
   }
-  return c;
+  return { code, expiresAt };
+}
+
+/** Spends a code and links `discordUserId` to the login the code was made for. Returns the login, or null for a wrong, used or expired code. A Discord account has one login, so an earlier link of it is replaced. */
+export function redeemLinkCode(db: DatabaseSync, keys: DiscordKeys, code: string, discordUserId: string, now = Date.now()): string | null {
+  const h = codeHash(keys, code);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const row = db.prepare("SELECT login, expires_at AS expiresAt FROM discord_link_codes WHERE code_hash = ?").get(h) as { login: string; expiresAt: string } | undefined;
+    if (!row) {
+      db.exec("ROLLBACK");
+      return null;
+    }
+    db.prepare("DELETE FROM discord_link_codes WHERE code_hash = ?").run(h);
+    if (Date.parse(row.expiresAt) <= now) {
+      db.exec("COMMIT");
+      return null;
+    }
+    db.prepare(`INSERT INTO discord_links (user_hash, login, linked_at) VALUES (?, ?, ?)
+      ON CONFLICT(user_hash) DO UPDATE SET login = excluded.login, linked_at = excluded.linked_at`).run(userHash(keys, discordUserId), row.login, new Date(now).toISOString());
+    db.exec("COMMIT");
+    return row.login;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 /** The dashboard login linked to a Discord user, or null. */
