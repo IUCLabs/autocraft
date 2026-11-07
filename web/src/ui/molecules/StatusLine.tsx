@@ -14,6 +14,7 @@ export const PHASE_TONE: Record<ItemPhase, Tone> = {
   Closed: "neutral",
   Held: "neutral",
   "Out of scope": "neutral",
+  "Pipeline off": "neutral",
 };
 
 export const PhaseBadge = ({ phase }: { phase: ItemPhase }) => <Badge tone={PHASE_TONE[phase]}>{phase}</Badge>;

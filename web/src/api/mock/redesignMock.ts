@@ -8,7 +8,7 @@ import { realData } from "./realStore";
 import { FINDING_HISTORY_11, FIX_ROUNDS_11, FIX_ROUNDS_4, at, findingStatus, itemPageFor, mockHeader, statusRows } from "./redesignData";
 
 const wait = <T,>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
-const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope"];
+const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope", "Pipeline off"];
 const GROUP: Record<string, SecurityGroup> = {
   new: "Needs a person", "awaiting-admin": "Needs a person", ready: "Ready to land", fixing: "Fixing", landing: "Landing",
   landed: "Landed or published", advisory: "Landed or published", published: "Landed or published", dismissed: "Dismissed or backlog", backlog: "Dismissed or backlog",
@@ -70,7 +70,7 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
           ],
         },
         problems,
-        phases: { Triage: 12, "Waiting for a person": d.total + (staff ? 1 : 0), Review: 5, Fixing: 3, Verifying: 2, "In queue": 9, Merged: 14, Closed: 6, Held: 4, "Out of scope": 21 },
+        phases: { Triage: 12, "Waiting for a person": d.total + (staff ? 1 : 0), Review: 5, Fixing: 3, Verifying: 2, "In queue": 9, Merged: 14, Closed: 6, Held: 4, "Out of scope": 21, "Pipeline off": 340 },
         running: "3 jobs running, batch #41 checking",
         progress: { openNow: 412, openAtStart: 960, done24h: 41, byAutoCraftPct: 78, perHour: [1, 2, 1, 0, 0, 1, 3, 2, 4, 3, 2, 5, 4, 3, 2, 1, 3, 4, 5, 6, 4, 3, 2, 3], spendTodayUsd: 38.2 },
         done: [

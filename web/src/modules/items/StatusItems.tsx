@@ -14,7 +14,7 @@ import { Page } from "../../ui/organisms/Page";
 import { useUrlState } from "../admin/parts";
 import type { ViewProps } from "../../registry/types";
 
-const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope"];
+const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope", "Pipeline off"];
 
 function Row({ r }: { r: ItemStatusRow }) {
   return (

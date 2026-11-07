@@ -2291,7 +2291,7 @@ export type McpTokenCreated = McpTokens & { id: number; token: string };
 
 // ---- redesign: one status per item, Home, the two-sided item page, findings as items ----------------------------
 
-export type ItemPhase = "Triage" | "Waiting for a person" | "Review" | "Fixing" | "Verifying" | "In queue" | "Merged" | "Closed" | "Held" | "Out of scope";
+export type ItemPhase = "Triage" | "Waiting for a person" | "Review" | "Fixing" | "Verifying" | "In queue" | "Merged" | "Closed" | "Held" | "Out of scope" | "Pipeline off";
 
 /** Where an item is, what it waits for and what happens next; every page draws the same line. */
 export interface ItemStatus {
