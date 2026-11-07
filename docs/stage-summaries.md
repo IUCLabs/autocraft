@@ -1,24 +1,24 @@
 ## Sync
 
-**What.** Mirrors every issue, pull request and comment of the tracked repos into the local database, then makes a vector of each title and body for similar-item search.
+**What.** Copies every issue, pull request and comment of the tracked repos from GitHub, then prepares each title and body for similar-item search.
 
 **When.** Every minute. CI of each default branch is read every two minutes, even when the pipeline is off.
 
-**Model.** None. The vectors are made on this machine.
+**Model.** None.
 
 **You see.** Fresh items on the Items page within a minute or two.
 
-**Can go wrong.** The mirror can be a few minutes behind GitHub, so every later stage checks the live state before it writes or spends a model call, and skips what changed.
+**Can go wrong.** The copy can be a few minutes behind GitHub. Every later stage checks the live state on GitHub first and skips an item that changed.
 
 ## Duplicates
 
 **What.** Finds open items that describe the same bug or request as another open item, or one closed in the last year, and compares each group.
 
-**When.** After Embed, for new or changed items.
+**When.** After Sync, for new or changed items.
 
 **Model.** Jev first, Haiku for the unclear pairs.
 
-**You see.** A "Duplicate?" question in Decide. An open one holds the item out of Review, Verify, Fix and the merge queue.
+**You see.** A "Duplicate?" question on the Needs you page. An open one holds the item out of Review, Verify, Fix and the merge queue.
 
 **Can go wrong.** A pair you already ruled on is not asked again.
 
@@ -170,13 +170,13 @@
 
 **What.** The questions the pipeline cannot settle: scope calls, reference behaviour, merges outside the rules, closing a pull request, label disagreements and duplicates.
 
-**When.** As they come up.
+**When.** As they come up. Operators settle them. Maintainers with write access settle them when an operator allows it for the repo, and otherwise send feedback.
 
-**Model.** Opus prepares each question.
+**Model.** Opus prepares each question with a summary and a recommended choice.
 
-**You see.** The Decisions list and the item page.
+**You see.** The Needs you page and the item page. Snooze hides a question until the item has new activity.
 
-**Can go wrong.** An operator can release an item that stopped waiting.
+**Can go wrong.** Nobody answers: the question stays open and only that item waits. A push to a pull request withdraws its old Merge? and Close? questions.
 
 ## Actions
 

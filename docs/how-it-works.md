@@ -4,7 +4,7 @@ AutoCraft reads every issue and pull request in the tracked repos, sorts them, r
 
 ## Sync
 
-Copies every issue, pull request and comment from GitHub once a minute. It also reads CI on each default branch every two minutes and indexes the text for similar-item search. Nothing here needs a person.
+Copies every issue, pull request and comment from GitHub once a minute. It also reads CI on each default branch every two minutes and prepares the text for similar-item search. Nothing here needs a person.
 
 ## Duplicates
 
@@ -60,14 +60,19 @@ Each item can have a conversation with Opus next to its decision. Everyone with 
 
 ## What needs a person
 
-- A scope call: is this in scope, closer to the reference app, or a plug-in?
-- Reference behaviour that public sources do not settle.
-- A "Merge?" question for a pull request outside the merge rules.
-- A "Close this PR?" question when the review says to close.
-- A label where Jev and Haiku disagree on scope.
-- A "Duplicate?" question.
+Most work runs without anyone. These questions wait on the Needs you page:
 
-Everything else runs without a person.
+- **Scope:** is this item in scope, a small extra or a plug-in?
+- **Merge?** for a pull request outside the merge rules.
+- **Close this PR?** when the review says to close it.
+- **Duplicate?** for items that look like the same report.
+- **Reference behaviour** that public sources do not settle.
+- **Label** disagreements on scope between the two classifiers.
+
+Operators settle every question. Maintainers who have write access to the repo can settle them too, when an operator has switched that on for the repo. Other maintainers send feedback, which operators read. Viewers only read.
+
+When nobody answers, the question stays open and only that item waits. Everything else keeps moving. Snooze hides a question until the item has new activity. A question about an old version of a pull request is withdrawn when the author pushes. A closed or merged item withdraws its questions.
+
 
 ## Actions
 

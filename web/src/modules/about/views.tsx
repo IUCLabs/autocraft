@@ -61,7 +61,7 @@ function StagePath() {
   const [open, setOpen] = useState(false);
   return (
     <div className="mt-5">
-      <ol className="hidden flex-wrap items-center md:flex gap-x-1 gap-y-2">
+      <ol className="flex flex-wrap items-center gap-x-1 gap-y-2">
         {STAGES.slice(0, 12).map((s, i) => (
           <li key={s.slug} className="flex items-center gap-1">
             {i > 0 && <CaretRightIcon className="text-ink/30" />}
