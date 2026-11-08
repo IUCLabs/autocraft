@@ -293,6 +293,26 @@ A claimed task may carry `patch`, a git-format unified diff of at most 1 MiB. Af
 
 A task may carry `warm: { key, role }` (`key` is the repo name, `[a-z0-9-]`, up to 64 characters). The worker keeps at most one warm cargo target dir per key in `warmDir`, with a JSON record (commit, size, last use). A `build` task is a build of the repo's upstream main: it runs with an empty target dir and, when every step succeeded, replaces the warm dir for its key atomically with its target dir. A `use` task starts with a copy of the warm dir (`cp -a --reflink=auto`) or an empty target dir, and discards it afterwards, so a PR build never changes the warm dir. After each store, least recently used warm dirs are removed until the total is within `warmMaxGb`. The free-disk pause measures the smaller free space of the work dir and the warm dir.
 
+### Shared warm snapshot store
+
+With several build machines, each worker's warm dirs exist only on its own disk. A snapshot store on a separate machine (the cache node) lets every worker start PR builds warm.
+
+Run it with `autocraft worker store serve --config FILE` (or `$AUTOCRAFT_STORE_CONFIG`). Config keys: `dir` (absolute, required), `readKey` and `writeKey` (required, at least 16 characters, different), `listen` (default `127.0.0.1:8990`), `maxGb` (200; least recently read snapshots are removed above it) and `maxUploadGb` (20; larger bodies are refused). It speaks plain HTTP: put it behind a TLS proxy or on a private cluster network, and keep the config file mode 0600.
+
+API, all with `Authorization: Bearer <key>`:
+
+- `GET /store/<key>` answers the record `{ commit, size, sha256, stored, bytes }`, or 404.
+- `GET /store/<key>/blob` streams the `.tar.zst` snapshot.
+- `PUT /store/<key>?commit=<sha>&bytes=<unpacked size>` stores a snapshot. It needs the write key. The body goes to a temp file while its sha256 is computed, and the snapshot replaces the previous one atomically only when the body arrived complete. An interrupted or oversized upload changes nothing.
+
+`<key>` is the warm key (`[a-z0-9-]`, up to 64 characters). The read key also works for the two GET routes; the write key works for everything.
+
+Worker config `warmStore: { url, readKey, writeKey?, timeoutSec }` (`timeoutSec` default 600) turns it on; without it workers behave as described above. All transfers run in the worker process on the host, never in a build container, and the container never receives the URL or keys.
+
+- After a `build` task (upstream main) has replaced the local warm dir, a worker with a `writeKey` uploads it (`tar | zstd`). Only workers that run trusted main builds should have a write key; `use` tasks (PR builds) never write.
+- Before a `use` task, the worker asks the store for the key's record. If its commit differs from the local warm dir's (or there is no local one), the worker downloads the snapshot, checks its sha256, unpacks it to a staging dir and swaps it in like a local `build` result. The snapshot is skipped when it is larger than `warmMaxGb` or the free disk would drop under `limits.minFreeDiskGb`.
+- A store that is down, slow (past `timeoutSec`), refuses the key or returns a corrupt snapshot is logged and ignored: the task uses the local warm dir or an empty target dir. A worker host without `zstd` skips both directions with a log line.
+
 ### Crate cache
 
 The shared crate cache (`<workDir>/crate-cache`) is never mounted into a container. Each task gets its own `CARGO_HOME`, seeded by copying `.crate` files from the shared cache and deleted with the task. Cargo does not re-verify files already in its cache, so nothing a task wrote is trusted. Right after each `fetch` step, before any build script or test has run, the worker process on the host admits a file to the shared cache only if it is a regular `.crate` in the official crates.io registry directory (`index.crates.io-*`) and its sha256 equals the checksum in the crates.io sparse index (fetched over HTTPS, looked up once per crate name). Other registries, git sources, anything written by offline steps and anything the index lookup cannot confirm are never admitted. Build output (`/target`) is shared only through the warm target dirs below.

@@ -10,6 +10,7 @@ import { removeContainer, runContainer, type RunOutcome } from "./container.ts";
 import { applyPatch } from "./patch.ts";
 import { downloadAndExtract } from "./tarball.ts";
 import { copyWarm, storeWarm, taskFieldProblem } from "./warm.ts";
+import { downloadWarm, uploadWarm } from "./warm-sync.ts";
 import { LIMITS, type ClaimedTask, type StepResult } from "./types.ts";
 
 export type TaskSink = {
@@ -128,6 +129,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
     const environment = prepared.info;
     if (task.warm?.role === "use") {
       try {
+        if (cfg.warmStore) await downloadWarm(cfg, task.warm.key, (m) => note(m));
         const hit = await copyWarm(cfg, task.warm.key, paths.target);
         await emit("source", hit ? "warm target dir copied\n" : "no warm target dir, starting cold\n");
       } catch (e) {
@@ -193,6 +195,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
       try {
         await storeWarm(cfg, task.warm.key, task.headSha, paths.target);
         await emit("source", "warm target dir stored\n");
+        if (cfg.warmStore?.writeKey) await uploadWarm(cfg, task.warm.key, task.headSha, (m) => note(m));
       } catch (e) {
         note(`warm store failed: ${(e as Error).message}`);
       }

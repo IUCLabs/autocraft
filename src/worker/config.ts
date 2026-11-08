@@ -31,6 +31,8 @@ export type WorkerConfig = {
   userns: string;
   maxSourceMb: number;
   maxStepSec: number;
+  /** Shared snapshot store for warm target dirs (see docs/operations.md). */
+  warmStore?: { url: string; readKey: string; writeKey?: string; timeoutSec: number };
 };
 
 const SAFE_PATH = /^[^,:\s\0]+$/;
@@ -76,7 +78,17 @@ export function parseWorkerConfig(raw: unknown): WorkerConfig {
   const fetchNetwork = str(o, "fetchNetwork", "pasta");
   const userns = str(o, "userns", "keep-id");
   for (const v of [fetchNetwork, userns, runtime]) if (v.startsWith("-") || /\s/.test(v)) throw new Error("config: runtime, fetchNetwork and userns must not start with '-' or contain spaces");
+  let warmStore: WorkerConfig["warmStore"];
+  if (o.warmStore !== undefined) {
+    const w = o.warmStore as Record<string, unknown> | null;
+    if (typeof w !== "object" || w === null || Array.isArray(w)) throw new Error("config: warmStore must be an object");
+    const url = str(w, "url").replace(/\/+$/, "");
+    if (!/^https?:\/\/[^\s]+$/.test(url)) throw new Error("config: warmStore.url must be an http(s) URL");
+    if (w.writeKey !== undefined && (typeof w.writeKey !== "string" || !w.writeKey)) throw new Error("config: warmStore.writeKey must be a non-empty string");
+    warmStore = { url, readKey: str(w, "readKey"), writeKey: w.writeKey as string | undefined, timeoutSec: num(w.timeoutSec, "warmStore.timeoutSec", 600, 5, 86_400) };
+  }
   return {
+    warmStore,
     coordinatorUrl,
     keyFile,
     workDir,

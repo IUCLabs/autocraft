@@ -34,7 +34,7 @@ function locked<T>(key: string, f: () => Promise<T>): Promise<T> {
   return next;
 }
 
-const dirOf = (cfg: WorkerConfig, key: string) => join(cfg.warmDir, key);
+export const dirOf = (cfg: WorkerConfig, key: string) => join(cfg.warmDir, key);
 const recOf = (cfg: WorkerConfig, key: string) => join(cfg.warmDir, `${key}.json`);
 
 export function readRecord(cfg: WorkerConfig, key: string): WarmRecord | null {
