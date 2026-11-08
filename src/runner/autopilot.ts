@@ -20,6 +20,7 @@ import { loadPlanSet, type PlanSet } from "../core/plan-set.ts";
 import { gates, type Want } from "../core/gates.ts";
 import type { Action, ActionKind } from "../core/plan.ts";
 import { writePlanCache } from "../core/plan-cache.ts";
+import { refreshLiveness } from "../liveness.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { embedDue } from "../embed/store.ts";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -931,6 +932,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   const t1 = performance.now();
   try { cache = writePlanCache(db, ctx.plans!); } catch (e) { log(`autopilot: plan cache: ${(e as Error).message}`); }
   const cacheMs = performance.now() - t1;
+  // The liveness check follows the plan cache and stores its own result at most every few minutes.
+  try { refreshLiveness(db); } catch (e) { log(`autopilot: liveness: ${(e as Error).message}`); }
   if (loadMs + lanesMs + cacheMs > 2000) log(`autopilot: pass took ${Math.round(loadMs + lanesMs + cacheMs)} ms: plans ${Math.round(loadMs)}, lanes ${Math.round(lanesMs)}, cache ${Math.round(cacheMs)} (${cache.written} rows written, ${cache.deleted} deleted)`);
   // A stage with a candidate the checks above held back says why; the others had no candidate or start now.
   Object.assign(status, ctx.notes ?? {});

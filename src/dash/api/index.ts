@@ -43,6 +43,7 @@ import { trace as itemTrace, traceDetail as itemTraceDetail } from "./trace.ts";
 import { postmergeOf } from "./postmerge.ts";
 import { canSeeInternals } from "./staff.ts";
 import * as operator from "./operator.ts";
+import * as stuck from "./stuck.ts";
 import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { verificationOf } from "../../verify/results.ts";
 import { areaNameOf } from "../../areas/store.ts";
@@ -434,6 +435,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
       const repos = mainCiRepos(db, await hiddenRepos(db, req));
       return { summary: summarize(repos), repos };
     }),
+    get("/api/stuck", stuck.stuckItems),
     get("/api/main-ci/summary", async (db, req) => summarize(mainCiRepos(db, await hiddenRepos(db, req)))),
     get("/api/contributors", adm.listContributors),
     get("/api/contributors/rule-preview", adm.previewRule),

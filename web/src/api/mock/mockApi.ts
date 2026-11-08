@@ -31,6 +31,7 @@ import { needsFixesPage, needsPage } from "./needsFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { mainCi } from "./mainCiMock";
+import { stuckItems } from "./stuckMock";
 import { DECISIONS, MOCK_USERS, MOCK_REPO_OWNERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const WRITE_TAGS: [RegExp, ActionTag][] = [[/merge/, "merge"], [/clos/, "close"], [/label/, "label"], [/comment|post/, "comment"], [/push/, "push"]];
@@ -321,6 +322,7 @@ export function createMockApi(): Api {
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
     mainCi: () => wait(mainCi()),
+    stuckItems: () => wait(stuckItems()),
     ...createConversationMock(me, changed, (repo, number, option, note) => {
       const d = decisions.find((x) => !x.answer && x.repo === shortRepo(repo) && x.number === number);
       if (d) settle(d, option, note, null);
