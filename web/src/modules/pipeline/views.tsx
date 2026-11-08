@@ -14,7 +14,7 @@ import { cn } from "../../ui/cn";
 import { num, eventTime } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
-import { JudgementModel, PilotPanel, PipelineSwitch, StageLimits } from "./controls";
+import { JudgementModel, OutsideLimits, PilotPanel, PipelineSwitch, StageLimits } from "./controls";
 import { useNow } from "../../lib/useNow";
 import { decisionPath } from "../../lib/links";
 import { ItemRef } from "../../ui/molecules/ItemRef";
@@ -197,6 +197,7 @@ export function PipelineView({ params }: ViewProps) {
       <PipelineSwitch className="mt-4" />
       <JudgementModel className="mt-4" />
       <PilotPanel className="mt-4" />
+      <OutsideLimits className="mt-4" />
       <div className="mt-4">
         <StageLimits />
       </div>

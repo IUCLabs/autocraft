@@ -1821,3 +1821,20 @@ END;
 -- Reads of the public status layer (src/public/status.ts): merged and posted in the last days.
 CREATE INDEX IF NOT EXISTS items_merged_at ON items(merged_at);
 CREATE INDEX IF NOT EXISTS review_posts_posted ON review_posts(posted_at);
+
+-- Outside-author protections (src/outside.ts). outside_holds is rewritten on every planner pass: the open items of authors
+-- outside the team that wait for model work, either over their daily budget ('limit') or created during a surge ('surge').
+-- outside_released lists the items an operator released; they are exempt from both holds.
+CREATE TABLE IF NOT EXISTS outside_holds (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  author TEXT NOT NULL,
+  kind TEXT NOT NULL,                 -- pr | issue
+  reason TEXT NOT NULL,               -- limit | surge
+  PRIMARY KEY (repo, number)
+);
+CREATE INDEX IF NOT EXISTS outside_holds_author ON outside_holds(author);
+CREATE TABLE IF NOT EXISTS outside_released (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  by TEXT NOT NULL, at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);

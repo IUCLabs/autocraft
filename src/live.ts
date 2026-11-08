@@ -63,8 +63,10 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   reviews: [{ table: "opus_reviews" }, { table: "review_posts" }],
   queue: [{ table: "merges" }, { table: "merge_batches" }, { table: "merge_batch_prs" }, { table: "merge_holds" }, { table: "premerge_reviews" }],
   fasttrack: [{ table: "fast_track" }],
+  // An operator released an outside-author item from its hold: the planner plans for it at once.
+  outside: [{ table: "outside_released" }],
   // The planner's Plan cache; its own output, so the planner does not plan again for it.
-  plans: [{ table: "item_plans" }, { table: "lane_next" }, { table: "liveness_items" }],
+  plans: [{ table: "item_plans" }, { table: "lane_next" }, { table: "liveness_items" }, { table: "outside_holds" }],
   jobs: [{ table: "jobs" }, { table: "stage_limits" }, { table: "stage_trips" }],
   // The breaker and limit rows alone, for pages that do not follow every job.
   limits: [{ table: "stage_limits" }, { table: "stage_trips" }],

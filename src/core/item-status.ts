@@ -1,6 +1,6 @@
 // One status line per item: the phase, what it waits for and what happens next. Computed by the planner from the plan state and
 // stored in the plan view, so every page draws the same line. No imports from outside src/core: the web build may use it.
-import type { ItemState, PlanState, WaitKind } from "./plan.ts";
+import type { ItemState, OutsideHoldInfo, PlanState, WaitKind } from "./plan.ts";
 
 export type ItemPhase = "Triage" | "Waiting for a person" | "Review" | "Fixing" | "Verifying" | "In queue" | "Merged" | "Closed" | "Held" | "Out of scope" | "Pipeline off";
 
@@ -12,6 +12,8 @@ export interface ItemStatus {
   next: string | null;
   /** When the item entered this state. */
   since: string;
+  /** Held for model work because its author is outside the team: over the daily limit or in a surge. An operator releases it. */
+  outside?: OutsideHoldInfo;
 }
 
 /** Phase of every PR plan state. A new plan state fails tsc here. */
@@ -54,11 +56,14 @@ export type StatusInput = {
   scopeAnswered?: boolean;
   /** False for an open item whose repo's Pipeline switch is off (and that is not fast-tracked): AutoCraft does nothing with it. */
   inPipeline?: boolean;
+  /** Held for model work because its author is outside the team (src/outside.ts). */
+  outside?: OutsideHoldInfo;
 };
 
 export function phaseOf(i: StatusInput): ItemPhase {
   if (i.gh === "MERGED" || i.state === "merged") return "Merged";
   if (i.gh === "CLOSED" || i.state === "closed") return "Closed";
+  if (i.outside) return "Held";
   if (i.inPipeline === false || i.state === "out-of-scope") return "Pipeline off";
   if (i.itemState && TRIAGE_OVERRIDES.includes(i.itemState)) return ITEM_PHASE[i.itemState];
   if (i.waitKind === "person") return "Waiting for a person";
@@ -78,6 +83,7 @@ export function phaseOf(i: StatusInput): ItemPhase {
 /** The status without its `since`. */
 export function statusOf(i: StatusInput): Omit<ItemStatus, "since"> {
   const phase = phaseOf(i);
+  if (i.outside) return { phase, waiting: i.wait, next: "Model work starts when the window frees or an operator releases it", outside: i.outside };
   // Outside the pipeline nothing waits and nothing comes next; "Needs a person" only repeats the phase.
   if (phase === "Pipeline off") return { phase, waiting: null, next: null };
   return { phase, waiting: i.wait, next: i.next === "Needs a person" ? null : i.next };

@@ -97,8 +97,8 @@ export function brokeHeads(db: DatabaseSync, repo?: string): Map<string, string>
 
 // ---- circuit breaker --------------------------------------------------------------------------------------
 
-type TripRow = { stage: string; active: number; reason: string; evidence: string; tripped_at: string; cleared_at: string | null; cleared_by: string | null };
-const tripRow = (db: DatabaseSync, stage: string): TripRow | undefined => db.prepare("SELECT * FROM stage_trips WHERE stage = ?").get(stage) as TripRow | undefined;
+export type TripRow = { stage: string; active: number; reason: string; evidence: string; tripped_at: string; cleared_at: string | null; cleared_by: string | null };
+export const tripRow = (db: DatabaseSync, stage: string): TripRow | undefined => db.prepare("SELECT * FROM stage_trips WHERE stage = ?").get(stage) as TripRow | undefined;
 
 /** Stages that are tripped now, with the reason. */
 export function activeTrips(db: DatabaseSync): Partial<Record<TripStage, string>> {
@@ -127,7 +127,7 @@ export function tripEvidence(db: DatabaseSync, stage: string): string[] {
 const mergeKey = (db: DatabaseSync, repo: string): string =>
   db.prepare("SELECT 1 FROM main.settings WHERE key = ?").get(`test_repo:${repo}`) ? `merge:${repo}` : "merge";
 
-function trip(db: DatabaseSync, stage: string, reason: string, evidence: string[], at: string): void {
+export function trip(db: DatabaseSync, stage: string, reason: string, evidence: string[], at: string): void {
   const r = tripRow(db, stage);
   if (r?.active) return;
   db.prepare(`INSERT INTO stage_trips (stage, active, reason, evidence, tripped_at) VALUES (?, 1, ?, ?, ?)
@@ -136,7 +136,7 @@ function trip(db: DatabaseSync, stage: string, reason: string, evidence: string[
   audit(db, "pipeline", "stage-trip", stage, { reason, evidence });
 }
 
-const sinceOf = (db: DatabaseSync, stage: string): string => tripRow(db, stage)?.cleared_at ?? "";
+export const sinceOf = (db: DatabaseSync, stage: string): string => tripRow(db, stage)?.cleared_at ?? "";
 
 /** Trips a push stage when BREAKER_BROKE of its last BREAKER_WINDOW pushes since the last resume broke a required check. */
 export function evaluatePushBreaker(db: DatabaseSync, stage: TripStage, at = new Date().toISOString()): void {
@@ -171,8 +171,8 @@ export class TripError extends Error {
 
 /** An operator clears a trip. Pushes and merges before this moment no longer count. */
 export function resumeStage(db: DatabaseSync, stage: string, by: string): void {
-  // `merge:<repo>` is a test repo's own merge breaker.
-  if (!(TRIP_STAGES as readonly string[]).includes(stage.split(":")[0]!)) throw new TripError(`no such stage: ${stage}; stages: ${TRIP_STAGES.join(", ")}`);
+  // `merge:<repo>` is a test repo's own merge breaker; `outside-surge` is the breaker of the outside-author protections (src/outside.ts).
+  if (stage !== "outside-surge" && !(TRIP_STAGES as readonly string[]).includes(stage.split(":")[0]!)) throw new TripError(`no such stage: ${stage}; stages: ${TRIP_STAGES.join(", ")}`);
   const r = tripRow(db, stage);
   if (!r?.active) throw new TripError(`${stage} is not paused by the circuit breaker`);
   const at = new Date().toISOString();

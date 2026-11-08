@@ -52,6 +52,7 @@ import { STEP_STAGE } from "../core/push-outcome.ts";
 import { jobBlock, stepParallel, type Active } from "./concurrency.ts";
 import { knownStep, loadSteps, STEPS, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
+import { refreshOutsideHolds } from "../outside.ts";
 import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
 import { FAST_FLOOR, fastFirst, fastScoreOf } from "../fasttrack.ts";
 
@@ -140,9 +141,17 @@ export type PlanCtx = {
 
 /** Only the repos in scope (pipeline on, narrowed by the pilot) are planned for; a job for another repo is never proposed. */
 export const planCtx = (db: DatabaseSync): PlanCtx => {
+  // The outside-author holds first: the facts below read them through the pilot condition (src/outside.ts).
+  const wake: number[] = [];
+  try {
+    const outside = refreshOutsideHolds(db);
+    if (outside.wakeAt !== null) wake.push(outside.wakeAt);
+  } catch (e) {
+    console.error(`autopilot: outside-author holds: ${(e as Error).message}`);
+  }
   const scope = scopeRepos(db);
   const run = latestRun(db);
-  return { run, tracked: trackedNames(db).filter((r) => scope.has(r)), plans: loadPlanSet(db, { run }), wake: [], notes: {} };
+  return { run, tracked: trackedNames(db).filter((r) => scope.has(r)), plans: loadPlanSet(db, { run }), wake, notes: {} };
 };
 
 /** The pass's Plans (loaded on first use when the ctx came without). */
@@ -800,7 +809,7 @@ export async function stageLimits(db: DatabaseSync): Promise<StageLimit[]> {
   });
 }
 
-export async function pipelineState(db: DatabaseSync): Promise<PipelineState> {
+export async function pipelineState(db: DatabaseSync): Promise<Omit<PipelineState, "outside">> {
   return {
     judgementModel: judgementModel(db), judgementModels: [...JUDGEMENT_MODELS],
     enabled: isEnabled(db), draining: isDraining(db), changedBy: getSetting(db, KEY_BY), changedAt: getSetting(db, KEY_AT),

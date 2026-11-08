@@ -158,7 +158,8 @@ export function barOf(c: Ctx, it: { kind: ItemKind; state: ItemState; mergedAt: 
   else if (open && queued) {
     const pos = (db.prepare("SELECT COUNT(*) AS k FROM jobs WHERE state = 'queued' AND step = ? AND id < ?").get(queued.step, queued.id) as { k: number }).k + 1;
     headline = { ...base, tone: "queued", text: `Queued for ${nameOf(queued.step)} · #${pos} in line`, jobId: queued.id };
-  } else if (preFailed) headline = { ...base, tone: "failed", text: failText(preFailed.label, preFailed.reason) };
+  } else if (open && status.outside) headline = { ...base, tone: "waiting", text: `Waiting: ${status.waiting ?? "an operator's release"}`, outside: status.outside };
+  else if (preFailed) headline = { ...base, tone: "failed", text: failText(preFailed.label, preFailed.reason) };
   else if (open && status.phase === "Waiting for a person") headline = { ...base, tone: "waiting", text: status.waiting ? `Waiting for ${status.waiting}` : "Waiting for a person" };
   else if (open && latestFail) headline = { ...base, tone: "failed", text: failText(latestFail.label, latestFail.reason), jobId: latestFail.jobId };
   else if (!open) headline = { ...base, tone: "done", text: it.state === "merged" ? "Merged" : "Closed", next: it.state === "merged" ? status.next : null };

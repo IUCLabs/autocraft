@@ -31,6 +31,7 @@ const seeds: Seed[] = [
   { repo: "vectorcraft", number: 1402, kind: "pr", state: "open", title: "Rename the curvature toggle and add a shortcut", author: "kiri-n", updated: 6, status: status("Verifying", 14, "a build worker", "merge queue if verified") },
   { repo: "lightcraft", number: 540, kind: "pr", state: "open", title: "Bloom threshold slider is ignored in preview", author: "hollowbrook", updated: 30, status: status("Review", 22, "an Opus review", "classify, then decide") },
   { repo: "filmcraft", number: 1830, kind: "issue", state: "open", title: "Timeline playhead jumps when zooming with the trackpad", author: "mosswood", updated: 50, status: status("Triage", 50, "classifier verdicts", "priority and decision") },
+  { repo: "craft-libs", number: 517, kind: "pr", state: "open", title: "Improve startup time", author: "wren-lat", updated: 4 * H, status: { ...status("Held", 4 * H, "author's daily limit (5 new PRs a day)", "Model work starts when the window frees or an operator releases it"), outside: { reason: "limit", author: "wren-lat", kind: "pr", limit: 5 } } },
   { repo: "effectcraft", number: 301, kind: "pr", state: "open", title: "Glow effect: use linear blending", author: "brushstroke42", updated: 2 * D, status: status("Held", 2 * D, "an operator to release the hold", "review resumes") },
   { repo: "craft-libs", number: 412, kind: "pr", state: "merged", title: "Bump the egui pin", author: "kiri-n", updated: 3 * H, status: status("Merged", 3 * H, null, null) },
   { repo: "deckcraft", number: 655, kind: "issue", state: "closed", title: "Slide thumbnails are blank after undo", author: "glasswing", updated: 5 * H, status: status("Closed", 5 * H, null, null) },
@@ -59,6 +60,10 @@ const BARS: Record<string, ItemBar> = {
   "designcraft#1484": {
     headline: { tone: "waiting", text: "Waiting for a Merge? answer", next: "merge or fix-up on the answer", model: null, startedAt: null, jobId: null },
     steps: [step("classify", "Classify", "done", 2 * D, 0.01, 4001), step("review", "Review", "done", 5 * H, 1.35, 4350), step("fixup", "Fix-up", "failed", 3 * H, 0.4, 4380), step("decide", "Decide", "current", null, 0.2, null), ...PR_NEXT],
+  },
+  "craft-libs#517": {
+    headline: { tone: "waiting", text: "Waiting: author's daily limit (5 new PRs a day)", next: "Model work starts when the window frees or an operator releases it", model: null, startedAt: null, jobId: null, outside: { reason: "limit", author: "wren-lat", kind: "pr", limit: 5 } },
+    steps: [],
   },
   "filmcraft#1830": {
     headline: { tone: "running", text: "Classify running", next: "priority and decision", model: "Jev", startedAt: at(0.15), jobId: 4418 },

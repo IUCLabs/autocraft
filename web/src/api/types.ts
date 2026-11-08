@@ -1184,7 +1184,7 @@ export type StageLimit = { step: string; title: string; perDay: number | null; u
   tripped?: string;
   /** What the stage is doing when nothing pauses it: "running", "queued", or why it is not starting ("nothing to do", "waiting for CI on 3 PRs in x"). */
   status?: string | null };
-export type PipelineState = { /** The model that prepares every question's options and recommendation (the prepare step), and the models an operator may pick ("opus", "sonnet"). */ judgementModel: string; judgementModels: string[]; enabled: boolean; /** Switched to drain: no new jobs, jobs already running keep their writes; shown as "Draining". Never true with enabled. */ draining: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[] };
+export type PipelineState = { /** The model that prepares every question's options and recommendation (the prepare step), and the models an operator may pick ("opus", "sonnet"). */ judgementModel: string; judgementModels: string[]; enabled: boolean; /** Switched to drain: no new jobs, jobs already running keep their writes; shown as "Draining". Never true with enabled. */ draining: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[]; outside: OutsideState };
 
 export interface PipelineStep {
   name: string;
@@ -2113,10 +2113,10 @@ export type NeedsFeedbackRow = {
   handled: boolean;
 };
 export type NeedsFeedbackPage = { rows: NeedsFeedbackRow[]; nextCursor: string | null };
-export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string } | { type: "retry"; decision: string } | { type: "fixes"; repo: RepoName };
+export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string } | { type: "retry"; decision: string } | { type: "fixes"; repo: RepoName } | { type: "outside"; author: string };
 export type NeedsStoppedRow = {
   id: string;
-  kind: "breaker" | "limit" | "account" | "act" | "fix-group";
+  kind: "breaker" | "limit" | "account" | "act" | "fix-group" | "outside-group";
   title: string;
   reason: string;
   since: string | null;
@@ -2124,6 +2124,8 @@ export type NeedsStoppedRow = {
   count?: number;
   resume: NeedsResume;
 };
+/** The items held for one outside author. */
+export type NeedsOutsideList = { rows: NeedsOutsideRow[] };
 /** An issue whose fix attempt stopped; Fix again clears it. */
 export type NeedsFixRow = { id: string; repo: RepoName; number: number; title: string; reason: string; since: string | null; impact: string | null };
 export type NeedsFixPage = { rows: NeedsFixRow[]; nextCursor: string | null };
@@ -2344,7 +2346,16 @@ export interface ItemStatus {
   next: string | null;
   /** When the item entered this state. */
   since: string;
+  /** Held for model work because its author is outside the team: over the daily limit or in a surge. */
+  outside?: OutsideHold;
 }
+
+/** Why an outside author's item waits for model work. `limit` is the author's daily limit for the item's kind. */
+export type OutsideHold = { reason: "limit" | "surge"; author: string; kind: "pr" | "issue"; limit: number };
+/** The outside-author protections: the three numbers (0 turns one off) and how many items are held now. */
+export type OutsideState = { prsPerDay: number; issuesPerDay: number; surgePerHour: number; heldByLimit: number; heldBySurge: number; authors: number; /** The surge breaker while it is tripped. */ tripped: { reason: string; since: string } | null };
+/** One item held for its author, in the group row of Needs you. */
+export type NeedsOutsideRow = { id: string; repo: RepoName; number: number; title: string; kind: "pr" | "issue"; reason: "limit" | "surge"; createdAt: string | null };
 
 export type ProblemKind = "stopped" | "health" | "stuck" | "gave-up";
 export interface HomeProblem { kind: ProblemKind; title: string; detail: string; to: string }
@@ -2455,6 +2466,8 @@ export interface ItemBarHeadline {
   startedAt: string | null;
   /** The job behind the headline (running, queued or failed), when there is one. */
   jobId: number | null;
+  /** Held for model work because its author is outside the team; operators get a Release button. */
+  outside?: OutsideHold;
 }
 export interface ItemBarStep {
   /** Registry stage id. */

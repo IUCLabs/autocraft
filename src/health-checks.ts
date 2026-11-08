@@ -184,8 +184,16 @@ function appIdentityChecks({ db }: CheckCtx): Check[] {
   return [ok("app-keys", "/admin/github-app"), { id: "app-coverage", state: "warn", text, brief: "The GitHub App does not cover every tracked repo", since: null, count: uncovered.length, to: "/admin/github-app" }];
 }
 
+/** The outside-author surge breaker (src/outside.ts) while it is tripped; an operator resumes it on the Pipeline page. */
+function outsideSurgeCheck({ db }: CheckCtx): Check[] {
+  const t = db.prepare("SELECT reason, tripped_at FROM stage_trips WHERE stage = 'outside-surge' AND active = 1").get() as { reason: string; tripped_at: string } | undefined;
+  if (!t) return [ok("outside-surge", "/pipeline")];
+  const held = (db.prepare("SELECT COUNT(*) AS n FROM main.outside_holds WHERE reason = 'surge'").get() as { n: number }).n;
+  return [{ id: "outside-surge", state: "warn", text: `New items from outside authors are held: ${t.reason}`, brief: "New items from outside authors are held", since: t.tripped_at, count: held, to: "/pipeline" }];
+}
+
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, outsideSurgeCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now()): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs }));

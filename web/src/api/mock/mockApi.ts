@@ -28,6 +28,7 @@ import { queueBatchList, queueList } from "./queueFixtures";
 import { batchDetailMock } from "./batchMock";
 import { createQueueMock } from "./queueMock";
 import { needsFixesPage, needsPage } from "./needsFixtures";
+import { outsideList, releaseHeld } from "./outsideMock";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { mainCi } from "./mainCiMock";
@@ -351,6 +352,11 @@ export function createMockApi(): Api {
     queue: (f) => wait(queueList(f), 60),
     needs: (f) => wait(needsPage(f), 60),
     needsFixes: (repo, cursor) => wait(needsFixesPage(repo, cursor), 60),
+    needsOutside: (author) => wait(outsideList(author), 60),
+    releaseOutside: async (repo, number) => {
+      releaseHeld(repo, number);
+      changed();
+    },
     queueBatches: (f) => wait(queueBatchList(f), 60),
     batch: (id) => wait(batchDetailMock(id), 60),
     flow: (repo) => wait(flowFixture(repo), 60),

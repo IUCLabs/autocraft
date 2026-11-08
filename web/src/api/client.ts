@@ -42,6 +42,8 @@ import type {
   AuditFilter,
   AuditPage,
   NeedsFixPage,
+  NeedsOutsideList,
+  OutsideState,
   NeedsPage,
   Contributor,
   ContributorFilter,
@@ -311,6 +313,9 @@ export interface Api {
   needs(filter: { feedback?: boolean; cursor?: string }): Promise<NeedsPage>;
   /** A repo's issues with a stopped fix, 25 per page. */
   needsFixes(repo: RepoName, cursor?: string): Promise<NeedsFixPage>;
+  needsOutside(author: string): Promise<NeedsOutsideList>;
+  /** Operator: exempts one item held for its author's daily limit or a surge. */
+  releaseOutside(repo: RepoName, number: number): Promise<void>;
   /** Integration batches of the merge queue, newest first, with their member PRs. */
   queueBatches(filter: BatchFilter): Promise<BatchList>;
   /** One integration batch with its members, CI and history. */
@@ -329,6 +334,8 @@ export interface Api {
     resetLimit(step: string): Promise<PipelineState>;
     /** Clears a stage the circuit breaker paused. */
     resumeTrip(stage: string): Promise<PipelineState>;
+    setOutsideLimits(input: Partial<Pick<OutsideState, "prsPerDay" | "issuesPerDay" | "surgePerHour">>): Promise<OutsideState>;
+    releaseOutsideAuthor(author: string): Promise<void>;
     /** Operator only: clears the warning about jobs of a step the runner stopped for running past their limit. */
     ackDeadline(step: string): Promise<{ ok: true }>;
     /** Operator only: the model of the prepare step, one of `judgementModels`. */
