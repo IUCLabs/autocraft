@@ -4,6 +4,7 @@
 // in mirrored text of tracked repos (the `repos` lookup, see image-index.ts);
 // redirects are followed by hand and re-checked; the bot's token goes only to
 // github.com. Upstream fetches are limited to a few at a time, 5 MB each.
+import { readEnv, readsUseApp } from "../../github/read.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -100,9 +101,15 @@ export function imageRepo(raw: string): string | null {
  * (re-read when its mtime changes), else `gh auth token`. Logs which one, never the value.
  */
 export function imageTokenSource(env: NodeJS.ProcessEnv = process.env, log: (line: string) => void = console.log): () => Promise<string | null> {
+  const own = boxImageTokenSource(env, log);
+  // Read at each use: under the app identity the installation token serves, whatever the box is configured with.
+  return () => (readsUseApp() ? ghToken() : own());
+}
+
+function boxImageTokenSource(env: NodeJS.ProcessEnv, log: (line: string) => void): () => Promise<string | null> {
   const file = envVar("IMAGE_TOKEN_FILE", env);
   if (!file) {
-    log("image proxy token: from `gh auth token` (AUTOCRAFT_IMAGE_TOKEN_FILE is not set)");
+    log("image proxy token: from `gh auth token` (AUTOCRAFT_IMAGE_TOKEN_FILE is not set; under the GitHub App identity an installation token is used)");
     return ghToken;
   }
   log("image proxy token: from the file named by AUTOCRAFT_IMAGE_TOKEN_FILE");
@@ -122,7 +129,11 @@ export function imageTokenSource(env: NodeJS.ProcessEnv = process.env, log: (lin
 }
 
 /** Runs `gh auth token` in the repo's directory (the gh wrapper picks the account by directory). */
-export function ghToken(): Promise<string | null> {
+export async function ghToken(): Promise<string | null> {
+  // Under the app identity the proxy fetches with an installation token; the box account's login is not consulted.
+  let env: Awaited<ReturnType<typeof readEnv>>;
+  try { env = await readEnv(); } catch (e) { console.log(`image proxy token: ${String((e as Error).message ?? e)}`); return null; }
+  if (env) return env.GH_TOKEN ?? null;
   return new Promise((resolve) => {
     execFile("gh", ["auth", "token"], { cwd: REPO_DIR, timeout: 15_000, encoding: "utf8" }, (err, stdout) => {
       const t = String(stdout ?? "").trim();

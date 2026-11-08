@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { diffCacheDir } from "../review/diff.ts";
 import type { Crate } from "./types.ts";
 import { slugOf } from "../owners.ts";
+import { readEnvFor } from "../github/read.ts";
 
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
 const MAX_MANIFESTS = 80;
@@ -16,9 +17,11 @@ export type CratesResult = ({ ok: true } & CrateInfo) | { ok: false; error: stri
 export type CratesFetcher = (repo: string, sha: string) => Promise<CratesResult>;
 
 /** `gh api <path>` stdout; rejects with the error text. */
-export function ghApi(path: string, jq?: string): Promise<string> {
+export async function ghApi(path: string, jq?: string): Promise<string> {
+  const args = ["api", path, ...(jq ? ["--jq", jq] : [])];
+  const env = await readEnvFor("gh", args);
   return new Promise((resolve, reject) => {
-    const p = spawn("gh", ["api", path, ...(jq ? ["--jq", jq] : [])], { cwd: REPO_DIR, timeout: 60_000 });
+    const p = spawn("gh", args, { cwd: REPO_DIR, timeout: 60_000, ...(env ? { env } : {}) });
     const out: Buffer[] = [];
     let err = "";
     p.stdout.on("data", (d: Buffer) => out.push(d));

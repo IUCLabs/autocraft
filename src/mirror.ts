@@ -15,6 +15,7 @@ import { syncActivity } from "./activity.ts";
 import { mentionNames, rememberSlug } from "./github/slugs.ts";
 import { appSlug } from "./github/identity.ts";
 import { envVar } from "./env.ts";
+import { readEnv } from "./github/read.ts";
 import { DEFAULT_OWNER, loadOwners, ownerOf, slugOf } from "./owners.ts";
 import { classifyFailure, clearRepoFailure, recordRepoFailure } from "./sync-errors.ts";
 
@@ -98,8 +99,10 @@ export class Client {
   resetAt: Date | null = null;
   spent = 0;
 
-  /** The child's whole environment when set (the app lane's token); otherwise gh inherits this process's. */
+  /** The child's whole environment when set (the app lane's token); otherwise it is the read environment of the current identity. */
   private env: Record<string, string> | undefined;
+  /** Whether the last call read as the app; a change of identity discards the rate figures of the other account. */
+  private lastApp: boolean | null = null;
 
   constructor(reserve: number, env?: Record<string, string>) {
     this.reserve = reserve;
@@ -113,10 +116,22 @@ export class Client {
     this.remaining = null;
   }
 
+  /** The environment of the next gh child: the fixed one, else the app's installation token (under `app`) or gh's own login (`box`). */
+  private async childEnv(owner?: string): Promise<Record<string, string> | undefined> {
+    if (this.env) return this.env;
+    const env = await readEnv(owner);
+    const app = env !== undefined;
+    if (this.lastApp !== null && this.lastApp !== app) { this.remaining = null; this.resetAt = null; }
+    this.lastApp = app;
+    return env;
+  }
+
   /** Runs gh without blocking the event loop (the runner's tick must keep its heartbeat and cancels). A timeout or spawn error is Transient. */
   private async run(query: string, variables: object): Promise<{ data?: Node; errors: Node[]; text: string; failed: boolean; stderr: string }> {
+    const owner = (variables as { owner?: unknown }).owner;
+    const env = await this.childEnv(typeof owner === "string" ? owner : undefined);
     const p = await new Promise<{ stdout: string; stderr: string; status: number | null }>((resolve, reject) => {
-      const child = spawn("gh", ["api", "graphql", "--input", "-"], { stdio: ["pipe", "pipe", "pipe"], ...(this.env ? { env: this.env } : {}) });
+      const child = spawn("gh", ["api", "graphql", "--input", "-"], { stdio: ["pipe", "pipe", "pipe"], ...(env ? { env } : {}) });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       let size = 0;
@@ -140,8 +155,9 @@ export class Client {
   }
 
   /** The `owner/name` GitHub's REST endpoint redirects a moved repo to, or null when it does not answer with another name. */
-  repoMovedTo(owner: string, name: string): string | null {
-    const p = spawnSync("gh", ["api", `repos/${owner}/${name}`, "--jq", ".full_name"], { encoding: "utf8", timeout: 30_000, ...(this.env ? { env: this.env } : {}) });
+  async repoMovedTo(owner: string, name: string): Promise<string | null> {
+    const env = await this.childEnv(owner);
+    const p = spawnSync("gh", ["api", `repos/${owner}/${name}`, "--jq", ".full_name"], { encoding: "utf8", timeout: 30_000, ...(env ? { env } : {}) });
     const full = p.status === 0 ? p.stdout.trim() : "";
     return full && full.toLowerCase() !== `${owner}/${name}`.toLowerCase() ? full : null;
   }
@@ -421,13 +437,13 @@ export function searchSince(orgHighWater: string): string {
   return iso(new Date(new Date(orgHighWater).getTime() - SEARCH_OVERLAP_MS));
 }
 
-export type Querier = { query(query: string, variables: object): Promise<Node>; spent: number; remaining: number | null; resetAt?: Date | null; repoMovedTo?(owner: string, name: string): string | null };
+export type Querier = { query(query: string, variables: object): Promise<Node>; spent: number; remaining: number | null; resetAt?: Date | null; repoMovedTo?(owner: string, name: string): string | null | Promise<string | null> };
 
 /** Skips a repo that cannot be read: logs and records why, with the new name when GitHub redirects. The run goes on with the other repos. */
-function failRepo(db: DatabaseSync, client: Querier, name: string, e: unknown): void {
+async function failRepo(db: DatabaseSync, client: Querier, name: string, e: unknown): Promise<void> {
   let moved: string | null = null;
   if ((e as { type?: string })?.type === "NOT_FOUND") {
-    try { moved = client.repoMovedTo?.(ownerOf(name), name) ?? null; } catch { /* the plain NOT_FOUND is recorded */ }
+    try { moved = (await client.repoMovedTo?.(ownerOf(name), name)) ?? null; } catch { /* the plain NOT_FOUND is recorded */ }
   }
   recordRepoFailure(db, name, e, moved);
   console.warn(`${slugOf(name)}: not synced: ${(e as Error).message}${moved ? ` (moved to ${moved})` : ""}`);
@@ -511,7 +527,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
           if (r.newest > (repoNewest.get(name) ?? "")) repoNewest.set(name, r.newest);
           if (r.newest > (out.newest ?? "")) out.newest = r.newest;
         } catch (e) {
-          failRepo(db, client, name, e);
+          await failRepo(db, client, name, e);
         }
       }
       return;
@@ -536,7 +552,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
       out.count += r.count;
       if (r.newest > (repoNewest.get(name) ?? "")) repoNewest.set(name, r.newest);
     } catch (e) {
-      failRepo(db, client, name, e);
+      await failRepo(db, client, name, e);
     }
   }
   for (const [repo, t] of repoNewest) bump.run(t, repo, t);
@@ -649,9 +665,9 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
     try {
       const r = (await client.query(REPO_QUERY, { owner, name })).repository;
       if (r && r.owner?.login?.toLowerCase() === owner.toLowerCase()) repos.push({ ...r, owner });
-      else failRepo(db, client, name, new GithubError("graphql error: repository not found under this owner", 0, "NOT_FOUND"));
+      else await failRepo(db, client, name, new GithubError("graphql error: repository not found under this owner", 0, "NOT_FOUND"));
     } catch (e) {
-      failRepo(db, client, name, e);
+      await failRepo(db, client, name, e);
     }
   }
   // A tracked repo of the default org missing from the listing is archived, or moved or deleted: only the last two are errors.
@@ -661,7 +677,7 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
       const r = (await client.query(REPO_QUERY, { owner: DEFAULT_OWNER, name })).repository;
       if (!r || r.owner?.login?.toLowerCase() !== DEFAULT_OWNER.toLowerCase()) throw new GithubError("graphql error: repository not found under this owner", 0, "NOT_FOUND");
     } catch (e) {
-      if (e instanceof GithubError && e.type === "NOT_FOUND") failRepo(db, client, name, e);
+      if (e instanceof GithubError && e.type === "NOT_FOUND") await failRepo(db, client, name, e);
       else console.warn(`  ${slugOf(name)}: ${(e as Error).message}`);
     }
   }
@@ -672,7 +688,7 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
   for (const r of repos) {
     const res = upsert.run(r.name, r.owner, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
     if (!res.changes) {
-      failRepo(db, client, r.name, new GithubError(`the name is known under another owner than ${r.owner}`, 0, "NOT_FOUND"));
+      await failRepo(db, client, r.name, new GithubError(`the name is known under another owner than ${r.owner}`, 0, "NOT_FOUND"));
     }
   }
   loadOwners(db);
@@ -709,7 +725,7 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
     try {
       count = await syncRepo(db, client, name, opts.full);
     } catch (e) {
-      failRepo(db, client, name, e);
+      await failRepo(db, client, name, e);
       failed++;
       lastError = e;
       // A GitHub outage or an exhausted rate limit fails every repo after long backoffs: end the run instead.
@@ -834,7 +850,7 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
           clearRepoFailure(db, due);
           console.log(`reconcile ${due}: ${c.open} open, ${c.updated} re-read, ${c.gone} gone`);
         } catch (e) {
-          failRepo(db, client, due, e);
+          await failRepo(db, client, due, e);
           // The oldest reconcile is picked next run; a repo that fails must not keep that place.
           db.prepare("UPDATE main.repos SET reconciled_at = ? WHERE name = ?").run(iso(now), due);
         }

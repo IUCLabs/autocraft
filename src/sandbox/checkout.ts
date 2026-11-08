@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { GIT_ENV, HARDENING } from "../fixup/git.ts";
 import { envVar } from "../env.ts";
 import { isInstructionPath } from "./instruction-paths.ts";
+import { readEnvFor } from "../github/read.ts";
 
 export { isInstructionPath };
 
@@ -20,9 +21,10 @@ export function checkoutRoot(): string {
 }
 
 type Out = { code: number; stdout: Buffer };
-function git(gitDir: string, args: string[], input?: string): Promise<Out> {
+async function git(gitDir: string, args: string[], input?: string): Promise<Out> {
+  const read = await readEnvFor("git", args);
   return new Promise((resolve, reject) => {
-    const p = spawn("git", [...HARDENING, ...args], { cwd: gitDir, env: { ...process.env, ...GIT_ENV }, stdio: ["pipe", "pipe", "ignore"], timeout: 300_000 });
+    const p = spawn("git", [...HARDENING, ...args], { cwd: gitDir, env: { ...(read ?? process.env), ...GIT_ENV }, stdio: ["pipe", "pipe", "ignore"], timeout: 300_000 });
     const chunks: Buffer[] = [];
     p.stdout.on("data", (d: Buffer) => chunks.push(d));
     p.on("error", reject);
