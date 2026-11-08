@@ -83,7 +83,7 @@ async function check(db: DatabaseSync, ref: Ref, a: Ask, by: By, live?: Live): P
   const plan = decidePr(f);
   const holds = plan.head === a.head && (plan.actions.some((x) => x.kind === a.kind && x.head === a.head && (a.bucket === undefined || x.params?.bucket === a.bucket) && (a.source === undefined || x.params?.source === a.source))
     // A batch member is in its batch state, not ready; it must still pass what a single merge needs apart from CI and mergeable.
-    || (a.batch === true && a.kind === "merge" && BATCH_STATES.includes(plan.state) && plan.path !== null && verifyAllows(plan.path, f.verification?.state)));
+    || (a.batch === true && a.kind === "merge" && BATCH_STATES.includes(plan.state) && plan.path !== null && verifyAllows(plan.path, f.verification?.state, f.verifyOverride)));
   if (!holds) {
     const now = plan.actions.map((x) => x.kind + (typeof x.params?.bucket === "string" ? `:${x.params.bucket}` : "")).join(", ") || "none";
     return { refused: `${name}: the plan no longer has ${a.kind}${a.bucket ? `:${a.bucket}` : ""} at ${short(a.head)} (state ${plan.state}, head ${short(plan.head)}, actions: ${now}${plan.wait ? `, waiting for ${plan.wait}` : ""})` };

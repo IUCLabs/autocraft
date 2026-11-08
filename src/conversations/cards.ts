@@ -546,7 +546,7 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
     settle = s.value;
   }
   const fix = steps.find((x) => x.kind === "fixup");
-  if (fix?.kind === "fixup" && fix.merge && (!d || (d.kind !== "merge" && d.kind !== "scope"))) return { note: "dropped a resolution: a fixup that merges needs an open merge or scope decision on the PR" };
+  if (fix?.kind === "fixup" && fix.merge && (!d || (d.kind !== "merge" && d.kind !== "scope" && d.kind !== "hold"))) return { note: "dropped a resolution: a fixup that merges needs an open merge, scope or hold decision on the PR" };
   const settling = steps.find(isSettling);
   if (settling) {
     const keeps = settling.kind === "fixup" && d?.kind === "scope" && settle?.kind === "answer" && KEEP_IN_CORE.includes(settle.option);

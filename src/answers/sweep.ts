@@ -12,7 +12,7 @@ function staleReason(db: DatabaseSync, d: DecisionRow): string | null {
   if (!it) return null;
   if (it.state === "MERGED") return "the PR merged";
   if (it.state === "CLOSED") return "the item is closed";
-  if (d.kind === "merge" || d.kind === "close") {
+  if (d.kind === "merge" || d.kind === "close" || d.kind === "hold") {
     const f = factsOf(d).find((x) => x.startsWith(HEAD_FACT));
     const head = f ? f.slice(HEAD_FACT.length).trim() : null;
     if (head && it.head_oid && head !== it.head_oid) return "the PR changed after the answer";

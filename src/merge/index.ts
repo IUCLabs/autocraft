@@ -38,6 +38,7 @@ import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { sweepStaleAnswers } from "../answers/sweep.ts";
+import { verifyOverride } from "./verify-override.ts";
 import { askHoldDecisions } from "../act/index.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import { ownerOf } from "../owners.ts";
@@ -347,7 +348,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (ch.state !== "OPEN") { refuse(e, null, `no longer open on GitHub (${ch.state.toLowerCase()})`); continue; }
     if (ch.head_oid !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(ch.head_oid)} since the review`); continue; }
     const ver = verificationOf(db, repo, e.number, ch.head_oid);
-    if (!verifyAllows(e.path, ver?.state)) { refuse(e, null, `verification at ${short(ch.head_oid)} is ${ver?.state ?? "missing"}, not passed`); continue; }
+    if (!verifyAllows(e.path, ver?.state, verifyOverride(db, repo, e.number, ch.head_oid))) { refuse(e, null, `verification at ${short(ch.head_oid)} is ${ver?.state ?? "missing"}, not passed`); continue; }
     if (e.path === "operator") {
       const still = actionable(db).some((a) => a.id === e.decisionId && a.answer === MERGE_OPTIONS.merge.key);
       if (!still) { refuse(e, null, "the operator's merge answer is gone"); continue; }

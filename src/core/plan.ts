@@ -169,7 +169,7 @@ export type PrFacts = {
   ci: string;
   mergeable: string;
   /** The mergeable state has read as unknown since `since`, and was read again `rereads` times (src/merge/mergeable.ts); null when it is known. */
-  unknown: { since: string; rereads: number; lastAt: string | null } | null;
+  unknown: { since: string; rereads: number; stuck: boolean } | null;
   /** Workflow runs waiting for approval at the head the checks describe (for an integration PR: at the batch tip). */
   runs: {
     waiting: number; reread: boolean; crossRepo: boolean; approvable: number;
@@ -178,9 +178,11 @@ export type PrFacts = {
   } | null;
 
   /** The latest merge attempt at the reviewed head. */
-  lastMerge: { outcome: string; reason: string | null; ci: string | null; mergeable: string | null } | null;
+  lastMerge: { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; /** Refused tries at this head. */ refusals?: number } | null;
   /** Runs were approved after that attempt. */
   runsApprovedAfterMerge: boolean;
+  /** An operator's Merge answer after the failed or errored verification of the head stands (src/merge/verify-override.ts). */
+  verifyOverride: boolean;
   verification: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
   /** Why Verify cannot build the repo (private, not Rust without CI), or null. */
   verifyUnavailable: string | null;

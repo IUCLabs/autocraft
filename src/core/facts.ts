@@ -29,6 +29,7 @@ import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
 import { operatorTries, operatorTriesLeft, operatorWork, queuedOperatorFix } from "../preapproval/state.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
+import { verifyOverride } from "../merge/verify-override.ts";
 import { unknownOf } from "../merge/mergeable.ts";
 import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, OPEN_QUESTION_SQL, UNSURE_AT_SQL, mergeDecisionId, holdDecisionId } from "./rules.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
@@ -191,7 +192,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     return m;
   };
 
-  const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
+  const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at, (SELECT COUNT(*) FROM merges m2 WHERE m2.repo = merges.repo AND m2.number = merges.number AND m2.head_oid = merges.head_oid AND m2.outcome = 'refused') AS refusals FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
   const retriedAfter = db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'retry' AND at > ? LIMIT 1");
   const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
   const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
@@ -254,7 +255,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
       review: null, post: { postable: false, posted: null },
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", unknown: null, runs: null,
-      lastMerge: null, runsApprovedAfterMerge: false, verification: null, verifyUnavailable: null,
+      lastMerge: null, runsApprovedAfterMerge: false, verifyOverride: false, verification: null, verifyUnavailable: null,
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: false } },
       premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
@@ -325,6 +326,28 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       postable: (hasPublic || !!p?.review_id) && !!pub,
       posted: p ? { head: p.head_oid, at: p.posted_at, opusAt: p.opus_at } : null,
     };
+    // The CI fix state at one head: the rows it recorded and its limits.
+    const cifixAt = (cfHead: string): NonNullable<PrFacts["cifix"]> => {
+      const prior = cifixRows.all(r.repo, r.number, cfHead) as { state: string; created_at: string; task_id: number | null; runs: string | null; reason: string | null }[];
+      const totals = cifixTotals.get(...CIFIX_PUSH_STATES, ...CIFIX_TRY_STATES, r.repo, r.number) as { pushes: number; tries: number };
+      const formatting = prior.find((x) => x.state === "formatting");
+      const task = formatting?.task_id != null ? getTask(db, formatting.task_id) : null;
+      const infra = prior.find((x) => x.state === "infra");
+      return {
+        states: prior.map((x) => x.state), tries: prior.filter((x) => CIFIX_TRY_STATES.includes(x.state)).length,
+        rerunAt: prior.find((x) => x.state === "rerun" || x.state === "rerunning")?.created_at ?? null,
+        infraRuns: infra ? (parseList(infra.runs ?? "[]") as number[]) : null,
+        formattingTask: formatting?.task_id ?? null, formatterEnded: !task || TERMINAL.includes(task.state),
+        totalPushes: totals.pushes, totalTries: totals.tries, checksAt: r.c_at,
+        skipReason: [...prior].reverse().find((x) => x.state === "skipped")?.reason ?? null,
+      };
+    };
+    // A non-take review at an earlier head while the review gate waits on red CI at the new head: the CI fix cannot start, so the contributor is asked (src/core/decide.ts unreviewedRed).
+    if (!take && r.state === "OPEN" && head && head !== r.r_head && base.reviewHold?.kind === "ci" && base.reviewHold.red && r.c_head === head && effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks) === "failure") {
+      base.ci = "failure";
+      base.gateRed = true;
+      base.cifix = cifixAt(head);
+    }
     if (!take) { out.push(base); continue; }
 
     const wait = waiting.get(r.repo, r.number, r.r_head) as Wait | undefined;
@@ -343,14 +366,15 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
     if (base.tier === "not" && r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref)) base.tier = "whitelisted";
 
-    const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string } | undefined;
+    const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string; refusals: number } | undefined;
     // An operator's Retry after a refusal asks for another try now, without waiting for CI or the mergeable state to change.
     // A fresh Merge answer after a refusal asks for another try, as a Retry does.
     if (last && !(last.outcome === "refused" && (retriedAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at) || answeredAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at)))) {
-      base.lastMerge = { outcome: last.outcome, reason: last.reason, ci: last.ci, mergeable: last.mergeable };
+      base.lastMerge = { outcome: last.outcome, reason: last.reason, ci: last.ci, mergeable: last.mergeable, refusals: last.refusals };
       base.runsApprovedAfterMerge = !!wait?.approved_at && wait.approved_at > last.at;
     }
     base.verification = (verifs.get(r.repo, r.number, r.r_head) as PrFacts["verification"] | undefined) ?? null;
+    if (base.verification?.state === "failed" || base.verification?.state === "error") base.verifyOverride = verifyOverride(db, r.repo, r.number, r.r_head);
     if (!base.verification || base.verification.state === "stale") {
       base.verifyUnavailable = !rf.pub ? PRIVATE_REASON : rf.f.noCi && cachedRust(r.repo, r.r_head) === false ? NOT_RUST_REASON : null;
     }
@@ -389,19 +413,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     }
     if (base.ci === "failure" || base.brokeByUs || base.gateRed) {
       const cfHead = base.brokeByUs || base.gateRed || (head && head !== r.r_head) ? head : r.r_head;
-      const prior = cifixRows.all(r.repo, r.number, cfHead) as { state: string; created_at: string; task_id: number | null; runs: string | null; reason: string | null }[];
-      const totals = cifixTotals.get(...CIFIX_PUSH_STATES, ...CIFIX_TRY_STATES, r.repo, r.number) as { pushes: number; tries: number };
-      const formatting = prior.find((x) => x.state === "formatting");
-      const task = formatting?.task_id != null ? getTask(db, formatting.task_id) : null;
-      const infra = prior.find((x) => x.state === "infra");
-      base.cifix = {
-        states: prior.map((x) => x.state), tries: prior.filter((x) => CIFIX_TRY_STATES.includes(x.state)).length,
-        rerunAt: prior.find((x) => x.state === "rerun" || x.state === "rerunning")?.created_at ?? null,
-        infraRuns: infra ? (parseList(infra.runs ?? "[]") as number[]) : null,
-        formattingTask: formatting?.task_id ?? null, formatterEnded: !task || TERMINAL.includes(task.state),
-        totalPushes: totals.pushes, totalTries: totals.tries, checksAt: r.c_at,
-        skipReason: [...prior].reverse().find((x) => x.state === "skipped")?.reason ?? null,
-      };
+      base.cifix = cifixAt(cfHead ?? r.r_head!);
     }
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
     base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);

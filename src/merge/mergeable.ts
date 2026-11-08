@@ -5,14 +5,14 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import { refreshChecks, type PrChecks } from "../review/checks.ts";
 
-import { UNKNOWN_AFTER_MS, UNKNOWN_GAP_MS, UNKNOWN_REREADS } from "../core/rules.ts";
-
-export { UNKNOWN_AFTER_MS, UNKNOWN_GAP_MS, UNKNOWN_REREADS };
+import { spawn } from "node:child_process";
+import { slugOf } from "../owners.ts";
+import { UNKNOWN_REREADS } from "../core/rules.ts";
 
 const PREFIX = "mergeable_unknown:";
 const keyOf = (repo: string, n: number) => `${PREFIX}${repo}#${n}`;
 
-export type UnknownState = { head: string; since: string; rereads: number; lastAt: string | null };
+export type UnknownState = { head: string; since: string; rereads: number; stuck: boolean };
 
 const parse = (v: string): UnknownState | null => { try { const x = JSON.parse(v) as UnknownState; return typeof x.since === "string" && typeof x.head === "string" ? x : null; } catch { return null; } };
 
@@ -26,7 +26,7 @@ export function noteMergeable(db: DatabaseSync, rows: PrChecks[], at: string): v
     const cur = get.get(k) as { value: string } | undefined;
     if (r.mergeable === "MERGEABLE" || r.mergeable === "CONFLICTING" || r.state !== "OPEN") { if (cur) del.run(k); continue; }
     const prev = cur ? parse(cur.value) : null;
-    if (!prev || prev.head !== r.head_oid) set.run(k, JSON.stringify({ head: r.head_oid, since: at, rereads: 0, lastAt: null } satisfies UnknownState));
+    if (!prev || prev.head !== r.head_oid) set.run(k, JSON.stringify({ head: r.head_oid, since: at, rereads: 0, stuck: false } satisfies UnknownState));
   }
 }
 
@@ -37,22 +37,41 @@ export function unknownOf(db: DatabaseSync, repo: string, n: number, head: strin
   return s && s.head === head ? s : null;
 }
 
-/** Reads the repo's long-unknown PRs again, one try each per UNKNOWN_GAP_MS. Returns the numbers read. */
-export async function rereadUnknown(db: DatabaseSync, client: Querier, repo: string, log: (line: string) => void = () => {}, nowMs: number = Date.now()): Promise<number[]> {
+/** The mergeable state of a PR as GitHub's REST endpoint reports it (reading it starts GitHub's mergeability job); null while GitHub has not computed it. */
+export type RestRead = (repo: string, number: number) => Promise<string | null>;
+
+export const restMergeable: RestRead = (repo, number) => new Promise((resolve, reject) => {
+  const p = spawn("gh", ["api", `repos/${slugOf(repo)}/pulls/${number}`, "--jq", ".mergeable"], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = "";
+  p.stdout.on("data", (d) => (out += d));
+  p.stderr.on("data", (d) => (err += d));
+  p.on("error", reject);
+  p.on("close", (code) => (code === 0 ? resolve(out.trim() === "true" ? "MERGEABLE" : out.trim() === "false" ? "CONFLICTING" : null) : reject(new Error(err.trim().slice(0, 200) || `gh exited ${code}`))));
+});
+
+/**
+ * Requests every waiting PR with an unknown mergeable state from GitHub's REST endpoint, which starts the mergeability job. The first
+ * read starts it; a later read (the next checks job) that still returns null marks the PR stuck, and the merge queue asks a person.
+ * No clock: one try per checks job, at most UNKNOWN_REREADS. A known answer is stored by reading the PR's checks again.
+ */
+export async function rereadUnknown(db: DatabaseSync, client: Querier, repo: string, log: (line: string) => void = () => {}, read: RestRead = restMergeable): Promise<number[]> {
   const rows = db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${PREFIX}${repo}#%`) as { key: string; value: string }[];
-  const due: { n: number; s: UnknownState }[] = [];
+  const open = db.prepare("SELECT 1 FROM main.items WHERE repo = ? AND number = ? AND kind = 'pr' AND state = 'OPEN'");
+  const done: number[] = [], known: number[] = [];
+  const set = db.prepare("UPDATE main.settings SET value = ? WHERE key = ?");
   for (const r of rows) {
     const s = parse(r.value);
     const n = Number(r.key.slice(r.key.lastIndexOf("#") + 1));
-    if (!s || !Number.isInteger(n) || s.rereads >= UNKNOWN_REREADS) continue;
-    if (Date.parse(s.since) + UNKNOWN_AFTER_MS > nowMs || (s.lastAt !== null && Date.parse(s.lastAt) + UNKNOWN_GAP_MS > nowMs)) continue;
-    due.push({ n, s });
+    if (!Number.isInteger(n)) continue;
+    if (!s || !open.get(repo, n)) { db.prepare("DELETE FROM main.settings WHERE key = ?").run(r.key); continue; }
+    if (s.stuck || s.rereads >= UNKNOWN_REREADS) continue;
+    let state: string | null;
+    try { state = await read(repo, n); } catch (e) { log(`checks: ${repo}#${n}: the REST read failed: ${String((e as Error).message ?? e)}`); continue; }
+    done.push(n);
+    if (state !== null) { known.push(n); continue; }
+    set.run(JSON.stringify({ ...s, rereads: s.rereads + 1, stuck: s.rereads >= 1 } satisfies UnknownState), r.key);
   }
-  if (!due.length) return [];
-  // The count is stored before the read: a failing read still uses up its try.
-  const set = db.prepare("UPDATE main.settings SET value = ? WHERE key = ?");
-  for (const d of due) set.run(JSON.stringify({ ...d.s, rereads: d.s.rereads + 1, lastAt: new Date(nowMs).toISOString() } satisfies UnknownState), keyOf(repo, d.n));
-  await refreshChecks(db, client, repo, due.map((d) => d.n), log);
-  log(`checks: ${repo}: read ${due.length} PR${due.length === 1 ? "" : "s"} with an unknown mergeable state again (${due.map((d) => `#${d.n}`).join(", ")})`);
-  return due.map((d) => d.n);
+  if (known.length) await refreshChecks(db, client, repo, known, log);
+  if (done.length) log(`checks: ${repo}: requested ${done.length} PR${done.length === 1 ? "" : "s"} with an unknown mergeable state from GitHub (${done.map((n) => `#${n}`).join(", ")})`);
+  return done;
 }

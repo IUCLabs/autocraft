@@ -155,14 +155,14 @@ export function nextStep(item: ItemPlan, f: ItemFacts, pr: PrFacts | null): stri
   switch (r) {
     case null: return "Review";
     case "take-fix": return "Fix-up";
-    case "hold": return "Needs a person";
+    case "hold": return pr?.decision.hold.answer === "wait" ? "Waiting for the author" : pr?.decision.hold.open ? "Hold? decision: waiting for an answer" : "Needs a person";
     case "close": return "Close";
     default: {
       const v = o ? o.verify : pr?.verification?.state ?? null;
       if (v === "unavailable") return "Merge? decision: not verified (Verify cannot build this repo)";
       if ((o ? o.ci : pr?.ci) === "none" && pr?.repoFacts.noCi) return "Merge? decision: the repo has no CI";
       if (v === "passed" || v === "ci-enough") return "Merge queue";
-      if (v === "failed" || v === "error") return "Needs a person: verification failed";
+      if (v === "failed" || v === "error") return pr?.decision.openQuestion || pr?.decision.asked ? "Merge? decision: verification failed" : "Needs a person: verification failed";
       return v ? "Verify: running" : "Verify";
     }
   }

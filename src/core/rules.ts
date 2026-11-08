@@ -19,14 +19,15 @@ export const VERIFY_OK = ["passed", "ci-enough"];
 export const verifyOk = (state: string | null | undefined): boolean => !!state && VERIFY_OK.includes(state);
 /** A PR in a repo Verify cannot build is merged only on an operator's answer, which says "not verified". */
 export const VERIFY_UNAVAILABLE = "unavailable";
-/** A failed or errored verification is asked about in the Merge? question; an operator's Merge answer to it stands. */
-export const verifyAllows = (path: "rule" | "operator" | null, state: string | null | undefined): boolean =>
-  verifyOk(state) || (path === "operator" && (state === VERIFY_UNAVAILABLE || state === "failed" || state === "error"));
+/** A failed or errored verification is asked about in the Merge? question; an operator's Merge answer given after the result stands (`override`, src/merge/verify-override.ts). */
+export const verifyAllows = (path: "rule" | "operator" | null, state: string | null | undefined, override = false): boolean =>
+  verifyOk(state) || (path === "operator" && (state === VERIFY_UNAVAILABLE || (override && (state === "failed" || state === "error"))));
 
-/** A PR whose mergeable state reads unknown is read again (src/merge/mergeable.ts): after UNKNOWN_AFTER_MS, UNKNOWN_REREADS times, UNKNOWN_GAP_MS apart; then a person is asked. */
-export const UNKNOWN_AFTER_MS = 30 * 60_000;
-export const UNKNOWN_GAP_MS = 2 * 3600_000;
-export const UNKNOWN_REREADS = 3;
+/** A PR whose mergeable state reads unknown is requested from GitHub's REST endpoint (src/merge/mergeable.ts), once per checks job, UNKNOWN_REREADS times at most; a second null answer asks a person. */
+export const UNKNOWN_REREADS = 2;
+
+/** A refusal caused by GitHub or the network, not by the PR: tried once more before a person is asked. */
+export const TRANSIENT_REFUSAL = /\b5\d\d\b|timed? ?out|ETIMEDOUT|ECONN|EAI_AGAIN|rate limit|temporar|unavailable|bad gateway/i;
 
 /** A merge refusal that only reports the state of CI, mergeable or the head: it clears when that state changes. Any other refusal is asked about. */
 export const STATE_REFUSAL = /^(not ready at merge time|head moved|no longer open|GitHub returned no such PR|the operator's merge answer is gone|verification at)/;

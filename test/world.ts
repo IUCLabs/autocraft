@@ -15,7 +15,7 @@ const base = (): PrFacts => ({
   review: { head: HEAD, at: REVIEW_AT, verdict: "take", unsure: false, mode: "full", reason: "ok", fixes: 0, stale: false, staleActionable: false },
   post: { postable: true, posted: { head: HEAD, at: "2026-11-04T10:01:00.000Z", opusAt: REVIEW_AT } },
   checksHere: true, checksOpen: true, ci: "success", mergeable: "MERGEABLE", unknown: null, runs: null,
-  lastMerge: null, runsApprovedAfterMerge: false,
+  lastMerge: null, runsApprovedAfterMerge: false, verifyOverride: false,
   verification: { state: "passed", kind: "build", summary: null, note: null }, verifyUnavailable: null,
   decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: false, hold: { asked: false, open: false, answer: null, otherOpen: false } },
   premerge: { at: "2026-11-04T10:30:00.000Z", tries: 0, hasFindings: true, unsure: false, defects: 0, defectsAllFixable: true, fixesSafe: true, minor: 0, error: null },

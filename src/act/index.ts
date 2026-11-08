@@ -106,11 +106,11 @@ const short = (sha: string) => sha.slice(0, 7);
 
 // ---- Close this PR? ------------------------------------------------------------
 
-type ReviewRow = { repo: string; number: number; head_oid: string; reason: string; sure: number | null; lines: number; title: string | null; author: string | null };
+type ReviewRow = { verdict?: string; repo: string; number: number; head_oid: string; reason: string; sure: number | null; lines: number; title: string | null; author: string | null };
 
 /** The final close reviews behind the Close? questions the Plans ask for in this repo. */
 function closeRows(db: DatabaseSync, repo: string): ReviewRow[] {
-  const get = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author
+  const get = db.prepare(`SELECT r.verdict, r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author
     FROM final_reviews r JOIN items i ON i.repo = r.repo AND i.number = r.number WHERE r.repo = ? AND r.number = ? AND r.head_oid = ? AND r.verdict = 'close'`);
   return plannedItems(db, "act", { repo }).filter((p) => p.action.params?.ask).map((p) => get.get(repo, p.facts.number, p.action.head) as ReviewRow | undefined).filter((r): r is ReviewRow => !!r);
 }
@@ -139,12 +139,13 @@ export function closeQuestion(r: ReviewRow, why: string | null = null, quiet = f
 // ---- Hold: what next? ------------------------------------------------------------
 
 /** The question for a PR whose latest review says hold, asked once per head. Review again and a fix-up first are cores of the prepared answer (src/decide/choices.ts). */
-export function holdQuestion(r: ReviewRow, quiet = false): Record<string, unknown> & { id: string } {
+export function holdQuestion(r: ReviewRow, quiet = false, ci: string | null = null): Record<string, unknown> & { id: string } {
   const reason = cleanReason(r.reason);
   return {
     id: holdDecisionId(r.repo, r.number, r.head_oid), kind: "hold", repo: r.repo, number: r.number,
-    question: "The review put this PR on hold. What next?",
-    context: `The Opus review says hold${r.sure === 0 ? " (Opus was unsure)" : ""}: it neither takes the PR as it is nor closes it, and nothing happens until a person decides.`,
+    question: ci ? "CI fails and nothing can fix it. What next?" : "The review put this PR on hold. What next?",
+    context: ci ? `${ci}. The review says ${r.verdict}, but the PR cannot merge while CI fails, so a Merge answer would change nothing.`
+      : `The Opus review says hold${r.sure === 0 ? " (Opus was unsure)" : ""}: it neither takes the PR as it is nor closes it, and nothing happens until a person decides.`,
     facts: [
       ...(quiet ? [] : [`${REASON_FACT}${r.reason.replace(/\s+/g, " ").trim().slice(0, 300)}`]),
       `author: ${r.author ?? "unknown"}, size ${sizeOf(r.lines)}`,
@@ -162,13 +163,13 @@ export function holdQuestion(r: ReviewRow, quiet = false): Record<string, unknow
  */
 export function askHoldDecisions(db: DatabaseSync, at: string, repo?: string): string[] {
   const get = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author
-    FROM final_reviews r JOIN items i ON i.repo = r.repo AND i.number = r.number WHERE r.repo = ? AND r.number = ? AND r.head_oid = ? AND r.verdict = 'hold'`);
+    FROM final_reviews r JOIN items i ON i.repo = r.repo AND i.number = r.number WHERE r.repo = ? AND r.number = ? AND r.head_oid = ?`);
   const todo = planned(db, "ask-merge", repo ? { repo } : {}).filter((p) => p.action.params?.hold === true);
   const qs: (Record<string, unknown> & { id: string })[] = [];
   for (const p of todo) {
     if (p.action.params?.withdraw) { withdrawHoldQuestion(db, p.facts.repo, p.facts.number, String(p.action.params?.decisionHead ?? p.action.head ?? ""), at, "the review at that head no longer says hold"); continue; }
     const r = get.get(p.facts.repo, p.facts.number, p.action.head) as ReviewRow | undefined;
-    if (r) qs.push(holdQuestion(r, isQuiet(db, r.repo, r.number)));
+    if (r) qs.push(holdQuestion(r, isQuiet(db, r.repo, r.number), typeof p.action.params?.ci === "string" ? p.action.params.ci : null));
   }
   if (qs.length) { ask(db, qs.map((q) => ({ ...q, asked_at: at }))); setAsideSupersededQuestions(db, at, repo); }
   else setAsideSupersededQuestions(db, at, repo);
