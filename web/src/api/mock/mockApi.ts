@@ -117,7 +117,8 @@ export function createMockApi(): Api {
 
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
-    if (status !== "answered" && d.answer) return false;
+    // As on the server: the open list also holds disputed answers.
+    if (status !== "answered" && d.answer && !(status === "open" && d.dispute)) return false;
     if (status === "open" && d.snoozed) return false;
     if (status === "snoozed" && !d.snoozed) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;

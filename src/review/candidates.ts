@@ -48,7 +48,8 @@ function scopeRows(db: DatabaseSync, extra: string): Map<string, string> {
  * counts only while it is settled (src/settlers.ts); `operatorsOnly` keeps only answers whose answerer settles.
  */
 export function scopeAnswers(db: DatabaseSync, operatorsOnly = false): Map<string, string> {
-  return scopeRows(db, operatorsOnly ? `AND ${settledBySql("decisions")}` : `AND NOT (${MAINTAINER_ANSWER} AND NOT ${settledBySql("decisions")})`);
+  // A disputed answer does not count until it is kept.
+  return scopeRows(db, `AND decisions.exec_state IS NOT 'disputed' ${operatorsOnly ? `AND ${settledBySql("decisions")}` : `AND NOT (${MAINTAINER_ANSWER} AND NOT ${settledBySql("decisions")})`}`);
 }
 
 /** Items whose latest scope answer is a maintainer's that no longer counts: the item waits for a decision again instead of being reviewed on it. */

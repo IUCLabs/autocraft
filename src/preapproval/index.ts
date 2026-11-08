@@ -31,6 +31,7 @@ import type { Exec } from "../fixup/git.ts";
 import { markReviewsStale, staleReviews } from "../review/discussion.ts";
 import type { PrFacts } from "../core/plan.ts";
 import { openOperatorFixups, operatorTriesLeft, queuedOperatorFix } from "./state.ts";
+import { lockLiveSql } from "../answers/hold.ts";
 
 export type PipelineStep = Extract<Step, { kind: "review" | "fixup" }>;
 
@@ -90,11 +91,11 @@ function move(db: DatabaseSync, p: Row, to: Row["state"], o: { head?: string | n
 const isOperator = (db: DatabaseSync, login: string | null, repo: string): boolean => settlesNow(db, login, [repo]);
 
 /** Takes back the Merge answer the hand-over wrote at the row's head (an answer anyone else wrote, or one already applied, stays). Inside the caller's transaction. */
-function revertAnswer(db: DatabaseSync, p: Row, by: string): boolean {
+export function revertAnswer(db: DatabaseSync, p: Row, by: string): boolean {
   if (!p.head) return false;
   const id = mergeDecisionId(p.repo, p.number, p.head);
   if (!db.prepare("SELECT 1 FROM audit WHERE action = 'answer' AND target = ? AND details LIKE '%\"source\":\"preapproval\"%'").get(id)) return false;
-  const r = db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL WHERE id = ? AND answer = 'merge' AND applied_at IS NULL AND answered_by = ?").run(id, p.by);
+  const r = db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL, exec_state = NULL, exec_reason = NULL, dispute_by = NULL, dispute_reason = NULL, dispute_at = NULL WHERE id = ? AND answer = 'merge' AND applied_at IS NULL AND answered_by = ?").run(id, p.by);
   if (r.changes !== 1) return false;
   audit(db, by, "undo", id, { answer: "merge", source: "preapproval" });
   return true;
@@ -201,7 +202,7 @@ function askMerge(db: DatabaseSync, p: Row, head: string, why: string, facts: st
   setAsideSupersededQuestions(db, at, p.repo);
 }
 
-type Hand = { done: true } | { gone: true } | { stop: string };
+type Hand = { done: true } | { gone: true } | { wait: true } | { stop: string };
 
 /**
  * Moves the row from ci to queued and answers the PR's Merge? decision at `head` with Merge for the operator, as the dashboard would,
@@ -221,6 +222,11 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
       db.exec("ROLLBACK");
       return { stop: `the Merge? question at this head was answered ${d0.answer}` };
     }
+    // A conversation card is settling the question right now: the hand-over waits for it instead of answering over it.
+    if (d0 && d0.answer === null && db.prepare(`SELECT 1 FROM main.decisions WHERE id = ? AND ${lockLiveSql("decisions")}`).get(id)) {
+      db.exec("ROLLBACK");
+      return { wait: true };
+    }
     if (!moveRaw(db, p, "queued", { head })) {
       db.exec("ROLLBACK");
       return { gone: true };
@@ -235,7 +241,7 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
     }
     if (getDecision(db, id)!.answer === null) {
       db.prepare(`UPDATE main.decisions SET answer = 'merge', answer_note = NULL, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
-        WHERE id = ? AND answer IS NULL`).run(p.by, at, id);
+        WHERE id = ? AND answer IS NULL AND NOT ${lockLiveSql("decisions")}`).run(p.by, at, id);
       db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(id);
       replaceProposedCards(db, p.repo, p.number, id);
       audit(db, p.by, "answer", id, { answer: "merge", source: "preapproval" });

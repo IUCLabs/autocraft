@@ -4,25 +4,38 @@
 import type { DatabaseSync } from "node:sqlite";
 import { BACKLOG, getDecision, optionsOf, type DecisionRow } from "../decisions.ts";
 import { audit } from "../dash/audit.ts";
+import { settledBy, settledBySql } from "../settlers.ts";
+import { writeEffect } from "../act/index.ts";
 
 export const SETTLING = "settling";
 export const DISPUTED = "disputed";
 
-/** The login of the person whose card is settling an open decision, or null. */
-export function settlingBy(d: Pick<DecisionRow, "answer" | "exec_state" | "exec_reason">): string | null {
+/** A card that has run longer than this is taken as crashed (conversations/act.ts marks it failed). */
+export const RUNNING_STALE_MS = 10 * 60_000;
+
+/**
+ * SQL: the lock of `t` (a decisions table or alias) is live: its card is still running and not stale. A lock whose card ended or
+ * died counts for nothing, so no path has to clear it for the decision to be answerable.
+ */
+export const lockLiveSql = (t = "decisions", now: Date = new Date()): string =>
+  `(${t}.exec_state = '${SETTLING}' AND EXISTS (SELECT 1 FROM main.conversation_cards lc WHERE lc.state = 'running' AND lc.acted_at > '${new Date(now.getTime() - RUNNING_STALE_MS).toISOString()}' AND ${t}.exec_reason LIKE lc.id || ':%'))`;
+
+/** The login of the person whose card is settling an open decision right now, or null. */
+export function settlingBy(db: DatabaseSync, d: Pick<DecisionRow, "id" | "answer" | "exec_state" | "exec_reason">): string | null {
   if (d.answer !== null || d.exec_state !== SETTLING) return null;
+  if (!db.prepare(`SELECT 1 FROM main.decisions WHERE id = ? AND ${lockLiveSql("decisions")}`).get(d.id)) return null;
   const r = d.exec_reason ?? "";
   return r.slice(r.indexOf(":") + 1) || "someone";
 }
 
 export const settlingMessage = (by: string): string => `${by} is applying their answer`;
 
-/** Claims the open decision for the card inside the transaction that starts the card's run. Throws when a card already holds it. A decision that is answered or missing is left alone: the run reports "the decision changed". */
+/** Claims the open decision for the card inside the transaction that starts the card's run. Throws when a live card holds it. A decision that is answered or missing is left alone: the run reports "the decision changed". */
 export function claimSettling(db: DatabaseSync, decisionId: string, cardId: number, login: string): void {
-  const r = db.prepare("UPDATE main.decisions SET exec_state = ?, exec_reason = ? WHERE id = ? AND answer IS NULL AND exec_state IS NULL").run(SETTLING, `${cardId}:${login}`, decisionId);
+  const r = db.prepare(`UPDATE main.decisions SET exec_state = ?, exec_reason = ? WHERE id = ? AND answer IS NULL AND NOT ${lockLiveSql("decisions")}`).run(SETTLING, `${cardId}:${login}`, decisionId);
   if (r.changes === 1) return;
   const d = getDecision(db, decisionId);
-  const by = d && settlingBy(d);
+  const by = d && settlingBy(db, d);
   if (by) throw new Error(settlingMessage(by));
 }
 
@@ -33,26 +46,31 @@ export function releaseSettling(db: DatabaseSync, decisionId: string, cardId: nu
 
 /** Locks left by a card that no longer runs (a crashed process). */
 export function sweepSettling(db: DatabaseSync): number {
-  return Number(db.prepare(`UPDATE main.decisions SET exec_state = NULL, exec_reason = NULL WHERE exec_state = ? AND answer IS NULL
+  return Number(db.prepare(`UPDATE main.decisions SET exec_state = NULL, exec_reason = NULL WHERE exec_state = ?
     AND NOT EXISTS (SELECT 1 FROM main.conversation_cards c WHERE c.state = 'running' AND decisions.exec_reason LIKE c.id || ':%')`).run(SETTLING).changes);
 }
 
 export const isDisputed = (d: Pick<DecisionRow, "exec_state" | "answer" | "applied_at">): boolean => d.exec_state === DISPUTED && d.answer !== null && !d.applied_at;
 
-/** An answered decision the pipeline has not applied yet, on the item: someone chose, GitHub does not show it yet. Backlog only holds, so it does not count. */
+/**
+ * The answered decision on the item whose GitHub write the pipeline has not made yet and still will: someone chose, GitHub does not show it yet.
+ * Backlog only holds, an option without a write (take, small-extra, need-info) leaves nothing to race, and an answer whose answerer no longer
+ * settles is not carried out.
+ */
 export function pendingAnswerOn(db: DatabaseSync, repo: string, number: number): DecisionRow | null {
-  return (db.prepare(`SELECT * FROM main.decisions WHERE repo = ? AND number = ? AND answer IS NOT NULL AND applied_at IS NULL AND answer <> ? AND id NOT LIKE '%~replaced-%'
-    ORDER BY answered_at DESC LIMIT 1`).get(repo, number, BACKLOG.key) as DecisionRow | undefined) ?? null;
+  const rows = db.prepare(`SELECT * FROM main.decisions WHERE repo = ? AND number = ? AND answer IS NOT NULL AND applied_at IS NULL AND answer <> ? AND id NOT LIKE '%~replaced-%'
+    ORDER BY answered_at DESC`).all(repo, number, BACKLOG.key) as DecisionRow[];
+  return rows.find((d) => writeEffect(d.kind, d.answer!) !== null && (isDisputed(d) || settledBy(db, d))) ?? null;
 }
 
-/** The reason a card that writes to the item must not run, or null. */
-export function pendingAnswerRefusal(db: DatabaseSync, repo: string, number: number): string | null {
+/** The reason a card of `by` that writes to the item must not run, or null. */
+export function pendingAnswerRefusal(db: DatabaseSync, repo: string, number: number, by: string): string | null {
   const d = pendingAnswerOn(db, repo, number);
   if (!d) return null;
   const label = optionsOf(d).find((o) => o.key === d.answer)?.label ?? d.answer;
-  return isDisputed(d)
-    ? `${d.answered_by}'s answer "${label}" is disputed by ${d.dispute_by}; it has to be kept or undone first`
-    : `${d.answered_by} already answered "${d.question}" with "${label}"; dispute that answer to change it`;
+  if (isDisputed(d)) return `${d.answered_by}'s answer "${label}" is disputed by ${d.dispute_by}; it has to be kept or undone first`;
+  if (d.answered_by?.toLowerCase() === by.toLowerCase()) return `You already answered "${d.question}" with "${label}". Undo your answer first`;
+  return `${d.answered_by} already answered "${d.question}" with "${label}"; dispute that answer to change it`;
 }
 
 /** True while any answer on the item is disputed: no pipeline write for the item goes ahead. */
@@ -72,4 +90,17 @@ export function openDispute(db: DatabaseSync, id: string, by: string, reason: st
 
 export function clearDispute(db: DatabaseSync, id: string): void {
   db.prepare("UPDATE main.decisions SET exec_state = NULL, exec_reason = NULL, dispute_by = NULL, dispute_reason = NULL, dispute_at = NULL WHERE id = ? AND exec_state = ?").run(id, DISPUTED);
+}
+
+/**
+ * SQL (decisions unaliased): an answered, unapplied decision the viewer has to look at: a disputed one (the answerer, or any operator), or one an
+ * operator has to reassign because its answerer no longer settles and its option writes to GitHub.
+ */
+export function heldOpenSql(login: string, operator: boolean): string {
+  const me = `'${login.replace(/'/g, "''")}'`;
+  const writes = `((decisions.answer = 'close' AND decisions.kind IN ('scope', 'close', 'duplicate', 'merge')) OR (decisions.answer = 'merge' AND decisions.kind = 'merge')
+    OR (decisions.kind = 'duplicate' AND (decisions.answer = 'accept' OR decisions.answer LIKE 'keep:%')))`;
+  return `(decisions.answer IS NOT NULL AND decisions.applied_at IS NULL AND decisions.answer <> '${BACKLOG.key}' AND decisions.id NOT LIKE '%~replaced-%'
+    AND ((decisions.exec_state = '${DISPUTED}' AND ${operator ? "1" : `decisions.answered_by = ${me} COLLATE NOCASE`})
+      OR (${operator ? "1" : "0"} AND decisions.exec_state IS NOT '${DISPUTED}' AND decisions.answered_by IS NOT NULL AND decisions.answered_by <> 'pipeline' AND ${writes} AND NOT ${settledBySql("decisions")})))`;
 }

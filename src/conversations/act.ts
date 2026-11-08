@@ -2,7 +2,7 @@
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
 import { guardRepo } from "../core/guard.ts";
 import { repoIdentity } from "../github/identity.ts";
-import { claimSettling, pendingAnswerRefusal, releaseSettling, sweepSettling } from "../answers/hold.ts";
+import { claimSettling, pendingAnswerRefusal, releaseSettling, RUNNING_STALE_MS, sweepSettling } from "../answers/hold.ts";
 import { initExecState, laneForOperator, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { readLive, writeEffect } from "../act/index.ts";
@@ -118,13 +118,13 @@ async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string |
     if (!d || d.answer !== null || (stamp !== undefined && decisionStamp(db, d) !== stamp)) throw new Error("the decision changed");
     const o = optionsOf(d).find((x) => x.key === key);
     if (!o) throw new Error(`"${key}" is not an option of the decision`);
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL,
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL, exec_state = NULL, exec_reason = NULL,
       public_text = COALESCE(?, public_text)
       WHERE id = ? AND answer IS NULL`).run(key, note ?? null, by, at, publicReason ?? null, d.id);
     if (r.changes !== 1) throw new Error("the decision changed");
     db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
     replaceProposedCards(db, d.repo, d.number, d.id);
-    audit(db, by, "answer", d.id, { answer: key, source: "conversation" });
+    audit(db, by, "answer", d.id, { answer: key, source: "conversation", card: c.id });
     db.exec("COMMIT");
     if (writeEffect(d.kind, key)) initExecState(db, d.id);
     return { result: `Answered the decision with "${o.label}"`, url: null };
@@ -141,12 +141,12 @@ function resolveDecision(db: DatabaseSync, c: CardRow, decisionId: string | unde
   try {
     const d = getDecision(db, decisionId);
     if (!d || d.answer !== null || d.repo !== c.repo || d.number !== c.number || (stamp !== undefined && decisionStamp(db, d) !== stamp)) throw new Error("the decision changed");
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL, exec_state = NULL, exec_reason = NULL
       WHERE id = ? AND answer IS NULL`).run(HANDLED.key, summary, by, at, at, d.id);
     if (r.changes !== 1) throw new Error("the decision changed");
     db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
     replaceProposedCards(db, d.repo, d.number, d.id);
-    audit(db, by, "answer", d.id, { answer: HANDLED.key, source: "conversation" });
+    audit(db, by, "answer", d.id, { answer: HANDLED.key, source: "conversation", card: c.id });
     db.exec("COMMIT");
     return { result: "Decision closed as handled in the conversation", url: null };
   } catch (e) {
@@ -501,10 +501,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const repos = cardRepos(c, params);
   const writes = params.kind === "comment" || params.kind === "label" || params.kind === "close" || params.kind === "duplicate"
     || (params.kind === "resolution" && params.steps.some((x) => x.kind !== "review" && x.kind !== "fixup"));
-  if (writesItem(params)) {
-    const refusal = pendingAnswerRefusal(db, c.repo, c.number);
-    if (refusal) throw new ConversationError(409, refusal);
-  }
+  const writing = writesItem(params);
   const lr = writes ? await laneForOperator(db, deps.lane, by, repos) : null;
   if (lr && !("lane" in lr)) throw new ConversationError("transient" in lr ? 503 : 409, "transient" in lr ? `GitHub could not be reached to check your access: ${lr.transient}` : lr.reason);
   const at = (deps.now?.() ?? new Date()).toISOString();
@@ -514,6 +511,9 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   try {
     const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
     if (claim.changes !== 1) { db.exec("ROLLBACK"); return { card: c, ran: false }; }
+    // Checked inside the transaction that starts the run, so an answer written a moment ago is seen.
+    const refusal = writing ? pendingAnswerRefusal(db, c.repo, c.number, by) : null;
+    if (refusal) throw new Error(refusal);
     if (settles) claimSettling(db, settles, id, by);
     db.exec("COMMIT");
   } catch (e) {
@@ -557,7 +557,7 @@ const writesItem = (p: CardParams): boolean =>
   p.kind === "close" || p.kind === "duplicate" || p.kind === "label" || (p.kind === "resolution" && p.steps.some((x) => WRITING_STEPS.has(x.kind)));
 
 /** A card left 'running' by a crashed process is marked failed: what it did on GitHub is unknown. */
-export const RUNNING_STALE_MS = 10 * 60_000;
+export { RUNNING_STALE_MS };
 export function sweepRunningCards(db: DatabaseSync, deps?: StoreDeps): number {
   const cutoff = new Date((deps?.now?.() ?? new Date()).getTime() - RUNNING_STALE_MS).toISOString();
   const n = db.prepare("UPDATE conversation_cards SET state = 'failed', error = 'outcome unknown; see the GitHub activity page' WHERE state = 'running' AND acted_at < ?").run(cutoff).changes as number;

@@ -18,7 +18,7 @@ import { audit } from "../audit.ts";
 import { heldLookup, type Held } from "../../runner/autopilot.ts";
 import { initExecState, retryDecision } from "../../github/user-lane.ts";
 import { inActiveBatch, mergeRunning } from "../../preapproval/index.ts";
-import { clearDispute, DISPUTED, isDisputed, openDispute, settlingBy, settlingMessage } from "../../answers/hold.ts";
+import { clearDispute, DISPUTED, heldOpenSql, lockLiveSql, isDisputed, openDispute, settlingBy, settlingMessage } from "../../answers/hold.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -190,9 +190,13 @@ export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
 export function wroteToGithub(db: DatabaseSync, d: DecisionRow): boolean {
   if (db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id)) return true;
   if (db.prepare("SELECT 1 FROM actions WHERE decision_id = ? AND comment_url IS NOT NULL LIMIT 1").get(d.id)) return true;
-  if (!d.repo || d.number === null || !d.answered_at) return false;
-  const cards = db.prepare("SELECT result FROM conversation_cards WHERE repo = ? AND number = ? AND state = 'done' AND acted_by = ? COLLATE NOCASE AND acted_at >= ?").all(d.repo, d.number, d.answered_by, d.answered_at) as { result: string | null }[];
-  return cards.some((c) => (c.result ?? "").split("; ").some((seg) => seg && !seg.startsWith("Answered the decision") && !seg.startsWith("Decision closed as handled")));
+  // Only the card that gave the answer counts: a later card on the item is another action.
+  const row = db.prepare("SELECT details FROM audit WHERE target = ? AND action = 'answer' ORDER BY rowid DESC LIMIT 1").get(d.id) as { details: string | null } | undefined;
+  let card: number | undefined;
+  try { card = (JSON.parse(row?.details ?? "{}") as { card?: number }).card; } catch { /* no card */ }
+  if (card === undefined) return false;
+  const c = db.prepare("SELECT result FROM conversation_cards WHERE id = ? AND state = 'done'").get(card) as { result: string | null } | undefined;
+  return (c?.result ?? "").split("; ").some((seg) => seg && !seg.startsWith("Answered the decision") && !seg.startsWith("Decision closed as handled"));
 }
 
 /** An operator's own "handled" answer, recorded by its audit source: nothing was written anywhere, so Undo stays possible although it is marked applied (a conversation card's handled answer follows GitHub writes and stays final). A withdrawn question's renamed row (`~replaced-`) never reopens. */
@@ -278,9 +282,9 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     answerNote: viewer.staff ? d.answer_note : null,
     answeredBy: d.answered_by, answeredAt: d.answered_at, appliedAt: d.applied_at,
     exec: execOf(db, d, d.repo ?? refs[0]?.repo ?? null, viewer),
-    settling: settlingBy(d),
-    dispute: isDisputed(d) ? { by: d.dispute_by ?? "", reason: d.dispute_reason ?? "", at: d.dispute_at ?? "" } : null,
-    orphaned: !!d.answer && !d.applied_at && !isBacklog(d.answer) && !isDisputed(d) && !!d.answered_by && d.answered_by !== "pipeline" && !settledBy(db, d, viewer.memo),
+    settling: settlingBy(db, d),
+    dispute: isDisputed(d) ? { by: d.dispute_by ?? "", reason: viewer.staff ? (d.dispute_reason ?? "") : "", at: d.dispute_at ?? "" } : null,
+    orphaned: !!d.answer && !d.applied_at && !isBacklog(d.answer) && !isDisputed(d) && !!d.answered_by && d.answered_by !== "pipeline" && writeEffect(d.kind, d.answer) !== null && !settledBy(db, d, viewer.memo),
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,
     exceptions: exceptionsOf(d),
@@ -300,7 +304,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     ...out, question: "", summary: "", context: [], facts: [], recommendedReason: "", risks: [], publicText: null, optionTexts: [],
     group: out.group.map((m) => ({ ...m, better: [], carry: [], adds: [] })),
     opinions: out.opinions.map((o) => ({ ...o, note: "" })), adoptedOpinion: out.adoptedOpinion && { ...out.adoptedOpinion, note: "" },
-    classifications: out.classifications.map((c) => ({ ...c, reason: "" })), priority: out.priority && { ...out.priority, reason: null },
+    dispute: out.dispute && { ...out.dispute, reason: "" }, classifications: out.classifications.map((c) => ({ ...c, reason: "" })), priority: out.priority && { ...out.priority, reason: null },
   };
 }
 
@@ -335,9 +339,8 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
   } else if (status === "backlog") where.push(`answer = '${BACKLOG.key}'`);
   else if (status === "snoozed") where.push(SNOOZED_SQL);
   else if (status === "open" || status === "opinions") {
-    // A disputed answer waits for its answerer and the operators: it is open for them.
-    if (!isOperator(req)) params.me = req.user.login;
-    where.push(`((answer IS NULL AND NOT ${SNOOZED_SQL}) OR (exec_state = '${DISPUTED}' AND answer IS NOT NULL AND applied_at IS NULL${isOperator(req) ? "" : " AND answered_by = :me COLLATE NOCASE"}))`);
+    // A disputed answer waits for its answerer and the operators, and an answer nobody settles any more for the operators: open for them.
+    where.push(`((answer IS NULL AND NOT ${SNOOZED_SQL}) OR ${heldOpenSql(req.user.login, isOperator(req))})`);
   }
   if (status === "opinions") where.push("(EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL) OR EXISTS (SELECT 1 FROM decision_comments c WHERE c.decision_id = decisions.id))");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
@@ -467,7 +470,7 @@ export async function answer(db: DatabaseSync, req: Req, via?: "mcp"): Promise<D
  */
 export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: Record<string, unknown>, source: string, via?: string): void {
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
-  const applying = settlingBy(d);
+  const applying = settlingBy(db, d);
   if (applying) throw new HttpError(409, settlingMessage(applying));
   const keys = new Set(optionsOf(d).map((o) => o.key));
   const handled = b.answer === HANDLED.key;
@@ -497,9 +500,9 @@ export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: 
     if (stored.length && b.textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
     const at = new Date().toISOString();
     // Handled writes nothing and no step acts on it, so it counts as applied at once (Undo still works, see directHandled).
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
-      WHERE id = ? AND answer IS NULL AND exec_state IS NOT 'settling'`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, login, at, handled ? at : null, d.id);
-    if (r.changes !== 1) throw new HttpError(409, settlingBy(getDecision(db, d.id) ?? d) ? settlingMessage(settlingBy(getDecision(db, d.id) ?? d)!) : "someone answered this a moment ago");
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL, exec_state = NULL, exec_reason = NULL
+      WHERE id = ? AND answer IS NULL AND NOT ${lockLiveSql("decisions")}`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, login, at, handled ? at : null, d.id);
+    if (r.changes !== 1) throw new HttpError(409, settlingBy(db, getDecision(db, d.id) ?? d) ? settlingMessage(settlingBy(db, getDecision(db, d.id) ?? d)!) : "someone answered this a moment ago");
     replaceProposedCards(db, d.repo, d.number, d.id);
   });
   if (writeEffect(d.kind, ans)) initExecState(db, d.id);
@@ -627,7 +630,7 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireSettler(db, req, d);
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
-  const applying = settlingBy(d);
+  const applying = settlingBy(db, d);
   if (applying) throw new HttpError(409, settlingMessage(applying));
   const oid = body(req).opinionId;
   if (typeof oid !== "string") throw new HttpError(400, "opinionId is required");
@@ -639,9 +642,9 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
   inTransaction(db, () => {
     const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, option) : [];
     if (stored.length && body(req).textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?, snoozed_by = NULL, snoozed_at = NULL
-      WHERE id = ? AND answer IS NULL AND exec_state IS NOT 'settling'`).run(option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
-    if (r.changes !== 1) throw new HttpError(409, settlingBy(getDecision(db, d.id) ?? d) ? settlingMessage(settlingBy(getDecision(db, d.id) ?? d)!) : "someone answered this a moment ago");
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?, snoozed_by = NULL, snoozed_at = NULL, exec_state = NULL, exec_reason = NULL
+      WHERE id = ? AND answer IS NULL AND NOT ${lockLiveSql("decisions")}`).run(option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
+    if (r.changes !== 1) throw new HttpError(409, settlingBy(db, getDecision(db, d.id) ?? d) ? settlingMessage(settlingBy(db, getDecision(db, d.id) ?? d)!) : "someone answered this a moment ago");
   });
   if (writeEffect(d.kind, option)) initExecState(db, d.id);
   audit(db, req.user.login, "adopt", d.id, { answer: o.option, opinion: o.id, of: o.login });

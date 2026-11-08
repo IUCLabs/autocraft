@@ -32,12 +32,12 @@ export function AnswerHold({ d }: { d: Decision }) {
   const chose = `${d.answeredBy} chose ${answer}${d.answeredAt ? ` at ${clock(d.answeredAt)}` : ""}`;
 
   if (d.dispute) {
-    const resolver = mine || (operator && settler);
+    const resolver = (mine || operator) && settler;
     return (
       <div className="space-y-2 text-sm">
         <p className="flex items-start gap-1.5 font-medium text-warn"><FlagIcon className="mt-1 shrink-0" weight="fill" /><span className="min-w-0">{d.dispute.by} disputed this answer at {clock(d.dispute.at)}</span></p>
         <p className="text-ink/80">{chose}.</p>
-        <p className="break-words text-ink/80">&ldquo;{d.dispute.reason}&rdquo;</p>
+        {d.dispute.reason && <p className="break-words text-ink/80">&ldquo;{d.dispute.reason}&rdquo;</p>}
         <p className="text-xs text-ink/55">Nothing is written to GitHub until it is kept or taken back.</p>
         {resolver && (
           <div className="flex flex-wrap items-center gap-2">
@@ -68,10 +68,12 @@ export function AnswerHold({ d }: { d: Decision }) {
   };
   return (
     <div className="space-y-2 text-sm">
-      <p className="text-ink/85">{chose}.</p>
-      {settler && !mine && !asking && (
-        <Button size="md" icon={FlagIcon} onClick={() => setAsking(true)} className="max-md:h-11">Dispute</Button>
-      )}
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-ink/85">{chose}.</p>
+        {settler && !mine && !asking && (
+          <Button size="sm" icon={FlagIcon} onClick={() => setAsking(true)} className="-mt-1 max-md:h-9">Dispute</Button>
+        )}
+      </div>
       {asking && (
         <div className="space-y-2">
           <Textarea rows={3} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Why is this answer wrong?" aria-label="Reason for the dispute" maxLength={2000} />
@@ -86,11 +88,14 @@ export function AnswerHold({ d }: { d: Decision }) {
   );
 }
 
+/** The held answers of an item the viewer sees as cards: the answerer sees an undo elsewhere, so only while the answer is disputed or orphaned. */
+export const visibleHeld = (ds: Decision[], login: string): Decision[] =>
+  ds.filter((d) => isHeldAnswer(d) && (d.dispute || d.orphaned || d.answeredBy?.toLowerCase() !== login.toLowerCase()));
+
 /** The held answers of an item as cards, in the style of the open question's card. */
 export function HeldAnswers({ ds }: { ds: Decision[] }) {
   const user = useUser();
-  // The answerer sees an undo elsewhere; the card is for everyone else, and for the answerer only while the answer is disputed.
-  const shown = ds.filter((d) => isHeldAnswer(d) && (d.dispute || d.orphaned || d.answeredBy?.toLowerCase() !== user.login.toLowerCase()));
+  const shown = visibleHeld(ds, user.login);
   if (!shown.length) return null;
   return (
     <section className="space-y-2" aria-label="Answered">

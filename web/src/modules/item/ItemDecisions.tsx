@@ -21,7 +21,9 @@ export function useItemDecisions(repo: string, number: number) {
   const q = useQuery(`item-decisions:${repo}#${number}`, async (api) => {
     const filter = { repo: [repo], number };
     const [open, snoozed, answered] = await Promise.all([api.decisions.list({ ...filter, status: "open" }), api.decisions.list({ ...filter, status: "snoozed" }), api.decisions.list({ ...filter, status: "answered" })]);
-    return [...open.decisions, ...snoozed.decisions, ...answered.decisions];
+    // A disputed answer is in both the open and the answered list.
+    const seen = new Set<string>();
+    return [...open.decisions, ...snoozed.decisions, ...answered.decisions].filter((d) => !seen.has(d.id) && !!seen.add(d.id));
   });
   const data = useFolded(q.data);
   return { ...q, data };

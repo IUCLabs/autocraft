@@ -20,17 +20,29 @@ function staleReason(db: DatabaseSync, d: DecisionRow): string | null {
   return null;
 }
 
+/** The PR merged at the head the answer was given for, alone or inside a merged batch: the answer was carried out, only its row was not closed. */
+function mergedAtHead(db: DatabaseSync, d: DecisionRow): boolean {
+  if (d.kind !== "merge") return false;
+  const f = factsOf(d).find((x) => x.startsWith(HEAD_FACT));
+  const head = f ? f.slice(HEAD_FACT.length).trim() : null;
+  if (!head || !d.repo || d.number === null) return false;
+  return !!db.prepare("SELECT 1 FROM main.merges WHERE repo = ? AND number = ? AND head_oid = ? AND outcome = 'merged'").get(d.repo, d.number, head)
+    || !!db.prepare("SELECT 1 FROM main.merge_batch_prs x JOIN main.merge_batches b ON b.id = x.batch_id WHERE b.repo = ? AND x.number = ? AND x.head_oid = ? AND b.state = 'merged'").get(d.repo, d.number, head);
+}
+
 /** Marks answered, unapplied single-item decisions of `repo` (all repos when omitted) that can no longer apply as applied, with a note. Returns how many. */
 export function sweepStaleAnswers(db: DatabaseSync, at: string, repo?: string): number {
   const rows = db.prepare(`SELECT * FROM main.decisions WHERE answer IS NOT NULL AND applied_at IS NULL AND answer <> ? AND answered_by <> ? AND repo IS NOT NULL AND number IS NOT NULL
     AND id NOT LIKE '%:dupegroup:%' AND id NOT LIKE '%~replaced-%' ${repo ? "AND repo = ?" : ""}`).all(BACKLOG.key, ACTOR, ...(repo ? [repo] : [])) as DecisionRow[];
   let n = 0;
   for (const d of rows) {
-    const why = staleReason(db, d);
+    const done = mergedAtHead(db, d);
+    const why = done ? "the PR merged at the answered head" : staleReason(db, d);
     if (!why) continue;
+    const note = done ? "" : `not applied: ${why}`;
     const r = db.prepare(`UPDATE main.decisions SET applied_at = ?, exec_state = 'done', exec_reason = NULL, dispute_by = NULL, dispute_reason = NULL, dispute_at = NULL,
-      answer_note = CASE WHEN answer_note IS NULL OR answer_note = '' THEN ? ELSE answer_note || ' (' || ? || ')' END
-      WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(at, `not applied: ${why}`, `not applied: ${why}`, d.id);
+      answer_note = CASE WHEN ? = '' THEN answer_note WHEN answer_note IS NULL OR answer_note = '' THEN ? ELSE answer_note || ' (' || ? || ')' END
+      WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(at, note, note, note, d.id);
     if (r.changes === 1) { audit(db, ACTOR, "answer-sweep", d.id, { answer: d.answer, why }); n++; }
   }
   return n;
