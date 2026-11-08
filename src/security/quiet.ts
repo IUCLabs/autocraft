@@ -1,5 +1,6 @@
 // The quiet pull request of a security fix: opened by the Land step, in the pipeline's name, and kept free of anything that
 // names the problem from the moment it opens until the advisory is published. One definition for every place that asks.
+import { prep } from "../sql-cache.ts";
 import type { DatabaseSync } from "node:sqlite";
 
 /** SQL condition: the findings whose pull request is quiet (the quiet route has no fork). */
@@ -27,5 +28,5 @@ export function quietFixPrs(db: DatabaseSync, repo?: string): Set<string> {
 
 /** True when `repo#number` is a quiet pull request. */
 export const isQuiet = (db: DatabaseSync, repo: string, number: number): boolean =>
-  !!db.prepare(`SELECT 1 FROM main.security_findings WHERE repo = ? AND fix_pr = ? AND ${QUIET_FINDING_SQL} LIMIT 1`).get(repo, number) ||
-  !!db.prepare(`SELECT 1 FROM main.security_quiet_prs qp JOIN main.security_findings qg ON qg.repo = qp.repo AND qg.number = qp.finding WHERE qp.repo = ? AND qp.pr = ? AND ${FORMER_OPEN_SQL} LIMIT 1`).get(repo, number);
+  !!prep(db, `SELECT 1 FROM main.security_findings WHERE repo = ? AND fix_pr = ? AND ${QUIET_FINDING_SQL} LIMIT 1`).get(repo, number) ||
+  !!prep(db, `SELECT 1 FROM main.security_quiet_prs qp JOIN main.security_findings qg ON qg.repo = qp.repo AND qg.number = qp.finding WHERE qp.repo = ? AND qp.pr = ? AND ${FORMER_OPEN_SQL} LIMIT 1`).get(repo, number);

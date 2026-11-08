@@ -23,7 +23,7 @@ export function useDecisionFilter() {
       repo: sp.get("repo")?.split(",").filter(Boolean),
       kind: sp.get("kind")?.split(",").filter(Boolean) as DecisionKind[] | undefined,
       minAge: sp.get("age") ? Number(sp.get("age")) : undefined,
-      mine: sp.get("mine") === "1",
+      all: sp.get("all") === "1",
       status: sp.get("tab") === "answered" ? "answered" : sp.get("tab") === "backlog" ? "backlog" : sp.get("tab") === "snoozed" ? "snoozed" : sp.get("tab") === "opinions" ? "opinions" : "open",
     }),
     [sp],
@@ -42,19 +42,12 @@ export function useDecisionFilter() {
 /** The loaded pages of the list; `loadMore` appends the next one. A change refetches every loaded page. */
 export function useDecisionList() {
   const { filter, search } = useDecisionFilter();
-  const q = usePagedQuery(`decisions?${search}`, (a, after) => a.decisions.list({ ...filter, after }), (p) => p.next);
+  const q = usePagedQuery(`decisions?${search}`, (a, after) => a.decisions.list({ ...filter, after }), (p) => p.next, { keepPageMs: 30_000 });
   const last = q.pages?.[q.pages.length - 1];
   const all = useMemo(() => q.pages?.flatMap((p) => p.decisions), [q.pages]);
   const decisions = useFolded(all);
   const data = last && { ...last, decisions: decisions ?? [] };
   return { data, error: q.error, loading: q.loading, refetch: q.refetch, hasMore: q.hasMore, loadMore: q.loadMore, loadingMore: q.loadingMore };
-}
-
-/** Kind, then repo, then oldest first: the order the list shows and j/k walks. */
-export function ordered(ds: Decision[]): Decision[] {
-  return [...ds].sort(
-    (a, b) => KINDS.indexOf(a.kind) - KINDS.indexOf(b.kind) || a.repo.localeCompare(b.repo) || a.askedAt.localeCompare(b.askedAt),
-  );
 }
 
 // ---- view-local state shared by the list, detail and thread panels ----

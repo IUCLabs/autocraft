@@ -3,10 +3,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Progress } from "../../../web/src/api/types.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
-import { SNOOZED_SQL, optionsOf, type DecisionRow } from "../../decisions.ts";
-import { heldOpenSql } from "../../answers/hold.ts";
+import { optionsOf, type DecisionRow } from "../../decisions.ts";
 import type { Req } from "../types.ts";
-import { inRepos, withoutHidden } from "./decisions.ts";
+import { needingSql, withoutHidden } from "./decisions.ts";
 import { healthOf } from "./now.ts";
 import { needs as needsPage, stopped } from "./needs.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -16,7 +15,7 @@ import { ITEM_PHASES, PHASE_SQL, type Home, type HomeDone, type HomeNeed, type H
 const OLDEST = 5;
 const DONE = 10;
 
-type Deps = { writeRepos: () => Promise<string[]>; progress: (hidden: string[]) => Progress };
+type Deps = { progress: (hidden: string[]) => Progress };
 
 const itemKindOf = (k: string | undefined): "pr" | "issue" | null => (k === undefined ? null : k === "pr" ? "pr" : "issue");
 
@@ -38,7 +37,7 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
 async function needs(db: DatabaseSync, req: Req, hidden: string[], staff: boolean, deps: Deps): Promise<Home["needs"]> {
   const params: Record<string, string> = {};
   const hide = withoutHidden(hidden, params);
-  const where = `((answer IS NULL AND NOT ${SNOOZED_SQL}) OR ${heldOpenSql(req.user.login, req.user.role === "operator")})${hide ? ` AND ${hide}` : ""}`;
+  const where = `${needingSql(req)}${hide ? ` AND ${hide}` : ""}`;
   const byKind: Partial<Record<NeedKind, number>> = {};
   for (const r of db.prepare(`SELECT kind, COUNT(*) AS n FROM decisions WHERE ${where} GROUP BY kind`).all(params) as { kind: NeedKind; n: number }[]) byKind[r.kind] = r.n;
   // The Needs page's own counts, so the total is the nav badge's number for this user.
@@ -48,10 +47,7 @@ async function needs(db: DatabaseSync, req: Req, hidden: string[], staff: boolea
   if (counts.stopped) byKind.stopped = counts.stopped;
   if (!staff) return { total, byKind, oldest: [] };
 
-  // Maintainers are asked for the decisions they may give feedback on or settle.
-  const rp: Record<string, string> = { ...params };
-  const mine = req.user.role === "maintainer" ? ` AND ${inRepos("wr", await deps.writeRepos(), rp)}` : "";
-  const asked: HomeNeed[] = (db.prepare(`SELECT * FROM decisions WHERE ${where}${mine} ORDER BY asked_at, id LIMIT ${OLDEST}`).all(rp) as DecisionRow[]).map((d) => {
+  const asked: HomeNeed[] = (db.prepare(`SELECT * FROM decisions WHERE ${where} ORDER BY asked_at, id LIMIT ${OLDEST}`).all(params) as DecisionRow[]).map((d) => {
     const it = d.number !== null && d.repo ? (db.prepare("SELECT kind, title FROM items WHERE repo = ? AND number = ?").get(d.repo, d.number) as { kind: string; title: string | null } | undefined) : undefined;
     return {
       id: d.id, kind: d.kind as NeedKind, repo: d.repo ?? "", number: d.number, title: d.number === null ? d.question : (it?.title ?? `${d.repo}#${d.number}`),

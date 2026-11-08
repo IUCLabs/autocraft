@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "preapprovals" | "security" | "discord" | "discord-links";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "claims" | "preapprovals" | "security" | "discord" | "discord-links";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
@@ -35,7 +35,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["item-trace-decision:", withSlot("decisions")],
   ["activity:", withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "agents", "jobs", "github")],
   ["item:", ITEM],
-  ["item-decisions:", withSlot("decisions", "items", "decision-snooze")],
+  ["item-decisions:", withSlot("decisions", "items", "decision-snooze", "claims")],
   ["items:", withSlot("items", "stages", "classify", "decisions", "discord")],
   ["discord-setup", ["discord", "discord-links"]],
   ["discord-account", ["discord-links"]],
@@ -43,11 +43,12 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["work:", ["items", "ranks", "classify", "checks", "decisions", "reviews", "verify", "fixes"]],
   ["cost:", ["usage", "agents"]],
   ["rates-", ["usage", "agents", "accounts"]],
-  ["count:", ["decisions", "decision-snooze", "items", "conversations"]],
+  ["count:", ["decisions", "decision-snooze", "settings", "access"]],
   // Feedback reads comments (in `items`), decisions and conversations; stopped rows read breakers and limits, not job runs.
   ["needs:", ["decisions", "decision-snooze", "conversations", "items", "limits", "accounts", "settings"]],
-  ["decisions?", withSlot("decisions", "decision-snooze", "items", "conversations", "plans", "settings", "limits")],
-  ["decision:", withSlot("decisions", "decision-snooze", "plans", "settings", "limits")],
+  // Not items, plans or conversations: they change every few seconds and a row's state follows the decision itself. Settings and access decide which questions a person settles.
+  ["decisions?", withSlot("decisions", "decision-snooze", "claims", "limits", "settings", "access")],
+  ["decision:", withSlot("decisions", "decision-snooze", "claims", "plans", "settings", "limits")],
   ["thread:", ["decisions"]],
   ["conversation:", ["conversations", "conversation-includes", "decision-choices"]],
   // A scan page also shows each running call's progress line, which arrives through `agents`.

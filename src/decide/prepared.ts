@@ -119,23 +119,49 @@ export const openSubjectSql = (d: string, i: string): string => `(${i}.state = '
 
 type Subject = { dkind: string; kind: string; head_oid: string | null } & Pick<PrepareColumns, "discussion_key" | "reviewed_at" | "prepares_today" | "stale_choices" | "review_queued">;
 
-function columnsOf(db: DatabaseSync, d: Partial<PrepareColumns> & { id: string; answer: string | null; repo: string | null; number: number | null }): { cols: PrepareColumns; head: string | null; open: true } | null {
-  if (d.answer !== null || d.number === null) return null;
-  const it = db.prepare(`SELECT i.kind, i.head_oid, d.kind AS dkind, ${prepareStateSql("d")} FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.id = ? AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`).get(utcDayStart(Date.now()), d.id) as Subject | undefined;
+type Open = Partial<PrepareColumns> & { id: string; answer: string | null; repo: string | null; number: number | null };
+
+const subjectSql = (): string => `SELECT d.id AS did, i.kind, i.head_oid, d.kind AS dkind, ${prepareStateSql("d")} FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
+    WHERE ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`;
+
+function columnsFrom(d: Open, it: Subject | undefined): { cols: PrepareColumns; head: string | null; open: true } | null {
   if (!it) return null;
   const cols: PrepareColumns = { id: d.id, kind: it.dkind, prepared_at: d.prepared_at ?? null, prepared_head: d.prepared_head ?? null, prepare_failed_head: d.prepare_failed_head ?? null, recommend_failures: d.recommend_failures ?? null, recommend_failed_at: d.recommend_failed_at ?? null,
     prepared_discussion: d.prepared_discussion ?? null, discussion_key: it.discussion_key ?? null, reviewed_at: it.reviewed_at ?? null, prepare_requested_at: d.prepare_requested_at ?? null, prepares_today: Number(it.prepares_today ?? 0), stale_choices: it.stale_choices ?? null, review_queued: Number(it.review_queued ?? 0) };
   return { cols, head: it.kind === "pr" ? it.head_oid : null, open: true };
 }
 
-export function preparing(db: DatabaseSync, d: Parameters<typeof columnsOf>[1]): boolean {
+function columnsOf(db: DatabaseSync, d: Open): { cols: PrepareColumns; head: string | null; open: true } | null {
+  if (d.answer !== null || d.number === null) return null;
+  return columnsFrom(d, db.prepare(`${subjectSql()} AND d.id = ?`).get(utcDayStart(Date.now()), d.id) as Subject | undefined);
+}
+
+export type PrepareState = { preparing: boolean; preparedEarlier: boolean };
+
+/** `preparing` and `preparedEarlier` of every open single-item decision in `ds` from one statement, for a page of rows. */
+export function prepareStates(db: DatabaseSync, ds: Open[]): Map<string, PrepareState> {
+  const open = ds.filter((d) => d.answer === null && d.number !== null);
+  const out = new Map<string, PrepareState>();
+  if (!open.length) return out;
+  const rows = db.prepare(`${subjectSql()} AND d.id IN (SELECT value FROM json_each(?))`).all(utcDayStart(Date.now()), JSON.stringify(open.map((d) => d.id))) as (Subject & { did: string })[];
+  const by = new Map(rows.map((r) => [r.did, r]));
+  for (const d of open) {
+    const x = columnsFrom(d, by.get(d.id));
+    out.set(d.id, x ? { preparing: isPreparing(x.cols, x.head), preparedEarlier: stateEarlier(x) } : { preparing: false, preparedEarlier: false });
+  }
+  return out;
+}
+
+const stateEarlier = (x: { cols: PrepareColumns; head: string | null }): boolean =>
+  (x.cols.prepared_at !== null || x.cols.stale_choices != null) && !isPrepared(x.cols, x.head) && prepareHeld(x.cols, x.head) === "capped";
+
+export function preparing(db: DatabaseSync, d: Open): boolean {
   const x = columnsOf(db, d);
   return !!x && isPreparing(x.cols, x.head);
 }
 
 /** The decision keeps choices from an earlier prepare because its prepares of the day are used up; an operator's Re-prepare updates them. */
-export function preparedEarlier(db: DatabaseSync, d: Parameters<typeof columnsOf>[1]): boolean {
+export function preparedEarlier(db: DatabaseSync, d: Open): boolean {
   const x = columnsOf(db, d);
-  return !!x && (x.cols.prepared_at !== null || x.cols.stale_choices != null) && !isPrepared(x.cols, x.head) && prepareHeld(x.cols, x.head) === "capped";
+  return !!x && stateEarlier(x);
 }

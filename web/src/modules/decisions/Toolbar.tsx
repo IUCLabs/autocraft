@@ -17,7 +17,7 @@ const AGES = [
 export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
   const { phone } = props;
   const { filter, update } = useDecisionFilter();
-  const { data: open } = useQuery("count:open", (api) => api.decisions.list({ status: "open", limit: 0 }));
+  const { data: open } = useQuery(`count:open:${filter.all ? "all" : "mine"}`, (api) => api.decisions.list({ status: "open", limit: 0, all: filter.all }));
   const { data: answered } = useQuery("count:answered", (api) => api.decisions.list({ status: "answered", limit: 0 }));
   const { data: backlog } = useQuery("count:backlog", (api) => api.decisions.list({ status: "backlog", limit: 0 }));
   const { data: snoozed } = useQuery("count:snoozed", (api) => api.decisions.list({ status: "snoozed", limit: 0 }));
@@ -65,8 +65,8 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
       <div className={cn("flex items-center gap-2", !phone && "ml-auto")}>
         <RepoPicker selected={filter.repo ?? []} onChange={(r) => update({ repo: r.length ? r.join(",") : null })} />
         <Picker label={AGES.find((a) => a.v === String(filter.minAge ?? ""))?.label ?? "Any age"} items={AGES} onPick={(v) => update({ age: v || null })} />
-        <button className="chip" data-active={!!filter.mine} aria-pressed={!!filter.mine} onClick={() => update({ mine: filter.mine ? null : "1" })} title="Only repos where you have write access">
-          My repos
+        <button className="chip" data-active={!!filter.all} aria-pressed={!!filter.all} onClick={() => update({ all: filter.all ? null : "1" })} title="Also the questions only others can settle">
+          Everything
         </button>
       </div>
     </div>

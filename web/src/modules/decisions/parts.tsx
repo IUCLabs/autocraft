@@ -51,7 +51,7 @@ export function ClaimPill({ claim, compact }: { claim: Decision["claim"]; compac
       <Avatar login={claim.login} size={16} />
       {!compact && (
         <span>
-          {claim.login} is viewing · <TimeAgo iso={claim.since} />
+          {claim.login} is looking · <TimeAgo iso={claim.since} />
         </span>
       )}
     </span>

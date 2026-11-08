@@ -1,5 +1,6 @@
 // Area lists (one saved version per change), item areas and model proposals. Plain SQL over the
 // tables area_lists, item_areas and area_proposals; the assignment itself is in assign.ts.
+import { prep } from "../sql-cache.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { AREAS_MAX, AREA_DESCRIPTION_MAX, AREA_NAME_MAX, NONE_OF_THESE, type Area } from "./types.ts";
 
@@ -161,7 +162,7 @@ export function editAreas(db: DatabaseSync, repo: string, edit: AreaEdit, by: st
 export type ItemArea = { area: string | null; source: string; confidence: number | null; listVersion: number; at: string };
 
 export function itemAreaOf(db: DatabaseSync, repo: string, number: number): ItemArea | null {
-  const r = db.prepare("SELECT area, source, confidence, list_version, at FROM item_areas WHERE repo = ? AND number = ?").get(repo, number) as { area: string | null; source: string; confidence: number | null; list_version: number; at: string } | undefined;
+  const r = prep(db, "SELECT area, source, confidence, list_version, at FROM item_areas WHERE repo = ? AND number = ?").get(repo, number) as { area: string | null; source: string; confidence: number | null; list_version: number; at: string } | undefined;
   return r ? { area: r.area, source: r.source, confidence: r.confidence, listVersion: r.list_version, at: r.at } : null;
 }
 

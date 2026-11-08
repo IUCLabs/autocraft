@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useNavigate } from "react-router-dom";
+import { useApi } from "../../api/client";
+import { canComment } from "../../registry/permissions";
 import { CheckIcon, ArrowUUpLeftIcon, UsersIcon } from "@phosphor-icons/react";
 import type { Decision, DecisionList } from "../../api/types";
 import type { Command, ViewProps } from "../../registry/types";
 import { useHotkeys, useShortcutHelp } from "../../shell/keyboard";
-import { Count } from "../../ui/atoms/Heading";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { ago, ageDays, when } from "../../lib/format";
@@ -15,7 +16,7 @@ import { ClaimPill, KIND_ICON } from "./parts";
 import { canTakeBack } from "./access";
 import { AnswerNotice } from "./AnswerNotice";
 import { ExecLine } from "./ExecLine";
-import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useUndo } from "./state";
+import { KIND_LABEL, KINDS, localActions, useDecisionFilter, useDecisionList, useLocal, useUndo } from "./state";
 import { useNow } from "../../lib/useNow";
 import { decisionPath } from "../../lib/links";
 import { MultiAnswer } from "./MultiAnswer";
@@ -64,11 +65,18 @@ export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
   useNow();
   const { data, loading, hasMore, loadMore, loadingMore } = useDecisionList();
   const navigate = useNavigate();
+  const api = useApi();
   const [id, setId] = useState<string>();
   const loc = useLocal();
-  const list = ordered(data?.decisions ?? []);
+  // The server orders the list (priority, then unclaimed, then age); it stays in that order.
+  const list = data?.decisions ?? [];
   const checked = list.filter((d) => loc.checked.has(d.id));
   useInboxKeys(list, id, setId);
+  // Opening a question marks it as being looked at, so the others' lists move it down.
+  const open = (d: Decision) => {
+    if (!d.answer && canComment(user)) void api.decisions.claim(d.id).catch(() => undefined);
+    navigate(decisionPath(d));
+  };
   const activeRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
@@ -77,11 +85,6 @@ export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
   useEffect(() => {
     if (phone && scroller.current) scroller.current.scrollTop = phoneListScroll;
   }, [phone]);
-  const groups: { kind: Decision["kind"]; items: Decision[] }[] = [];
-  for (const d of list) {
-    const g = groups.find((x) => x.kind === d.kind);
-    g ? g.items.push(d) : groups.push({ kind: d.kind, items: [d] });
-  }
   const oldest = data?.oldestAskedAt;
 
   return (
@@ -95,21 +98,9 @@ export function InboxList({ user, phone }: ViewProps & { phone?: boolean }) {
         <AnswerNotice key={a.id} entry={a} className="shrink-0 border-b border-line" />
       ))}
       <div ref={scroller} onScroll={phone ? (e) => (phoneListScroll = e.currentTarget.scrollTop) : undefined} className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Decisions">
-        {groups.map((g) => {
-          const Icon = KIND_ICON[g.kind];
-          return (
-            <div key={g.kind}>
-              <div className="sticky top-0 z-20 flex h-8 items-center gap-1.5 border-b border-line bg-bg px-4 text-xs font-semibold text-ink/70">
-                <Icon className="text-[12px] text-ink/45" />
-                {KIND_LABEL[g.kind]}
-                <Count n={g.items.length} />
-              </div>
-              {g.items.map((d) => (
-                <Row key={d.id} phone={phone} d={d} canUndo={canTakeBack(user, d)} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => navigate(decisionPath(d))} activeRef={d.id === id ? activeRef : undefined} />
-              ))}
-            </div>
-          );
-        })}
+        {list.map((d) => (
+          <Row key={d.id} phone={phone} d={d} canUndo={canTakeBack(user, d)} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => open(d)} activeRef={d.id === id ? activeRef : undefined} />
+        ))}
         {phone && data && !loading && !list.length && <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
         {hasMore && data && (
           <div className="flex items-center justify-between gap-3 px-4 py-3 text-xs text-ink/55">
@@ -136,6 +127,7 @@ function Row({ phone, d, canUndo, active, checked, mine, onOpen, activeRef }: { 
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;
   const item = d.shown;
+  const KindIcon = KIND_ICON[d.kind];
   return (
     <div className={cn("group relative flex border-b border-line", active ? "bg-accent/[0.08]" : "hover:bg-ink/[0.03]")}>
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
@@ -153,6 +145,10 @@ function Row({ phone, d, canUndo, active, checked, mine, onOpen, activeRef }: { 
           </span>
         </div>
         <div className="mt-0.5 flex items-start gap-1.5 text-xs text-ink/50">
+          <span className="inline-flex shrink-0 items-center gap-1 pt-0.5" title={KIND_LABEL[d.kind]}>
+            <KindIcon className="text-[12px] text-ink/45" />
+            <span className="hidden sm:inline">{KIND_LABEL[d.kind]}</span>
+          </span>
           {d.number === null ? (
             <>
               <span className="code shrink-0 text-[11.5px]">{d.repo}</span>
@@ -172,10 +168,10 @@ function Row({ phone, d, canUndo, active, checked, mine, onOpen, activeRef }: { 
               </span>
             )}
             {d.number !== null && <QueueBadge slot={d.queue} />}
-            <ClaimPill claim={d.claim} compact />
             {d.answer && d.undoable && canUndo && <RowUndo id={d.id} />}
           </span>
         </div>
+        {d.claim && <p className="mt-1"><ClaimPill claim={d.claim} /></p>}
         {d.dispute && <p className="mt-1 break-words text-xs text-warn">{d.dispute.by} disputed {d.answeredBy}&rsquo;s answer: {d.dispute.reason}</p>}
         <ExecLine d={d} canRetry={canUndo} compact />
       </div>
