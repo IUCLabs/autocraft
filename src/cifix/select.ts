@@ -7,9 +7,9 @@ import type { CifixCandidate, CifixSelection } from "./candidates.ts";
 export function selectCifix(db: DatabaseSync, repo: string, run?: string | null, plans?: PlanSet): CifixSelection {
   const out: CifixSelection = { work: [], collect: [], rerun: [], capped: [], ask: [], lint: [] };
   for (const { facts: f, action } of planned(db, "cifix", { repo, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) })) {
-    const x = f.cifix!, r = f.review!;
+    const x = f.cifix!, r = f.review;
     const c: CifixCandidate = {
-      repo, number: f.number, head: action.head!, verdict: r.verdict as "take" | "take-fix", reason: r.reason, attempt: x.tries + 1,
+      repo, number: f.number, head: action.head!, verdict: r?.verdict === "take-fix" ? "take-fix" : "take", reason: r?.reason ?? "", attempt: x.tries + 1,
       route: f.pushable ? "branch" : "comment", rerun: x.rerunAt !== null, rerunAt: x.rerunAt,
     };
     const bucket = action.params?.bucket;

@@ -28,6 +28,7 @@ import type {
 const WRITES: Partial<Record<DecisionKind, Record<string, string>>> = {
   scope: { close: "closes it on GitHub" },
   close: { close: "closes the PR on GitHub" },
+  hold: { close: "closes the PR on GitHub" },
   duplicate: { close: "closes it on GitHub" },
   merge: { merge: "merges on GitHub", close: "closes the PR on GitHub" },
 };
@@ -377,6 +378,25 @@ const SEEDS: Seed[] = [
     author: "nadir-k",
     size: [9412, 3870, 38],
     cls: [["haiku", "performance", "unclear"], ["jev", "infra", "no"]],
+  },
+  {
+    kind: "hold",
+    repo: "gridcraft",
+    number: 1012,
+    title: "Formula bar: recalculate on paste without the dirty flag",
+    question: "The review put this PR on hold. What next?",
+    context: ["The Opus review says hold: it neither takes the PR as it is nor closes it, and nothing happens until a person decides."],
+    facts: ["review reason: the paste path skips the dirty flag, so dependent cells keep stale values; the fix touches the evaluator core", "author: 3 merged, whitelisted, size M", "head commit 9f3c2ab41d07"],
+    options: [
+      { key: "wait", label: "Wait for the author", hint: "Keep it open and leave it to the author; asked again after a new commit or review." },
+      { key: "close", label: "Close", hint: "Not wanted as it is; post a short comment and close the PR." },
+    ],
+    recommended: "wait",
+    recommendedReason: "The paste path needs a design call from the author before a fix-up can be written.",
+    ageH: 5,
+    author: "quill-m",
+    size: [214, 38, 6],
+    cls: [["haiku", "bugfix", "unclear"], ["jev", "bugfix", "no"]],
   },
   {
     kind: "merge",

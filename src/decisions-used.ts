@@ -25,11 +25,12 @@ export function applyUsedAnswers(db: DatabaseSync, at: string = new Date().toISO
   const attempted = db.prepare("SELECT 1 FROM fix_attempts WHERE repo = ? AND number = ?");
   let n = 0;
   for (const a of actionable(db)) {
-    if (a.kind !== "scope" && a.kind !== "close") continue;
+    if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "hold") continue;
     const d = getDecision(db, a.id)!;
     const perItem = a.items.map((it) => ({ it, answer: a.exceptions.find((e) => e.repo === it.repo && e.number === it.number)?.answer ?? a.answer }));
     if (!perItem.length || perItem.some((p) => p.answer === "close")) continue;
     const used = perItem.every(({ it, answer }) => {
+      if (a.kind === "hold") return answer === "wait";
       if (a.kind === "close") return answer === "hold" || answer === "keep";
       if (answer === "need-info") return true;
       const row = item.get(it.repo, it.number) as ItemRow | undefined;

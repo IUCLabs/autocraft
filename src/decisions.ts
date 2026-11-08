@@ -10,7 +10,7 @@ import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
 import { inPilot } from "./pilot.ts";
 
-export const KINDS = ["scope", "duplicate", "close", "merge", "split", "other"] as const;
+export const KINDS = ["scope", "duplicate", "close", "merge", "hold", "split", "other"] as const;
 export type Kind = (typeof KINDS)[number];
 
 export type Option = { key: string; label: string; hint?: string };

@@ -168,6 +168,8 @@ export type PrFacts = {
   /** CI at the reviewed head with optional checks applied; "pending" while approved runs have not finished; "unknown" when the checks are of another head. */
   ci: string;
   mergeable: string;
+  /** The mergeable state has read as unknown since `since`, and was read again `rereads` times (src/merge/mergeable.ts); null when it is known. */
+  unknown: { since: string; rereads: number; lastAt: string | null } | null;
   /** Workflow runs waiting for approval at the head the checks describe (for an integration PR: at the batch tip). */
   runs: {
     waiting: number; reread: boolean; crossRepo: boolean; approvable: number;
@@ -194,6 +196,8 @@ export type PrFacts = {
     mergeAnswerAfterReview: boolean;
     /** Member of an open duplicate group (asked after the group is answered). */
     inOpenGroup: boolean;
+    /** The Hold question of a review that says hold, at the reviewed head: asked at all, still unanswered, and the answer given. */
+    hold: { asked: boolean; open: boolean; answer: string | null; /** Another open question of the item (scope, Merge?, Close?) is asked first. */ otherOpen: boolean };
   };
 
   /** The pre-merge review row at the reviewed head. */
@@ -229,6 +233,8 @@ export type PrFacts = {
     states: string[]; tries: number; rerunAt: string | null; infraRuns: number[] | null;
     formattingTask: number | null; formatterEnded: boolean;
     totalPushes: number; totalTries: number;
+    /** The reason of the head's skipped CI fix (nothing to fix), or null. */
+    skipReason: string | null;
     /** When the checks were fetched (ISO). */
     checksAt: string | null;
   } | null;
@@ -343,7 +349,7 @@ export type ItemFacts = {
   };
 
   /** Operator answers "close" that the Act step applies to this item: one per decision, with the state of its action row (null: none yet; done and skipped are final). */
-  answeredClose: { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; security: boolean; action: string | null; /** A member of a duplicate group decision: the Act step closes it, and its close record (not an actions row) ends the target. */ group?: boolean; /** The decision waits for its operator's token or access: no act action until it is retried or answered again. */ waiting?: boolean }[];
+  answeredClose: { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge" | "hold"; security: boolean; action: string | null; /** A member of a duplicate group decision: the Act step closes it, and its close record (not an actions row) ends the target. */ group?: boolean; /** The decision waits for its operator's token or access: no act action until it is retried or answered again. */ waiting?: boolean }[];
   /** The final Opus review at the PR's latest review head says close. `atHead`: that is the PR's current head. `asked`: the Close? decision at that head exists. */
   closeReview: { head: string; atHead: boolean; asked: boolean } | null;
 

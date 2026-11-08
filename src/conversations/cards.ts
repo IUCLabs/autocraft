@@ -430,7 +430,7 @@ export function applicableSteps(db: DatabaseSync, repo: string, n: number): stri
     if (isPr) {
       out.push("request_reviewers", "review", "fixup");
       const d = openDecision(db, repo, n);
-      if (d && (d.kind === "merge" || d.kind === "scope")) out.push("fixup with merge");
+      if (d && (d.kind === "merge" || d.kind === "scope" || d.kind === "hold")) out.push("fixup with merge");
     } else if (!closeRefusal(db, repo, n)) out.push("transfer");
   } else if (f.state === "CLOSED" && !("note" in reopenStep(db, repo, n))) out.push("reopen");
   return quiet ? out.filter((k) => !PUBLIC_TEXT_STEPS.has(k)) : out;

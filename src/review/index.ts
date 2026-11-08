@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { refreshChecks } from "./checks.ts";
+import { rereadUnknown } from "../merge/mergeable.ts";
 import { markReviewsStale, withRetry } from "./discussion.ts";
 
 export type ChecksParams = { repo: string };
@@ -14,6 +15,7 @@ export type ChecksParams = { repo: string };
 /** For the runner: refreshes CI and merge state of every open PR of the repo. */
 export async function runChecks(db: DatabaseSync, params: ChecksParams, log: (line: string) => void = console.log, querier: Querier = new Client(1000)): Promise<{ prs: number }> {
   const rows = await withRetry(() => refreshChecks(db, querier, params.repo, undefined, log));
+  await rereadUnknown(db, querier, params.repo, log);
   return { prs: rows.length };
 }
 

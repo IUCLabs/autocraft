@@ -14,10 +14,10 @@ const base = (): PrFacts => ({
   repoFacts: { mergeApproved: true, pushApproved: true, commentApproved: true, ciApproved: true, noCi: false, mainRed: false },
   review: { head: HEAD, at: REVIEW_AT, verdict: "take", unsure: false, mode: "full", reason: "ok", fixes: 0, stale: false, staleActionable: false },
   post: { postable: true, posted: { head: HEAD, at: "2026-11-04T10:01:00.000Z", opusAt: REVIEW_AT } },
-  checksHere: true, checksOpen: true, ci: "success", mergeable: "MERGEABLE", runs: null,
+  checksHere: true, checksOpen: true, ci: "success", mergeable: "MERGEABLE", unknown: null, runs: null,
   lastMerge: null, runsApprovedAfterMerge: false,
   verification: { state: "passed", kind: "build", summary: null, note: null }, verifyUnavailable: null,
-  decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: false },
+  decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: false, hold: { asked: false, open: false, answer: null, otherOpen: false } },
   premerge: { at: "2026-11-04T10:30:00.000Z", tries: 0, hasFindings: true, unsure: false, defects: 0, defectsAllFixable: true, fixesSafe: true, minor: 0, error: null },
   premergeFixUsed: false, sensitive: [], statementConflicts: [], pushable: true, pushChain: [HEAD], conflict: null, inActiveBatch: false, fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
 });

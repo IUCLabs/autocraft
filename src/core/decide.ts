@@ -3,7 +3,7 @@
 import {
   BATCHABLE, MAIN_RED_HELD, PREMERGE_DEFECT_REASON, PREMERGE_UNSURE_REASON, PREMERGE_FAILED_REASON, PREMERGE_MAX_TRIES, RETRY_AFTER_MS, REVIEW_LABELS, KEEP_IN_CORE,
   RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, VERIFY_UNAVAILABLE, ciAllows, conflictNote, verifyAllows, verifyOk,
-  FIXUP_MAX_ATTEMPTS, CIFIX_FINAL_STATES, CIFIX_MAX_PUSHES_PER_PR, CIFIX_MAX_TRIES, CIFIX_MAX_TRIES_PER_PR,
+  FIXUP_MAX_ATTEMPTS, CIFIX_FINAL_STATES, CIFIX_MAX_PUSHES_PER_PR, CIFIX_MAX_TRIES, CIFIX_MAX_TRIES_PER_PR, STATE_REFUSAL, UNKNOWN_GAP_MS, UNKNOWN_REREADS,
 } from "./rules.ts";
 import { UNCHECKED_REASON } from "./sensitive.ts";
 import { inFlightNow, unassignActions } from "./assignment.ts";
@@ -38,6 +38,14 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
   for (const c of f.statementConflicts) reasons.push(`conflicts with ${c.where}: "${excerpt(c.text)}" (${c.reason})`);
   if (f.verification?.state === VERIFY_UNAVAILABLE) reasons.push(`not verified: ${f.verification.summary ?? "Verify cannot build this repo"}`);
   if (f.ci === "none" && f.repoFacts.noCi) reasons.push("the repo has no CI checks");
+  if (open && (f.verification?.state === "failed" || f.verification?.state === "error")) reasons.push(`verification ${f.verification.state === "failed" ? "failed" : "errored"}: ${excerpt(f.verification.summary ?? f.verification.note ?? "no detail")}`);
+  // A merge refused for a reason other than the state of CI or mergeable waits for nothing that changes by itself: a person is asked.
+  if (open && refusalStuck(f)) reasons.push(`the merge was refused: ${excerpt(f.lastMerge!.reason!)}`);
+  const stuckUnknown = open ? unknownStuck(f) : null;
+  if (stuckUnknown) reasons.push(stuckUnknown);
+  // The CI fix has nothing to fix, but the queue reads CI as failing: a person decides.
+  const idle = open ? ciFixIdle(f) : null;
+  if (idle) reasons.push(idle);
   // Only a merge answer is set aside at an unsure head; a hold or close still counts.
   const given = f.decision.answer;
   const answer = given === "merge" && r.unsure && !f.decision.mergeAnswerAfterReview ? null : given;
@@ -87,13 +95,13 @@ function stateOf(f: PrFacts, e: Entry, merged: boolean, held: "backlog" | "dupli
   if (!e.reasons.length) e.path = "rule";
   else if (e.answer === "merge") e.path = "operator";
   if (f.mergeable === "CONFLICTING") return "conflict";
-  if (f.ci === "failure") return "ci-failed";
+  if (f.ci === "failure") return !e.path && ciFixIdle(f) ? "needs-decision" : "ci-failed";
   if ((f.runs?.waiting ?? 0) > 0) return "ci-approval";
   // A Merge? question is asked only once the operator can see the verification result.
-  if (!e.path) return verifyState(f) ?? "needs-decision";
+  if (!e.path) { const v = verifyState(f); return v === "verify-failed" || v === "verify-error" ? "needs-decision" : v ?? "needs-decision"; }
   if (!ciAllows(e.path, f.ci, e.noCi) || f.mergeable !== "MERGEABLE") return "waiting-ci";
   const v = verifyState(f);
-  if (v) return v;
+  if (v && !(e.path === "operator" && (v === "verify-failed" || v === "verify-error"))) return v;
   if (e.path === "rule" && e.premerge) {
     if (e.premerge === "none" || e.premerge === "retry") return "waiting-premerge";
     if (e.premerge === "fix") {
@@ -132,11 +140,11 @@ const premergeRetryDue = (f: PrFacts): boolean => {
 const WAITS: Partial<Record<QueueState, string>> = {
   "waiting-ci": "CI or GitHub's mergeable state", "waiting-premerge": "the pre-merge review", "waiting-verify": "verification",
   "needs-decision": "an operator's Merge? answer", "ci-approval": "approval of CI runs", "waiting-main-ci": "a green main", "in-batch": "its batch",
-  "batch-checking": "its batch", "batch-failed": "its batch", "changes-requested": "the maintainer's review", refused: "a change in CI or mergeable state",
+  "batch-checking": "its batch", "batch-failed": "its batch", "verify-failed": "a person: verification failed", "verify-error": "a person: verification errored", "changes-requested": "the maintainer's review", refused: "a change in CI or mergeable state",
 };
 
 /** Queue states whose WAITS text waits on a person. */
-const PERSON_WAITS: ReadonlySet<string> = new Set(["needs-decision", "ci-approval", "changes-requested"]);
+const PERSON_WAITS: ReadonlySet<string> = new Set(["needs-decision", "ci-approval", "changes-requested", "verify-failed", "verify-error"]);
 
 /** An operator's Hold or Close answer at the head: nothing is pushed or asked of the contributor, whatever the source. */
 const declinedBy = (f: PrFacts): boolean => f.decision.answer !== null && f.decision.answer !== "merge";
@@ -167,13 +175,47 @@ export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | nu
   return { bucket: f.repoFacts.pushApproved ? "fix" : "unapproved", done: false };
 }
 
-export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" | "linting" | "collect" | "rerun" | "rerun-wait" | "failed" | "capped" | "done";
+/** The last merge try was refused for a reason that is not about CI, mergeable or the head, and nothing changed since: only a person can clear it. */
+export function refusalStuck(f: PrFacts): boolean {
+  const m = f.lastMerge;
+  if (m?.outcome !== "refused" || !m.reason || STATE_REFUSAL.test(m.reason) || f.runsApprovedAfterMerge) return false;
+  return m.ci === null || m.mergeable === null || (m.ci === f.ci && m.mergeable === f.mergeable);
+}
+
+/** GitHub still reports the mergeable state as unknown after every re-read: the reason for a Merge? question, or null. */
+export function unknownStuck(f: PrFacts): string | null {
+  const u = f.unknown;
+  if (!u || f.mergeable === "MERGEABLE" || f.mergeable === "CONFLICTING" || u.rereads < UNKNOWN_REREADS || !u.lastAt || f.now - Date.parse(u.lastAt) < UNKNOWN_GAP_MS) return null;
+  return `GitHub still reports the merge state as unknown after ${u.rereads} re-reads since ${u.since.slice(0, 16).replace("T", " ")}`;
+}
+
+/** The CI fix is done with nothing to fix while the queue reads CI as failing: the reason for a Merge? question, or null. */
+export function ciFixIdle(f: PrFacts): string | null {
+  const c = f.cifix;
+  if (f.ci !== "failure" || f.mergeable === "CONFLICTING" || !c || !c.states.includes("skipped") || c.states.some((s) => s !== "skipped" && CIFIX_FINAL_STATES.includes(s)) || cifixBucket(f) !== "done") return null;
+  return `CI fails, but the CI fix has nothing to fix${c.skipReason ? ` (${excerpt(c.skipReason)})` : ""}`;
+}
+
+export type CifixBucket = "unreviewed" | "work" | "unapproved" | "cannot-push" | "formatting" | "linting" | "collect" | "rerun" | "rerun-wait" | "failed" | "capped" | "done";
+
+/** CI is red at the head, the review gate waits on it, and no take review covers the head. */
+function unreviewedRed(f: PrFacts): boolean {
+  const r = f.review;
+  const covered = !!r && (r.verdict === "take" || r.verdict === "take-fix") && r.head === f.head && !r.stale;
+  return f.ghState === "OPEN" && f.ci === "failure" && f.reviewHold?.kind === "ci" && f.reviewHold.red === true && !covered && !declinedBy(f) && !f.draft && notHeld(f)
+    && f.mergeable !== "CONFLICTING" && !f.changesRequested && !f.mergeHeld && !f.brokeByUs && !f.gateRed;
+}
 
 /** Where the CI fix step stands for a PR whose CI fails at the reviewed head, or null when it is no candidate. */
 export function cifixBucket(f: PrFacts): CifixBucket | null {
   const r = f.review, c = f.cifix;
   // Our own push that turned the checks red is repaired against the pushed head, whose review is still the one of the head before.
   const broke = !!f.brokeByUs || !!f.gateRed;
+  // The next review waits for green CI at a head no take review covers, and the CI fix needs a take review: the contributor is asked once.
+  if (c && unreviewedRed(f)) {
+    if (CIFIX_FINAL_STATES.some((s) => c.states.includes(s))) return "done";
+    return f.repoFacts.commentApproved && !f.quiet ? "unreviewed" : "cannot-push";
+  }
   if (declinedBy(f) || !r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || (r.head !== f.head && !broke) || f.ghState !== "OPEN" || (f.ci !== "failure" && !broke) || f.draft || !notHeld(f)) return null;
   if (f.mergeable === "CONFLICTING" || (r.stale && !broke) || f.changesRequested || f.mergeHeld) return null;
   if (r.verdict === "take-fix") {
@@ -198,6 +240,7 @@ export function cifixBucket(f: PrFacts): CifixBucket | null {
 function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "ask" | "other" | null {
   const b = cifixBucket(f);
   if (b === null) return null;
+  if (b === "unreviewed") return "ask";
   // A fix given up or capped at this head: the contributor is asked once.
   // Not for our own breakage, and not when the fix-up already asked at this head: one comment per head.
   if ((b === "failed" || b === "capped") && f.repoFacts.commentApproved && !f.brokeByUs && fixupOf(f)?.bucket !== "asked") return "ask";
@@ -219,6 +262,17 @@ const stuckWait = (f: PrFacts): Wait | null => {
   if (cf === "done" && f.cifix?.states.includes("asked")) return contributor("the contributor to fix CI");
   if (cf === "failed" || cf === "capped") return f.brokeByUs ? person("a person to fix CI our push broke") : f.repoFacts.commentApproved ? contributor("the contributor to fix CI") : approval;
   return cf === "cannot-push" ? approval : null;
+};
+
+/** What a PR waits on when the review waits for red CI and the CI fix could not start: the contributor was asked, or a person decides. Null when the ask is still due. */
+const unreviewedWait = (f: PrFacts): Wait | null => {
+  if (!f.cifix || !unreviewedRed(f)) return null;
+  const s = f.cifix.states;
+  if (s.includes("asked")) return contributor("the contributor to fix CI");
+  if (!f.repoFacts.commentApproved) return person("comment approval for the repo");
+  if (s.includes("comment-failed")) return person("a person: the comment to the contributor failed");
+  if (s.includes("skipped")) return person(`a person: CI is red and the CI fix has nothing to fix${f.cifix.skipReason ? ` (${excerpt(f.cifix.skipReason)})` : ""}`);
+  return CIFIX_FINAL_STATES.some((x) => s.includes(x)) ? person("a person to look at the red CI") : null;
 };
 
 /** Actions that work the PR towards merge (a push, a base merge, a review of a new head, a pre-merge review, the merge), as against comment-only asks. */
@@ -380,6 +434,12 @@ export function decidePr(f: PrFacts): Plan {
     else actions.push(act("cifix", f.head, { bucket: cf }));
   }
 
+  // A hold review: a person is asked once per head what to do (src/merge/hold.ts). A question left open for a head that is no longer held is set aside by the same step.
+  const hq = f.decision.hold;
+  const holdState = state === "opus-hold" && !!r && !held && !f.heldBacklog;
+  if (holdState && !hq.asked && !hq.otherOpen) actions.push(act("ask-merge", r!.head, { hold: true }));
+  else if (!holdState && hq.open) actions.push(act("ask-merge", f.head, { hold: true, withdraw: true, decisionHead: r?.head ?? f.head }));
+
   // Stored model patches whose lint task ended: the collect step folds the format changes and pushes, or sends the findings back to the model.
   for (const l of f.lint) {
     // A conflict resolution is collected while the PR still conflicts; every other patch needs it not to.
@@ -409,9 +469,24 @@ export function decidePr(f: PrFacts): Plan {
   actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
-  const queueWait = (st: QueueState): Wait | null => (WAITS[st] ? { text: WAITS[st]!, kind: PERSON_WAITS.has(st) ? "person" : "system" } : null);
+  const queueWait = (st: QueueState): Wait | null => {
+    if (st === "waiting-ci" && f.mergeable !== "MERGEABLE" && f.mergeable !== "CONFLICTING" && f.unknown) {
+      const stuck = unknownStuck(f);
+      return stuck ? person(`${stuck}; closing and reopening the PR on GitHub makes it compute the state`)
+        : system(`GitHub's merge state, unknown since ${f.unknown.since.slice(11, 16)} (read again ${f.unknown.rereads} of ${UNKNOWN_REREADS})`);
+    }
+    if (st === "refused" && refusalStuck(f)) return person(`a person: the merge was refused (${excerpt(f.lastMerge!.reason!)})`);
+    if (st === "ci-failed") { const idle = ciFixIdle(f); if (idle) return person(`a person: ${idle}; fix the check or mark it optional`); }
+    return WAITS[st] ? { text: WAITS[st]!, kind: PERSON_WAITS.has(st) ? "person" : "system" } : null;
+  };
+  // The Hold question of a hold review: open, answered Wait, or answered and being carried out.
+  const holdWait: Wait | null = holdState && !hq.asked && hq.otherOpen ? person("an answer to the item's open question; the Hold question follows")
+    : !holdState || !hq.asked ? null
+    : hq.open ? person("an operator's Hold answer")
+    : hq.answer === "wait" ? contributor("the author (the Hold question was answered: wait)")
+    : system("the answer to the Hold question to be carried out");
   const wait: Wait | null = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? person("merge held by an operator") : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : queueWait(e.state))) : null;
   // A review hold names what the pre-approved merge itself waits for, so it comes before the generic pre-approval wait.
-  const finalWait: Wait | null = wait ?? (!main && reviewWait ? (f.reviewHold?.person ? person(reviewWait) : system(reviewWait)) : null) ?? (f.operator?.hold && !main ? system("its pre-approved merge") : null);
+  const finalWait: Wait | null = wait ?? (main ? null : holdWait ?? unreviewedWait(f)) ?? (!main && reviewWait ? (f.reviewHold?.person ? person(reviewWait) : system(reviewWait)) : null) ?? (f.operator?.hold && !main ? system("its pre-approved merge") : null);
   return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: finalWait?.text ?? null, waitKind: finalWait?.kind ?? null });
 }

@@ -18,7 +18,7 @@ export interface ItemShown {
   title: string | null;
 }
 
-export type DecisionKind = "scope" | "duplicate" | "close" | "merge" | "split" | "other";
+export type DecisionKind = "scope" | "duplicate" | "close" | "merge" | "hold" | "split" | "other";
 
 export interface OptionTexts {
   option: string;

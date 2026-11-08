@@ -19,8 +19,17 @@ export const VERIFY_OK = ["passed", "ci-enough"];
 export const verifyOk = (state: string | null | undefined): boolean => !!state && VERIFY_OK.includes(state);
 /** A PR in a repo Verify cannot build is merged only on an operator's answer, which says "not verified". */
 export const VERIFY_UNAVAILABLE = "unavailable";
+/** A failed or errored verification is asked about in the Merge? question; an operator's Merge answer to it stands. */
 export const verifyAllows = (path: "rule" | "operator" | null, state: string | null | undefined): boolean =>
-  verifyOk(state) || (path === "operator" && state === VERIFY_UNAVAILABLE);
+  verifyOk(state) || (path === "operator" && (state === VERIFY_UNAVAILABLE || state === "failed" || state === "error"));
+
+/** A PR whose mergeable state reads unknown is read again (src/merge/mergeable.ts): after UNKNOWN_AFTER_MS, UNKNOWN_REREADS times, UNKNOWN_GAP_MS apart; then a person is asked. */
+export const UNKNOWN_AFTER_MS = 30 * 60_000;
+export const UNKNOWN_GAP_MS = 2 * 3600_000;
+export const UNKNOWN_REREADS = 3;
+
+/** A merge refusal that only reports the state of CI, mergeable or the head: it clears when that state changes. Any other refusal is asked about. */
+export const STATE_REFUSAL = /^(not ready at merge time|head moved|no longer open|GitHub returned no such PR|the operator's merge answer is gone|verification at)/;
 export const ciAllows = (path: "rule" | "operator" | null, ci: string | null | undefined, noCi: boolean): boolean =>
   ci === "success" || (path === "operator" && ci === "none" && noCi);
 
@@ -106,6 +115,15 @@ export const MERGE_OPTIONS = {
   hold: { key: "hold", label: "Hold", hint: "Keep it open and out of the merge queue." },
   close: { key: "close", label: "Close", hint: "Not wanted as it is; post a short comment and close the PR." },
 } as const;
+
+/** Options of the "Hold" question asked for a PR whose Opus review says hold. Review again, and a fix-up first, are offered as cores (src/decide/choices.ts). */
+export const HOLD_OPTIONS = {
+  wait: { key: "wait", label: "Wait for the author", hint: "Keep it open and leave it to the author; asked again after a new commit or review." },
+  close: { key: "close", label: "Close", hint: "Not wanted as it is; post a short comment and close the PR." },
+} as const;
+
+/** One Hold question per PR head. */
+export const holdDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:hold@${head}`;
 
 /** One open decision per PR head: a push gets a new one. */
 export const mergeDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:merge@${head}`;

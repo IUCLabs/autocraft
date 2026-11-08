@@ -265,7 +265,7 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     const got = r.value;
     // The PR moved on while the call ran: the next pass prepares it for the new head. A group's kept item may be closed; prepareIds decides whether the group is still open.
     const after = itemOf.get(repo, n) as ItemRow | undefined;
-    if (!after || (!group && after.state !== "OPEN") || (isPr && d.kind === "merge" && after.head_oid !== head)) {
+    if (!after || (!group && after.state !== "OPEN") || (isPr && (d.kind === "merge" || d.kind === "hold") && after.head_oid !== head)) {
       // Counted as a try at the head it was asked for: a new head is prepared at once, anything else waits like a failure instead of repeating every pass.
       failed.run(head, now(), head, d.id);
       p.log(`decide: ${d.id}: head moved on during the call; prepared again next pass`);

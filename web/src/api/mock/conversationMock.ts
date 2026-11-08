@@ -56,6 +56,23 @@ function mergeChoices(n: number): DecisionChoices {
   return { id: `ch-${n}`, decisionId: "designcraft#1484:merge", pick: { core: "o:merge", reason: "Review and CI are green and the author is whitelisted. The data duplicates the language pack, so a follow-up issue covers moving onto it." }, cores, source: "prepare", at: at(5) };
 }
 
+/** A Hold question: a new review is always offered first, then a fix-up, waiting for the author, closing and Later. */
+function holdChoices(): DecisionChoices {
+  const cores: ChoiceCore[] = [
+    { key: "x:review", label: "Review the PR again", autocraft: "reviews the PR again, then asks again if needed", writes: [], drafted: false, extras: [] },
+    {
+      key: "fixup-merge", label: "Fix up first, then merge", autocraft: "pushes the fix-up, reviews again, merges if both pass",
+      params: { instructions: "Mark the pasted range dirty in `paste_cells` before recalculating, and add a regression test for a dependent cell." },
+      writes: ["push", "merge"], drafted: true,
+      extras: [{ id: "e1", kind: "comment", tag: "comment", on: true, text: "Thanks for the fix. The paste path also has to set the dirty flag; I'm pushing that change, then merging." }],
+    },
+    { key: "o:wait", label: "Wait for the author", autocraft: "keeps it open and leaves it to the author; asks again after a new commit or review", writes: [], drafted: true, extras: [{ id: "e1", kind: "comment", tag: "comment", on: true, text: "The review found that the paste path skips the dirty flag. Could you update the PR?" }] },
+    { key: "o:close", label: "Close", autocraft: "records the answer and stops working on it", params: { reason: "" }, writes: ["comment", "close"], drafted: false, extras: [] },
+    { key: "backlog", label: "Later", autocraft: "moves it to the Backlog", writes: [], drafted: false, extras: [] },
+  ];
+  return { id: "ch-h1", decisionId: "gridcraft#1012:hold", pick: { core: "o:wait", reason: "The paste path needs a design call from the author before a fix-up can be written." }, cores, source: "prepare", at: at(5) };
+}
+
 /** A scope question where the item was already done: Opus adds a close-as-done core. */
 function scopeChoices(n: number): DecisionChoices {
   const cores: ChoiceCore[] = [
@@ -151,7 +168,7 @@ function seed(): ConversationTurn[] {
 /** In-memory conversations. Only designcraft#1484 starts with one; an operator's message is answered after a few seconds. */
 export function createConversationMock(me: User, changed: () => void, settle?: (repo: string, number: number, option: string, note: string | null) => void, hooks?: { reprepare?: (decisionId: string) => void }, derive?: (repo: string, number: number) => DecisionChoices | null): Pick<Api, "conversations"> {
   // The open choices by item; a run that settles the question removes them.
-  const choices = new Map<string, DecisionChoices>([[REF, mergeChoices(1)], ["photocraft#4127", scopeChoices(1)], ["gridcraft#977", { ...mergeChoices(1), id: "ch-g1", decisionId: "gridcraft#977:merge", pick: null }]]);
+  const choices = new Map<string, DecisionChoices>([[REF, mergeChoices(1)], ["photocraft#4127", scopeChoices(1)], ["gridcraft#977", { ...mergeChoices(1), id: "ch-g1", decisionId: "gridcraft#977:merge", pick: null }], ["gridcraft#1012", holdChoices()]]);
   let epoch = 1;
   const failedOnce = new Set<string>();
   if (hooks)
