@@ -325,12 +325,8 @@ export type ItemFacts = {
     open: boolean;
     /** The answer of the latest answered scope decision covering the item. */
     answer: string | null;
-    /** A decision exists that keeps Decide from asking again: any open decision, any scope decision, any Backlog answer. */
+    /** A decision exists that keeps Decide from asking again: any open decision, any scope decision (a maintainer answer that no longer counts excepted), any Backlog answer. */
     covered: boolean;
-    /** The item's stage row is past "classified". */
-    pastClassified: boolean;
-    /** The item has only been labelled (stage "labeled"): a scope-vs-scope disagreement from a later classification is still asked. */
-    labeledOnly?: boolean;
     /** One of its open decisions (any kind) has no prepare for its current state (src/decide/prepared.ts): failed tries so far at the current head and the time of the last failure. */
     recommend: { failures: number; failedAt: string | null } | null;
   };
@@ -359,8 +355,8 @@ export type ItemFacts = {
     publicRepo: boolean;
     /** The step found the repo has no Rust workspace at its root. */
     notRust: boolean;
-    /** An open PR in the repo closes the issue or mentions it by number. */
-    openPr: boolean;
+    /** The number of an open PR in the repo that closes the issue (a closing keyword or closing-issue link, not a bare mention), or null. */
+    openPr: number | null;
     /** The priority row's impact level (P0 to P4). */
     impact: string | null;
     /** The latest scope decision about the issue itself, and whether an operator answered it. */

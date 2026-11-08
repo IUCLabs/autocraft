@@ -85,13 +85,13 @@ function randomItem(x: Rnd): ItemFacts {
     },
     embeddedHash: x.pick(["e1", "e1", null]), priorityHash: x.pick(["e1", "e1", null]), scannedHash: x.pick(["e1", "e1", null]),
     pairsToCheck: x.int(2), inGroupToAsk: x.bool(0.1), dupeAnswers: x.bool(0.1) ? ["d1"] : [],
-    scope: { open: x.bool(0.1), covered: x.bool(0.2), pastClassified: x.bool(0.1), answer: null, recommend: x.bool(0.1) ? { failures: x.int(3), failedAt: null } : null },
+    scope: { open: x.bool(0.1), covered: x.bool(0.2), answer: null, recommend: x.bool(0.1) ? { failures: x.int(3), failedAt: null } : null },
     labels: { existing: x.pick([["bugfix"], []]), pluginAnswer: x.bool(0.1), labeledNote: null },
     answeredClose: x.bool(0.2) ? [{ decisionId: "d", kind: x.pick(["scope", "close", "duplicate", "merge"] as const), security: x.bool(0.2), action: x.pick([null, null, "failed", "done"]) }] : [],
     closeReview: x.bool(0.1) ? { head: "h1", atHead: x.bool(), asked: x.bool() } : null,
     fix: {
       attempt: x.bool(0.3) ? { state: x.pick(["retry", "testing", "passed", "skipped", "failed"]), textChanged: x.bool(), headDone: x.bool(), baseDone: x.bool() } : null,
-      publicRepo: x.bool(0.9), notRust: x.bool(0.1), openPr: x.bool(0.1), impact: x.pick(["P0", "P2", "P4"]), scopeDecision: null,
+      publicRepo: x.bool(0.9), notRust: x.bool(0.1), openPr: x.bool(0.1) ? 7 : null, impact: x.pick(["P0", "P2", "P4"]), scopeDecision: null,
     },
   } as Parameters<typeof itemFacts>[0]);
 }

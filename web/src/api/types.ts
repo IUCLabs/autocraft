@@ -2081,10 +2081,10 @@ export type NeedsFeedbackRow = {
   handled: boolean;
 };
 export type NeedsFeedbackPage = { rows: NeedsFeedbackRow[]; nextCursor: string | null };
-export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string };
+export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string } | { type: "fix"; repo: RepoName; number: number };
 export type NeedsStoppedRow = {
   id: string;
-  kind: "breaker" | "limit" | "account";
+  kind: "breaker" | "limit" | "account" | "fix";
   title: string;
   reason: string;
   since: string | null;

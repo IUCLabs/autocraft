@@ -17,6 +17,13 @@ function Resume({ row, onDone }: { row: NeedsStoppedRow; onDone: () => void }) {
   const r = row.resume;
   if (r.type === "link") return <TextLink to={r.to}>Open</TextLink>;
   if (!operator) return null;
+  if (r.type === "fix")
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <ConfirmButton idle="secondary" label="Fix again" confirmLabel="Confirm fix again" loading={write.busy === "resume"} onConfirm={() => void write.run("resume", async () => { await api.release(r.repo, r.number, "fix-again"); onDone(); })} />
+        <ErrorLine error={write.error} />
+      </div>
+    );
   return (
     <div className="flex flex-col items-end gap-1">
       <ConfirmButton idle="secondary" label="Resume" confirmLabel="Confirm resume" loading={write.busy === "resume"} onConfirm={() => void write.run("resume", async () => { await api.pipeline.resumeTrip(r.stage); onDone(); })} />

@@ -10,6 +10,7 @@ import { reviewBots } from "../../review/bots.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./shown.ts";
+import { fixStoppedWait } from "../../core/decide-item.ts";
 import { blankIfHidden, hiddenRepos } from "./visible.ts";
 import { allOwnLogins } from "../../github/identity.ts";
 
@@ -112,6 +113,15 @@ export async function stopped(db: DatabaseSync, hidden: string[]): Promise<Needs
     if (l.perDay === 0 && !l.tripped) out.push({ id: `limit:${l.step}`, kind: "limit", title: l.title, reason: "The daily limit is 0", since: updated.get(l.step) ?? null, resume: { type: "link", to: "/pipeline" } });
   for (const a of listAccounts(db))
     if (a.enabled && a.pausedReason) out.push({ id: `account:${a.id}`, kind: "account", title: a.label, reason: blankIfHidden(a.pausedReason, hidden), since: null, resume: { type: "link", to: "/accounts" } });
+  // Issues whose fix attempt was skipped or failed: the plan waits on a person, and Fix again clears it.
+  const fixes = db.prepare(`SELECT p.repo, p.number, i.title, a.state, a.reason, a.summary, COALESCE(a.updated_at, p.planned_at) AS since
+    FROM main.item_plans p JOIN items i ON i.repo = p.repo AND i.number = p.number LEFT JOIN fix_attempts a ON a.repo = p.repo AND a.number = p.number
+    WHERE p.kind = 'issue' AND p.wait IN (?, ?) ORDER BY since`).all(fixStoppedWait("skipped"), fixStoppedWait("failed")) as
+    { repo: string; number: number; title: string | null; state: string | null; reason: string | null; summary: string | null; since: string | null }[];
+  for (const r of fixes) {
+    if (hidden.includes(r.repo)) continue;
+    out.push({ id: `fix:${r.repo}#${r.number}`, kind: "fix", title: `${r.repo}#${r.number} ${r.title ?? ""}`.trim(), reason: `The fix attempt was ${r.state ?? "stopped"}${r.reason ?? r.summary ? `: ${r.reason ?? r.summary}` : ""}`, since: r.since, resume: { type: "fix", repo: r.repo, number: r.number } });
+  }
   return out;
 }
 

@@ -17,29 +17,25 @@ export function scopeReason(f: ItemFacts): "needs-decision" | "scope-disagreemen
   return null;
 }
 
-/** An issue the Fix stage may start on: settled bugfix, not backlog priority, no attempt (a skipped one returns when its text changed), a public Rust repo, no scope call against it, no open PR for it. */
-function fixCandidate(f: ItemFacts): boolean {
+/** An issue the Fix stage may start on: settled bugfix, not backlog priority, no attempt (a skipped one returns when its text changed), a public Rust repo, no scope call against it, no open PR that closes it (`ignoreOpenPr` leaves that test out). */
+function fixCandidate(f: ItemFacts, ignoreOpenPr = false): boolean {
   const c = f.classification, fix = f.fix, a = fix.attempt;
   if (!fix.publicRepo || fix.notRust || c.status !== "settled" || c.label !== "bugfix") return false;
   if (fix.impact && levelWith(fix.impact as Level, c.flags.includes("security")) === "P4") return false;
   if (a && !(a.state === "skipped" && a.textChanged)) return false;
   const d = fix.scopeDecision;
   if (d ? !(d.answer === "take" && d.byOperator) : c.flags.includes("needs decision")) return false;
-  return !fix.openPr;
+  return ignoreOpenPr || fix.openPr === null;
 }
 
 /** Jev and Haiku chose different labels and it is not a scope call: a referee (Sonnet, then Opus when Sonnet was unsure) still has to settle it. An unsure Opus settles the label too and flags a scope decision. */
 const labelDisagreement = (f: ItemFacts): boolean => f.classification.status === "disagree" && scopeReason(f) !== "scope-disagreement";
 
-/** The last referee was unsure, so the needs-decision flag comes from it and not from Jev or Haiku. */
-const refereeUnsure = (f: ItemFacts): boolean => !!f.classification.referee && !f.classification.referee.sure && f.classification.referee.final;
+/** A scope decision should be asked: the reason holds and no open decision, scope decision or Backlog answer covers the item. Labelling or a later stage does not suppress it. */
+const scopeNeeded = (f: ItemFacts): boolean => scopeReason(f) !== null && !f.scope.covered;
 
-/** A scope decision should be asked: the reason holds and no decision or later stage covers the item. */
-const scopeNeeded = (f: ItemFacts): boolean => {
-  const reason = scopeReason(f);
-  // An item that was only labelled still gets its scope question when a later classification disagrees on a scope label or an unsure referee flags it.
-  return reason !== null && !f.scope.covered && (!f.scope.pastClassified || (!!f.scope.labeledOnly && (reason === "scope-disagreement" || refereeUnsure(f))));
-};
+/** The wait of an issue whose fix attempt was skipped or failed: Fix again, Backlog or Close on the item page (and Needs you > Stopped) clears it. */
+export const fixStoppedWait = (state: string): string => `a person to retry the ${state} fix`;
 
 const PLUGIN_WAIT = "stays open as a plugin candidate";
 /** A PR settled as a plugin candidate is not reviewed or merged: it stays open with its label (no question) unless a scope decision about it is open. */
@@ -57,7 +53,7 @@ export function itemState(f: ItemFacts): ItemState {
 
 const WAITS: Partial<Record<ItemState, string>> = {
   "held-duplicate": "a Duplicate? answer", "held-backlog": "a Backlog hold", "referee-due": "the label referee",
-  "waiting-haiku": "Haiku's second opinion", "scope-open": "a scope answer",
+  "waiting-haiku": "Haiku's second opinion", "scope-open": "a scope answer", "scope-due": "the scope question to be asked",
 };
 
 export function decideItem(f: ItemFacts): ItemPlan {
@@ -116,14 +112,20 @@ export function decideItem(f: ItemFacts): ItemPlan {
   // unassign (issues; a PR's is decided with its review-to-merge plan): kept while a fix attempt runs or its PR is open, released
   // when the issue waits on a person, was given up or left the scope.
   if (f.kind === "issue") {
-    const running = ["retry", "testing", "passed"].includes(a?.state ?? "") || (a?.state === "pr-opened" && fix.openPr);
+    const running = ["retry", "testing", "passed"].includes(a?.state ?? "") || (a?.state === "pr-opened" && fix.openPr !== null);
     actions.push(...unassignActions(f.assignment, f.open, !f.inScope || !!f.held || !running));
   }
 
   // A closed item is here for its unapplied answered close only.
   if (!f.open) actions.splice(0, actions.length, ...actions.filter((a) => a.kind === "act" && !a.params?.ask));
-  const wait = actions.some(isWork) ? null : !f.inScope ? "not in scope" : state === "classified" && pluginPr(f) ? PLUGIN_WAIT : WAITS[state] ?? null;
-  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait, waitKind: wait === null ? null : f.inScope && (state === "held-duplicate" || state === "scope-open") ? "person" : "system" };
+  const base = actions.some(isWork) ? null : !f.inScope ? "not in scope" : state === "classified" && pluginPr(f) ? PLUGIN_WAIT : WAITS[state] ?? null;
+  // An issue with nothing else due waits on the PR that closes it, or on a person when its fix attempt was skipped or failed.
+  let wait = base, waitKind: ItemPlan["waitKind"] = base === null ? null : f.inScope && (state === "held-duplicate" || state === "scope-open") ? "person" : "system";
+  if (wait === null && f.kind === "issue" && f.open && f.inScope && !backlog && !f.held && actions.every((x) => !isWork(x))) {
+    if (fix.openPr !== null && (a?.state === "pr-opened" || a?.state === "passed" || fixCandidate(f, true))) { wait = `open PR #${fix.openPr}`; waitKind = "system"; }
+    else if (a?.state === "skipped" || a?.state === "failed") { wait = fixStoppedWait(a.state); waitKind = "person"; }
+  }
+  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait, waitKind };
 }
 
 /** The Work page's next-step text (rank/next.ts nextStepOf), from the item's state and, for a PR, the facts of its review-to-merge path. */

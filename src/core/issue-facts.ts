@@ -20,7 +20,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { TERMINAL } from "../build/tasks.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
 import { issuesWithOpenPr, notRustKey, textHash } from "../fixissue/candidates.ts";
-import { headOf, scopeAnswers } from "../review/candidates.ts";
+import { headOf, scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql } from "../pilot.ts";
 import { isPreparing, prepareStateSql, utcDayStart, type PrepareColumns } from "../decide/prepared.ts";
@@ -95,6 +95,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const memo = settleMemo();
   const answers = scopeAnswers(db);
   const operatorAnswers = scopeAnswers(db, true);
+  const unsettled = unsettledScope(db);
   const latestScope = new Map<string, { answer: string | null; byOperator: boolean }>(), securityIds = new Set<string>();
   const head = db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?");
   const openScope = new Set<string>(), covered = new Set<string>(), recommend = new Map<string, { failures: number; failedAt: string | null }>();
@@ -118,7 +119,9 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     }
     // A question the pipeline withdrew (its item closed) does not cover the item: if it reopens, it is asked again.
     const withdrawn = d.answer === "withdrawn" && d.answered_by === "pipeline";
-    if ((d.answer === null || d.kind === "scope" || d.answer === "backlog") && !dupegroup && !withdrawn) for (const r of refsOf(d)) covered.add(r);
+    // A maintainer's scope answer that no longer counts (src/settlers.ts) covers nothing: the item needs a decision again.
+    const lapsed = d.kind === "scope" && d.answer !== null && refsOf(d).every((r) => unsettled.has(r));
+    if ((d.answer === null || d.kind === "scope" || d.answer === "backlog") && !dupegroup && !withdrawn && !lapsed) for (const r of refsOf(d)) covered.add(r);
   }
   const labeled = new Map((db.prepare("SELECT repo, number, note FROM stages WHERE stage = 'labeled' ORDER BY at, rowid").all() as { repo: string; number: number; note: string | null }[])
     .map((s) => [`${s.repo}#${s.number}`, s.note]));
@@ -170,7 +173,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     WHERE r.verdict = 'close' AND r.head_oid = (SELECT r2.head_oid FROM opus_reviews r2 WHERE r2.repo = r.repo AND r2.number = r.number AND r2.verdict IS NOT NULL ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)`).all() as
     { repo: string; number: number; head_oid: string; i_head: string | null; updated_at: string | null; c_head: string | null; c_at: string | null; asked: number }[])
     closeReview.set(`${r.repo}#${r.number}`, { head: r.head_oid, atHead: headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid, asked: !!r.asked });
-  const repoMemo = new Map<string, { comment: boolean; fix: boolean; pub: boolean; notRust: boolean; openPrs: Set<number> }>();
+  const repoMemo = new Map<string, { comment: boolean; fix: boolean; pub: boolean; notRust: boolean; openPrs: Map<number, number> }>();
   const repoOf = (repo: string) => {
     let m = repoMemo.get(repo);
     if (!m) {
@@ -183,9 +186,9 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const textOf = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?");
   const mirrored = db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ? AND kind = 'pr'");
   // The fix PR we just opened counts as open until a sync mirrors it: the mirror's open-PR list doesn't have it yet.
-  const ownPrUnmirrored = (state: string | null, url: string | null): boolean => {
+  const ownPrUnmirrored = (state: string | null, url: string | null): number | null => {
     const m = state === "pr-opened" ? /\/([^/]+)\/pull\/(\d+)$/.exec(url ?? "") : null;
-    return !!m && !mirrored.get(m[1]!, Number(m[2]));
+    return m && !mirrored.get(m[1]!, Number(m[2])) ? Number(m[2]) : null;
   };
   const body = db.prepare("SELECT repo, number, kind, title, body, additions, deletions, changed_files, author_association FROM items WHERE repo = ? AND number = ?");
 
@@ -237,7 +240,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       },
       embedHash, embeddedHash: r.e_hash, priorityHash: r.pr_hash, scannedHash: r.scan_hash,
       pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref), dupeAnswers: dupeAnswers.get(ref) ?? [],
-      scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), labeledOnly: r.stage === "labeled", pastClassified: r.stage !== null && r.stage !== "classified", recommend: recommend.get(ref) ?? null },
+      scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), recommend: recommend.get(ref) ?? null },
       labels: { quietFix: own.quiet.has(ref), existing: json<unknown[]>(r.labels, []).map(String), pluginAnswer: operatorAnswers.get(ref) === "plugin", labeledNote: note },
       answeredClose: answeredClose.get(ref) ?? [],
       closeReview: closeReview.get(ref) ?? null,
@@ -248,7 +251,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
           headDone: r.h_state !== null && (TERMINAL as string[]).includes(r.h_state),
           baseDone: r.a_base === null || (r.b_state !== null && (TERMINAL as string[]).includes(r.b_state)),
         },
-        publicRepo: repoOf(r.repo).pub, notRust: repoOf(r.repo).notRust, openPr: r.kind === "issue" && (repoOf(r.repo).openPrs.has(r.number) || ownPrUnmirrored(r.a_state, r.a_pr)), impact: r.impact,
+        publicRepo: repoOf(r.repo).pub, notRust: repoOf(r.repo).notRust, openPr: r.kind === "issue" ? repoOf(r.repo).openPrs.get(r.number) ?? ownPrUnmirrored(r.a_state, r.a_pr) : null, impact: r.impact,
         scopeDecision: latestScope.get(ref) ?? null,
       },
     };
