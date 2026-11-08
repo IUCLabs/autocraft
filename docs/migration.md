@@ -8,7 +8,17 @@ Placeholders: `<root>` is the systemd install root, `IMAGE` the image, `DATA` an
 RUN="-v DATA:/data -v CONFIG:/config --env-file container.env"
 ```
 
-`container.env` holds `AUTOCRAFT_BASE_URL`, `AUTOCRAFT_TRUST_PROXY` and any other setting from the systemd settings file that is not a path. Do not copy the path settings (`AUTOCRAFT_DB`, `AUTOCRAFT_SECRETS_FILE`, cache and lock directories, listen addresses): the image sets them.
+`container.env` holds `AUTOCRAFT_BASE_URL`, `AUTOCRAFT_TRUST_PROXY` and any other setting from the systemd settings file that is not a path. Do not copy the path settings (`AUTOCRAFT_DB`, `AUTOCRAFT_SECRETS_FILE`, cache and lock directories, listen addresses): the image sets them. Go through the old settings file line by line:
+
+| Old setting | In the container |
+|---|---|
+| `AUTOCRAFT_BASE_URL`, `AUTOCRAFT_TRUST_PROXY`, `AUTOCRAFT_LOGIN_APP`, `AUTOCRAFT_REVIEW_BOTS`, `AUTOCRAFT_STOP_TIMEOUT` | Copy to `container.env`. |
+| `AUTOCRAFT_DISCORD_TOKEN_FILE`, `AUTOCRAFT_DISCORD_KEY_FILE`, `AUTOCRAFT_IMAGE_TOKEN_FILE` | Each names a file. Copy the file to `/config` (step 6) and set the variable to the new path. |
+| `AUTOCRAFT_ARTIFACT_DIR`, `AUTOCRAFT_SNAPSHOT_DIR` | Leave unset: the code then uses `artifacts` and `item-snapshot` beside the database, in `/data` (step 5). |
+| `AUTOCRAFT_MERGE_CMD`, `AUTOCRAFT_EXTRA_STEPS` | Name a program or module of the old host. The image has neither; leave them unset unless a derived image adds it. |
+| `AUTOCRAFT_WORKER_SSH`, `AUTOCRAFT_BRANCH`, `AUTOCRAFT_ROOT`, `AUTOCRAFT_UNITS`, `AUTOCRAFT_RUNNER_UNIT`, `AUTOCRAFT_TIMER`, `AUTOCRAFT_SUDO`, `AUTOCRAFT_HEALTH_URL`, `AUTOCRAFT_ENV_FILE`, `AUTOCRAFT_KEEP_RELEASES` | Drop. Only `deploy/hook.sh` reads them; it runs `autocraft worker update-code`, which needs `ssh` and a bare repository, and the image has neither. Update a worker's code by hand (see Build worker in the VPS section). |
+
+Also check the old `PATH` for wrappers (for example a `gh` wrapper that picks an account by directory): the image has the plain `gh`, which uses the one `GH_TOKEN`.
 
 Steps marked **admin** need a person with access to the secrets or to DNS and the proxy.
 
@@ -32,6 +42,29 @@ Steps marked **admin** need a person with access to the secrets or to DNS and th
    ```
 
    Expect `ok`. Restore only the `.db` file; never copy `-wal` or `-shm` files from the old host. On a volume that held a database before, the restore command deletes stale `-wal` and `-shm` files first.
+
+   The database directory (`<root>/data`) holds more than `mirror.db`. The container finds each of these beside the database in `/data`, with no setting:
+
+   | Path | Verdict | Evidence |
+   |---|---|---|
+   | `reference/<repo>/` (private reference pages, about 1.5 GB) | **Carry over.** It is not rebuildable from GitHub; without it the calls that judge reference-app behaviour run without `/reference`. | `src/reference.ts:22-33`, `src/review/opus.ts:256` |
+   | `item-snapshot/items.db` (about 0.9 GB) | **Drop.** It is built from the database. The first sync after start creates it (`rebuilt`); the dashboard and a pipeline-off runner do not need it. Check that it exists before the pipeline goes on (step 9). | `src/itemtools/snapshot.ts:94-110`, `src/mirror.ts:895` |
+   | `artifacts/` (task output) | **Optional.** Rows in `build_artifacts` point to these files. A missing file makes the artifact download answer 404 ("the artifact file is gone"). Tasks older than 30 days lose their artifacts anyway. Copy it only to keep recent downloads. | `src/dash/api/build.ts:77-82`, `src/build/tasks.ts:23` |
+   | `backups/` | **Optional.** Keep the old files off the box as history; the container writes new ones to `/data/backups`. | `deploy/backup.sh` |
+   | `<root>/cache/` (embedding model, diffs, checkouts, fixup git cache, job logs, usage readings) | **Drop.** Each part is fetched or rebuilt on demand: the model (34 MB) downloads on first use, a missing diff is read from GitHub, checkouts and the fixup cache are cloned again. | `src/review/diff.ts:36-45`, `src/embed/model.ts:48` |
+
+   Stream the reference pages per repository (the import checks the files, needs the repository to be tracked, which the restored database provides, and records `reference-import` in the audit log):
+
+   ```
+   tar -cf - -C <root>/data/reference/<repo> . | docker run -i --rm -v DATA:/data IMAGE reference import <repo>
+   docker run --rm -v DATA:/data IMAGE reference list
+   ```
+
+   The file counts and sizes must equal the old host's `autocraft reference list`. To copy `artifacts/` as it is:
+
+   ```
+   tar -cf - -C <root>/data artifacts | docker run -i --rm -v DATA:/data --entrypoint tar IMAGE -xf - -C /data
+   ```
 6. **Place the secrets. admin.** Create `/config/secrets.json` with mode 0600, owner uid 10001, with the old file's content. Keep `session_key` byte for byte: the dashboard seals each user's GitHub tokens with it, and with a different key every sealed token reads as unavailable until the user signs in again. The GitHub client and App keys come from the same file. Never put the file in an image, a manifest or a log.
 
    ```
@@ -39,7 +72,36 @@ Steps marked **admin** need a person with access to the secrets or to DNS and th
    ```
 
    The dashboard refuses to start if the file is readable by group or others.
-7. **Place the accounts. admin.** Copy `accounts.json` and the Claude configuration directories (`<root>/config/claude/`, one per account, with their logins) to `/config/accounts.json` and `/config/claude/`, owned by uid 10001, keeping the modes (credentials are 0600). The systemd install used a logged-in `gh`; the container uses a token instead. The admin creates a GitHub token for `gh` (classic personal access token with the `repo`, `read:org` and `workflow` scopes; keep `workflow`, which lets the pipeline push to branches that change workflow files) and sets it as `GH_TOKEN` for the dashboard, the runner and the sync and backup containers (with Docker, `GH_TOKEN=...` in a `container.env` file of mode 0600 passed with `--env-file`; in Kubernetes, the Secret `autocraft-github`). The dashboard needs it for the image proxy and for adding a repository. If a login does not carry over, sign in again with the account's Claude CLI inside the container.
+
+   `secrets.json` also holds the GitHub App's keys, including `github_app_webhook_secret`, the secret that GitHub signs webhook deliveries with (`src/dash/server/config.ts:103-108`). Nothing else stores it, so the webhook keeps working with the same URL. The dashboard reads it at start.
+
+   **Other secret files.** Each is read by path from an environment variable, refused when group or others can read it (`src/discord/keys.ts:62-67`), and must be placed in `/config` with mode 0600, owner uid 10001:
+
+   | Old file | New path and setting | Notes |
+   |---|---|---|
+   | `AUTOCRAFT_DISCORD_TOKEN_FILE` | `/config/discord-token`, same variable | Needed on the runner (it runs the gateway). |
+   | `AUTOCRAFT_DISCORD_KEY_FILE` | `/config/discord-key`, same variable | **Byte for byte.** Stored message references are sealed with a key derived from it (`src/discord/keys.ts:13-16`); a different key makes every stored reference unreadable, and the deletion lookups stop matching. Set it on the dashboard and the runner (the dashboard builds message links with it). |
+   | `AUTOCRAFT_IMAGE_TOKEN_FILE` (if set) | `/config/image-token`, same variable | Without it the image proxy uses `GH_TOKEN`. |
+
+   ```
+   docker run -i --rm -v CONFIG:/config --entrypoint sh IMAGE -c 'umask 077; cat > /config/discord-key' < <old key file>
+   sha256sum <old key file>; docker run --rm -v CONFIG:/config --entrypoint sha256sum IMAGE /config/discord-key
+   ```
+
+   The two hashes must match. The watched channels and Discord status are in the database and carry over with it.
+7. **Place the accounts. admin.** Accounts come from two places (`src/agents/box.ts`): the entries of `accounts.json`, each with an absolute `configDir` of the old host, and the accounts added on the Accounts page, whose directories are `<accounts root>/<id>` (`/config/claude` in the image). Copy every directory, owned by uid 10001, keeping the modes (credentials are 0600), and rewrite `accounts.json` so that no `configDir` names an old path:
+
+   1. List the directories: `jq -r '.[].configDir' accounts.json`, and `<root>/config/claude/` for the added accounts. A directory that is `<root>/config/claude` itself already holds the added accounts as subdirectories.
+   2. Copy each one to `/config/<its last path component>` (so `<root>/config/claude` becomes `/config/claude` and `<root>/config/claude-b` becomes `/config/claude-b`), and `accounts.json` to `/config/accounts.json` with each `configDir` changed to that path:
+
+      ```
+      tar -C <old configDir> -cf - . | docker run -i --rm -v CONFIG:/config --entrypoint sh IMAGE -c 'mkdir -p /config/NAME && tar -C /config/NAME -xpf -'
+      jq 'map(.configDir = "/config/" + (.configDir | split("/") | last))' accounts.json | docker run -i --rm -v CONFIG:/config --entrypoint sh IMAGE -c 'umask 077; cat > /config/accounts.json'
+      ```
+
+   3. Each directory carries its login (`.credentials.json`) and, if the operator set one, its long-lived token (`oauth-token`). Usage readings and sign-in state are read again by the app. Look for absolute host paths in each directory's `settings.json` and remove them.
+
+   The systemd install used a logged-in `gh`; the container uses a token instead. The admin creates a GitHub token for `gh` (classic personal access token with the `repo`, `read:org` and `workflow` scopes; keep `workflow`, which lets the pipeline push to branches that change workflow files) and sets it as `GH_TOKEN` for the dashboard, the runner and the sync and backup containers (with Docker, `GH_TOKEN=...` in a `container.env` file of mode 0600 passed with `--env-file`; in Kubernetes, the Secret `autocraft-github`). The dashboard needs it for the image proxy and for adding a repository. If a login does not carry over, sign in again with the account's Claude CLI inside the container.
 8. **Start the dashboard**, then the runner (the runner needs the sandbox options from Sandbox (bubblewrap) in operations.md). Both start with the pipeline off, because the restored database says so:
 
    ```
@@ -97,3 +159,94 @@ A StatefulSet pod holds the ReadWriteOnce claims, so nothing else can mount them
 2. Start a helper pod that mounts both claims (uid 10001, `fsGroup` 10001, the same image, `command: [sleep, 3600]`). Do cut-over steps 5 to 7 in it with `kubectl exec -i` and `kubectl cp`: restore the database (including the deletion of stale `-wal` and `-shm` files), then place `secrets.json` (mode 0600), `accounts.json` and the Claude directories.
 3. Delete the helper pod and wait until it is gone.
 4. Create the Secret `autocraft-github` (key `token`), then scale up: `kubectl scale statefulset autocraft --replicas=1`.
+
+## VPS with Docker Compose
+
+`deploy/compose/compose.yaml` runs the dashboard, the runner and the `periodic` container (sync every minute, `backup daily 7` daily, the loop of the Kubernetes manifest) on one host. Copy `deploy/compose/container.env.example` to `container.env` next to it (mode 0600) and fill it in. `GH_TOKEN` and the settings of the table in the introduction go there; the file is read by all three services. `AUTOCRAFT_IMAGE` (shell or `.env`) names the image; the default is the local `autocraft`.
+
+| Item | Value |
+|---|---|
+| Volumes | `autocraft-data` (`DATA`) and `autocraft-config` (`CONFIG`) |
+| Dashboard | published on `127.0.0.1:3005` only |
+| Worker API | 8981, not published (see Build workers) |
+| Restart | `unless-stopped`; the runner has `stop_grace_period: 30s`, `seccomp=unconfined` and `systempaths=unconfined` |
+| Logs | `docker compose logs`; Docker keeps 5 files of 10 MB per service |
+
+The cut-over steps above apply unchanged, with these commands:
+
+| Step | Compose |
+|---|---|
+| 4. Create the volumes | `docker compose up --no-start` (creates the volumes with the image's ownership, starts nothing) |
+| 5 to 7. Restore and place files | The `docker run` commands with `DATA=autocraft-data`, `CONFIG=autocraft-config` and `IMAGE` the image |
+| 8. Start | `docker compose up -d dashboard runner`, then `docker compose up -d periodic` |
+| 9. Check | `docker compose ps` (both services `healthy`); `docker compose run --rm --no-deps dashboard repos list` and `... pipeline status` |
+| 11. Pipeline on | `docker compose exec runner node --no-warnings src/cli.ts pipeline on` |
+| Rollback | `docker compose stop`; keep the volumes |
+
+After a reboot Docker starts the services again; the pipeline state is in the database. Update by pulling or building the new image and running `docker compose up -d`; the runner stops its jobs first (see Stopping in [operations.md](operations.md)).
+
+### Reverse proxy and DNS
+
+Any TLS reverse proxy on the VPS forwards the public origin to `127.0.0.1:3005`. It must:
+
+- pass `Host` and set `X-Forwarded-For` (with `AUTOCRAFT_TRUST_PROXY=1` the dashboard reads the last entry);
+- not buffer or time out `GET /api/live` early (an event stream that stays open);
+- accept request bodies of at least 1 MB (`POST /webhooks/github` allows 1 MB);
+- route nothing to 8981.
+
+A Caddy site that meets this:
+
+```
+autocraft.example.com {
+	reverse_proxy 127.0.0.1:3005 {
+		flush_interval -1
+	}
+}
+```
+
+With nginx, set `proxy_buffering off` and a long `proxy_read_timeout` for `/api/live`.
+
+Cut the traffic over by changing the DNS record of the origin to the VPS (lower its TTL a day ahead). When the origin stays the same, nothing registered with GitHub changes: the GitHub App's callback, setup and webhook URLs and the OAuth app's callback URL all derive from `AUTOCRAFT_BASE_URL`, and sessions (stored in the database) stay valid because the cookie belongs to the same host. Deliveries sent while DNS still points at the old host reach it, not the new one; the minute poll covers them. If the origin changes, follow Moving to a new domain in [deploy-checklist.md](deploy-checklist.md).
+
+### Build workers
+
+Untrusted pull request builds never run on the VPS: it has no worker. A worker runs on a separate build box (location open) and connects to the runner's worker API.
+
+1. **Route to 8981.** The worker must reach the runner on 8981, and nothing else may. Either:
+   - a private network or VPN between the build box and the VPS: uncomment `10.8.0.1:8981:8981` in `compose.yaml` with the VPS's address on that network, and use `http://10.8.0.1:8981` as `coordinatorUrl`. Use plain HTTP only inside an encrypted network;
+   - a TLS proxy on the VPS for a separate hostname (not the dashboard's site), forwarding to `127.0.0.1:8981` (uncomment the loopback line) and accepting only the build box's address (`remote_ip` matcher in Caddy, `allow` and `deny all` in nginx, or a firewall rule on the port). `coordinatorUrl` is then `https://worker-api.example.com`.
+
+   The worker key authenticates every call after the address check; it does not replace it.
+2. **Register the environment**, once, and put its key on the build box:
+
+   ```
+   docker compose exec -T runner node --no-warnings src/cli.ts envs add build1 --label "Build box" --kind remote --slots 2 --print | head -n 1 | ssh build-box 'umask 077; mkdir -p ~/.config/craft-worker; cat > ~/.config/craft-worker/key'
+   ```
+
+   The key is shown once; `envs rotate-key build1 --print` issues a new one. The Build environments page does the same. The environment row is in the database, so a migrated install keeps its registered environments; place the old keys on the build box again if the old worker moves, or rotate.
+3. **Configure the worker** (see Running a worker in [operations.md](operations.md)): `coordinatorUrl` from step 1, `keyFile` and `workDir` on the build box, rootless Podman for the steps. Run it as a user service from a checkout of this repository at the commit of the image (`SOURCE_COMMIT`). A new image needs a new checkout and a worker restart; the image cannot update the worker, because it has no `ssh` client.
+
+**Without a connected worker** the pipeline keeps running. Build tasks stay `queued` (up to 500; the enqueue is refused above that). What waits:
+
+| Work | Effect |
+|---|---|
+| Verify for a PR whose repo has no upstream CI, or a bugfix that changes a test | The verification stays "Planned" (tasks queued for a worker). Repos whose upstream CI is enough are not affected. |
+| Fix-up and CI fix lint tasks | The patch waits for its lint task; there is no queue timeout. |
+| Check tool inside a Claude call | The check waits up to the 45-minute cap on all check time of the call, then the call gets "no worker had taken it (still queued)". |
+| Security fix builds | Wait up to 4 hours, then the tasks are cancelled and the round counts as failed. |
+
+It shows as: the warning `Build worker <label> has not reported for N min` (a `fail` check `worker:<id>`) once the worker has been silent for 5 minutes; `N build tasks have waited over 10 minutes for a worker` (`build-queue`, `fail` when no enabled environment is up) on the dashboard's warnings menu and in `GET /healthz/checks` (503); and the Build environments page, where the environment is offline. A worker that returns claims the queue in priority order; tasks it held when it went silent are requeued once.
+
+### `jev`
+
+The image has no `jev`. The runner notices (`jevInstalled`), records the outage `not installed` (shown on the Accounts page) and tests the PATH again on each pass. Meanwhile Haiku does Jev's work: the classify, priority and duplicate-pair steps, the semantic reference check of replies and the Discord signal check decide with Haiku alone (`src/agents/jev.ts`, `src/reference-lint.ts:127`, `src/discord/signals.ts:159`). That costs Claude account usage that Jev calls would not, and decisions lose Jev's first pass; a derived image that puts `jev` on the PATH restores it. Nothing fails.
+
+### Off-box backup copy
+
+The `periodic` container keeps 7 daily snapshots in the `autocraft-data` volume (`/data/backups`), the same disk as the database. Copy them off the VPS daily, to storage the VPS cannot overwrite. For example, from a machine that holds the destination credentials:
+
+```
+ssh vps 'docker run --rm -v autocraft-data:/data --entrypoint sh IMAGE -c "cat \$(ls -1t /data/backups/daily-*.db.zst | head -n 1)"' > daily-latest.db.zst
+```
+
+Also keep a copy of `autocraft-config` (`secrets.json`, `accounts.json`, the Claude directories, the Discord files): the database alone cannot sign anyone in. Archive it with `docker run --rm -v autocraft-config:/config --entrypoint tar IMAGE -cf - -C /config .` and encrypt the archive before it leaves the VPS. Test a restore (steps 5 and 6) on another machine.

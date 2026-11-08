@@ -13,8 +13,18 @@ deploy/container/build-push.sh --no-push     # build only; local name autocraft
 
 - The script refuses a working tree with uncommitted or untracked changes, tags the image with the 12-character commit id and `latest`, and pushes both tags. `DOCKER_HOST` is honoured. Extra build arguments go in `BUILD_ARGS`, for example `BUILD_ARGS="--build-arg CLAUDE_CODE_VERSION=2.1.309"`.
 - Contents: `node:24-bookworm-slim` pinned by digest, `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, `pnpm`, `gh` (pinned by checksum), the Claude CLI (pinned, auto-update off), the production dependencies and the built dashboard. It runs as uid 10001 and declares the volumes `/data` and `/config`.
-- Not in the image: `jev` (steps that need it fail until a derived image adds it) and the sandbox build workers.
+- Not in the image: `jev` (Haiku does Jev's work while it is missing; a derived image restores it) and the sandbox build workers.
 - One image serves every process. The first argument picks it: `dashboard` (default), `runner`, `sync`, `backup`, or any `autocraft` subcommand.
+
+## VPS with Docker Compose
+
+On one VPS, `deploy/compose/compose.yaml` runs the same three processes (dashboard, runner, periodic) with named volumes `autocraft-data` and `autocraft-config`; the settings go in `container.env` (`deploy/compose/container.env.example`). The runbook is the "VPS with Docker Compose" section of [migration.md](migration.md). In short:
+
+- **Proxy.** Any TLS reverse proxy on the VPS forwards the origin to `127.0.0.1:3005`, the only published port. It must pass `Host`, set `X-Forwarded-For` and not buffer `GET /api/live`.
+- **DNS.** Point the origin's record at the VPS. If the origin stays the same, the GitHub App's callback, setup and webhook URLs and the OAuth callback URL stay as they are.
+- **Build workers.** None on the VPS. A separate build box reaches the worker API (8981) over a private network or a TLS proxy that accepts only its address, never through the dashboard's site. Register it with `envs add <id> --kind remote`.
+- **`jev`.** Not in the image. Haiku does the classify, priority, duplicate and signal work through the Claude accounts until a derived image adds it.
+- **Backups.** The daily snapshot sits on the VPS disk. Copy it, and `/config`, off the VPS on a schedule.
 
 ## Processes
 
@@ -133,5 +143,5 @@ Check after the move: sign in, open the GitHub App page, and confirm the item pa
 - Registry. Where the image is pushed, who can push, and the pull credential in the cluster.
 - Secret management. Today `secrets.json` is copied to the config volume by hand and `GH_TOKEN` comes from a Kubernetes Secret. Whether a secret manager replaces either is not decided.
 - Runner settings on the real cluster (see above): untested.
-- Off-volume backup copy: mechanism not chosen.
-- `jev` is not in the image.
+- Off-volume backup copy: mechanism not chosen (on a VPS, see the migration runbook for an example).
+- `jev` is not in the image; Haiku does its work (see "Not in the image").
