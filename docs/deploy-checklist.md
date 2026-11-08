@@ -12,7 +12,7 @@ deploy/container/build-push.sh --no-push     # build only; local name autocraft
 ```
 
 - The script refuses a working tree with uncommitted or untracked changes, tags the image with the 12-character commit id and `latest`, and pushes both tags. `DOCKER_HOST` is honoured. Extra build arguments go in `BUILD_ARGS`, for example `BUILD_ARGS="--build-arg CLAUDE_CODE_VERSION=2.1.309"`.
-- Contents: `node:24-bookworm-slim` pinned by digest, `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `pnpm`, `gh` (pinned by checksum), the Claude CLI (pinned, auto-update off), the production dependencies and the built dashboard. It runs as uid 10001 and declares the volumes `/data` and `/config`.
+- Contents: Docker Hardened Images for Node 26 on Debian 13 (the shell-less runtime variant; the build stages use the dev variant), `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `pnpm`, `gh` (pinned by checksum), the Claude CLI (pinned, auto-update off), the production dependencies and the built dashboard. It runs as uid 10001 and declares the volumes `/data` and `/config`.
 - Not in the image: `jev` (Haiku does Jev's work while it is missing; a derived image restores it) and the sandbox build workers.
 - One image serves every process. The first argument picks it: `dashboard` (default), `runner`, `sync`, `backup`, or any `autocraft` subcommand.
 
