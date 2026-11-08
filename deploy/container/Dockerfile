@@ -41,9 +41,15 @@ ARG TARGETARCH
 
 RUN set -eux; \
     apt-get update; \
-    # curl and gzip only exist in this stage, to fetch and unpack the GitHub CLI;
+    # curl and gzip fetch and unpack the GitHub CLI below (a dev base may lack them);
     apt-get install -y --no-install-recommends curl gzip; \
-    packages="bash bubblewrap ca-certificates curl git sqlite3 tini zstd"; \
+    # Besides the tools themselves, the shell-less base lacks the basics scripts and
+    # spawned programs rely on, so they are listed too: dash (/bin/sh, which git runs
+    # `!` credential helpers with), coreutils (entrypoint.sh, backup.sh and the periodic
+    # loop: mkdir rm ls date stat sleep head tail mktemp dirname cp), findutils (xargs
+    # in backup.sh), grep and sed, tar and gzip (src/reference.ts, src/worker/warm.ts),
+    # and bsdutils (`script`, src/agents/login.ts).
+    packages="bash bsdutils bubblewrap ca-certificates coreutils curl dash findutils git grep gzip sed sqlite3 tar tini zstd"; \
     # The full dependency closure, flattened from apt-cache's indented tree;
     # `apt-get download` fetches them whether or not this stage already has them.
     apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
@@ -55,17 +61,24 @@ RUN set -eux; \
     xargs -r -n1 sh -c 'apt-get download "$0" || true' < /tmp/packages; \
     for deb in *.deb; do dpkg -x "$deb" /rootfs; done; \
     rm -rf /var/lib/apt/lists/* /tmp/debs /tmp/packages; \
+    # `dpkg -x` runs no postinst, so make sure /bin/sh exists whatever the packages shipped.
+    [ -e /rootfs/usr/bin/sh ] || ln -s dash /rootfs/usr/bin/sh; \
     # Prove the unpacked tree runs on its own libraries before it is copied into
     # the runtime base, which has no shell to debug it with later. A plain file
     # stands in for /dev/null so git can open it inside the chroot.
     mkdir -p /rootfs/dev; : > /rootfs/dev/null; \
-    chroot /rootfs /bin/bash -c 'export PATH=/usr/local/bin:/usr/bin:/bin LC_ALL=C; \
+    chroot /rootfs /bin/bash -c 'set -e; export PATH=/usr/local/bin:/usr/bin:/bin LC_ALL=C; \
       git --version; \
       curl --version >/dev/null; \
       sqlite3 --version >/dev/null; \
       bwrap --version; \
       zstd --version >/dev/null; \
-      tini --version'; \
+      tini --version; \
+      script --version >/dev/null; \
+      find --version >/dev/null; xargs --version >/dev/null; sed --version >/dev/null; gzip --version >/dev/null'; \
+    chroot /rootfs /bin/sh -c 'set -e; export PATH=/usr/local/bin:/usr/bin:/bin LC_ALL=C; \
+      sh -c true; echo x | cat >/dev/null; echo x | grep x >/dev/null; tar --version >/dev/null; \
+      echo x | sha256sum >/dev/null; date >/dev/null; stat / >/dev/null; sleep 0; cp --version >/dev/null'; \
     rm -rf /rootfs/dev; \
     # Volatile mount points and package-manager state do not belong in the layer,
     # and a symlinked /var/lock cannot be merged onto the base image's directory.
@@ -80,7 +93,7 @@ RUN set -eux; \
     install -D -m 0644 /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt; \
     printf 'root:x:0:0:root:/root:/bin/bash\nautocraft:x:10001:10001:autocraft:/data/home:/bin/bash\n' > /rootfs/etc/passwd; \
     printf 'root:x:0:\nautocraft:x:10001:\n' > /rootfs/etc/group; \
-    install -d -o 10001 -g 10001 /rootfs/data/home /rootfs/data/cache /rootfs/config
+    install -d -o 10001 -g 10001 /rootfs/data /rootfs/data/home /rootfs/data/cache /rootfs/config
 
 # Node CLIs: pnpm for the pipeline's build environments and the Claude CLI, pinned
 # like the host install, which updates by hand (DISABLE_AUTOUPDATER).
