@@ -45,7 +45,7 @@ test("the open list runs by priority level, unclaimed before claimed, then age, 
 
   // A maintainer settles on alpha only: write permission there, and the app acts for them.
   db.prepare("INSERT INTO access (login, role) VALUES ('maint', 'maintainer')").run();
-  db.prepare("INSERT INTO settings (key, value) VALUES ('maintainer_writes', '1'), ('repo_identity:alpha', 'app'), ('repo_identity:beta', 'app')").run();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('maintainer_writes', '1'), ('github_identity', 'app')").run();
   db.prepare("INSERT INTO repo_permissions (login, repo, permission, checked_at) VALUES ('maint', 'alpha', 'write', ?)").run(new Date().toISOString());
   assert.deepEqual(await page(as("maint", "maintainer")), ["d4", "d2", "d3", "d1"]);
   assert.deepEqual(await page(as("maint", "maintainer", { all: "1" })), ["d4", "d5", "d2", "d3", "d1"], "the toggle shows everything");

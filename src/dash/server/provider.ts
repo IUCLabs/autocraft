@@ -244,9 +244,23 @@ export function oauthProviderFor(config: Config): Provider {
   return new GitHubProvider(githubClientId, githubClientSecret);
 }
 
-export function providerFor(config: Config): Provider {
+/**
+ * The dashboard's sign-in provider. The identity (and the registered app) is read at every call, so a switch or a
+ * registration takes effect without a restart. A GitHub App's user authorization uses the same endpoints as the OAuth App's.
+ */
+export function providerFor(config: Config, identity: () => "box" | "app"): Provider {
   if (config.devAuth) return new FakeProvider(config.devPermsFile, config.devTokenTtlMs ?? undefined);
-  const { githubClientId, githubClientSecret, app } = config.secrets;
-  // The GitHub App's user authorization uses the same endpoints as the OAuth App's.
-  return config.loginApp === "github-app" && app ? new GitHubProvider(app.clientId, app.clientSecret) : new GitHubProvider(githubClientId, githubClientSecret);
+  const now = (): Provider => {
+    const { githubClientId, githubClientSecret, app } = config.secrets;
+    return identity() === "app" && app ? new GitHubProvider(app.clientId, app.clientSecret) : new GitHubProvider(githubClientId, githubClientSecret);
+  };
+  return {
+    authorizeUrl: (...a) => now().authorizeUrl(...a),
+    exchange: (...a) => now().exchange(...a),
+    refresh: (...a) => now().refresh(...a),
+    identity: (...a) => now().identity(...a),
+    revoke: (...a) => now().revoke(...a),
+    revokeGrant: (...a) => now().revokeGrant(...a),
+    permission: (...a) => now().permission(...a),
+  };
 }

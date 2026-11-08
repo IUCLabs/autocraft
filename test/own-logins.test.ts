@@ -15,7 +15,7 @@ test("the app's bot is ours on every repo once its slug is known, and stays ours
 
   // A slug seen once stays ours when the secrets can no longer be read, on repos of either identity.
   rememberSlug(w.db, "my-app");
-  w.db.prepare("INSERT INTO main.settings (key, value) VALUES ('repo_identity:app', 'app')").run();
+  w.db.prepare("INSERT INTO main.settings (key, value) VALUES ('github_identity', 'app')").run();
   assert.deepEqual([...ownLogins(w.db, "app", null)].sort(), ["box", "my-app", "my-app[bot]"]);
   assert.deepEqual([...ownLogins(w.db, "other", null)].sort(), ["box", "my-app", "my-app[bot]"]);
 });

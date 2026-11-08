@@ -12,7 +12,7 @@ RUN="-v DATA:/data -v CONFIG:/config --env-file container.env"
 
 | Old setting | In the container |
 |---|---|
-| `AUTOCRAFT_BASE_URL`, `AUTOCRAFT_TRUST_PROXY`, `AUTOCRAFT_LOGIN_APP`, `AUTOCRAFT_REVIEW_BOTS`, `AUTOCRAFT_STOP_TIMEOUT` | Copy to `container.env`. |
+| `AUTOCRAFT_BASE_URL`, `AUTOCRAFT_TRUST_PROXY`, `AUTOCRAFT_REVIEW_BOTS`, `AUTOCRAFT_STOP_TIMEOUT` | Copy to `container.env`. |
 | `AUTOCRAFT_DISCORD_TOKEN_FILE`, `AUTOCRAFT_DISCORD_KEY_FILE`, `AUTOCRAFT_IMAGE_TOKEN_FILE` | Each names a file. Copy the file to `/config` (step 6) and set the variable to the new path. |
 | `AUTOCRAFT_ARTIFACT_DIR`, `AUTOCRAFT_SNAPSHOT_DIR` | Leave unset: the code then uses `artifacts` and `item-snapshot` beside the database, in `/data` (step 5). |
 | `AUTOCRAFT_MERGE_CMD`, `AUTOCRAFT_EXTRA_STEPS` | Name a program or module of the old host. The image has neither; leave them unset unless a derived image adds it. |

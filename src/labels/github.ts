@@ -12,7 +12,7 @@ import { plannedItems } from "../core/select-items.ts";
 import { ALL_LABELS, type LabelDef } from "./set.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
-import { repoIdentity } from "../github/identity.ts";
+import { githubIdentity } from "../github/identity.ts";
 import { authFailure, isWaiting, laneForDecision, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps } from "../github/user-lane.ts";
 
 export const BATCH = 10;          // mutations per request
@@ -90,7 +90,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     throw new LabelsError(`${repo} is not approved for labelling. An operator approves it on the dashboard Repos page.`);
   }
   // An item whose plugin label waits for its operator's token or access is left out until it is retried.
-  const waits = (n: number) => repoIdentity(db, repo) === "app" && isWaiting(db, pluginDecisionOf(db, repo, n));
+  const waits = (n: number) => githubIdentity(db) === "app" && isWaiting(db, pluginDecisionOf(db, repo, n));
   let todo: Todo[] = plannedItems(db, "label", { repo, run: o.runId }).filter((p) => !waits(p.facts.number)).map((p) => ({ number: p.facts.number, add: p.action.params!.add as string[] }));
   if (o.limit !== undefined) todo = todo.slice(0, o.limit);
   const res: ApplyResult = { planned: todo.length, labeled: 0, failed: [], skipped: 0, batches: 0, dryRun: !o.apply };
@@ -122,7 +122,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     // A label an operator's answer adds (plugin candidate) is written as that operator in a repo on the app's identity; the rest stay with the stage's own account.
     const asUser = new Map<number, string>();
     for (const r of writable) {
-      const dec = repoIdentity(db, repo) === "app" ? pluginDecisionOf(db, repo, r.number) : undefined;
+      const dec = githubIdentity(db) === "app" ? pluginDecisionOf(db, repo, r.number) : undefined;
       const g = await guardItem(db, { repo, number: r.number }, { kind: "label" }, o.by ?? CLI_BY, dec);
       if ("refused" in g) { log(`${repo}#${r.number}: not labelled: ${g.refused}`); res.skipped++; } else { grants.set(r.number, g); if (dec) asUser.set(r.number, dec); }
     }

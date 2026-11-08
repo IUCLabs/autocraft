@@ -29,16 +29,18 @@ const MAX_REVOKE_ATTEMPTS = 5;
 export class Vault {
   #db: DatabaseSync;
   #box: TokenBox;
-  #provider: Provider;
+  #providerOf: () => Provider;
+  get #provider(): Provider { return this.#providerOf(); }
   #sweeping = false;
   #inflight = new Map<string, Promise<UserTokenResult>>();
   /** Pause between rereads after a rejected refresh; tests set it to 0. */
   waitMs = 300;
 
-  constructor(db: DatabaseSync, box: TokenBox, provider: Provider) {
+  /** `provider` may be a function, read at each use, so the GitHub App's registration can change while the vault lives. */
+  constructor(db: DatabaseSync, box: TokenBox, provider: Provider | (() => Provider)) {
     this.#db = db;
     this.#box = box;
-    this.#provider = provider;
+    this.#providerOf = typeof provider === "function" ? provider : () => provider;
   }
 
   /** A usable access token for `login`, refreshed when it is within a minute of expiry or `rejected` (a token GitHub answered 401 to). */

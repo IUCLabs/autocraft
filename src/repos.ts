@@ -5,7 +5,8 @@ import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
 import { execFile } from "node:child_process";
 import { DEFAULT_OWNER, loadOwners, OWNER, splitSlug } from "./owners.ts";
-import { repoIdentity, setRepoIdentityChecked } from "./github/identity.ts";
+import { githubIdentity, setGithubIdentityChecked } from "./github/identity.ts";
+import { readAppSecrets } from "./github/install-token.ts";
 import { PilotError, setRepoPipeline } from "./pilot.ts";
 
 export class RepoError extends Error {}
@@ -171,20 +172,6 @@ const sub: Record<string, (args: string[]) => void | Promise<void>> = {
       process.exit(1);
     }
   },
-  identity: async (a) => {
-    const usage = "identity <name | owner/name> [legacy|app]";
-    // Tracked repos are keyed by the bare name; the owner part of a slug is only accepted.
-    const name = splitSlug(need(a, usage)).name;
-    const db = connect();
-    if (!isTracked(db, name)) { console.error(`${name} is not tracked`); process.exit(1); }
-    if (a[1] === undefined) { console.log(`${name}: ${repoIdentity(db, name)}`); return; }
-    try {
-      console.log(await setRepoIdentityChecked(db, "cli", name, a[1]) ? `${name}: identity ${a[1]}` : `${name}: identity was already ${a[1]}`);
-    } catch (e) {
-      console.error((e as Error).message);
-      process.exit(1);
-    }
-  },
   purge: (a) => {
     const name = need(a, "purge <name>");
     try {
@@ -199,8 +186,24 @@ const sub: Record<string, (args: string[]) => void | Promise<void>> = {
 };
 
 export const commands = {
+  identity: {
+    summary: "identity [box|app]: show or set whose GitHub account writes and dashboard sign-in use",
+    run: async (args: string[]) => {
+      const db = connect();
+      if (args[0] === undefined) { console.log(githubIdentity(db)); return; }
+      try {
+        let registered = false;
+        try { registered = readAppSecrets() !== null; } catch { /* unreadable file: no app */ }
+        const changed = await setGithubIdentityChecked(db, "cli", args[0], { registered });
+        console.log(changed ? `identity ${args[0]} (dashboard sessions end; everyone signs in again)` : `identity was already ${args[0]}`);
+      } catch (e) {
+        console.error((e as Error).message);
+        process.exit(1);
+      }
+    },
+  },
   repos: {
-    summary: "tracked repos: list | track <name> | untrack <name> | pipeline <name> on|off | identity <name> [legacy|app] | purge <name>",
+    summary: "tracked repos: list | track <name> | untrack <name> | pipeline <name> on|off | purge <name>",
     run: (args: string[]) => {
       const f = args[0] ? sub[args[0]] : undefined;
       if (!f) {

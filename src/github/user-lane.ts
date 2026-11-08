@@ -1,6 +1,6 @@
 // The user lane: a GitHub write that carries out an operator's answer is made as that operator, with the operator's
-// GitHub App user token (src/github/vault.ts), never as the box account or the app. Only repos whose `repo_identity`
-// is `app` use it; under `legacy` nothing here runs and the box account writes as before.
+// GitHub App user token (src/github/vault.ts), never as the box account or the app. It applies while the GitHub
+// identity is `app`; under `box` nothing here runs and the box account writes as before.
 //
 // A decision whose operator has no usable token, or no write access on the repo, does not fail: it waits
 // (`decisions.exec_state` waiting-token / waiting-permission, with a plain reason) and runs again after that operator
@@ -8,7 +8,7 @@
 import { statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { AppError, call, GITHUB_API } from "./app.ts";
-import { identityOfDecision, repoIdentity } from "./identity.ts";
+import { identityOfDecision, githubIdentity } from "./identity.ts";
 import { openVault, type Vault } from "./vault.ts";
 import { envVar } from "../env.ts";
 import { appChildEnv } from "./install-token.ts";
@@ -38,7 +38,7 @@ export function markExecDone(db: DatabaseSync): void {
  */
 export function initExecState(db: DatabaseSync, id: string): void {
   const d = db.prepare("SELECT repo, answered_by FROM main.decisions WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL").get(id) as { repo: string | null; answered_by: string | null } | undefined;
-  if (!d?.repo || !d.answered_by || repoIdentity(db, d.repo) !== "app") return;
+  if (!d?.repo || !d.answered_by || githubIdentity(db) !== "app") return;
   const has = db.prepare("SELECT 1 FROM main.user_tokens WHERE login = ? AND status = 'ok'").get(d.answered_by);
   if (has) setExecState(db, id, "pending");
   else setExecState(db, id, "waiting-token", SIGN_IN_REASON);
@@ -170,7 +170,7 @@ const answeredByMaintainer = (db: DatabaseSync, decisionId: string): boolean =>
  * caller then uses its own transports and nothing changes. Only the repos on `app` are checked.
  */
 export async function laneForDecision(db: DatabaseSync, deps: LaneDeps | undefined, decisionId: string, repos: string[]): Promise<LaneResult | null> {
-  const app = repos.filter((r) => repoIdentity(db, r) === "app");
+  const app = (githubIdentity(db) === "app" ? repos : []);
   // A maintainer's answer is never carried out by the box account: a repo off the app identity refuses the write.
   if (app.length < repos.length && answeredByMaintainer(db, decisionId)) return { state: "waiting-permission", reason: NOT_APP_REASON };
   if (!app.length) return null;
@@ -184,7 +184,7 @@ export async function laneForDecision(db: DatabaseSync, deps: LaneDeps | undefin
 
 /** The lane for an operator acting right now (a conversation card), or null when every repo is on the box account. */
 export async function laneForOperator(db: DatabaseSync, deps: LaneDeps | undefined, login: string, repos: string[]): Promise<LaneResult | null> {
-  const app = repos.filter((r) => repoIdentity(db, r) === "app");
+  const app = (githubIdentity(db) === "app" ? repos : []);
   return app.length ? resolveLane(deps ?? defaultLaneDeps(db), login, app) : null;
 }
 

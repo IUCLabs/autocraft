@@ -102,9 +102,9 @@ function buildRepos(): TrackedRepo[] {
     const prs = Math.round(open * (0.3 + r() * 0.2));
     const toAdd = Math.round(prs * (0.4 + r() * 0.3));
     const labels = { approved: false, approvedBy: null, approvedAt: null, toAdd, skipped: Math.round(prs * 0.2), conflicts: r() < 0.3 ? Math.floor(r() * 4) : 0 };
-    return { name, owner: MOCK_REPO_OWNERS[name] ?? "storytold", tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null }, pushing: { approved: false, approvedBy: null, approvedAt: null }, commenting: { approved: false, approvedBy: null, approvedAt: null }, fixing: { approved: false, approvedBy: null, approvedAt: null }, mainFixing: { approved: false, approvedBy: null, approvedAt: null }, ciApproving: { approved: false, approvedBy: null, approvedAt: null }, optionalChecks: name === "designcraft" ? ["sonarcloud / SonarCloud Scan"] : [], seenChecks: ["gate / test", "gate / lint", "sonarcloud / SonarCloud Scan", "docs / link-check"], pipeline: name === "designcraft", identity: (name === "filmcraft" ? "app" : "legacy") as "app" | "legacy" };
+    return { name, owner: MOCK_REPO_OWNERS[name] ?? "storytold", tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null }, pushing: { approved: false, approvedBy: null, approvedAt: null }, commenting: { approved: false, approvedBy: null, approvedAt: null }, fixing: { approved: false, approvedBy: null, approvedAt: null }, mainFixing: { approved: false, approvedBy: null, approvedAt: null }, ciApproving: { approved: false, approvedBy: null, approvedAt: null }, optionalChecks: name === "designcraft" ? ["sonarcloud / SonarCloud Scan"] : [], seenChecks: ["gate / test", "gate / lint", "sonarcloud / SonarCloud Scan", "docs / link-check"], pipeline: name === "designcraft" };
   });
-  const rest = UNTRACKED.map((name) => ({ name, owner: "storytold", tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false, identity: "legacy" as const }));
+  const rest = UNTRACKED.map((name) => ({ name, owner: "storytold", tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false as const }));
   return [...tracked, ...rest];
 }
 
@@ -140,7 +140,7 @@ let appRemoved = false;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "dispute", "dispute-resolve", "answer-sweep", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "mcp-token-create", "mcp-token-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
-  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-register-failed", "github-app-remove", "github-app-login-mode", "github-app-link-create", "github-app-link-revoke", "github-app-link-use", "github-app-manager", "repo-track", "repo-untrack",
+  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-register-failed", "github-app-remove", "github-identity", "github-app-link-create", "github-app-link-revoke", "github-app-link-use", "github-app-manager", "repo-track", "repo-untrack",
 ];
 
 function buildAudit(): AuditEntry[] {
@@ -170,6 +170,7 @@ type AdminApi = Pick<Api, "contributors" | "repoAdmin" | "access" | "githubApp">
 export function createAdminMock(me: User, changed: () => void): AdminApi {
   const authors = buildAuthors();
   let singleMax = 3;
+  let githubIdentity: "box" | "app" = typeof location !== "undefined" && location.search.includes("identity=app") ? "app" : "box";
   const repos = buildRepos();
   const access = structuredClone(ACCESS);
   const setupLinks: GithubSetupLink[] = [
@@ -180,7 +181,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
   const appStatus = (): GithubAppStatus => {
     const registered = !appRemoved && (typeof location === "undefined" || !location.search.includes("unregistered"));
     return {
-      configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock", authorized: registered ? false : null,
+      configured: registered, identity: githubIdentity, canRegister: true, defaultName: "AutoCraft", csrf: "mock", authorized: registered ? false : null,
       app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
       links: [...setupLinks],
       installations: registered ? [
@@ -300,7 +301,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         if (!/^[A-Za-z0-9._-]{1,100}$/.test(bare)) throw new Error("Not a repo name.");
         let r = repos.find((x) => x.name === bare);
         if (r?.tracked) throw new Error(`${name} is already tracked`);
-        if (!r) repos.push((r = { name: bare, owner, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false, identity: "legacy" }));
+        if (!r) repos.push((r = { name: bare, owner, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false }));
         r.tracked = true;
         r.labels ??= { approved: false, approvedBy: null, approvedAt: null, toAdd: 0, skipped: 0, conflicts: 0 };
         r.merging ??= { approved: false, approvedBy: null, approvedAt: null };
@@ -380,17 +381,6 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         changed();
         return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
       },
-      async setIdentity(name, identity) {
-        requireOperator("set the repo identity");
-        const r = repos.find((x) => x.name === name);
-        if (!r?.tracked) throw new Error(`${name} is not tracked`);
-        if (identity === "app" && appIdentityBlocker(appStatus(), r)) throw new Error(appIdentityBlocker(appStatus(), r)!);
-        if (r.identity === identity) throw new Error(`${name} already uses the ${identity} identity`);
-        log("repo-identity", name, { identity, was: r.identity });
-        r.identity = identity;
-        changed();
-        return wait(structuredClone(repos.find((x) => x.name === name)!), 40);
-      },
       async setPipeline(name, on) {
         requireOperator("switch the pipeline");
         const r = repos.find((x) => x.name === name);
@@ -417,6 +407,20 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
       status() {
         requireOperator("see the GitHub App");
         return wait(appStatus());
+      },
+      async setIdentity(identity) {
+        requireOperator("switch the GitHub identity");
+        const status = appStatus();
+        if (identity === githubIdentity) throw new Error(`The GitHub identity is already ${identity === "app" ? "the GitHub App" : "the box account"}.`);
+        if (identity === "app") {
+          if (!status.configured) throw new Error("No GitHub App is registered.");
+          const bad = repos.filter((r) => r.tracked && appIdentityBlocker(status, r)).map((r) => r.name);
+          if (bad.length) throw new Error(`The GitHub App does not cover ${bad.length === 1 ? "this repo" : "these repos"}: ${bad.join(", ")}.`);
+        }
+        log("github-identity", identity, { identity, was: githubIdentity });
+        githubIdentity = identity;
+        changed();
+        return wait({ identity, signIn: "" });
       },
       async createLink(org) {
         requireOperator("create setup links");

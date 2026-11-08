@@ -1,7 +1,7 @@
 // Runs one action card once through the existing write paths (src/github/write.ts, the decision answer,
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
 import { guardRepo } from "../core/guard.ts";
-import { repoIdentity } from "../github/identity.ts";
+import { githubIdentity } from "../github/identity.ts";
 import { claimSettling, pendingAnswerRefusal, releaseSettling, RUNNING_STALE_MS, sweepSettling } from "../answers/hold.ts";
 import { initExecState, laneForOperator, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -472,7 +472,7 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
 
 async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, boxQ: Querier, at: string, canWrite?: ActDeps["canWrite"], note?: string, boxExec: Exec = defaultExec, lane: Lane | null = null): Promise<Outcome> {
   // Each action resolves its lane from its own target repo: legacy repos run as the box, app repos as the operator.
-  const laneFor = (repo: string): Lane | null => (lane && repoIdentity(db, repo) === "app" ? lane : null);
+  const laneFor = (repo: string): Lane | null => (lane && githubIdentity(db) === "app" ? lane : null);
   const q = laneFor(c.repo)?.querier ?? boxQ;
   const ctx: Ctx = { exec: laneFor(c.repo)?.exec ?? boxExec, execFor: (repo) => laneFor(repo)?.exec ?? boxExec, note, db, c, by, q, at, w: { db, login: by }, source: { source: "conversation", card: c.id } };
   switch (p.kind) {
@@ -539,7 +539,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     if (writes && !settlesNow(db, by, repos)) throw new ConversationError(409, `${by} no longer has write access`);
     if (writes) {
       const q = deps.querier ?? new Client(1000);
-      for (const r of repos) if (repoIdentity(db, r) !== "app") {
+      for (const r of githubIdentity(db) === "app" ? [] : repos) {
         const live = await liveWrite(q, r, by);
         if (live === "no") throw new ConversationError(409, `${by} no longer has write access to ${slugOf(r)}`);
         if (live === "transient") throw new ConversationError(503, "GitHub could not be reached to check the presser's access");

@@ -75,7 +75,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // What Opus had seen of the item when it proposed the card: JSON {head, last_comment}; null for cards stored before this.
   ["conversation_cards", "seen", "TEXT"],
   ["decisions", "snoozed_at", "TEXT"],
-  // Where the GitHub write of an answer stands under repo_identity=app (src/github/user-lane.ts): pending | waiting-token | waiting-permission | done | failed; null before any attempt.
+  // Where the GitHub write of an answer stands under the app identity (src/github/user-lane.ts): pending | waiting-token | waiting-permission | done | failed; null before any attempt.
   ["decisions", "exec_state", "TEXT"],
   ["decisions", "exec_reason", "TEXT"],
   // A dispute of an answered, unapplied decision (src/answers/hold.ts): who, why and when. exec_state is then 'disputed'.
@@ -230,10 +230,12 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 14;
+const MIGRATION_VERSION = 15;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
+  // The GitHub identity is one instance-wide setting; per-repo rows no longer mean anything.
+  db.prepare("DELETE FROM main.settings WHERE key LIKE 'repo_identity:%'").run();
   // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.
   const now = new Date().toISOString();
   db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);

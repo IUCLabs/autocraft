@@ -256,7 +256,7 @@ describe("api", () => {
 
   test("a maintainer settles only with maintainer_writes on, the app identity on the repo and write access; undo only their own", async () => {
     const setting = (on: boolean) => on ? db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1')").run() : db.prepare("DELETE FROM settings WHERE key = 'maintainer_writes'").run();
-    const identity = (app: boolean) => app ? db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('repo_identity:photocraft', 'app')").run() : db.prepare("DELETE FROM settings WHERE key = 'repo_identity:photocraft'").run();
+    const identity = (app: boolean) => app ? db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('github_identity', 'app')").run() : db.prepare("DELETE FROM settings WHERE key = 'github_identity'").run();
     const X1 = "photocraft#7:scope", X2 = "photocraft#8:scope";
     ask(db, [X1, X2].map((id) => ({ id, kind: "scope" as const, repo: "photocraft", number: Number(id.split("#")[1]!.split(":")[0]), question: "Small extra or plugin?", options: OPTS, recommended: "small", summary: "s" })));
     const maint = await signedIn("maint"), pal = await signedIn("pal"), boss = await signedIn("boss");

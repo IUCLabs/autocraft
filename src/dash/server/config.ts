@@ -18,8 +18,30 @@ export type AppSecrets = {
 export type AppOwner = { login: string; type: "User" | "Organization" };
 export type Secrets = { githubClientId: string; githubClientSecret: string; sessionKey: string; app: AppSecrets | null };
 
-/** Which GitHub application signs dashboard users in: the OAuth App (secrets github_client_*) or the GitHub App (secrets github_app_*). */
-export type LoginApp = "oauth" | "github-app";
+/**
+ * Makes `secrets.app` follow the secrets file: it is read again whenever the file changes (another process or a
+ * registration may have rewritten it), so registering or removing the app takes effect without a restart. An
+ * unreadable file keeps the last good value.
+ */
+export function followAppSecrets(secrets: Secrets, file: string): void {
+  const stampOf = (): string => { try { const st = statSync(file); return `${st.ino}:${st.size}:${st.mtimeMs}`; } catch { return "none"; } };
+  let cached = secrets.app;
+  let stamp = stampOf();
+  Object.defineProperty(secrets, "app", {
+    enumerable: true, configurable: true,
+    get(): AppSecrets | null {
+      const now = stampOf();
+      if (now !== stamp) {
+        if (now === "none") { cached = null; stamp = now; }
+        else {
+          try { cached = appSecretsOf(JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>); stamp = now; } catch { /* mid-write or unreadable: keep the last good value */ }
+        }
+      }
+      return cached;
+    },
+    set(v: AppSecrets | null) { cached = v; stamp = stampOf(); },
+  });
+}
 
 export type Config = {
   host: string;
@@ -34,7 +56,6 @@ export type Config = {
   imageCacheDir: string | null;    // the image proxy's disk cache; null: none
   secrets: Secrets;
   secretsFile: string | null;      // where registration writes the app's secrets
-  loginApp: LoginApp;
 };
 
 export const DEFAULT_WEB_DIST = fileURLToPath(new URL("../../../web/dist", import.meta.url));
@@ -200,10 +221,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       secrets.app = appSecretsOf(JSON.parse(readFileSync(secretsFile, "utf8")) as Record<string, unknown>);
     } catch { /* no file yet: registration creates it */ }
   }
-  const loginAppRaw = envVar("LOGIN_APP", env) ?? "oauth";
-  if (loginAppRaw !== "oauth" && loginAppRaw !== "github-app") throw new ConfigError("AUTOCRAFT_LOGIN_APP must be oauth or github-app");
-  const loginApp: LoginApp = loginAppRaw;
-  if (loginApp === "github-app" && !devAuth && !secrets.app) throw new ConfigError("AUTOCRAFT_LOGIN_APP=github-app needs the github_app_* secrets; register the app first");
+  if (secretsFile) followAppSecrets(secrets, secretsFile);
   const rawBaseUrl = envVar("BASE_URL", env);
   if (rawBaseUrl) {
     let u: URL;
@@ -223,7 +241,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const webDistEnv = envVar("WEB_DIST", env);
   return {
-    host, port, baseUrl, devAuth, secrets, secretsFile, loginApp,
+    host, port, baseUrl, devAuth, secrets, secretsFile,
     dbPath: envVar("DB", env) ?? dbPath(),
     webDist: webDistEnv ? resolve(webDistEnv) : DEFAULT_WEB_DIST,
     devPermsFile: devAuth ? (envVar("DEV_PERMS", env) ?? null) : null,
