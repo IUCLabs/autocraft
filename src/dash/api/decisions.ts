@@ -11,6 +11,7 @@ import type {
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
 import { conversationOf, insertTurn, systemBlock } from "../../conversations/store.ts";
+import { blocksFacts } from "../../review/blockers.ts";
 import { BACKLOG, HANDLED, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
@@ -252,7 +253,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     summary: d.summary ?? "", summaryBy: d.summary_by ?? "", summaryAt: d.summary_at ?? d.asked_at,
     body: batch ? null : (item?.body ?? null),
     context: contextOf(d.context),
-    facts: factsOf(d),
+    facts: [...factsOf(d), ...(d.answer === null ? blocksFacts(db, d.repo, d.number) : [])],
     // An answer the pipeline or a conversation gave is not one of the asked options; it is listed so every view can name it.
     options: [...optionsOf(d), ...[HANDLED, WITHDRAWN_OPTION].filter((o) => o.key === d.answer)].map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",

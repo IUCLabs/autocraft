@@ -9,7 +9,7 @@ import { runModelStep } from "../agents/step.ts";
 import { REVIEW_OPUS } from "../agents/steps.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
-import { noteBlocks, openBlockers } from "./blockers.ts";
+import { openBlockers } from "./blockers.ts";
 import { isScopeQuestion, settledScope } from "./candidates.ts";
 import { recordReviewFailure, reviewHolds } from "./gate.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
@@ -96,7 +96,6 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   const scopeSettled = settledScope(db, c.repo, c.number) !== null;
   const blockers = r.verdict === "hold" ? openBlockers(db, r.blocked_by.filter((x) => x !== `${c.repo}#${c.number}`)).filter((b) => !(scopeSettled && isScopeQuestion(db, b))) : [];
   const blockedBy = blockers.length ? JSON.stringify(blockers) : null;
-  noteBlocks(db, blockers, `${c.repo}#${c.number}`);
   db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, trigger, job_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims, blockedBy,
     again ? (markedStaleSince(db, c.repo, c.number, again.at) ? "operator" : "discussion") : "new-head", currentJobId());

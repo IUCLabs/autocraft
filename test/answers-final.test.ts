@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 import { mergeDecisionId } from "../src/core/rules.ts";
 import { advancePreapprovals, preapprovalOf, runPipelineStep } from "../src/preapproval/index.ts";
+import { markReviewsStale } from "../src/review/discussion.ts";
 import { recordReviewFailure, reviewHold } from "../src/review/gate.ts";
 import { saveOpus } from "../src/review/opus.ts";
 import { OPERATOR, T0, world, type World } from "./world-db.ts";
@@ -51,5 +52,21 @@ describe("a re-review at the same head", () => {
     save(w, 1, "sha1", "hold", true);
     assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = ?", id).length, 0);
     assert.match(String(w.rows("SELECT answer_note FROM decisions WHERE id LIKE ?", `${id}~replaced-%`)[0]?.answer_note), /new review is a hold/);
+  });
+});
+
+describe("a review that failed for good", () => {
+  test("a request newer than the last failure grants exactly one more try", () => {
+    const w = fresh().pr(1);
+    const t = Date.now() - 60_000;
+    for (let i = 0; i < 4; i++) recordReviewFailure(w.db, "app", 1, "h", t);
+    const held = reviewHold(w.db, "app", 1, "h");
+    assert.equal(held?.kind, "failed");
+    assert.match(held!.wait, /Review again/);
+    markReviewsStale(w.db, OPERATOR, "app", 1);
+    assert.equal(reviewHold(w.db, "app", 1, "h"), null);
+    // The extra try fails too: final again until the next request.
+    recordReviewFailure(w.db, "app", 1, "h", Date.now() + 1000);
+    assert.equal(reviewHold(w.db, "app", 1, "h")?.kind, "failed");
   });
 });

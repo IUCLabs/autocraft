@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { activeBlockers, hasOpenQuestion, storedBlockedBy } from "./blockers.ts";
-import { MAX_RERUNS_PER_DAY, discussionState, reviewRequestedSince, type DiscussionState } from "./discussion.ts";
+import { MAX_RERUNS_PER_DAY, discussionState, markedStaleSince, maintainerSince, reviewRequestedSince, type DiscussionState } from "./discussion.ts";
 import { ourCommitsSince } from "./ours.ts";
 
 /** Opus review calls of one PR per UTC day, new heads, re-runs and failed calls together (a reply-fix turn is part of its review). */
@@ -86,8 +86,12 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
     if (failed) {
       const [n, at] = [Number(failed.split("|")[0]), Date.parse(failed.split("|")[1] ?? "")];
       const delay = FAILURE_BACKOFF_MS[n - 1];
-      if (delay === undefined) return { kind: "failed", wait: `its review failed ${n} times at this commit; a new commit or a maintainer's request` };
-      if (at + delay > nowMs) return { kind: "failed", wait: `the review after ${n} failed ${n === 1 ? "try" : "tries"} at this commit, from ${new Date(at + delay).toISOString().slice(11, 16)}`, until: at + delay };
+      if (delay === undefined) {
+        // Final. A request newer than the last failure grants one more try; a failure then stamps a newer time and makes it final again.
+        const since = failed.split("|")[1] ?? "";
+        const asked = markedStaleSince(db, repo, number, since) || maintainerSince(discussionState(db, repo).get(`${repo}#${number}`), since, null);
+        if (!asked) return { kind: "failed", wait: `its review failed ${n} times at this commit; a new commit, a Review again press or a maintainer's comment gives it one more try` };
+      } else if (at + delay > nowMs) return { kind: "failed", wait: `the review after ${n} failed ${n === 1 ? "try" : "tries"} at this commit, from ${new Date(at + delay).toISOString().slice(11, 16)}`, until: at + delay };
     }
     // A person's pre-approved merge waits for the review of the head its fix-up pushed: that is their request for it, as a review-again press would be.
     if (preapproved.get(repo, number, head)) return null;
