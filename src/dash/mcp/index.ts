@@ -198,7 +198,7 @@ async function listRepos(env: McpEnv): Promise<ToolResult> {
   for (const h of held) counts.set(h.repo, (counts.get(h.repo) ?? 0) + 1);
   const rows = [];
   for (const repo of repos) {
-    const l = await dec.listDecisions(env.db, reqOf(user, { query: { status: "open", repo, limit: "0" } }));
+    const l = await dec.listDecisions(env.db, reqOf(user, { query: { status: "open", repo, limit: "0", all: "1" } }));
     rows.push({ repo, openDecisions: l.total, byKind: l.byKind, oldestAskedAt: l.oldestAskedAt, fixupsWaiting: counts.get(repo) ?? 0 });
   }
   return show(`${rows.length} repositories. Use list_inbox or list_fixups with a repo to see the work.`, "repositories", rows);
@@ -208,7 +208,8 @@ async function listInbox(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { repo: "repo", kind: "kind", limit: "limit", cursor: "cursor" });
   const user = env.user(false);
   const l: DecisionList = await dec.listDecisions(env.db, reqOf(user, {
-    query: { status: "open", repo: a.repo as string | undefined, kind: a.kind as string | undefined, limit: String(a.limit ?? 10), after: a.cursor as string | undefined },
+    // Every open decision the user may see: agents send feedback on any of them, not only the ones their user can settle.
+    query: { status: "open", all: "1", repo: a.repo as string | undefined, kind: a.kind as string | undefined, limit: String(a.limit ?? 10), after: a.cursor as string | undefined },
   }));
   const rows = l.decisions.map((d) => ({
     id: d.id, kind: d.kind, item: ref(d), title: d.title, question: d.question,
