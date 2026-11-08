@@ -70,3 +70,26 @@ describe("a review that failed for good", () => {
     assert.equal(reviewHold(w.db, "app", 1, "h")?.kind, "failed");
   });
 });
+
+describe("a sure take-fix review of a pre-approved fix-up", () => {
+  test("the pipeline's fix-up runs, its push continues the pre-approval, and a take moves it to ci", async () => {
+    const w = fresh().pr(1).review(1, { verdict: "take-fix" });
+    await startPushed(w, 1, "sha1b");
+    settle(w);
+    w.review(1, { verdict: "take-fix", head: "sha1b" });
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 1)?.state, "review");
+    assert.equal(w.rows("SELECT 1 FROM decisions WHERE id = ?", mergeDecisionId("app", 1, "sha1b")).length, 0);
+    const kinds = w.prPlan(1).actions.map((a) => `${a.kind}:${String(a.params?.source ?? "")}`);
+    assert.ok(kinds.includes("fixup:review"), kinds.join());
+
+    w.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, attempt, created_at, source) VALUES ('app', 1, 'sha1b', 'sha1c', 'pushed', 1, ?, 'review')").run(T0);
+    w.synced(1, "sha1c");
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 1)?.head, "sha1c");
+    assert.equal(preapprovalOf(w.db, "app", 1)?.state, "review");
+    w.review(1, { head: "sha1c" });
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 1)?.state, "ci");
+  });
+});
