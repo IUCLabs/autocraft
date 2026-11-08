@@ -643,7 +643,8 @@ CREATE TABLE IF NOT EXISTS model_waits (
   repo TEXT,
   since INTEGER NOT NULL,             -- ms since epoch, when the call began to wait
   seen_at INTEGER NOT NULL,           -- ms since epoch, last poll
-  eligible INTEGER NOT NULL DEFAULT 0 -- 1 when an account could take the call at the last poll
+  eligible INTEGER NOT NULL DEFAULT 0, -- 1 when an account could take the call at the last poll
+  level INTEGER NOT NULL DEFAULT 2    -- urgency band of the call's first item, 4 (P0) to 0 (P4); orders waiters of a repo within a class
 );
 CREATE INDEX IF NOT EXISTS model_waits_seen ON model_waits(seen_at);
 
@@ -769,10 +770,11 @@ CREATE TABLE IF NOT EXISTS actions (
   decision_id TEXT NOT NULL,
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   kind TEXT NOT NULL,                 -- comment-close
-  state TEXT NOT NULL,                -- done | skipped | failed
+  state TEXT NOT NULL,                -- done | skipped | failed | stopped (failed ACT_MAX_ATTEMPTS times; a person retries, undoes or answers again)
   comment_url TEXT,
   reason TEXT,
   created_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0, -- failed tries; db.ts adds it to older databases
   UNIQUE (decision_id, repo, number, kind)
 );
 CREATE INDEX IF NOT EXISTS actions_item ON actions(repo, number);
@@ -1141,7 +1143,7 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
   params TEXT NOT NULL,               -- JSON
   text TEXT,
   description TEXT NOT NULL,          -- one plain line written by our code from the parameters
-  state TEXT NOT NULL DEFAULT 'proposed',  -- proposed | running | done | failed | dismissed
+  state TEXT NOT NULL DEFAULT 'proposed',  -- proposed | queued | running | done | failed | dismissed
   result TEXT,                        -- what happened, in one line
   result_url TEXT,
   error TEXT,
@@ -1150,7 +1152,10 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
   edited_by TEXT,
   edited_at TEXT,
   seen TEXT,                          -- JSON {head, last_comment}: the item as Opus last saw it; null on cards from before it was recorded
-  choice_id TEXT                      -- the decision_choices row the card was run from (Do it on a choice); NULL for cards Opus proposed (db.ts adds it to older databases)
+  choice_id TEXT,                     -- the decision_choices row the card was run from (Do it on a choice); NULL for cards Opus proposed (db.ts adds it to older databases)
+  queued_at TEXT,                     -- state queued: when the press found no room under the daily GitHub write limit
+  queue_args TEXT,                    -- JSON {skip, note, noteStaysOut, role}: what the press carried, kept for the later run
+  dispute_by TEXT, dispute_reason TEXT, dispute_at TEXT -- a queued press someone else disputed: the drain skips it until the presser or an operator keeps or dismisses it
 );
 -- Maintainer posts (decision comments and opinions) an operator chose to share with Opus. Excluded unless a row exists; `sent_turn`
 -- is the operator turn whose stored block carries the text (each post is sent once).

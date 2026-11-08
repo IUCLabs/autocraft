@@ -7,6 +7,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { applyDrafts, choicesById, coresFor, currentChoices, type Core } from "../decide/choices.ts";
 import type { ActionTag } from "../decide/choices-types.ts";
 import { decisionStamp } from "../conversations/cards.ts";
+import { lockLiveSql } from "../answers/hold.ts";
+import { queuePlace } from "../conversations/queue.ts";
 import { choicesView, doChoice } from "../dash/api/conversations.ts";
 import { HttpError } from "../dash/server/util.ts";
 import type { Req, Role, User } from "../dash/types.ts";
@@ -213,7 +215,7 @@ export class DecisionAlerts {
       if (owner) await this.#refresh(m, owner);
     }
     for (const p of people) {
-      const open = db.prepare(`SELECT * FROM decisions WHERE answer IS NULL AND NOT ${SNOOZED_SQL} AND asked_at >= (SELECT created_at FROM discord_alerts WHERE user_hash = ?) ORDER BY asked_at`).all(p.userHash) as DecisionRow[];
+      const open = db.prepare(`SELECT * FROM decisions WHERE answer IS NULL AND NOT ${SNOOZED_SQL} AND NOT ${lockLiveSql("decisions")} AND asked_at >= (SELECT created_at FROM discord_alerts WHERE user_hash = ?) ORDER BY asked_at`).all(p.userHash) as DecisionRow[];
       const have = new Set((db.prepare("SELECT decision_id FROM discord_alert_msgs WHERE user_hash = ?").all(p.userHash) as { decision_id: string }[]).map((r) => r.decision_id));
       const fresh = open.filter((d) => !have.has(d.id) && itemsOf(d).length > 0 && mayReceive(db, p.login, p.role, reposOf(d)));
       if (!fresh.length) continue;
@@ -377,7 +379,7 @@ export function installAlertCommands(ix: Interactions, alerts: DecisionAlerts): 
         json: { core: core.key, params: {}, extras: sendable(core).map((e) => ({ id: e.id })) }, user,
       } as Req;
       const card = await doChoice(db, req, alerts.deps.act);
-      await call.edit({ content: card.state === "failed" ? `Failed: ${soft(card.error ?? "the choice did not run", 300)}` : `${card.state === "done" ? "Done" : "Started"}: ${soft(core.label, 80)}`, components: [] });
+      await call.edit({ content: card.state === "failed" ? `Failed: ${soft(card.error ?? "the choice did not run", 300)}` : `${card.state === "done" ? "Done" : card.state === "queued" ? "Queued: daily GitHub write limit" + (queuePlace(db, card.id) ? `, #${queuePlace(db, card.id)} in line` : "") : "Started"}: ${soft(core.label, 80)}`, components: [] });
     } catch (e) {
       await call.edit({ content: e instanceof HttpError ? e.message : "Something went wrong. Try again in a moment.", components: [] });
       if (!(e instanceof HttpError)) alerts.deps.log(`discord: alert press failed: ${(e as Error).message}`);

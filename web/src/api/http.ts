@@ -143,6 +143,8 @@ export function createHttpApi(): Api {
       retryPreapproval: (repo, n) => post(`/api/items/${repo}/${n}/preapproval/retry`),
       doCard: (id, opts) => post(`/api/conversation-cards/${id}/do`, opts?.skip?.length || opts?.note ? { ...(opts.skip?.length && { skip: opts.skip }), ...(opts.note && { note: opts.note }) } : undefined),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
+      disputeCard: (id, reason) => post(`/api/conversation-cards/${id}/dispute`, { reason }),
+      keepCard: (id) => post(`/api/conversation-cards/${id}/keep`),
       // A finding's choices are built from its actions (no decision row): the answer is the finding action itself.
       doChoice: async (choiceId, body) => {
         const f = /^ch-f-(.+)-(\d+)-/.exec(choiceId);

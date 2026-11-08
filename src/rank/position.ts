@@ -6,6 +6,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { QueueSlot } from "../../web/src/api/types.ts";
 import { workScores } from "../fasttrack.ts";
+import { targetKeys } from "../act/order.ts";
+import { commentApprovalOf } from "../act/approval.ts";
 
 /** Next step text → queued stage and the Queue tab that lists it. Steps not listed here are not queued. */
 const QUEUED: Record<string, Pick<QueueSlot, "stage" | "tab">> = {
@@ -17,6 +19,9 @@ const QUEUED: Record<string, Pick<QueueSlot, "stage" | "tab">> = {
 };
 
 const BATCHED = new Set(["batch-checking", "in-batch"]);
+
+/** The Act stage is queued by the order the Act step works in (priority level, then the time of the answer), not by the work rank. */
+const ACT_SLOT: Pick<QueueSlot, "stage" | "tab"> = { stage: "Act", tab: "act" };
 
 type Entry = { repo: string; number: number; score: number } & Pick<QueueSlot, "stage" | "tab">;
 export type Stages = Map<string, Entry[]>;
@@ -67,7 +72,35 @@ export function computeStages(db: DatabaseSync): Stages {
     if (!QUEUED[step] || (step === "Merge queue" && (held.has(k) || BATCHED.has(r.state)))) continue;
     out.push({ repo: r.repo, number: r.number, score: score(r.repo, r.number) ?? 0, next: step });
   }
-  return orderStages(out);
+  const stages = orderStages(out);
+  const act = actEntries(db);
+  if (act.length) stages.set("Act", act);
+  return stages;
+}
+
+const EPOCH_CAP = 1e10;
+
+/** Items with an answered close the Act step has not carried out yet, in the step's order. Repos not approved for commenting and disputed answers have no place. */
+function actEntries(db: DatabaseSync): Entry[] {
+  const rows = db.prepare(`SELECT repo, number, actions FROM main.item_plans WHERE actions LIKE '%"kind":"act"%'`).all() as { repo: string; number: number; actions: string | null }[];
+  const targets: { decisionId: string; repo: string; number: number }[] = [];
+  const approved = new Map<string, boolean>();
+  for (const r of rows) {
+    let acts: { kind?: string; params?: { ask?: boolean; group?: boolean; decisionId?: string } }[];
+    try { acts = JSON.parse(r.actions ?? "[]"); } catch { continue; }
+    const t = acts.find((a) => a.kind === "act" && !a.params?.ask && !a.params?.group && a.params?.decisionId);
+    if (!t) continue;
+    if (!approved.has(r.repo)) approved.set(r.repo, commentApprovalOf(db, r.repo) !== null);
+    if (approved.get(r.repo)) targets.push({ decisionId: t.params!.decisionId!, repo: r.repo, number: r.number });
+  }
+  if (!targets.length) return [];
+  const keys = targetKeys(db, targets);
+  const disputed = new Set((db.prepare("SELECT id FROM main.decisions WHERE exec_state = 'disputed' AND id IN (SELECT value FROM json_each(?))").all(JSON.stringify(targets.map((t) => t.decisionId))) as { id: string }[]).map((x) => x.id));
+  return targets.filter((t) => !disputed.has(t.decisionId)).map((t) => {
+    const k = keys.get(t.decisionId);
+    const sec = k?.at ? Date.parse(k.at) / 1000 : 0;
+    return { repo: t.repo, number: t.number, score: (k?.band ?? 2) * EPOCH_CAP + (EPOCH_CAP - (Number.isFinite(sec) ? sec : 0)), ...ACT_SLOT };
+  }).sort((a, b) => b.score - a.score || a.repo.localeCompare(b.repo) || a.number - b.number);
 }
 
 const cache = new WeakMap<DatabaseSync, { sig: string; stages: Stages }>();
@@ -90,7 +123,10 @@ export function slotsOf(byStage: Stages, visible: Iterable<string>): Map<string,
     let place = 0;
     for (const e of list) {
       if (!seen.has(e.repo)) continue;
-      out.set(`${e.repo}#${e.number}`, { stage: e.stage, tab: e.tab, place: ++place });
+      const key = `${e.repo}#${e.number}`;
+      // An item with a place in a pipeline stage keeps it; the Act place is for items with no other.
+      if (e.stage === "Act" && out.has(key)) continue;
+      out.set(key, { stage: e.stage, tab: e.tab, place: ++place });
     }
   }
   return out;

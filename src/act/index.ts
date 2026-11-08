@@ -37,6 +37,8 @@ import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
 import { cleanReason, duplicateComment, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { orderTargets } from "./order.ts";
+import { actRoom } from "../conversations/queue.ts";
 import { setAsideSupersededQuestions } from "../merge/withdraw.ts";
 import { ownerOf } from "../owners.ts";
 import { sweepStaleAnswers } from "../answers/sweep.ts";
@@ -67,6 +69,8 @@ export type ActSummary = {
   /** Close? decisions asked (or that would be). */
   asked: string[];
   done: string[]; skipped: { ref: string; reason: string }[]; failed: { ref: string; reason: string }[];
+  /** Queued card presses carried out by this run. */
+  cards?: number;
   note: string | null;
 };
 
@@ -140,12 +144,15 @@ export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): s
 
 type Target = { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; repo: string; number: number };
 
-type ActionRow = { id: number; decision_id: string; repo: string; number: number; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string };
+type ActionRow = { attempts: number; id: number; decision_id: string; repo: string; number: number; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string };
 const rowOf = (db: DatabaseSync, t: Target): ActionRow | undefined =>
   db.prepare("SELECT * FROM actions WHERE decision_id = ? AND repo = ? AND number = ? AND kind = ?").get(t.decisionId, t.repo, t.number, KIND) as ActionRow | undefined;
 
 /** `asked_by` of the decisions a security scan asks. An operator's close answer to one applies in any repo approved for commenting, in the pipeline or not. */
 export const SECURITY_ASKER = "security-scan";
+
+/** A target that fails this many times (not an authorization failure) is stopped: Act skips it with the reason and a person retries it from the Needs you page, or undoes or answers again. */
+export const ACT_MAX_ATTEMPTS = 3;
 
 /** Answered-close targets in the repo that the Plans send here: no final (done or skipped) action row yet. */
 /** Item-level targets only: a duplicate group's members are carried out by actOnGroups, which the same act actions schedule. */
@@ -160,6 +167,9 @@ function answerStands(db: DatabaseSync, id: string, answer: string | null): bool
   const d = getDecision(db, id);
   return !!d && d.answer === answer && !d.applied_at && d.exec_state !== "disputed";
 }
+
+/** The repo's targets in the order Act works: item priority level (security raised), then the time of the answer. */
+const pendingInOrder = (db: DatabaseSync, repo: string, refs?: string[]): Target[] => orderTargets(db, pending(db, repo, refs));
 
 // ---- GitHub ----------------------------------------------------------------------
 
@@ -227,14 +237,23 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
   // Answers that need no GitHub write are applied whether or not commenting is approved.
   // The group steps compare text hashes with the ones stored at the comparison: a hash cleared by an edit outside sync is filled first, so the edit is seen.
-  if (!dryRun) { fillEmbedHashes(db); applyDuplicateAnswers(db, at()); sweepStaleAnswers(db, at(), repo); }
+  // Queued card presses run first, from the same shared daily count: they were pressed before this run, and each is held to the presser's current access.
+  let cardWrites = 0;
+  if (!dryRun) {
+    fillEmbedHashes(db); applyDuplicateAnswers(db, at()); sweepStaleAnswers(db, at());
+    const { drainQueuedCards } = await import("../conversations/act.ts");
+    const drained = await drainQueuedCards(db, { now: deps?.now, querier: deps?.querier, lane: deps?.lane }, params.limit === undefined ? {} : { writes: params.limit });
+    cardWrites = drained.writes;
+    summary.cards = drained.ran;
+    if (drained.ran) log(`act: ${drained.ran} queued card press${drained.ran === 1 ? "" : "es"} carried out`);
+  }
   if (!commentApprovalOf(db, repo)) {
     summary.note = `commenting in ${repo} is not approved`;
     log(`act ${repo}: ${summary.note}; nothing done`);
     return summary;
   }
-  let todo = pending(db, repo);
-  if (params.limit !== undefined) todo = todo.slice(0, params.limit);
+  let todo = pendingInOrder(db, repo);
+  if (params.limit !== undefined) todo = todo.slice(0, Math.max(0, params.limit - cardWrites));
   if (dryRun) {
     summary.asked = closeRows(db, repo).map((r) => closeDecisionId(r.repo, r.number, r.head_oid));
     for (const id of summary.asked) log(`  would ask Close? ${id}`);
@@ -249,10 +268,10 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   if (summary.asked.length) log(`  asked ${summary.asked.length} Close? decision${summary.asked.length === 1 ? "" : "s"}`);
   // Newly asked ones are unanswered, so the work list is the one taken above.
 
-  const save = (t: Target, state: "done" | "skipped" | "failed", reason: string | null, url: string | null) => {
+  const save = (t: Target, state: "done" | "skipped" | "failed" | "stopped", reason: string | null, url: string | null, attempts?: number) => {
     const prev = rowOf(db, t);
-    if (prev) db.prepare("UPDATE actions SET state = ?, reason = ?, comment_url = COALESCE(?, comment_url), created_at = ? WHERE id = ?").run(state, reason, url, at(), prev.id);
-    else db.prepare("INSERT INTO actions (decision_id, repo, number, kind, state, comment_url, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(t.decisionId, t.repo, t.number, KIND, state, url, reason, at());
+    if (prev) db.prepare("UPDATE actions SET state = ?, reason = ?, comment_url = COALESCE(?, comment_url), created_at = ?, attempts = COALESCE(?, attempts) WHERE id = ?").run(state, reason, url, at(), attempts ?? null, prev.id);
+    else db.prepare("INSERT INTO actions (decision_id, repo, number, kind, state, comment_url, reason, created_at, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(t.decisionId, t.repo, t.number, KIND, state, url, reason, at(), attempts ?? 0);
   };
   // A decision is applied once none of its targets is left to do.
   const settle = (t: Target) => {
@@ -270,6 +289,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
 
   let handled = 0;
   for (const t of todo) {
+    // The daily count is shared with card presses; one target is one count.
+    if (!actRoom(db, 1, (deps?.now() ?? new Date()).getTime())) { summary.note = "the daily limit is reached"; break; }
     const dec = getDecision(db, t.decisionId)!;
     const prev = rowOf(db, t);
     // An answer in a repo on the app's identity is carried out as the operator who gave it, with their token; it waits when there is none.
@@ -336,12 +357,24 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         jobItem(db, t.repo, t.number, `waiting: ${why}`, log);
         continue;
       }
-      if (lr) setExecState(db, t.decisionId, "failed", why);
+      // An error of GitHub itself (a server error, timeout, network failure, rate limit) says nothing about this target: the run stops, no try is counted,
+      // and the job ends as failed so the registered failure backoff applies.
+      if (githubWide(e)) {
+        summary.failed.push({ ref: refOf(t), reason: why });
+        jobItem(db, t.repo, t.number, `GitHub is failing, stopping: ${why}`, log);
+        break;
+      }
       const row = rowOf(db, t);
-      save(t, "failed", why, row?.comment_url ?? null);
-      summary.failed.push({ ref: refOf(t), reason: why });
-      jobItem(db, t.repo, t.number, `failed: ${why}`, log);
-      break;
+      // The comment of a retry that already posted it is not repeated. After ACT_MAX_ATTEMPTS failed tries the target is stopped and a person is asked; the other targets go on.
+      // The job ends as failed (see the step), so the registered failure backoff spaces the tries.
+      const attempts = (row?.attempts ?? 0) + 1;
+      const stop = attempts >= ACT_MAX_ATTEMPTS;
+      const shown = stop ? `stopped after ${attempts} failed tries: ${why}` : why;
+      if (lr || stop) setExecState(db, t.decisionId, "failed", shown);
+      save(t, stop ? "stopped" : "failed", shown, row?.comment_url ?? null, attempts);
+      if (stop) audit(db, ACTOR, "act-stopped", refOf(t), { decision: t.decisionId, reason: why, attempts });
+      summary.failed.push({ ref: refOf(t), reason: shown });
+      jobItem(db, t.repo, t.number, `failed: ${shown}`, log);
     }
   }
   // Duplicate groups: the stored comments and closes, within what is left of the limit.
@@ -379,7 +412,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     };
     const g = await actOnGroups(db, {
       repo, io, at, log, dryRun: false,
-      left: () => (params.limit === undefined ? Infinity : params.limit - handled),
+      left: () => (params.limit === undefined ? Infinity : Math.max(0, params.limit - cardWrites - handled)),
       handled: () => { handled++; params.onHandled?.(handled); },
     });
     summary.done.push(...g.done);
@@ -389,6 +422,13 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   markExecDone(db);
   log(`act ${repo}: ${summary.done.length} closed, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.asked.length} asked`);
   return summary;
+}
+
+/** An error that points at GitHub or the network, not at the target: a 5xx status, a timeout, a dropped connection or a rate limit. */
+export function githubWide(e: unknown): boolean {
+  const status = Number((e as { status?: unknown })?.status ?? 0);
+  if (status >= 500 || status === 429) return true;
+  return /\b(HTTP|status)\s*:?\s*5\d\d\b|timed? ?out|ETIMEDOUT|ECONN\w*|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network|rate.?limit|abuse detection|bad gateway|service unavailable/i.test(String((e as Error)?.message ?? e));
 }
 
 /** True when the decision has close targets in another repo (a batch across repos), which this run does not settle. */

@@ -132,6 +132,16 @@ function seed(): ConversationTurn[] {
           text: "Do the nonstandard rules in these patterns differ from the ones in the language pack?",
           state: "proposed",
         }),
+        card({
+          id: 10,
+          kind: "comment",
+          label: "Post comment",
+          title: "Thank the author for the data",
+          text: "Thanks for the patterns.",
+          state: "queued",
+          by: "mosswood",
+          queued: { place: 3, reason: "daily GitHub write limit, #3 in line", dispute: null },
+        }),
       ],
       notes: [],
     },
@@ -323,6 +333,22 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         settle?.(repo, Number(num), answer, body.note ?? null);
         changed();
         return snap(card({ id: nextId++, kind: "resolution", title: core.label, state: "done", fromChoice: true, by: me.login, at, done: { at, link: "", label: core.label } }));
+      },
+      async disputeCard(id, reason) {
+        const k = find(id);
+        needCard(k);
+        if (k.state !== "queued" || !k.queued) throw new Error("only a queued press can be disputed");
+        k.queued = { ...k.queued, place: null, reason: "daily GitHub write limit", dispute: { by: me.login, reason, at: new Date().toISOString() } };
+        changed();
+        return snap(k);
+      },
+      async keepCard(id) {
+        const k = find(id);
+        needCard(k);
+        if (k.state !== "queued" || !k.queued?.dispute) throw new Error("that press is not disputed");
+        k.queued = { place: 1, reason: "daily GitHub write limit, #1 in line", dispute: null };
+        changed();
+        return snap(k);
       },
       async dismissCard(id) {
         const k = find(id);

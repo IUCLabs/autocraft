@@ -149,6 +149,8 @@ export interface Decision {
   exec: { state: ExecState; reason: string | null; approvalsRepo?: string } | null;
   /** Login of the person whose card is applying an answer to this open decision; nobody else may answer meanwhile. */
   settling?: string | null;
+  /** The press that holds this open decision waits for room under the daily GitHub write limit: who pressed, the place in line (null while disputed), and a dispute of the press. */
+  queued?: { card: number; by: string; place: number | null; reason: string; dispute: { by: string; reason: string; at: string } | null } | null;
   /** Someone disputed the answer before the pipeline applied it: the pipeline ignores it until the answerer or an operator keeps it or undoes it. */
   dispute?: { by: string; reason: string; at: string } | null;
   /** Answered, not applied, and the answerer can no longer settle (lost the role, or the setting is off): an operator reassigns it. */
@@ -1742,7 +1744,7 @@ export interface QueueSlot {
   /** Stage name as shown: Review, Opus review, Fix, Fix-up, Verify, Merge. */
   stage: string;
   /** The Queue tab that lists the stage. */
-  tab: Exclude<QueueTab, "all">;
+  tab: Exclude<QueueTab, "all"> | "act";
   place: number;
 }
 
@@ -1829,7 +1831,7 @@ export interface QueuePage {
 /** A proposed card's drafts as an operator edited them; a field left out stays as it is. */
 export type CardEdit = { text?: string; issue?: { title: string; body: string }; instructions?: string };
 
-export type ConversationCardState = "proposed" | "running" | "done" | "failed" | "dismissed" | "replaced";
+export type ConversationCardState = "proposed" | "queued" | "running" | "done" | "failed" | "dismissed" | "replaced";
 
 /**
  * An action Opus proposed. `title` is written by the server from the card's parameters; `text` is the card's editable comment.
@@ -1867,6 +1869,8 @@ export interface ConversationCard {
   /** An answer or close card that writes to GitHub: what it does, e.g. "closes the PR on GitHub". The button asks for a second confirmation. */
   writes?: string;
   state: ConversationCardState;
+  /** Set when state is queued: the press found no room under the daily GitHub write limit; `place` counts from 1 in the order the cards run (null while disputed). */
+  queued?: { place: number | null; reason: string; dispute: { by: string; reason: string; at: string } | null };
   /** Set when state is done; `link` is empty when the action wrote nothing on GitHub. */
   done?: { at: string; link: string; label: string };
   /** Set when state is failed. */
@@ -2087,10 +2091,10 @@ export type NeedsFeedbackRow = {
   handled: boolean;
 };
 export type NeedsFeedbackPage = { rows: NeedsFeedbackRow[]; nextCursor: string | null };
-export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string } | { type: "fixes"; repo: RepoName };
+export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string } | { type: "retry"; decision: string } | { type: "fixes"; repo: RepoName };
 export type NeedsStoppedRow = {
   id: string;
-  kind: "breaker" | "limit" | "account" | "fix-group";
+  kind: "breaker" | "limit" | "account" | "act" | "fix-group";
   title: string;
   reason: string;
   since: string | null;

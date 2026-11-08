@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { QueuedPress } from "../../ui/molecules/QueuedPress";
 import { CaretDownIcon, CaretRightIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { Decision, DecisionChoices } from "../../api/types";
@@ -78,8 +79,9 @@ function HoldCard({ d, choices, updating }: { d: Decision; choices?: DecisionCho
     if (!d.answer && commenter) void api.decisions.claim(d.id);
   }, [api, d.id, d.answer, commenter]);
   // A card from another person is applying an answer: nobody answers meanwhile.
-  const applying = d.settling && d.settling.toLowerCase() !== user.login.toLowerCase() ? d.settling : null;
-  const actor = canActOn(user, [d]) && !applying;
+  const queued = d.queued ?? null;
+  const applying = !queued && d.settling && d.settling.toLowerCase() !== user.login.toLowerCase() ? d.settling : null;
+  const actor = canActOn(user, [d]) && !applying && !queued;
   const preparing = (d.preparing || updating) && !d.answer;
   const loading = choices === undefined && d.number !== null && d.group.length === 0;
   const rec = preparing || loading ? null : recommended(d, choices);
@@ -92,7 +94,10 @@ function HoldCard({ d, choices, updating }: { d: Decision; choices?: DecisionCho
         {d.snoozed && <span>Snoozed until new activity</span>}
       </div>
       <p className="mt-1.5 text-pretty text-[15px] font-semibold leading-6"><Refs text={d.question} repo={d.repo} /></p>
-      {applying ? (
+      {queued ? (
+        <QueuedPress by={queued.by} queued={queued} viewer={{ login: user.login, operator: user.role === "operator" }} canSettle={canActOn(user, [d])}
+          onDismiss={() => api.conversations.dismissCard(queued.card)} onDispute={(reason) => api.conversations.disputeCard(queued.card, reason)} onKeep={() => api.conversations.keepCard(queued.card)} />
+      ) : applying ? (
         <p className="mt-2 text-sm text-ink/70">{applying} is applying their answer</p>
       ) : preparing ? (
         <p className="mt-2 text-sm text-ink/55">{d.preparing ? "Opus is preparing the options" : "Opus is updating the options"}</p>

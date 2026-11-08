@@ -26,6 +26,7 @@ import { pilotSql } from "../pilot.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { judgementModel } from "./judgement.ts";
 import { loadSummaryItems } from "./index.ts";
+import { lockLiveSql } from "../answers/hold.ts";
 import { discussionKeySql, openSubjectSql, prepareDue, prepareStateSql, utcDayStart, type PrepareColumns } from "./prepared.ts";
 import { PREPARE_DIFF_LIMIT, PREPARE_MEMBERS, PREPARE_STOPPED_LIMIT, PREPARE_SUMMARY_MAX, PREPARE_TURNS_LIMIT, type PrepareInput } from "./prepare-types.ts";
 
@@ -94,12 +95,27 @@ type DueRow = PrepareColumns & { id: string; repo: string; asked_at: string; num
 /** The head a decision is prepared for: a pull request's head commit, else null. */
 const headOf = (r: { item_kind: string | null; head_oid: string | null }): string | null => (r.item_kind === "pr" ? r.head_oid : null);
 
-/** Ids of the open decisions whose prepare is due (no prepare for the current state, tries left, backoff over), those an operator asked to prepare again first, then oldest decision first. The item's Plan says whether the decide step has work; this reads the decisions themselves. */
+/** A decision gains one level band for each day it has been open (at most all 4), so P2 decisions are not starved by a steady flow of P0 ones. Aging orders the prepares; nothing waits on a timer. */
+export const PREPARE_AGING_MS = 24 * 3600_000;
+
+/**
+ * Ids of the open decisions whose prepare is due (no prepare for the current state, tries left, backoff over), those an operator asked to prepare again first,
+ * then repos in turn (each repo's first, then each repo's second, and so on), and within a round by the item's priority level raised by the age of the decision
+ * (P0 first), then oldest first. A decision whose press is running or queued is locked and not prepared. The item's Plan says whether the decide step has work; this reads the decisions themselves.
+ */
 export function prepareIds(db: DatabaseSync, repos?: string[], nowMs: number = Date.now()): string[] {
-  const rows = db.prepare(`SELECT d.id, d.repo, d.asked_at, d.number, d.prepare_requested_at, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind AS item_kind, i.head_oid, d.kind, d.prepared_discussion, ${prepareStateSql("d")}
-    FROM decisions d LEFT JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} ORDER BY d.prepare_requested_at IS NULL, d.prepare_requested_at, d.asked_at, d.id`).all(utcDayStart(nowMs)) as DueRow[];
-  return rows.filter((r) => !repos?.length || repos.includes(r.repo)).filter((r) => prepareDue(r, headOf(r), nowMs)).map((r) => r.id);
+  const rows = db.prepare(`SELECT d.id, d.repo, d.asked_at, d.number, d.prepare_requested_at, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind AS item_kind, i.head_oid, d.kind, d.prepared_discussion, ${prepareStateSql("d")},
+      COALESCE(CAST(rk.score / 10000 AS INTEGER), 2) AS band
+    FROM decisions d LEFT JOIN items i ON i.repo = d.repo AND i.number = d.number LEFT JOIN item_rank rk ON rk.repo = d.repo AND rk.number = d.number
+    WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} AND NOT ${lockLiveSql("d")}
+    ORDER BY d.prepare_requested_at IS NULL, d.prepare_requested_at, d.asked_at, d.id`).all(utcDayStart(nowMs)) as (DueRow & { band: number })[];
+  const due = rows.filter((r) => !repos?.length || repos.includes(r.repo)).filter((r) => prepareDue(r, headOf(r), nowMs));
+  const level = (r: { band: number; asked_at: string }): number => r.band + Math.min(4, Math.floor(Math.max(0, nowMs - Date.parse(r.asked_at)) / PREPARE_AGING_MS) || 0);
+  // Within a repo the best (aged level, then oldest) comes first, so its round numbers follow that order.
+  due.sort((x, y) => level(y) - level(x) || (x.asked_at < y.asked_at ? -1 : x.asked_at > y.asked_at ? 1 : 0) || (x.id < y.id ? -1 : 1));
+  const round = new Map<string, number>();
+  const turn = new Map(due.map((r) => [r.id, r.prepare_requested_at ? -1 : (round.set(r.repo, (round.get(r.repo) ?? -1) + 1), round.get(r.repo)!)]));
+  return due.sort((x, y) => turn.get(x.id)! - turn.get(y.id)! || level(y) - level(x) || (x.asked_at < y.asked_at ? -1 : x.asked_at > y.asked_at ? 1 : 0) || (x.id < y.id ? -1 : 1)).map((r) => r.id);
 }
 
 // ---- what stopped the pipeline -----------------------------------------------

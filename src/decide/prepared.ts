@@ -21,10 +21,19 @@ export type PrepareColumns = {
   prepare_requested_at?: string | null;
   /** Automatic prepares of this decision since UTC midnight (`preparesTodaySql`). */
   prepares_today?: number;
+  /** 1 when the item's Plan holds a review or carry action at the PR's current head (`reviewQueuedSql`): a review is about to start. */
+  review_queued?: number;
 };
 
 /** Automatic prepares per decision per UTC day; an operator's Re-prepare is exempt. */
 export const PREPARE_DAILY_CAP = 3;
+
+/** A new comment re-prepares a decision only while it has fewer automatic prepares than this today: a first prepare and one re-prepare for the discussion. Later comments wait for a new head, a new review or an operator's Re-prepare. */
+export const DISCUSSION_PREPARES_PER_DAY = 2;
+
+/** The item's Plan holds a review or carry action for the PR's current head, so a review starts soon. A review that is stale but held (daily cap, CI, a blocking item, paused) has no such action. Alias `d`: a decision row. */
+export const reviewQueuedSql = (d: string): string => `EXISTS (SELECT 1 FROM item_plans qp JOIN items qi ON qi.repo = qp.repo AND qi.number = qp.number, json_each(CASE WHEN json_valid(qp.actions) THEN qp.actions ELSE '[]' END) qa
+  WHERE qp.repo = ${d}.repo AND qp.number = ${d}.number AND json_extract(qa.value, '$.kind') IN ('review', 'carry') AND json_extract(qa.value, '$.head') IS qi.head_oid)`;
 
 /** The newest comment the item's discussion counts (src/review/discussion.ts isCounted, stored as `comments.counted`), without our own posts (app accounts, note lines). Alias `d`: a decision row. */
 export const discussionKeySql = (d: string): string => `(SELECT c.id FROM comments c WHERE c.repo = ${d}.repo AND c.number = ${d}.number AND c.counted = 1
@@ -56,7 +65,7 @@ export const preparesTodaySql = (d: string): string => `(SELECT count(*) FROM de
 /** The select list for the columns above, for open decisions only; binds one `?` (the UTC day start). */
 export const prepareStateSql = (d: string): string => `CASE WHEN ${d}.answer IS NULL THEN ${discussionKeySql(d)} END AS discussion_key,
   CASE WHEN ${d}.answer IS NULL THEN ${reviewedAtSql(d)} END AS reviewed_at, CASE WHEN ${d}.answer IS NULL THEN ${preparesTodaySql(d)} END AS prepares_today,
-  CASE WHEN ${d}.answer IS NULL THEN ${staleChoicesSql(d)} END AS stale_choices`;
+  CASE WHEN ${d}.answer IS NULL THEN ${staleChoicesSql(d)} END AS stale_choices, ${reviewQueuedSql(d)} AS review_queued`;
 
 export const utcDayStart = (nowMs: number): string => `${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00.000Z`;
 
@@ -74,15 +83,16 @@ const idHead = (d: PrepareColumns): string | null => {
 export const isPrepared = (d: PrepareColumns, head: string | null): boolean => {
   if (d.prepared_at === null) return false;
   if (d.kind === undefined || d.kind === "merge") return (d.prepared_head ?? null) === (head ?? null);
-  if (d.prepared_discussion != null && (d.discussion_key ?? "") !== d.prepared_discussion) return false;
+  if (d.prepared_discussion != null && (d.discussion_key ?? "") !== d.prepared_discussion && ((d.prepares_today ?? 0) < DISCUSSION_PREPARES_PER_DAY || !!d.prepare_requested_at)) return false;
   if (choicesDependOnCode(d.stale_choices)) return false;
   return !(d.reviewed_at && d.reviewed_at > d.prepared_at);
 };
 
-/** Why an automatic prepare is not due: the decision is for an older head (it is about to be withdrawn), or it used its prepares of the day. An operator's Re-prepare lifts the cap. */
-export const prepareHeld = (d: PrepareColumns, head: string | null): "old-head" | "capped" | null => {
+/** Why an automatic prepare is not due: the decision is for an older head or a review of its head is queued (the review's result withdraws a Merge? or Close? question and asks it again), or it used its prepares of the day. An operator's Re-prepare lifts the cap and the review hold. */
+export const prepareHeld = (d: PrepareColumns, head: string | null): "old-head" | "review-queued" | "capped" | null => {
   const h = idHead(d);
   if (h !== null && h !== head) return "old-head";
+  if (h !== null && d.review_queued && !d.prepare_requested_at) return "review-queued";
   if (!d.prepare_requested_at && (d.prepares_today ?? 0) >= PREPARE_DAILY_CAP) return "capped";
   return null;
 };
@@ -105,7 +115,7 @@ export const prepareDue = (d: PrepareColumns, head: string | null, nowMs: number
 export const openSubjectSql = (d: string, i: string): string => `(${i}.state = 'OPEN' OR (${d}.id LIKE '%:dupegroup:%' AND EXISTS (SELECT 1 FROM dupe_group_items gi
   JOIN items m ON m.repo = ${d}.repo AND m.number = gi.number WHERE gi.decision_id = ${d}.id AND gi.role = 'close' AND m.state = 'OPEN')))`;
 
-type Subject = { dkind: string; kind: string; head_oid: string | null } & Pick<PrepareColumns, "discussion_key" | "reviewed_at" | "prepares_today" | "stale_choices">;
+type Subject = { dkind: string; kind: string; head_oid: string | null } & Pick<PrepareColumns, "discussion_key" | "reviewed_at" | "prepares_today" | "stale_choices" | "review_queued">;
 
 function columnsOf(db: DatabaseSync, d: Partial<PrepareColumns> & { id: string; answer: string | null; repo: string | null; number: number | null }): { cols: PrepareColumns; head: string | null; open: true } | null {
   if (d.answer !== null || d.number === null) return null;
@@ -113,7 +123,7 @@ function columnsOf(db: DatabaseSync, d: Partial<PrepareColumns> & { id: string; 
     WHERE d.id = ? AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")}`).get(utcDayStart(Date.now()), d.id) as Subject | undefined;
   if (!it) return null;
   const cols: PrepareColumns = { id: d.id, kind: it.dkind, prepared_at: d.prepared_at ?? null, prepared_head: d.prepared_head ?? null, prepare_failed_head: d.prepare_failed_head ?? null, recommend_failures: d.recommend_failures ?? null, recommend_failed_at: d.recommend_failed_at ?? null,
-    prepared_discussion: d.prepared_discussion ?? null, discussion_key: it.discussion_key ?? null, reviewed_at: it.reviewed_at ?? null, prepare_requested_at: d.prepare_requested_at ?? null, prepares_today: Number(it.prepares_today ?? 0), stale_choices: it.stale_choices ?? null };
+    prepared_discussion: d.prepared_discussion ?? null, discussion_key: it.discussion_key ?? null, reviewed_at: it.reviewed_at ?? null, prepare_requested_at: d.prepare_requested_at ?? null, prepares_today: Number(it.prepares_today ?? 0), stale_choices: it.stale_choices ?? null, review_queued: Number(it.review_queued ?? 0) };
   return { cols, head: it.kind === "pr" ? it.head_oid : null, open: true };
 }
 

@@ -35,12 +35,13 @@ export function needsPage(f: { feedback?: boolean; cursor?: string }): NeedsPage
   const start = f.cursor ? Number(f.cursor) : 0;
   const size = 50;
   return {
-    counts: { decisions: 40, feedback: ROWS.filter((r) => !r.handled).length, stopped: 5 },
+    counts: { decisions: 40, feedback: ROWS.filter((r) => !r.handled).length, stopped: 6 },
     feedback: f.feedback ? { rows: ROWS.slice(start, start + size), nextCursor: start + size < ROWS.length ? String(start + size) : null } : null,
     stopped: [
       { id: "breaker:merge", kind: "breaker", title: "Merge", reason: "Two merges in a row left the default branch red", since: at(95), resume: { type: "trip", stage: "merge" } },
       { id: "limit:fixup", kind: "limit", title: "Fix-up", reason: "The daily limit is 0", since: at(60 * 30), resume: { type: "link", to: "/pipeline" } },
       { id: "account:b", kind: "account", title: "Second account", reason: "paused: 5-hour use 92% (pause at 80%)", since: null, resume: { type: "link", to: "/accounts" } },
+      { id: "act:photocraft#4:7", kind: "act", title: "photocraft#4080", reason: "stopped after 3 failed tries: GitHub refused the close", since: at(120), resume: { type: "retry", decision: "photocraft#4080:scope" } },
       { id: "fixes:craft-libs", kind: "fix-group", title: "craft-libs", reason: "52 issues with a stopped fix", since: at(60 * 20), count: 52, resume: { type: "fixes", repo: "craft-libs" } },
       { id: "fixes:photocraft", kind: "fix-group", title: "photocraft", reason: "1 issue with a stopped fix", since: at(60 * 90), count: 1, resume: { type: "fixes", repo: "photocraft" } },
     ],

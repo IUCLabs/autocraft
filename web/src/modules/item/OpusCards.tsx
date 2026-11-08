@@ -1,13 +1,16 @@
 import { useApi } from "../../api/client";
+import { useUser } from "../../shell/UserContext";
 import type { ConversationCard } from "../../api/types";
 import { markStarting } from "./starting";
 import { OpusCard } from "../../ui/organisms/OpusCard";
 
 export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt-2", item }: { a: ConversationCard; operator: boolean; editInstructions?: boolean; className?: string; item?: { repo: string; number: number } }) {
   const api = useApi();
+  const user = useUser();
   return (
     <OpusCard
       card={a}
+      viewer={user}
       operator={operator}
       editInstructions={editInstructions}
       className={className}
@@ -17,6 +20,8 @@ export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt
         if (item && a.fixup && ran.state !== "failed") markStarting(item.repo, item.number, a.title);
       }}
       onDismiss={() => api.conversations.dismissCard(a.id)}
+      onDispute={(reason) => api.conversations.disputeCard(a.id, reason)}
+      onKeep={() => api.conversations.keepCard(a.id)}
     />
   );
 }

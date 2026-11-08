@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { CheckIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { CheckIcon, HourglassIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import type { CardEdit, ConversationCard } from "../../api/types";
 import { Button } from "../atoms/Button";
 import { TimeAgo } from "../atoms/TimeAgo";
 import { StepDraft } from "../molecules/StepDraft";
+import { QueuedPress } from "../molecules/QueuedPress";
 import { cn } from "../cn";
 
 const area = "block w-full [field-sizing:content] max-h-[60vh] min-h-24 resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60";
@@ -13,7 +14,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * An action Opus proposed. A card with `settles` is a resolution (title, steps, what it settles, then the buttons);
  * a card without it is a smaller, quieter single action. Props only: the caller runs the calls.
  */
-export function OpusCard({ card: a, operator, editInstructions = true, onRun, onDismiss, className }: {
+export function OpusCard({ card: a, operator, viewer, editInstructions = true, onRun, onDismiss, onDispute, onKeep, className }: {
   card: ConversationCard;
   operator: boolean;
   /** False: the fix-up instructions show without an Edit button (they go to the fix-up model, so only operators write them). */
@@ -21,6 +22,10 @@ export function OpusCard({ card: a, operator, editInstructions = true, onRun, on
   /** Runs the card; `edit` holds the drafts (comment text, issue, fix-up instructions) that differ from the proposed ones. */
   onRun: (edit?: CardEdit) => Promise<unknown>;
   onDismiss: () => Promise<unknown>;
+  /** The signed-in person, for a queued press: its presser and operators dismiss it, others who settle dispute it. */
+  viewer?: { login: string };
+  onDispute?: (reason: string) => Promise<unknown>;
+  onKeep?: () => Promise<unknown>;
   className?: string;
 }) {
   // The drafts being edited, and their edited values; a draft left out of `vals` shows the card's own.
@@ -43,7 +48,7 @@ export function OpusCard({ card: a, operator, editInstructions = true, onRun, on
   const [error, setError] = useState<string>();
   // A card that writes to GitHub needs a second press, like the decision page.
   const [armed, setArmed] = useState(false);
-  const locked = busy || a.state === "running";
+  const locked = busy || a.state === "running" || a.state === "queued";
   const proposed = a.state === "proposed";
   const resolution = a.settles !== undefined;
 
@@ -82,10 +87,12 @@ export function OpusCard({ card: a, operator, editInstructions = true, onRun, on
       <div className={cn("flex items-start gap-1.5 font-medium", resolution ? "text-sm" : "text-xs")}>
         {a.state === "done" && <CheckIcon className="mt-0.5 shrink-0 text-ok" />}
         {a.state === "failed" && <WarningCircleIcon className="mt-0.5 shrink-0 text-bad" />}
+        {a.state === "queued" && <HourglassIcon className="mt-0.5 shrink-0 text-ink/50" />}
         {a.state === "running" && <SpinnerIcon className="mt-0.5 shrink-0 animate-spin text-ink/50" />}
         <span className={cn("min-w-0 flex-1 break-words", a.state === "dismissed" && "font-normal text-ink/45", a.state === "dismissed" && "line-through")}>{resolution ? a.headline : a.title}</span>
         {a.state === "done" && <span className="shrink-0 text-xs font-normal text-ok">Done</span>}
         {a.state === "failed" && <span className="shrink-0 text-xs font-normal text-bad">Failed</span>}
+        {a.state === "queued" && <span className="shrink-0 text-xs font-normal text-ink/55">Queued</span>}
         {a.state === "running" && <span className="shrink-0 text-xs font-normal text-ink/55">Running…</span>}
         {a.state === "dismissed" && <span className="shrink-0 text-xs font-normal text-ink/45">Dismissed</span>}
       </div>
@@ -157,6 +164,9 @@ export function OpusCard({ card: a, operator, editInstructions = true, onRun, on
         </p>
       )}
       {error && <p className="mt-2 text-xs text-bad">{error}</p>}
+      {a.state === "queued" && a.queued && viewer && onDispute && onKeep && (
+        <QueuedPress by={a.by ?? ""} queued={a.queued} viewer={{ login: viewer.login, operator }} canSettle={a.canSettle} onDismiss={onDismiss} onDispute={onDispute} onKeep={onKeep} />
+      )}
       {proposed && operator && (
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <Button

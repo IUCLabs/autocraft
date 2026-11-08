@@ -6,6 +6,7 @@ import { BACKLOG, getDecision, optionsOf, type DecisionRow } from "../decisions.
 import { audit } from "../dash/audit.ts";
 import { settledBy, settledBySql } from "../settlers.ts";
 import { writeEffect } from "../act/index.ts";
+import { queuePlace } from "../conversations/queue.ts";
 
 export const SETTLING = "settling";
 export const DISPUTED = "disputed";
@@ -14,11 +15,11 @@ export const DISPUTED = "disputed";
 export const RUNNING_STALE_MS = 10 * 60_000;
 
 /**
- * SQL: the lock of `t` (a decisions table or alias) is live: its card is still running and not stale. A lock whose card ended or
- * died counts for nothing, so no path has to clear it for the decision to be answerable.
+ * SQL: the lock of `t` (a decisions table or alias) is live: its card is still running and not stale, or is queued for room under the
+ * daily GitHub write limit. A lock whose card ended or died counts for nothing, so no path has to clear it for the decision to be answerable.
  */
 export const lockLiveSql = (t = "decisions", now: Date = new Date()): string =>
-  `(${t}.exec_state = '${SETTLING}' AND EXISTS (SELECT 1 FROM main.conversation_cards lc WHERE lc.state = 'running' AND lc.acted_at > '${new Date(now.getTime() - RUNNING_STALE_MS).toISOString()}' AND ${t}.exec_reason LIKE lc.id || ':%'))`;
+  `(${t}.exec_state = '${SETTLING}' AND EXISTS (SELECT 1 FROM main.conversation_cards lc WHERE (lc.state = 'queued' OR (lc.state = 'running' AND lc.acted_at > '${new Date(now.getTime() - RUNNING_STALE_MS).toISOString()}')) AND ${t}.exec_reason LIKE lc.id || ':%'))`;
 
 /** The login of the person whose card is settling an open decision right now, or null. */
 export function settlingBy(db: DatabaseSync, d: Pick<DecisionRow, "id" | "answer" | "exec_state" | "exec_reason">): string | null {
@@ -30,13 +31,33 @@ export function settlingBy(db: DatabaseSync, d: Pick<DecisionRow, "id" | "answer
 
 export const settlingMessage = (by: string): string => `${by} is applying their answer`;
 
-/** Claims the open decision for the card inside the transaction that starts the card's run. Throws when a live card holds it. A decision that is answered or missing is left alone: the run reports "the decision changed". */
+/** The queued card that holds the open decision's lock, if any. */
+export function queuedLock(db: DatabaseSync, d: Pick<DecisionRow, "id" | "exec_state" | "exec_reason">): number | null {
+  if (d.exec_state !== SETTLING) return null;
+  const id = Number((d.exec_reason ?? "").split(":")[0]);
+  if (!Number.isInteger(id)) return null;
+  return db.prepare("SELECT 1 FROM main.conversation_cards WHERE id = ? AND state = 'queued'").get(id) ? id : null;
+}
+
+/** Why an answer to the locked decision is refused: a card is running, or the press waits for room (the place is read now). */
+export function lockMessage(db: DatabaseSync, d: DecisionRow): string {
+  const by = settlingBy(db, d) ?? "someone";
+  const card = queuedLock(db, d);
+  if (card === null) return settlingMessage(by);
+  const place = queuePlace(db, card);
+  return `${by}'s answer waits for the daily GitHub write limit${place ? ` (#${place})` : ""}`;
+}
+
+/**
+ * Claims the open decision for the card inside the transaction that queues the card or starts its run. A lock the card already holds
+ * (it was queued) is taken over. Throws when another live card holds it. A decision that is answered or missing is left alone: the run reports "the decision changed".
+ */
 export function claimSettling(db: DatabaseSync, decisionId: string, cardId: number, login: string): void {
-  const r = db.prepare(`UPDATE main.decisions SET exec_state = ?, exec_reason = ? WHERE id = ? AND answer IS NULL AND NOT ${lockLiveSql("decisions")}`).run(SETTLING, `${cardId}:${login}`, decisionId);
+  const r = db.prepare(`UPDATE main.decisions SET exec_state = ?, exec_reason = ? WHERE id = ? AND answer IS NULL AND (NOT ${lockLiveSql("decisions")} OR (exec_state = ? AND exec_reason LIKE ?))`)
+    .run(SETTLING, `${cardId}:${login}`, decisionId, SETTLING, `${cardId}:%`);
   if (r.changes === 1) return;
   const d = getDecision(db, decisionId);
-  const by = d && settlingBy(db, d);
-  if (by) throw new Error(settlingMessage(by));
+  if (d && settlingBy(db, d)) throw new Error(lockMessage(db, d));
 }
 
 /** Clears the lock of the card. The answer's own exec state replaces it when the card answered the decision. */
@@ -44,10 +65,10 @@ export function releaseSettling(db: DatabaseSync, decisionId: string, cardId: nu
   db.prepare("UPDATE main.decisions SET exec_state = NULL, exec_reason = NULL WHERE id = ? AND exec_state = ? AND exec_reason LIKE ?").run(decisionId, SETTLING, `${cardId}:%`);
 }
 
-/** Locks left by a card that no longer runs (a crashed process). */
+/** Locks left by a card that no longer runs (a crashed process). A queued card keeps its lock. */
 export function sweepSettling(db: DatabaseSync): number {
   return Number(db.prepare(`UPDATE main.decisions SET exec_state = NULL, exec_reason = NULL WHERE exec_state = ?
-    AND NOT EXISTS (SELECT 1 FROM main.conversation_cards c WHERE c.state = 'running' AND decisions.exec_reason LIKE c.id || ':%')`).run(SETTLING).changes);
+    AND NOT EXISTS (SELECT 1 FROM main.conversation_cards c WHERE c.state IN ('running', 'queued') AND decisions.exec_reason LIKE c.id || ':%')`).run(SETTLING).changes);
 }
 
 export const isDisputed = (d: Pick<DecisionRow, "exec_state" | "answer" | "applied_at">): boolean => d.exec_state === DISPUTED && d.answer !== null && !d.applied_at;
@@ -100,7 +121,10 @@ export function heldOpenSql(login: string, operator: boolean): string {
   const me = `'${login.replace(/'/g, "''")}'`;
   const writes = `((decisions.answer = 'close' AND decisions.kind IN ('scope', 'close', 'duplicate', 'merge')) OR (decisions.answer = 'merge' AND decisions.kind = 'merge')
     OR (decisions.kind = 'duplicate' AND (decisions.answer = 'accept' OR decisions.answer LIKE 'keep:%')))`;
-  return `(decisions.answer IS NOT NULL AND decisions.applied_at IS NULL AND decisions.answer <> '${BACKLOG.key}' AND decisions.id NOT LIKE '%~replaced-%'
+  // An open decision whose queued press someone disputed: the presser and operators look at it.
+  const queuedDispute = `(decisions.answer IS NULL AND decisions.exec_state = '${SETTLING}' AND EXISTS (SELECT 1 FROM main.conversation_cards hc WHERE hc.state = 'queued' AND hc.dispute_by IS NOT NULL
+    AND decisions.exec_reason LIKE hc.id || ':%' AND ${operator ? "1" : `hc.acted_by = ${me} COLLATE NOCASE`}))`;
+  return `(${queuedDispute} OR decisions.answer IS NOT NULL AND decisions.applied_at IS NULL AND decisions.answer <> '${BACKLOG.key}' AND decisions.id NOT LIKE '%~replaced-%'
     AND ((decisions.exec_state = '${DISPUTED}' AND ${operator ? "1" : `decisions.answered_by = ${me} COLLATE NOCASE`})
       OR (${operator ? "1" : "0"} AND decisions.exec_state IS NOT '${DISPUTED}' AND decisions.answered_by IS NOT NULL AND decisions.answered_by <> 'pipeline' AND ${writes} AND NOT ${settledBySql("decisions")})))`;
 }
