@@ -4,7 +4,8 @@
 // in mirrored text of tracked repos (the `repos` lookup, see image-index.ts);
 // redirects are followed by hand and re-checked; the bot's token goes only to
 // github.com. Upstream fetches are limited to a few at a time, 5 MB each.
-import { readEnv, readsUseApp } from "../../github/read.ts";
+import { ownerOf } from "../../owners.ts";
+import { readEnv } from "../../github/read.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -78,7 +79,7 @@ export type ImageResult = { status: number; type?: string; data?: Buffer; error?
 
 export type ImageProxyOptions = {
   fetch?: typeof fetch;
-  token?: () => Promise<string | null>;   // the token for attachment URLs
+  token?: (owner: string | undefined) => Promise<string | null>;   // the token for attachment URLs of a repo owner
   cacheDir?: string | null;               // null: no disk cache
   repos?: (href: string) => string[];     // tracked repos whose text contains the URL; default: none
   maxConcurrent?: number;                 // upstream fetches at once
@@ -100,16 +101,10 @@ export function imageRepo(raw: string): string | null {
  * Where the image token comes from: the file named by AUTOCRAFT_IMAGE_TOKEN_FILE
  * (re-read when its mtime changes), else `gh auth token`. Logs which one, never the value.
  */
-export function imageTokenSource(env: NodeJS.ProcessEnv = process.env, log: (line: string) => void = console.log): () => Promise<string | null> {
-  const own = boxImageTokenSource(env, log);
-  // Read at each use: under the app identity the installation token serves, whatever the box is configured with.
-  return () => (readsUseApp() ? ghToken() : own());
-}
-
-function boxImageTokenSource(env: NodeJS.ProcessEnv, log: (line: string) => void): () => Promise<string | null> {
+export function imageTokenSource(env: NodeJS.ProcessEnv = process.env, log: (line: string) => void = console.log): (owner?: string) => Promise<string | null> {
   const file = envVar("IMAGE_TOKEN_FILE", env);
   if (!file) {
-    log("image proxy token: from `gh auth token` (AUTOCRAFT_IMAGE_TOKEN_FILE is not set; under the GitHub App identity an installation token is used)");
+    log("image proxy token: from `gh auth token`, or under the GitHub App identity an installation token of the image's owner (AUTOCRAFT_IMAGE_TOKEN_FILE is not set)");
     return ghToken;
   }
   log("image proxy token: from the file named by AUTOCRAFT_IMAGE_TOKEN_FILE");
@@ -129,10 +124,10 @@ function boxImageTokenSource(env: NodeJS.ProcessEnv, log: (line: string) => void
 }
 
 /** Runs `gh auth token` in the repo's directory (the gh wrapper picks the account by directory). */
-export async function ghToken(): Promise<string | null> {
-  // Under the app identity the proxy fetches with an installation token; the box account's login is not consulted.
+export async function ghToken(owner?: string): Promise<string | null> {
+  // Under the app identity the proxy fetches with an installation token of the image's owner; the box account's login is not consulted.
   let env: Awaited<ReturnType<typeof readEnv>>;
-  try { env = await readEnv(); } catch (e) { console.log(`image proxy token: ${String((e as Error).message ?? e)}`); return null; }
+  try { env = await readEnv(owner); } catch (e) { console.log(`image proxy token: ${String((e as Error).message ?? e)}`); return null; }
   if (env) return env.GH_TOKEN ?? null;
   return new Promise((resolve) => {
     execFile("gh", ["auth", "token"], { cwd: REPO_DIR, timeout: 15_000, encoding: "utf8" }, (err, stdout) => {
@@ -150,8 +145,8 @@ export function defaultImageCacheDir(env: NodeJS.ProcessEnv = process.env): stri
 
 export class ImageProxy {
   #fetch: typeof fetch;
-  #tokenSource: () => Promise<string | null>;
-  #token: { value: string | null; at: number } | null = null;
+  #tokenSource: (owner: string | undefined) => Promise<string | null>;
+  #tokens = new Map<string, { value: string | null; at: number }>();
   #cacheDir: string | null;
   #inflight = new Map<string, Promise<ImageResult>>();
   #writes = 0;
@@ -166,11 +161,16 @@ export class ImageProxy {
     this.#slots = new Semaphore(opts.maxConcurrent ?? MAX_UPSTREAM_FETCHES, opts.queueWaitMs ?? FETCH_QUEUE_WAIT_MS);
   }
 
-  async #getToken(): Promise<string | null> {
-    if (!this.#token || Date.now() - this.#token.at > TOKEN_TTL_MS) {
-      this.#token = { value: await this.#tokenSource().catch(() => null), at: Date.now() };
+  async #getToken(href: string): Promise<string | null> {
+    const repo = this.#repos(href)[0];
+    const owner = repo ? ownerOf(repo) : undefined;
+    const key = owner ?? "";
+    let t = this.#tokens.get(key);
+    if (!t || Date.now() - t.at > TOKEN_TTL_MS) {
+      t = { value: await this.#tokenSource(owner).catch(() => null), at: Date.now() };
+      this.#tokens.set(key, t);
     }
-    return this.#token.value;
+    return t.value;
   }
 
   /** `allow` is asked only when the image has to be fetched (the per-session rate limit). */
@@ -213,7 +213,7 @@ export class ImageProxy {
       for (let hop = 0; ; hop++) {
         const headers: Record<string, string> = { accept: "image/avif,image/webp,image/png,image/jpeg,image/gif" };
         if (needsToken(url)) {
-          const t = await this.#getToken();
+          const t = await this.#getToken(start.href);
           if (t) headers.authorization = `Bearer ${t}`;
         }
         const res = await this.#fetch(url.href, { headers, redirect: "manual", signal });

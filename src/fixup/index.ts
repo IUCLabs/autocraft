@@ -9,8 +9,6 @@
 //
 // Without --apply it is a dry run: local tables only, nothing called or written.
 // The checkout is untrusted data: nothing from it is ever run (see git.ts).
-import { readsUseApp } from "../github/read.ts";
-import { appSlug } from "../github/identity.ts";
 import { duplicateHeld } from "../dupes/held.ts";
 import { commitIdentity, ownLogins, type CommitIdentity } from "../github/identity.ts";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -172,9 +170,9 @@ export type Who = { login: string; nodeId: string; email: string };
 const sourceOf = (c: FixCandidate): string => (c.carry ? "carry" : c.source ?? "review");
 
 export async function whoAmI(run: Exec): Promise<Who> {
-  // An installation token has no user; under the app identity the account is the app's bot user.
-  const slug = readsUseApp() ? appSlug() : null;
-  const r = await run("gh", ["api", slug ? `users/${slug}%5Bbot%5D` : "user"]);
+  // The pipeline's account is the box account in both modes (an app has no user and cannot be assigned); under `app` its
+  // writes are still made as the app.
+  const r = await run("gh", ["api", "user"], { inherit: true });
   if (r.code !== 0) throw new Error("could not read the pipeline's GitHub account");
   const u = JSON.parse(r.stdout) as { login?: string; id?: number; node_id?: string };
   if (!u.login || !u.id || !u.node_id) throw new Error("could not read the pipeline's GitHub account");

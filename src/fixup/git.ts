@@ -12,14 +12,16 @@ import { readEnvFor } from "../github/read.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 /** `replaceEnv`: `env` is the child's whole environment, not an addition to this process's (the app lane, which must not inherit the box account's tokens). */
-export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string; replaceEnv?: boolean };
+/** `inherit`: run with this process's own environment and the box account's login, never the app's read token (the security-advisory writes, the pipeline account lookup). */
+export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string; replaceEnv?: boolean; inherit?: boolean };
 /** Runs a command; resolves with its exit code, rejects only when it can't be started. */
 export type Exec = (cmd: string, args: string[], opts?: ExecOpts) => Promise<ExecResult>;
 
 export const exec: Exec = async (cmd, args, opts = {}) => {
-  // A gh or git command that brings its own whole environment (a write lane) keeps it; any other reads as the current
-  // identity: the app's installation token under `app`, the inherited login under `box`.
-  const read = opts.replaceEnv ? undefined : await readEnvFor(cmd, args);
+  // A command that brings its own whole environment (a write lane) or asks to inherit keeps it. Any other gh command and
+  // the network reads of git (fetch, ls-remote, clone, pull) read as the current identity: the app's installation token
+  // under `app`, the inherited login under `box`. Local git commands and pushes get no token.
+  const read = opts.replaceEnv || opts.inherit ? undefined : await readEnvFor(cmd, args);
   const env = opts.replaceEnv ? opts.env : { ...(read ?? process.env), ...opts.env };
   return spawned(cmd, args, opts, env);
 };

@@ -3,6 +3,7 @@
 // login. Under `app` the child's whole environment is the inherited basics plus an installation token (never the
 // box account's credentials), and a failure to mint one is an error, not a fallback to the box account.
 // The setting is read at every call, so a switch takes effect in the runner and the dashboard without a restart.
+import { existsSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
 import { DEFAULT_OWNER, OWNER } from "../owners.ts";
@@ -12,52 +13,89 @@ export type ReadEnv = Record<string, string>;
 export type ReadDeps = { db?: DatabaseSync; mint?: (owner: string) => Promise<string>; defaultOwner?: () => string };
 
 let shared: { path: string; db: DatabaseSync } | null = null;
-/** A read-only handle on the instance database, opened on first use; null when the database cannot be opened. */
+/**
+ * A read-only handle on the instance database, opened on first use. Null only when there is no database file (nothing
+ * configured the identity); a file that cannot be opened is an error, never a silent read as the box account.
+ */
 function sharedDb(): DatabaseSync | null {
   const path = dbPath();
   if (shared?.path === path) return shared.db;
-  try {
-    const db = new DatabaseSync(path, { readOnly: true, timeout: 5_000 });
-    shared = { path, db };
-    return db;
-  } catch {
-    return null;
+  if (!existsSync(path)) return null;
+  let last: unknown;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const db = new DatabaseSync(path, { readOnly: true, timeout: 5_000 });
+      shared = { path, db };
+      return db;
+    } catch (e) { last = e; }
   }
+  throw new Error(`cannot read the GitHub identity setting: ${String((last as Error)?.message ?? last).slice(0, 120)}`);
 }
 
 function settingOf(db: DatabaseSync): string | undefined {
-  try {
-    return (db.prepare("SELECT value FROM main.settings WHERE key = 'github_identity'").get() as { value: string } | undefined)?.value;
-  } catch {
-    return undefined;
+  let last: unknown;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return (db.prepare("SELECT value FROM main.settings WHERE key = 'github_identity'").get() as { value: string } | undefined)?.value;
+    } catch (e) { last = e; }
   }
+  throw new Error(`cannot read the GitHub identity setting: ${String((last as Error)?.message ?? last).slice(0, 120)}`);
 }
 
-/** Whether reads go through the GitHub App right now. */
+/** Whether reads go through the GitHub App right now. Throws when the setting exists to be read but cannot be. */
 export function readsUseApp(db?: DatabaseSync): boolean {
   const d = db ?? sharedDb();
   return d !== null && settingOf(d) === "app";
 }
 
-/** The owner of the first tracked repo: the installation that reads not tied to one owner go through. */
+/** The owner of the tracked repos: the default owner when it has any, else the first tracked one. */
 export function trackedOwner(db?: DatabaseSync): string {
   const d = db ?? sharedDb();
   try {
-    const r = d?.prepare("SELECT r.owner FROM main.tracked_repos t JOIN main.repos r ON r.name = t.name WHERE r.owner IS NOT NULL ORDER BY t.added_at LIMIT 1").get() as { owner: string } | undefined;
-    if (r?.owner && OWNER.test(r.owner)) return r.owner;
+    const rows = d?.prepare("SELECT r.owner FROM main.tracked_repos t JOIN main.repos r ON r.name = t.name WHERE r.owner IS NOT NULL ORDER BY t.added_at").all() as { owner: string }[] | undefined;
+    const owners = (rows ?? []).map((r) => r.owner).filter((o) => OWNER.test(o));
+    if (owners.some((o) => o.toLowerCase() === DEFAULT_OWNER)) return DEFAULT_OWNER;
+    if (owners[0]) return owners[0];
   } catch { /* fall through to the default owner */ }
   return DEFAULT_OWNER;
 }
 
-/** The owner a gh or git command is about, when its arguments name one (`repos/O/…`, `--repo O/…`, `owner=O`, `github.com/O/…`). */
+/** The owner whose installation serves a read: `owner` when valid, else the tracked owner's. */
+export const resolveOwner = (owner?: string, db?: DatabaseSync): string => (owner && OWNER.test(owner) ? owner : trackedOwner(db));
+
+const slugOwner = (v: string | undefined): string | undefined => {
+  const o = v?.includes("/") ? v.split("/")[0] : undefined;
+  return o && OWNER.test(o) ? o : undefined;
+};
+
+/** The owner a gh or git command is about, when its arguments name one (`repos/O/…`, `--repo O/…`, `-R O/…`, `owner=O`, `github.com/O/…`). */
 export function ownerOfArgs(args: readonly string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     const m = /^(?:repos|orgs)\/([^/]+)/.exec(a) ?? /github\.com\/([^/]+)\//.exec(a) ?? /^owner=(.+)$/.exec(a);
     if (m && OWNER.test(m[1]!)) return m[1]!;
-    if (a === "--repo" && args[i + 1]?.includes("/")) { const o = args[i + 1]!.split("/")[0]!; if (OWNER.test(o)) return o; }
+    const eq = /^(?:--repo|-R)=(.+)$/.exec(a);
+    if (eq) { const o = slugOwner(eq[1]); if (o) return o; }
+    if (a === "--repo" || a === "-R") { const o = slugOwner(args[i + 1]); if (o) return o; }
   }
   return undefined;
+}
+
+/** The owner a GraphQL call is about: its `owner` or `login` variable, else an `org:`/`user:`/`repo:` term of a search query. */
+export function ownerOfVariables(v: object): string | undefined {
+  const x = v as { owner?: unknown; login?: unknown; q?: unknown };
+  for (const c of [x.owner, x.login]) if (typeof c === "string" && OWNER.test(c)) return c;
+  if (typeof x.q === "string") {
+    const m = /(?:^|\s)(?:org|user):([A-Za-z0-9-]+)/.exec(x.q) ?? /(?:^|\s)repo:([A-Za-z0-9-]+)\//.exec(x.q);
+    if (m && OWNER.test(m[1]!)) return m[1]!;
+  }
+  return undefined;
+}
+
+/** A read as the app that cannot be made; `notInstalled` when the app is not installed on the owner. */
+export class AppReadError extends Error {
+  readonly notInstalled: boolean;
+  constructor(message: string, notInstalled: boolean) { super(message); this.name = "AppReadError"; this.notInstalled = notInstalled; }
 }
 
 /**
@@ -72,13 +110,26 @@ export async function readEnv(owner?: string, deps: ReadDeps = {}): Promise<Read
   try {
     return appChildEnv(await (deps.mint ?? installationToken)(o));
   } catch (e) {
-    const why = e instanceof AppNotInstalledError ? `the GitHub App is not installed on ${o}` : `no installation token for ${o}: ${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)}`;
-    throw new Error(`app identity: ${why}`);
+    const missing = e instanceof AppNotInstalledError;
+    const why = missing ? `the GitHub App is not installed on ${o}` : `no installation token for ${o}: ${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)}`;
+    throw new AppReadError(`app identity: ${why}`, missing);
   }
 }
 
-/** The environment for spawning `cmd args`: the app's for gh and git under `app`, else undefined (inherit). */
+const NETWORK_GIT = new Set(["fetch", "ls-remote", "clone", "pull"]);
+/** The subcommand of a git argument list, past leading `-c key=value` pairs. */
+function gitSubcommand(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "-c" || args[i] === "-C" || args[i] === "--git-dir") { i++; continue; }
+    if (args[i]!.startsWith("-")) continue;
+    return args[i];
+  }
+  return undefined;
+}
+
+/** The environment for spawning `cmd args`: the app's for every gh command and the network reads of git under `app`, else undefined (inherit). Local git gets no token. */
 export async function readEnvFor(cmd: string, args: readonly string[]): Promise<ReadEnv | undefined> {
-  if (cmd !== "gh" && cmd !== "git") return undefined;
+  if (cmd === "git") { const sub = gitSubcommand(args); if (!sub || !NETWORK_GIT.has(sub)) return undefined; }
+  else if (cmd !== "gh") return undefined;
   return readEnv(ownerOfArgs(args));
 }

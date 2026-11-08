@@ -15,7 +15,7 @@ import { syncActivity } from "./activity.ts";
 import { mentionNames, rememberSlug } from "./github/slugs.ts";
 import { appSlug } from "./github/identity.ts";
 import { envVar } from "./env.ts";
-import { readEnv } from "./github/read.ts";
+import { AppReadError, ownerOfVariables, readEnv, resolveOwner } from "./github/read.ts";
 import { DEFAULT_OWNER, loadOwners, ownerOf, slugOf } from "./owners.ts";
 import { classifyFailure, clearRepoFailure, recordRepoFailure } from "./sync-errors.ts";
 
@@ -101,8 +101,9 @@ export class Client {
 
   /** The child's whole environment when set (the app lane's token); otherwise it is the read environment of the current identity. */
   private env: Record<string, string> | undefined;
-  /** Whether the last call read as the app; a change of identity discards the rate figures of the other account. */
-  private lastApp: boolean | null = null;
+  /** Rate figures per account: "" for the box account or a fixed env, else the installation's owner. `remaining`/`resetAt` are the current key's. */
+  private rates = new Map<string, { remaining: number | null; resetAt: Date | null }>();
+  private rateKey = "";
 
   constructor(reserve: number, env?: Record<string, string>) {
     this.reserve = reserve;
@@ -116,20 +117,35 @@ export class Client {
     this.remaining = null;
   }
 
-  /** The environment of the next gh child: the fixed one, else the app's installation token (under `app`) or gh's own login (`box`). */
-  private async childEnv(owner?: string): Promise<Record<string, string> | undefined> {
-    if (this.env) return this.env;
-    const env = await readEnv(owner);
-    const app = env !== undefined;
-    if (this.lastApp !== null && this.lastApp !== app) { this.remaining = null; this.resetAt = null; }
-    this.lastApp = app;
-    return env;
+  /**
+   * The environment of the next gh child and the key of its rate figures: the fixed one, else the app's installation
+   * token of the owner (under `app`; rate limits belong to the installation) or gh's own login (`box`, key "").
+   */
+  private async childEnv(owner?: string): Promise<{ env: Record<string, string> | undefined; key: string }> {
+    if (this.env) return { env: this.env, key: "" };
+    let env: Record<string, string> | undefined;
+    try {
+      env = await readEnv(owner);
+    } catch (e) {
+      // A token that cannot be minted now may be minted later; a missing installation is final.
+      if (e instanceof AppReadError && !e.notInstalled) throw new Transient(e.message);
+      throw e;
+    }
+    return { env, key: env ? resolveOwner(owner).toLowerCase() : "" };
+  }
+
+  /** Makes the rate figures those of `key` (an installation, or the box account). */
+  private useRate(key: string): void {
+    if (key === this.rateKey) return;
+    this.rates.set(this.rateKey, { remaining: this.remaining, resetAt: this.resetAt });
+    const r = this.rates.get(key);
+    this.remaining = r?.remaining ?? null;
+    this.resetAt = r?.resetAt ?? null;
+    this.rateKey = key;
   }
 
   /** Runs gh without blocking the event loop (the runner's tick must keep its heartbeat and cancels). A timeout or spawn error is Transient. */
-  private async run(query: string, variables: object): Promise<{ data?: Node; errors: Node[]; text: string; failed: boolean; stderr: string }> {
-    const owner = (variables as { owner?: unknown }).owner;
-    const env = await this.childEnv(typeof owner === "string" ? owner : undefined);
+  private async run(query: string, variables: object, env: Record<string, string> | undefined): Promise<{ data?: Node; errors: Node[]; text: string; failed: boolean; stderr: string }> {
     const p = await new Promise<{ stdout: string; stderr: string; status: number | null }>((resolve, reject) => {
       const child = spawn("gh", ["api", "graphql", "--input", "-"], { stdio: ["pipe", "pipe", "pipe"], ...(env ? { env } : {}) });
       const out: Buffer[] = [];
@@ -156,17 +172,19 @@ export class Client {
 
   /** The `owner/name` GitHub's REST endpoint redirects a moved repo to, or null when it does not answer with another name. */
   async repoMovedTo(owner: string, name: string): Promise<string | null> {
-    const env = await this.childEnv(owner);
+    const { env } = await this.childEnv(owner);
     const p = spawnSync("gh", ["api", `repos/${owner}/${name}`, "--jq", ".full_name"], { encoding: "utf8", timeout: 30_000, ...(env ? { env } : {}) });
     const full = p.status === 0 ? p.stdout.trim() : "";
     return full && full.toLowerCase() !== `${owner}/${name}`.toLowerCase() ? full : null;
   }
 
   async query(query: string, variables: object): Promise<Node> {
+    const { env, key } = await this.childEnv(ownerOfVariables(variables));
+    this.useRate(key);
     if (this.remaining !== null && this.remaining < this.reserve) {
       await this.sleepUntilReset(`${this.remaining} points left, reserve ${this.reserve}`);
     }
-    const r = await this.run(query, variables);
+    const r = await this.run(query, variables, env);
     if (r.text.includes("secondary rate limit") || r.text.includes("abuse")) {
       console.log("  secondary rate limit: sleeping 90s");
       await sleep(90_000);
