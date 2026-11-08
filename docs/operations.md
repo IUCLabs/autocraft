@@ -163,7 +163,7 @@ Every call carries `Authorization: Bearer <worker key>`, which identifies the en
 | `POST /worker/tasks/:id/start` | none | `{ cancel }` |
 | `POST /worker/tasks/:id/log` | `{ step, chunk }`, chunk at most 64 KB | `{ truncated }` |
 | `PUT /worker/tasks/:id/artifacts/:name` | raw bytes, at most 50 MB; the name is 1 to 100 of letters, digits, `.`, `_`, `-` | `{ bytes, contentType }` |
-| `POST /worker/tasks/:id/finish` | `{ results: [{ step, exitCode, durationMs, timedOut }], summary }` | `{ state }`; retries return the same answer |
+| `POST /worker/tasks/:id/finish` | `{ results: [{ step, exitCode, durationMs, timedOut, peakMemBytes?, oomKilled? }], summary }` | `{ state }`; retries return the same answer |
 | `POST /worker/tasks/:id/heartbeat` | none (every 15 s while running) | `{ cancel }` |
 
 `claim` with `free: 0` is allowed and refreshes the heartbeat and the paused reason. The task is `done` when every step exited 0 without a timeout, otherwise `failed` (empty results too). Errors are `{ "error": text }` with status 400 (bad body), 401 (key), 409 (the task is not running on this environment), 413 (size cap), 415 (artifact type), 429 (rate limit; `Retry-After`).
@@ -178,8 +178,11 @@ autocraft envs rotate-key <id> (--out FILE | --print)
 autocraft tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
 autocraft tasks show <id>
 autocraft tasks cancel <id>
+autocraft tasks mem [--days N]
 autocraft tasks enqueue-test --env-requires linux --repo NAME --sha SHA
 ```
+
+`tasks mem` prints, per repo and step name, the number of steps with a memory measurement, their median and maximum peak memory in GB and the number killed for running out of memory (default: tasks that ended in the last 30 days). Use it to size build nodes.
 
 `tasks enqueue-test` queues a harmless smoke test for a tracked public repo (`uname -a; nproc; free -g` with no network, then `cargo --version`).
 
@@ -267,6 +270,8 @@ Run the worker as a separate OS user without access to the operator's home, toke
 ```
 
 Only `coordinatorUrl`, `keyFile` and `workDir` are required. `workDir` must not contain commas, colons or spaces. Other keys: `userns` (default `keep-id`), `maxSourceMb` (300), `maxStepSec` (14400), `warmDir` (default `<workDir>/../warm`, same path rules as `workDir`) and `warmMaxGb` (60).
+
+The worker records each step's peak memory from the container's cgroup (v2) while the step runs and sends it as `peakMemBytes`; `oomKilled` is true when the kernel killed the step for reaching the memory limit (`limits.memoryGb`). Both are omitted when the cgroup cannot be read.
 
 Then install `deploy/craft-worker.service` as a systemd user unit of the sandbox user (the file's header lists the steps).
 

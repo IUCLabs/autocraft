@@ -2,6 +2,7 @@
 // environment is passed in: the only env vars are the ones set below.
 import { execFile, spawn } from "node:child_process";
 import type { WorkerConfig } from "./config.ts";
+import { sampleMemory, type MemoryReading } from "./memory.ts";
 
 export const LABEL = "craft-worker";
 
@@ -88,12 +89,13 @@ export async function removeStaleContainers(cfg: WorkerConfig): Promise<void> {
   for (const id of ids) await exec(cfg.runtime, ["rm", "-f", id]);
 }
 
-export type RunOutcome = { exitCode: number | null; timedOut: boolean; cancelled: boolean };
+export type RunOutcome = { exitCode: number | null; timedOut: boolean; cancelled: boolean } & MemoryReading;
 
 export async function runContainer(cfg: WorkerConfig, spec: RunSpec, o: { timeoutMs: number; signal: AbortSignal; onOutput: (b: Buffer) => void }): Promise<RunOutcome> {
   const child = spawn(cfg.runtime, runArgs(cfg, spec), { stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.on("data", o.onOutput);
   child.stderr.on("data", o.onOutput);
+  const memory = sampleMemory(cfg.runtime, spec.name);
   let timedOut = false;
   let cancelled = false;
   let hard: NodeJS.Timeout | undefined;
@@ -116,8 +118,14 @@ export async function runContainer(cfg: WorkerConfig, spec: RunSpec, o: { timeou
       child.once("error", reject);
       child.once("close", (c) => resolve(c));
     });
-    return { exitCode: timedOut || cancelled ? null : code, timedOut, cancelled };
+    const mem = await memory.stop();
+    // The cgroup can vanish before the last memory.events read, so exit 137 (SIGKILL) with a peak at the limit also counts.
+    const limit = Math.round(cfg.limits.memoryGb * 1024) * 1024 * 1024;
+    const killed = code === 137 && !timedOut && !cancelled && (mem.peakMemBytes === undefined || mem.peakMemBytes >= limit * 0.9);
+    const oomKilled = mem.oomKilled === true || killed ? true : mem.oomKilled;
+    return { exitCode: timedOut || cancelled ? null : code, timedOut, cancelled, ...mem, ...(oomKilled === undefined ? {} : { oomKilled }) };
   } finally {
+    void memory.stop();
     clearTimeout(timer);
     if (hard) clearTimeout(hard);
     o.signal.removeEventListener("abort", onAbort);

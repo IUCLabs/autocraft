@@ -289,7 +289,9 @@ export function parseResults(v: unknown): TaskResult[] {
     if (!step || (code !== null && (typeof code !== "number" || !Number.isInteger(code))) || typeof ms !== "number" || !Number.isFinite(ms) || ms < 0 || typeof o.timedOut !== "boolean") {
       throw new BuildError(400, `results[${i}] is not valid`);
     }
-    return { step, exitCode: code as number | null, durationMs: Math.round(ms), timedOut: o.timedOut };
+    const mem = o.peakMemBytes;
+    const peakMemBytes = typeof mem === "number" && Number.isFinite(mem) && mem >= 0 ? Math.round(mem) : undefined;
+    return { step, exitCode: code as number | null, durationMs: Math.round(ms), timedOut: o.timedOut, ...(peakMemBytes !== undefined ? { peakMemBytes } : {}), ...(typeof o.oomKilled === "boolean" ? { oomKilled: o.oomKilled } : {}) };
   });
 }
 
@@ -484,4 +486,30 @@ export function pruneTasks(db: DatabaseSync, nowMs: number = Date.now()): number
     }
     n += ids.length;
   }
+}
+
+export type MemRow = { repo: string; step: string; steps: number; medianBytes: number; maxBytes: number; oom: number };
+
+/** Peak memory per repo and step name over tasks that ended in the last `days` days; steps without a measurement are skipped. */
+export function memorySummary(db: DatabaseSync, days: number): MemRow[] {
+  const since = new Date(Date.now() - days * 86400_000).toISOString();
+  const rows = db.prepare("SELECT repo, results FROM build_tasks WHERE ended_at >= ? AND results != '[]'").all(since) as { repo: string; results: string }[];
+  const groups = new Map<string, { repo: string; step: string; peaks: number[]; oom: number }>();
+  for (const row of rows) {
+    for (const r of json<TaskResult[]>(row.results, [])) {
+      if (typeof r.peakMemBytes !== "number") continue;
+      const key = `${row.repo}\0${r.step}`;
+      const g = groups.get(key) ?? { repo: row.repo, step: r.step, peaks: [], oom: 0 };
+      g.peaks.push(r.peakMemBytes);
+      if (r.oomKilled) g.oom++;
+      groups.set(key, g);
+    }
+  }
+  return [...groups.values()]
+    .map((g) => {
+      const p = g.peaks.sort((a, b) => a - b);
+      const mid = p.length >> 1;
+      return { repo: g.repo, step: g.step, steps: p.length, medianBytes: p.length % 2 ? p[mid]! : Math.round((p[mid - 1]! + p[mid]!) / 2), maxBytes: p[p.length - 1]!, oom: g.oom };
+    })
+    .sort((a, b) => a.repo.localeCompare(b.repo) || a.step.localeCompare(b.step));
 }

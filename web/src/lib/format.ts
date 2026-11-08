@@ -78,3 +78,6 @@ export const dayResetLocal = () => {
   const reset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   return clock(reset);
 };
+
+/** Memory size for a step's peak: "812 MB", "5.8 GB". */
+export const memSize = (bytes: number) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`);

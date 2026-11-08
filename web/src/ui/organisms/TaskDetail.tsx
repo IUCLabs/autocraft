@@ -3,7 +3,7 @@ import type { BuildTaskDetail } from "../../api/types";
 import { Badge, type Tone } from "../atoms/Badge";
 import { Facts } from "../molecules/Facts";
 import { CodeBlock } from "../molecules/CodeBlock";
-import { span } from "../../lib/format";
+import { memSize, span } from "../../lib/format";
 
 const TONE: Record<string, Tone> = { queued: "neutral", claimed: "accent", running: "accent", done: "ok", failed: "bad", cancelled: "neutral", lost: "bad" };
 
@@ -25,6 +25,8 @@ export function TaskDetail({ task }: { task: BuildTaskDetail }) {
                   <span key={r.step} className="text-xs">
                     <span className="code">{r.step}</span> <span className={r.timedOut || (r.exitCode ?? 0) !== 0 ? "text-bad" : "text-ok"}>{r.timedOut ? "timed out" : `exit ${r.exitCode ?? "none"}`}</span>{" "}
                     <span className="num text-ink/50">{span(r.durationMs)}</span>
+                    {r.peakMemBytes !== undefined && <span className="num text-ink/50"> · peak {memSize(r.peakMemBytes)}</span>}
+                    {r.oomKilled && <span className="text-bad"> · out of memory</span>}
                   </span>
                 ))}
               </span>
