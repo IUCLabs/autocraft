@@ -1,6 +1,5 @@
 // GitHub side of the Label stage: ensure the label set exists, add labels to items.
 // Every call goes through the mirror's Querier (gh api graphql, rate-limit aware).
-import { settledBySql } from "../settlers.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import { setTimeout as sleepMs } from "node:timers/promises";
@@ -12,8 +11,6 @@ import { plannedItems } from "../core/select-items.ts";
 import { ALL_LABELS, type LabelDef } from "./set.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
-import { githubIdentity } from "../github/identity.ts";
-import { authFailure, isWaiting, laneForDecision, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps } from "../github/user-lane.ts";
 
 export const BATCH = 10;          // mutations per request
 export const WRITES_PER_MIN = 40; // below GitHub's content-creating limit, leaving the write pacing budget room for other writes
@@ -69,14 +66,7 @@ export type ApplyResult = { planned: number; labeled: number; failed: number[]; 
 export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; /** Who asked; default: an operator at the command line. */ by?: By; wait?: Wait; log?: (s: string) => void;
   /** Called with the running count of items labelled, after each batch. */
   onLabeled?: (labeled: number) => void;
-  /** The user lane's token source and transports; default: the secrets file's app. */
-  lane?: LaneDeps };
-
-/** The scope decision an operator answered "plugin" for this item: its answer is what adds the plugin candidate label, so its operator writes it. */
-export function pluginDecisionOf(db: DatabaseSync, repo: string, number: number): string | undefined {
-  return (db.prepare(`SELECT id FROM main.decisions WHERE kind = 'scope' AND repo = ? AND number = ? AND answer = 'plugin' AND ${settledBySql("decisions")}
-    ORDER BY answered_at DESC LIMIT 1`).get(repo, number) as { id: string } | undefined)?.id;
-}
+};
 
 /** An item the Plans give labels to, and the labels to add. */
 type Todo = { number: number; add: string[] };
@@ -89,9 +79,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
   if (o.apply && !approval) {
     throw new LabelsError(`${repo} is not approved for labelling. An operator approves it on the dashboard Repos page.`);
   }
-  // An item whose plugin label waits for its operator's token or access is left out until it is retried.
-  const waits = (n: number) => githubIdentity(db) === "app" && isWaiting(db, pluginDecisionOf(db, repo, n));
-  let todo: Todo[] = plannedItems(db, "label", { repo, run: o.runId }).filter((p) => !waits(p.facts.number)).map((p) => ({ number: p.facts.number, add: p.action.params!.add as string[] }));
+  let todo: Todo[] = plannedItems(db, "label", { repo, run: o.runId }).map((p) => ({ number: p.facts.number, add: p.action.params!.add as string[] }));
   if (o.limit !== undefined) todo = todo.slice(0, o.limit);
   const res: ApplyResult = { planned: todo.length, labeled: 0, failed: [], skipped: 0, batches: 0, dryRun: !o.apply };
   if (!o.apply) {
@@ -119,38 +107,13 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     const idMap = new Map([...ids].map(([n, v]) => [n, v.id] as [number, string | null]));
     // Each item is guarded right before its labels are written: the Plan must still add them.
     const grants = new Map<number, GuardedItem>();
-    // A label an operator's answer adds (plugin candidate) is written as that operator in a repo on the app's identity; the rest stay with the stage's own account.
-    const asUser = new Map<number, string>();
     for (const r of writable) {
-      const dec = githubIdentity(db) === "app" ? pluginDecisionOf(db, repo, r.number) : undefined;
-      const g = await guardItem(db, { repo, number: r.number }, { kind: "label" }, o.by ?? CLI_BY, dec);
-      if ("refused" in g) { log(`${repo}#${r.number}: not labelled: ${g.refused}`); res.skipped++; } else { grants.set(r.number, g); if (dec) asUser.set(r.number, dec); }
+      const g = await guardItem(db, { repo, number: r.number }, { kind: "label" }, o.by ?? CLI_BY);
+      if ("refused" in g) { log(`${repo}#${r.number}: not labelled: ${g.refused}`); res.skipped++; } else grants.set(r.number, g);
     }
     const guarded = writable.filter((r) => grants.has(r.number));
     const done: number[] = [];
-    const plain = guarded.filter((r) => !asUser.has(r.number));
-    if (plain.length) done.push(...await mutate(w, client, repo, plain, idMap, have, wait, o.runId, grants));
-    for (const r of guarded.filter((x) => asUser.has(x.number))) {
-      const dec = asUser.get(r.number)!;
-      const lr = await laneForDecision(db, o.lane, dec, [repo]);
-      if (lr && !("lane" in lr)) {
-        if (!("transient" in lr)) { setExecState(db, dec, lr.state, lr.reason); log(`${repo}#${r.number}: waiting: ${lr.reason}`); }
-        res.skipped++;
-        continue;
-      }
-      if (lr) setExecState(db, dec, "pending");
-      try {
-        done.push(...await addLabels(w, lr ? lr.lane.querier : client, repo,
-          [{ number: r.number, id: idMap.get(r.number)!, labelIds: r.add.map((a) => have.labels.get(a.toLowerCase())!), names: r.add, g: grants.get(r.number)! }], (f) => retrying(f, wait), { run: o.runId }));
-      } catch (e) {
-        const why = String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 300);
-        const denied = lr ? authFailure(e) : null;
-        if (denied === "transient") { res.skipped++; continue; }
-        if (denied) { setExecState(db, dec, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(repo)); res.skipped++; continue; }
-        if (lr) setExecState(db, dec, "failed", why);
-        throw e;
-      }
-    }
+    if (guarded.length) done.push(...await mutate(w, client, repo, guarded, idMap, have, wait, o.runId, grants));
     for (const r of guarded) if (!done.includes(r.number)) res.failed.push(r.number);
     const ok = guarded.filter((r) => done.includes(r.number));
     if (ok.length) {

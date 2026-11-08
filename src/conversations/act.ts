@@ -256,7 +256,7 @@ async function closeDuplicate({ db, c, by, q, at, w, source }: Ctx, of: number):
 
 /** The Act approval of `repo` for the operator's write. Room under the daily limit was taken for the whole card before its first write (doCard), so a card never stops halfway for it. */
 function actGrant(db: DatabaseSync, repo: string, by: string, need: "comment" | "labels" = "comment") {
-  // The operator who presses the button acts as themselves (as `user:<login>` once the repo is on the app's identity).
+  // The grant names the presser; only a close is made as them (src/github/identity.ts).
   const g = guardRepo(db, repo, need, { operator: by }, undefined, by);
   if ("refused" in g) throw new Error(g.refused);
   return g;
@@ -471,7 +471,7 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
 }
 
 async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, boxQ: Querier, at: string, canWrite?: ActDeps["canWrite"], note?: string, boxExec: Exec = defaultExec, lane: Lane | null = null): Promise<Outcome> {
-  // Each action resolves its lane from its own target repo: legacy repos run as the box, app repos as the operator.
+  // Under the app's identity only a close uses the presser's lane (write.ts); every other write is the app's.
   const laneFor = (repo: string): Lane | null => (lane && githubIdentity(db) === "app" ? lane : null);
   const q = laneFor(c.repo)?.querier ?? boxQ;
   const ctx: Ctx = { exec: laneFor(c.repo)?.exec ?? boxExec, execFor: (repo) => laneFor(repo)?.exec ?? boxExec, note, db, c, by, q, at, w: { db, login: by }, source: { source: "conversation", card: c.id } };
@@ -528,7 +528,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
       noteIsSummary = true;
     }
   }
-  // A card's GitHub writes are the pressing operator's own: on a repo with the app's identity they use that operator's token, and a card that cannot stays proposed.
+  // A card's close is the pressing operator's own: under the app's identity it uses that operator's token, and a card that cannot stays proposed. Its other writes are the app's.
   const repos = cardRepos(c, params);
   const writes = params.kind === "comment" || params.kind === "label" || params.kind === "close" || params.kind === "duplicate"
     || (params.kind === "resolution" && params.steps.some((x) => x.kind !== "review" && x.kind !== "fixup"));
@@ -546,7 +546,9 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
       }
     }
   }
-  const lr = writes ? await laneForOperator(db, deps.lane, by, repos) : null;
+  // Only a close is made as the presser; a card that closes nothing runs as the app and needs no token.
+  const closes = params.kind === "close" || params.kind === "duplicate" || (params.kind === "resolution" && params.steps.some((x) => x.kind === "close" || x.kind === "duplicate"));
+  const lr = writes && closes ? await laneForOperator(db, deps.lane, by, repos) : null;
   if (lr && !("lane" in lr)) throw new ConversationError("transient" in lr ? 503 : 409, "transient" in lr ? `GitHub could not be reached to check your access: ${lr.transient}` : lr.reason);
   const at = (deps.now?.() ?? new Date()).toISOString();
   // The card claims the decision it settles in the transaction that queues or starts it: no dashboard answer or other card settles it meanwhile.

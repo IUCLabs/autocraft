@@ -46,8 +46,9 @@ test("app identity: the installation token is the whole child environment; legac
   assert.equal(o.env!.GITHUB_TOKEN, undefined);
   assert.ok(!Object.values(o.env!).includes(BOX));
 
+  // A comment is the app's whoever's answer it carries out; only a merge or close keeps the person's lane.
   await comment("user:example-user");
-  assert.equal(seen.pop()!.env, undefined);
+  assert.equal(seen.pop()!.env!.GH_TOKEN, APP);
 
   await pushOwnBranch(w, repoGrant, git as never, "batch-push", { repo: "lane", remote: "storytold/lane", branch: "autocraft/x", sha: "a".repeat(40) });
   assert.equal((gitSeen.pop() as { app: { env: Record<string, string> } }).app.env.GH_TOKEN, APP);

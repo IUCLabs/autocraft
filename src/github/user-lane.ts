@@ -1,8 +1,9 @@
-// The user lane: a GitHub write that carries out an operator's answer is made as that operator, with the operator's
-// GitHub App user token (src/github/vault.ts), never as the box account or the app. It applies while the GitHub
-// identity is `app`; under `box` nothing here runs and the box account writes as before.
+// The user lane: a merge or a close that carries out a person's answer is made as that person, with their GitHub App
+// user token (src/github/vault.ts), never as the box account or the app (`actsAsPerson` in identity.ts). Every other
+// write of the same answer, the comment before a close included, is the app's and needs no lane. The lane applies while
+// the GitHub identity is `app`; under `box` nothing here runs and the box account writes as before.
 //
-// A decision whose operator has no usable token, or no write access on the repo, does not fail: it waits
+// A decision with a merge or close whose person has no usable token, or no write access on the repo, does not fail: it waits
 // (`decisions.exec_state` waiting-token / waiting-permission, with a plain reason) and runs again after that operator
 // signs in or authorizes again, or when someone presses Retry.
 import { statSync } from "node:fs";

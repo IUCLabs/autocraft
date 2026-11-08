@@ -8,7 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { recordPush } from "../push-outcomes.ts";
 import type { Grant, Guarded, GuardedItem, GuardedRepo } from "../core/guard.ts";
-import { auditIdentity, githubIdentity } from "./identity.ts";
+import { auditIdentity, githubIdentity, identityFor, type WriteKind } from "./identity.ts";
 
 /** The PR steps that push to a contributor's branch or ask on the PR where it is closed to us (`lint`: the collect step of a stored patch). */
 export type AskKind = "fixup" | "conflict" | "cifix" | "lint";
@@ -46,17 +46,17 @@ function covers(g: Guarded | Grant, repo: string, number?: number): void {
  * Who a write is made as, for the audit row's `identity`: `legacy` while the grant's repo is on the box account, else
  * the grant's identity (src/github/identity.ts). Every write takes it from its grant, so none goes unmapped.
  */
-const idOf = (w: Writer, g: Guarded | Grant): string => auditIdentity(w.db, g);
+const idOf = (w: Writer, g: Guarded | Grant, kind: WriteKind = "other"): string => auditIdentity(w.db, g, kind);
 
 // ---- identity lanes -------------------------------------------------------------
 // A write made under a grant `as: "app"` while the GitHub identity is `app` runs with an installation token: gh and
 // git children get a replaced environment (the box account's tokens are not in it) and GraphQL goes through a client
 // with that environment. Every other write is unchanged: the box account's own credentials.
-// Grants `as: user:<login>` belong to the user lane (the person's own token). They never get the app token: they
-// stay on the box account at the callers of `inAppLane` (laneExec, laneGit, laneQuery, mergeViaCommand), where the
-// user lane plugs in.
+// A merge or close for a grant `as: user:<login>` belongs to the user lane (the person's own token): it never gets the
+// app token, and the caller supplies the person's transport. Every other write of such a grant is the app's
+// (`actsAsPerson` in identity.ts), whatever transport the caller passes.
 
-const inAppLane = (w: Writer, g: Guarded | Grant): boolean => g.as === "app" && githubIdentity(w.db) === "app";
+const inAppLane = (w: Writer, g: Guarded | Grant, kind: WriteKind = "other"): boolean => githubIdentity(w.db) === "app" && identityFor(g, kind) === "app";
 
 /** The child environment for a grant's repo, holding an installation token. Never falls back to the box account: a failure is a clear error. */
 async function appEnv(w: Writer, g: Guarded | Grant): Promise<Record<string, string>> {
@@ -74,8 +74,8 @@ async function appEnv(w: Writer, g: Guarded | Grant): Promise<Record<string, str
 /** A failed command result for a mint failure: callers already handle a non-zero exit. */
 const failedResult = (e: unknown): ExecResult => ({ code: 1, stdout: "", stderr: String((e as Error).message ?? e) });
 
-function laneExec(w: Writer, g: Guarded | Grant, exec: Exec): Exec {
-  if (!inAppLane(w, g)) return exec;
+function laneExec(w: Writer, g: Guarded | Grant, exec: Exec, kind: WriteKind = "other"): Exec {
+  if (!inAppLane(w, g, kind)) return exec;
   return async (cmd, args, opts) => {
     let env: Record<string, string>;
     try { env = await appEnv(w, g); } catch (e) { return failedResult(e); }
@@ -94,8 +94,8 @@ function laneGit(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">): Pick<Git
   };
 }
 
-function laneQuery(w: Writer, g: Guarded | Grant, q: Querier): Querier {
-  if (!inAppLane(w, g)) return q;
+function laneQuery(w: Writer, g: Guarded | Grant, q: Querier, kind: WriteKind = "other"): Querier {
+  if (!inAppLane(w, g, kind)) return q;
   return {
     query: async (query, variables) => (w.appClient ?? ((env) => new Client(0, env)))(await appEnv(w, g)).query(query, variables),
     get spent() { return q.spent; },
@@ -276,14 +276,14 @@ export function duplicateClose(kept: { id: string; pr: boolean }, keptRef?: stri
 /** Closes an issue or PR. Issues get a state reason; a DUPLICATE close that GitHub rejects is retried once as NOT_PLANNED. */
 export async function closeItem(w: Writer, g: Grant, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}, how?: CloseHow): Promise<void> {
   covers(g, item.repo, item.number);
-  q = laneQuery(w, g, q);
+  q = laneQuery(w, g, q, "close");
   const o = typeof how === "string" ? { reason: how } as Exclude<CloseHow, string> : how;
   // GitHub has a state reason for issues only.
   const reason = o && !item.pr ? o.reason : undefined;
   const duplicateOf = reason === "DUPLICATE" ? o?.duplicateOf : undefined;
   const d0 = reason ? { ...details, reason, ...(o?.keptRef ? { kept: o.keptRef } : {}) } : details;
   let fellBack = false;
-  await recorded(w, idOf(w, g), "act-close", refOf(item.repo, item.number), d0, async () => {
+  await recorded(w, idOf(w, g, "close"), "act-close", refOf(item.repo, item.number), d0, async () => {
     if (item.pr) return q.query(CLOSE_PR, { id: item.id });
     if (!reason) return q.query(CLOSE_ISSUE, { id: item.id });
     if (reason !== "DUPLICATE") return q.query(CLOSE_ISSUE_AS, { id: item.id, reason });
@@ -470,9 +470,9 @@ export function ghOpenPr(w: Writer, g: Grant, exec: Exec, action: string, o: { r
 
 export function ghClosePr(w: Writer, g: Grant, exec: Exec, o: { repo: string; number: number }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
-  exec = laneExec(w, g, exec);
+  exec = laneExec(w, g, exec, "close");
   const comment = withNote(note, text);
-  return viaGh(w, idOf(w, g), exec, "batch-pr-close", refOf(o.repo, o.number), { ...details, text: comment },
+  return viaGh(w, idOf(w, g, "close"), exec, "batch-pr-close", refOf(o.repo, o.number), { ...details, text: comment },
     ["pr", "close", String(o.number), "--repo", `${slugOf(o.repo)}`, "--comment", comment]);
 }
 
@@ -680,12 +680,12 @@ export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string
   const args = [`${slugOf(g.repo)}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), "--head", g.head];
   const repo = g.repo;
   const method: string = o.method;
-  const base = { ...details, method, identity: idOf(w, g), ...jobOf() };
+  const base = { ...details, method, identity: idOf(w, g, "merge"), ...jobOf() };
   const target = refOf(repo, g.number);
   const id = await begin(w, "merge", target, base);
   let r: CommandResult;
   try {
-    if (inAppLane(w, g)) {
+    if (inAppLane(w, g, "merge")) {
       // The merge command runs with the installation token as its whole environment.
       try { r = await run(cmd, args, await appEnv(w, g)); } catch (e) { if (!String((e as Error).message).startsWith("app identity:")) throw e; r = failedResult(e); }
     } else r = await run(cmd, args, env);

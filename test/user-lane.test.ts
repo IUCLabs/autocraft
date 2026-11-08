@@ -40,7 +40,9 @@ test("legacy repos close as before; an app repo without the operator's token wai
     permission: async () => "write",
     transports: () => ({ querier: userQuerier, exec: async () => ({ code: 0, stdout: "", stderr: "" }) }),
   };
-  const deps = { ...w.gh.actDeps(), lane };
+  const appQueries: string[] = [];
+  const app = { mint: async () => "app-token", appClient: () => ({ query: async (q: string): Promise<Record<string, unknown>> => { appQueries.push(q.includes("addComment") ? "comment" : "other"); return {}; } }) };
+  const deps = { ...w.gh.actDeps(), lane, app };
   const waiting = await runAct(w.db, { repo: "app", dryRun: false }, quiet, deps);
   assert.deepEqual(waiting.done, []);
   assert.equal(w.gh.writes.length, 0, "the box account writes nothing in a repo on the app's identity");
@@ -54,9 +56,12 @@ test("legacy repos close as before; an app repo without the operator's token wai
   userQuerier.query = async (q: string) => { queries.push(q.includes("closeIssue") || q.includes("closePullRequest") ? "close" : q.includes("addComment") ? "comment" : "read"); return q.includes("issueOrPullRequest") ? { repository: { issueOrPullRequest: { __typename: "PullRequest", id: "PR_1", state: "OPEN", headRefOid: (w.rows("SELECT head_oid FROM items WHERE number = 1")[0] as { head_oid: string }).head_oid } } } : {}; };
   await runAct(w.db, { repo: "app", dryRun: false }, quiet, deps);
   assert.equal(w.gh.writes.length, 0, "still nothing through the box's transports");
-  assert.ok(queries.includes("comment") && queries.includes("close"), `the user's transports made the writes: ${queries.join(",")}`);
+  assert.ok(queries.includes("close") && !queries.includes("comment"), `the person's transports made the close only: ${queries.join(",")}`);
+  assert.deepEqual(appQueries, ["comment"], "the comment before the close is the app's");
   const row = w.rows("SELECT details FROM audit WHERE action = 'act-close'")[0] as { details: string };
   assert.equal((JSON.parse(row.details) as { identity: string }).identity, `user:${OPERATOR}`);
+  const crow = w.rows("SELECT details FROM audit WHERE action = 'act-comment'")[0] as { details: string };
+  assert.equal((JSON.parse(crow.details) as { identity: string }).identity, "app");
 });
 
 test("a waiting decision is no act work: the run counts nothing and the planner plans no act for it", async () => {

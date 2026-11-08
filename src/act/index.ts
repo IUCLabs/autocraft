@@ -52,7 +52,7 @@ const KIND = "comment-close";
 const DUP_FACT = "duplicate of ";
 const REASON_FACT = "review reason: ";
 
-export type ActDeps = { querier: Querier; now: () => Date; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps };
+export type ActDeps = { querier: Querier; now: () => Date; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** Replaces the app lane's token minter and client (tests). */ app?: Pick<Writer, "mint" | "appClient"> };
 export const defaultDeps = (): ActDeps => ({ querier: new Client(1000), now: () => new Date() });
 
 export type ActParams = {
@@ -277,7 +277,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const dryRun = params.dryRun ?? true;
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
-  const w: Writer = { db, login: ACTOR };
+  const w: Writer = { db, login: ACTOR, ...deps?.app };
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
   // Answers that need no GitHub write are applied whether or not commenting is approved.
   // The group steps compare text hashes with the ones stored at the comparison: a hash cleared by an edit outside sync is filled first, so the edit is seen.
@@ -337,7 +337,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     if (!actRoom(db, 1, (deps?.now() ?? new Date()).getTime())) { summary.note = "the daily limit is reached"; break; }
     const dec = getDecision(db, t.decisionId)!;
     const prev = rowOf(db, t);
-    // An answer in a repo on the app's identity is carried out as the operator who gave it, with their token; it waits when there is none.
+    // Under the app's identity the close is made as the operator who answered, with their token (the comment before it is the app's); it waits when there is none.
     const lr = await laneForDecision(db, d.lane, t.decisionId, [t.repo]);
     if (lr && !("lane" in lr)) {
       if ("transient" in lr) jobItem(db, t.repo, t.number, `not closed yet: ${lr.transient}`, log);
@@ -425,7 +425,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const groupGrant = summary.failed.length ? null : guardRepo(db, repo, "comment", params.by ?? CLI_BY);
   if (groupGrant && "refused" in groupGrant) log(`  duplicate groups: not applied: ${groupGrant.refused}`);
   else if (groupGrant) {
-    // Each group decision is carried out as the operator who answered it; `begin` picks that operator's lane.
+    // Each group decision's closes are made as the operator who answered it; `begin` picks that operator's lane.
     let lane: Lane | null = null;
     const q = (): Querier => lane?.querier ?? d.querier;
     const asAnswerer = (decision: string): GuardedRepo => {

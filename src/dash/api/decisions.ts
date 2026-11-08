@@ -662,7 +662,7 @@ export async function keepAnswer(db: DatabaseSync, req: Req): Promise<Decision> 
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
-/** Operator: tries the GitHub write of a waiting or failed answer again. It is still made as the operator who answered. */
+/** Operator: tries the GitHub write of a waiting or failed answer again. Its merge or close is still made as the operator who answered. */
 export async function retry(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireSettler(db, req, d, true);

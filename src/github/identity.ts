@@ -1,7 +1,8 @@
 // Who a GitHub write is made as. A grant carries `as`, decided where the guard makes it:
-//  - a decision answered by an operator gives `user:<login>` (the person who pressed the button acts under their own
-//    name, with their own token from the vault);
-//  - everything else (rules, reviews, fix-ups, pushes, automatic labels, CI) gives `app`.
+//  - a merge or a close that carries out a person's answer is made as that person, `user:<login>` (their own name, with
+//    their own token from the vault); `actsAsPerson` is the one place that rule lives;
+//  - everything else gives `app`: comments (the one before a close included), labels, assignments, new issues, review
+//    requests, transfers, fix-up pushes, CI approvals, edits, and every rule, review and automatic write.
 // The instance-wide setting `github_identity` decides whether that is used at all: under `box` (the default) the box
 // account makes every write, and `as` only appears in the audit row as a record of what it would be.
 import type { DatabaseSync } from "node:sqlite";
@@ -36,19 +37,25 @@ export function setGithubIdentity(db: DatabaseSync, by: string, value: unknown):
   return true;
 }
 
-/** The identity a write made for `decisionId` has: the login that answered it, or the app (no decision, not answered yet). */
+/** What a write is, for the one question of whose name it goes under. Merges and closes are the ones a person's answer carries out. */
+export type WriteKind = "merge" | "close" | "other";
+
+/** Only a merge or a close that carries out a person's answer is made as that person; every other write is the app's. */
+export const actsAsPerson = (kind: WriteKind): boolean => kind === "merge" || kind === "close";
+
+/** The person who answered `decisionId`, or the app (no decision, not answered yet): who a merge or close for it is made as. */
 export function identityOfDecision(db: DatabaseSync, decisionId: string | undefined): Identity {
   if (decisionId === undefined) return "app";
   const row = db.prepare("SELECT answered_by FROM decisions WHERE id = ? AND answer IS NOT NULL").get(decisionId) as { answered_by: string | null } | undefined;
   return row?.answered_by ? `user:${row.answered_by}` : "app";
 }
 
-/** The identity a grant was made for. */
-export const identityFor = (g: Guarded | Grant): Identity => g.as;
+/** The identity a write of `kind` under grant `g` is made as. */
+export const identityFor = (g: Guarded | Grant, kind: WriteKind = "other"): Identity => (actsAsPerson(kind) ? g.as : "app");
 
-/** What an audit row records: `legacy` while writes use the box account, else the grant's identity. */
-export function auditIdentity(db: DatabaseSync, g: Guarded | Grant): "legacy" | Identity {
-  return githubIdentity(db) === "box" ? "legacy" : identityFor(g);
+/** What an audit row records: `legacy` while writes use the box account, else the identity the write is made as. */
+export function auditIdentity(db: DatabaseSync, g: Guarded | Grant, kind: WriteKind = "other"): "legacy" | Identity {
+  return githubIdentity(db) === "box" ? "legacy" : identityFor(g, kind);
 }
 
 /** Whether the app can act on `owner/repo`: covered, not covered (with the reason), or not confirmable now (GitHub 5xx, rate limit, network). */
