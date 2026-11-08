@@ -24,7 +24,7 @@ const closed = (o: Partial<{ decisionId: string; kind: "scope" | "close" | "dupl
 const hoursAgo = (h: number) => new Date(NOW - h * 3600_000).toISOString();
 
 const rows: Row[] = [
-  { name: "a classified, labelled, embedded issue has nothing due", facts: {}, expect: { state: "classified", actions: [], next: "Fix", wait: null } },
+  { name: "a classified, labelled, embedded issue has nothing due", facts: {}, expect: { state: "classified", actions: [], next: "Fix", wait: "an open request for a person to pick up" } },
 
   // ---- classify
   { name: "no verdict in the run: Jev is due", facts: { classification: { status: "unclassified", label: null, jevLabel: null, jev: null } }, expect: { state: "unclassified", actions: ["classify"], next: "Classify" } },

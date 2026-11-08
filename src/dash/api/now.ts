@@ -48,7 +48,7 @@ const notHidden = (col: string, hidden: string[], nullOk = false): string =>
 /** The health checks that are not ok, as the warnings list shows them; viewers get the short text and no checks of repos they cannot see. */
 export function checkProblems(db: DatabaseSync, hidden: string[], internals: boolean, nowMs: number): NowProblem[] {
   const area = (id: string): NowProblem["area"] =>
-    id === "runner" ? "runner" : id.startsWith("deadline:") ? "deadline" : id.startsWith("worker:") || id === "build-queue" ? "workers" : id === "accounts" ? "account" : "sync";
+    id === "runner" ? "runner" : id.startsWith("deadline:") ? "deadline" : id === "liveness" ? "liveness" : id.startsWith("worker:") || id === "build-queue" ? "workers" : id === "accounts" ? "account" : "sync";
   return computeChecks(db, nowMs)
     .filter((c) => c.state !== "ok" && !(c.repo !== undefined && hidden.includes(c.repo)))
     .map((c) => ({ id: c.id, area: area(c.id), tone: c.state === "fail" ? "bad" : "warn", text: internals ? c.text : c.brief, to: c.to, since: c.since, ...(c.ackStep ? { ackStep: c.ackStep } : {}) }));

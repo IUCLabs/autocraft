@@ -35,6 +35,8 @@ const labelDisagreement = (f: ItemFacts): boolean => f.classification.status ===
 const scopeNeeded = (f: ItemFacts): boolean => scopeReason(f) !== null && !f.scope.covered;
 
 /** The wait of an issue whose fix attempt was skipped or failed: Fix again, Backlog or Close on the item page (and Needs you > Stopped) clears it. */
+/** The wait of an open issue with nothing due and nothing to ask: it stays open as a request for anyone to pick up. */
+export const TRIAGE_WAIT = "an open request for a person to pick up";
 export const fixStoppedWait = (state: string): string => `a person to retry the ${state} fix`;
 
 const PLUGIN_WAIT = "stays open as a plugin candidate";
@@ -124,6 +126,7 @@ export function decideItem(f: ItemFacts): ItemPlan {
   if (wait === null && f.kind === "issue" && f.open && f.inScope && !backlog && !f.held && actions.every((x) => !isWork(x))) {
     if (fix.openPr !== null) { wait = `open PR #${fix.openPr.number}${fix.openPr.closes ? "" : " mentions it"}`; waitKind = "system"; }
     else if (a?.state === "skipped" || a?.state === "failed") { wait = fixStoppedWait(a.state); waitKind = "person"; }
+    else if (state === "classified" && f.fix.openPr === null) { wait = TRIAGE_WAIT; waitKind = "system"; }
   }
   return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait, waitKind };
 }

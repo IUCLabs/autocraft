@@ -1468,6 +1468,18 @@ CREATE TABLE IF NOT EXISTS plan_history (
 );
 CREATE INDEX IF NOT EXISTS plan_history_item ON plan_history(repo, number, id);
 CREATE INDEX IF NOT EXISTS plan_history_at ON plan_history(at);
+-- The liveness check's result (src/liveness.ts), replaced as a whole after planner passes: the open items that are stuck (nothing will move
+-- them and nobody is asked) or long (live, but plan state and wait unchanged past the limit). `since` is when state or wait last changed.
+CREATE TABLE IF NOT EXISTS liveness_items (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- pr | issue
+  verdict TEXT NOT NULL,              -- stuck | long
+  cause TEXT NOT NULL,
+  state TEXT NOT NULL, wait TEXT, phase TEXT NOT NULL,
+  since TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS job_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER NOT NULL,

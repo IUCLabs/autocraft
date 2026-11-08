@@ -8,6 +8,7 @@ import { stepTitle } from "./dash/api/trace.ts";
 import { repoErrors } from "./sync-errors.ts";
 import { slugOf } from "./owners.ts";
 import { trackedNames } from "./repos.ts";
+import { storedLiveness } from "./liveness.ts";
 
 /** Thresholds, in one place. */
 export const THRESHOLDS = {
@@ -43,6 +44,8 @@ export type Check = {
   group?: "workers" | "sync-repos" | "deadlines";
   /** Set on a job stopped for running past its step's limit: the step an operator acknowledges to clear it. */
   ackStep?: string;
+  /** Items a check counts (the liveness check); reported with `of`. */
+  count?: number;
   /** Size of the group the check is counted against (tracked repos for `sync-repos`). */
   of?: number;
   /** Dashboard page that shows the cause. */
@@ -151,8 +154,21 @@ function deadlineChecks({ db }: CheckCtx): Check[] {
   }));
 }
 
+/** Open items that nothing will move and nobody is asked about (fail), or that have not changed for days (warn). Read from the result the runner stores after planner passes. */
+function livenessCheck({ db }: CheckCtx): Check[] {
+  const l = storedLiveness(db);
+  if (!l || (l.stuck === 0 && l.long === 0)) return [ok("liveness", "/stuck", { of: l?.open })];
+  const oldest = (v: string) => l.items.filter((i) => i.verdict === v).map((i) => i.since).sort()[0] ?? null;
+  if (l.stuck > 0) {
+    const text = `${l.stuck} open item${l.stuck === 1 ? " is" : "s are"} stuck: nothing is due and nobody is asked${l.long ? `; ${l.long} more unchanged for days` : ""}`;
+    return [{ id: "liveness", state: "fail", text, brief: "Some items are stuck", since: oldest("stuck"), count: l.stuck, of: l.open, to: "/stuck" }];
+  }
+  const text = `${l.long} open item${l.long === 1 ? " has" : "s have"} not changed for days`;
+  return [{ id: "liveness", state: "warn", text, brief: "Some items have not moved for days", since: oldest("long"), count: l.long, of: l.open, to: "/stuck" }];
+}
+
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now()): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs }));
@@ -166,7 +182,7 @@ export function publicChecks(checks: Check[]): { status: CheckState; checks: Pub
   const groups = new Map<string, Check[]>();
   for (const c of checks) {
     if (c.group) groups.set(c.group, [...(groups.get(c.group) ?? []), c]);
-    else out.push({ id: c.id, state: c.state, since: c.since });
+    else out.push({ id: c.id, state: c.state, since: c.since, ...(c.count !== undefined ? { count: c.count } : {}), ...(c.of !== undefined ? { of: c.of } : {}) });
   }
   for (const [id, list] of groups) {
     const bad = list.filter((c) => c.state !== "ok");

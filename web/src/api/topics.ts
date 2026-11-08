@@ -22,6 +22,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["now", ["jobs", "agents", "tasks", "envs", "queue", "sync", "accounts", "settings", "repos", "mainci", "decisions", "access", "actions"]],
   ["progress", ["items", "stages", "repos", "decisions", "mainci"]],
   ["main-ci", ["mainci", "repos"]],
+  ["stuck", ["plans", "items"]],
   // The trace reads most tables behind an item page plus model calls, jobs and GitHub detail. The `trace` topic leaves out a running call's progress lines; the page also asks the server `since` its last stamp.
   ["item-trace:", TRACE],
   // The item page is the trace plus the header (labels, Discord, fast track, holds) and the GitHub side; it also asks `since` its last stamp.

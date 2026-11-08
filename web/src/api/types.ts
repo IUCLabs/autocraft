@@ -671,6 +671,29 @@ export interface MainCiRepo {
   /** What AutoCraft is doing about the red head ("rerunning failed jobs", "asked an operator", "needs a fix", ...); null when nothing. */
   autocraft: string | null;
 }
+/** One open item the liveness check flags: `stuck` (nothing is due and nobody is asked) or `long` (live, but unchanged past the limit). */
+export interface StuckItem {
+  repo: RepoName;
+  number: number;
+  kind: "pr" | "issue";
+  verdict: "stuck" | "long";
+  /** Why it is stuck, or for a long item why it is live. */
+  cause: string;
+  state: string;
+  wait: string | null;
+  phase: string;
+  /** When the plan state or wait last changed. */
+  since: string;
+  title: string | null;
+}
+/** GET /api/stuck. */
+export interface StuckItems {
+  checkedAt: string | null;
+  open: number;
+  stuck: number;
+  long: number;
+  items: StuckItem[];
+}
 /** GET /api/main-ci: red first, then optional, running, none, green; each group by name. */
 export interface MainCi {
   summary: MainCiSummary;
@@ -2154,7 +2177,7 @@ export interface NextPage {
 // ---- Now page (GET /api/now) ---------------------------------------------------
 
 /** A thing that needs attention; `to` is the page where it is fixed. `info` problems do not break "all healthy". */
-export type NowProblem = { id: string; area: "pipeline" | "runner" | "workers" | "breaker" | "limit" | "account" | "jev" | "main-ci" | "jobs" | "sync" | "deadline"; tone: "bad" | "warn"; text: string; to: string; since: string | null; /** Set on a job stopped for running past its step's limit: the step an operator acknowledges to clear the warning. */ ackStep?: string };
+export type NowProblem = { id: string; area: "pipeline" | "runner" | "workers" | "breaker" | "limit" | "account" | "jev" | "main-ci" | "jobs" | "sync" | "deadline" | "liveness"; tone: "bad" | "warn"; text: string; to: string; since: string | null; /** Set on a job stopped for running past its step's limit: the step an operator acknowledges to clear the warning. */ ackStep?: string };
 export type NowHealth = {
   pipeline: { enabled: boolean; by: string | null; at: string | null };
   problems: NowProblem[];

@@ -36,6 +36,8 @@ export type PlanView = {
   fixup?: FixupBucket;
   cifix?: CifixBucket;
   queue?: QueueView;
+  /** Who the wait is on, as the planner typed it; absent when nothing is awaited (read by the liveness check). */
+  waitKind?: WaitKind;
   /** Phase, wait and next step; `since` is when phase or wait last changed. */
   status: ItemStatus;
 };
@@ -83,6 +85,7 @@ function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFa
     if (cf && CIFIX_BUCKETS[cf]) v.cifix = CIFIX_BUCKETS[cf];
     if (isQueueState(pr.plan.state) && pr.facts.review) v.queue = queueViewOf(pr.facts, pr.plan);
   }
+  if (wait !== null && waitKind) v.waitKind = waitKind;
   v.status = {
     ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, waitKind, scopeAnswered: pr?.facts.scopeAnswer != null, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked", inPipeline: item?.facts.inScope ?? pr?.facts.inScope }),
     since: plannedAt,
