@@ -256,7 +256,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       review: null, post: { postable: false, posted: null },
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", unknown: null, runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verifyOverride: false, verification: null, verifyUnavailable: null,
-      decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: false } },
+      decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: !!otherOpen.get(r.repo, r.number) } },
       premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);

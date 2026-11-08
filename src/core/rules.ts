@@ -23,8 +23,8 @@ export const VERIFY_UNAVAILABLE = "unavailable";
 export const verifyAllows = (path: "rule" | "operator" | null, state: string | null | undefined, override = false): boolean =>
   verifyOk(state) || (path === "operator" && (state === VERIFY_UNAVAILABLE || (override && (state === "failed" || state === "error"))));
 
-/** A PR whose mergeable state reads unknown is requested from GitHub's REST endpoint (src/merge/mergeable.ts), once per checks job, UNKNOWN_REREADS times at most; a second null answer asks a person. */
-export const UNKNOWN_REREADS = 2;
+/** A PR whose mergeable state stayed unknown for several checks reads is requested once from GitHub's REST endpoint (src/merge/mergeable.ts); a null answer asks a person. */
+export const UNKNOWN_REREADS = 1;
 
 /** A refusal caused by GitHub or the network, not by the PR: tried once more before a person is asked. */
 export const TRANSIENT_REFUSAL = /\b5\d\d\b|timed? ?out|ETIMEDOUT|ECONN|EAI_AGAIN|rate limit|temporar|unavailable|bad gateway/i;

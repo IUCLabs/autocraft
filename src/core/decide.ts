@@ -482,7 +482,7 @@ export function decidePr(f: PrFacts): Plan {
     if (st === "waiting-ci" && f.mergeable !== "MERGEABLE" && f.mergeable !== "CONFLICTING" && f.unknown) {
       const stuck = unknownStuck(f);
       return stuck ? person(`${stuck}; closing and reopening the PR on GitHub makes it compute the state`)
-        : system(`GitHub's merge state, unknown since ${f.unknown.since.slice(11, 16)} (asked GitHub to compute it ${f.unknown.rereads} of ${UNKNOWN_REREADS} times)`);
+        : system(`GitHub's merge state, unknown since ${f.unknown.since.slice(11, 16)} (unknown for ${f.unknown.reads} checks reads in a row)`);
     }
     if (st === "refused" && refusalStuck(f)) return person(`a person: the merge was refused (${excerpt(f.lastMerge!.reason!)})`);
     return WAITS[st] ? { text: WAITS[st]!, kind: PERSON_WAITS.has(st) ? "person" : "system" } : null;
@@ -497,9 +497,13 @@ export function decidePr(f: PrFacts): Plan {
   const wait: Wait | null = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? person("merge held by an operator") : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : queueWait(e.state))) : null;
   // A review hold names what the pre-approved merge itself waits for, so it comes before the generic pre-approval wait.
   // A PR the review never takes up still names what it waits on: its scope answer, or a label that gets no review.
-  const unreviewableWait: Wait | null = state === "scope" && f.scopeAnswer !== null
+  // No scope answer yet: the question is open (a person) or the Decide step has it to ask (the item's decide action).
+  const scopeAsk = (): Wait => (f.decision.hold.otherOpen ? person("a scope answer") : system("the scope question to be asked"));
+  const unreviewableWait: Wait | null = state === "scope" && f.scopeAnswer === null ? scopeAsk()
+    : state === "scope" && f.scopeAnswer !== null
     ? (f.scopeAnswer === "need-info" ? person("the reference check the need-info answer asked for") : f.scopeAnswer === "plugin" ? contributor("the author: kept open as a plugin candidate") : system("the scope answer to be carried out"))
-    : state === "label-not-reviewed" && !f.needsDecisionFlag ? (!f.label ? system("its label") : f.label === "plugin candidate" ? system("it stays open as a plugin candidate") : person(`a person: its label "${f.label}" gets no review`))
+    : state === "label-not-reviewed" && f.needsDecisionFlag ? scopeAsk()
+    : state === "label-not-reviewed" ? (!f.label ? system("its label") : f.label === "plugin candidate" ? system("it stays open as a plugin candidate") : person(`a person: its label "${f.label}" gets no review`))
     : null;
   const finalWait: Wait | null = wait ?? (main ? null : holdWait ?? unreviewedWait(f) ?? unreviewableWait) ?? (!main && reviewWait ? (f.reviewHold?.person ? person(reviewWait) : system(reviewWait)) : null) ?? (f.operator?.hold && !main ? system("its pre-approved merge") : null);
   return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: finalWait?.text ?? null, waitKind: finalWait?.kind ?? null });

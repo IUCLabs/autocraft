@@ -169,7 +169,7 @@ export type PrFacts = {
   ci: string;
   mergeable: string;
   /** The mergeable state has read as unknown since `since`, and was read again `rereads` times (src/merge/mergeable.ts); null when it is known. */
-  unknown: { since: string; rereads: number; stuck: boolean } | null;
+  unknown: { since: string; reads: number; rereads: number; stuck: boolean } | null;
   /** Workflow runs waiting for approval at the head the checks describe (for an integration PR: at the batch tip). */
   runs: {
     waiting: number; reread: boolean; crossRepo: boolean; approvable: number;

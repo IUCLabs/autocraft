@@ -218,7 +218,11 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
       db.exec("ROLLBACK");
       return { stop: `${p.by} no longer settles decisions on ${p.repo}` };
     }
-    // A hand-over never answers Merge over a failed verification: the operator is asked.
+    // A hand-over waits for a running verification and never answers Merge over a failed one: the operator is asked.
+    if (db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')").get(p.repo, p.number, head)) {
+      db.exec("ROLLBACK");
+      return { wait: true };
+    }
     if (db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('failed', 'error')").get(p.repo, p.number, head)) {
       db.exec("ROLLBACK");
       return { stop: "verification failed at the pushed head" };

@@ -48,10 +48,10 @@ test("a failed or errored verification asks Merge? with the failure, and the ans
 
 test("a mergeable state still unknown after GitHub was asked to compute it asks Merge?; before that the wait says how often it was asked", () => {
   const since = new Date(NOW - 10 * 3600_000).toISOString();
-  const reading = decidePr(prFacts({ mergeable: "UNKNOWN", unknown: { since, rereads: 1, stuck: false } }));
+  const reading = decidePr(prFacts({ mergeable: "UNKNOWN", unknown: { since, reads: 3, rereads: 0, stuck: false } }));
   assert.equal(reading.state, "waiting-ci");
-  assert.match(reading.wait ?? "", /1 of 2/);
-  const stuck = decidePr(prFacts({ mergeable: "UNKNOWN", unknown: { since, rereads: 2, stuck: true } }));
+  assert.match(reading.wait ?? "", /3 checks reads/);
+  const stuck = decidePr(prFacts({ mergeable: "UNKNOWN", unknown: { since, reads: 6, rereads: 1, stuck: true } }));
   assert.equal(stuck.state, "needs-decision");
   assert.ok(stuck.actions.some((a) => a.kind === "ask-merge"));
   assert.ok(stuck.reasons.some((r) => r.includes("unknown")));
@@ -134,5 +134,26 @@ test("from database rows: red CI at a new head with an earlier non-take review a
   try {
     const p = w.prPlan(1);
     assert.deepEqual(p.actions.filter((a) => a.kind === "cifix").map((a) => a.params?.bucket), ["ask"]);
+  } finally { w.close(); }
+});
+
+test("from database rows: a Merge answer given while verification ran does not cover its failure; the question is asked again", async () => {
+  const { world } = await import("./world-db.ts");
+  const { setAsideAnswerBeforeFailure, verifyOverride } = await import("../src/merge/verify-override.ts");
+  const w = world().repo().pr(1, { ci: "success" }).review(1, { verdict: "take" }).verified(1, "running").answer(1, "merge");
+  try {
+    const head = w.prPlan(1).head!;
+    // The verification fails after the answer.
+    w.db.prepare("UPDATE verifications SET state = 'failed', summary = 'tests fail', finished_at = '2999-01-01T00:00:00.000Z' WHERE repo = 'app' AND number = 1").run();
+    assert.equal(verifyOverride(w.db, "app", 1, head), false);
+    assert.ok(!w.prPlan(1).actions.some((a) => a.kind === "merge"));
+    assert.equal(setAsideAnswerBeforeFailure(w.db, "app", 1, head, new Date().toISOString()), true);
+    const p = w.prPlan(1);
+    assert.equal(p.state, "needs-decision");
+    assert.ok(p.actions.some((a) => a.kind === "ask-merge"));
+    // An answer given after the result stands.
+    w.db.prepare("UPDATE verifications SET finished_at = '2000-01-01T00:00:00.000Z' WHERE repo = 'app' AND number = 1").run();
+    w.answer(1, "merge");
+    assert.equal(verifyOverride(w.db, "app", 1, head), true);
   } finally { w.close(); }
 });
