@@ -77,7 +77,7 @@ function build(state: TaskState, agoMin: number, over: Partial<BuildTask>): Buil
   const active = state === "claimed" || state === "running";
   const envId = state === "queued" ? null : (over.envId ?? (id % 3 === 0 ? "build-a" : "sandbox"));
   const steps = active || state === "queued" ? [] : PLAN.slice(0, state === "failed" ? 2 : 3);
-  const results: TaskResult[] = steps.map((s, i) => ({ step: s.name, exitCode: state === "failed" && i === steps.length - 1 ? 101 : 0, durationMs: 4_000 + i * 70_000, timedOut: false }));
+  const results: TaskResult[] = steps.map((s, i) => ({ step: s.name, exitCode: state === "failed" && i === steps.length - 1 ? 101 : 0, durationMs: 4_000 + i * 70_000, timedOut: false, ...(id % 3 === 2 ? {} : { peakMemBytes: [1.4e9, 3.2e9, 5.8e9][i % 3], ...(state === "failed" && i === steps.length - 1 && id % 2 === 0 ? { oomKilled: true } : {}) }) }));
   const started = state === "queued" ? null : iso((agoMin - 1) * MIN);
   return {
     id: ++id, jobId: null, step: "verify", repo, number: N[id % N.length]!, headSha: (id * 7919).toString(16).padStart(8, "0").repeat(5), baseSha: null,

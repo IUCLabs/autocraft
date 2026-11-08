@@ -8,7 +8,7 @@ import type { EnvKind } from "../../web/src/api/types.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
 import { BuildError, createEnv, KINDS, listEnvs, rotateKey, updateEnv } from "./envs.ts";
-import { cancelTask, createTask, getTaskDetail, listTasks } from "./tasks.ts";
+import { cancelTask, createTask, getTaskDetail, listTasks, memorySummary } from "./tasks.ts";
 
 const USAGE = `usage: autocraft envs list
        autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N (--out FILE | --print)
@@ -17,6 +17,7 @@ const USAGE = `usage: autocraft envs list
        autocraft tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
        autocraft tasks show <id>
        autocraft tasks cancel <id>
+       autocraft tasks mem [--days N]
        autocraft tasks enqueue-test --env-requires linux --repo NAME --sha SHA`;
 
 function die(msg: string): never {
@@ -150,7 +151,7 @@ function tasks(args: string[]): void {
     console.log(`requires ${JSON.stringify(t.requires)}  priority ${t.priority}  env ${t.envId ?? "-"}  queued ${t.queuedAt}${t.endedAt ? `  ended ${t.endedAt}` : ""}`);
     for (const s of t.plan) {
       const r = t.results.find((x) => x.step === s.name);
-      console.log(`  step ${safe(s.name)}: ${safe(s.cmd.join(" "))}  [network ${s.network}, ${s.timeoutSec} s]${r ? `  exit ${r.exitCode ?? "-"}${r.timedOut ? " (timed out)" : ""}, ${r.durationMs} ms` : ""}`);
+      console.log(`  step ${safe(s.name)}: ${safe(s.cmd.join(" "))}  [network ${s.network}, ${s.timeoutSec} s]${r ? `  exit ${r.exitCode ?? "-"}${r.timedOut ? " (timed out)" : ""}, ${r.durationMs} ms${r.peakMemBytes !== undefined ? `, peak ${(r.peakMemBytes / 1e9).toFixed(2)} GB` : ""}${r.oomKilled ? " (out of memory)" : ""}` : ""}`);
     }
     if (t.summary) console.log(`summary: ${safe(t.summary)}`);
     for (const a of t.artifacts) console.log(`artifact ${a.name} ${a.bytes} bytes ${a.contentType}`);
@@ -160,6 +161,17 @@ function tasks(args: string[]): void {
     if (!Number.isInteger(id)) die(USAGE);
     const t = run(() => cancelTask(db, id, "cli"));
     console.log(`task ${id}: ${t.state === "cancelled" ? "cancelled" : "cancel requested"}`);
+  } else if (sub === "mem") {
+    const { opt } = options(rest);
+    const days = Number(opt.get("days") ?? 30);
+    if (!Number.isFinite(days) || days <= 0) die(USAGE);
+    const gb = (b: number) => (b / 1e9).toFixed(2);
+    const rows = memorySummary(db, days);
+    if (rows.length === 0) console.log(`no steps with memory data in the last ${days} days`);
+    else {
+      console.log(`${"repo".padEnd(20)} ${"step".padEnd(16)} ${"steps".padStart(5)} ${"median GB".padStart(10)} ${"max GB".padStart(8)} ${"oom".padStart(4)}`);
+      for (const r of rows) console.log(`${safe(r.repo).padEnd(20)} ${safe(r.step).padEnd(16)} ${String(r.steps).padStart(5)} ${gb(r.medianBytes).padStart(10)} ${gb(r.maxBytes).padStart(8)} ${String(r.oom).padStart(4)}`);
+    }
   } else if (sub === "enqueue-test") {
     enqueueTest(db, rest);
   } else die(USAGE);
@@ -188,5 +200,5 @@ function enqueueTest(db: DatabaseSync, args: string[]): void {
 
 export const commands = {
   envs: { summary: "build environments: list | add <id> | set <id> | rotate-key <id>", run: (args: string[]) => envs(args) },
-  tasks: { summary: "build tasks: list | show <id> | cancel <id> | enqueue-test", run: (args: string[]) => tasks(args) },
+  tasks: { summary: "build tasks: list | show <id> | cancel <id> | mem | enqueue-test", run: (args: string[]) => tasks(args) },
 };

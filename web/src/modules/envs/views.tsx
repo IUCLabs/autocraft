@@ -7,7 +7,7 @@ import { CheckIcon, CopyIcon, DownloadSimpleIcon, PencilSimpleIcon, PlusIcon, XI
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
 import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { nowMs, num, span, eventTime } from "../../lib/format";
+import { memSize, nowMs, num, span, eventTime } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -492,7 +492,7 @@ function DetailBody({ id }: { id: number }) {
                   <span className="text-sm font-medium">{s.name}</span>
                   <Badge>{s.network === "fetch" ? "network: fetch" : "no network"}</Badge>
                   <span className="num ml-auto text-xs text-ink/60">
-                    {r ? `${r.timedOut ? "timed out" : `exit ${r.exitCode ?? "–"}`} · ${span(r.durationMs)}`.replace("<1 m", `${(r.durationMs / 1000).toFixed(1)} s`) : `limit ${s.timeoutSec} s`}
+                    {r ? `${r.timedOut ? "timed out" : `exit ${r.exitCode ?? "–"}`} · ${span(r.durationMs)}`.replace("<1 m", `${(r.durationMs / 1000).toFixed(1)} s`) + (r.peakMemBytes !== undefined ? ` · peak ${memSize(r.peakMemBytes)}` : "") + (r.oomKilled ? " · out of memory" : "") : `limit ${s.timeoutSec} s`}
                   </span>
                   {r && <Badge tone={r.exitCode === 0 && !r.timedOut ? "ok" : "bad"}>{r.exitCode === 0 && !r.timedOut ? "Passed" : "Failed"}</Badge>}
                 </div>

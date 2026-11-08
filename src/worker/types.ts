@@ -24,7 +24,7 @@ export type TaskStep = {
   artifacts?: string[];
 };
 
-export type StepResult = { step: string; exitCode: number | null; durationMs: number; timedOut: boolean };
+export type StepResult = { step: string; exitCode: number | null; durationMs: number; timedOut: boolean; peakMemBytes?: number; oomKilled?: boolean };
 
 /** What `claim` returns per task. `sourceUrl` is an anonymous tarball URL for headSha. */
 export type ClaimedTask = {

@@ -1688,7 +1688,7 @@ export type TaskStep = {
   artifacts?: string[];                 // globs under /out to return
 };
 export type TaskState = "queued" | "claimed" | "running" | "done" | "failed" | "cancelled" | "lost";
-export type TaskResult = { step: string; exitCode: number | null; durationMs: number; timedOut: boolean };
+export type TaskResult = { step: string; exitCode: number | null; durationMs: number; timedOut: boolean; peakMemBytes?: number; oomKilled?: boolean };
 export type TaskArtifact = { name: string; bytes: number; contentType: string };
 export type BuildTask = {
   id: number; jobId: number | null; step: string;   // pipeline step that created it

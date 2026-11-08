@@ -169,7 +169,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
         cancelled = true;
         break;
       }
-      results.push({ step: step.name, exitCode: outcome.exitCode, durationMs: Date.now() - started, timedOut: outcome.timedOut });
+      results.push({ step: step.name, exitCode: outcome.exitCode, durationMs: Date.now() - started, timedOut: outcome.timedOut, ...(outcome.peakMemBytes !== undefined ? { peakMemBytes: outcome.peakMemBytes } : {}), ...(outcome.oomKilled !== undefined ? { oomKilled: outcome.oomKilled } : {}) });
       if (outcome.timedOut) await emit(step.name, `\nstep timed out after ${step.timeoutSec} s and was killed\n`);
       const files = collectArtifacts(out, step.artifacts ?? [], taken, budget, (s) => void emit(step.name, `${s}\n`));
       for (const f of files) {
