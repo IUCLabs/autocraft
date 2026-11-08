@@ -517,3 +517,17 @@ export async function cancelPreapproval(db: DatabaseSync, by: string, repo: stri
   } else finish();
   return preapprovalOf(db, repo, n)!;
 }
+
+/**
+ * Operator: queues the PR's failed pre-approved merge again with the same instructions at the PR's current head, as a new
+ * pre-approval (the same path as the first press: the audit entry and the thread line are the ones of any pre-approval).
+ * An open Merge? question at the head is answered by the new row's hand-over as it would have been the first time.
+ * Throws when the latest pre-approval did not fail.
+ */
+export async function retryPreapproval(db: DatabaseSync, by: string, repo: string, n: number): Promise<Preapproval> {
+  const p = db.prepare("SELECT * FROM preapprovals WHERE repo = ? AND number = ? ORDER BY id DESC LIMIT 1").get(repo, n) as Row | undefined;
+  if (!p || p.state !== "failed") throw new Error(`${repo}#${n} has no failed pre-approved merge`);
+  if (!isOperator(db, by, repo)) throw new Error(`${by} does not settle decisions on ${repo}`);
+  await runPipelineStep(db, { repo, number: n, step: { kind: "fixup", instructions: p.instructions, merge: true }, by });
+  return preapprovalOf(db, repo, n)!;
+}

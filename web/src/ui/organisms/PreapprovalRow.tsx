@@ -2,6 +2,7 @@ import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { GitMergeIcon, HourglassIcon, ProhibitIcon, QuestionIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import type { Preapproval } from "../../api/types";
 import { githubCommitUrl } from "../../lib/links";
+import { Button } from "../atoms/Button";
 import { TimeAgo } from "../atoms/TimeAgo";
 import { ConfirmButton } from "../molecules/ConfirmButton";
 import { cn } from "../cn";
@@ -27,12 +28,15 @@ function Head({ repo, number, sha }: { repo: string; number: number; sha: string
 }
 
 /** The pre-approved merge of a PR: its state in plain words, the operator's instructions, the heads and the reason it ended. Props only. */
-export function PreapprovalRow({ p, repo, number, canCancel, onCancel, loading, className }: {
+export function PreapprovalRow({ p, repo, number, canCancel, onCancel, canRetry = false, onRetry, loading, className }: {
   p: Preapproval;
   repo: string;
   number: number;
   canCancel: boolean;
   onCancel: () => void;
+  /** Operators: queue a failed pre-approval again with the same instructions. */
+  canRetry?: boolean;
+  onRetry?: () => void;
   loading?: boolean;
   className?: string;
 }) {
@@ -49,6 +53,7 @@ export function PreapprovalRow({ p, repo, number, canCancel, onCancel, loading, 
           </p>
         </div>
         {canCancel && ACTIVE.has(p.state) && <ConfirmButton label="Cancel" confirmLabel="Confirm cancel" idle="secondary" loading={loading} onConfirm={onCancel} />}
+        {canRetry && p.state === "failed" && onRetry && <Button size="sm" variant="secondary" loading={loading} className="max-md:h-11" onClick={onRetry}>Try again</Button>}
       </div>
       {p.instructions && <blockquote className="mt-2 whitespace-pre-wrap break-words border-l-2 border-line-strong pl-3 text-sm leading-5 text-ink/75">{p.instructions}</blockquote>}
       <p className="mt-2 text-xs text-ink/60">

@@ -252,6 +252,15 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         changed();
         return snap(p);
       },
+      async retryPreapproval(repo, number) {
+        need();
+        const p = PREAPPROVALS[`${repo}#${number}`];
+        if (!p || p.state !== "failed") throw new Error(`${repo}#${number} has no failed pre-approved merge`);
+        Object.assign(p, { state: "fixup", reason: null, at: new Date().toISOString(), by: me.login, updatedAt: new Date().toISOString() });
+        open(repo, number).turns.push(sys(nextId++, 0, `${me.login} approved a merge after a fix-up: a fix-up is queued again.`));
+        changed();
+        return snap(p);
+      },
       async editCard(id, edit) {
         const k = find(id);
         needCard(k);
