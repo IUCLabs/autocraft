@@ -126,23 +126,29 @@ export async function stopped(db: DatabaseSync, hidden: string[]): Promise<Needs
 
 export const FIXES_PAGE = 25;
 
-/** One page of a repo's issues with a stopped fix: higher priority first (unprioritized last), then the newest stop. The cursor is the offset. */
+const STOP_WORDS: Record<string, string> = { skipped: "was skipped", failed: "failed" };
+
+/** One page of a repo's issues with a stopped fix: higher priority first (unprioritized last), then the newest stop, then the number. The cursor is the last row's `score|since|number`. */
 export async function fixes(db: DatabaseSync, req: Req): Promise<NeedsFixPage> {
   const repo = req.params.repo ?? req.query.get("repo") ?? "";
   if ((await hiddenRepos(db, req)).includes(repo)) return { rows: [], nextCursor: null };
   const c = req.query.get("cursor");
-  if (c !== null && !/^\d{1,6}$/.test(c)) throw new HttpError(400, "bad cursor");
-  const off = Number(c ?? 0);
-  const rows = db.prepare(`SELECT p.number, i.title, a.state, a.reason, a.summary, COALESCE(a.updated_at, p.planned_at) AS since, pr.impact
-    FROM main.item_plans p JOIN items i ON i.repo = p.repo AND i.number = p.number
-    LEFT JOIN fix_attempts a ON a.repo = p.repo AND a.number = p.number LEFT JOIN item_priority pr ON pr.repo = p.repo AND pr.number = p.number
-    WHERE p.repo = ? AND p.kind = 'issue' AND p.wait IN (?, ?)
-    ORDER BY pr.score IS NULL, pr.score DESC, since DESC, p.number DESC LIMIT ? OFFSET ?`).all(repo, fixStoppedWait("skipped"), fixStoppedWait("failed"), FIXES_PAGE + 1, off) as
-    { number: number; title: string | null; state: string | null; reason: string | null; summary: string | null; since: string | null; impact: string | null }[];
-  const detail = (r: (typeof rows)[number]) => r.reason ?? r.summary;
+  const m = c === null ? null : /^(-?\d{1,9})\|([^|]{1,40})\|(\d{1,9})$/.exec(c);
+  if (c !== null && !m) throw new HttpError(400, "bad cursor");
+  const after = m ? { score: Number(m[1]), since: m[2]!, number: Number(m[3]) } : { score: 2_000_000_000, since: "", number: 0 };
+  const rows = db.prepare(`SELECT * FROM (
+      SELECT p.number, i.title, a.state, a.reason, a.summary, COALESCE(a.updated_at, p.planned_at) AS since, pr.impact, COALESCE(pr.score, -1) AS score
+      FROM main.item_plans p JOIN items i ON i.repo = p.repo AND i.number = p.number
+      LEFT JOIN fix_attempts a ON a.repo = p.repo AND a.number = p.number LEFT JOIN item_priority pr ON pr.repo = p.repo AND pr.number = p.number
+      WHERE p.repo = ? AND p.kind = 'issue' AND p.wait IN (?, ?))
+    WHERE ? = 2000000000 OR score < ? OR (score = ? AND (since < ? OR (since = ? AND number < ?)))
+    ORDER BY score DESC, since DESC, number DESC LIMIT ?`).all(repo, fixStoppedWait("skipped"), fixStoppedWait("failed"), after.score, after.score, after.score, after.since, after.since, after.number, FIXES_PAGE + 1) as
+    { number: number; title: string | null; state: string | null; reason: string | null; summary: string | null; since: string; impact: string | null; score: number }[];
+  const page = rows.slice(0, FIXES_PAGE);
+  const last = page[page.length - 1];
   return {
-    rows: rows.slice(0, FIXES_PAGE).map((r) => ({ id: `fix:${repo}#${r.number}`, repo, number: r.number, title: r.title ?? "", reason: `The fix attempt was ${r.state ?? "stopped"}${detail(r) ? `: ${detail(r)}` : ""}`, since: r.since, impact: r.impact })),
-    nextCursor: rows.length > FIXES_PAGE ? String(off + FIXES_PAGE) : null,
+    rows: page.map((r) => ({ id: `fix:${repo}#${r.number}`, repo, number: r.number, title: r.title ?? "", reason: `The fix attempt ${STOP_WORDS[r.state ?? ""] ?? "stopped"}${r.reason ?? r.summary ? `: ${r.reason ?? r.summary}` : ""}`, since: r.since, impact: r.impact })),
+    nextCursor: rows.length > FIXES_PAGE && last ? `${last.score}|${last.since}|${last.number}` : null,
   };
 }
 

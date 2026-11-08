@@ -48,7 +48,7 @@ export function needsPage(f: { feedback?: boolean; cursor?: string }): NeedsPage
 }
 
 const FIX_TITLES = ["Crash when the curve has a single point", "Export drops the alpha channel", "Panel layout resets after undo", "Wrong unit shown in the ruler", "Brush preview lags on large canvases"];
-const FIX_REASONS = ["skipped: the issue gives no way to reproduce the crash", "skipped: the change needs a design decision", "failed: the fix did not pass the repo's tests"];
+const FIX_REASONS = ["was skipped: the issue gives no way to reproduce the crash", "was skipped: the change needs a design decision", "failed: the fix did not pass the repo's tests"];
 
 export function needsFixesPage(repo: string, cursor?: string): NeedsFixPage {
   const total = repo === "craft-libs" ? 52 : 1;
@@ -56,7 +56,7 @@ export function needsFixesPage(repo: string, cursor?: string): NeedsFixPage {
   const size = 25;
   const rows = Array.from({ length: Math.max(0, Math.min(size, total - start)) }, (_, k) => {
     const n = start + k;
-    return { id: `fix:${repo}#${400 - n}`, repo, number: 400 - n, title: FIX_TITLES[n % FIX_TITLES.length]!, reason: `The fix attempt was ${FIX_REASONS[n % FIX_REASONS.length]}`, since: at(60 * (20 + n * 7)), impact: n < 4 ? "P1" : n < 12 ? "P2" : null };
+    return { id: `fix:${repo}#${400 - n}`, repo, number: 400 - n, title: FIX_TITLES[n % FIX_TITLES.length]!, reason: `The fix attempt ${FIX_REASONS[n % FIX_REASONS.length]}`, since: at(60 * (20 + n * 7)), impact: n < 4 ? "P1" : n < 12 ? "P2" : null };
   });
   return { rows, nextCursor: start + size < total ? String(start + size) : null };
 }

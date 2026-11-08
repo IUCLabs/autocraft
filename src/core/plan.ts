@@ -355,8 +355,8 @@ export type ItemFacts = {
     publicRepo: boolean;
     /** The step found the repo has no Rust workspace at its root. */
     notRust: boolean;
-    /** The number of an open PR in the repo that closes the issue (a closing keyword or closing-issue link, not a bare mention), or null. */
-    openPr: number | null;
+    /** The open PR that holds the issue: one that closes or addresses it (`closes`), else a person's PR that mentions it by number; null when there is none. */
+    openPr: { number: number; closes: boolean } | null;
     /** The priority row's impact level (P0 to P4). */
     impact: string | null;
     /** The latest scope decision about the issue itself, and whether an operator answered it. */

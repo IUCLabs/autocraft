@@ -241,6 +241,7 @@ export function createMockApi(): Api {
       thread: (id) => wait(threads[id] ?? []),
     },
     release: () => wait(undefined, 60),
+    stopFix: () => wait(undefined, 60),
     item: (repo, number) => {
       const it = itemFor(repo, number);
       const postmerge = postmergeFor(number, it.kind, mockRole() !== "viewer");

@@ -17,15 +17,15 @@ export function scopeReason(f: ItemFacts): "needs-decision" | "scope-disagreemen
   return null;
 }
 
-/** An issue the Fix stage may start on: settled bugfix, not backlog priority, no attempt (a skipped one returns when its text changed), a public Rust repo, no scope call against it, no open PR that closes it (`ignoreOpenPr` leaves that test out). */
-function fixCandidate(f: ItemFacts, ignoreOpenPr = false): boolean {
+/** An issue the Fix stage may start on: settled bugfix, not backlog priority, no attempt (a skipped one returns when its text changed), a public Rust repo, no scope call against it, no open PR that closes or mentions it. */
+function fixCandidate(f: ItemFacts): boolean {
   const c = f.classification, fix = f.fix, a = fix.attempt;
   if (!fix.publicRepo || fix.notRust || c.status !== "settled" || c.label !== "bugfix") return false;
   if (fix.impact && levelWith(fix.impact as Level, c.flags.includes("security")) === "P4") return false;
   if (a && !(a.state === "skipped" && a.textChanged)) return false;
   const d = fix.scopeDecision;
   if (d ? !(d.answer === "take" && d.byOperator) : c.flags.includes("needs decision")) return false;
-  return ignoreOpenPr || fix.openPr === null;
+  return fix.openPr === null;
 }
 
 /** Jev and Haiku chose different labels and it is not a scope call: a referee (Sonnet, then Opus when Sonnet was unsure) still has to settle it. An unsure Opus settles the label too and flags a scope decision. */
@@ -122,7 +122,7 @@ export function decideItem(f: ItemFacts): ItemPlan {
   // An issue with nothing else due waits on the PR that closes it, or on a person when its fix attempt was skipped or failed.
   let wait = base, waitKind: ItemPlan["waitKind"] = base === null ? null : f.inScope && (state === "held-duplicate" || state === "scope-open") ? "person" : "system";
   if (wait === null && f.kind === "issue" && f.open && f.inScope && !backlog && !f.held && actions.every((x) => !isWork(x))) {
-    if (fix.openPr !== null && (a?.state === "pr-opened" || a?.state === "passed" || fixCandidate(f, true))) { wait = `open PR #${fix.openPr}`; waitKind = "system"; }
+    if (fix.openPr !== null) { wait = `open PR #${fix.openPr.number}${fix.openPr.closes ? "" : " mentions it"}`; waitKind = "system"; }
     else if (a?.state === "skipped" || a?.state === "failed") { wait = fixStoppedWait(a.state); waitKind = "person"; }
   }
   return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait, waitKind };

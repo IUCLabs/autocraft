@@ -415,6 +415,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/items/:repo/:n/preapproval/retry", operator: true, handler: ok(operator.retryItemPreapproval) },
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
+    { method: "POST", pattern: "/api/items/:repo/:n/stop-fix", operator: true, handler: ok(operator.stopFixItem) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },
     get("/api/areas/:repo", areas.repoAreas),
     { method: "POST", pattern: "/api/areas/:repo/edit", operator: true, handler: ok(areas.edit) },

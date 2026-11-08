@@ -32,7 +32,7 @@ const heldReview = (db: DatabaseSync, repo: string, n: number, head: string | nu
   head ? db.prepare("SELECT reason FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'hold'").get(repo, n, head) as { reason: string } | undefined : undefined;
 const failedVerify = (db: DatabaseSync, repo: string, n: number, head: string | null) =>
   head ? db.prepare("SELECT state, summary FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('failed', 'error')").get(repo, n, head) as { state: string; summary: string | null } | undefined : undefined;
-const stoppedFix = (db: DatabaseSync, repo: string, n: number) =>
+export const stoppedFix = (db: DatabaseSync, repo: string, n: number) =>
   db.prepare("SELECT state, round, retries, push_tries, reason, summary FROM fix_attempts WHERE repo = ? AND number = ? AND state IN ('skipped', 'failed') AND pr_url IS NULL").get(repo, n) as
     { state: string; round: number; retries: number; push_tries: number; reason: string | null; summary: string | null } | undefined;
 

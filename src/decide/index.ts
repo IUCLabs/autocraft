@@ -17,6 +17,7 @@ import { type Candidate, type Reason } from "./select.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { scopeReason } from "../core/decide-item.ts";
 import { unsettledScope } from "../review/candidates.ts";
+import { setAsideLapsedScope } from "../merge/withdraw.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { ownLogins } from "../github/identity.ts";
 import { isBotLogin } from "../review/bots.ts";
@@ -102,8 +103,8 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   const lapsed = unsettledScope(db);
   for (const c of picked) {
     const q = buildDecision(db, c);
-    // A maintainer's answer that no longer counts: the same question is open again.
-    if (lapsed.has(`${c.repo}#${c.number}`)) db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL WHERE id = ? AND kind = 'scope' AND applied_at IS NULL").run(q.id);
+    // A maintainer's answer that no longer counts is set aside, so a fresh question takes its id.
+    if (lapsed.has(`${c.repo}#${c.number}`)) setAsideLapsedScope(db, q.id, at);
     ask(db, [{ ...q, asked_at: at }]);
     stage.run(c.repo, c.number, at, `scope decision ${q.id}`);
     count(result.byRepo, c.repo).asked++;

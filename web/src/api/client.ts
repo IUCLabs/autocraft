@@ -183,6 +183,8 @@ export interface Api {
   activity(q?: ActivityQuery): Promise<ActivityPage | ItemTraceUnchanged>;
   /** Operator only: review the current head again, plan Verify again, or try the issue fix again. Writes nothing to GitHub. */
   release(repo: RepoName, number: number, action: ReleaseAction): Promise<void>;
+  /** Operator only: puts an issue with a stopped fix in the Backlog or closes it (through a scope decision answered at once). */
+  stopFix(repo: RepoName, number: number, answer: "backlog" | "close"): Promise<void>;
   /** Top bar: jumps by number, logins, words in titles and bodies. */
   search(q: string): Promise<SearchHit[]>;
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */

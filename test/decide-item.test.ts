@@ -119,7 +119,7 @@ const rows: Row[] = [
   { name: "not a bugfix", facts: fixable({ classification: { label: "infra" }, labels: { existing: ["infra"] } }), expect: { state: "classified", actions: [] } },
   { name: "private repo", facts: fixable({ fix: { publicRepo: false } }), expect: { state: "classified", actions: [] } },
   { name: "repo without a Rust workspace", facts: fixable({ fix: { notRust: true } }), expect: { state: "classified", actions: [] } },
-  { name: "an open PR closes the issue", facts: fixable({ fix: { openPr: 7 } }), expect: { state: "classified", actions: [], wait: "open PR #7" } },
+  { name: "an open PR closes the issue", facts: fixable({ fix: { openPr: { number: 7, closes: true } } }), expect: { state: "classified", actions: [], wait: "open PR #7" } },
   { name: "needs-decision flag without a scope decision", facts: fixable({ ...needsDecision, scope: { covered: true } }), expect: { state: "classified", actions: [] } },
   { name: "scope decision answered take by an operator", facts: fixable({ ...needsDecision, scope: { covered: true }, fix: { scopeDecision: { answer: "take", byOperator: true } } }), expect: { state: "classified", actions: ["fixissue"] } },
   { name: "scope decision answered take by someone else", facts: fixable({ fix: { scopeDecision: { answer: "take", byOperator: false } } }), expect: { state: "classified", actions: [] } },
