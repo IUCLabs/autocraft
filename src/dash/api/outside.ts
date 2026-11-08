@@ -48,6 +48,6 @@ export function releaseAll(db: DatabaseSync, req: Req) {
 export async function held(db: DatabaseSync, req: Req): Promise<NeedsOutsideList> {
   const hidden = await hiddenRepos(db, req);
   const rows = db.prepare(`SELECT h.repo, h.number, h.kind, h.reason, i.title, i.created_at FROM main.outside_holds h LEFT JOIN items i ON i.repo = h.repo AND i.number = h.number
-    WHERE h.author = ? COLLATE NOCASE ORDER BY i.created_at, h.number LIMIT 200`).all(req.params.author!) as { repo: string; number: number; kind: "pr" | "issue"; reason: "limit" | "surge"; title: string | null; created_at: string | null }[];
-  return { rows: rows.filter((r) => !hidden.includes(r.repo)).map((r) => ({ id: `outside:${r.repo}#${r.number}`, repo: r.repo, number: r.number, title: r.title ?? "", kind: r.kind, reason: r.reason, createdAt: r.created_at })) };
+    WHERE h.author = ? COLLATE NOCASE${hidden.length ? ` AND h.repo NOT IN (${hidden.map(() => "?").join(",")})` : ""} ORDER BY i.created_at, h.number LIMIT 200`).all(req.params.author!, ...hidden) as { repo: string; number: number; kind: "pr" | "issue"; reason: "limit" | "surge"; title: string | null; created_at: string | null }[];
+  return { rows: rows.map((r) => ({ id: `outside:${r.repo}#${r.number}`, repo: r.repo, number: r.number, title: r.title ?? "", kind: r.kind, reason: r.reason, createdAt: r.created_at })) };
 }

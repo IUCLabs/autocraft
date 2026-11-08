@@ -18,6 +18,8 @@ import { allOwnLogins } from "./github/identity.ts";
 import type { OutsideHoldInfo } from "./core/plan.ts";
 import { sinceOf, trip, tripRow } from "./push-outcomes.ts";
 import { isWhitelisted } from "./whitelist.ts";
+import { pipelineRepos } from "./pilot.ts";
+import { isBotLogin } from "./review/bots.ts";
 
 export const OUTSIDE_SURGE = "outside-surge";
 export const KEYS = { prsPerDay: "outside_prs_per_day", issuesPerDay: "outside_issues_per_day", surgePerHour: "outside_surge_per_hour" } as const;
@@ -64,6 +66,18 @@ export type Hold = { repo: string; number: number; author: string; kind: "pr" | 
 
 const INSIDE_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
+/** GitHub Bot authors: the mirror's author type, or (rows synced before it was stored) a `[bot]` suffix or a known app login (the mirror stores app logins without the suffix). */
+const isBotAuthor = (r: { author: string; author_type: string | null }): boolean =>
+  r.author_type === "Bot" || (r.author_type === null && (isBotLogin(r.author) || r.author.toLowerCase() === "github-actions")) || r.author.endsWith("[bot]");
+
+/** Once, on the first run: items that already have pipeline work (a decision, review, classification, stage row, fix-up, ...) count as admitted, so nothing in flight is held on deploy. */
+function backfillAdmitted(db: DatabaseSync, since: string, now: number): void {
+  if (db.prepare("SELECT 1 FROM main.settings WHERE key = 'outside_admitted_backfill'").get()) return;
+  const has = ["decisions", "opus_reviews", "classifications", "fixups", "ci_fixes", "fix_attempts", "verifications", "stages"].map((t) => `EXISTS (SELECT 1 FROM main.${t} x WHERE x.repo = i.repo AND x.number = i.number)`).join(" OR ");
+  db.prepare(`INSERT OR IGNORE INTO main.outside_admitted (repo, number, at) SELECT i.repo, i.number, ? FROM items i WHERE i.created_at >= ? AND (${has})`).run(new Date(now).toISOString(), since);
+  db.prepare("INSERT OR IGNORE INTO main.settings (key, value) VALUES ('outside_admitted_backfill', '1')").run();
+}
+
 /** Logins that are never outside authors: the dashboard's operators and maintainers and the pipeline's own accounts (lowercase). */
 function insiders(db: DatabaseSync): Set<string> {
   const out = new Set<string>();
@@ -85,8 +99,18 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
   let wakeAt: number | null = null;
   const released = new Set((db.prepare("SELECT repo, number FROM main.outside_released").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
   if (enabled) {
-    const rows = db.prepare("SELECT repo, number, kind, author, state, created_at, author_association, author_type FROM items WHERE created_at >= ? AND author IS NOT NULL")
-      .all(new Date(now - DAY_MS).toISOString()) as Row[];
+    const dayAgo = now - DAY_MS;
+    const tripped = lim.surgePerHour > 0 ? tripRow(db, OUTSIDE_SURGE) : undefined;
+    const surgeFrom = tripped?.active ? Date.parse(tripped.tripped_at) - HOUR_MS : null;
+    // While the breaker is tripped its holds last until it is resumed, however old the items are.
+    const from = Math.min(dayAgo, surgeFrom ?? dayAgo);
+    // Only items in scope for model work count: repos with the pipeline on, and not fast-tracked.
+    const scope = pipelineRepos(db);
+    const fast = new Set((db.prepare("SELECT repo, number FROM main.fast_track").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
+    const rows = (db.prepare("SELECT repo, number, kind, author, state, created_at, author_association, author_type FROM items WHERE created_at >= ? AND author IS NOT NULL")
+      .all(new Date(from).toISOString()) as Row[]).filter((r) => scope.has(r.repo) && !fast.has(`${r.repo}#${r.number}`));
+    backfillAdmitted(db, new Date(from).toISOString(), now);
+    const admitted = new Set((db.prepare("SELECT repo, number FROM main.outside_admitted").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
     const inside = insiders(db);
     const memo = new Map<string, boolean>();
     const whitelisted = (login: string): boolean => {
@@ -95,10 +119,10 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
       if (v === undefined) { v = isWhitelisted(db, login).ok; memo.set(k, v); }
       return v;
     };
-    const cheap = rows.filter((r) => !INSIDE_ASSOCIATIONS.has(r.author_association ?? "") && r.author_type !== "Bot" && !r.author.endsWith("[bot]") && !inside.has(r.author.toLowerCase()));
+    const cheap = rows.filter((r) => !INSIDE_ASSOCIATIONS.has(r.author_association ?? "") && !isBotAuthor(r) && !inside.has(r.author.toLowerCase()));
 
     // Surge: outside-author items of the last hour since the last resume.
-    if (lim.surgePerHour > 0 && !tripRow(db, OUTSIDE_SURGE)?.active) {
+    if (lim.surgePerHour > 0 && !tripped?.active) {
       const since = Math.max(now - HOUR_MS, Date.parse(sinceOf(db, OUTSIDE_SURGE)) || 0);
       const recent = cheap.filter((r) => Date.parse(r.created_at) > since);
       // The whitelist is read only when the cheap count already passes the threshold.
@@ -108,11 +132,9 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
         for (const r of real) byAuthor.set(r.author, (byAuthor.get(r.author) ?? 0) + 1);
         const top = [...byAuthor].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([a, n]) => `${a}: ${n}`);
         trip(db, OUTSIDE_SURGE, `${real.length} new items from outside authors in the last hour (more than ${lim.surgePerHour})`, top, new Date(now).toISOString());
+        return refreshOutsideHolds(db, now);
       }
     }
-    // The whitelist check runs for the authors the rules may hold.
-    const surge = lim.surgePerHour > 0 ? tripRow(db, OUTSIDE_SURGE) : undefined;
-    const surgeFrom = surge?.active ? Date.parse(surge.tripped_at) - HOUR_MS : null;
     const groups = new Map<string, Row[]>();
     for (const r of cheap) {
       const k = `${r.author.toLowerCase()}|${r.kind}`;
@@ -122,18 +144,25 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
       rs.sort((a, b) => a.created_at.localeCompare(b.created_at) || a.number - b.number);
       const kind = rs[0]!.kind === "pr" ? "pr" as const : "issue" as const;
       const limit = kind === "pr" ? lim.prsPerDay : lim.issuesPerDay;
-      const overLimit = limit > 0 && rs.length > limit;
+      const win = rs.filter((r) => Date.parse(r.created_at) >= dayAgo);
+      const overLimit = limit > 0 && win.length > limit;
       const inSurge = surgeFrom !== null && rs.some((r) => Date.parse(r.created_at) >= surgeFrom);
       if (!overLimit && !inSurge) continue;
       if (whitelisted(rs[0]!.author)) continue;
-      rs.forEach((r, i) => {
-        if (r.state !== "OPEN" || released.has(`${r.repo}#${r.number}`)) return;
-        const surged = surgeFrom !== null && Date.parse(r.created_at) >= surgeFrom;
-        if (surged) holds.push({ repo: r.repo, number: r.number, author: r.author, kind, reason: "surge" });
-        else if (overLimit && i >= limit) holds.push({ repo: r.repo, number: r.number, author: r.author, kind, reason: "limit" });
+      // An admitted item (planned without a hold once, or with pipeline work already) is never held again.
+      const free = (r: Row) => r.state !== "OPEN" || released.has(`${r.repo}#${r.number}`) || admitted.has(`${r.repo}#${r.number}`);
+      for (const r of rs) if (!free(r) && surgeFrom !== null && Date.parse(r.created_at) >= surgeFrom) holds.push({ repo: r.repo, number: r.number, author: r.author, kind, reason: "surge" });
+      const surged = new Set(holds.map((h) => `${h.repo}#${h.number}`));
+      win.forEach((r, i) => {
+        if (overLimit && i >= limit && !free(r) && !surged.has(`${r.repo}#${r.number}`)) holds.push({ repo: r.repo, number: r.number, author: r.author, kind, reason: "limit" });
       });
-      if (overLimit) { const t = Date.parse(rs[0]!.created_at) + DAY_MS; wakeAt = wakeAt === null ? t : Math.min(wakeAt, t); }
+      if (overLimit) { const t = Date.parse(win[0]!.created_at) + DAY_MS; wakeAt = wakeAt === null ? t : Math.min(wakeAt, t); }
     }
+    // Admit what is in scope and not held.
+    const held = new Set(holds.map((h) => `${h.repo}#${h.number}`));
+    const admit = db.prepare("INSERT OR IGNORE INTO main.outside_admitted (repo, number, at) VALUES (?, ?, ?)");
+    const at = new Date(now).toISOString();
+    for (const r of cheap) if (!held.has(`${r.repo}#${r.number}`) && !admitted.has(`${r.repo}#${r.number}`)) admit.run(r.repo, r.number, at);
   }
   const have = db.prepare("SELECT repo, number, author, kind, reason FROM main.outside_holds").all() as Hold[];
   const key = (h: Hold) => `${h.repo}#${h.number}|${h.author}|${h.kind}|${h.reason}`;

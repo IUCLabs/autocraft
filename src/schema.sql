@@ -1838,3 +1838,9 @@ CREATE TABLE IF NOT EXISTS outside_released (
   by TEXT NOT NULL, at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 );
+-- Items the outside-author holds let through: planned without a hold once, or already worked when the protections began.
+-- An admitted item is never held by the daily limit afterwards.
+CREATE TABLE IF NOT EXISTS outside_admitted (
+  repo TEXT NOT NULL, number INTEGER NOT NULL, at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);

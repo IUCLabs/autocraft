@@ -33,6 +33,18 @@ test("an outside author's 6th PR in 24 hours waits; members and the pipeline's o
   refreshOutsideHolds(db, NOW);
   assert.equal(inPilot(db, "app", outsider[5]!), true, "a released item stays exempt");
 
+  // Sticky admission: lowering the limit does not hold items that were let through.
+  setOutsideLimits(db, "op", { prsPerDay: 2 });
+  refreshOutsideHolds(db, NOW);
+  assert.deepEqual(outsider.slice(0, 5).map((n) => inPilot(db, "app", n)), [true, true, true, true, true]);
+  setOutsideLimits(db, "op", { prsPerDay: 5 });
+
+  // Items of a repo whose pipeline is off are neither counted nor held.
+  db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('idle', 0)").run();
+  for (let k = 1; k <= 8; k++) db.prepare("INSERT INTO items (repo, number, kind, state, author, author_association, created_at) VALUES ('idle', ?, 'pr', 'OPEN', 'offauthor', 'NONE', ?)").run(k, ago(50));
+  refreshOutsideHolds(db, NOW);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM outside_holds WHERE repo = 'idle'").get() as { n: number }).n, 0);
+
   // The oldest items age out of the window: the held one starts by itself.
   const held = add("outsider", "pr", 1);
   refreshOutsideHolds(db, NOW);
