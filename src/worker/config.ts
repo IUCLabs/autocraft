@@ -32,7 +32,7 @@ export type WorkerConfig = {
   maxSourceMb: number;
   maxStepSec: number;
   /** Shared snapshot store for warm target dirs (see docs/operations.md). */
-  warmStore?: { url: string; readKey: string; writeKey?: string; timeoutSec: number };
+  warmStore?: { url: string; readKey: string; writeKey?: string; signKeyFile?: string; verifyKeyFiles: string[]; timeoutSec: number };
 };
 
 const SAFE_PATH = /^[^,:\s\0]+$/;
@@ -85,7 +85,11 @@ export function parseWorkerConfig(raw: unknown): WorkerConfig {
     const url = str(w, "url").replace(/\/+$/, "");
     if (!/^https?:\/\/[^\s]+$/.test(url)) throw new Error("config: warmStore.url must be an http(s) URL");
     if (w.writeKey !== undefined && (typeof w.writeKey !== "string" || !w.writeKey)) throw new Error("config: warmStore.writeKey must be a non-empty string");
-    warmStore = { url, readKey: str(w, "readKey"), writeKey: w.writeKey as string | undefined, timeoutSec: num(w.timeoutSec, "warmStore.timeoutSec", 600, 5, 86_400) };
+    const verify = w.verifyKeyFiles;
+    if (!Array.isArray(verify) || !verify.length || verify.some((f) => typeof f !== "string" || !isAbsolute(expand(f)))) throw new Error("config: warmStore.verifyKeyFiles must list absolute public key paths");
+    if (w.signKeyFile !== undefined && (typeof w.signKeyFile !== "string" || !isAbsolute(expand(w.signKeyFile)))) throw new Error("config: warmStore.signKeyFile must be an absolute path");
+    if (w.writeKey !== undefined && w.signKeyFile === undefined) throw new Error("config: warmStore.writeKey needs warmStore.signKeyFile");
+    warmStore = { url, readKey: str(w, "readKey"), writeKey: w.writeKey as string | undefined, signKeyFile: w.signKeyFile ? expand(w.signKeyFile as string) : undefined, verifyKeyFiles: (verify as string[]).map(expand), timeoutSec: num(w.timeoutSec, "warmStore.timeoutSec", 600, 5, 86_400) };
   }
   return {
     warmStore,

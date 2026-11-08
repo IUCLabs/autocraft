@@ -139,7 +139,7 @@ Check after the move: sign in, open the GitHub App page, and confirm the item pa
 
 ## Open items
 
-- Warm snapshot store. With more than one build machine, run `autocraft worker store serve` on a cache node (behind TLS or on the cluster network) and set `warmStore` in the worker configs; the trusted main-build workers get the write key. See `docs/operations.md` (Shared warm snapshot store). Not set up yet.
+- Warm snapshot store. With more than one build machine, run `autocraft worker store serve` on a cache node (behind TLS or on the cluster network) and generate a signing key pair (`autocraft worker store keygen`), set `warmStore` in the worker configs (public key for all, write key and private key only for the trusted main-build workers). See `docs/operations.md` (Shared warm snapshot store). Not set up yet.
 - Build pods or build boxes. The manifest has no build workers. Untrusted builds can run in separate pods or on separate boxes that call the worker API; this is not decided, and with boxes the worker API needs a TLS route.
 - Registry. Where the image is pushed, who can push, and the pull credential in the cluster.
 - Secret management. Today `secrets.json` is copied to the config volume by hand and `GH_TOKEN` comes from a Kubernetes Secret. Whether a secret manager replaces either is not decided.

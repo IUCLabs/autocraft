@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { detectCapabilities, loadWorkerConfig, readKey } from "./config.ts";
 import { WorkerApi } from "./client.ts";
 import { serve } from "./serve.ts";
-import { storeServe } from "./store.ts";
+import { generateSigningKeys, storeServe } from "./store.ts";
 import { connect } from "../db.ts";
 import { requestUpdate, statusLines } from "../build/worker-update.ts";
 
@@ -13,6 +13,7 @@ import { envVar } from "../env.ts";
 
 const USAGE = `usage: autocraft worker serve [--config FILE]   (default: $AUTOCRAFT_WORKER_CONFIG)
        autocraft worker store serve [--config FILE]   (default: $AUTOCRAFT_STORE_CONFIG)
+       autocraft worker store keygen --private FILE --public FILE
        autocraft worker update-code --sha SHA --ssh USER@HOST --key FILE --git-dir BARE_REPO
        autocraft worker status`;
 
@@ -73,6 +74,16 @@ export const commands = {
         const db = connect();
         for (const l of statusLines(db)) console.log(l);
         db.close();
+        return;
+      }
+      if (args[0] === "store" && args[1] === "keygen") {
+        const opt = (n: string) => args[args.indexOf(n) + 1];
+        if (args.indexOf("--private") < 0 || args.indexOf("--public") < 0 || !opt("--private") || !opt("--public")) {
+          console.error(USAGE);
+          process.exit(2);
+        }
+        generateSigningKeys(opt("--private")!, opt("--public")!);
+        console.log("-> Key pair written. Give the public key to every worker's verifyKeyFiles; keep the private key on the build workers that sign.");
         return;
       }
       if (args[0] === "store" && args[1] === "serve") {

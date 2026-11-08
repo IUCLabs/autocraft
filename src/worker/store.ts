@@ -1,16 +1,17 @@
 // Shared snapshot store for warm target dirs (the "cache node"). Holds one
 // `.tar.zst` snapshot per repo key plus a JSON record. Reads need the read
 // key, writes the write key. Plain HTTP: run it behind TLS or on a private network.
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isAbsolute, join } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { WARM_KEY } from "./warm.ts";
 
-export type StoreConfig = { listen: string; dir: string; maxGb: number; maxUploadGb: number; readKey: string; writeKey: string };
-export type StoreRecord = { commit: string; size: number; sha256: string; stored: number; bytes?: number; lastRead: number };
+export type StoreConfig = { listen: string; dir: string; maxGb: number; maxUploadGb: number; requestTimeoutSec: number; idleTimeoutSec: number; readKey: string; writeKey: string };
+/** `stored`, `bytes` and `signature` come from the signing worker; the store only keeps them. */
+export type StoreRecord = { commit: string; size: number; sha256: string; stored: number; bytes: number; signature: string; lastRead: number };
 
 export function parseStoreConfig(raw: unknown): StoreConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("config: expected a JSON object");
@@ -33,7 +34,7 @@ export function parseStoreConfig(raw: unknown): StoreConfig {
   const writeKey = strOf("writeKey");
   if (readKey.length < 16 || writeKey.length < 16) throw new Error("config: keys must be at least 16 characters");
   if (readKey === writeKey) throw new Error("config: readKey and writeKey must differ");
-  return { listen, dir, maxGb: num("maxGb", 200), maxUploadGb: num("maxUploadGb", 20), readKey, writeKey };
+  return { listen, dir, maxGb: num("maxGb", 200), maxUploadGb: num("maxUploadGb", 20), requestTimeoutSec: num("requestTimeoutSec", 3600), idleTimeoutSec: num("idleTimeoutSec", 120), readKey, writeKey };
 }
 
 const digest = (s: string) => createHash("sha256").update(s).digest();
@@ -85,7 +86,11 @@ export function createStore(cfg: StoreConfig): Server {
   async function put(req: IncomingMessage, res: ServerResponse, key: string, q: URLSearchParams) {
     const commit = q.get("commit") ?? "";
     if (!COMMIT.test(commit)) return send(res, 400, { error: "commit must be a hex sha" });
+    const claimed = q.get("sha256") ?? "";
+    const stored = Number(q.get("stored"));
     const bytes = Number(q.get("bytes"));
+    const signature = q.get("signature") ?? "";
+    if (!/^[0-9a-f]{64}$/.test(claimed) || !(stored > 0) || !(bytes > 0) || !/^[A-Za-z0-9+/=]{20,200}$/.test(signature)) return send(res, 400, { error: "sha256, stored, bytes and signature are required" });
     const limit = cfg.maxUploadGb * 1024 ** 3;
     const declared = Number(req.headers["content-length"] ?? 0);
     if (declared > limit) return send(res, 413, { error: "body too large" });
@@ -109,15 +114,24 @@ export function createStore(cfg: StoreConfig): Server {
       return;
     }
     const sha256 = hash.digest("hex");
-    renameSync(tmp, blobPath(key, sha256));
-    const rec: StoreRecord = { commit, size, sha256, stored: Date.now(), bytes: Number.isFinite(bytes) && bytes > 0 ? bytes : undefined, lastRead: Date.now() };
-    writeRec(key, rec);
-    sweep(key, sha256);
-    evict(key);
+    if (sha256 !== claimed) {
+      rmSync(tmp, { force: true });
+      return send(res, 400, { error: "sha256 does not match the body" });
+    }
+    const rec: StoreRecord = { commit, size, sha256, stored, bytes, signature, lastRead: Date.now() };
+    try {
+      renameSync(tmp, blobPath(key, sha256));
+      writeRec(key, rec);
+      sweep(key, sha256);
+      evict(key);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      return send(res, 500, { error: "store failed" });
+    }
     send(res, 200, rec);
   }
 
-  return createServer((req, res) => {
+  const handle = (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://x");
     const m = /^\/store\/([^/]+)(\/blob)?$/.exec(url.pathname);
     if (!m || !WARM_KEY.test(m[1]!)) return send(res, 404, { error: "not found" });
@@ -133,10 +147,41 @@ export function createStore(cfg: StoreConfig): Server {
     const rec = readRec(key);
     if (!rec) return send(res, 404, { error: "no snapshot" });
     if (!blob) return send(res, 200, rec);
-    writeRec(key, { ...rec, lastRead: Date.now() });
-    res.writeHead(200, { "content-type": "application/zstd", "content-length": statSync(blobPath(key, rec.sha256)).size, "x-sha256": rec.sha256 });
-    createReadStream(blobPath(key, rec.sha256)).on("error", () => res.destroy()).pipe(res);
+    // Open before answering: a concurrent upload may delete the file name, not the open descriptor.
+    let fd: number;
+    try {
+      fd = openSync(blobPath(key, rec.sha256), "r");
+    } catch {
+      return send(res, 404, { error: "no snapshot" });
+    }
+    try {
+      writeRec(key, { ...rec, lastRead: Date.now() });
+    } catch {
+      // Recording the read is best effort (a full disk must not stop reads).
+    }
+    res.writeHead(200, { "content-type": "application/zstd", "content-length": fstatSync(fd).size, "x-sha256": rec.sha256 });
+    createReadStream("", { fd }).on("error", () => res.destroy()).pipe(res);
+  };
+
+  const server = createServer((req, res) => {
+    try {
+      handle(req, res);
+    } catch {
+      if (!res.headersSent) send(res, 400, { error: "bad request" });
+      else res.destroy();
+    }
   });
+  server.requestTimeout = cfg.requestTimeoutSec * 1000;
+  server.headersTimeout = Math.min(30_000, server.requestTimeout || 30_000);
+  server.setTimeout(cfg.idleTimeoutSec * 1000);
+  return server;
+}
+
+/** Writes an Ed25519 key pair for snapshot signing; the private key is mode 0600 and never overwritten. */
+export function generateSigningKeys(privateFile: string, publicFile: string): void {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  writeFileSync(privateFile, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600, flag: "wx" });
+  writeFileSync(publicFile, publicKey.export({ type: "spki", format: "pem" }), { mode: 0o644, flag: "wx" });
 }
 
 export async function storeServe(configPath: string): Promise<void> {

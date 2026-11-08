@@ -129,7 +129,8 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
     const environment = prepared.info;
     if (task.warm?.role === "use") {
       try {
-        if (cfg.warmStore) await downloadWarm(cfg, task.warm.key, (m) => note(m));
+        // In the background: a slow store never delays the build; the next task gets the new snapshot.
+        if (cfg.warmStore) void downloadWarm(cfg, task.warm.key, (m) => note(m));
         const hit = await copyWarm(cfg, task.warm.key, paths.target);
         await emit("source", hit ? "warm target dir copied\n" : "no warm target dir, starting cold\n");
       } catch (e) {

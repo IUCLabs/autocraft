@@ -9,7 +9,8 @@ import { PATCH_MAX_BYTES } from "./patch.ts";
 
 export const WARM_KEY = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
-export type WarmRecord = { commit: string; bytes: number; lastUsed: number };
+/** `stored` is when the main build finished (carried through the shared store); older records have none. */
+export type WarmRecord = { commit: string; bytes: number; lastUsed: number; stored?: number };
 
 /** Why the optional `patch` / `warm` fields of a claimed task are malformed, or null. */
 export function taskFieldProblem(task: { patch?: unknown; warm?: unknown }): string | null {
@@ -22,13 +23,14 @@ export function taskFieldProblem(task: { patch?: unknown; warm?: unknown }): str
     if (typeof w !== "object" || w === null || Array.isArray(w)) return "warm must be an object";
     if (typeof w.key !== "string" || !WARM_KEY.test(w.key)) return "warm.key is malformed";
     if (w.role !== "use" && w.role !== "build") return "warm.role must be use or build";
+    if (w.role === "build" && task.patch !== undefined) return "a build task cannot carry a patch";
   }
   return null;
 }
 
 const locks = new Map<string, Promise<unknown>>();
 /** Serializes work on one key: a copy must not run while the dir is replaced or evicted. */
-function locked<T>(key: string, f: () => Promise<T>): Promise<T> {
+export function locked<T>(key: string, f: () => Promise<T>): Promise<T> {
   const next = (locks.get(key) ?? Promise.resolve()).then(f, f);
   locks.set(key, next.catch(() => {}));
   return next;
@@ -89,8 +91,11 @@ export function copyWarm(cfg: WorkerConfig, key: string, target: string): Promis
 }
 
 /** Moves `target` in as the warm dir for `key`, then evicts least recently used dirs over the cap. */
-export function storeWarm(cfg: WorkerConfig, key: string, commit: string, target: string): Promise<void> {
+export function storeWarm(cfg: WorkerConfig, key: string, commit: string, target: string, opts: { stored?: number; replaceIf?: (cur: WarmRecord | null) => boolean } = {}): Promise<boolean> {
+  let done = false;
   return locked(key, async () => {
+    if (opts.replaceIf && !opts.replaceIf(readRecord(cfg, key))) return;
+    done = true;
     mkdirSync(cfg.warmDir, { recursive: true });
     const bytes = await diskBytes(target);
     const tag = `${process.pid}-${Date.now()}`;
@@ -100,10 +105,11 @@ export function storeWarm(cfg: WorkerConfig, key: string, commit: string, target
     const had = existsSync(dirOf(cfg, key));
     if (had) renameSync(dirOf(cfg, key), old);
     renameSync(stage, dirOf(cfg, key));
-    writeRecord(cfg, key, { commit, bytes, lastUsed: Date.now() });
+    writeRecord(cfg, key, { commit, bytes, lastUsed: Date.now(), stored: opts.stored ?? Date.now() });
     if (had) rmSync(old, { recursive: true, force: true });
   }).then(async () => {
-    await evictWarm(cfg);
+    if (done) await evictWarm(cfg);
+    return done;
   });
 }
 
