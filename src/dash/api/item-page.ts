@@ -3,11 +3,12 @@
 // viewers get no review text, card details or job errors; a quiet pull request is veiled by the trace context; costs stay visible.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { CiState, DiscordInfo, ItemKind, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, Tier } from "../../../web/src/api/types.ts";
+import type { CiState, DiscordInfo, ItemBar, ItemKind, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, Tier } from "../../../web/src/api/types.ts";
 import { statusFromItem, type ItemStatus } from "../../core/item-status.ts";
 import { triggerWhy } from "../../review/trigger.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { fingerprint, context, gather, stepTitle, obj, arr, type Ctx, type Ev, hiddenSql } from "./trace.ts";
+import { barOf } from "./item-bar.ts";
 import { discordOf } from "./discord.ts";
 import { itemCore } from "./index.ts";
 import { pushedByAutoCraft, writesOf, MATCH_WINDOW_MS, type WriteRow } from "./github-writes.ts";
@@ -54,7 +55,7 @@ export interface ItemPageHeader {
 }
 export interface ItemPageData {
   repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string; author: string; stamp: string; header: ItemPageHeader;
-  status: ItemStatus; costUsd: number; reviews: ReviewHistory; results: ResultCard[]; history: HistoryEntry[]; github: GithubSide;
+  status: ItemStatus; bar: ItemBar; costUsd: number; reviews: ReviewHistory; results: ResultCard[]; history: HistoryEntry[]; github: GithubSide;
 }
 export type ItemPageUnchanged = { unchanged: true; stamp: string };
 
@@ -87,6 +88,8 @@ const EXTRA = [
   "SELECT id, state, updated_at FROM preapprovals WHERE repo = ?1 AND number = ?2 ORDER BY id DESC LIMIT 1",
   "SELECT id FROM fast_track WHERE repo = ?1 AND number = ?2",
   "SELECT pipeline FROM tracked_repos WHERE name = ?1 AND ?2 IS NOT NULL",
+  "SELECT COUNT(*), MAX(id), group_concat(state) FROM jobs WHERE state IN ('queued', 'running') AND repo = ?1 AND json_extract(params, '$.number') = ?2",
+  "SELECT group_concat((SELECT COUNT(*) FROM jobs q WHERE q.state = 'queued' AND q.step = j.step AND q.id < j.id)) FROM jobs j WHERE j.state = 'queued' AND j.repo = ?1 AND json_extract(j.params, '$.number') = ?2",
 ];
 
 async function stampOf(c: Ctx, req: Req): Promise<string> {
@@ -338,9 +341,10 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
   const row = db.prepare("SELECT url, head_oid, (SELECT synced_at FROM item_reads r WHERE r.repo = items.repo AND r.number = items.number) AS synced_at FROM items WHERE repo = ? AND number = ?").get(c.repo, c.n) as { url: string | null; head_oid: string | null; synced_at: string | null };
   const cost = (db.prepare(`SELECT COALESCE(SUM(r.cost_usd), 0) AS cost FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ?${hiddenSql(c.hidden)}`)
     .get(c.repo, c.n, ...c.hidden) as { cost: number }).cost;
+  const status = statusOf(c, it);
   return {
     repo: c.repo, number: c.n, kind: it.kind, state: it.state, title: it.title, author: it.author, stamp,
-    header: headerOf(c, it, it.queue ?? null), status: statusOf(c, it), costUsd: cost,
+    header: headerOf(c, it, it.queue ?? null), status, bar: barOf(c, { kind: it.kind, state: it.state, mergedAt: it.mergedAt, pipelineOn: it.pipelineOn === true }, status), costUsd: cost,
     reviews: it.kind === "pr" ? reviewsOf(c, row.head_oid, ev) : { latest: null, earlier: [] }, results: resultsOf(c, it), history: historyOf(c, ev),
     github: githubOf(c, it, ev, row.url ?? "", row.synced_at),
   };

@@ -9,7 +9,6 @@ import { Pending } from "../../../ui/atoms/Pending";
 import { Badge, type Tone } from "../../../ui/atoms/Badge";
 import { ItemIcon } from "../../../ui/atoms/ItemIcon";
 import { QueueBadge } from "../../../ui/molecules/QueueBadge";
-import { StatusLine } from "../../../ui/molecules/StatusLine";
 import { Segmented } from "../../../ui/molecules/Segmented";
 import { useIsPhone } from "../../../shell/useMedia";
 import { useUser } from "../../../shell/UserContext";
@@ -17,6 +16,7 @@ import { cn } from "../../../ui/cn";
 import { AutoCraftSide } from "./AutoCraftSide";
 import { GithubSide } from "./GithubSide";
 import { ItemMenu } from "./ItemMenu";
+import { StatusBar } from "./StatusBar";
 
 type Side = "autocraft" | "github";
 
@@ -139,7 +139,7 @@ function Header({ d }: { d: ItemPageData }) {
         </a>
         {user.role === "operator" && <ItemMenu d={d} />}
       </div>
-      <StatusLine status={d.status} className="mt-2.5 rounded bg-ink/[0.04] px-3 py-2" />
+      <StatusBar d={d} />
     </header>
   );
 }

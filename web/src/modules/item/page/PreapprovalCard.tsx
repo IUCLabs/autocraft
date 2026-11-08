@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useApi } from "../../../api/client";
 import type { Preapproval } from "../../../api/types";
 import { PreapprovalRow } from "../../../ui/organisms/PreapprovalRow";
+import { markStarting } from "../starting";
 import { ErrorLine } from "../../admin/parts";
 
 export function PreapprovalCard({ repo, number, p, operator }: { repo: string; number: number; p: Preapproval; operator: boolean }) {
@@ -24,7 +25,11 @@ export function PreapprovalCard({ repo, number, p, operator }: { repo: string; n
     }
   };
   const cancel = act(() => api.conversations.cancelPreapproval(repo, number));
-  const retry = act(() => api.conversations.retryPreapproval(repo, number));
+  const retry = act(async () => {
+    const p = await api.conversations.retryPreapproval(repo, number);
+    markStarting(repo, number, "the pre-approved merge");
+    return p;
+  });
   return (
     <div className="border-b border-line px-4 py-3 md:px-6">
       <PreapprovalRow p={shown} repo={repo} number={number} canCancel={operator} onCancel={() => void cancel()} canRetry={operator} onRetry={() => void retry()} loading={busy} />

@@ -53,7 +53,7 @@ export function Conversation({ repo, number, conv, ds, updating }: { repo: strin
       {!updating && suggestions.length > 0 && (
         <div className="mt-3 space-y-2">
           {suggestions.map((a) => (
-            <ActionCard key={a.id} a={a} operator={canAct(user, [repo])} editInstructions={user.role === "operator"} className="" />
+            <ActionCard key={a.id} a={a} operator={canAct(user, [repo])} editInstructions={user.role === "operator"} className="" item={{ repo, number }} />
           ))}
         </div>
       )}

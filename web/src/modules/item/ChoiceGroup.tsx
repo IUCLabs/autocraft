@@ -10,6 +10,7 @@ import { RadioRow } from "../../ui/molecules/RadioRow";
 import { StepDraft } from "../../ui/molecules/StepDraft";
 import { cn } from "../../ui/cn";
 import { canActOn } from "../decisions/access";
+import { markStarting } from "./starting";
 import { localActions, useAnswer, useLocal } from "../decisions/state";
 import { useWorkflow } from "../decisions/Workflow";
 import { COMPOSER_ID } from "./Composer";
@@ -65,6 +66,7 @@ function ReprepareButton({ d, user, busy, setBusy, setError, text }: { d: Decisi
     setBusy(true);
     try {
       await api.decisions.reprepare(d.id);
+      markStarting(d.repo, d.number, "Prepare");
     } catch (e) {
       setError(message(e));
     } finally {
@@ -265,6 +267,8 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
         return;
       }
       if (ran.state === "done") {
+        // Only the answers that queue a step (a fix-up, a merge, a review) start visible work.
+        if (core.params?.instructions !== undefined || /merge|fix|review|verify/i.test(core.key)) markStarting(d.repo, d.number, core.label);
         const answer = core.key.startsWith("o:") ? core.key.slice(2) : core.key === "backlog" ? "backlog" : "handled";
         localActions.fold(d.id, { answer, answerNote: note.trim() || null, answeredBy: user.login, answeredAt: ran.at ?? new Date().toISOString(), undoable: false });
       }

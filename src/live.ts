@@ -110,6 +110,9 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
     { table: "model_checks" }, { table: "conflict_merges" }, { table: "job_items" }, { table: "opus_review_history" }, { table: "plan_history" }, { table: "patch_checks" },
     { table: "pr_files" }, { table: "pr_commits" }, { table: "item_activity" }, { table: "agent_run_items" }, { table: "agent_run_tools" },
     { table: "agent_runs", ops: ["INSERT"] },
+    // The item page's status bar follows a job starting, queuing and ending, not its progress lines.
+    { table: "jobs", ops: ["INSERT"] },
+    { table: "jobs", ops: ["UPDATE"], when: "old.state IS NOT new.state OR old.started_at IS NOT new.started_at OR old.ended_at IS NOT new.ended_at" },
     { table: "agent_runs", ops: ["UPDATE"], when: "old.state IS NOT new.state OR old.ended_at IS NOT new.ended_at OR old.cost_usd IS NOT new.cost_usd OR old.summary IS NOT new.summary" },
   ],
   // Rows of the audit table that record a write on GitHub.

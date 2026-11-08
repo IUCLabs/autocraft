@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { PaperPlaneRightIcon } from "@phosphor-icons/react";
+import { markStarting } from "./starting";
 import { useApi } from "../../api/client";
 import type { Decision, DecisionChoices, RepoName } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
@@ -42,6 +43,7 @@ export function Composer({ repo, number, operator, commenter, exists, pending, f
     try {
       await api.conversations.say(repo, number, text, ask ? undefined : false);
       setDraft("");
+      if (ask) markStarting(repo, number, "Opus reply");
     } catch (e) {
       // Nothing was sent: the old choices come back.
       localActions.stopUpdating(item);
