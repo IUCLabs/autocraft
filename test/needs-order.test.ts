@@ -52,6 +52,6 @@ test("the open list runs by priority level, unclaimed before claimed, then age, 
   assert.equal((await needs(db, as("maint", "maintainer"))).counts.decisions, 4, "the badge counts the same list");
   assert.equal((await needs(db, as("op", "operator"))).counts.decisions, 5);
 
-  assert.deepEqual(await page(as("viewer", "viewer")), [], "a viewer has nothing to settle");
-  assert.equal((await needs(db, as("viewer", "viewer"))).counts.decisions, 0);
+  assert.deepEqual(await page(as("viewer", "viewer")), ["d4", "d5", "d2", "d3", "d1"], "a viewer reads everything they may see");
+  assert.equal((await needs(db, as("viewer", "viewer"))).counts.decisions, 5);
 });

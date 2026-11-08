@@ -365,9 +365,11 @@ export function withoutHidden(hidden: string[], params: Record<string, string>):
 
 /**
  * SQL for the decisions a person has to look at (decisions unaliased): open ones they can settle, plus the disputes and unsettled answers they resolve
- * (src/answers/hold.ts). `everything` leaves out the can-settle test, for a view of all open questions.
+ * (src/answers/hold.ts). `everything` leaves out the can-settle test, for a view of all open questions; viewers always get it.
  */
 export function needingSql(req: Req, everything = false): string {
+  // A viewer settles nothing, so a can-settle default would leave them an empty list: they read every question they may see.
+  everything ||= req.user.role === "viewer";
   const open = `answer IS NULL AND NOT ${SNOOZED_SQL}${everything ? "" : ` AND ${canSettleSql(req.user.login, req.user.role)}`}`;
   return `((${open}) OR ${heldOpenSql(req.user.login, isOperator(req))})`;
 }
