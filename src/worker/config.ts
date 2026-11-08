@@ -1,4 +1,5 @@
 // Worker configuration: one JSON file (`--config` or AUTOCRAFT_WORKER_CONFIG).
+import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { arch, availableParallelism, homedir, platform, totalmem } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -31,6 +32,8 @@ export type WorkerConfig = {
   userns: string;
   maxSourceMb: number;
   maxStepSec: number;
+  /** Shared snapshot store for warm target dirs (see docs/operations.md). */
+  warmStore?: { url: string; readKey: string; writeKey?: string; signKey?: KeyObject; verifyKeys: KeyObject[]; timeoutSec: number };
 };
 
 const SAFE_PATH = /^[^,:\s\0]+$/;
@@ -50,6 +53,15 @@ function str(o: Record<string, unknown>, name: string, def?: string): string {
   const v = o[name] ?? def;
   if (typeof v !== "string" || !v) throw new Error(`config: ${name} is required`);
   return v;
+}
+
+/** Reads a key file at parse time so a bad path or format stops the worker at start. */
+function loadKey(file: string, make: (pem: Buffer) => KeyObject): KeyObject {
+  try {
+    return make(readFileSync(file));
+  } catch (e) {
+    throw new Error(`config: cannot load key ${file}: ${(e as Error).message}`);
+  }
 }
 
 export function parseWorkerConfig(raw: unknown): WorkerConfig {
@@ -76,7 +88,21 @@ export function parseWorkerConfig(raw: unknown): WorkerConfig {
   const fetchNetwork = str(o, "fetchNetwork", "pasta");
   const userns = str(o, "userns", "keep-id");
   for (const v of [fetchNetwork, userns, runtime]) if (v.startsWith("-") || /\s/.test(v)) throw new Error("config: runtime, fetchNetwork and userns must not start with '-' or contain spaces");
+  let warmStore: WorkerConfig["warmStore"];
+  if (o.warmStore !== undefined) {
+    const w = o.warmStore as Record<string, unknown> | null;
+    if (typeof w !== "object" || w === null || Array.isArray(w)) throw new Error("config: warmStore must be an object");
+    const url = str(w, "url").replace(/\/+$/, "");
+    if (!/^https?:\/\/[^\s]+$/.test(url)) throw new Error("config: warmStore.url must be an http(s) URL");
+    if (w.writeKey !== undefined && (typeof w.writeKey !== "string" || !w.writeKey)) throw new Error("config: warmStore.writeKey must be a non-empty string");
+    const verify = w.verifyKeyFiles;
+    if (!Array.isArray(verify) || !verify.length || verify.some((f) => typeof f !== "string" || !isAbsolute(expand(f)))) throw new Error("config: warmStore.verifyKeyFiles must list absolute public key paths");
+    if (w.signKeyFile !== undefined && (typeof w.signKeyFile !== "string" || !isAbsolute(expand(w.signKeyFile)))) throw new Error("config: warmStore.signKeyFile must be an absolute path");
+    if (w.writeKey !== undefined && w.signKeyFile === undefined) throw new Error("config: warmStore.writeKey needs warmStore.signKeyFile");
+    warmStore = { url, readKey: str(w, "readKey"), writeKey: w.writeKey as string | undefined, signKey: w.signKeyFile ? loadKey(expand(w.signKeyFile as string), createPrivateKey) : undefined, verifyKeys: (verify as string[]).map((f) => loadKey(expand(f), createPublicKey)), timeoutSec: num(w.timeoutSec, "warmStore.timeoutSec", 600, 5, 86_400) };
+  }
   return {
+    warmStore,
     coordinatorUrl,
     keyFile,
     workDir,

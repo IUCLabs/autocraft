@@ -298,6 +298,34 @@ A claimed task may carry `patch`, a git-format unified diff of at most 1 MiB. Af
 
 A task may carry `warm: { key, role }` (`key` is the repo name, `[a-z0-9-]`, up to 64 characters). The worker keeps at most one warm cargo target dir per key in `warmDir`, with a JSON record (commit, size, last use). A `build` task is a build of the repo's upstream main: it runs with an empty target dir and, when every step succeeded, replaces the warm dir for its key atomically with its target dir. A `use` task starts with a copy of the warm dir (`cp -a --reflink=auto`) or an empty target dir, and discards it afterwards, so a PR build never changes the warm dir. After each store, least recently used warm dirs are removed until the total is within `warmMaxGb`. The free-disk pause measures the smaller free space of the work dir and the warm dir.
 
+### Shared warm snapshot store
+
+With several build machines, each worker's warm dirs exist only on its own disk. A snapshot store on a separate machine (the cache node) lets every worker start PR builds warm.
+
+Run it with `autocraft worker store serve --config FILE` (or `$AUTOCRAFT_STORE_CONFIG`). Config keys: `dir` (absolute, required), `readKey` and `writeKey` (required, at least 16 characters, different), `listen` (default `127.0.0.1:8990`), `maxGb` (200; least recently read snapshots are removed above it), `maxUploadGb` (20; larger bodies are refused), `requestTimeoutSec` (3600; the longest an upload may take) and `idleTimeoutSec` (120; a connection silent for that long is closed). It speaks plain HTTP: the transport must be TLS (a proxy in front) or a private cluster network. Keep the config file mode 0600.
+
+API, all with `Authorization: Bearer <key>`:
+
+- `GET /store/<key>` answers the record `{ commit, size, sha256, stored, bytes, signature }`, or 404.
+- `GET /store/<key>/blob` streams the `.tar.zst` snapshot.
+- `PUT /store/<key>?commit=&sha256=&stored=&bytes=&signature=` stores a snapshot. It needs the write key. The body goes to a temp file while its sha256 is computed; the snapshot replaces the previous one atomically only when the body arrived complete and matches `sha256`. An interrupted or oversized upload changes nothing.
+
+`<key>` is the warm key (`[a-z0-9-]`, up to 64 characters). The read key also works for the two GET routes; the write key works for everything.
+
+#### Signing
+
+The cache node is not trusted for content. A worker that uploads signs `(key, commit, sha256, stored, bytes)` with an Ed25519 private key; the store keeps the signature in the record. Every worker that downloads verifies it with the public keys in its config and refuses unsigned snapshots and bad signatures. `stored` is the time of the main build. Generate a key pair with `autocraft worker store keygen --private FILE --public FILE` (the private key file is created mode 0600 and never overwritten). The store itself needs neither key.
+
+#### Worker config
+
+`warmStore: { url, readKey, verifyKeyFiles, writeKey?, signKeyFile?, timeoutSec }`. `verifyKeyFiles` lists public key paths. `writeKey` and `signKeyFile` are set together, only on workers that run trusted main builds. `timeoutSec` defaults to 600. Without `warmStore` workers behave as described above. All transfers run in the worker process on the host, never in a build container, and the container never receives the URL or keys.
+
+- After a `build` task (upstream main; a `build` task cannot carry a patch) has replaced the local warm dir, a worker with a `writeKey` takes a hard-link copy of it under the warm lock, then packs (`tar | zstd`), signs and uploads the copy without holding the lock. `use` tasks (PR builds) never write. The upload is skipped when the local warm dir has changed in the meantime.
+- When a `use` task starts, the worker starts a download in the background and the task uses the local warm dir as it is now; the next task gets the new snapshot. Concurrent tasks share one download. The download happens only when the store's snapshot is signed correctly and newer (`stored`) than the local one; the swap checks this again under the warm lock. The blob is first written to a spool file and its sha256 is checked against the signed record; only then is it unpacked, by the same safe extractor as source tarballs (regular files, directories and links inside the tree, no path through a symlink, no special mode bits), capped at the signed size plus slack. A worker runs one download at a time, and the free-disk check counts the download in progress. Key files are read when the worker config is loaded, so a bad path stops the worker at start.
+
+Build workers need synchronized clocks (NTP): `stored` is compared across machines to decide which snapshot is newer. A snapshot larger than `warmMaxGb`, or one that would take the free disk under `limits.minFreeDiskGb`, is skipped.
+- A store that is down, slow (past `timeoutSec`), refuses the key or returns a bad snapshot is logged and ignored. A worker host without `zstd` skips both directions with a log line.
+
 ### Crate cache
 
 The shared crate cache (`<workDir>/crate-cache`) is never mounted into a container. Each task gets its own `CARGO_HOME`, seeded by copying `.crate` files from the shared cache and deleted with the task. Cargo does not re-verify files already in its cache, so nothing a task wrote is trusted. Right after each `fetch` step, before any build script or test has run, the worker process on the host admits a file to the shared cache only if it is a regular `.crate` in the official crates.io registry directory (`index.crates.io-*`) and its sha256 equals the checksum in the crates.io sparse index (fetched over HTTPS, looked up once per crate name). Other registries, git sources, anything written by offline steps and anything the index lookup cannot confirm are never admitted. Build output (`/target`) is shared only through the warm target dirs below.
