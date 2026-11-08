@@ -2087,15 +2087,20 @@ export type NeedsFeedbackRow = {
   handled: boolean;
 };
 export type NeedsFeedbackPage = { rows: NeedsFeedbackRow[]; nextCursor: string | null };
-export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string };
+export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string } | { type: "fixes"; repo: RepoName };
 export type NeedsStoppedRow = {
   id: string;
-  kind: "breaker" | "limit" | "account";
+  kind: "breaker" | "limit" | "account" | "fix-group";
   title: string;
   reason: string;
   since: string | null;
+  /** A fix-group row: how many issues of the repo have a stopped fix. */
+  count?: number;
   resume: NeedsResume;
 };
+/** An issue whose fix attempt stopped; Fix again clears it. */
+export type NeedsFixRow = { id: string; repo: RepoName; number: number; title: string; reason: string; since: string | null; impact: string | null };
+export type NeedsFixPage = { rows: NeedsFixRow[]; nextCursor: string | null };
 export type NeedsPage = { counts: NeedsCounts; feedback: NeedsFeedbackPage | null; stopped: NeedsStoppedRow[] };
 // ---- Next page -------------------------------------------------------------------
 

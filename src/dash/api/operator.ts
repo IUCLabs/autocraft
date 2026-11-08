@@ -1,7 +1,10 @@
 // Operator-only releases on the Item page: review again, verify again, try the fix again.
 // They change local tables only; the pipeline picks the item up on its next pass.
 import type { DatabaseSync } from "node:sqlite";
-import { ActionError, batchAgain, fixAgain, reviewAgain, verifyAgain } from "../../operator-actions.ts";
+import { ActionError, batchAgain, fixAgain, reviewAgain, stoppedFix, verifyAgain } from "../../operator-actions.ts";
+import { ask, getDecision } from "../../decisions.ts";
+import { SCOPE_OPTIONS } from "../../decide/decision.ts";
+import { applyAnswer } from "./decisions.ts";
 import { cancelPreapproval, retryPreapproval } from "../../preapproval/index.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -48,6 +51,32 @@ export async function retryItemPreapproval(db: DatabaseSync, req: Req) {
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }
+}
+
+/**
+ * Operator: puts an issue with a stopped fix in the Backlog, or closes it. Both go through a scope decision the operator answers
+ * at once, so the Backlog hold and the close (comment, act limit, approvals) follow the same paths as any decision.
+ */
+export async function stopFixItem(db: DatabaseSync, req: Req): Promise<{ ok: true }> {
+  if (req.user.role !== "operator") throw new HttpError(403, "only operators can decide an issue");
+  const repo = req.params.repo!;
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
+  await needVisible(db, req, repo);
+  const answer = (req.json as { answer?: unknown } | undefined)?.answer;
+  if (answer !== "close" && answer !== "backlog") throw new HttpError(400, "answer must be close or backlog");
+  const it = db.prepare("SELECT kind, state, title FROM items WHERE repo = ? AND number = ?").get(repo, n) as { kind: string; state: string; title: string | null } | undefined;
+  if (!it || it.kind !== "issue" || it.state !== "OPEN") throw new HttpError(409, `${repo}#${n} is not an open issue`);
+  const a = stoppedFix(db, repo, n);
+  if (!a) throw new HttpError(409, `${repo}#${n} has no skipped or failed fix attempt`);
+  const id = `${repo}#${n}:scope:fix-stopped`;
+  if (getDecision(db, id)?.answer) throw new HttpError(409, `${repo}#${n} was already decided this way`);
+  ask(db, [{
+    id, kind: "scope", repo, number: n, question: "What happens to this issue?", context: `The fix attempt ${a.state === "failed" ? "failed" : "was skipped"}${a.reason ?? a.summary ? `: ${a.reason ?? a.summary}` : ""}`, facts: [],
+    options: [{ ...SCOPE_OPTIONS.close }, { ...SCOPE_OPTIONS.take }], recommended: null, asked_by: req.user.login, asked_at: new Date().toISOString(),
+  }]);
+  applyAnswer(db, getDecision(db, id)!, req.user.login, { answer }, "dashboard");
+  return { ok: true };
 }
 
 export const reviewItemAgain = (db: DatabaseSync, req: Req) => run(db, req, reviewAgain);

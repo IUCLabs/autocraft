@@ -42,10 +42,10 @@ const itemBase = (): ItemFacts => ({
     jev: { at: "2026-11-04T08:00:00.000Z", changed: false, unsure: false }, haiku: null,
   },
   embedHash: "e1", embeddedHash: "e1", priorityHash: "e1", scannedHash: "e1", pairsToCheck: 0, inGroupToAsk: false, inCompareSet: false, dupeAnswers: [],
-  scope: { open: false, answer: null, covered: false, pastClassified: false, recommend: null },
+  scope: { open: false, answer: null, covered: false, recommend: null },
   labels: { existing: ["bugfix"], pluginAnswer: false, labeledNote: null },
   answeredClose: [], closeReview: null,
-  fix: { attempt: null, publicRepo: true, notRust: false, openPr: false, impact: "P4", scopeDecision: null },
+  fix: { attempt: null, publicRepo: true, notRust: false, openPr: null, impact: "P4", scopeDecision: null },
 });
 
 /** The default facts of an open issue with nothing due (backlog priority, so no fix, classified bugfix, labelled, embedded, scanned, prioritized), with the given fields replaced. Object fields are merged one level deep; null replaces the whole object. */

@@ -50,7 +50,7 @@ import { settledOf, unflagged } from "../../classify/settled.ts";
 import { isQuiet } from "../../security/quiet.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
-import { needs } from "./needs.ts";
+import { fixes as needsFixes, needs } from "./needs.ts";
 import { home } from "./home.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
@@ -417,6 +417,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/items/:repo/:n/preapproval/retry", operator: true, handler: ok(operator.retryItemPreapproval) },
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
+    { method: "POST", pattern: "/api/items/:repo/:n/stop-fix", operator: true, handler: ok(operator.stopFixItem) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },
     get("/api/areas/:repo", areas.repoAreas),
     { method: "POST", pattern: "/api/areas/:repo/edit", operator: true, handler: ok(areas.edit) },
@@ -549,6 +550,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/security/findings/:repo/:n", security.finding),
     post("/api/security/findings/:repo/:n", security.actOnFinding),
     get("/api/needs", needs),
+    get("/api/needs/fixes/:repo", needsFixes),
     get("/api/flow", flow),
     get("/api/now", now),
     get("/api/now/feed", nowFeed),

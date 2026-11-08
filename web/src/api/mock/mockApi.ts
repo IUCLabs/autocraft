@@ -27,7 +27,7 @@ import { nextPageFixture } from "./nextMock";
 import { queueBatchList, queueList } from "./queueFixtures";
 import { batchDetailMock } from "./batchMock";
 import { createQueueMock } from "./queueMock";
-import { needsPage } from "./needsFixtures";
+import { needsFixesPage, needsPage } from "./needsFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { mainCi } from "./mainCiMock";
@@ -256,6 +256,7 @@ export function createMockApi(): Api {
       thread: (id) => wait(threads[id] ?? []),
     },
     release: () => wait(undefined, 60),
+    stopFix: () => wait(undefined, 60),
     item: (repo, number) => {
       const it = itemFor(repo, number);
       const postmerge = postmergeFor(number, it.kind, mockRole() !== "viewer");
@@ -345,6 +346,7 @@ export function createMockApi(): Api {
     next: () => wait(nextPageFixture(), 60),
     queue: (f) => wait(queueList(f), 60),
     needs: (f) => wait(needsPage(f), 60),
+    needsFixes: (repo, cursor) => wait(needsFixesPage(repo, cursor), 60),
     queueBatches: (f) => wait(queueBatchList(f), 60),
     batch: (id) => wait(batchDetailMock(id), 60),
     flow: (repo) => wait(flowFixture(repo), 60),
