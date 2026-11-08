@@ -1,6 +1,6 @@
 // Protection of model spend from authors outside the team (docs/pipeline.md, "Outside authors").
 //
-// An outside author is an item's author who is not an operator or maintainer of the dashboard, not the pipeline's own account,
+// An outside author is an item's author who is not an operator or maintainer of the dashboard, not a GitHub Bot account (an app can open items only where it is installed),
 // not a member, owner or collaborator of the repo (the mirror's author association), and not whitelisted (the Contributors page:
 // an `allow` override or a whitelisted tier). Two protections, each off at 0:
 //   - Daily budget: of one outside author's items created in the last 24 hours, only the first `outside_prs_per_day` PRs and the
@@ -59,7 +59,7 @@ export function setOutsideLimits(db: DatabaseSync, by: string, input: unknown): 
   return next;
 }
 
-type Row = { repo: string; number: number; kind: string; author: string; state: string; created_at: string; author_association: string | null };
+type Row = { repo: string; number: number; kind: string; author: string; state: string; created_at: string; author_association: string | null; author_type: string | null };
 export type Hold = { repo: string; number: number; author: string; kind: "pr" | "issue"; reason: "limit" | "surge" };
 
 const INSIDE_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -85,7 +85,7 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
   let wakeAt: number | null = null;
   const released = new Set((db.prepare("SELECT repo, number FROM main.outside_released").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
   if (enabled) {
-    const rows = db.prepare("SELECT repo, number, kind, author, state, created_at, author_association FROM items WHERE created_at >= ? AND author IS NOT NULL")
+    const rows = db.prepare("SELECT repo, number, kind, author, state, created_at, author_association, author_type FROM items WHERE created_at >= ? AND author IS NOT NULL")
       .all(new Date(now - DAY_MS).toISOString()) as Row[];
     const inside = insiders(db);
     const memo = new Map<string, boolean>();
@@ -95,7 +95,7 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
       if (v === undefined) { v = isWhitelisted(db, login).ok; memo.set(k, v); }
       return v;
     };
-    const cheap = rows.filter((r) => !INSIDE_ASSOCIATIONS.has(r.author_association ?? "") && !inside.has(r.author.toLowerCase()));
+    const cheap = rows.filter((r) => !INSIDE_ASSOCIATIONS.has(r.author_association ?? "") && r.author_type !== "Bot" && !r.author.endsWith("[bot]") && !inside.has(r.author.toLowerCase()));
 
     // Surge: outside-author items of the last hour since the last resume.
     if (lim.surgePerHour > 0 && !tripRow(db, OUTSIDE_SURGE)?.active) {

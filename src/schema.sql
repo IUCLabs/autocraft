@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS items (
   kind TEXT NOT NULL,                 -- 'pr' | 'issue'
   state TEXT NOT NULL,                -- 'OPEN' | 'CLOSED' | 'MERGED'
   title TEXT, body TEXT, url TEXT,
-  author TEXT, author_association TEXT,
+  author TEXT, author_type TEXT, author_association TEXT,
   created_at TEXT, updated_at TEXT, closed_at TEXT, merged_at TEXT,
   merged_by TEXT,
   state_reason TEXT,                  -- issues: COMPLETED | NOT_PLANNED | DUPLICATE

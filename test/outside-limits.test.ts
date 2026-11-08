@@ -23,10 +23,11 @@ test("an outside author's 6th PR in 24 hours waits; members and the pipeline's o
   const outsider = Array.from({ length: 6 }, (_, k) => add("outsider", "pr", 600 - k * 10));
   const member = Array.from({ length: 8 }, (_, k) => add("regular", "pr", 300 - k, "MEMBER"));
   const own = add("bot", "pr", 5);
+  const app = Array.from({ length: 7 }, (_, k) => add("renovate[bot]", "pr", 100 - k));
   const old = add("outsider", "pr", 30 * 60); // older than 24 hours: outside the window
   refreshOutsideHolds(db, NOW);
   assert.deepEqual(outsider.map((n) => inPilot(db, "app", n)), [true, true, true, true, true, false]);
-  assert.ok([...member, own, old].every((n) => inPilot(db, "app", n)));
+  assert.ok([...member, own, old, ...app].every((n) => inPilot(db, "app", n)));
 
   releaseOutside(db, "op", "app", outsider[5]!);
   refreshOutsideHolds(db, NOW);

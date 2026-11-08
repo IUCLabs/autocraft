@@ -24,7 +24,7 @@ const LIGHT_PAGE = 100;
 const MIN_PAGE = 10;
 
 const COLUMNS = [
-  "repo", "number", "kind", "state", "title", "body", "url", "author", "author_association",
+  "repo", "number", "kind", "state", "title", "body", "url", "author", "author_type", "author_association",
   "created_at", "updated_at", "closed_at", "merged_at", "merged_by", "state_reason", "is_draft",
   "labels", "assignees", "comments_count", "additions", "deletions", "changed_files",
   "head_ref", "head_oid", "head_repo", "base_ref", "maintainer_can_modify", "mergeable",
@@ -52,7 +52,7 @@ query($login: String!, $after: String) {
   }
 }`;
 
-export const COMMON = `number title body url author { login } authorAssociation createdAt updatedAt closedAt state
+export const COMMON = `number title body url author { login __typename } authorAssociation createdAt updatedAt closedAt state
   labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } }
   commentCount: comments { totalCount }`;
 export const COMMENTS = "comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body url } }";
@@ -232,7 +232,7 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
   const r: Record<string, SQLInputValue> = Object.fromEntries(COLUMNS.map((c) => [c, null]));
   Object.assign(r, {
     repo, number: n.number, kind, state: n.state, title: n.title, body: n.body, url: n.url,
-    author: login(n.author), author_association: n.authorAssociation,
+    author: login(n.author), author_type: n.author?.__typename ?? null, author_association: n.authorAssociation,
     created_at: n.createdAt, updated_at: n.updatedAt, closed_at: n.closedAt,
     labels: JSON.stringify(n.labels.nodes.map((x: Node) => x.name)),
     assignees: JSON.stringify(n.assignees.nodes.map((x: Node) => x.login)),

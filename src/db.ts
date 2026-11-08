@@ -161,6 +161,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conversation_turns", "progress", "TEXT"],
   ["agent_runs", "progress", "TEXT"],
   ["agent_runs", "cost_usd", "REAL"],
+  // GitHub's type of an item's author (User, Bot, ...); Bot authors are exempt from the outside-author limits.
+  ["items", "author_type", "TEXT"],
   // The commenter's association with the repository (OWNER, MEMBER, ...).
   ["comments", "author_association", "TEXT"],
   // 1 when the body names the pipeline login (@login); set when the comment is written, backfilled by migrateValues.
