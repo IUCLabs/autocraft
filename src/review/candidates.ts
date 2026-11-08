@@ -65,7 +65,7 @@ export function settledScope(db: DatabaseSync, repo: string, number: number): { 
   const answer = scopeAnswers(db).get(ref);
   if (!answer || !KEEP_IN_CORE.includes(answer)) return null;
   const rows = db.prepare(`SELECT answered_by, answer_note, repo, number, items FROM decisions
-    WHERE kind = 'scope' AND answer = ? AND answered_by IS NOT NULL AND answered_by <> 'pipeline' ORDER BY answered_at DESC`).all(answer) as
+    WHERE kind = 'scope' AND answer = ? AND answered_by IS NOT NULL AND answered_by <> 'pipeline' AND NOT (${MAINTAINER_ANSWER} AND NOT ${settledBySql("decisions")}) ORDER BY answered_at DESC`).all(answer) as
     { answered_by: string; answer_note: string | null; repo: string | null; number: number | null; items: string | null }[];
   const r = rows.find((x) => (x.number !== null ? x.repo === repo && x.number === number : parseRefs(x.items).some((i) => i.repo === repo && i.number === number)));
   if (!r) return null;
@@ -73,8 +73,8 @@ export function settledScope(db: DatabaseSync, repo: string, number: number): { 
   return { answer, by: r.answered_by, note };
 }
 
-/** A tracked item "repo#n" whose open decision is a scope question. */
+/** A tracked issue "repo#n" whose open decision is a scope question (a PR is a code dependency, never only a question). */
 export function isScopeQuestion(db: DatabaseSync, ref: string): boolean {
   const [repo, n] = ref.split("#");
-  return !!db.prepare("SELECT 1 FROM decisions WHERE repo = ? AND number = ? AND kind = 'scope' AND answer IS NULL LIMIT 1").get(repo!, Number(n));
+  return !!db.prepare("SELECT 1 FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number AND i.kind = 'issue' WHERE d.repo = ? AND d.number = ? AND d.kind = 'scope' AND d.answer IS NULL LIMIT 1").get(repo!, Number(n));
 }

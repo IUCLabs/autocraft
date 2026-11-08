@@ -54,7 +54,10 @@ export function hasOpenQuestion(db: DatabaseSync, refs: readonly string[]): bool
 /** Facts for an open decision naming the PRs whose review it holds (derived from their stored holds; the decision row is not written). */
 export function blocksFacts(db: DatabaseSync, repo: string | null, number: number | null): string[] {
   if (repo === null || number === null) return [];
-  const rows = db.prepare(`SELECT o.repo, o.number FROM main.opus_reviews o JOIN main.items i ON i.repo = o.repo AND i.number = o.number AND i.state = 'OPEN'
-    WHERE o.verdict = 'hold' AND o.blocked_by LIKE ? ORDER BY o.repo, o.number LIMIT 5`).all(`%"${repo}#${number}"%`) as { repo: string; number: number }[];
-  return rows.map((r) => `Blocks the review of ${r.repo}#${r.number}`);
+  const me = `${repo}#${number}`;
+  const rows = db.prepare(`SELECT o.repo, o.number, o.at, o.blocked_by FROM main.opus_reviews o JOIN main.items i ON i.repo = o.repo AND i.number = o.number AND i.state = 'OPEN'
+    WHERE o.verdict IS NOT NULL AND o.blocked_by LIKE ?
+      AND o.rowid = (SELECT l.rowid FROM main.opus_reviews l WHERE l.repo = o.repo AND l.number = o.number AND l.verdict IS NOT NULL ORDER BY l.at DESC, l.rowid DESC LIMIT 1)
+      AND o.verdict = 'hold' ORDER BY o.repo, o.number LIMIT 5`).all(`%"${me}"%`) as { repo: string; number: number; at: string; blocked_by: string }[];
+  return rows.filter((r) => activeBlockers(db, `${r.repo}#${r.number}`, r.blocked_by, r.at).includes(me)).map((r) => `Blocks the review of ${r.repo}#${r.number}`);
 }

@@ -350,9 +350,9 @@ function advance(db: DatabaseSync, p: Row): void {
       const f = cur === head ? loadPrFact(db, p.repo, p.number) : null;
       const state = f ? decidePr(f).state : null;
       if (state && NOT_REVIEWABLE.includes(state)) return stop("asked", `the pushed head cannot be reviewed (${state})`, head);
-      // A hold that no wait ends: another item's open question, red CI, or a review that failed for good.
+      // The gate lifts every hold for a pre-approved head except a review that failed for good, which only a new request or push ends.
       const hold = cur === head ? reviewHold(db, p.repo, p.number, head) : null;
-      if (hold && (hold.kind === "blocked" || (hold.kind === "ci" && hold.red) || (hold.kind === "failed" && hold.until === undefined))) return stop("asked", `the review of the pushed head waits on ${hold.wait}`, head);
+      if (hold?.kind === "failed" && hold.until === undefined) return stop("asked", `the review of the pushed head waits on ${hold.wait}`, head);
       return;
     }
     if (r.kind === "take") return void move(db, p, "ci", { line: "The review of the fix-up says take; waiting for CI." });
