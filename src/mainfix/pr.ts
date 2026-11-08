@@ -18,6 +18,7 @@ import type { CifixPr } from "../cifix/types.ts";
 import { forkOf } from "../fixissue/index.ts";
 import { outsideShown } from "../fixup/excerpt.ts";
 import { Git, type Exec } from "../fixup/git.ts";
+import { setPipelineLogin } from "../github/pipeline-account.ts";
 import { scrubReason, whoAmI } from "../fixup/index.ts";
 import { commitIdentity } from "../github/identity.ts";
 import { ghOpenPr, pushOwnBranch } from "../github/write.ts";
@@ -247,7 +248,7 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
 
     const who = await whoAmI(c.exec);
     const author = await commitIdentity(c.db, c.repo, async () => who);
-    c.db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
+    setPipelineLogin(c.db, who.login);
     const commit = await git.commit(applied.tree, head, commitMessage(title, patchFiles), { name: author.name, email: author.email });
     const changes = await git.rawChanges(head, commit);
     const touched = changes.map((x) => x[3]!).sort().join("\n");

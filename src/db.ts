@@ -233,7 +233,7 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 15;
+const MIGRATION_VERSION = 16;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -294,6 +294,8 @@ function dropColumns(db: DatabaseSync): void {
 
 // Values renamed after their first release, rewritten on every connect.
 function migrateValues(db: DatabaseSync): void {
+  // A bot login stored as the pipeline account (learnt through app-token reads) is wrong; the box account is learnt again.
+  db.exec("DELETE FROM main.settings WHERE key = 'pipeline_login' AND value LIKE '%[bot]'");
   // A new duplicate cut-off applies to every item, so each one is scanned again at it.
   const cut = String(SIM_THRESHOLD);
   const scannedAt = () => (db.prepare("SELECT value FROM main.settings WHERE key = 'dupes_scan_threshold'").get() as { value: string } | undefined)?.value;

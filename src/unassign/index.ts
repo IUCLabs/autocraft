@@ -2,15 +2,15 @@
 // are read from GitHub just before the write, so an assignment made by a person meanwhile is never touched.
 import type { DatabaseSync } from "node:sqlite";
 import { guardRepo } from "../core/guard.ts";
-import { PIPELINE_LOGIN_KEY } from "../core/rules.ts";
 import { planned } from "../core/select.ts";
 import { plannedItems } from "../core/select-items.ts";
 import type { PlanSet } from "../core/plan-set.ts";
 import type { By } from "../core/gates.ts";
 import { issueInfo, pullRequestInfo, releaseItem } from "../github/claim.ts";
 import type { Writer } from "../github/write.ts";
-import { viewerOf } from "../merge/index.ts";
+import { pipelineMe, setPipelineLogin } from "../github/pipeline-account.ts";
 import { Client, type Querier } from "../mirror.ts";
+import type { Exec } from "../fixup/git.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { leaseItem } from "../runner/leases.ts";
 import { ownerOf } from "../owners.ts";
@@ -20,7 +20,7 @@ const oneLine = (s: string, max = 200) => s.replace(/\s+/g, " ").trim().slice(0,
 
 export type UnassignResult = { unassigned: string[]; failed: string[]; due: number };
 
-export type UnassignParams = { repo: string; by: By; runId: string; log?: (line: string) => void; querier?: Querier; plans?: PlanSet };
+export type UnassignParams = { repo: string; by: By; runId: string; log?: (line: string) => void; querier?: Querier; exec?: Exec; plans?: PlanSet };
 
 /** Unassigns the pipeline's account from the items of one repo that the Plans say are off the path to merge. One item failing does not stop the others. */
 export async function runUnassign(db: DatabaseSync, p: UnassignParams): Promise<UnassignResult> {
@@ -37,8 +37,9 @@ export async function runUnassign(db: DatabaseSync, p: UnassignParams): Promise<
   const g = guardRepo(db, p.repo, null, p.by);
   if ("refused" in g) { log(`${p.repo}: ${g.refused}`); return out; }
   const w: Writer = { db, login: ACTOR };
-  const me = await viewerOf(q);
-  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(PIPELINE_LOGIN_KEY, me.login);
+  const me = await pipelineMe(log, p.exec);
+  if (!me) return out;
+  setPipelineLogin(db, me.login);
   for (const d of due) {
     const ref = `${p.repo}#${d.number}`;
     // A running job works the item (it may have just claimed it): leave the claim alone.

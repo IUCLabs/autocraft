@@ -30,8 +30,8 @@ import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
+import { pipelineMe, setPipelineLogin } from "../github/pipeline-account.ts";
 import { Client, type Querier } from "../mirror.ts";
-import { viewerOf } from "../merge/index.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { claimForWork, issueInfo } from "../github/claim.ts";
 import { commitIdentity, ownLogins, githubIdentity, identityFor } from "../github/identity.ts";
@@ -303,7 +303,7 @@ async function assignIssue(x: Ctx, c: IssueCandidate): Promise<void> {
   if (duplicateHeld(db, c.repo, c.number)) { log(`  ${refOf(c)}: not assigned: held`); return; }
   const g = guardRepo(db, c.repo, "fix-issue", x.by ?? CLI_BY);
   if ("refused" in g) { log(`  ${refOf(c)}: not assigned: ${g.refused}`); return; }
-  await claimForWork({ db, login: ACTOR }, g, d.querier, c.repo, c.number, "issue", () => viewerOf(d.querier!), { run: x.runId }, log);
+  await claimForWork({ db, login: ACTOR }, g, d.querier, c.repo, c.number, "issue", () => pipelineMe(log, d.exec), { run: x.runId }, log);
 }
 
 /**
@@ -318,7 +318,8 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
   try {
     const info = await issueInfo(q, ownerOf(c.repo), c.repo, c.number);
     if (!info || info.state !== "OPEN") return;
-    const me = await viewerOf(q);
+    const me = await pipelineMe(log, d.exec);
+    if (!me) return;
     const w: Writer = { db, login: ACTOR };
     if (attemptOf(db, c.repo, c.number)?.state === "failed") return;
     // A duplicate or Backlog hold that arrived while the attempt ran: the claim would announce a fix for an issue about to be closed or held.
@@ -365,7 +366,8 @@ export async function unclaimHeld(x: Ctx, repo: string): Promise<number> {
       if (!claim || !id) continue;
       const g = guardRepo(db, repo, "fix-issue", x.by ?? CLI_BY);
       if ("refused" in g) { log(`  ${ref}: claim not removed: ${g.refused}`); continue; }
-      const me = await viewerOf(q);
+      const me = await pipelineMe(log, d.exec);
+      if (!me) continue;
       const r = await ghDeleteComment({ db, login: ACTOR }, g, d.exec, "fixissue-unclaim", { repo, number, commentId: id, logins: new Set([me.login, ...ownLogins(db, repo)]) }, { run: x.runId, url: claim.url });
       if (r.code === 0) { deleted++; log(`  ${ref}: claim comment removed`); } else log(`  ${ref}: claim comment not removed: ${oneLine(r.stderr)}`);
     } catch (e) {
@@ -701,7 +703,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const who = await whoAmI(d.exec);
     const author = await commitIdentity(db, r.repo, async () => who);
-    db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
+    setPipelineLogin(db, who.login);
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
     // On an app repo the branch lives in the base repository, so its head owner is the org.
     const headOwners = [who.login, ...(githubIdentity(db) === "app" ? [ownerOf(r.repo)] : [])];

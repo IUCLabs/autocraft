@@ -22,6 +22,7 @@ import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
 import { planned } from "../core/select.ts";
 import { claimForWork } from "../github/claim.ts";
+import { pipelineMe } from "../github/pipeline-account.ts";
 import { mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
@@ -121,21 +122,6 @@ const short = (sha: string) => sha.slice(0, 7);
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 300);
 
 // ---- GitHub reads ----
-
-type Viewer = { login: string; id: string };
-const viewers = new WeakMap<Querier, Viewer>();
-
-/** The pipeline's GitHub account, asked once per querier. */
-export async function viewerOf(q: Querier): Promise<Viewer> {
-  let v = viewers.get(q);
-  if (!v) {
-    const d = await q.query("query { viewer { login id } }", {}) as { viewer?: Viewer };
-    if (!d.viewer?.login || !d.viewer.id) throw new Error("could not read the pipeline's GitHub account");
-    v = d.viewer;
-    viewers.set(q, v);
-  }
-  return v;
-}
 
 export type PrInfo = { id: string; head: string; state: string; assignees: string[]; authors: number; commits: number };
 
@@ -380,7 +366,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }
     const ag = guardRepo(db, repo, "merge", params.by ?? CLI_BY);
     if ("refused" in ag) log(`  ${refOf(e)}: not assigned: ${ag.refused}`);
-    else await claimForWork(w, ag, d.querier, repo, e.number, "pr", () => viewerOf(d.querier), { run: runId }, log);
+    else await claimForWork(w, ag, d.querier, repo, e.number, "pr", () => pipelineMe(log), { run: runId }, log);
     const method = methodOf(info);
     const g = await guard(db, { repo, number: e.number }, { kind: "merge", head: e.head, ...(e.path === "operator" ? { decisionId: e.decisionId ?? undefined } : {}) }, params.by ?? CLI_BY, liveOf(db, d.querier));
     if ("refused" in g) {

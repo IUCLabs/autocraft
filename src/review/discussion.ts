@@ -11,6 +11,8 @@ import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
 import { ownerOf } from "../owners.ts";
+import type { Exec } from "../fixup/git.ts";
+import { pipelineMe, setPipelineLogin } from "../github/pipeline-account.ts";
 import { allOwnLogins, ownLogins } from "../github/identity.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
@@ -330,10 +332,11 @@ export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false
 }
 
 /** Records the login that posts for us (the token's viewer) when no stage has yet, so our posts can be told from others'. */
-export async function ensurePipelineLogin(db: DatabaseSync, q: Querier): Promise<void> {
+export async function ensurePipelineLogin(db: DatabaseSync, _q: Querier, run?: Exec): Promise<void> {
   if (pipelineLogin(db)) return;
-  const login = (await q.query("query { viewer { login } }", {}))?.viewer?.login;
-  if (typeof login === "string" && login) db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING").run(LOGIN_KEY, login);
+  // Never the querier's viewer: under the app identity that is the bot.
+  const me = await pipelineMe(() => {}, run);
+  if (me) setPipelineLogin(db, me.login, false);
 }
 
 /**
