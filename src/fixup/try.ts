@@ -16,7 +16,7 @@ import { parseFixes } from "./candidates.ts";
 import { DIFF_CAP, FILE_CAP, TOTAL_CAP, defaultDeps, type FixupDeps } from "./index.ts";
 import { shownSize, viewFile } from "./excerpt.ts";
 import { Git } from "./git.ts";
-import { fixupEditable, validatePatch, type FixupPr } from "./patch.ts";
+import { buildScriptsAt, fixupEditable, validatePatch, type FixupPr } from "./patch.ts";
 import { ownerOf } from "../owners.ts";
 
 const LINT_GIVE_UP_MS = 90 * 60_000;
@@ -36,13 +36,14 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   const fixes = parseFixes(review.fixes);
   if (!fixes.length) throw new Error(`the take-fix review of ${ref} lists no usable fix`);
   const files = [...new Set(fixes.map((f) => f.file))];
-  const bad = files.find((f) => !fixupEditable(f));
-  if (bad) throw new Error(`the fixes name ${bad}, which a fix-up may not edit`);
 
   mkdirSync(d.root, { recursive: true });
   const git = new Git(d.exec, d.root, repo);
   const head = await git.fetchPr(ownerOf(repo), repo, number);
   if (head !== item.head_oid) throw new Error(`the PR head is now ${head.slice(0, 7)}, not the reviewed ${item.head_oid.slice(0, 7)}`);
+  const scripts = await buildScriptsAt(git, head);
+  const bad = files.find((f) => !fixupEditable(f, scripts));
+  if (bad) throw new Error(`the fixes name ${bad}, which a fix-up may not edit`);
   const diff = await cachedDiff(repo, number, head, d.fetchDiff);
   if (!diff.ok) throw new Error(`no diff: ${diff.error}`);
   if (diff.text.length > DIFF_CAP) throw new Error(`the PR diff is over the ${DIFF_CAP} character limit`);
@@ -65,7 +66,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   const before0 = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM agent_runs").get() as { n: number }).n;
   const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM model_checks").get() as { n: number }).n;
   const base = (await d.querier.query(BASE_QUERY, { owner: ownerOf(repo), name: repo, n: number }) as { repository?: { pullRequest?: { baseRefOid?: string } | null } }).repository?.pullRequest?.baseRefOid ?? null;
-  const tool = new CheckTool({ db, step: "fixup", repo, number, head, base, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) });
+  const tool = new CheckTool({ db, step: "fixup", repo, number, head, base, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, (x) => fixupEditable(x, scripts)))) });
   const t0 = Date.now();
   const reply = await d.ask(db, [{ ref, title: (item.title ?? "").slice(0, 300), fixes, files: shown, diff: diff.text, ...repoDir }], checkout, tool);
   log(`model call took ${Math.round((Date.now() - t0) / 1000)} s`);
@@ -81,7 +82,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   for (const c of calls) log(`  ${c.command}${c.crate ? ` -p ${c.crate}` : ""}${c.test_name ? ` ${c.test_name}` : ""}: ${c.outcome ?? "unfinished"} (task ${c.task_id ?? "none"}, ${c.ended_at ? Math.round((Date.parse(c.ended_at) - Date.parse(c.started_at)) / 1000) : "?"} s)`);
 
   if (reply === null) { log("\nthe model gave no answer"); return 1; }
-  const v = validatePatch(reply, files, fixupEditable);
+  const v = validatePatch(reply, files, (x) => fixupEditable(x, scripts));
   if (!v.ok) { log(`\nrefused: ${v.reason}\n\nreply:\n${indent(reply.slice(0, 3000))}`); return 1; }
   log(`\nfinal patch (${v.changed} changed lines):\n${indent(v.patch)}`);
   const applied = await applyCheck(git, d.root, head)(v.patch);

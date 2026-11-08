@@ -4,6 +4,7 @@
 import { cleanReason } from "../act/templates.ts";
 import { isInstructionPath } from "../sandbox/instruction-paths.ts";
 import { QUOTE_WORDS } from "../replylint.ts";
+import type { Git } from "./git.ts";
 import type { ShownFile } from "./excerpt.ts";
 
 export const MAX_CHANGED_LINES = 300;
@@ -17,8 +18,8 @@ export function safePath(p: string): boolean {
 }
 
 /** Files a fix-up may edit: Rust files and Markdown files, with the same exclusions as `editable`. */
-export function fixupEditable(path: string): boolean {
-  if (editable(path)) return true;
+export function fixupEditable(path: string, scripts: BuildScripts = null): boolean {
+  if (editable(path, scripts)) return true;
   const parts = path.split("/");
   return safePath(path) && path.toLowerCase().endsWith(".md") && !parts.some((s) => s.startsWith(".")) && !AGENT_DOCS.test(parts[parts.length - 1]!);
 }
@@ -27,10 +28,10 @@ export function fixupEditable(path: string): boolean {
  * Files an operator's fix-up may edit: any file of the repository except what every fix-up refuses (CI workflows, cargo
  * configuration, build scripts, files that instruct coding agents) and hidden-directory paths of the git metadata.
  */
-export function operatorEditable(path: string): boolean {
+export function operatorEditable(path: string, scripts: BuildScripts = null): boolean {
   const parts = path.split("/");
   const name = parts[parts.length - 1]!.toLowerCase();
-  return safePath(path) && path !== "build.rs" && !path.endsWith("/build.rs") && !parts.some((s) => s === ".cargo" || s === ".github")
+  return safePath(path) && !isBuildScript(path, scripts) && !parts.some((s) => s === ".cargo" || s === ".github")
     && !AGENT_DOCS.test(parts[parts.length - 1]!) && !isInstructionPath(path)
     && name !== "cargo.toml" && name !== "cargo.lock" && !name.startsWith("rust-toolchain")
     && name !== ".gitmodules" && name !== ".gitattributes" && name !== "codeowners";
@@ -57,12 +58,86 @@ export function splitChanges(text: string, instructions = ""): { diff: string; c
   return { diff: t.slice(0, i).trimEnd(), changes };
 }
 
+/**
+ * The build scripts of a checkout (paths Cargo runs at build time), or null when the checkout is unknown. With null every
+ * file named `build.rs` counts as a build script.
+ */
+export type BuildScripts = ReadonlySet<string> | null;
+
+export function isBuildScript(path: string, scripts: BuildScripts): boolean {
+  if (scripts === null) return path === "build.rs" || path.endsWith("/build.rs");
+  return scripts.has(path);
+}
+
+/** The `[package]` table's `build` setting of a Cargo.toml: a path, false (none), or undefined (Cargo's default `build.rs`). null: no `[package]` table. */
+function packageBuild(toml: string): string | false | undefined | null {
+  let table = "", has = false, build: string | false | undefined;
+  for (const raw of toml.split(/\r?\n/)) {
+    const line = raw.replace(/^\s+/, "");
+    const h = /^\[\s*([^\]]*?)\s*\]/.exec(line);
+    if (h && !line.startsWith("[[")) { table = h[1]!.replace(/\s+/g, ""); if (table === "package") has = true; continue; }
+    if (line.startsWith("[[")) { table = "[[]]"; continue; }
+    const k = table === "package" ? /^build\s*=\s*(.*)$/.exec(line) : table === "" ? /^package\.build\s*=\s*(.*)$/.exec(line) : null;
+    if (!k) continue;
+    if (table === "") has = true;
+    const v = k[1]!.trim();
+    const str = /^(?:"([^"]*)"|'([^']*)')/.exec(v);
+    if (str) build = str[1] ?? str[2]!;
+    else if (/^false\b/.test(v)) build = false;
+  }
+  return has ? build : null;
+}
+
+/** The normalized `dir/rel`, or null when it leaves the repository. */
+function joinPath(dir: string, rel: string): string | null {
+  const out = dir ? dir.split("/") : [];
+  for (const s of rel.split("/")) {
+    if (s === "" || s === ".") continue;
+    if (s === "..") { if (!out.pop()) return null; } else out.push(s);
+  }
+  return out.join("/");
+}
+
+/**
+ * The build scripts Cargo runs in a checkout, from its file list and a reader of file contents: for every Cargo.toml with a
+ * `[package]` table, the path its `build` key names, `build.rs` beside it when the key is absent, nothing for `build = false`.
+ */
+export function buildScripts(files: string[], read: (path: string) => string | null): Set<string> {
+  const out = new Set<string>();
+  for (const f of files) {
+    if (f !== "Cargo.toml" && !f.endsWith("/Cargo.toml")) continue;
+    const toml = read(f);
+    if (toml === null) continue;
+    const b = packageBuild(toml);
+    if (b === null || b === false) continue;
+    const dir = f.slice(0, -"Cargo.toml".length).replace(/\/$/, "");
+    const p = joinPath(dir, b ?? "build.rs");
+    if (p !== null) out.add(p);
+  }
+  return out;
+}
+
+/** The build scripts at commit `sha` of a bare repository; null when it can't be read (callers then refuse every build.rs). */
+export async function buildScriptsAt(git: Pick<Git, "git" | "file">, sha: string): Promise<BuildScripts> {
+  const ls = await git.git(["ls-tree", "-r", "--name-only", sha]);
+  if (ls.code !== 0) return null;
+  const files = ls.stdout.split("\n").filter(Boolean);
+  const tomls = files.filter((f) => f === "Cargo.toml" || f.endsWith("/Cargo.toml"));
+  const text = new Map<string, string>();
+  for (const f of tomls) {
+    const r = await git.file(sha, f);
+    if (r.ok) text.set(f, r.content);
+    else return null;
+  }
+  return buildScripts(files, (p) => text.get(p) ?? null);
+}
+
 /** Markdown files that instruct coding agents; a fix-up never edits them. */
 const AGENT_DOCS = /^(claude(\.local)?|agents|gemini|copilot-instructions)\.md$/i;
 
 /** Source files an automated fix (a CI fix or an issue fix) may edit: Rust files other than build scripts, nothing under .cargo or .github. */
-export function editable(path: string): boolean {
-  return safePath(path) && path.endsWith(".rs") && !path.endsWith("/build.rs") && path !== "build.rs" && !path.split("/").some((s) => s === ".cargo" || s === ".github");
+export function editable(path: string, scripts: BuildScripts = null): boolean {
+  return safePath(path) && path.endsWith(".rs") && !isBuildScript(path, scripts) && !path.split("/").some((s) => s === ".cargo" || s === ".github");
 }
 
 /** The diff text without a surrounding Markdown fence or leading prose lines. */

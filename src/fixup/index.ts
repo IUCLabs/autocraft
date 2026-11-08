@@ -48,7 +48,7 @@ import { referenceDir } from "../reference.ts";
 import { cleanReason } from "../act/templates.ts";
 import { defaultSemanticDeps, referenceProblems } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
-import { fixupEditable, operatorEditable, quotesText, splitChanges, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
+import { buildScriptsAt, fixupEditable, operatorEditable, quotesText, splitChanges, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage, fixupCommentEdited, fixupCommentLines, operatorCommentText } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -400,7 +400,6 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       jobItem(db, repo, c.number, `held: ${reason}`, log);
     };
     try {
-      if (!c.carry && files.some((f) => !fixupEditable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); return; }
       const r = await d.querier.query(PR_QUERY, { owner: ownerOf(repo), name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       noteLive(db, repo, c.number, pr, at());
@@ -426,13 +425,15 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       }
       const head = await git.fetchPr(ownerOf(repo), repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); return; }
+      const scripts = await buildScriptsAt(git, head);
+      if (!c.carry && files.some((f) => !fixupEditable(f, scripts))) { hold("too-large", "the fixes name files a fix-up may not edit"); return; }
 
       const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
       if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); return; }
       if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); return; }
       // An operator's fix-up may edit any file of the repository a fix-up may touch: the instructions name no file. The PR's own files are the ones shown.
       if (c.operator) {
-        files = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(operatorEditable);
+        files = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter((p) => operatorEditable(p, scripts));
       }
       // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
       const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
@@ -481,14 +482,14 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       if (folded !== null) dropSessions(c.lint!.session);
       const raw = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, ...(quiet ? { quiet } : {}), files: shown, diff: diff.text, ...(c.operator ? { operator: c.operator.instructions } : {}), ...(carried ? { carried_from: carried } : {}),
         ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout,
-        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(c.operator ? validatePatch(splitChanges(p).diff, null, operatorEditable) : validatePatch(p, files, fixupEditable))) }), ses);
+        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(c.operator ? validatePatch(splitChanges(p).diff, null, (x) => operatorEditable(x, scripts)) : validatePatch(p, files, (x) => fixupEditable(x, scripts)))) }), ses);
       ledger.hold(ses.kept);
       if (c.lint && folded === null) dropSessions(c.lint.session, ses.kept ? { "": ses.kept } : {});
       if (raw === null) { fail("failed", "the model gave no answer"); return; }
       // An operator fix-up's reply ends with the model's list of what it changed; a stored patch keeps the list in its row.
       const split = c.operator && folded === null ? splitChanges(raw, c.operator.instructions) : { diff: raw, changes: c.lint?.changes ?? [] };
       const reply = split.diff;
-      const v = c.operator ? validatePatch(reply, null, operatorEditable) : validatePatch(reply, files, fixupEditable);
+      const v = c.operator ? validatePatch(reply, null, (x) => operatorEditable(x, scripts)) : validatePatch(reply, files, (x) => fixupEditable(x, scripts));
       if (!v.ok) { fail("refused", v.reason); return; }
       const word = quiet ? patchGiveaway(v.patch) : null;
       if (word) { fail("refused", QUIET_PATCH_REFUSAL); return; }
@@ -611,7 +612,7 @@ async function carryWork(c: FixCandidate, fetchDiff: DiffFetcher): Promise<{ ok:
     const diff = await cachedDiff(c.repo, src.number, src.head, fetchDiff);
     if (!diff.ok) return { ok: false, reason: `no diff of #${src.number}: ${oneLine(diff.error)}` };
     if (diff.text.length > DIFF_CAP) return { ok: false, reason: `the diff of #${src.number} is over the ${DIFF_CAP} character limit` };
-    const paths = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(fixupEditable);
+    const paths = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter((p) => fixupEditable(p));
     for (const point of src.points) {
       const named = paths.filter((p) => point.includes(p));
       for (const file of named.length ? named : paths) fixes.push({ file, change: `from #${src.number}: ${point}` });
