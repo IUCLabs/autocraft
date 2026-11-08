@@ -43,7 +43,9 @@ RUN set -eux; \
     apt-get update; \
     # curl and gzip only exist in this stage, to fetch and unpack the GitHub CLI;
     apt-get install -y --no-install-recommends curl gzip; \
-    packages="bash bubblewrap ca-certificates curl git sqlite3 tini zstd"; \
+    # coreutils: the entrypoint's mkdir, backup.sh's date/mktemp/ls/rm and the
+    # periodic container's loop. findutils: backup.sh's xargs. sed: both scripts.
+    packages="bash bubblewrap ca-certificates coreutils curl findutils git sed sqlite3 tini zstd"; \
     # The full dependency closure, flattened from apt-cache's indented tree;
     # `apt-get download` fetches them whether or not this stage already has them.
     apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
