@@ -51,36 +51,67 @@ export function auditIdentity(db: DatabaseSync, g: Guarded | Grant): "legacy" | 
   return githubIdentity(db) === "box" ? "legacy" : identityFor(g);
 }
 
-/** Why a repo cannot use the app identity (no app registered, not installed, repo outside the installation), or null when it can. */
-export async function appIdentityBlocker(repo: string, mint: (owner: string, repo: string) => Promise<string> = installationToken): Promise<string | null> {
-  const owner = ownerOf(repo);
+/** Whether the app can act on `owner/repo`: covered, not covered (with the reason), or not confirmable now (GitHub 5xx, rate limit, network). */
+export type Coverage = { kind: "covered" } | { kind: "uncovered"; why: string } | { kind: "unconfirmed"; why: string };
+
+export async function appCoverage(owner: string, repo: string, mint: (owner: string, repo: string) => Promise<string> = installationToken): Promise<Coverage> {
   try {
     await mint(owner, repo);
-    return null;
+    return { kind: "covered" };
   } catch (e) {
-    if (e instanceof AppNotInstalledError) return `The GitHub App is not installed on ${owner}.`;
-    if (e instanceof RepoNotInInstallationError) return `${owner}/${repo} is not in the GitHub App's installation.`;
-    if (e instanceof AppError && e.message === "no GitHub App is registered") return "No GitHub App is registered.";
-    return `GitHub could not confirm the installation: ${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 160)}`;
+    if (e instanceof AppNotInstalledError) return { kind: "uncovered", why: `The GitHub App is not installed on ${owner}.` };
+    if (e instanceof RepoNotInInstallationError) return { kind: "uncovered", why: `${owner}/${repo} is not in the GitHub App's installation.` };
+    if (e instanceof AppError && e.message === "no GitHub App is registered") return { kind: "uncovered", why: "No GitHub App is registered." };
+    const transient = !(e instanceof AppError) || e.status === 0 || e.status >= 500 || e.rateLimited;
+    const why = `GitHub could not confirm the installation: ${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 160)}`;
+    return transient ? { kind: "unconfirmed", why } : { kind: "uncovered", why };
   }
 }
 
-/** Thrown when the instance cannot switch to the app; `repos` are the tracked repos the app does not cover (empty when no app is registered). */
+/** Tracked repos by coverage; `unconfirmed` are those GitHub could not answer for. */
+export async function trackedCoverage(db: DatabaseSync, mint?: (owner: string, repo: string) => Promise<string>): Promise<{ uncovered: string[]; unconfirmed: string[] }> {
+  const names = (db.prepare("SELECT name FROM main.tracked_repos ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
+  const uncovered: string[] = [], unconfirmed: string[] = [];
+  for (const n of names) {
+    const c = await appCoverage(ownerOf(n), n, mint);
+    if (c.kind === "uncovered") uncovered.push(n);
+    else if (c.kind === "unconfirmed") unconfirmed.push(n);
+  }
+  return { uncovered, unconfirmed };
+}
+
+let coverageMemo: { at: number; running: boolean; uncovered: string[]; unconfirmed: string[] } | null = null;
+/** What the health check shows: the last coverage reading of the tracked repos, refreshed in the background at most every 2 minutes (the minter caches installations). */
+export function coverageSnapshot(db: DatabaseSync): { uncovered: string[]; unconfirmed: string[] } {
+  if (!coverageMemo || (!coverageMemo.running && Date.now() - coverageMemo.at > 120_000)) {
+    const prev = coverageMemo;
+    coverageMemo = { at: Date.now(), running: true, uncovered: prev?.uncovered ?? [], unconfirmed: prev?.unconfirmed ?? [] };
+    void trackedCoverage(db).then((r) => { coverageMemo = { at: Date.now(), running: false, ...r }; }, () => { coverageMemo = { at: Date.now(), running: false, uncovered: [], unconfirmed: prev?.unconfirmed ?? [] }; });
+  }
+  return { uncovered: coverageMemo.uncovered, unconfirmed: coverageMemo.unconfirmed };
+}
+
+/**
+ * Thrown when the instance cannot switch to the app. `repos` are the tracked repos the app does not cover (empty when no app is
+ * registered); `transient` means GitHub could not confirm coverage (try again), and then `repos` lists the unconfirmed ones.
+ */
 export class IdentityRefused extends Error {
   repos: string[];
-  constructor(message: string, repos: string[]) { super(message); this.repos = repos; }
+  transient: boolean;
+  constructor(message: string, repos: string[], transient = false) { super(message); this.repos = repos; this.transient = transient; }
 }
 
 /** Sets the identity. Switching to `app` needs a registered app and an installation covering every tracked repo. Returns false when nothing changed. */
 export async function setGithubIdentityChecked(
-  db: DatabaseSync, by: string, value: unknown, deps: { registered: boolean; mint?: (owner: string, repo: string) => Promise<string> },
+  db: DatabaseSync, by: string, value: unknown, deps: { registered: () => boolean; mint?: (owner: string, repo: string) => Promise<string> },
 ): Promise<boolean> {
   if (value === "app" && githubIdentity(db) !== "app") {
-    if (!deps.registered) throw new IdentityRefused("No GitHub App is registered.", []);
-    const repos = (db.prepare("SELECT name FROM main.tracked_repos ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
-    const bad: string[] = [];
-    for (const r of repos) if (await appIdentityBlocker(r, deps.mint)) bad.push(r);
-    if (bad.length) throw new IdentityRefused(`The GitHub App does not cover ${bad.length === 1 ? "this repo" : "these repos"}: ${bad.join(", ")}.`, bad);
+    if (!deps.registered()) throw new IdentityRefused("No GitHub App is registered.", []);
+    const { uncovered, unconfirmed } = await trackedCoverage(db, deps.mint);
+    if (uncovered.length) throw new IdentityRefused(`The GitHub App does not cover ${uncovered.length === 1 ? "this repo" : "these repos"}: ${uncovered.join(", ")}.`, uncovered);
+    if (unconfirmed.length) throw new IdentityRefused(`GitHub could not confirm the installation for ${unconfirmed.join(", ")}. Try again.`, unconfirmed, true);
+    // The app may have been removed while GitHub was asked: check again, with no await before the write.
+    if (!deps.registered()) throw new IdentityRefused("No GitHub App is registered.", []);
   }
   return setGithubIdentity(db, by, value);
 }

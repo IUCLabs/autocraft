@@ -306,10 +306,14 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     live.add(res, () => loadSession(db, cookieId) !== null);
   }
 
+  /** Under the app identity with no app keys, sign-in has nothing to go through: it is refused, never sent to the OAuth App. */
+  const signInBlocked = (): boolean => githubIdentity(db) === "app" && !opts.provider && !config.devAuth && !config.secrets.app;
+  const noAppPage = (nonce: string): Res => errorPage(nonce, 503, "Sign-in unavailable", "GitHub sign-in is set to the GitHub App, but no app keys are available. An operator must restore the app's keys or switch the GitHub identity back to the box account.");
+
   function startOAuth(returnTo: string, selectAccount: boolean, scopes?: string[], p: Provider = provider): { r: Res; cookies: string[] } {
     const state = randomToken(24), verifier = randomToken(48);
-    db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
-      .run(state, verifier, returnTo, new Date().toISOString());
+    db.prepare("INSERT INTO oauth_states (state, verifier, return_to, identity, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(state, verifier, returnTo, githubIdentity(db), new Date().toISOString());
     return {
       r: { redirect: p.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, selectAccount, scopes) },
       cookies: [cookie(STATE_COOKIE, state, 600)],
@@ -335,6 +339,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
       const returnTo = safeReturnTo(url.searchParams.get("return_to"));
       if (loadSession(db, cookies.get(SESSION_COOKIE))) return { r: { redirect: returnTo } };
+      if (signInBlocked()) return { r: noAppPage(nonce) };
       return startOAuth(returnTo, url.searchParams.get("select") === "1");
     }
     if (req.method === "GET" && path === "/auth/authorize-app") {
@@ -355,15 +360,21 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       const state = url.searchParams.get("state") ?? "";
       const code = url.searchParams.get("code") ?? "";
-      const row = db.prepare("DELETE FROM oauth_states WHERE state = ? RETURNING verifier, return_to, created_at").get(state) as
-        { verifier: string; return_to: string | null; created_at: string } | undefined;
+      const row = db.prepare("DELETE FROM oauth_states WHERE state = ? RETURNING verifier, return_to, identity, created_at").get(state) as
+        { verifier: string; return_to: string | null; identity: string | null; created_at: string } | undefined;
       const cookieState = cookies.get(STATE_COOKIE) ?? "";
       if (!row || !code || !safeEqual(cookieState, state) || Date.now() - Date.parse(row.created_at) > 600_000) {
         return { r: errorPage(nonce, 400, "Sign-in expired", "Start again from the sign-in link."), cookies: clear };
       }
+      const plainSignIn = !row.return_to?.startsWith("setup:") && !row.return_to?.startsWith(AUTHORIZE_PREFIX);
+      // A sign-in finishes under the identity it started with; if that is no longer the current one, it starts again.
+      const startedAs: "box" | "app" = row.identity === "app" ? "app" : row.identity === "box" ? "box" : githubIdentity(db);
+      const changed = (): boolean => plainSignIn && startedAs !== githubIdentity(db);
+      if (plainSignIn && signInBlocked()) return { r: noAppPage(nonce), cookies: clear };
+      if (changed()) return { r: errorPage(nonce, 400, "Sign-in failed", "The GitHub identity changed during sign-in. Start again."), cookies: clear };
       let tokens: Tokens | null, who: GithubUser | null;
       try {
-        const p = row.return_to?.startsWith("setup:") ? setupProvider : row.return_to?.startsWith(AUTHORIZE_PREFIX) ? (appProviderNow() ?? provider) : provider;
+        const p = row.return_to?.startsWith("setup:") ? setupProvider : row.return_to?.startsWith(AUTHORIZE_PREFIX) ? (appProviderNow() ?? provider) : opts.provider || config.devAuth ? provider : providerFor(config, () => startedAs);
         tokens = await p.exchange(code, row.verifier, callbackUrl);
         who = tokens ? await p.identity(tokens.access) : null;
       } catch (e) {
@@ -400,8 +411,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         auditRefusedSignIn(db, login, { ip, reason: "github-id-mismatch" });
         return { r: errorPage(nonce, 403, "Not authorised", `The GitHub account ${login} is not the account that was added to this dashboard's access list.`), cookies: clear };
       }
+      if (changed()) return { r: errorPage(nonce, 400, "Sign-in failed", "The GitHub identity changed during sign-in. Start again."), cookies: clear };
       const id = createSession(db, box, access.login, tokens, req.headers["user-agent"]);
-      if (githubIdentity(db) === "app") { saveUserTokens(db, box, access.login, who.id, tokens); retryWaiting(db, access.login); }
+      if (startedAs === "app") { saveUserTokens(db, box, access.login, who.id, tokens); retryWaiting(db, access.login); }
       audit(db, access.login, "sign-in", access.login, { ip });
       return {
         r: { redirect: safeReturnTo(row.return_to) },

@@ -45,8 +45,8 @@ function IdentityBlock({ s, onChange }: { s: GithubAppStatus; onChange: () => vo
   const api = useApi();
   const operator = useUser().role === "operator";
   const [error, setError] = useState<string | null>(null);
+  const [pick, setPick] = useState<"box" | "app" | null>(null);
   const choose = async (identity: "box" | "app") => {
-    if (identity === s.identity) return;
     setError(null);
     try {
       const done = await api.githubApp.setIdentity(identity);
@@ -60,7 +60,10 @@ function IdentityBlock({ s, onChange }: { s: GithubAppStatus; onChange: () => vo
     <Block className="mt-4" title="GitHub identity">
       <div className="px-4 py-3">
         {operator ? (
-          <Segmented label="GitHub identity" value={s.identity} options={(["box", "app"] as const).map((v) => ({ value: v, label: IDENTITY_LABEL[v] }))} onChange={(v) => void choose(v)} />
+          <div className="flex flex-wrap items-center gap-3">
+            <Segmented label="GitHub identity" value={pick ?? s.identity} options={(["box", "app"] as const).map((v) => ({ value: v, label: IDENTITY_LABEL[v] }))} onChange={(v) => setPick(v === s.identity ? null : v)} />
+            {pick && pick !== s.identity && <ConfirmButton label={`Switch to ${IDENTITY_LABEL[pick]}`} confirmLabel="Switch and end every session" idle="secondary" onConfirm={() => void choose(pick)} />}
+          </div>
         ) : (
           <Badge tone={s.identity === "app" ? "ok" : undefined}>{IDENTITY_LABEL[s.identity]}</Badge>
         )}

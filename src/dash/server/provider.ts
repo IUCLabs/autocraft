@@ -254,9 +254,14 @@ export function providerFor(config: Config, identity: () => "box" | "app"): Prov
     const { githubClientId, githubClientSecret, app } = config.secrets;
     return identity() === "app" && app ? new GitHubProvider(app.clientId, app.clientSecret) : new GitHubProvider(githubClientId, githubClientSecret);
   };
+  // Sign-in under the app identity never falls back to the OAuth App: without app keys it fails.
+  const noFallback = (): Provider => {
+    if (identity() === "app" && !config.secrets.app) throw new Error("the GitHub identity is the app but no app keys are available");
+    return now();
+  };
   return {
-    authorizeUrl: (...a) => now().authorizeUrl(...a),
-    exchange: (...a) => now().exchange(...a),
+    authorizeUrl: (...a) => noFallback().authorizeUrl(...a),
+    exchange: (...a) => noFallback().exchange(...a),
     refresh: (...a) => now().refresh(...a),
     identity: (...a) => now().identity(...a),
     revoke: (...a) => now().revoke(...a),

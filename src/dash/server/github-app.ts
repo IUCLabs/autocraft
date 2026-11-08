@@ -30,10 +30,10 @@ export function githubAppRoutes(config: Config, deps: AppDeps, mint?: (owner: st
       const identity = (r.json as { identity?: unknown } | undefined)?.identity;
       if (identity !== "box" && identity !== "app") return { status: 400, json: { error: "The GitHub identity must be box or app." } };
       try {
-        const changed = await setGithubIdentityChecked(db, r.user.login, identity, { registered: !!config.secrets.app, mint });
+        const changed = await setGithubIdentityChecked(db, r.user.login, identity, { registered: () => !!config.secrets.app, mint });
         if (!changed) return { status: 409, json: { error: `The GitHub identity is already ${identity === "app" ? "the GitHub App" : "the box account"}.` } };
       } catch (e) {
-        if (e instanceof IdentityRefused) return { status: 409, json: { error: e.message, repos: e.repos } };
+        if (e instanceof IdentityRefused) return { status: e.transient ? 503 : 409, json: { error: e.message, repos: e.repos } };
         throw e;
       }
       return { json: { identity, signIn: "/auth/signin" } };
@@ -64,6 +64,8 @@ export function githubAppRoutes(config: Config, deps: AppDeps, mint?: (owner: st
       }
       config.secrets.app = null;
       db.prepare("DELETE FROM github_app_states").run();
+      // The stored user tokens belong to the removed app.
+      db.prepare("DELETE FROM user_tokens").run();
       audit(db, r.user.login, "github-app-remove", app.slug, { slug: app.slug, owner: app.owner?.login ?? null });
       return { json: { settingsUrl: settingsUrl(app.slug, app.owner) } };
     },

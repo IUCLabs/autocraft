@@ -9,6 +9,8 @@ import { repoErrors } from "./sync-errors.ts";
 import { slugOf } from "./owners.ts";
 import { trackedNames } from "./repos.ts";
 import { storedLiveness } from "./liveness.ts";
+import { coverageSnapshot, githubIdentity } from "./github/identity.ts";
+import { readAppSecrets } from "./github/install-token.ts";
 
 /** Thresholds, in one place. */
 export const THRESHOLDS = {
@@ -167,8 +169,23 @@ function livenessCheck({ db }: CheckCtx): Check[] {
   return [{ id: "liveness", state: "warn", text, brief: "Some items have not moved for days", since: oldest("long"), count: l.long, of: l.open, to: "/stuck" }];
 }
 
+/** Under the GitHub App identity: the app's keys must be readable (fail), and every tracked repo should be in its installation (warn). Nothing is listed under the box account. */
+function appIdentityChecks({ db }: CheckCtx): Check[] {
+  if (githubIdentity(db) !== "app") return [];
+  let keys = false;
+  try { keys = readAppSecrets() !== null; } catch { keys = false; }
+  if (!keys) {
+    const text = "The GitHub identity is the GitHub App, but no app keys are available";
+    return [{ id: "app-keys", state: "fail", text, brief: "GitHub sign-in and writes are unavailable", since: null, to: "/admin/github-app" }];
+  }
+  const { uncovered } = coverageSnapshot(db);
+  if (!uncovered.length) return [ok("app-keys", "/admin/github-app"), ok("app-coverage", "/admin/github-app")];
+  const text = `The GitHub App does not cover ${uncovered.length} tracked repo${uncovered.length === 1 ? "" : "s"}: ${clip(uncovered.join(", "), 120)}`;
+  return [ok("app-keys", "/admin/github-app"), { id: "app-coverage", state: "warn", text, brief: "The GitHub App does not cover every tracked repo", since: null, count: uncovered.length, to: "/admin/github-app" }];
+}
+
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now()): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs }));

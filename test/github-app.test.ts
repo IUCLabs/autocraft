@@ -8,7 +8,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { after, before, describe, test } from "node:test";
+import { after, afterEach, before, describe, test } from "node:test";
 import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
@@ -142,6 +142,8 @@ async function signedIn(login: string, origin = base): Promise<Client> {
 }
 
 describe("github app registration", () => {
+  afterEach(() => { db.prepare("DELETE FROM settings WHERE key = 'github_identity'").run(); });
+
   test("only operators reach the page's API and the registration start", async () => {
     for (const login of ["viewer1", "maint"]) {
       const c = await signedIn(login);
@@ -190,7 +192,7 @@ describe("github app registration", () => {
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'github-app-register' AND target = 'autocraft-test'").get() as { n: number }).n, 1);
   });
 
-  test("app sign-in keeps the user's token sealed in user_tokens and is audited as an identity change", async () => {
+  test("app sign-in keeps the user's token sealed in user_tokens", async () => {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('github_identity', 'app')").run();
     const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: secretsFile };
     const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [] });
@@ -201,7 +203,6 @@ describe("github app registration", () => {
     assert.ok(row.token_enc && !row.token_enc.includes("dev_"));
     await signedIn("maint", s.url);
     assert.equal((db.prepare("SELECT version FROM user_tokens WHERE login = 'maint'").get() as { version: number }).version, 2);
-    db.prepare("DELETE FROM settings WHERE key = 'github_identity'").run();
   });
 
   test("a secrets file that cannot be written keeps the app's slug visible and leaks no key", async () => {
@@ -250,6 +251,29 @@ describe("github app registration", () => {
     assert.equal(keys(), null);
   });
 
+  test("the identity route refuses with the uncovered repos listed, and a switch ends every session", async () => {
+    const file = join(dir, "identity-secrets.json");
+    writeFileSync(file, JSON.stringify({ github_app_id: "4242", github_app_slug: "autocraft-test", github_app_private_key: PEM, github_app_client_id: "Iv1.test", github_app_client_secret: CLIENT_SECRET }));
+    const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
+    const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [] });
+    closers.push(s.close);
+    const boss = await signedIn("boss", s.url);
+    assert.equal((await (await signedIn("maint", s.url)).json("/api/admin/github-app/identity", { identity: "app" })).status, 403);
+    db.prepare("DELETE FROM tracked_repos").run();
+    db.prepare("INSERT INTO tracked_repos (name) VALUES ('photocraft')").run();
+    // No installation can be looked up here, so the tracked repo is not covered.
+    const refused = await boss.json("/api/admin/github-app/identity", { identity: "app" });
+    assert.equal(refused.status, 409);
+    assert.deepEqual(((await refused.json()) as { repos: string[] }).repos, ["photocraft"]);
+    assert.equal((await boss.req("/api/admin/github-app")).status, 200);
+    db.prepare("DELETE FROM tracked_repos WHERE name = 'photocraft'").run();
+    const done = await boss.json("/api/admin/github-app/identity", { identity: "app" });
+    assert.equal(done.status, 200);
+    assert.deepEqual(await done.json(), { identity: "app", signIn: "/auth/signin" });
+    assert.equal((await boss.req("/api/admin/github-app")).status, 401);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'github-identity' AND target = 'app'").get() as { n: number }).n, 1);
+  });
+
   test("a refreshed app sign-in token reaches user_tokens", async () => {
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('github_identity', 'app')").run();
     const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: secretsFile };
@@ -263,7 +287,6 @@ describe("github app registration", () => {
     await new Promise((r) => setTimeout(r, 350));
     await c.req("/api/test/can/photocraft");
     assert.equal(provider.refreshes, 1);
-    db.prepare("DELETE FROM settings WHERE key = 'github_identity'").run();
     const after = row();
     assert.equal(after.version, before.version + 1);
     assert.notEqual(after.token_enc, before.token_enc);
