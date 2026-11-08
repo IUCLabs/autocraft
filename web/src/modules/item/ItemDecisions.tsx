@@ -21,7 +21,9 @@ export function useItemDecisions(repo: string, number: number) {
   const q = useQuery(`item-decisions:${repo}#${number}`, async (api) => {
     const filter = { repo: [repo], number };
     const [open, snoozed, answered] = await Promise.all([api.decisions.list({ ...filter, status: "open" }), api.decisions.list({ ...filter, status: "snoozed" }), api.decisions.list({ ...filter, status: "answered" })]);
-    return [...open.decisions, ...snoozed.decisions, ...answered.decisions];
+    // A disputed answer is in both the open and the answered list.
+    const seen = new Set<string>();
+    return [...open.decisions, ...snoozed.decisions, ...answered.decisions].filter((d) => !seen.has(d.id) && !!seen.add(d.id));
   });
   const data = useFolded(q.data);
   return { ...q, data };
@@ -75,7 +77,9 @@ function HoldCard({ d, choices, updating }: { d: Decision; choices?: DecisionCho
   useEffect(() => {
     if (!d.answer && commenter) void api.decisions.claim(d.id);
   }, [api, d.id, d.answer, commenter]);
-  const actor = canActOn(user, [d]);
+  // A card from another person is applying an answer: nobody answers meanwhile.
+  const applying = d.settling && d.settling.toLowerCase() !== user.login.toLowerCase() ? d.settling : null;
+  const actor = canActOn(user, [d]) && !applying;
   const preparing = (d.preparing || updating) && !d.answer;
   const loading = choices === undefined && d.number !== null && d.group.length === 0;
   const rec = preparing || loading ? null : recommended(d, choices);
@@ -88,7 +92,9 @@ function HoldCard({ d, choices, updating }: { d: Decision; choices?: DecisionCho
         {d.snoozed && <span>Snoozed until new activity</span>}
       </div>
       <p className="mt-1.5 text-pretty text-[15px] font-semibold leading-6"><Refs text={d.question} repo={d.repo} /></p>
-      {preparing ? (
+      {applying ? (
+        <p className="mt-2 text-sm text-ink/70">{applying} is applying their answer</p>
+      ) : preparing ? (
         <p className="mt-2 text-sm text-ink/55">{d.preparing ? "Opus is preparing the options" : "Opus is updating the options"}</p>
       ) : loading ? null : (
         <>

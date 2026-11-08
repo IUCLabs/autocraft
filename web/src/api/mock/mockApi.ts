@@ -117,7 +117,8 @@ export function createMockApi(): Api {
 
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
-    if (status !== "answered" && d.answer) return false;
+    // As on the server: the open list also holds disputed answers.
+    if (status !== "answered" && d.answer && !(status === "open" && d.dispute)) return false;
     if (status === "open" && d.snoozed) return false;
     if (status === "snoozed" && !d.snoozed) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
@@ -172,11 +173,25 @@ export function createMockApi(): Api {
         changed();
         return wait(d, 30);
       },
+      async dispute(id, reason) {
+        const d = find(id);
+        requireOperator(d);
+        Object.assign(d, { dispute: { by: me.login, reason, at: nowIso() }, undoable: true });
+        changed();
+        return wait(d, 30);
+      },
+      async keepAnswer(id) {
+        const d = find(id);
+        requireOperator(d);
+        Object.assign(d, { dispute: null });
+        changed();
+        return wait(d, 30);
+      },
       async undo(id) {
         const d = find(id);
         requireOperator(d);
         if (!d.undoable) throw new Error("already applied");
-        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [], undoable: false });
+        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [], undoable: false, dispute: null, orphaned: false });
         changed();
         return wait(d, 30);
       },

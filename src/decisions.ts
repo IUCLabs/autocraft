@@ -2,6 +2,7 @@
 // person on the dashboard answers them. The one command that sets answers is
 // the operator's bulk Backlog (`decisions backlog`), which only holds items.
 import { settledBy, settledBySql } from "./settlers.ts";
+import { lockLiveSql } from "./answers/hold.ts";
 import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
@@ -24,7 +25,7 @@ export type DecisionRow = {
   answered_by: string | null; answered_at: string | null; applied_at: string | null;
   prepared_at?: string | null; prepared_head?: string | null; prepared_discussion?: string | null; prepare_requested_at?: string | null; prepare_failed_head?: string | null; recommend_failures?: number | null; recommend_failed_at?: string | null;
   summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null; snoozed_by: string | null; snoozed_at: string | null;
-  exec_state?: string | null; exec_reason?: string | null;
+  exec_state?: string | null; exec_reason?: string | null; dispute_by?: string | null; dispute_reason?: string | null; dispute_at?: string | null;
 };
 
 const j = <T>(s: string | null, d: T): T => {
@@ -200,7 +201,7 @@ export function backlogOpen(db: DatabaseSync, scope: BacklogScope, by: string, a
   if (!apply) return { applied: false, decisions };
   db.exec("BEGIN IMMEDIATE");
   try {
-    const set = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL WHERE id = ? AND answer IS NULL`);
+    const set = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL WHERE id = ? AND answer IS NULL AND NOT ${lockLiveSql("decisions")}`);
     for (const d of rows) {
       if (set.run(BACKLOG.key, isBatch(d) ? "[]" : null, by, at, d.id).changes === 1) audit(db, by, "answer", d.id, { answer: BACKLOG.key, bulk: true });
     }

@@ -5,6 +5,7 @@ import { useQuery } from "../../../api/client";
 import type { ItemPageData } from "../../../api/types";
 import { useUser } from "../../../shell/UserContext";
 import { canAct, canComment } from "../../../registry/permissions";
+import { HeldAnswers, visibleHeld } from "../../decisions/AnswerHold";
 import { OpenQuestions, useItemDecisions } from "../ItemDecisions";
 import { ActionCard } from "../OpusCards";
 import { Composer } from "../Composer";
@@ -34,8 +35,9 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
   const suggestions = lastOpus?.actions.filter((a) => a.settles === undefined && !a.fromChoice && ["proposed", "running", "failed"].includes(a.state) && a.canSettle) ?? [];
   return (
     <div className="pb-2">
-      {open.length > 0 && (
-        <div className="border-b border-line px-4 py-3 md:px-6">
+      {(open.length > 0 || visibleHeld(ds ?? [], user.login).length > 0) && (
+        <div className="space-y-2 border-b border-line px-4 py-3 md:px-6">
+          <HeldAnswers ds={ds ?? []} />
           <OpenQuestions ds={(ds ?? []).filter((x) => x.answer || open.includes(x))} choices={choices} updating={updating?.decisionId} />
         </div>
       )}

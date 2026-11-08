@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Progress } from "../../../web/src/api/types.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
 import { SNOOZED_SQL, optionsOf, type DecisionRow } from "../../decisions.ts";
+import { heldOpenSql } from "../../answers/hold.ts";
 import type { Req } from "../types.ts";
 import { inRepos, withoutHidden } from "./decisions.ts";
 import { healthOf } from "./now.ts";
@@ -37,7 +38,7 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
 async function needs(db: DatabaseSync, req: Req, hidden: string[], staff: boolean, deps: Deps): Promise<Home["needs"]> {
   const params: Record<string, string> = {};
   const hide = withoutHidden(hidden, params);
-  const where = `answer IS NULL AND NOT ${SNOOZED_SQL}${hide ? ` AND ${hide}` : ""}`;
+  const where = `((answer IS NULL AND NOT ${SNOOZED_SQL}) OR ${heldOpenSql(req.user.login, req.user.role === "operator")})${hide ? ` AND ${hide}` : ""}`;
   const byKind: Partial<Record<NeedKind, number>> = {};
   for (const r of db.prepare(`SELECT kind, COUNT(*) AS n FROM decisions WHERE ${where} GROUP BY kind`).all(params) as { kind: NeedKind; n: number }[]) byKind[r.kind] = r.n;
   // The Needs page's own counts, so the total is the nav badge's number for this user.

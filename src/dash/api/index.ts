@@ -387,6 +387,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/answer", dec.answer),
     post("/api/decisions/:id/undo", dec.undo),
     post("/api/decisions/:id/retry", dec.retry),
+    post("/api/decisions/:id/dispute", dec.dispute),
+    post("/api/decisions/:id/keep", dec.keepAnswer),
     { method: "POST", pattern: "/api/decisions/:id/snooze", operator: true, handler: ok(dec.snooze) },
     { method: "POST", pattern: "/api/decisions/:id/reprepare", operator: true, handler: ok(dec.reprepare) },
     post("/api/decisions/:id/reopen", dec.reopen),

@@ -116,6 +116,8 @@ export function createHttpApi(): Api {
       answer: (id, input) => post(dec(id, "/answer"), input),
       undo: (id) => post(dec(id, "/undo")),
       retry: (id) => post(dec(id, "/retry")),
+      dispute: (id, reason) => post(dec(id, "/dispute"), { reason }),
+      keepAnswer: (id) => post(dec(id, "/keep")),
       snooze: (id, on) => post(dec(id, "/snooze"), { on }),
       reopen: (id) => post(dec(id, "/reopen")),
       feedback: (id, input) => post(dec(id, "/feedback"), input),

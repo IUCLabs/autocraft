@@ -159,7 +159,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   adopted_opinion TEXT,               -- decision_opinions.id when the answer adopted an opinion
   snoozed_by TEXT,                    -- operator who snoozed the open question
   snoozed_at TEXT,                    -- the question is snoozed while the item has no activity after this (SNOOZED_SQL)
-  exec_state TEXT, exec_reason TEXT   -- the answer's GitHub write: pending | waiting-token | waiting-permission | done | failed, and why it waits or failed
+  exec_state TEXT, exec_reason TEXT,  -- the answer's GitHub write: pending | waiting-token | waiting-permission | done | failed, and why it waits or failed; an open decision: settling while a card runs (reason `<card id>:<login>`); an answered one: disputed (src/answers/hold.ts)
+  dispute_by TEXT, dispute_reason TEXT, dispute_at TEXT  -- who disputed the unapplied answer, why, and when
 );
 CREATE INDEX IF NOT EXISTS decisions_open ON decisions(answer, kind, repo);
 CREATE INDEX IF NOT EXISTS decisions_asked ON decisions(answer, asked_at);
