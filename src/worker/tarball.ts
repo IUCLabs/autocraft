@@ -77,6 +77,24 @@ class Reader {
 }
 
 /** Extracts an uncompressed tar stream into `dest` (which must exist). Returns the number of files written. */
+/** Creates the directories `parts` below `dest`, refusing to pass through a symlink (mkdir -p would follow one out of the tree). */
+function ensureDir(dest: string, parts: string[]): string {
+  let cur = dest;
+  for (const part of parts) {
+    cur = join(cur, part);
+    let st: ReturnType<typeof lstatSync> | null = null;
+    try {
+      st = lstatSync(cur);
+    } catch {
+      mkdirSync(cur, { mode: 0o755 });
+      continue;
+    }
+    if (st.isSymbolicLink()) throw new TarError(`path passes through a symlink: ${parts.join("/")}`);
+    if (!st.isDirectory()) throw new TarError(`path component is not a directory: ${parts.join("/")}`);
+  }
+  return cur;
+}
+
 export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limits = DEFAULT_EXTRACT_LIMITS, strip = 1): Promise<number> {
   const r = new Reader(src);
   const files = new Set<string>();
@@ -124,12 +142,11 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
     const rel = safeRelative(name, strip);
     const mode = octal(h, 100, 8) & 0o777; // drops setuid, setgid and sticky
     if (type === "5") {
-      if (rel) mkdirSync(join(dest, ...rel), { recursive: true, mode: 0o755 });
+      if (rel) ensureDir(dest, rel);
     } else if (type === "0" || type === "7") {
       if (psize !== size) total += psize - size;
       if (!rel) throw new TarError(`file without a path below the root: ${name}`);
-      const full = join(dest, ...rel);
-      mkdirSync(dirname(full), { recursive: true });
+      const full = join(ensureDir(dest, rel.slice(0, -1)), rel[rel.length - 1]!);
       const fd = openSync(full, "w", (mode | 0o600) & 0o777);
       try {
         let left = psize;
@@ -167,14 +184,14 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
   // Links are created last, so no file is ever written through one.
   for (const l of hardlinks) {
     if (!files.has(l.target)) throw new TarError(`hardlink target is not a file in the archive: ${l.target}`);
-    const full = join(dest, l.path);
-    mkdirSync(dirname(full), { recursive: true });
+    const lp = l.path.split("/");
+    const full = join(ensureDir(dest, lp.slice(0, -1)), lp[lp.length - 1]!);
     linkSync(join(dest, l.target), full);
     files.add(l.path);
   }
   for (const l of symlinks) {
-    const full = join(dest, l.path);
-    mkdirSync(dirname(full), { recursive: true });
+    const lp = l.path.split("/");
+    const full = join(ensureDir(dest, lp.slice(0, -1)), lp[lp.length - 1]!);
     try {
       lstatSync(full);
       throw new TarError(`symlink replaces an extracted entry: ${l.path}`);

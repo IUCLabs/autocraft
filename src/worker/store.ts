@@ -160,7 +160,7 @@ export function createStore(cfg: StoreConfig): Server {
       // Recording the read is best effort (a full disk must not stop reads).
     }
     res.writeHead(200, { "content-type": "application/zstd", "content-length": fstatSync(fd).size, "x-sha256": rec.sha256 });
-    createReadStream("", { fd }).on("error", () => res.destroy()).pipe(res);
+    void pipeline(createReadStream("", { fd }), res).catch(() => {});
   };
 
   const server = createServer((req, res) => {
