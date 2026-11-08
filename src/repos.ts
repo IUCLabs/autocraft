@@ -8,6 +8,7 @@ import { DEFAULT_OWNER, loadOwners, OWNER, splitSlug } from "./owners.ts";
 import { appCoverage, githubIdentity, setGithubIdentityChecked } from "./github/identity.ts";
 import { readAppSecrets } from "./github/install-token.ts";
 import { PilotError, setRepoPipeline } from "./pilot.ts";
+import { AppReadError, readEnv } from "./github/read.ts";
 
 export class RepoError extends Error {}
 
@@ -44,8 +45,11 @@ export function trackRepo(db: DatabaseSync, by: string, input: string): boolean 
 /** Whether `owner/name` exists and the account can read it. */
 export type RepoExists = (owner: string, name: string) => Promise<boolean>;
 
-export const ghRepoExists: RepoExists = (owner, name) =>
-  new Promise((resolve) => execFile("gh", ["api", `repos/${owner}/${name}`, "--jq", ".full_name"], { timeout: 30_000 }, (err) => resolve(!err)));
+export const ghRepoExists: RepoExists = async (owner, name) => {
+  let env: Awaited<ReturnType<typeof readEnv>>;
+  try { env = await readEnv(owner); } catch (e) { if (e instanceof AppReadError && e.notInstalled) return false; throw e; }
+  return new Promise((resolve) => execFile("gh", ["api", `repos/${owner}/${name}`, "--jq", ".full_name"], { timeout: 30_000, ...(env ? { env } : {}) }, (err) => resolve(!err)));
+};
 
 /**
  * trackRepo for an operator's input: a repo of another owner is tracked only when GitHub confirms it

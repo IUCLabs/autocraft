@@ -409,7 +409,7 @@ export async function addLabels(w: Writer, q: Querier, repo: string, items: Labe
 const GH_URL = /https:\/\/github\.com\/\S+/;
 
 async function viaGh(w: Writer, identity: string, exec: Exec, action: string, target: string, details: Details, args: string[], input?: string): Promise<ExecResult> {
-  return recorded(w, identity, action, target, details, () => exec("gh", args, input === undefined ? undefined : { input }),
+  return recorded(w, identity, action, target, details, () => exec("gh", args, input === undefined && identity !== "legacy" ? undefined : { ...(input === undefined ? {} : { input }), ...(identity === "legacy" ? { inherit: true } : {}) }),
     (r) => ({ url: r.stdout.match(GH_URL)?.[0] }),
     (r) => (r.code === 0 ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
 }
@@ -610,7 +610,7 @@ export async function ghAdvisoryCreate(w: Writer, g: Grant, exec: Exec, o: { rep
   const body = json({ summary: o.summary, description: o.description, severity: o.severity, vulnerabilities: [{ package: { ecosystem: "other", name: o.repo }, vulnerable_version_range: o.range, patched_versions: o.patched ?? null }] });
   let ghsa: string | null = null;
   const result = await recorded(w, "legacy", "security-advisory", o.key, { repo: o.repo },
-    () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories`, "--input", "-", "--jq", ".ghsa_id"], { input: body }),
+    () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories`, "--input", "-", "--jq", ".ghsa_id"], { input: body, inherit: true }),
     (r) => { ghsa = r.stdout.trim() || null; return { ghsa: ghsa ?? undefined }; },
     (r) => (r.code === 0 && r.stdout.trim() ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
   return { ghsa, result };
@@ -621,7 +621,7 @@ export async function ghAdvisoryFork(w: Writer, g: Grant, exec: Exec, o: { repo:
   covers(g, o.repo);
   let fork: string | null = null;
   const result = await recorded(w, "legacy", "security-advisory-fork", o.key, { repo: o.repo, ghsa: o.ghsa },
-    () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}/forks`, "--jq", ".full_name"]),
+    () => exec("gh", ["api", "-X", "POST", `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}/forks`, "--jq", ".full_name"], { inherit: true }),
     (r) => { fork = r.stdout.trim() || null; return { fork: fork ?? undefined }; },
     (r) => (r.code === 0 && r.stdout.trim() ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
   return { fork, result };
@@ -643,7 +643,7 @@ export function ghAdvisoryPr(w: Writer, g: Grant, exec: Exec, o: { repo: string;
 export async function ghAdvisoryRange(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; ghsa: string; range: () => Promise<string> }): Promise<ExecResult | null> {
   covers(g, o.repo);
   const url = `repos/${slugOf(o.repo)}/security-advisories/${o.ghsa}`;
-  const cur = await exec("gh", ["api", url, "--jq", "[.vulnerabilities[]?.vulnerable_version_range // empty | select(. != \"\")] | length"]);
+  const cur = await exec("gh", ["api", url, "--jq", "[.vulnerabilities[]?.vulnerable_version_range // empty | select(. != \"\")] | length"], { inherit: true });
   if (cur.code === 0 && cur.stdout.trim() !== "0") return null;
   const range = await o.range();
   return viaGh(w, "legacy", exec, "security-advisory-range", o.key, { repo: o.repo, ghsa: o.ghsa },

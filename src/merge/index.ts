@@ -42,6 +42,7 @@ import { verifyOverride } from "./verify-override.ts";
 import { askHoldDecisions } from "../act/index.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import { ownerOf } from "../owners.ts";
+import { readEnvFor } from "../github/read.ts";
 
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
@@ -92,9 +93,11 @@ export type MergeSummary = {
   asked: string[];
 };
 
-export function spawnRun(cmd: string, args: string[], env?: Record<string, string>, replaceEnv = false): Promise<CommandResult> {
+export async function spawnRun(cmd: string, args: string[], env?: Record<string, string>, replaceEnv = false): Promise<CommandResult> {
+  // Without an environment of its own, a gh command reads and writes as the current identity (the app's token under `app`).
+  const own = env ? undefined : await readEnvFor(cmd, args);
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: env ? (replaceEnv ? env : { ...process.env, ...env }) : process.env });
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: own ?? (env ? (replaceEnv ? env : { ...process.env, ...env }) : process.env) });
     let stdout = "", stderr = "";
     p.stdout.on("data", (d) => (stdout += d));
     p.stderr.on("data", (d) => (stderr += d));

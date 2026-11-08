@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { slugOf } from "../owners.ts";
 import { mergeDecisionId, UNKNOWN_REREADS } from "../core/rules.ts";
 import { withdrawMergeQuestion } from "./withdraw.ts";
+import { readEnvFor } from "../github/read.ts";
 
 const PREFIX = "mergeable_unknown:";
 const keyOf = (repo: string, n: number) => `${PREFIX}${repo}#${n}`;
@@ -59,14 +60,18 @@ export function unknownOf(db: DatabaseSync, repo: string, n: number, head: strin
 /** The mergeable state of a PR as GitHub's REST endpoint reports it (reading it starts GitHub's mergeability job); null while GitHub has not computed it. */
 export type RestRead = (repo: string, number: number) => Promise<string | null>;
 
-export const restMergeable: RestRead = (repo, number) => new Promise((resolve, reject) => {
-  const p = spawn("gh", ["api", `repos/${slugOf(repo)}/pulls/${number}`, "--jq", ".mergeable"], { stdio: ["ignore", "pipe", "pipe"] });
+export const restMergeable: RestRead = async (repo, number) => {
+  const args = ["api", `repos/${slugOf(repo)}/pulls/${number}`, "--jq", ".mergeable"];
+  const env = await readEnvFor("gh", args);
+  return new Promise((resolve, reject) => {
+  const p = spawn("gh", args, { stdio: ["ignore", "pipe", "pipe"], ...(env ? { env } : {}) });
   let out = "", err = "";
   p.stdout.on("data", (d) => (out += d));
   p.stderr.on("data", (d) => (err += d));
   p.on("error", reject);
   p.on("close", (code) => (code === 0 ? resolve(out.trim() === "true" ? "MERGEABLE" : out.trim() === "false" ? "CONFLICTING" : null) : reject(new Error(err.trim().slice(0, 200) || `gh exited ${code}`))));
-});
+  });
+};
 
 /**
  * Requests a PR whose state stayed unknown for READS_BEFORE_REQUEST checks reads from GitHub's REST endpoint, which starts the mergeability job.

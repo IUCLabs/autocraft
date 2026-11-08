@@ -8,15 +8,26 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { envVar } from "../env.ts";
 import { APP_CREDENTIAL_HELPER } from "../github/install-token.ts";
+import { readEnvFor } from "../github/read.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 /** `replaceEnv`: `env` is the child's whole environment, not an addition to this process's (the app lane, which must not inherit the box account's tokens). */
-export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string; replaceEnv?: boolean };
+/** `inherit`: run with this process's own environment and the box account's login, never the app's read token (the security-advisory writes, the pipeline account lookup). */
+export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string; replaceEnv?: boolean; inherit?: boolean };
 /** Runs a command; resolves with its exit code, rejects only when it can't be started. */
 export type Exec = (cmd: string, args: string[], opts?: ExecOpts) => Promise<ExecResult>;
 
-export const exec: Exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const p = spawn(cmd, args, { cwd: opts.cwd, env: opts.replaceEnv ? opts.env : { ...process.env, ...opts.env }, stdio: ["pipe", "pipe", "pipe"], timeout: 300_000 });
+export const exec: Exec = async (cmd, args, opts = {}) => {
+  // A command that brings its own whole environment (a write lane) or asks to inherit keeps it. Any other gh command and
+  // the network reads of git (fetch, ls-remote, clone, pull) read as the current identity: the app's installation token
+  // under `app`, the inherited login under `box`. Local git commands and pushes get no token.
+  const read = opts.replaceEnv || opts.inherit ? undefined : await readEnvFor(cmd, args);
+  const env = opts.replaceEnv ? opts.env : { ...(read ?? process.env), ...opts.env };
+  return spawned(cmd, args, opts, env);
+};
+
+const spawned = (cmd: string, args: string[], opts: ExecOpts, env: NodeJS.ProcessEnv | undefined): Promise<ExecResult> => new Promise((resolve, reject) => {
+  const p = spawn(cmd, args, { cwd: opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], timeout: 300_000 });
   let stdout = "", stderr = "";
   p.stdout.on("data", (d) => (stdout += d));
   p.stderr.on("data", (d) => (stderr += d));

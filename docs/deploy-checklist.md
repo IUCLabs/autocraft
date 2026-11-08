@@ -63,7 +63,7 @@ Never set `AUTOCRAFT_DEV_AUTH`: it signs in as any login and is allowed only on 
 | Volume | Mount | Holds | Secrets |
 |---|---|---|---|
 | data (20 Gi in the manifest) | `/data` | `mirror.db` (SQLite), the git cache and checkouts, job logs, task artifacts, `HOME`, backups in `/data/backups` | The database holds encrypted GitHub user tokens, agent token hashes and sessions. Treat it, and its backups, as secret. |
-| config (1 Gi) | `/config` | `secrets.json` (mode 0600, owner uid 10001), `accounts.json`, the Claude account directories in `/config/claude`, the `gh` config if `gh auth login` is used instead of `GH_TOKEN` | All of it. `secrets.json` holds the OAuth client secret, the session key and the GitHub App private key; the account directories hold Claude logins. |
+| config (1 Gi) | `/config` | `secrets.json` (mode 0600, owner uid 10001), `accounts.json`, the Claude account directories in `/config/claude`, the `gh` config if `gh auth login` is used instead of `GH_TOKEN` (needed only while the GitHub identity is the box account; under the GitHub App identity every read and write uses installation tokens) | All of it. `secrets.json` holds the OAuth client secret, the session key and the GitHub App private key; the account directories hold Claude logins. |
 
 Both are read-write: the dashboard rewrites `secrets.json` (a temporary file in `/config`, then a rename) when the GitHub App is registered, and writes account files, logins and usage readings. `session_key` seals the stored GitHub tokens (`user_tokens` and each session's token set). With a different key those read as unavailable until each user signs in again. Sessions and agent tokens do not depend on it.
 

@@ -15,6 +15,7 @@
 import { spawn } from "node:child_process";
 import { FORMAL_REVIEWS, refuseLive, type ReviewFact } from "./changes-requested.ts";
 import { cliMergeRecorder, ghMergePr, MERGE_RECORDED_ENV } from "../github/write.ts";
+import { readEnvFor } from "../github/read.ts";
 
 export type Method = "--squash" | "--merge";
 export type Gh = (args: string[]) => Promise<string>;
@@ -122,9 +123,10 @@ export async function refuseChangesRequested(repo: string, pr: string, gh: Gh): 
   return refuseLive(formal, p.reviewDecision);
 }
 
-export function ghExec(args: string[]): Promise<string> {
+export async function ghExec(args: string[]): Promise<string> {
+  const env = await readEnvFor("gh", args);
   return new Promise((resolve, reject) => {
-    const p = spawn("gh", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("gh", args, { stdio: ["ignore", "pipe", "pipe"], ...(env ? { env } : {}) });
     let out = "", err = "";
     p.stdout.on("data", (d) => (out += d));
     p.stderr.on("data", (d) => (err += d));

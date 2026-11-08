@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { envVar } from "../env.ts";
 import { slugOf } from "../owners.ts";
+import { readEnvFor } from "../github/read.ts";
 
 // gh picks its account from the working directory, so it runs in this repo.
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
@@ -18,8 +19,15 @@ export function diffCacheDir(): string {
 export type DiffResult = { ok: true; text: string } | { ok: false; tooLarge: boolean; error: string };
 export type DiffFetcher = (repo: string, number: number) => Promise<DiffResult>;
 
-export const ghDiff: DiffFetcher = (repo, number) => new Promise((resolve) => {
-  const p = spawn("gh", ["pr", "diff", String(number), "--repo", `${slugOf(repo)}`], { cwd: REPO_DIR, timeout: 120_000 });
+export const ghDiff: DiffFetcher = async (repo, number) => {
+  const args = ["pr", "diff", String(number), "--repo", `${slugOf(repo)}`];
+  let env: Awaited<ReturnType<typeof readEnvFor>>;
+  try { env = await readEnvFor("gh", args); } catch (e) { return { ok: false, tooLarge: false, error: String((e as Error).message ?? e) }; }
+  return runDiff(args, env);
+};
+
+const runDiff = (args: string[], env: Awaited<ReturnType<typeof readEnvFor>>): Promise<DiffResult> => new Promise((resolve) => {
+  const p = spawn("gh", args, { cwd: REPO_DIR, timeout: 120_000, ...(env ? { env } : {}) });
   const out: Buffer[] = [];
   let err = "";
   p.stdout.on("data", (d: Buffer) => out.push(d));
@@ -99,9 +107,11 @@ export function codeDiff(text: string, keepTests = false): CodeDiff {
 /** The diff between two heads of one PR, or a failure. Not cached: it is read once per new head. */
 export type DeltaFetcher = (repo: string, base: string, head: string) => Promise<DiffResult>;
 
-function gh(args: string[]): Promise<{ code: number | null; out: string; err: string }> {
+async function gh(args: string[]): Promise<{ code: number | null; out: string; err: string }> {
+  let env: Awaited<ReturnType<typeof readEnvFor>>;
+  try { env = await readEnvFor("gh", args); } catch (e) { return { code: -1, out: "", err: String((e as Error).message ?? e) }; }
   return new Promise((resolve) => {
-    const p = spawn("gh", args, { cwd: REPO_DIR, timeout: 120_000 });
+    const p = spawn("gh", args, { cwd: REPO_DIR, timeout: 120_000, ...(env ? { env } : {}) });
     const out: Buffer[] = [];
     let err = "";
     p.stdout.on("data", (d: Buffer) => out.push(d));
