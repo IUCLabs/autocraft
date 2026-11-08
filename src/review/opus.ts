@@ -10,6 +10,7 @@ import { REVIEW_OPUS } from "../agents/steps.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
 import { openBlockers } from "./blockers.ts";
+import { isScopeQuestion, settledScope } from "./candidates.ts";
 import { recordReviewFailure, reviewHolds } from "./gate.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
@@ -54,6 +55,10 @@ export type OpusSummary = {
 };
 
 const now = () => new Date().toISOString();
+const scopeSettledField = (db: DatabaseSync, repo: string, number: number): { scope_settled?: NonNullable<OpusPr["scope_settled"]> } => {
+  const s = settledScope(db, repo, number);
+  return s ? { scope_settled: s } : {};
+};
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
 
 export function defaultOpusDeps(): OpusDeps {
@@ -76,12 +81,20 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   // An answered question is withdrawn as for any re-review: the head then needs a new answer.
   const unanswered = !!db.prepare("SELECT 1 FROM decisions WHERE id = ? AND answer IS NULL").get(mergeDecisionId(c.repo, c.number, c.head_oid));
   const keepsQuestion = !!again && unanswered && (r.verdict === "take" || r.verdict === "take-fix") && headWasUnsure(db, c.repo, c.number, c.head_oid);
-  if (again && !keepsQuestion) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
+  // An answered, unapplied merge answer stands through a re-review at the same head unless the verdict got worse.
+  const keepsAnswer = !!again && (r.verdict === "take" || r.verdict === "take-fix") && r.sure
+    && !!db.prepare("SELECT 1 FROM decisions WHERE id = ? AND answer = 'merge' AND applied_at IS NULL").get(mergeDecisionId(c.repo, c.number, c.head_oid));
+  if (again && !keepsQuestion && !keepsAnswer) {
+    const worse = r.verdict === "take" || r.verdict === "take-fix" ? "the new review is unsure" : `the new review is a ${r.verdict}`;
+    withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at, `superseded by a new review: ${worse}`);
+  }
   // The row about to be replaced may predate the history: copy it first.
   db.prepare(`${HISTORY_COPY_SQL} AND o.repo = ? AND o.number = ? AND o.head_oid = ?`).run(c.repo, c.number, c.head_oid);
   const risks = JSON.stringify(r.risks), fixes = r.fixes.length ? JSON.stringify(r.fixes) : null, pub = r.public ? JSON.stringify(r.public) : null, claims = r.claims.length ? JSON.stringify(r.claims) : null;
   // Only open tracked items other than the PR can block it: a reference that is already closed would end the wait at once.
-  const blockers = r.verdict === "hold" ? openBlockers(db, r.blocked_by.filter((x) => x !== `${c.repo}#${c.number}`)) : [];
+  // A scope question is no blocker once a person has settled scope for this PR.
+  const scopeSettled = settledScope(db, c.repo, c.number) !== null;
+  const blockers = r.verdict === "hold" ? openBlockers(db, r.blocked_by.filter((x) => x !== `${c.repo}#${c.number}`)).filter((b) => !(scopeSettled && isScopeQuestion(db, b))) : [];
   const blockedBy = blockers.length ? JSON.stringify(blockers) : null;
   db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, trigger, job_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims, blockedBy,
@@ -150,7 +163,7 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
       mode: "full", earlier_opus: null, diff: cd.text,
       related_open: relatedOpen(db, repo, c.number, cd.files), review_history: latestReview(db, repo, c.number, c.head_oid),
     };
-    return { kind: "ready", input: { ...input, statements: relatedStatements(db, repo, c.number) }, snap: { seen: now(), hash: null }, mode: "full", base: null };
+    return { kind: "ready", input: { ...input, statements: relatedStatements(db, repo, c.number), ...scopeSettledField(db, repo, c.number) }, snap: { seen: now(), hash: null }, mode: "full", base: null };
   }
   let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
   const earlier = earlierOpus(db, c);
@@ -185,6 +198,7 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
     mode, earlier_opus: mode === "delta" ? earlier : null, ...(unapplied.length ? { unapplied_fixes: unapplied } : {}), ...(ours.length ? { pipeline_commits: ours } : {}), diff, discussion,
     related_open: relatedOpen(db, repo, c.number, cd.files),
     statements: relatedStatements(db, repo, c.number),
+    ...scopeSettledField(db, repo, c.number),
   };
   return { kind: "ready", input, snap, mode, base };
 }

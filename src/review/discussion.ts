@@ -264,7 +264,7 @@ function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionStat
 }
 
 /** A maintainer's counted entry newer than a review's snapshot that the review did not read; PR author comments do not count. */
-function maintainerSince(state: { newest: string; hash: string; maint: string } | undefined, seen: string, hash: string | null): boolean {
+export function maintainerSince(state: { newest: string; hash: string; maint: string } | undefined, seen: string, hash: string | null): boolean {
   return !!state && !!state.maint && sec(state.maint) > sec(seen) && state.hash !== hash;
 }
 

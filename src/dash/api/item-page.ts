@@ -147,7 +147,11 @@ function reviewsOf(c: Ctx, headNow: string | null, events: Ev[]): ReviewHistory 
       id: r.key, head: short(r.head_oid), current: r.head_oid === headNow, at: r.at, trigger, why: staff ? triggerWhy(r.trigger, !older) ?? (older ? (trigger === "discussion" ? "New discussion since the last review" : "New commits since the last review") : "First review") : "",
       verdict: (VERDICTS.has(r.verdict ?? "") ? r.verdict : "hold") as ReviewVerdict, sure: r.sure === 1,
       summary: staff ? r.summary || r.reason || "" : "", fixes: staff ? fixes : [], risks: staff ? arr<string>(r.risks) : [], claims: staff ? claims : [],
-      blockedBy: arr<ItemRef>(r.blocked_by).filter((b) => b && typeof b.repo === "string" && typeof b.number === "number" && !c.hidden.includes(b.repo)).map((b) => ({ repo: b.repo, number: b.number })),
+      // Stored as "repo#n" strings.
+      blockedBy: arr<unknown>(r.blocked_by).flatMap((b): ItemRef[] => {
+        const m = typeof b === "string" ? /^([\w.-]+)#(\d+)$/.exec(b) : null;
+        return m && !c.hidden.includes(m[1]!) ? [{ repo: m[1]!, number: Number(m[2]) }] : [];
+      }),
       costUsd: costs.get(`review:${r.key}`) ?? 0,
     };
   });
