@@ -1,4 +1,4 @@
-import type { NeedsFeedbackRow, NeedsPage } from "../types";
+import type { NeedsFeedbackRow, NeedsFixPage, NeedsPage } from "../types";
 import { NOW } from "./fixtures";
 
 const at = (min: number) => new Date(NOW - min * 60_000).toISOString();
@@ -35,13 +35,28 @@ export function needsPage(f: { feedback?: boolean; cursor?: string }): NeedsPage
   const start = f.cursor ? Number(f.cursor) : 0;
   const size = 50;
   return {
-    counts: { decisions: 40, feedback: ROWS.filter((r) => !r.handled).length, stopped: 4 },
+    counts: { decisions: 40, feedback: ROWS.filter((r) => !r.handled).length, stopped: 5 },
     feedback: f.feedback ? { rows: ROWS.slice(start, start + size), nextCursor: start + size < ROWS.length ? String(start + size) : null } : null,
     stopped: [
       { id: "breaker:merge", kind: "breaker", title: "Merge", reason: "Two merges in a row left the default branch red", since: at(95), resume: { type: "trip", stage: "merge" } },
       { id: "limit:fixup", kind: "limit", title: "Fix-up", reason: "The daily limit is 0", since: at(60 * 30), resume: { type: "link", to: "/pipeline" } },
-      { id: "fix:craft-libs#251", kind: "fix", title: "craft-libs#251 Crash when the curve has a single point", reason: "The fix attempt was skipped: the issue gives no way to reproduce the crash", since: at(60 * 20), resume: { type: "fix", repo: "craft-libs", number: 251 } },
       { id: "account:b", kind: "account", title: "Second account", reason: "paused: 5-hour use 92% (pause at 80%)", since: null, resume: { type: "link", to: "/accounts" } },
+      { id: "fixes:craft-libs", kind: "fix-group", title: "craft-libs", reason: "52 issues with a stopped fix", since: at(60 * 20), count: 52, resume: { type: "fixes", repo: "craft-libs" } },
+      { id: "fixes:photocraft", kind: "fix-group", title: "photocraft", reason: "1 issue with a stopped fix", since: at(60 * 90), count: 1, resume: { type: "fixes", repo: "photocraft" } },
     ],
   };
+}
+
+const FIX_TITLES = ["Crash when the curve has a single point", "Export drops the alpha channel", "Panel layout resets after undo", "Wrong unit shown in the ruler", "Brush preview lags on large canvases"];
+const FIX_REASONS = ["skipped: the issue gives no way to reproduce the crash", "skipped: the change needs a design decision", "failed: the fix did not pass the repo's tests"];
+
+export function needsFixesPage(repo: string, cursor?: string): NeedsFixPage {
+  const total = repo === "craft-libs" ? 52 : 1;
+  const start = cursor ? Number(cursor) : 0;
+  const size = 25;
+  const rows = Array.from({ length: Math.max(0, Math.min(size, total - start)) }, (_, k) => {
+    const n = start + k;
+    return { id: `fix:${repo}#${400 - n}`, repo, number: 400 - n, title: FIX_TITLES[n % FIX_TITLES.length]!, reason: `The fix attempt was ${FIX_REASONS[n % FIX_REASONS.length]}`, since: at(60 * (20 + n * 7)), impact: n < 4 ? "P1" : n < 12 ? "P2" : null };
+  });
+  return { rows, nextCursor: start + size < total ? String(start + size) : null };
 }

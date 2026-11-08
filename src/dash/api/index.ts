@@ -50,7 +50,7 @@ import { settledOf, unflagged } from "../../classify/settled.ts";
 import { isQuiet } from "../../security/quiet.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
-import { needs } from "./needs.ts";
+import { fixes as needsFixes, needs } from "./needs.ts";
 import { home } from "./home.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
@@ -547,6 +547,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/security/findings/:repo/:n", security.finding),
     post("/api/security/findings/:repo/:n", security.actOnFinding),
     get("/api/needs", needs),
+    get("/api/needs/fixes/:repo", needsFixes),
     get("/api/flow", flow),
     get("/api/now", now),
     get("/api/now/feed", nowFeed),

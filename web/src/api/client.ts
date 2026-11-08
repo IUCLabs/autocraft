@@ -41,6 +41,7 @@ import type {
   AnswerInput,
   AuditFilter,
   AuditPage,
+  NeedsFixPage,
   NeedsPage,
   Contributor,
   ContributorFilter,
@@ -297,6 +298,8 @@ export interface Api {
   next(): Promise<NextPage>;
   /** What waits on a person: counts for the tabs, feedback nobody answered yet (newest first, paged by cursor) and stopped stages. */
   needs(filter: { feedback?: boolean; cursor?: string }): Promise<NeedsPage>;
+  /** A repo's issues with a stopped fix, 25 per page. */
+  needsFixes(repo: RepoName, cursor?: string): Promise<NeedsFixPage>;
   /** Integration batches of the merge queue, newest first, with their member PRs. */
   queueBatches(filter: BatchFilter): Promise<BatchList>;
   /** One integration batch with its members, CI and history. */

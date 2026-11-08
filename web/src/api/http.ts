@@ -294,6 +294,7 @@ export function createHttpApi(): Api {
     prompts: () => get("/api/prompts"),
     queue: (f) => get(`/api/queue${qs(f)}`),
     needs: (f) => get(`/api/needs${qs(f)}`),
+    needsFixes: (repo, cursor) => get(`/api/needs/fixes/${encodeURIComponent(repo)}${qs({ cursor })}`),
     queueBatches: (f) => get(`/api/queue/batches${qs(f)}`),
     batch: (id) => get(`/api/batches/${id}`),
     flow: (repo) => get(`/api/flow${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`),

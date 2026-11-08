@@ -1,11 +1,9 @@
 import type { ReactNode } from "react";
 import type { NeedsStoppedRow } from "../../api/types";
 import { Badge } from "../atoms/Badge";
-import { TextLink } from "../atoms/TextLink";
-import { itemPath } from "../../lib/links";
 import { TimeAgo } from "../atoms/TimeAgo";
 
-const KIND: Record<NeedsStoppedRow["kind"], string> = { breaker: "Tripped", limit: "Paused", account: "No headroom", fix: "Fix stopped" };
+const KIND: Record<NeedsStoppedRow["kind"], string> = { breaker: "Tripped", limit: "Paused", account: "No headroom", "fix-group": "Fix stopped" };
 
 /** A stage or account that stopped; `action` is the control that resumes it. */
 export function StoppedRow({ row, action }: { row: NeedsStoppedRow; action?: ReactNode }) {
@@ -13,9 +11,7 @@ export function StoppedRow({ row, action }: { row: NeedsStoppedRow; action?: Rea
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-3">
       <div className="min-w-0 flex-1 basis-60">
         <div className="flex flex-wrap items-center gap-2">
-          {row.resume.type === "fix"
-            ? <TextLink to={itemPath(row.resume.repo, row.resume.number)} className="text-sm font-medium">{row.title}</TextLink>
-            : <span className="text-sm font-medium">{row.title}</span>}
+          <span className="text-sm font-medium">{row.title}</span>
           <Badge tone="warn">{KIND[row.kind]}</Badge>
           {row.since && <TimeAgo iso={row.since} className="text-xs text-ink/50" />}
         </div>

@@ -8,6 +8,7 @@ import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { StoppedRow } from "../../ui/molecules/StoppedRow";
 import { useWrite } from "../../lib/hooks";
 import { useUser } from "../../shell/UserContext";
+import { FixGroup } from "./FixGroup";
 import { useSummary } from "./state";
 
 function Resume({ row, onDone }: { row: NeedsStoppedRow; onDone: () => void }) {
@@ -15,15 +16,9 @@ function Resume({ row, onDone }: { row: NeedsStoppedRow; onDone: () => void }) {
   const write = useWrite();
   const operator = useUser().role === "operator";
   const r = row.resume;
+  if (r.type === "fixes") return null;
   if (r.type === "link") return <TextLink to={r.to}>Open</TextLink>;
   if (!operator) return null;
-  if (r.type === "fix")
-    return (
-      <div className="flex flex-col items-end gap-1">
-        <ConfirmButton idle="secondary" label="Fix again" confirmLabel="Confirm fix again" loading={write.busy === "resume"} onConfirm={() => void write.run("resume", async () => { await api.release(r.repo, r.number, "fix-again"); onDone(); })} />
-        <ErrorLine error={write.error} />
-      </div>
-    );
   return (
     <div className="flex flex-col items-end gap-1">
       <ConfirmButton idle="secondary" label="Resume" confirmLabel="Confirm resume" loading={write.busy === "resume"} onConfirm={() => void write.run("resume", async () => { await api.pipeline.resumeTrip(r.stage); onDone(); })} />
@@ -40,9 +35,7 @@ export function StoppedTab() {
       <ErrorLine error={q.error?.message} className="px-4 py-3" />
       {q.data && rows.length === 0 && <EmptyState icon={PlayCircleIcon}>Nothing is stopped.</EmptyState>}
       <ul className="mx-auto max-w-[900px]">
-        {rows.map((r) => (
-          <StoppedRow key={r.id} row={r} action={<Resume row={r} onDone={q.refetch} />} />
-        ))}
+        {rows.map((r) => (r.kind === "fix-group" ? <FixGroup key={r.id} row={r} /> : <StoppedRow key={r.id} row={r} action={<Resume row={r} onDone={q.refetch} />} />))}
       </ul>
     </div>
   );
