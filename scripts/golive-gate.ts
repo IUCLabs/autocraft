@@ -82,7 +82,12 @@ const querier = {
       checkWrite(q.includes("addComment") ? "comment" : q.includes("close") ? "close" : "write", id);
       return q.includes("addComment") ? { addComment: { commentEdge: { node: { url: `https://x.test/${id}` } } } } : {};
     }
-    if (q.includes("issueOrPullRequest")) return { repository: { issueOrPullRequest: { __typename: "Issue", id: `${v.name}#${v.n}`, state: "OPEN" } } };
+    if (q.includes("issueOrPullRequest")) {
+      // GitHub agrees with the mirror: a PR keeps the head the database holds.
+      const it = db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?").get(String(v.name), Number(v.n)) as { kind: string; head_oid: string | null } | undefined;
+      const id = `${v.name}#${v.n}`;
+      return { repository: { issueOrPullRequest: it?.kind === "pr" ? { __typename: "PullRequest", id, state: "OPEN", headRefOid: it.head_oid } : { __typename: "Issue", id, state: "OPEN" } } };
+    }
     if (q.includes("viewer")) return { viewer: { login: "pipeline-bot", id: "U1" } };
     return { repository: {} };
   },

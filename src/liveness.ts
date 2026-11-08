@@ -3,7 +3,7 @@
 // threshold, not a pipeline wait). The runner refreshes the stored result after planner passes (refreshLiveness); the health check,
 // the Stuck items page and `autocraft liveness` read it.
 import type { DatabaseSync } from "node:sqlite";
-import { fixStoppedWait } from "./core/decide-item.ts";
+import { fixStoppedWait, TRIAGE_WAIT } from "./core/decide-item.ts";
 import type { WaitKind } from "./core/plan.ts";
 
 export type LivenessVerdict = "stuck" | "long";
@@ -26,7 +26,7 @@ export type ItemFlags = { question: boolean; answered?: boolean; dispute: boolea
 
 /** Plan states a person parks on purpose: nothing is due and nobody is asked. */
 const PARKED_STATES: ReadonlySet<string> = new Set(["backlog", "held-backlog", "draft", "declined", "out-of-scope"]);
-const PARKED_WAITS: ReadonlySet<string> = new Set(["merge held by an operator", "stays open as a plugin candidate", "a Backlog hold"]);
+const PARKED_WAITS: ReadonlySet<string> = new Set(["merge held by an operator", "stays open as a plugin candidate", "a Backlog hold", TRIAGE_WAIT]);
 /** Waits on a pipeline step that has no action due: nothing is working on them. */
 const INTERNAL_WAITS: ReadonlySet<string> = new Set(["the scope question to be asked", "the label referee", "Haiku's second opinion"]);
 /** Person waits whose person acts on GitHub, not in a question. */
