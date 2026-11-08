@@ -51,9 +51,15 @@ export function retryWaiting(db: DatabaseSync, login?: string): number {
   return Number(r.changes);
 }
 
+/** Act's tries of a decision start again: a target it stopped after repeated failures is planned once more. Used when the answer is undone, given again, kept after a dispute, or retried. */
+export function resetActTries(db: DatabaseSync, id: string): void {
+  db.prepare("UPDATE main.actions SET state = CASE WHEN state = 'stopped' THEN 'failed' ELSE state END, attempts = 0 WHERE decision_id = ? AND state IN ('stopped', 'failed')").run(id);
+}
+
 export function retryDecision(db: DatabaseSync, id: string): boolean {
   const r = db.prepare(`UPDATE main.decisions SET exec_state = 'pending', exec_reason = NULL
     WHERE id = ? AND exec_state IN ('waiting-token', 'waiting-permission', 'failed') AND applied_at IS NULL AND answer IS NOT NULL`).run(id);
+  if (Number(r.changes) > 0) resetActTries(db, id);
   return Number(r.changes) > 0;
 }
 

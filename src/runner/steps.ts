@@ -355,8 +355,11 @@ export const STEPS: StepDef[] = [
       const refused = await checkCommentApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const r = await runAct(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
-      ctx.acted(r.done.length + r.skipped.length + r.failed.length + r.asked.length);
-      return `${r.repo}: ${r.done.length} closed, ${r.skipped.length} skipped, ${r.failed.length} failed, ${r.asked.length} decisions asked`;
+      ctx.acted(r.done.length + r.skipped.length + r.failed.length + r.asked.length + (r.cards ?? 0));
+      const line = `${r.repo}: ${r.done.length} closed, ${r.skipped.length} skipped, ${r.failed.length} failed, ${r.asked.length} decisions asked${r.cards ? `, ${r.cards} queued presses carried out` : ""}`;
+      // A failed target ends the job as failed, so the registered failure backoff spaces its next tries (a target stops after ACT_MAX_ATTEMPTS).
+      if (r.failed.length) throw new Error(`${line}; ${r.failed[0]!.ref}: ${r.failed[0]!.reason}`);
+      return line;
     },
   },
   {

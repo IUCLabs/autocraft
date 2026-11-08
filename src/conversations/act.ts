@@ -9,7 +9,9 @@ import { readLive, writeEffect } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { optionsOf, BACKLOG, HANDLED, getDecision, reposOf, replaceProposedCards } from "../decisions.ts";
-import { actUsedToday } from "./usage.ts";
+import { actRoom, needOf, queuedAhead, queuedCards, queuePlace, queueReason, type QueueArgs, cardWriteCount } from "./queue.ts";
+import { settlesNow } from "../settlers.ts";
+import { actBlockedReason } from "../runner/autopilot.ts";
 import { addLabels, closeItem, commentOn, createIssue, IssueError, assignTo, removeLabel, reopenItem, requestReviewers, transferIssue, type Note, type Writer } from "../github/write.ts";
 import { exec as defaultExec, type Exec } from "../fixup/git.ts";
 import { runPipelineStep } from "../preapproval/index.ts";
@@ -27,12 +29,14 @@ export type CardRow = {
   seen: string | null;
   /** The decision_choices row the card was run from. */
   choice_id?: string | null;
+  /** Set while the card waits for room under the daily limit: when it was pressed and what the press carried (QueueArgs JSON); a dispute by someone else of the queued press. */
+  queued_at?: string | null; queue_args?: string | null; dispute_by?: string | null; dispute_reason?: string | null; dispute_at?: string | null;
   id: number; turn_id: number; repo: string; number: number; kind: string; params: string; text: string | null; description: string;
   state: string; result: string | null; result_url: string | null; error: string | null; acted_by: string | null; acted_at: string | null; edited_by: string | null; edited_at: string | null;
 };
 
 /** `canWrite` is the signed-in operator's write access to a repo; the shell has none to check. */
-export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** The note with the choice. */ note?: string; /** The presser's role, named in the conversation block (default operator). */ role?: string; /** The presser is not an operator: the note is stored and shown but never put in the model's block. */ noteStaysOut?: boolean };
+export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** The note with the choice. */ note?: string; /** The presser's role, named in the conversation block (default operator). */ role?: string; /** The presser is not an operator: the note is stored and shown but never put in the model's block. */ noteStaysOut?: boolean; /** Set by the Act step's drain: run the queued card as its presser pressed it. */ drain?: boolean };
 
 export const cardOf = (db: DatabaseSync, id: number): CardRow | undefined =>
   db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(id) as CardRow | undefined;
@@ -94,12 +98,22 @@ export function editCard(db: DatabaseSync, id: number, by: string, edit: CardEdi
   return need(db, id);
 }
 
+/** Dismisses a proposed card, or a queued press (which releases the lock of the decision it settles). The presser of a queued card stays on the card as `queued_by` in the audit. */
 export function dismissCard(db: DatabaseSync, id: number, by: string, deps?: StoreDeps & { role?: string }): CardRow {
   const c = need(db, id);
   const at = (deps?.now?.() ?? new Date()).toISOString();
-  const r = db.prepare("UPDATE conversation_cards SET state = 'dismissed', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
-  if (r.changes !== 1) throw new ConversationError(409, `the card is already ${c.state}`);
-  audit(db, by, "conversation-card-dismiss", ref(c.repo, c.number), { card: id });
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const r = db.prepare("UPDATE conversation_cards SET state = 'dismissed', acted_by = ?, acted_at = ? WHERE id = ? AND state IN ('proposed', 'queued')").run(by, at, id);
+    if (r.changes !== 1) throw new ConversationError(409, `the card is already ${c.state}`);
+    const settles = c.state === "queued" ? settledDecisionOf(JSON.parse(c.params) as CardParams) : undefined;
+    if (settles) releaseSettling(db, settles, id);
+    db.exec("COMMIT");
+  } catch (e) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw e;
+  }
+  audit(db, by, "conversation-card-dismiss", ref(c.repo, c.number), { card: id, ...(c.state === "queued" && { queuedBy: c.acted_by ?? undefined }) });
   insertTurn(db, c.repo, c.number, { kind: "system", login: "system", body: `${by} dismissed the card: ${c.description}.`, block: systemBlock(`The ${deps?.role ?? "operator"} ${by} dismissed the proposed action: ${c.description}.`) }, deps);
   return need(db, id);
 }
@@ -240,19 +254,11 @@ async function closeDuplicate({ db, c, by, q, at, w, source }: Ctx, of: number):
   return { url };
 }
 
-/** The Act step's daily limit also covers the GitHub writes of conversation cards. */
-function actRoom(db: DatabaseSync): void {
-  const row = db.prepare("SELECT per_day FROM stage_limits WHERE step = 'act'").get() as { per_day: number | null } | undefined;
-  if (!row || row.per_day === null) return;
-  if (actUsedToday(db) >= row.per_day) throw new Error(`the daily limit of ${row.per_day} Act writes is reached`);
-}
-
-/** The Act approval of `repo` for the operator's write, and room under the daily limit. */
+/** The Act approval of `repo` for the operator's write. Room under the daily limit was taken for the whole card before its first write (doCard), so a card never stops halfway for it. */
 function actGrant(db: DatabaseSync, repo: string, by: string, need: "comment" | "labels" = "comment") {
   // The operator who presses the button acts as themselves (as `user:<login>` once the repo is on the app's identity).
   const g = guardRepo(db, repo, need, { operator: by }, undefined, by);
   if ("refused" in g) throw new Error(g.refused);
-  actRoom(db);
   return g;
 }
 
@@ -271,6 +277,16 @@ async function needLiveWrite(q: Querier, repo: string, login: string): Promise<v
   const d = await q.query(COLLABORATORS, { owner: ownerOf(repo), name: repo, login }) as { repository?: { collaborators?: { edges?: { permission: string; node: { login: string } }[] } | null } | null };
   const e = d.repository?.collaborators?.edges?.find((x) => x.node.login.toLowerCase() === login.toLowerCase());
   if (!e || !["WRITE", "MAINTAIN", "ADMIN"].includes(e.permission)) throw new Error(`${login} does not have write access to ${repo}`);
+}
+
+/** The presser's write permission on a repo the box acts on, read from GitHub now. */
+async function liveWrite(q: Querier, repo: string, login: string): Promise<"ok" | "no" | "transient"> {
+  try {
+    await needLiveWrite(q, repo, login);
+    return "ok";
+  } catch (e) {
+    return /does not have write access/.test(String((e as Error).message)) ? "no" : "transient";
+  }
 }
 
 async function unlabel(ctx: Ctx, label: string): Promise<Outcome> {
@@ -472,8 +488,10 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, boxQ
 export async function doCard(db: DatabaseSync, id: number, by: string, deps: ActDeps = {}): Promise<{ card: CardRow; ran: boolean }> {
   const c = need(db, id);
   if (c.state === "replaced") throw new ConversationError(409, "replaced by a later reply");
+  const draining = deps.drain === true && c.state === "queued";
+  if (c.state === "queued" && !draining) return { card: c, ran: false };
   let params = JSON.parse(c.params) as CardParams;
-  if (c.state === "proposed" && staleOf(db, c.repo, c.number, c.seen) === "pr-changed" && dependsOnCode(params, c.text)) throw new ConversationError(409, "the PR changed since this was proposed");
+  if ((c.state === "proposed" || draining) && staleOf(db, c.repo, c.number, c.seen) === "pr-changed" && dependsOnCode(params, c.text)) throw new ConversationError(409, "the PR changed since this was proposed");
   const note = deps.note?.trim() || undefined;
   if (note && note.length > NOTE_MAX) throw new ConversationError(400, `the note is longer than ${NOTE_MAX} characters`);
   const skipped: string[] = [];
@@ -502,23 +520,64 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const writes = params.kind === "comment" || params.kind === "label" || params.kind === "close" || params.kind === "duplicate"
     || (params.kind === "resolution" && params.steps.some((x) => x.kind !== "review" && x.kind !== "fixup"));
   const writing = writesItem(params);
+  const nowMs = (deps.now?.() ?? new Date()).getTime();
+  // A press from the queue is carried out as its presser if they still may: their role and write access are read again now.
+  if (draining) {
+    if (writes && !settlesNow(db, by, repos)) throw new ConversationError(409, `${by} no longer has write access`);
+    if (writes) {
+      const q = deps.querier ?? new Client(1000);
+      for (const r of repos) if (repoIdentity(db, r) !== "app") {
+        const live = await liveWrite(q, r, by);
+        if (live === "no") throw new ConversationError(409, `${by} no longer has write access to ${slugOf(r)}`);
+        if (live === "transient") throw new ConversationError(503, "GitHub could not be reached to check the presser's access");
+      }
+    }
+  }
   const lr = writes ? await laneForOperator(db, deps.lane, by, repos) : null;
   if (lr && !("lane" in lr)) throw new ConversationError("transient" in lr ? 503 : 409, "transient" in lr ? `GitHub could not be reached to check your access: ${lr.transient}` : lr.reason);
   const at = (deps.now?.() ?? new Date()).toISOString();
-  // The card claims the decision it settles in the transaction that starts its run: no dashboard answer or other card settles it meanwhile.
+  // The card claims the decision it settles in the transaction that queues or starts it: no dashboard answer or other card settles it meanwhile.
   const settles = settledDecisionOf(params);
+  const needW = cardWriteCount(params, c.text);
+  // Refusals a press that has to wait would only meet at the drain are given now.
+  if (!draining && needW > 0 && (!actRoom(db, needW, nowMs) || queuedAhead(db, id))) {
+    const g = guardRepo(db, c.repo, grantNeed(params), { operator: by }, undefined, by);
+    if ("refused" in g) throw new ConversationError(409, g.refused);
+    if (params.kind === "resolution" && params.settle) await checkSettle(db, c, params.settle, deps.canWrite).catch((e) => { throw new ConversationError(409, String((e as Error).message ?? e)); });
+  }
+  let queued = false;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
-    if (claim.changes !== 1) { db.exec("ROLLBACK"); return { card: c, ran: false }; }
+    const from = draining ? "queued" : "proposed";
+    // Room is taken in this transaction, for all the card's writes at once. A press queues behind the presses already waiting.
+    const wait = needW > 0 && (!actRoom(db, needW, nowMs) || (!draining && queuedAhead(db, id)));
+    if (wait && draining) { db.exec("ROLLBACK"); return { card: c, ran: false }; }
+    if (wait) {
+      const block = actBlockedReason(db, c.repo);
+      if (block) throw new Error(`The daily GitHub write limit leaves no room and ${block}, so this cannot wait in line`);
+    }
+    const claim = wait
+      ? db.prepare("UPDATE conversation_cards SET state = 'queued', acted_by = ?, acted_at = ?, queued_at = ?, queue_args = ?, error = NULL, dispute_by = NULL, dispute_reason = NULL, dispute_at = NULL WHERE id = ? AND state = 'proposed'")
+        .run(by, at, at, JSON.stringify({ ...(deps.skip?.length && { skip: deps.skip }), ...(note && { note }), ...(deps.noteStaysOut && { noteStaysOut: true }), ...(deps.role && { role: deps.role }) } satisfies QueueArgs), id)
+      : db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = ?").run(by, at, id, from);
+    if (claim.changes !== 1) { db.exec("ROLLBACK"); return { card: need(db, id), ran: false }; }
     // Checked inside the transaction that starts the run, so an answer written a moment ago is seen.
     const refusal = writing ? pendingAnswerRefusal(db, c.repo, c.number, by) : null;
     if (refusal) throw new Error(refusal);
     if (settles) claimSettling(db, settles, id, by);
     db.exec("COMMIT");
+    queued = wait;
   } catch (e) {
-    db.exec("ROLLBACK");
+    if (db.isTransaction) db.exec("ROLLBACK");
     throw new ConversationError(409, String((e as Error).message ?? e));
+  }
+  if (queued) {
+    audit(db, by, "conversation-card-queue", ref(c.repo, c.number), { card: id, kind: c.kind });
+    insertTurn(db, c.repo, c.number, {
+      kind: "system", login: "system", body: `${by} pressed the card: ${c.description}. Queued: daily GitHub write limit.` + (note ? ` Note: ${note}` : ""),
+      block: systemBlock(`The ${deps.role ?? "operator"} ${by} chose the proposed action: ${c.description}. It is queued behind the daily limit of GitHub writes and runs in order when room returns.`),
+    }, deps);
+    return { card: need(db, id), ran: false };
   }
   let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
@@ -546,6 +605,67 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   }, deps);
   return { card: need(db, id), ran: true };
 }
+
+/** Ends a queued card that cannot run, with the reason, and frees the decision it held. */
+function failQueued(db: DatabaseSync, c: CardRow, error: string, deps: StoreDeps): void {
+  const at = (deps.now?.() ?? new Date()).toISOString();
+  let settles: string | undefined;
+  try { settles = settledDecisionOf(JSON.parse(c.params) as CardParams); } catch { /* a card with unreadable parameters settles nothing */ }
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const r = db.prepare("UPDATE conversation_cards SET state = 'failed', error = ?, acted_at = ? WHERE id = ? AND state = 'queued'").run(error, at, c.id);
+    if (r.changes === 1 && settles) releaseSettling(db, settles, c.id);
+    db.exec("COMMIT");
+    if (r.changes !== 1) return;
+  } catch (e) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw e;
+  }
+  audit(db, c.acted_by ?? "system", "conversation-card", ref(c.repo, c.number), { card: c.id, kind: c.kind, state: "failed", error, queued: true });
+  insertTurn(db, c.repo, c.number, { kind: "system", login: "system", body: `${c.acted_by}'s queued card could not run: ${c.description}. ${error}.`, block: systemBlock(`The queued action chosen by ${c.acted_by} could not run: ${c.description}. ${error}.`) }, deps);
+}
+
+/**
+ * Runs the queued cards that have room, in queue order, as their pressers pressed them (note, skipped steps and role are kept on the
+ * card). Stops at the first card that still has no room, so a later one never passes it. A disputed press is skipped, as is one whose repo
+ * the pipeline does not cover now. A card that cannot run (the presser lost access, the item closed, the decision changed) fails with the
+ * reason and frees its decision; a transient GitHub error leaves it queued. `writes` is how many GitHub writes the caller still allows
+ * (the Act job's limit). Returns the cards run and the writes they were counted for.
+ */
+export async function drainQueuedCards(db: DatabaseSync, deps: ActDeps = {}, o: { writes?: number } = {}): Promise<{ ran: number; writes: number }> {
+  let ran = 0, used = 0;
+  for (const q of queuedCards(db)) {
+    if (q.dispute_by) continue;
+    const c = cardOf(db, q.id);
+    if (!c || c.state !== "queued" || !c.acted_by) continue;
+    const nowMs = (deps.now?.() ?? new Date()).getTime();
+    let args: QueueArgs, params: CardParams, need: number;
+    try {
+      args = JSON.parse(c.queue_args ?? "{}") as QueueArgs;
+      params = JSON.parse(c.params) as CardParams;
+      need = needOf(c);
+    } catch (e) {
+      failQueued(db, c, oneLine(`the queued press cannot be read: ${(e as Error).message}`), deps);
+      continue;
+    }
+    if (actBlockedReason(db, c.repo)) continue;
+    if (!actRoom(db, need, nowMs) || (o.writes !== undefined && used + need > o.writes)) break;
+    const item = db.prepare("SELECT state FROM main.items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { state: string } | undefined;
+    if (item && item.state !== "OPEN") { failQueued(db, c, `the item is already ${item.state.toLowerCase()}`, deps); continue; }
+    try {
+      const r = await doCard(db, c.id, c.acted_by, { ...deps, drain: true, skip: args.skip, note: args.note, noteStaysOut: args.noteStaysOut, role: args.role, canWrite: undefined });
+      if (r.ran) { ran++; used += need; }
+    } catch (e) {
+      if (e instanceof ConversationError && e.status === 503) continue;
+      failQueued(db, c, oneLine(String((e as Error).message ?? e)), deps);
+    }
+  }
+  return { ran, writes: used };
+}
+
+/** The approval a card's writes need: labels alone need the labelling approval, anything else the commenting one. */
+const grantNeed = (p: CardParams): "comment" | "labels" =>
+  p.kind === "label" || (p.kind === "resolution" && p.steps.length > 0 && p.steps.every((x) => x.kind === "label" || x.kind === "unlabel" || x.kind === "review" || x.kind === "fixup")) ? "labels" : "comment";
 
 /** The decision the card settles, if any. */
 const settledDecisionOf = (p: CardParams): string | undefined =>

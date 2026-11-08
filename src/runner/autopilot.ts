@@ -32,7 +32,9 @@ import { isQueueState } from "../core/plan.ts";
 import { isWork } from "../core/assignment.ts";
 import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
-import { actUsedToday } from "../conversations/usage.ts";
+import { actLimit, actUsedToday } from "../conversations/usage.ts";
+import { queueHead } from "../conversations/queue.ts";
+import { compareKeys, targetKeys } from "../act/order.ts";
 import { openedToday, perDay } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
 import { defaultPerDay, lanesInOrder, limitSteps, zeroOnlySteps } from "../stages/registry.ts";
@@ -388,9 +390,27 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Comments and closes after operator answers, and Close? decisions for reviewed PRs.
     name: "act",
     perRepo: true,
+    // Queued card presses: the drain runs when the first press fits under the daily limit, so the room (and the limit) is part of the input.
+    extra: (db) => {
+      const h = queueHead(db);
+      return h ? `queue:${h.fits ? 1 : 0}:${actLimit(db) ?? "n"}` : "";
+    },
     detect: (db, ctx) => {
-      const repos = new Set(allowed(plannedItems(db, "act", { plans: plansOf(db, ctx) })).map((p) => p.facts.repo));
-      return ctx.tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "act", params: { repo } }));
+      // Repos in the order of their best target: item priority level, then repos that Act served least recently (so one busy repo does not keep the shared daily limit), then the oldest answer.
+      const best = new Map<string, { band: number; at: string }>();
+      const targets = allowed(plannedItems(db, "act", { plans: plansOf(db, ctx) })).flatMap((p) => (typeof p.action.params?.decisionId === "string" ? [{ decisionId: p.action.params.decisionId, repo: p.facts.repo, number: p.facts.number }] : []));
+      const keys = targetKeys(db, targets);
+      for (const t of targets) {
+        const k = keys.get(t.decisionId);
+        if (k && (!best.has(t.repo) || compareKeys(k, best.get(t.repo)) < 0)) best.set(t.repo, k);
+      }
+      for (const p of allowed(plannedItems(db, "act", { plans: plansOf(db, ctx) }))) if (!best.has(p.facts.repo)) best.set(p.facts.repo, { band: 0, at: "" });
+      // The press at the head of the queue is carried out by the job of its repo once it fits; until then the planner wakes at the next UTC midnight, when room returns.
+      const head = queueHead(db);
+      if (head && !head.fits) ctx.wake?.push(nextUtcMidnight(Date.now()));
+      else if (head && ctx.tracked.includes(head.repo) && commentApprovalOf(db, head.repo)) best.set(head.repo, { band: 5, at: "" });
+      const served = new Map(ctx.tracked.map((repo) => [repo, lastJobEnd(db, "act", repo)?.endedAt ?? ""]));
+      return ctx.tracked.filter((repo) => best.has(repo)).sort((a, b) => best.get(b)!.band - best.get(a)!.band || (served.get(a)! < served.get(b)! ? -1 : served.get(a)! > served.get(b)! ? 1 : 0) || compareKeys(best.get(a), best.get(b)) || a.localeCompare(b)).map((repo) => ({ step: "act", params: { repo } }));
     },
   },
   {
@@ -1143,6 +1163,19 @@ export function heldLookup(db: DatabaseSync): (repo: string, number: number, dec
     }
     return null;
   };
+}
+
+/**
+ * Why no Act job will run for `repo` now, or null: the pipeline is off or draining, off for the repo, Act is tripped, or its daily limit is 0.
+ * A reached daily limit is not a block: queued presses wait for it. Presses that cannot be carried out are refused with this reason instead of queued.
+ */
+export function actBlockedReason(db: DatabaseSync, repo: string): string | null {
+  if (!isEnabled(db)) return isDraining(db) ? "the pipeline is draining" : "the pipeline is off";
+  if (!scopeRepos(db).has(repo)) return `the pipeline is off for ${repo}`;
+  const tripped = tripReasonOfStep(db, "act");
+  if (tripped) return `Act is ${tripped}`;
+  if (limitRow(db, "act").per_day === 0) return "the daily limit of Act is 0";
+  return null;
 }
 
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };

@@ -12,3 +12,9 @@ export function actUsedToday(db: DatabaseSync, ms: number = Date.now()): number 
   const cards = (db.prepare(`SELECT COUNT(*) AS n FROM audit WHERE at >= ? AND details LIKE '%"source":"conversation"%' AND details LIKE '%"state":"done"%' AND action IN (${actions.map(() => "?").join(",")})`).get(since, ...actions) as { n: number }).n;
   return jobs + cards;
 }
+
+/** The Act step's daily limit, or null when it has none. */
+export function actLimit(db: DatabaseSync): number | null {
+  const row = db.prepare("SELECT per_day FROM stage_limits WHERE step = 'act'").get() as { per_day: number | null } | undefined;
+  return row?.per_day ?? null;
+}

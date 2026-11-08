@@ -169,6 +169,8 @@ interface Seed {
   exec?: [ExecState, string | null] | [ExecState, string | null, string]; // state, reason, repo whose approvals hold it
   /** An open question whose answer another person's card is applying. */
   settling?: string;
+  /** An open question whose press waits for room under the daily GitHub write limit: who pressed it, the place in line, and a dispute (by, reason, hours ago). */
+  queued?: [string, number] | [string, number, [string, string, number]];
   /** An answer someone disputed before the pipeline applied it: who, why, hours ago. */
   dispute?: [string, string, number];
 }
@@ -232,6 +234,7 @@ const SEEDS: Seed[] = [
     repo: "designcraft",
     number: 2210,
     title: "Export artboards as animated WebP",
+    queued: ["mosswood", 3],
     opinions: [
       ["mosswood", "plugin", "The encoder dependency is heavy for a feature the reference app lacks.", 130],
       ["kiri-n", "plugin", "Agree: plugin API can already add export formats.", 95],
@@ -420,6 +423,7 @@ const SEEDS: Seed[] = [
     repo: "vectorcraft",
     number: 1402,
     title: "Pen tool: add curvature mode for smooth Bézier paths",
+    queued: ["saltmarsh-ink", 0, ["kiri-n", "That item belongs in the Vectorcraft backlog, not in scope.", 2]],
     question: "Is the Pen tool's curvature mode in scope?",
     context: ["The reference app has a separate Curvature tool with the same behaviour."],
     facts: ["+620 −44 · 8 files", "author: 47 merged, whitelisted", "reference app: Curvature tool", "CI passing · mergeable"],
@@ -874,7 +878,9 @@ function toDecision(s: Seed): Decision {
     answeredAt: s.answer ? iso(s.answer[2] * H) : null,
     appliedAt: s.answer?.[3] ? iso(s.answer[2] * H - 20 * M) : null,
     exec: s.exec ? { state: s.exec[0], reason: s.exec[1], ...(s.exec[2] ? { approvalsRepo: s.exec[2] } : {}) } : null,
-    settling: s.settling ?? null,
+    settling: s.settling ?? s.queued?.[0] ?? null,
+    queued: s.queued ? { card: 900 + s.number!, by: s.queued[0], place: s.queued[2] ? null : s.queued[1], reason: s.queued[2] ? "daily GitHub write limit" : `daily GitHub write limit, #${s.queued[1]} in line`,
+      dispute: s.queued[2] ? { by: s.queued[2][0], reason: s.queued[2][1], at: iso(s.queued[2][2] * H) } : null } : null,
     dispute: s.dispute ? { by: s.dispute[0], reason: s.dispute[1], at: iso(s.dispute[2] * H) } : null,
     opinions,
     adoptedOpinion: s.answer?.[5] !== undefined ? opinions[s.answer[5]] : null,

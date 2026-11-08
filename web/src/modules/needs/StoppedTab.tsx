@@ -1,6 +1,7 @@
 import { PlayCircleIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { NeedsStoppedRow } from "../../api/types";
+import { Button } from "../../ui/atoms/Button";
 import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { TextLink } from "../../ui/atoms/TextLink";
@@ -17,6 +18,14 @@ function Resume({ row, onDone }: { row: NeedsStoppedRow; onDone: () => void }) {
   const r = row.resume;
   if (r.type === "link") return <TextLink to={r.to}>Open</TextLink>;
   if (!operator) return null;
+  if (r.type === "retry") {
+    return (
+      <div className="flex flex-col items-end gap-1">
+        <Button size="sm" variant="secondary" loading={write.busy === "retry"} onClick={() => void write.run("retry", async () => { await api.decisions.retry(r.decision); onDone(); })}>Retry</Button>
+        <ErrorLine error={write.error} />
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-end gap-1">
       <ConfirmButton idle="secondary" label="Resume" confirmLabel="Confirm resume" loading={write.busy === "resume"} onConfirm={() => void write.run("resume", async () => { await api.pipeline.resumeTrip(r.stage); onDone(); })} />

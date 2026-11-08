@@ -62,6 +62,9 @@ test("the 4th automatic prepare in a UTC day is held and the decision is not pre
   assert.equal(preparing(w.db, getDecision(w.db, "app#7:scope")!), false);
   // With earlier choices it shows them as prepared earlier.
   w.db.prepare("UPDATE decisions SET prepared_at = '2026-11-04T10:00:00.000Z', prepared_discussion = 'zzz' WHERE id = 'app#7:scope'").run();
+  // Past the day's discussion re-prepares a new comment no longer makes the choices stale; a new review at the head does.
+  assert.equal(preparedEarlier(w.db, getDecision(w.db, "app#7:scope")!), false);
+  w.db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, at, mode, verdict) VALUES ('app', 7, (SELECT head_oid FROM items WHERE number = 7), '2026-11-04T11:40:00.000Z', 'full', 'take')").run();
   assert.equal(preparedEarlier(w.db, getDecision(w.db, "app#7:scope")!), true);
   w.db.prepare("UPDATE decisions SET prepare_requested_at = ?, prepared_at = NULL WHERE id = 'app#7:scope'").run("2026-11-04T11:00:00.000Z");
   assert.deepEqual(prepareIds(w.db, undefined, DAY), ["app#7:scope"]);
@@ -95,4 +98,32 @@ test("after a push, a scope decision whose choices hold a code-dependent core is
   for (const at of ["01", "02", "03"]) w.db.prepare("INSERT INTO decision_prepares (decision_id, at, manual) VALUES ('app#7:scope', ?, 0)").run(`${new Date().toISOString().slice(0, 10)}T00:00:${at}.000Z`);
   assert.equal(preparing(w.db, getDecision(w.db, "app#7:scope")!), false);
   assert.equal(preparedEarlier(w.db, getDecision(w.db, "app#7:scope")!), true);
+});
+
+test("a second comment in a day does not re-prepare; a Merge? question waits only while the Plan holds a review at its head, and Re-prepare lifts that", () => {
+  const { w, head } = setup();
+  const today = "2026-11-04";
+  const rec = (at: string) => w.db.prepare("INSERT INTO decision_prepares (decision_id, at, manual) VALUES ('app#7:scope', ?, 0)").run(at);
+  comment(w, "c2", "2026-11-04T11:30:00.000Z");
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), ["app#7:scope"], "the first comment of the day re-prepares");
+  rec(`${today}T00:00:01.000Z`); rec(`${today}T00:00:02.000Z`);
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), [], "later comments wait for a new review, head or Re-prepare");
+  w.db.prepare("UPDATE decisions SET prepared_at = NULL WHERE id LIKE '%merge@%'").run();
+  const merge = `app#7:merge@${head}`;
+  const plan = (actions: unknown[]) => w.db.prepare("INSERT OR REPLACE INTO item_plans (repo, number, kind, state, actions, reasons, view, planned_at) VALUES ('app', 7, 'pr', 'x', ?, '[]', ?, '2026-11-04T00:00:00.000Z')").run(JSON.stringify(actions), JSON.stringify({ next: "Review" }));
+  plan([]);
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), [merge], "a stale review the Plan does not start (held by a cap or a blocker) does not hold the question");
+  plan([{ kind: "review", head }]);
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), [], "a review that starts at this head withdraws and asks the question again");
+  w.db.prepare("UPDATE decisions SET prepare_requested_at = '2026-11-04T11:00:00.000Z' WHERE id = ?").run(merge);
+  assert.deepEqual(prepareIds(w.db, undefined, DAY), [merge], "an operator's Re-prepare runs");
+});
+
+test("prepares go round the repos, and a locked decision is not prepared", () => {
+  const { w } = setup();
+  w.db.prepare("UPDATE decisions SET prepared_at = NULL").run();
+  assert.equal(prepareIds(w.db, undefined, DAY).length, 2);
+  w.db.prepare("INSERT INTO conversation_cards (id, turn_id, repo, number, kind, params, description, state) VALUES (9, 0, 'app', 7, 'resolution', '{}', 'x', 'queued')").run();
+  w.db.prepare("UPDATE decisions SET exec_state = 'settling', exec_reason = '9:op' WHERE id = 'app#7:scope'").run();
+  assert.deepEqual(prepareIds(w.db, undefined, DAY).filter((id) => id.includes("scope")), [], "a queued press holds its decision");
 });

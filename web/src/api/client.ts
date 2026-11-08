@@ -152,6 +152,9 @@ export interface Api {
     /** `skip`: indexes into `steps` the operator removed; the rest run in order. `note`: kept with the choice (on the decision it settles, in the thread), never posted to GitHub; at most 500 characters. */
     doCard(id: number, opts?: { skip?: number[]; note?: string }): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
+    /** Someone else who settles disputes a queued press (a reason is required); the presser or an operator keeps it or dismisses it. */
+    disputeCard(id: number, reason: string): Promise<ConversationCard>;
+    keepCard(id: number): Promise<ConversationCard>;
     /** Runs one core with its ticked extras as a card; returns that card. */
     doChoice(choiceId: string, body: DoChoiceBody): Promise<ConversationCard>;
     /** Operator only: stops the item's running pre-approved merge (state becomes "cancelled"); the PR's open question, if any, stays. */

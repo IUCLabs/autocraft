@@ -32,7 +32,7 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
   }, [updating, conv, opusTurns, item]);
   // Only the newest Opus turn's cards are live: a card that leaves the question open is a suggested reply.
   const lastOpus = conv ? [...conv.turns].reverse().find((t) => t.kind === "opus") : undefined;
-  const suggestions = lastOpus?.actions.filter((a) => a.settles === undefined && !a.fromChoice && ["proposed", "running", "failed"].includes(a.state) && a.canSettle) ?? [];
+  const suggestions = lastOpus?.actions.filter((a) => a.settles === undefined && !a.fromChoice && ["proposed", "queued", "running", "failed"].includes(a.state) && a.canSettle) ?? [];
   return (
     <div className="pb-2">
       {(open.length > 0 || visibleHeld(ds ?? [], user.login).length > 0) && (

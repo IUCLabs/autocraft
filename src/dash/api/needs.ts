@@ -113,6 +113,12 @@ export async function stopped(db: DatabaseSync, hidden: string[]): Promise<Needs
     if (l.perDay === 0 && !l.tripped) out.push({ id: `limit:${l.step}`, kind: "limit", title: l.title, reason: "The daily limit is 0", since: updated.get(l.step) ?? null, resume: { type: "link", to: "/pipeline" } });
   for (const a of listAccounts(db))
     if (a.enabled && a.pausedReason) out.push({ id: `account:${a.id}`, kind: "account", title: a.label, reason: blankIfHidden(a.pausedReason, hidden), since: null, resume: { type: "link", to: "/accounts" } });
+  // Targets Act stopped after repeated failures, while the answer still stands: an operator retries them from here.
+  for (const a of db.prepare(`SELECT a.decision_id, a.repo, a.number, a.reason, a.created_at FROM main.actions a JOIN main.decisions d ON d.id = a.decision_id JOIN main.items i ON i.repo = a.repo AND i.number = a.number
+    WHERE a.state = 'stopped' AND d.answer IS NOT NULL AND d.applied_at IS NULL AND d.exec_state IS NOT 'disputed' AND d.id NOT LIKE '%~replaced-%' AND i.state = 'OPEN' ORDER BY a.created_at`).all() as { decision_id: string; repo: string; number: number; reason: string | null; created_at: string }[]) {
+    if (hidden.includes(a.repo)) continue;
+    out.push({ id: `act:${a.decision_id}:${a.number}`, kind: "act", title: `${a.repo}#${a.number}`, reason: blankIfHidden(a.reason ?? "Act stopped after repeated failures", hidden), since: a.created_at, resume: { type: "retry", decision: a.decision_id } });
+  }
   return out;
 }
 

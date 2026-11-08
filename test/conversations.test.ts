@@ -362,7 +362,7 @@ describe("access", () => {
     ]) await assert.rejects(f, (e) => e instanceof HttpError && e.status === 403);
     assert.equal(db.prepare("SELECT state FROM conversation_cards").get()!.state, "proposed");
     const writes = apiRoutes().filter((r) => r.method === "POST" && /conversation/.test(r.pattern));
-    assert.equal(writes.length, 5);
+    assert.equal(writes.length, 7);
     // Chat is operator-only; the card routes check who may settle in the handler (refused for the viewer above).
     assert.deepEqual(writes.filter((r) => r.operator === true).map((r) => r.pattern).sort(), ["/api/conversations/:repo/:n/includes", "/api/conversations/:repo/:n/messages"]);
     // A second message while Opus has not answered the first is refused.

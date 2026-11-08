@@ -5,6 +5,7 @@ import { boxAccounts } from "./box.ts";
 import { accountHasRoom, chooseAccount, freeSlots, RUN_SLOT_MS, type Choice } from "./accounts.ts";
 import { insertRun, onRunEnd, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
+import { levelBand } from "../rank/level.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
 export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
@@ -65,17 +66,21 @@ function sleepOrWake(ms: number): Promise<void> {
   });
 }
 
-type Waiter = { id: number; cls: number; step: string; repo: string | null; since: number };
+type Waiter = { id: number; cls: number; level: number; step: string; repo: string | null; since: number };
 
 const runningBy = (db: DatabaseSync, nowMs: number, col: "j.repo" | "r.step"): Map<string, number> =>
   new Map((db.prepare(`SELECT ${col} AS k, COUNT(*) AS n FROM agent_runs r LEFT JOIN jobs j ON j.id = r.job_id WHERE r.state = 'running' AND r.provider = 'claude' AND r.started_at >= ? AND ${col} IS NOT NULL GROUP BY ${col}`)
     .all(new Date(nowMs - RUN_SLOT_MS).toISOString()) as { k: string; n: number }[]).map((r) => [r.k, Number(r.n)]));
 
-/** Fresh, eligible waiters in claim order: class, then fewest running calls of the waiter's repo, then of its step, then oldest. */
+/** A waiter gains one level band for each of these minutes it has waited (at most all 4 bands), so a steady flow of P0 calls cannot starve P2 ones. Aging orders waiters; nothing waits on a timer. */
+export const LEVEL_AGING_MS = 30 * 60_000;
+export const agedLevel = (level: number, sinceMs: number, nowMs: number): number => level + Math.min(4, Math.floor(Math.max(0, nowMs - sinceMs) / LEVEL_AGING_MS));
+
+/** Fresh, eligible waiters in claim order: class, then fewest running calls of the waiter's repo (one repo cannot take every slot), then the item's priority level raised by the time waited (P0 first), then fewest running calls of its step, then oldest. */
 function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
-  const rows = db.prepare("SELECT id, class AS cls, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[];
+  const rows = db.prepare("SELECT id, class AS cls, level, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[];
   const repoN = runningBy(db, nowMs, "j.repo"), stepN = runningBy(db, nowMs, "r.step");
-  return rows.sort((x, y) => y.cls - x.cls || (repoN.get(x.repo ?? "") ?? 0) - (repoN.get(y.repo ?? "") ?? 0) || (stepN.get(x.step) ?? 0) - (stepN.get(y.step) ?? 0) || x.since - y.since || x.id - y.id);
+  return rows.sort((x, y) => y.cls - x.cls || (repoN.get(x.repo ?? "") ?? 0) - (repoN.get(y.repo ?? "") ?? 0) || agedLevel(y.level, y.since, nowMs) - agedLevel(x.level, x.since, nowMs) || (stepN.get(x.step) ?? 0) - (stepN.get(y.step) ?? 0) || x.since - y.since || x.id - y.id);
 }
 
 /** How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter of the current call's class. */
@@ -125,7 +130,7 @@ function pollClaude(db: DatabaseSync, w: Waiter, s: RunInput, minTokenMs?: numbe
     // Eligibility ignores full slots: a waiter that only lacks a slot still counts when ranking, one that lacks a fresh token does not.
     const eligible = "account" in chooseAccount(db, nowMs, minTokenMs, true) ? 1 : 0;
     const up = db.prepare("UPDATE model_waits SET seen_at = ?, eligible = ? WHERE id = ?").run(nowMs, eligible, w.id);
-    if (Number(up.changes) === 0) db.prepare("INSERT INTO model_waits (id, provider, class, job_id, step, repo, since, seen_at, eligible) VALUES (?, 'claude', ?, ?, ?, ?, ?, ?, ?)").run(w.id, w.cls, context?.jobId ?? null, w.step, w.repo, w.since, nowMs, eligible);
+    if (Number(up.changes) === 0) db.prepare("INSERT INTO model_waits (id, provider, class, level, job_id, step, repo, since, seen_at, eligible) VALUES (?, 'claude', ?, ?, ?, ?, ?, ?, ?, ?)").run(w.id, w.cls, w.level, context?.jobId ?? null, w.step, w.repo, w.since, nowMs, eligible);
     if (!("account" in c)) {
       db.exec("COMMIT");
       return { wait: c };
@@ -149,9 +154,10 @@ function pollClaude(db: DatabaseSync, w: Waiter, s: RunInput, minTokenMs?: numbe
 export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: string) => void = console.log, maxWaitMs?: number, minTokenMs?: number): Promise<Started> {
   let lastLog = 0;
   const began = Date.now();
-  const w: Waiter = { id: 0, cls: currentClass(s.promptId), step: stepOf(s.promptId).step, repo: context?.repo ?? null, since: began };
+  const first = s.items[0];
+  const w: Waiter = { id: 0, cls: currentClass(s.promptId), level: levelBand(db, first?.repo, first?.number), step: stepOf(s.promptId).step, repo: context?.repo ?? null, since: began };
   // The row exists before the first poll returns, so queueRoom() is exact right after a call is made.
-  w.id = Number(db.prepare("INSERT INTO model_waits (provider, class, job_id, step, repo, since, seen_at, eligible) VALUES ('claude', ?, ?, ?, ?, ?, ?, 0)").run(w.cls, context?.jobId ?? null, w.step, w.repo, began, began).lastInsertRowid);
+  w.id = Number(db.prepare("INSERT INTO model_waits (provider, class, level, job_id, step, repo, since, seen_at, eligible) VALUES ('claude', ?, ?, ?, ?, ?, ?, ?, 0)").run(w.cls, w.level, context?.jobId ?? null, w.step, w.repo, began, began).lastInsertRowid);
   let claimed = false;
   try {
     for (;;) {
