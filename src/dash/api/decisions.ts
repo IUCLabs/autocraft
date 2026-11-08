@@ -2,7 +2,8 @@
 // and the thread. Feedback (picks and comments) is display-only: nothing the pipeline
 // reads (src/decisions.ts `actionable`) touches their tables. Feedback reaches a prompt only when an operator includes
 // it in a conversation (`<included>` blocks, src/conversations/store.ts).
-import { preparedEarlier, preparing } from "../../decide/prepared.ts";
+import { preparedEarlier, preparing, prepareStates, type PrepareState } from "../../decide/prepared.ts";
+import { prep } from "../../sql-cache.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
@@ -11,7 +12,7 @@ import type {
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
 import { conversationOf, insertTurn, systemBlock } from "../../conversations/store.ts";
-import { blocksFacts } from "../../review/blockers.ts";
+import { blocksFacts, blocksIndex } from "../../review/blockers.ts";
 import { BACKLOG, HANDLED, isBacklog, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
@@ -29,7 +30,8 @@ import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
-import { canSettle, canSettleCached, settledBy, settleMemo, type SettleMemo } from "../../settlers.ts";
+import { canSettle, canSettleCached, canSettleSql, settledBy, settleMemo, type SettleMemo } from "../../settlers.ts";
+import { DEFAULT_BAND } from "../../rank/level.ts";
 import { isQuiet } from "../../security/quiet.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
@@ -114,7 +116,7 @@ type ClassRow = {
 
 export function classificationsOf(db: DatabaseSync, repo: string, n: number): Classification[] {
   // Latest verdict per classifier, picked here: a correlated MAX(at) subquery makes SQLite walk the (classifier, at) index.
-  const all = db.prepare(`SELECT classifier, at, type_label, want, reference, reason, dup_of FROM classifications
+  const all = prep(db, `SELECT classifier, at, type_label, want, reference, reason, dup_of FROM classifications
     WHERE repo = ? AND number = ? ORDER BY classifier`).all(repo, n) as ClassRow[];
   const latest = new Map<string, string>();
   for (const r of all) if (!latest.has(r.classifier) || r.at > latest.get(r.classifier)!) latest.set(r.classifier, r.at);
@@ -126,24 +128,44 @@ export function classificationsOf(db: DatabaseSync, repo: string, n: number): Cl
   }));
 }
 
-// Duplicates from the classifiers, issues a PR closes, and PRs that close this issue.
-export function relatedOf(db: DatabaseSync, repo: string, n: number): RelatedItem[] {
+/**
+ * The two relations that have no index, read once for a page: classifier duplicates by their original, and PRs by the issues they close ("repo#number" -> numbers).
+ * The PR read uses the covering partial index `items_closing`.
+ */
+export type RelatedIndex = { duplicatedBy: Map<string, number[]>; linkedBy: Map<string, number[]> };
+export function relatedIndex(db: DatabaseSync): RelatedIndex {
+  const duplicatedBy = new Map<string, number[]>();
+  for (const r of prep(db, "SELECT DISTINCT repo, dup_of, number FROM classifications WHERE dup_of IS NOT NULL ORDER BY number").all() as { repo: string; dup_of: number; number: number }[]) {
+    const k = `${r.repo}#${r.dup_of}`;
+    duplicatedBy.set(k, [...(duplicatedBy.get(k) ?? []), r.number]);
+  }
+  const linkedBy = new Map<string, number[]>();
+  for (const p of prep(db, "SELECT repo, number, closing_issues FROM main.items INDEXED BY items_closing WHERE kind = 'pr' AND closing_issues IS NOT NULL AND closing_issues <> '[]'").all() as { repo: string; number: number; closing_issues: string }[])
+    for (const x of json<unknown[]>(p.closing_issues, [])) if (typeof x === "number") linkedBy.set(`${p.repo}#${x}`, [...(linkedBy.get(`${p.repo}#${x}`) ?? []), p.number]);
+  return { duplicatedBy, linkedBy };
+}
+
+// Duplicates from the classifiers, issues a PR closes, and PRs that close this issue. `idx` answers the two unindexed lookups from a page-wide read.
+export function relatedOf(db: DatabaseSync, repo: string, n: number, idx?: RelatedIndex): RelatedItem[] {
   const out = new Map<string, { number: number; relation: Relation }>();
   const add = (number: number, relation: Relation) => {
     if (number !== n && Number.isInteger(number) && !out.has(String(number))) out.set(String(number), { number, relation });
   };
-  for (const r of db.prepare("SELECT DISTINCT dup_of FROM classifications WHERE repo = ? AND number = ? AND dup_of IS NOT NULL").all(repo, n) as { dup_of: number }[])
+  for (const r of prep(db, "SELECT DISTINCT dup_of FROM classifications WHERE repo = ? AND number = ? AND dup_of IS NOT NULL").all(repo, n) as { dup_of: number }[])
     add(r.dup_of, "duplicate-of");
-  for (const r of db.prepare("SELECT DISTINCT number FROM classifications WHERE repo = ? AND dup_of = ? LIMIT 10").all(repo, n) as { number: number }[])
-    add(r.number, "duplicated-by");
-  const it = db.prepare("SELECT kind, closing_issues FROM items WHERE repo = ? AND number = ?").get(repo, n) as { kind: string; closing_issues: string | null } | undefined;
+  for (const x of idx ? (idx.duplicatedBy.get(`${repo}#${n}`) ?? []).slice(0, 10) : (prep(db, "SELECT DISTINCT number FROM classifications WHERE repo = ? AND dup_of = ? LIMIT 10").all(repo, n) as { number: number }[]).map((r) => r.number))
+    add(x, "duplicated-by");
+  const it = prep(db, "SELECT kind, closing_issues FROM items WHERE repo = ? AND number = ?").get(repo, n) as { kind: string; closing_issues: string | null } | undefined;
   for (const x of json<unknown[]>(it?.closing_issues, [])) if (typeof x === "number") add(x, "fixes");
   if (it?.kind === "issue") {
-    const prs = db.prepare(`SELECT number, closing_issues FROM items WHERE repo = ? AND kind = 'pr' AND closing_issues LIKE ? LIMIT 50`)
-      .all(repo, `%${n}%`) as { number: number; closing_issues: string }[];
-    for (const p of prs) if (json<unknown[]>(p.closing_issues, []).includes(n)) add(p.number, "links");
+    if (idx) for (const p of (idx.linkedBy.get(`${repo}#${n}`) ?? []).slice(0, 50)) add(p, "links");
+    else {
+      const prs = prep(db, `SELECT number, closing_issues FROM items WHERE repo = ? AND kind = 'pr' AND closing_issues LIKE ? LIMIT 50`)
+        .all(repo, `%${n}%`) as { number: number; closing_issues: string }[];
+      for (const p of prs) if (json<unknown[]>(p.closing_issues, []).includes(n)) add(p.number, "links");
+    }
   }
-  const look = db.prepare("SELECT title, state, kind FROM items WHERE repo = ? AND number = ?");
+  const look = prep(db, "SELECT title, state, kind FROM items WHERE repo = ? AND number = ?");
   const res: RelatedItem[] = [];
   for (const { number, relation } of [...out.values()].slice(0, 10)) {
     const row = look.get(repo, number) as { title: string | null; state: string; kind: string } | undefined;
@@ -160,7 +182,9 @@ function contextOf(c: string | null): string[] {
   return c.split(/\n+/).map((s) => s.trim()).filter(Boolean);
 }
 
-export type Viewer = { login: string; role: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null; memo?: SettleMemo };
+export type Viewer = { login: string; role: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null; memo?: SettleMemo;
+  /** Per-page lookups a list fills once so toDecision does not query per row. */
+  prep?: Map<string, PrepareState>; blocks?: Map<string, string[]>; related?: RelatedIndex };
 /** The reason a write waits or failed: the stored text (it may carry GitHub's error text) only for operators and maintainers, one fixed sentence per state for everyone else. */
 export function execReasonFor(state: ExecState, stored: string | null, repo: string | null, staff: boolean): string | null {
   if (staff) return stored;
@@ -175,7 +199,7 @@ function queuedOf(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision["q
   if (d.answer !== null) return null;
   const id = queuedLock(db, d);
   if (id === null) return null;
-  const c = db.prepare("SELECT acted_by, dispute_by, dispute_reason, dispute_at FROM main.conversation_cards WHERE id = ?").get(id) as { acted_by: string | null; dispute_by: string | null; dispute_reason: string | null; dispute_at: string | null };
+  const c = prep(db, "SELECT acted_by, dispute_by, dispute_reason, dispute_at FROM main.conversation_cards WHERE id = ?").get(id) as { acted_by: string | null; dispute_by: string | null; dispute_reason: string | null; dispute_at: string | null };
   const place = queuePlace(db, id);
   return { card: id, by: c.acted_by ?? "", place, reason: queueReason(place), dispute: c.dispute_by ? { by: c.dispute_by, reason: viewer.staff ? (c.dispute_reason ?? "") : "", at: c.dispute_at ?? "" } : null };
 }
@@ -200,27 +224,27 @@ export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
 
 /** Whether a GitHub write already exists for the answer: Act's comment, a duplicate group's post, or another step of the card that answered. */
 export function wroteToGithub(db: DatabaseSync, d: DecisionRow): boolean {
-  if (db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id)) return true;
-  if (db.prepare("SELECT 1 FROM actions WHERE decision_id = ? AND comment_url IS NOT NULL LIMIT 1").get(d.id)) return true;
+  if (prep(db, "SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id)) return true;
+  if (prep(db, "SELECT 1 FROM actions WHERE decision_id = ? AND comment_url IS NOT NULL LIMIT 1").get(d.id)) return true;
   // Only the card that gave the answer counts: a later card on the item is another action.
-  const row = db.prepare("SELECT details FROM audit WHERE target = ? AND action = 'answer' ORDER BY rowid DESC LIMIT 1").get(d.id) as { details: string | null } | undefined;
+  const row = prep(db, "SELECT details FROM audit WHERE target = ? AND action = 'answer' ORDER BY rowid DESC LIMIT 1").get(d.id) as { details: string | null } | undefined;
   let card: number | undefined;
   try { card = (JSON.parse(row?.details ?? "{}") as { card?: number }).card; } catch { /* no card */ }
   if (card === undefined) return false;
-  const c = db.prepare("SELECT result FROM conversation_cards WHERE id = ? AND state = 'done'").get(card) as { result: string | null } | undefined;
+  const c = prep(db, "SELECT result FROM conversation_cards WHERE id = ? AND state = 'done'").get(card) as { result: string | null } | undefined;
   return (c?.result ?? "").split("; ").some((seg) => seg && !seg.startsWith("Answered the decision") && !seg.startsWith("Decision closed as handled"));
 }
 
 /** An operator's own "handled" answer, recorded by its audit source: nothing was written anywhere, so Undo stays possible although it is marked applied (a conversation card's handled answer follows GitHub writes and stays final). A withdrawn question's renamed row (`~replaced-`) never reopens. */
 const directHandled = (db: DatabaseSync, d: DecisionRow): boolean =>
-  d.answer === HANDLED.key && !d.id.includes("~replaced-") && !!db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'answer' AND details LIKE '%\"source\":\"dashboard\"%' LIMIT 1").get(d.id);
+  d.answer === HANDLED.key && !d.id.includes("~replaced-") && !!prep(db, "SELECT 1 FROM audit WHERE target = ? AND action = 'answer' AND details LIKE '%\"source\":\"dashboard\"%' LIMIT 1").get(d.id);
 
 const ROLE_ORDER: Record<DuplicateMember["role"], number> = { keep: 0, close: 1, stay: 2 };
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
 
 function groupOf(db: DatabaseSync, d: DecisionRow): DuplicateMember[] {
   if (d.kind !== "duplicate" || !d.id.includes(":dupegroup:")) return [];
-  const rows = db.prepare(`SELECT gi.number, gi.kind, gi.role, gi.detail, i.title, i.state FROM dupe_group_items gi
+  const rows = prep(db, `SELECT gi.number, gi.kind, gi.role, gi.detail, i.title, i.state FROM dupe_group_items gi
     LEFT JOIN items i ON i.repo = gi.repo AND i.number = gi.number WHERE gi.decision_id = ?`).all(d.id) as { number: number; kind: string; role: string; detail: string | null; title: string | null; state: string | null }[];
   return rows.map((r) => {
     let detail: Record<string, unknown> = {};
@@ -235,13 +259,13 @@ function risksOf(db: DatabaseSync, d: DecisionRow): string[] {
   if ((d.kind !== "merge" && d.kind !== "close") || !d.repo || d.number === null) return [];
   const head = factsOf(d).find((f) => f.startsWith(HEAD_FACT))?.slice(HEAD_FACT.length).trim();
   if (!head) return [];
-  const o = db.prepare("SELECT risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(d.repo, d.number, head) as { risks: string | null } | undefined;
+  const o = prep(db, "SELECT risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(d.repo, d.number, head) as { risks: string | null } | undefined;
   try { return strings(JSON.parse(o?.risks ?? "[]")); } catch { return []; }
 }
 
 function snoozedOf(db: DatabaseSync, d: DecisionRow): { by: string; at: string } | null {
   if (d.answer || !d.snoozed_at) return null;
-  const row = db.prepare(`SELECT ${SNOOZED_SQL} AS s FROM decisions WHERE id = ?`).get(d.id) as { s: number } | undefined;
+  const row = prep(db, `SELECT ${SNOOZED_SQL} AS s FROM decisions WHERE id = ?`).get(d.id) as { s: number } | undefined;
   return row?.s ? { by: d.snoozed_by ?? "", at: d.snoozed_at } : null;
 }
 
@@ -249,23 +273,24 @@ function snoozedOf(db: DatabaseSync, d: DecisionRow): { by: string; at: string }
 function touchesQuiet(db: DatabaseSync, d: DecisionRow): boolean {
   if (d.repo !== null && d.number !== null && isQuiet(db, d.repo, d.number)) return true;
   if (itemsOf(d).some((r) => isQuiet(db, r.repo, r.number))) return true;
-  const members = db.prepare("SELECT repo, number FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { repo: string; number: number }[];
+  const members = prep(db, "SELECT repo, number FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { repo: string; number: number }[];
   return members.some((m) => isQuiet(db, m.repo, m.number));
 }
 
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
   const batch = isBatch(d);
   const refs = itemsOf(d);
-  const look = db.prepare("SELECT title, body, kind, state FROM items WHERE repo = ? AND number = ?");
+  const look = prep(db, "SELECT title, body, kind, state FROM items WHERE repo = ? AND number = ?");
   const item = batch ? undefined : (look.get(d.repo, d.number) as { title: string | null; body: string | null; kind: string; state: string } | undefined);
-  const opinions = (db.prepare(`SELECT id, login, option, note, at, permission, via FROM decision_opinions
+  const opinions = (prep(db, `SELECT id, login, option, note, at, permission, via FROM decision_opinions
     WHERE decision_id = ? AND retracted_at IS NULL ORDER BY at DESC`).all(d.id) as OpinionRow[]).map(toOpinion);
   const adopted = d.adopted_opinion
-    ? (db.prepare("SELECT id, login, option, note, at, permission, via FROM decision_opinions WHERE id = ?").get(d.adopted_opinion) as OpinionRow | undefined)
+    ? (prep(db, "SELECT id, login, option, note, at, permission, via FROM decision_opinions WHERE id = ?").get(d.adopted_opinion) as OpinionRow | undefined)
     : undefined;
-  const claimRow = db.prepare(`SELECT login, since FROM decision_claims WHERE decision_id = ? AND at > ? AND login <> ? ORDER BY at DESC LIMIT 1`)
+  const claimRow = prep(db, `SELECT login, since FROM decision_claims WHERE decision_id = ? AND at > ? AND login <> ? ORDER BY at DESC LIMIT 1`)
     .get(d.id, new Date(Date.now() - CLAIM_TTL).toISOString(), viewer.login) as Claim | undefined;
-  const commentCount = (db.prepare("SELECT COUNT(*) AS n FROM decision_comments WHERE decision_id = ?").get(d.id) as { n: number }).n;
+  const pstate = viewer.prep?.get(d.id) ?? (viewer.prep && (d.answer !== null || d.number === null) ? { preparing: false, preparedEarlier: false } : undefined);
+  const commentCount = (prep(db, "SELECT COUNT(*) AS n FROM decision_comments WHERE decision_id = ?").get(d.id) as { n: number }).n;
   // Viewers get none of the model text of a decision about a quiet pull request.
   const veil = !viewer.staff && touchesQuiet(db, d);
   const out: Decision = {
@@ -279,7 +304,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     summary: d.summary ?? "", summaryBy: d.summary_by ?? "", summaryAt: d.summary_at ?? d.asked_at,
     body: batch ? null : (item?.body ?? null),
     context: contextOf(d.context),
-    facts: [...factsOf(d), ...(d.answer === null ? blocksFacts(db, d.repo, d.number) : [])],
+    facts: [...factsOf(d), ...(d.answer === null ? (viewer.blocks ? (viewer.blocks.get(`${d.repo}#${d.number}`) ?? []) : blocksFacts(db, d.repo, d.number)) : [])],
     // An answer the pipeline or a conversation gave is not one of the asked options; it is listed so every view can name it.
     options: [...optionsOf(d), ...[HANDLED, WITHDRAWN_OPTION].filter((o) => o.key === d.answer)].map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
@@ -302,11 +327,11 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     opinions,
     exceptions: exceptionsOf(d),
     snoozed: snoozedOf(db, d),
-    preparing: preparing(db, d),
-    preparedEarlier: preparedEarlier(db, d),
+    preparing: pstate ? pstate.preparing : preparing(db, d),
+    preparedEarlier: pstate ? pstate.preparedEarlier : preparedEarlier(db, d),
     claim: d.answer ? null : (claimRow ? { login: claimRow.login, since: claimRow.since } : null),
     commentCount,
-    related: batch ? [] : relatedOf(db, d.repo!, d.number!),
+    related: batch ? [] : relatedOf(db, d.repo!, d.number!, viewer.related),
     classifications: batch ? [] : classificationsOf(db, d.repo!, d.number!),
     area: batch ? null : areaNameOf(db, d.repo!, d.number!),
     priority: batch ? null : priorityOf(db, d.repo!, d.number!),
@@ -338,9 +363,18 @@ export function withoutHidden(hidden: string[], params: Record<string, string>):
   return hidden.length ? `NOT ${inRepos("hd", hidden, params)}` : null;
 }
 
+/**
+ * SQL for the decisions a person has to look at (decisions unaliased): open ones they can settle, plus the disputes and unsettled answers they resolve
+ * (src/answers/hold.ts). `everything` leaves out the can-settle test, for a view of all open questions.
+ */
+export function needingSql(req: Req, everything = false): string {
+  const open = `answer IS NULL AND NOT ${SNOOZED_SQL}${everything ? "" : ` AND ${canSettleSql(req.user.login, req.user.role)}`}`;
+  return `((${open}) OR ${heldOpenSql(req.user.login, isOperator(req))})`;
+}
+
 // Pages are cut by keyset: `after` is the `next` of the previous page, "<sort key>|<id>".
-// Open decisions run oldest asked first, answered ones newest answer first.
-export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () => Promise<string[]>): Promise<DecisionList> {
+// Open decisions run by priority level, then unclaimed before claimed, then oldest asked; answered ones newest answer first.
+export async function listDecisions(db: DatabaseSync, req: Req): Promise<DecisionList> {
   const q = req.query;
   const status = q.get("status") ?? "open";
   if (!["open", "opinions", "answered", "backlog", "snoozed"].includes(status)) throw new HttpError(400, "status must be open, opinions, answered, backlog or snoozed");
@@ -352,8 +386,8 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
   } else if (status === "backlog") where.push(`answer = '${BACKLOG.key}'`);
   else if (status === "snoozed") where.push(SNOOZED_SQL);
   else if (status === "open" || status === "opinions") {
-    // A disputed answer waits for its answerer and the operators, and an answer nobody settles any more for the operators: open for them.
-    where.push(`((answer IS NULL AND NOT ${SNOOZED_SQL}) OR ${heldOpenSql(req.user.login, isOperator(req))})`);
+    // The person's own list unless asked for everything (`all=1`) or scoped to one item: only the questions they can settle, plus the disputes they resolve.
+    where.push(needingSql(req, q.get("all") === "1" || q.get("number") !== null));
   }
   if (status === "opinions") where.push("(EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL) OR EXISTS (SELECT 1 FROM decision_comments c WHERE c.decision_id = decisions.id))");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
@@ -378,7 +412,6 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
       WHERE json_extract(ij.value, '$.repo') = :itemRepo AND json_extract(ij.value, '$.number') = CAST(:itemNo AS INTEGER))
       OR EXISTS (SELECT 1 FROM dupe_group_items gm WHERE gm.decision_id = decisions.id AND gm.repo = :itemRepo AND gm.number = :itemNo))`);
   }
-  if (q.get("mine") === "1" || q.get("mine") === "true") where.push(inRepos("mn", await writeRepos(), params));
 
   // Counts and the oldest ask cover every match, not just the page.
   const kindRows = db.prepare(`SELECT kind, COUNT(*) AS n, MIN(asked_at) AS oldest FROM decisions WHERE ${where.join(" AND ")} GROUP BY kind`).all(params) as
@@ -393,31 +426,51 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
   }
 
   const answered = status === "answered" || status === "backlog";
-  const sortKey = answered ? "answered_at" : "asked_at";
   const after = q.get("after");
-  const page = [...where];
-  if (after) {
-    const k = after.indexOf("|");
-    if (k < 0) throw new HttpError(400, "after must be a next cursor");
-    params.ck = after.slice(0, k);
-    params.cid = after.slice(k + 1);
-    page.push(`(${sortKey} ${answered ? "<" : ">"} :ck OR (${sortKey} = :ck AND id > :cid))`);
-  }
   // limit=0 asks for the counts only: no page, and no queue slots to compute.
   const rawLimit = q.get("limit");
-  const countOnly = rawLimit !== null && rawLimit !== "" && Number(rawLimit) === 0;
-  if (countOnly) return { decisions: [], total, byKind, oldestAskedAt, next: null };
+  if (rawLimit !== null && rawLimit !== "" && Number(rawLimit) === 0) return { decisions: [], total, byKind, oldestAskedAt, next: null };
   const limit = Math.min(Math.max(Number(rawLimit) || 100, 1), 500);
-  const offset = after ? 0 : Math.max(Number(q.get("offset")) || 0, 0);
-  const rows = db.prepare(`SELECT * FROM decisions WHERE ${page.join(" AND ")} ORDER BY ${sortKey} ${answered ? "DESC" : "ASC"}, id LIMIT :limit OFFSET :offset`)
-    .all({ ...params, limit: limit + 1, offset }) as DecisionRow[];
-  const more = rows.length > limit;
-  const shown = rows.slice(0, limit);
-  const last = shown[shown.length - 1] as (DecisionRow & Record<string, string>) | undefined;
+  let ids: { id: string; cursor: string }[];
+  if (answered) {
+    // Answered ones: newest answer first.
+    const page = [...where];
+    if (after) {
+      const k = after.indexOf("|");
+      if (k < 0) throw new HttpError(400, "after must be a next cursor");
+      params.ck = after.slice(0, k);
+      params.cid = after.slice(k + 1);
+      page.push("(answered_at < :ck OR (answered_at = :ck AND id > :cid))");
+    }
+    ids = (db.prepare(`SELECT id, answered_at || '|' || id AS cursor FROM decisions WHERE ${page.join(" AND ")} ORDER BY answered_at DESC, id LIMIT :limit`)
+      .all({ ...params, limit: limit + 1 }) as { id: string; cursor: string }[]);
+  } else {
+    // Open ones: priority level (security raised), then ones nobody else is looking at, then the oldest ask. The cursor carries all four keys.
+    const fresh = new Date(Date.now() - CLAIM_TTL).toISOString();
+    const me = req.user.login.replace(/'/g, "''");
+    const keyed = `SELECT id, asked_at, COALESCE((SELECT CAST(r.score / 10000 AS INTEGER) FROM main.item_rank r WHERE r.repo = decisions.repo AND r.number = decisions.number), ${DEFAULT_BAND}) AS lvl,
+      EXISTS (SELECT 1 FROM main.decision_claims c WHERE c.decision_id = decisions.id AND c.at > :fresh AND c.login <> '${me}') AS claimed FROM decisions WHERE ${where.join(" AND ")}`;
+    const page: string[] = [];
+    if (after) {
+      const m = /^(\d+)\|([01])\|([^|]*)\|(.*)$/s.exec(after);
+      if (!m) throw new HttpError(400, "after must be a next cursor");
+      params.cl = m[1]!; params.cc = m[2]!; params.ca = m[3]!; params.ci = m[4]!;
+      page.push("(lvl < CAST(:cl AS INTEGER) OR (lvl = CAST(:cl AS INTEGER) AND (claimed > CAST(:cc AS INTEGER) OR (claimed = CAST(:cc AS INTEGER) AND (asked_at > :ca OR (asked_at = :ca AND id > :ci))))))");
+    }
+    ids = (db.prepare(`SELECT id, lvl || '|' || claimed || '|' || asked_at || '|' || id AS cursor FROM (${keyed})${page.length ? ` WHERE ${page.join(" AND ")}` : ""} ORDER BY lvl DESC, claimed, asked_at, id LIMIT :limit`)
+      .all({ ...params, fresh, limit: limit + 1 }) as { id: string; cursor: string }[]);
+  }
+  const more = ids.length > limit;
+  const shownIds = ids.slice(0, limit);
+  const rowOf = new Map((shownIds.length ? db.prepare("SELECT * FROM decisions WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(shownIds.map((r) => r.id))) as DecisionRow[] : []).map((d) => [d.id, d]));
+  const shown = shownIds.map((r) => rowOf.get(r.id)!);
   const viewer = shown.length ? await viewerWith(db, req) : viewerOf(req);
+  viewer.prep = prepareStates(db, shown);
+  if (shown.some((d) => d.answer === null)) viewer.blocks = blocksIndex(db);
+  if (shown.some((d) => d.number !== null)) viewer.related = relatedIndex(db);
   return {
     decisions: shown.map((d) => toDecision(db, d, viewer)), total, byKind, oldestAskedAt,
-    next: more && last ? `${last[sortKey]}|${last.id}` : null,
+    next: more ? shownIds[shownIds.length - 1]!.cursor : null,
   };
 }
 

@@ -112,3 +112,22 @@ export function settledBy(db: DatabaseSync, d: { answered_by: string | null; rep
   try { items = JSON.parse(d.items ?? "[]"); } catch { /* none */ }
   return allAppIdentity(db, [...new Set([...(d.repo ? [d.repo] : []), ...items.map((i) => i.repo)])], m);
 }
+
+/**
+ * SQL condition on a decisions row (`a`: its table name or alias): `login` with `role` settles it, as `canSettleCached` decides for one row. An operator
+ * settles everything. A maintainer needs `maintainer_writes` on, and for the decision's repo and every batch item's repo the app's identity and a fresh
+ * cached write permission. Anyone else settles nothing.
+ */
+export function canSettleSql(login: string, role: string, a = "decisions"): string {
+  if (role === "operator") return "1";
+  if (role !== "maintainer") return "0";
+  const me = `'${login.replace(/'/g, "''")}'`;
+  const ok = (repo: string): string => `(EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${repo} AND s.value = 'app')
+    AND EXISTS (SELECT 1 FROM main.repo_permissions rp WHERE rp.login = ${me} AND rp.repo = ${repo} AND rp.permission IN ${WRITE}
+      AND rp.checked_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${PERM_READ_TTL / 1000} seconds')))`;
+  return `(EXISTS (SELECT 1 FROM main.settings WHERE key = '${MAINTAINER_WRITES_KEY}' AND value = '1')
+    AND (${a}.repo IS NOT NULL OR json_array_length(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) > 0)
+    AND (${a}.repo IS NULL OR ${ok(`${a}.repo`)})
+    AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) j
+      WHERE json_extract(j.value, '$.repo') IS NOT NULL AND NOT ${ok("json_extract(j.value, '$.repo')")}))`;
+}

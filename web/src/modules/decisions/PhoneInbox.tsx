@@ -14,7 +14,7 @@ export function PhoneInbox(props: ViewProps) {
   const { filter } = useDecisionFilter();
   const loc = useLocal();
   const [sheet, setSheet] = useState(false);
-  const active = (filter.kind?.length ?? 0) + (filter.repo?.length ?? 0) + (filter.minAge ? 1 : 0) + (filter.mine ? 1 : 0);
+  const active = (filter.kind?.length ?? 0) + (filter.repo?.length ?? 0) + (filter.minAge ? 1 : 0) + (filter.all ? 1 : 0);
 
   return (
     <div className="flex h-full min-h-0 flex-col">

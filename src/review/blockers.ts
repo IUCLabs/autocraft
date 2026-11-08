@@ -61,3 +61,21 @@ export function blocksFacts(db: DatabaseSync, repo: string | null, number: numbe
       AND o.verdict = 'hold' ORDER BY o.repo, o.number LIMIT 5`).all(`%"${me}"%`) as { repo: string; number: number; at: string; blocked_by: string }[];
   return rows.filter((r) => activeBlockers(db, `${r.repo}#${r.number}`, r.blocked_by, r.at).includes(me)).map((r) => `Blocks the review of ${r.repo}#${r.number}`);
 }
+
+/** `blocksFacts` for every PR at once: the facts by blocked ref ("repo#number"), from one scan of the latest holds. For a page of decisions. */
+export function blocksIndex(db: DatabaseSync): Map<string, string[]> {
+  const rows = db.prepare(`SELECT o.repo, o.number, o.at, o.blocked_by FROM main.opus_reviews o JOIN main.items i ON i.repo = o.repo AND i.number = o.number AND i.state = 'OPEN'
+    WHERE o.verdict = 'hold' AND o.blocked_by LIKE '%"%'
+      AND o.rowid = (SELECT l.rowid FROM main.opus_reviews l WHERE l.repo = o.repo AND l.number = o.number AND l.verdict IS NOT NULL ORDER BY l.at DESC, l.rowid DESC LIMIT 1)
+    ORDER BY o.repo, o.number`).all() as { repo: string; number: number; at: string; blocked_by: string }[];
+  const out = new Map<string, string[]>();
+  for (const r of rows) {
+    const self = `${r.repo}#${r.number}`;
+    for (const ref of activeBlockers(db, self, r.blocked_by, r.at)) {
+      const facts = out.get(ref) ?? [];
+      if (facts.length < 5) facts.push(`Blocks the review of ${self}`);
+      out.set(ref, facts);
+    }
+  }
+  return out;
+}

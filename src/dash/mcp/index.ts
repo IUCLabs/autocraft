@@ -198,7 +198,7 @@ async function listRepos(env: McpEnv): Promise<ToolResult> {
   for (const h of held) counts.set(h.repo, (counts.get(h.repo) ?? 0) + 1);
   const rows = [];
   for (const repo of repos) {
-    const l = await dec.listDecisions(env.db, reqOf(user, { query: { status: "open", repo, limit: "0" } }), async () => []);
+    const l = await dec.listDecisions(env.db, reqOf(user, { query: { status: "open", repo, limit: "0" } }));
     rows.push({ repo, openDecisions: l.total, byKind: l.byKind, oldestAskedAt: l.oldestAskedAt, fixupsWaiting: counts.get(repo) ?? 0 });
   }
   return show(`${rows.length} repositories. Use list_inbox or list_fixups with a repo to see the work.`, "repositories", rows);
@@ -209,7 +209,7 @@ async function listInbox(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const user = env.user(false);
   const l: DecisionList = await dec.listDecisions(env.db, reqOf(user, {
     query: { status: "open", repo: a.repo as string | undefined, kind: a.kind as string | undefined, limit: String(a.limit ?? 10), after: a.cursor as string | undefined },
-  }), async () => []);
+  }));
   const rows = l.decisions.map((d) => ({
     id: d.id, kind: d.kind, item: ref(d), title: d.title, question: d.question,
     recommended: d.options.find((o) => o.key === d.recommended)?.label ?? null,

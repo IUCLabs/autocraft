@@ -693,7 +693,8 @@ export interface DecisionFilter {
   kind?: DecisionKind[];
   /** minimum age in days */
   minAge?: number;
-  mine?: boolean;
+  /** Every open question, not only the ones the person can settle (and the disputes they resolve). */
+  all?: boolean;
   /** with exactly one `repo`: only decisions about this item (its own, or a group that lists it) */
   number?: number;
   /** "opinions": open decisions that have at least one opinion */

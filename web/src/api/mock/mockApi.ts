@@ -130,13 +130,15 @@ export function createMockApi(): Api {
     if (f.number !== undefined && !(d.number === f.number || d.items.some((i) => i.repo === d.repo && i.number === f.number))) return false;
     if (f.kind?.length && !f.kind.includes(d.kind)) return false;
     if (f.minAge && NOW - Date.parse(d.askedAt) < f.minAge * 86400_000) return false;
-    if (f.mine && !me.writeRepos.includes(d.repo)) return false;
+    // As on the server: the default open list holds what the person can settle, plus disputes; `all` and an item's own list hold everything.
+    if (status === "open" && !f.all && f.number === undefined && !d.canSettle && !d.dispute) return false;
     return true;
   };
 
   const settle = (d: Decision, answer: string, note: string | null, adoptedOpinion: Decision["adoptedOpinion"], exceptions: Decision["exceptions"] = []) =>
     Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null, undoable: true, exec: null });
 
+  const LEVEL_RANK = (d: Decision): number => 4 - Number((d.priority?.level ?? "P2").slice(1));
   // A screenshot aid: localStorage.mockSlow (ms) delays decision refetches so the moment after an answer can be captured.
   const lag = () => Number(globalThis.localStorage?.getItem("mockSlow")) || 10;
   const api: Omit<Api, keyof RedesignApi> = {
@@ -148,7 +150,7 @@ export function createMockApi(): Api {
         const all = decisions.filter((d) => matches(d, filter));
         const sorted =
           !["answered", "backlog"].includes(filter.status ?? "open")
-            ? all.sort((a, b) => a.askedAt.localeCompare(b.askedAt))
+            ? all.sort((a, b) => LEVEL_RANK(b) - LEVEL_RANK(a) || Number(!!a.claim) - Number(!!b.claim) || a.askedAt.localeCompare(b.askedAt))
             : all.sort((a, b) => (b.answeredAt ?? "").localeCompare(a.answeredAt ?? ""));
         const byKind: Partial<Record<Decision["kind"], number>> = {};
         for (const d of sorted) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;

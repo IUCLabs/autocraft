@@ -3,8 +3,8 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { NeedsFeedbackPage, NeedsFeedbackRow, NeedsFixPage, NeedsPage, NeedsStoppedRow } from "../../../web/src/api/types.ts";
 import { listAccounts } from "../../agents/accounts.ts";
-import { SNOOZED_SQL, getDecision, reposOf, type DecisionRow } from "../../decisions.ts";
-import { heldOpenSql } from "../../answers/hold.ts";
+import { getDecision, reposOf } from "../../decisions.ts";
+import { needingSql, withoutHidden } from "./decisions.ts";
 import { stageLimits } from "../../runner/autopilot.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
 import { reviewBots } from "../../review/bots.ts";
@@ -173,11 +173,10 @@ export async function needs(db: DatabaseSync, req: Req): Promise<NeedsPage> {
     cursor = { at: c.slice(0, i), id: c.slice(i + 1) };
   }
   const fb = feedback(db, hidden, cursor, q.get("feedback") === "1" ? limit : 1);
-  // A batch decision counts only when none of its items is in a hidden repo, as in the Decisions list.
-  const needing = `((answer IS NULL AND NOT ${SNOOZED_SQL}) OR ${heldOpenSql(req.user.login, req.user.role === "operator")})`;
-  const decisions = hidden.length
-    ? (db.prepare(`SELECT * FROM decisions WHERE ${needing}`).all() as DecisionRow[]).filter((d) => !reposOf(d).some((x) => hidden.includes(x))).length
-    : (db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE ${needing}`).get() as { n: number }).n;
+  // The same filter as the Needs you list: what this person settles, plus the disputes they resolve; a batch counts only when none of its items is in a hidden repo.
+  const dp: Record<string, string> = {};
+  const hide = withoutHidden(hidden, dp);
+  const decisions = (db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE ${needingSql(req)}${hide ? ` AND ${hide}` : ""}`).get(dp) as { n: number }).n;
   const rows = await stopped(db, hidden);
   const last = fb.rows[fb.rows.length - 1];
   return {

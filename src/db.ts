@@ -210,6 +210,8 @@ const ADDED_INDEXES = [
   "CREATE INDEX IF NOT EXISTS main.items_class ON items(state, repo, number, class_scheme, class_hash)",
   "CREATE INDEX IF NOT EXISTS main.items_embed ON items(repo, number, embed_hash)",
   "CREATE INDEX IF NOT EXISTS main.items_embed_missing ON items(repo, number) WHERE embed_hash IS NULL",
+  // Covers the lookup of the PRs that close an issue: reading the list from the index avoids fetching every PR row (body and all).
+  "CREATE INDEX IF NOT EXISTS main.items_closing ON items(repo, number, closing_issues) WHERE kind = 'pr' AND closing_issues IS NOT NULL AND closing_issues <> '[]'",
   `CREATE TRIGGER IF NOT EXISTS main.items_hash_stale AFTER UPDATE OF title, body, additions, deletions, changed_files, author_association, kind ON items
     WHEN new.embed_hash IS old.embed_hash AND new.class_hash IS old.class_hash AND new.class_scheme IS old.class_scheme
       AND (old.title IS NOT new.title OR old.body IS NOT new.body OR old.additions IS NOT new.additions OR old.deletions IS NOT new.deletions

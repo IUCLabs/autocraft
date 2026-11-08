@@ -1,5 +1,5 @@
 import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from "@tanstack/react-query";
-import { createContext, useCallback, useContext } from "react";
+import { createContext, useCallback, useContext, useRef } from "react";
 import { topicsFor } from "./topics";
 import type {
   DiscordAccount,
@@ -469,11 +469,22 @@ export interface PagedQuery<P> {
  * A cursor-paged list in the shared cache. A change event refetches every loaded page in order, so
  * "Show more" keeps its place. `next` gives the cursor of the page after `page`, or null on the last one.
  */
-export function usePagedQuery<P>(key: string, fn: (api: Api, cursor: string | undefined) => Promise<P>, next: (page: P) => string | null | undefined): PagedQuery<P> {
+export function usePagedQuery<P>(key: string, fn: (api: Api, cursor: string | undefined) => Promise<P>, next: (page: P) => string | null | undefined, opts: { keepPageMs?: number } = {}): PagedQuery<P> {
   const api = useApi();
+  // With `keepPageMs`, a change event refetches the first page only; a later page is read again when its cursor changed or its copy is older than that.
+  const kept = useRef(new Map<string, { page: P; at: number }>());
   const q = useInfiniteQuery<P, Error, { pages: P[] }, string[], string | undefined>({
     queryKey: [key],
-    queryFn: ({ pageParam }) => fn(api, pageParam),
+    queryFn: async ({ pageParam }) => {
+      const keep = opts.keepPageMs;
+      if (!keep || pageParam === undefined) return fn(api, pageParam);
+      const hit = kept.current.get(pageParam);
+      if (hit && Date.now() - hit.at < keep) return hit.page;
+      const page = await fn(api, pageParam);
+      for (const [k, v] of kept.current) if (Date.now() - v.at >= keep) kept.current.delete(k);
+      kept.current.set(pageParam, { page, at: Date.now() });
+      return page;
+    },
     initialPageParam: undefined,
     getNextPageParam: (last) => next(last) ?? undefined,
     meta: { topics: topicsFor(key) },

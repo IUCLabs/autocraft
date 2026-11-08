@@ -381,7 +381,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/me", me),
     get("/api/repos", visibleRepos),
     get("/api/repos/owners", repoOwners),
-    get("/api/decisions", (db, req) => dec.listDecisions(db, req, () => writeRepos(db, req))),
+    get("/api/decisions", (db, req) => dec.listDecisions(db, req)),
     get("/api/decisions/:id", dec.getOne),
     get("/api/decisions/:id/thread", dec.thread),
     post("/api/decisions/:id/answer", dec.answer),
@@ -559,7 +559,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
     get("/api/security/findings", securityPage.securityFindings),
     get("/api/security/findings/:repo/:n/page", securityPage.findingPage),
-    get("/api/home", (db, req) => home(db, req, { writeRepos: () => writeRepos(db, req), progress: (hidden) => progress(db, hidden) })),
+    get("/api/home", (db, req) => home(db, req, { progress: (hidden) => progress(db, hidden) })),
     get("/api/items/status", items.statusList),
   ];
 }

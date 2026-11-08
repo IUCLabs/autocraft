@@ -56,8 +56,10 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   dupes: [{ table: "duplicate_pairs" }, { table: "duplicate_scans" }],
   // A snooze or wake: the inbox changes, the pipeline's input does not (the `decisions` topic skips these columns).
   "decision-snooze": [{ table: "decisions", ops: ["UPDATE"], when: "old.snoozed_at IS NOT new.snoozed_at" }],
-  decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" },
+  decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" },
     { table: "dupe_comparisons" }, { table: "dupe_groups" }, { table: "dupe_group_items" }, { table: "dupe_group_posts" }, { table: "dupe_group_texts" }],
+  // Who is looking at which question: presence only, so a claim refetches the lists that show it and nothing else.
+  claims: [{ table: "decision_claims" }],
   reviews: [{ table: "opus_reviews" }, { table: "review_posts" }],
   queue: [{ table: "merges" }, { table: "merge_batches" }, { table: "merge_batch_prs" }, { table: "merge_holds" }, { table: "premerge_reviews" }],
   fasttrack: [{ table: "fast_track" }],
