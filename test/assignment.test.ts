@@ -15,6 +15,9 @@ const ours: AssignFacts = { login: "bot", assignees: ["bot"], ours: true };
 const unassigns = (a: { actions: { kind: string }[] }) => a.actions.some((x) => x.kind === "unassign");
 const spent = { fixes: 2, attempts: 99, recorded: [] as string[] };
 
+// The pipeline account as `gh api user` reports it.
+const asPipelineBot = async () => ({ code: 0, stdout: JSON.stringify({ login: "pipeline-bot", id: 9, node_id: "NB" }), stderr: "" });
+
 test("a PR is unassigned only when we are the sole assignee and made the assignment", () => {
   const plan = (assignment: AssignFacts) => decidePr(prFacts({ size: "L", lines: 900, assignment }));
   assert.equal(plan(ours).state, "needs-decision");
@@ -89,7 +92,7 @@ test("the unassign step releases what the planner says and only our own assignme
   w.gh.live(1, { assignees: ["pipeline-bot"] });
   w.gh.live(2, { assignees: ["pipeline-bot", "alice"] });
   w.answer(1, "hold").answer(2, "hold");
-  const r = await runUnassign(w.db, { repo: "app", by: "pipeline", runId: "t", querier: w.gh.querier });
+  const r = await runUnassign(w.db, { repo: "app", by: "pipeline", runId: "t", querier: w.gh.querier, exec: asPipelineBot });
   assert.deepEqual(r.due, 1);
   assert.deepEqual(r.unassigned, ["app#1"]);
 });
@@ -104,7 +107,7 @@ test("a push keeps the assignment while the new head's review is due; a stage as
   // The mirror still shows the head our push left, and a comment of ours made its review stale.
   w.db.prepare("INSERT INTO settings (key, value) VALUES ('review_stale:app#1', '2999-01-01T00:00:00Z'), ('review_stale:app#2', '2999-01-01T00:00:00Z')").run();
   w.db.prepare("INSERT INTO push_outcomes (at, stage, action, repo, number, from_oid, to_oid, before_res) VALUES ('2026-11-04T00:01:00Z', 'fixup', 'fixup-push', 'app', 1, 'old', 'new', 'unknown')").run();
-  const r = await runUnassign(w.db, { repo: "app", by: "pipeline", runId: "t", querier: w.gh.querier });
+  const r = await runUnassign(w.db, { repo: "app", by: "pipeline", runId: "t", querier: w.gh.querier, exec: asPipelineBot });
   assert.deepEqual(r.unassigned, [], "neither our push nor the contributor's releases while the new head's review is due");
 
   const g = guardRepo(w.db, "app", "push", "pipeline");
