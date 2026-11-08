@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi } from "../optional-checks.ts";
-import { activeBlockers, storedBlockedBy } from "./blockers.ts";
+import { activeBlockers, hasOpenQuestion, storedBlockedBy } from "./blockers.ts";
 import { MAX_RERUNS_PER_DAY, discussionState, reviewRequestedSince, type DiscussionState } from "./discussion.ts";
 import { ourCommitsSince } from "./ours.ts";
 
@@ -46,7 +46,7 @@ export function recordReviewFailure(db: DatabaseSync, repo: string, number: numb
 }
 
 /** `until`: when a timed wait ends (ms), so the planner wakes then. `red`: a ci hold whose head's CI has failed (not still running). */
-export type ReviewHold = { kind: "blocked" | "ci" | "cap" | "interval" | "failed"; wait: string; until?: number; red?: boolean };
+export type ReviewHold = { kind: "blocked" | "ci" | "cap" | "interval" | "failed"; wait: string; until?: number; red?: boolean; /** A blocker has an open question: the wait is on a person. */ person?: boolean };
 
 /** CI at the PR's head as the review gate reads it: "ok" (passed, or no checks and none pending), "pending", "failure", or "unknown" when the stored checks describe another head. */
 export function headCi(db: DatabaseSync, repo: string, number: number, head: string): "ok" | "pending" | "failure" | "unknown" {
@@ -73,6 +73,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
   const runs = db.prepare(`SELECT COUNT(CASE WHEN s >= :today THEN 1 END) AS n, MAX(s) AS last FROM (
       SELECT MIN(r.started_at) AS s FROM main.agent_run_items i JOIN main.agent_runs r ON r.id = i.run_id
       WHERE i.repo = :repo AND i.number = :number AND r.step = 'opus-review' GROUP BY COALESCE(r.job_id, -r.id))`);
+  const preapproved = db.prepare("SELECT 1 FROM main.preapprovals WHERE repo = ? AND number = ? AND head = ? AND state = 'review'");
   const failure = db.prepare("SELECT value FROM main.settings WHERE key = ?");
   const interval = reviewMinInterval(db) * 60_000;
   const today = new Date(nowMs).toISOString().slice(0, 10);
@@ -80,6 +81,16 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
   type Last = { head_oid: string; at: string; verdict: string; seen_at: string | null; disc_hash: string | null; blocked_by: string | null };
   return (repo, number, head) => {
     const last = lastReview.get(repo, number) as Last | undefined;
+    // The failure backoff holds even after a request: a review that keeps failing is not retried on every pass.
+    const failed = (failure.get(failKey(repo, number, head)) as { value: string } | undefined)?.value;
+    if (failed) {
+      const [n, at] = [Number(failed.split("|")[0]), Date.parse(failed.split("|")[1] ?? "")];
+      const delay = FAILURE_BACKOFF_MS[n - 1];
+      if (delay === undefined) return { kind: "failed", wait: `its review failed ${n} times at this commit; a new commit or a maintainer's request` };
+      if (at + delay > nowMs) return { kind: "failed", wait: `the review after ${n} failed ${n === 1 ? "try" : "tries"} at this commit, from ${new Date(at + delay).toISOString().slice(11, 16)}`, until: at + delay };
+    }
+    // A person's pre-approved merge waits for the review of the head its fix-up pushed: that is their request for it, as a review-again press would be.
+    if (preapproved.get(repo, number, head)) return null;
     if (last) {
       let state = states.get(repo);
       if (!state) states.set(repo, (state = discussionState(db, repo)));
@@ -88,19 +99,12 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
     let settled = false;
     if (last?.verdict === "hold" && storedBlockedBy(last.blocked_by).length) {
       const open = activeBlockers(db, `${repo}#${number}`, last.blocked_by, last.at, nowMs);
-      if (open.length) return { kind: "blocked", wait: `${open.join(", ")}, which blocks its review` };
+      if (open.length) return { kind: "blocked", wait: `${open.join(", ")}, which blocks its review`, ...(hasOpenQuestion(db, open) ? { person: true } : {}) };
       settled = true;
     }
     const ci = headCi(db, repo, number, head);
     if (ci === "pending") return { kind: "ci", wait: "CI on the latest commit to finish" };
     if (ci === "failure" && last && !settled) return { kind: "ci", wait: "CI on the latest commit to pass", red: true };
-    const failed = (failure.get(failKey(repo, number, head)) as { value: string } | undefined)?.value;
-    if (failed) {
-      const [n, at] = [Number(failed.split("|")[0]), Date.parse(failed.split("|")[1] ?? "")];
-      const delay = FAILURE_BACKOFF_MS[n - 1];
-      if (delay === undefined) return { kind: "failed", wait: `its review failed ${n} times at this commit; a new commit or a maintainer's request` };
-      if (at + delay > nowMs) return { kind: "failed", wait: `the review after ${n} failed ${n === 1 ? "try" : "tries"} at this commit, from ${new Date(at + delay).toISOString().slice(11, 16)}`, until: at + delay };
-    }
     const ours = last && last.head_oid !== head ? ourCommitsSince(db, repo, number, last.head_oid, head) : null;
     if (ours?.complete && ours.commits.length) return null;
     const h = history.get({ today, repo, number }) as { n: number; last: string | null };

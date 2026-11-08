@@ -44,3 +44,25 @@ export function activeBlockers(db: DatabaseSync, self: string, stored: string | 
     return !(l?.verdict === "hold" && storedBlockedBy(l.blocked_by).includes(self));
   });
 }
+
+/** Whether any of the refs has an open decision: the wait is then on a person. */
+export function hasOpenQuestion(db: DatabaseSync, refs: readonly string[]): boolean {
+  const pending = db.prepare("SELECT 1 FROM main.decisions WHERE repo = ? AND number = ? AND answer IS NULL LIMIT 1");
+  return refs.some((ref) => { const m = REF.exec(ref); return !!m && !!pending.get(m[1]!, Number(m[2])); });
+}
+
+/** Adds a fact to each blocker's open decisions saying which PR it keeps from being reviewed. */
+export function noteBlocks(db: DatabaseSync, blockers: readonly string[], pr: string): void {
+  const open = db.prepare("SELECT id, facts FROM main.decisions WHERE repo = ? AND number = ? AND answer IS NULL");
+  const fact = `Blocks the review of ${pr}`;
+  for (const ref of blockers) {
+    const m = REF.exec(ref);
+    if (!m) continue;
+    for (const d of open.all(m[1]!, Number(m[2])) as { id: string; facts: string | null }[]) {
+      let facts: string[] = [];
+      try { const v = JSON.parse(d.facts ?? "[]") as unknown; if (Array.isArray(v)) facts = v.filter((x): x is string => typeof x === "string"); } catch { /* none */ }
+      if (facts.includes(fact)) continue;
+      db.prepare("UPDATE main.decisions SET facts = ? WHERE id = ?").run(JSON.stringify([...facts, fact]), d.id);
+    }
+  }
+}
