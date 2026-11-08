@@ -1,5 +1,6 @@
 // Mock content for the redesign: the curated items, their status lines, reviews, results, history and GitHub sides, and findings.
-import type { FixRound, GithubEvent, ItemBar, ItemBarStep, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ResultCard } from "../types";
+import type { FixRound, GithubEvent, ItemBar, ItemBarStep, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry } from "../types";
+import { withTimeline, type MockPage, type ResultCard } from "./storyMock";
 import { NOW } from "./fixtures";
 
 export const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -275,7 +276,7 @@ const RESULTS_9981: ResultCard[] = [
   { id: "c3", kind: "classifiers", title: "Classifiers", outcome: "Bug fix, 3 of 3 agree", tone: "neutral", at: at(5 * H), detail: null, earlier: [] },
 ];
 
-const FULL: Record<string, Omit<ItemPageData, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header" | "bar"> & { header?: Partial<ItemPageHeader> }> = {
+const FULL: Record<string, Omit<MockPage, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header" | "bar"> & { header?: Partial<ItemPageHeader> }> = {
   "designcraft#1484": { header: HEADER_1484, reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
   "photocraft#9981": { reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981 },
   "wordcraft#2214": {
@@ -302,12 +303,12 @@ export function itemPageFor(repo: string, number: number): ItemPageData | null {
   if (!s) return null;
   const full = FULL[`${repo}#${number}`];
   const base = { repo, number, kind: s.kind, state: s.state, title: s.title, author: s.author, status: s.status, bar: BARS[`${repo}#${number}`] ?? barFromStatus(s.status), stamp: "mock", header: { ...mockHeader(s.kind), ...full?.header } };
-  if (full) return { ...base, ...full, header: base.header, costUsd: total(full.history) };
+  if (full) return withTimeline({ ...base, ...full, header: base.header, costUsd: total(full.history) });
   const history = [hist("h1", s.updated + 20, "Classify", "classified", "Jev", 0), hist("h2", s.updated, s.status.phase, s.status.waiting ?? "done", null, null, "event")];
-  return {
+  return withTimeline({
     ...base, reviews: { latest: null, earlier: [] }, results: [{ id: "c1", kind: "classifiers", title: "Classifiers", outcome: "3 of 3 agree", tone: "neutral", at: at(s.updated + 20), detail: null, earlier: [] }], history, costUsd: 0,
     github: { description: s.title, url: `https://github.com/storytold/${repo}/${s.kind === "pr" ? "pull" : "issues"}/${number}`, events: [gh("g1", "opened", s.updated + 60, s.author, s.title)], checks: [], commits: [], files: [], syncedAt: at(3) },
-  };
+  });
 }
 
 export const FIX_ROUNDS_11: FixRound[] = [

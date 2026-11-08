@@ -57,6 +57,11 @@ export function preapprovalOf(db: DatabaseSync, repo: string, n: number): Preapp
   return r ? toView(r) : null;
 }
 
+/** Every pre-approved merge of the PR, oldest first. */
+export function preapprovalsOf(db: DatabaseSync, repo: string, n: number): Preapproval[] {
+  return (db.prepare("SELECT * FROM preapprovals WHERE repo = ? AND number = ? ORDER BY id").all(repo, n) as Row[]).map(toView);
+}
+
 /** The system line of the item's thread (when it has a conversation). Not inside a transaction: the thread writes its own. */
 function say(db: DatabaseSync, repo: string, n: number, text: string): void {
   if (conversationOf(db, repo, n)) insertTurn(db, repo, n, { kind: "system", login: "system", body: text, block: systemBlock(text) });
