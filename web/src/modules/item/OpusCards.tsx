@@ -14,7 +14,7 @@ export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt
       onRun={async (edit) => {
         if (edit) await api.conversations.editCard(a.id, edit);
         const ran = await api.conversations.doCard(a.id);
-        if (item && ran.state !== "failed") markStarting(item.repo, item.number, a.title);
+        if (item && a.fixup && ran.state !== "failed") markStarting(item.repo, item.number, a.title);
       }}
       onDismiss={() => api.conversations.dismissCard(a.id)}
     />

@@ -33,9 +33,11 @@ function Elapsed({ since }: { since: string }) {
 function Headline({ d }: { d: ItemPageData }) {
   const starting = useStarting(d.repo, d.number);
   const h = d.bar.headline;
-  // A pushed update replaces the optimistic line.
-  useEffect(() => clearStarting(d.repo, d.number), [d.repo, d.number, d.stamp]);
   const real = h.tone === "running" || h.tone === "queued";
+  // The optimistic line gives way once the server shows the work.
+  useEffect(() => {
+    if (real) clearStarting(d.repo, d.number);
+  }, [d.repo, d.number, real]);
   const showStarting = starting !== null && !real;
   const tone = TONE[showStarting ? "running" : h.tone];
   const Ico = tone.icon;

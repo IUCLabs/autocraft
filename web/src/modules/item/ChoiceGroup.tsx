@@ -267,7 +267,8 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
         return;
       }
       if (ran.state === "done") {
-        markStarting(d.repo, d.number, core.label);
+        // Only the answers that queue a step (a fix-up, a merge, a review) start visible work.
+        if (core.params?.instructions !== undefined || /merge|fix|review|verify/i.test(core.key)) markStarting(d.repo, d.number, core.label);
         const answer = core.key.startsWith("o:") ? core.key.slice(2) : core.key === "backlog" ? "backlog" : "handled";
         localActions.fold(d.id, { answer, answerNote: note.trim() || null, answeredBy: user.login, answeredAt: ran.at ?? new Date().toISOString(), undoable: false });
       }

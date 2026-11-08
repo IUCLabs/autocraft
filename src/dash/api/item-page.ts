@@ -89,6 +89,7 @@ const EXTRA = [
   "SELECT id FROM fast_track WHERE repo = ?1 AND number = ?2",
   "SELECT pipeline FROM tracked_repos WHERE name = ?1 AND ?2 IS NOT NULL",
   "SELECT COUNT(*), MAX(id), group_concat(state) FROM jobs WHERE state IN ('queued', 'running') AND repo = ?1 AND json_extract(params, '$.number') = ?2",
+  "SELECT group_concat((SELECT COUNT(*) FROM jobs q WHERE q.state = 'queued' AND q.step = j.step AND q.id < j.id)) FROM jobs j WHERE j.state = 'queued' AND j.repo = ?1 AND json_extract(j.params, '$.number') = ?2",
 ];
 
 async function stampOf(c: Ctx, req: Req): Promise<string> {
@@ -343,7 +344,7 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
   const status = statusOf(c, it);
   return {
     repo: c.repo, number: c.n, kind: it.kind, state: it.state, title: it.title, author: it.author, stamp,
-    header: headerOf(c, it, it.queue ?? null), status, bar: barOf(c, it, status), costUsd: cost,
+    header: headerOf(c, it, it.queue ?? null), status, bar: barOf(c, { kind: it.kind, state: it.state, mergedAt: it.mergedAt, pipelineOn: it.pipelineOn === true }, status), costUsd: cost,
     reviews: it.kind === "pr" ? reviewsOf(c, row.head_oid, ev) : { latest: null, earlier: [] }, results: resultsOf(c, it), history: historyOf(c, ev),
     github: githubOf(c, it, ev, row.url ?? "", row.synced_at),
   };
