@@ -22,7 +22,7 @@ On one VPS, `deploy/compose/compose.yaml` runs the same three processes (dashboa
 
 - **Proxy.** Any TLS reverse proxy on the VPS forwards the origin to `127.0.0.1:3005`, the only published port. It must pass `Host`, set `X-Forwarded-For` and not buffer `GET /api/live`.
 - **DNS.** Point the origin's record at the VPS. If the origin stays the same, the GitHub App's callback, setup and webhook URLs and the OAuth callback URL stay as they are.
-- **Build workers.** None on the VPS. A separate build box reaches the worker API (8981) over a private network or a TLS proxy that accepts only its address, never through the dashboard's site. Register it with `envs add <id> --kind remote`.
+- **Build workers.** None on the VPS. A separate build box reaches the worker API (8981) through a TLS proxy on its own hostname that accepts only its address, never through the dashboard's site. Register it with `autocraft envs add <id> --label TEXT --kind remote --slots N --print` (the full command with the key handling is under "Build workers" in the migration runbook). Disable the old install's `local-sandbox` environments (`envs set <id> --enabled no`), or their health checks fail.
 - **`jev`.** Not in the image. Haiku does the classify, priority, duplicate and signal work through the Claude accounts until a derived image adds it.
 - **Backups.** The daily snapshot sits on the VPS disk. Copy it, and `/config`, off the VPS on a schedule.
 
