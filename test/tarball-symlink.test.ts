@@ -28,3 +28,22 @@ test("extractTar refuses entries below a symlink created earlier in the archive"
     rmSync(top, { recursive: true, force: true });
   }
 });
+
+test("extractTar refuses a link whose target resolves outside through another link", async () => {
+  mkdirSync(SCRATCH, { recursive: true });
+  const top = mkdtempSync(join(SCRATCH, "tar-symlink-"));
+  try {
+    const dest = join(top, "dest");
+    mkdirSync(dest);
+    const tar = gunzipSync(
+      makeTarGz([
+        { name: "d1/d2/" },
+        { name: "d1/d2/up", type: "2", linkname: "../.." },
+        { name: "d1/d2/t", type: "2", linkname: "up/../.." },
+      ]),
+    );
+    await assert.rejects(extractTar((async function* () { yield tar; })(), dest, undefined, 0), /outside the tree/);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});

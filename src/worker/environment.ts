@@ -4,7 +4,7 @@
 // the image build runs apt only, with a package list taken from the base commit's CI file.
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkerConfig } from "./config.ts";
 import { isCommitId, resolveGate } from "./gate.ts";
@@ -109,7 +109,13 @@ export async function ensureCheckout(cfg: WorkerConfig, repo: "craft-fonts" | "c
 /** craft-i18n.rev of the checkout: the gate's switch for craft-i18n. Only a bare commit id is accepted. */
 export function readI18nRev(srcDir: string): string | null {
   const f = join(srcDir, "craft-i18n.rev");
-  if (!existsSync(f)) return null;
+  let st;
+  try {
+    st = lstatSync(f);
+  } catch {
+    return null;
+  }
+  if (!st.isFile()) throw new Error("craft-i18n.rev must be a regular file");
   const rev = readFileSync(f, "utf8").replace(/\s+/g, "");
   if (!isCommitId(rev)) throw new Error("craft-i18n.rev is not one 40-character commit id");
   return rev;

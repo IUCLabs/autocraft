@@ -2,8 +2,8 @@
 // its destination. Own parser instead of `tar`: the rules (no absolute paths,
 // no `..`, links only inside the tree, no devices, no special mode bits) are
 // then the same on every host and testable without a tar binary.
-import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, symlinkSync, writeSync } from "node:fs";
-import { dirname, join, posix } from "node:path";
+import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, symlinkSync, writeSync } from "node:fs";
+import { dirname, join, posix, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
@@ -199,6 +199,17 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
       if (e instanceof TarError) throw e;
     }
     symlinkSync(l.target, full);
+  }
+  // The checks above are lexical; a chain of links can still resolve outside the tree. Dangling links may stay.
+  const root = realpathSync.native(dest);
+  for (const l of symlinks) {
+    let real: string;
+    try {
+      real = realpathSync.native(join(dest, l.path)); // native: the JS version resolves ".." lexically
+    } catch {
+      continue;
+    }
+    if (real !== root && !real.startsWith(root + sep)) throw new TarError(`symlink resolves outside the tree: ${l.path}`);
   }
   return files.size;
 }

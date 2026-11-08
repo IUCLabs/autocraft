@@ -54,7 +54,7 @@ export function downloadWarm(cfg: WorkerConfig, key: string, say: Say): Promise<
   if (!s) return Promise.resolve();
   const running = inflight.get(key);
   if (running) return running;
-  const p = (downloadChain = downloadChain.then(() => download(cfg, key, say))).then(() => {}).finally(() => inflight.delete(key));
+  const p = (downloadChain = downloadChain.then(() => download(cfg, key, say)).catch(() => {})).then(() => {}).finally(() => inflight.delete(key));
   inflight.set(key, p);
   return p;
 }
@@ -114,8 +114,12 @@ async function download(cfg: WorkerConfig, key: string, say: Say): Promise<void>
     procs.forEach((c) => c.kill("SIGKILL"));
     await extracting?.catch(() => {});
     reservedBytes -= reserved;
-    rmSync(stage, { recursive: true, force: true });
-    rmSync(spool, { force: true });
+    try {
+      rmSync(stage, { recursive: true, force: true });
+      rmSync(spool, { force: true });
+    } catch {
+      // cleanWarm removes leftovers at the next start.
+    }
   }
 }
 
@@ -172,7 +176,11 @@ export async function uploadWarm(cfg: WorkerConfig, key: string, commit: string,
     say(`warm store: upload failed: ${ac.signal.aborted ? "timed out" : (e as Error).message}`);
   } finally {
     clearTimeout(timer);
-    rmSync(spool, { force: true });
-    rmSync(snap, { recursive: true, force: true });
+    try {
+      rmSync(spool, { force: true });
+      rmSync(snap, { recursive: true, force: true });
+    } catch {
+      // cleanWarm removes leftovers at the next start.
+    }
   }
 }
