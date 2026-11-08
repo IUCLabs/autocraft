@@ -320,7 +320,7 @@ Layout: `<root>/{repo.git,releases,app,data,cache,config}` (`app` is a symlink t
 
 ## Running in a container
 
-To move a running systemd install to a container, follow [migration.md](migration.md).
+To move a running systemd install to a container, follow [migration.md](migration.md). For one host, `deploy/compose/compose.yaml` runs the dashboard, the runner and the periodic container with Docker Compose (see "VPS with Docker Compose" there).
 
 One image runs the dashboard, the runner and the one-shot sync and backup commands, beside the systemd install (which is unchanged). Sandbox workers are not part of the image; they keep running on their own machines and reach the runner's worker API.
 
@@ -331,7 +331,7 @@ docker build -f deploy/container/Dockerfile -t autocraft .
 docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://autocraft.example.com autocraft dashboard
 ```
 
-The image is `node:24-bookworm-slim` (pinned by digest) with `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It contains `gh` (pinned by checksum; authenticate with the `GH_TOKEN` environment variable) but not `jev`; steps that need `jev` fail until a derived image adds it. `--build-arg SOURCE_COMMIT=<sha>` records the commit the dashboard shows (the image has no `.git`). `tini` is PID 1 and reaps the jobs' child processes.
+The image is `node:24-bookworm-slim` (pinned by digest) with `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It contains `gh` (pinned by checksum; authenticate with the `GH_TOKEN` environment variable) but not `jev`; while it is missing, Haiku does Jev's work (the runner records the outage "not installed" and checks the `PATH` on every pass), and a derived image that adds `jev` restores it. `--build-arg SOURCE_COMMIT=<sha>` records the commit the dashboard shows (the image has no `.git`). `tini` is PID 1 and reaps the jobs' child processes.
 
 The first argument picks the process, exactly as the systemd units start them:
 
