@@ -23,7 +23,7 @@ const TONE: Record<ItemBarTone, { icon: Icon; box: string; spin?: boolean; pulse
 
 const mmss = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
-  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
 /** Elapsed time of a running job, counted on the client from the server's start time. */
@@ -50,7 +50,7 @@ function Headline({ d }: { d: ItemPageData }) {
   ) : (
     <>
       {h.text}
-      {h.tone === "running" && h.model && <> · {h.model}</>}
+      {h.tone === "running" && h.model && <> · {h.model.charAt(0).toUpperCase() + h.model.slice(1)}</>}
       {h.tone === "running" && h.startedAt && <> · <Elapsed since={h.startedAt} /></>}
     </>
   );
@@ -70,7 +70,7 @@ function Headline({ d }: { d: ItemPageData }) {
 function StepMark({ s }: { s: ItemBarStep }) {
   if (s.state === "done") return <CheckIcon weight="bold" className="text-ok" />;
   if (s.state === "failed") return <XIcon weight="bold" className="text-bad" />;
-  if (s.state === "current") return s.running ? <CircleNotchIcon weight="bold" className="text-accent-ink" /> : <PauseCircleIcon weight="fill" className="text-warn" />;
+  if (s.state === "current") return s.running ? <span className="size-2 rounded-full bg-accent" /> : <PauseCircleIcon weight="fill" className="text-warn" />;
   return <span className="size-1.5 rounded-full bg-ink/25" />;
 }
 

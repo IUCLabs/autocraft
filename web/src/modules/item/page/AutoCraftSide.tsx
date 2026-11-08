@@ -16,7 +16,10 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
   const { data: ds } = useItemDecisions(d.repo, d.number);
   const { data: conv } = useQuery(`conversation:${d.repo}#${d.number}`, (a) => a.conversations.get(d.repo, d.number), { pollMs: (x) => (x?.pending ? 4000 : false) });
   const choices = conv ? (conv.choices ?? null) : undefined;
-  const open = (ds ?? []).filter((x) => !x.answer);
+  // A running pre-approved merge is the answer to the merge question: nobody is needed until it stops.
+  const pre = d.header.preapproval;
+  const settled = pre !== null && ["fixup", "review", "ci", "queued"].includes(pre.state);
+  const open = (ds ?? []).filter((x) => !x.answer && !(settled && x.kind === "merge"));
   const item = `${d.repo}#${d.number}`;
   const updating = useLocal().updating[item];
   const opusTurns = conv?.turns.filter((t) => t.kind === "opus").length ?? 0;
@@ -33,7 +36,7 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
     <div className="pb-2">
       {open.length > 0 && (
         <div className="border-b border-line px-4 py-3 md:px-6">
-          <OpenQuestions ds={ds ?? []} choices={choices} updating={updating?.decisionId} />
+          <OpenQuestions ds={(ds ?? []).filter((x) => x.answer || open.includes(x))} choices={choices} updating={updating?.decisionId} />
         </div>
       )}
       <Story d={d} flash={flash} conv={conv} />

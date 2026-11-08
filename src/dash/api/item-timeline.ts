@@ -18,6 +18,16 @@ const base = (id: string, at: string, kind: TimelineEntry["kind"], actor: string
   id, at, kind, actor, icon, text, tone: "neutral", costUsd: null, major: false, jobId: null, reviewId: null, githubId: null, commit: null, preapproval: null, calls: [], body: null, markdown: false, lines: [], feedback: null,
 });
 
+/** What a job did, in the page's words; the job's own outcome is internal wording and shows only when it failed. */
+const PLAIN: Record<string, string> = {
+  fixup: "Fix-up started", cifix: "CI fix started", decide: "Opus prepared the question", "merge-ask": "Opus prepared the merge question", "classify-new": "Classified", "classify-all": "Classified", prioritize: "Priority set", rank: "Queue position updated",
+  embed: "Indexed for similar items", dupes: "Checked for duplicates", "dupes-compare": "Compared duplicates", referee: "Label disagreement settled", "labels-apply": "Labels applied", "review-post": "Review posted",
+  "review-carry": "Earlier review carried over", "review-batch": "Review prepared", unassign: "Unassigned", "ci-approve": "CI runs approved", verify: "Verification planned", "verify-collect": "Verification result read",
+  checks: "CI read", merge: "Merge queue run", conversation: "Opus replied", act: "Action run", postmerge: "Post-merge review", "postmerge-file": "Follow-up issues filed", premerge: "Pre-merge review",
+};
+
+const PLAIN_BY_TITLE = new Map(Object.entries(PLAIN).map(([id, text]) => [stepTitle(id), text]));
+
 type Turn = { id: number; kind: string; login: string; at: string; body: string; status: string | null; error: string | null };
 type DecisionRow = { id: string; question: string; options: string | null; answer: string | null; answer_note: string | null; answered_by: string | null; answered_at: string | null; answered_role: string | null };
 
@@ -29,6 +39,7 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
     !staff ? [] : ev.filter((x) => x.kind === "model-call" && x.ref.jobId === jobId).map((x) => ({ label: `${x.call?.step ?? x.summary} (${x.call?.model ?? x.actor.name})`, kind: "model" as const, costUsd: x.call?.costUsd ?? null }));
   const callCost = (calls: HistoryCall[]): number | null => (calls.some((x) => x.costUsd !== null) ? calls.reduce((s, x) => s + (x.costUsd ?? 0), 0) : null);
   const fixSteps = ev.filter((e) => e.kind === "step" && /^(fixup|cifix|conflict):/.test(e.id));
+  const stepOfJob = new Map(q<{ id: number; step: string }>(db, "SELECT id, step FROM jobs WHERE json_extract(params, '$.number') = ?1 AND repo = ?2 UNION SELECT j.id, j.step FROM job_items ji JOIN jobs j ON j.id = ji.job_id WHERE ji.number = ?1 AND ji.repo = ?2", n, repo).map((j) => [j.id, j.step]));
   const jobsWithCalls = new Set(ev.filter((e) => e.kind === "job").map((e) => e.ref.jobId));
   const mergeSteps = ev.filter((e) => e.kind === "step" && e.id.startsWith("merge:"));
   const near = (a: string, b: string, ms: number) => Math.abs(Date.parse(a) - Date.parse(b)) <= ms;
@@ -42,7 +53,8 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
     if (e.kind === "plan" || e.kind === "decision" || e.kind === "conversation") continue;
     if (e.kind === "model-call") {
       if (jobsWithCalls.has(e.ref.jobId)) continue;
-      const t = base(e.id, e.at, "harness", "AutoCraft", "job", `${e.call?.step ?? "Model call"}: ${e.summary.replace(/^[^:]*:\s*/, "")}`);
+      const title = e.call?.step ?? "Model call";
+      const t = base(e.id, e.at, "harness", "AutoCraft", "job", PLAIN_BY_TITLE.get(title) ?? `${title}: ${e.summary.replace(/^[^:]*:\s*/, "")}`);
       t.costUsd = e.call?.costUsd ?? null;
       out.push(t);
     } else if (e.kind === "job") {
@@ -51,12 +63,16 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
       // The review and verification lines say what these jobs did.
       if (/^(Opus review:|verify-)/.test(after)) continue;
       const calls = callsOf(e.ref.jobId);
-      const t = base(e.id, e.at, "harness", "AutoCraft", "job", `${e.actor.name}: ${staff ? after : after.split(":")[0]!}`);
+      const stepId = typeof e.ref.jobId === "number" ? stepOfJob.get(e.ref.jobId) : undefined;
+      if (stepId === "premerge" || stepId === "postmerge") continue;
+      const plain = stepId ? PLAIN[stepId] : undefined;
+      const failed = /^(failed|refused|error)/i.test(after);
+      const t = base(e.id, e.at, "harness", "AutoCraft", "job", `${plain ?? e.actor.name}${failed ? ` failed${staff ? `: ${clip(after.replace(/^(failed|refused|error):?\s*/i, ""), 140)}` : ""}` : plain ? "" : `: ${staff ? after : after.split(":")[0]!}`}`);
       t.calls = calls; t.costUsd = callCost(calls); t.jobId = typeof e.ref.jobId === "number" ? e.ref.jobId : null; t.tone = toneOf(after);
       t.major = /^failed/.test(after);
       out.push(t);
     } else if (e.kind === "check") {
-      const t = base(e.id, e.at, "harness", "AutoCraft", "check", `${e.actor.name}: ${after}`);
+      const t = base(e.id, e.at, "harness", "AutoCraft", "check", e.summary);
       t.tone = toneOf(after);
       out.push(t);
     } else if (e.kind === "review") {
@@ -135,13 +151,18 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
       t.feedback = { source: `decision-comment:${cm.id}`, decisionId: cm.decision_id, pick: null, write: false, open: cm.answer === null };
       out.push(t);
     }
-    for (const t of q<Turn>(db, "SELECT id, kind, login, at, body, status, error FROM conversation_turns WHERE repo = ? AND number = ?", repo, n)) {
-      const opus = t.kind === "opus", sys = t.kind === "system";
-      const e = base(`turn:${t.id}`, t.at, opus ? "opus" : sys ? "harness" : "person", opus ? "Opus" : sys ? "AutoCraft" : t.login, "chat", sys ? clip(t.body, 140) : clip(t.body, 110));
-      e.major = !sys; e.body = sys && t.body.length <= 140 ? null : t.body; e.markdown = opus;
-      if (t.status === "failed") { e.tone = "bad"; e.lines = [t.error ?? "Opus gave no usable reply."]; }
+    // Opus's messages that answer a person are conversation; the others (a refreshed summary of the question) are the harness's work.
+    const turns = q<Turn & { seq: number }>(db, "SELECT id, kind, login, at, body, status, error, seq FROM conversation_turns WHERE repo = ? AND number = ? ORDER BY seq, id", repo, n);
+    turns.forEach((t, i) => {
+      // System lines repeat what the press, pre-approval and fix-up lines say.
+      if (t.kind === "system") return;
+      const opus = t.kind === "opus";
+      const reply = opus && turns[i - 1] !== undefined && !["opus", "system"].includes(turns[i - 1]!.kind);
+      const e = base(`turn:${t.id}`, t.at, opus && reply ? "opus" : opus ? "harness" : "person", opus ? "Opus" : t.login, "chat", opus && !reply ? "Opus refreshed its summary" : clip(t.body, 110));
+      e.major = !(opus && !reply); e.body = t.body; e.markdown = opus;
+      if (t.status === "failed") { e.tone = "bad"; e.major = true; e.lines = [t.error ?? "Opus gave no usable reply."]; }
       out.push(e);
-    }
+    });
   }
 
   // Pre-approvals: the person's press, and the outcome the fix-up line does not already say.

@@ -6,6 +6,9 @@ import type { ItemBar, ItemBarStep, ItemKind, ItemState, ItemStatus } from "../.
 import { stagesInOrder, stageOfStep, type StageId } from "../../stages/registry.ts";
 import { clip, hiddenSql, stepTitle, type Ctx } from "./trace.ts";
 
+/** A step as people read it: its stage's short name ("Fix-up"), else its title. */
+const nameOf = (step: string): string => stageOfStep(step)?.title ?? stepTitle(step);
+
 /** core: shown while it is still ahead of an open item. seen: shown only once the item has been through it. */
 type Role = "core" | "seen" | null;
 const ROLE: Record<StageId, { pr: Role; issue: Role }> = {
@@ -87,17 +90,17 @@ function evidenceOf(c: Ctx, q: Q, mergedAt: string | null, mergedByUs: boolean):
     const stage = stageOfStep(j.step)?.id;
     const at = j.ended_at ?? j.at;
     const kind = classifyJob(j);
-    if (kind === "failed") { if (stage) out.push({ stage, state: "failed", at, jobId: j.id, label: stepTitle(j.step), reason: reasonOf(j.outcome || j.error), step: j.step }); continue; }
+    if (kind === "failed") { if (stage) out.push({ stage, state: "failed", at, jobId: j.id, label: nameOf(j.step), reason: reasonOf(j.outcome || j.error), step: j.step }); continue; }
     if (HELD_OUTCOME.test(j.outcome ?? "")) continue;
     if (!(cleared.get(j.step)! >= at)) cleared.set(j.step, at);
-    if (stage && kind === "done") out.push({ stage, state: "done", at, jobId: j.id, label: stepTitle(j.step), reason: null, step: j.step });
+    if (stage && kind === "done") out.push({ stage, state: "done", at, jobId: j.id, label: nameOf(j.step), reason: null, step: j.step });
   }
   // A crashed job has no job_items row: read it by its params.
   const since = new Date(Date.now() - FAILED_JOBS_DAYS * 86400_000).toISOString();
   for (const j of q<{ id: number; step: string; ended_at: string; error: string | null }>(
     "SELECT id, step, ended_at, error FROM jobs WHERE state = 'failed' AND repo = ?1 AND ended_at > ?3 AND json_extract(params, '$.number') = ?2", repo, n, since)) {
     const stage = stageOfStep(j.step)?.id;
-    if (stage && !seen.has(j.id)) out.push({ stage, state: "failed", at: j.ended_at, jobId: j.id, label: stepTitle(j.step), reason: reasonOf(j.error), step: j.step });
+    if (stage && !seen.has(j.id)) out.push({ stage, state: "failed", at: j.ended_at, jobId: j.id, label: nameOf(j.step), reason: reasonOf(j.error), step: j.step });
   }
   const live = out.filter((e) => !(e.state === "failed" && e.step && (cleared.get(e.step) ?? "") > e.at));
   const rowsOf = (label: string, stage: StageId, rows: { state: string; reason: string | null; at: string }[]) => {
@@ -151,10 +154,10 @@ export function barOf(c: Ctx, it: { kind: ItemKind; state: ItemState; mergedAt: 
   let headline: ItemBar["headline"];
   const base = { next: status.next, model: null, startedAt: null, jobId: null };
   const failText = (label: string, reason: string | null) => `${label} failed${reason ? `: ${reason}` : ""}`;
-  if (open && runningStep) headline = { tone: "running", text: `${stepTitle(runningStep)} running`, next: status.next, model: run?.model ?? null, startedAt: job?.started_at ?? run?.started_at ?? null, jobId: job?.id ?? run?.job_id ?? null };
+  if (open && runningStep) headline = { tone: "running", text: `${nameOf(runningStep)} running`, next: status.next, model: run?.model ?? null, startedAt: job?.started_at ?? run?.started_at ?? null, jobId: job?.id ?? run?.job_id ?? null };
   else if (open && queued) {
     const pos = (db.prepare("SELECT COUNT(*) AS k FROM jobs WHERE state = 'queued' AND step = ? AND id < ?").get(queued.step, queued.id) as { k: number }).k + 1;
-    headline = { ...base, tone: "queued", text: `Queued for ${stepTitle(queued.step)} · #${pos} in line`, jobId: queued.id };
+    headline = { ...base, tone: "queued", text: `Queued for ${nameOf(queued.step)} · #${pos} in line`, jobId: queued.id };
   } else if (preFailed) headline = { ...base, tone: "failed", text: failText(preFailed.label, preFailed.reason) };
   else if (open && status.phase === "Waiting for a person") headline = { ...base, tone: "waiting", text: status.waiting ? `Waiting for ${status.waiting}` : "Waiting for a person" };
   else if (open && latestFail) headline = { ...base, tone: "failed", text: failText(latestFail.label, latestFail.reason), jobId: latestFail.jobId };
