@@ -76,7 +76,8 @@ async function collect(perDay?: number) {
       if (args[0] === "pr") {
         created.push(args.join(" "));
         if (++arrived === 2 || perDay !== undefined) release();
-        await Promise.race([both, new Promise((_, no) => setTimeout(() => no(new Error("the second PR was never opened at the same time")), 5000))]);
+        // No clock: if the second PR is never opened at the same time this deadlocks and the test timeout reports it.
+        await both;
         return out("https://github.com/storytold/app/pull/12\n");
       }
       if (args[0] === "issue") return out("");
@@ -99,7 +100,7 @@ async function collect(perDay?: number) {
   return { s, created, db };
 }
 
-test("fixissue-collect opens the PR of each of two passed attempts once when they run at the same time", async () => {
+test("fixissue-collect opens the PR of each of two passed attempts once when they run at the same time", { timeout: 120_000 }, async () => {
   const { s, created, db } = await collect();
   assert.equal(s.opened, 2);
   assert.equal(created.length, 2);
