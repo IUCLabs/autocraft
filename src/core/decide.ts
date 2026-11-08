@@ -411,6 +411,7 @@ export function decidePr(f: PrFacts): Plan {
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const queueWait = (st: QueueState): Wait | null => (WAITS[st] ? { text: WAITS[st]!, kind: PERSON_WAITS.has(st) ? "person" : "system" } : null);
   const wait: Wait | null = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? person("merge held by an operator") : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : queueWait(e.state))) : null;
-  const finalWait: Wait | null = wait ?? (f.operator?.hold && !main ? system("its pre-approved merge") : null) ?? (!main && reviewWait ? system(reviewWait) : null);
+  // A review hold names what the pre-approved merge itself waits for, so it comes before the generic pre-approval wait.
+  const finalWait: Wait | null = wait ?? (!main && reviewWait ? system(reviewWait) : null) ?? (f.operator?.hold && !main ? system("its pre-approved merge") : null);
   return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait: finalWait?.text ?? null, waitKind: finalWait?.kind ?? null });
 }
