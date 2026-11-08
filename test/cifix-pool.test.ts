@@ -30,8 +30,8 @@ const git = (cwd: string, ...args: string[]): string => {
   return r.stdout.trim();
 };
 
-/** Two PRs (#7, #8) with a failing gate check, one model slot pool of 8, and a fake model that waits for the other PR's call. */
-function setup() {
+/** Two PRs (#7, #8) with a failing gate check, one model slot pool of 8, and a fake model that waits until `calls` calls are in flight. */
+function setup(calls = 2) {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(join(work, "src"), { recursive: true });
@@ -85,9 +85,9 @@ function setup() {
     },
     ask: async (_db, input) => {
       asked.push(input[0]!.ref);
-      if (asked.length === 2) { overlap = true; release(); }
-      // Long enough for the second PR's git work under a loaded full-suite run; released as soon as it asks.
-      await Promise.race([both, new Promise((r) => setTimeout(r, 20_000))]);
+      if (asked.length === calls) { overlap = true; release(); }
+      // Waits for the other PR's call with no clock; if the calls never overlap this deadlocks and the test timeout reports it.
+      await both;
       return null;
     },
     check: async () => null,
@@ -95,15 +95,15 @@ function setup() {
   return { db, deps, asked, overlap: () => overlap };
 }
 
-test("two PRs of one cifix job make their model calls at once", async () => {
+test("two PRs of one cifix job make their model calls at once", { timeout: 120_000 }, async () => {
   const w = setup();
   await runCifix(w.db, { repo: "app", dryRun: false }, () => {}, w.deps);
   assert.deepEqual([...w.asked].sort(), ["app#7", "app#8"]);
   assert.equal(w.overlap(), true, "the second call started while the first was still waiting");
 });
 
-test("a PR whose lease another running job holds is skipped", async () => {
-  const w = setup();
+test("a PR whose lease another running job holds is skipped", { timeout: 120_000 }, async () => {
+  const w = setup(1);
   const add = (step: string): number => Number(w.db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, started_at) VALUES (?, '{}', 'pipeline', ?, 'running', ?)").run(step, T0, T0).lastInsertRowid);
   const mine = add("cifix"), other = add("fixup");
   assert.ok(take(w.db, "pr:app#8", other, "fixup"));
