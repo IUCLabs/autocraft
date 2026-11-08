@@ -84,13 +84,13 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
     },
     itemPage: async (repo, number) => {
       const p = real?.pages.find((x) => x.repo === repo && x.number === number) ?? itemPageFor(repo, number);
-      if (p) return wait(me.role === "viewer" ? { ...p, reviews: { latest: p.reviews.latest && { ...p.reviews.latest, fixes: [], risks: [], claims: [] }, earlier: [] }, history: p.history.map((h) => ({ ...h, calls: [] })), bar: { ...p.bar, headline: { ...p.bar.headline, text: p.bar.headline.tone === "failed" ? p.bar.headline.text.split(":")[0]! : p.bar.headline.text } } } : p);
+      if (p) return wait(me.role === "viewer" ? { ...p, reviews: { latest: p.reviews.latest && { ...p.reviews.latest, fixes: [], risks: [], claims: [] }, earlier: [] }, timeline: p.timeline.map((h) => ({ ...h, calls: [], body: null, lines: [] })), bar: { ...p.bar, headline: { ...p.bar.headline, text: p.bar.headline.tone === "failed" ? p.bar.headline.text.split(":")[0]! : p.bar.headline.text } } } : p);
       const it = await base.item(repo, number);
       const status = { phase: it.state === "merged" ? "Merged" : it.state === "closed" ? "Closed" : "Triage", waiting: null, next: null, since: it.updatedAt } as const;
       return wait({
         repo, number, kind: it.kind, state: it.state, title: it.title, author: it.author, costUsd: 0, stamp: "mock", header: mockHeader(it.kind, it.labels),
         status, bar: barFromStatus(status),
-        reviews: { latest: null, earlier: [] }, results: [], history: [],
+        reviews: { latest: null, earlier: [] }, timeline: [],
         github: { description: it.body, url: `https://github.com/storytold/${repo}/${it.kind === "pr" ? "pull" : "issues"}/${number}`, events: [{ id: "g1", type: "opened", at: it.createdAt, actor: it.author, body: it.body, autocraft: null }], checks: [], commits: [], files: [], syncedAt: new Date(Date.now() - 120_000).toISOString() },
       });
     },

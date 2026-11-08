@@ -3,9 +3,10 @@
 // every rule that guesses is marked. Pure TypeScript: it runs in the browser on a JSON export.
 import type { RealDecision } from "./realDecisions";
 import { barFromStatus } from "./redesignData";
+import { withTimeline, type ResultCard, type ResultTone } from "./storyMock";
 import type {
   FindingPageData, ItemPageHeader, GithubEvent, GithubSide, HistoryCall, HistoryEntry, HistoryKind, ItemPageData, ItemPhase, ItemState, ItemStatus, ItemStatusRow,
-  OpusReviewEntry, ResultCard, ResultTone, ReviewTrigger, ReviewVerdict, CiState, FindingView,
+  OpusReviewEntry, ReviewTrigger, ReviewVerdict, CiState, FindingView,
 } from "../types";
 
 type Json = Record<string, any>;
@@ -237,11 +238,11 @@ function headerOf(r: RealItem): ItemPageHeader {
 
 export function pageOf(r: RealItem): ItemPageData {
   const history = historyOf(r);
-  return {
+  return withTimeline({
     repo: r.repo, number: r.number, kind: r.item.kind, state: r.item.state, title: r.item.title, author: r.item.author,
     stamp: r.repo + "#" + r.number, header: headerOf(r), status: statusOf(r), bar: barFromStatus(statusOf(r)), costUsd: r.trace.events.reduce((s, e) => s + (e.kind === "model-call" ? (e.call?.costUsd ?? 0) : 0), 0),
     reviews: reviewsOf(r), results: resultsOf(r), history, github: githubOf(r),
-  };
+  });
 }
 
 /** A finding page for staff: the finding as exported plus a status line from its state. */

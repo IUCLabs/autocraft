@@ -2350,20 +2350,6 @@ export interface OpusReviewEntry {
 }
 export interface ReviewHistory { latest: OpusReviewEntry | null; earlier: OpusReviewEntry[] }
 
-export type ResultTone = "ok" | "warn" | "bad" | "neutral" | "accent";
-/** A compact result card of the AutoCraft side: Verify, Fix-ups, Pre-merge review, Classifiers, Duplicates. `earlier` holds older results of the same kind. */
-export interface ResultCard {
-  id: string;
-  kind: "verify" | "fixup" | "premerge" | "postmerge" | "classifiers" | "duplicates" | "security" | "patch-checks" | "actions";
-  title: string;
-  outcome: string;
-  tone: ResultTone;
-  at: string;
-  detail: string | null;
-  earlier: { at: string; outcome: string }[];
-  /** Post-merge cards: the follow-up issues or PRs it opened. */
-  followups?: ItemRef[];
-}
 
 export type HistoryKind = "model" | "write" | "decision" | "event";
 export interface HistoryCall { label: string; kind: "model" | "tool"; costUsd: number | null }
@@ -2447,6 +2433,40 @@ export interface ItemBarStep {
 }
 export interface ItemBar { headline: ItemBarHeadline; steps: ItemBarStep[] }
 
+export type TimelineTone = "ok" | "warn" | "bad" | "neutral";
+export type TimelineIcon = "review" | "fixup" | "merge" | "push" | "github" | "check" | "job" | "chat" | "person";
+/** One line of the item's story: a turn of a person or Opus, or a line of the harness's work (`kind: "harness"`; the page folds runs of the minor ones). */
+export interface TimelineEntry {
+  /** Stable across fetches. */
+  id: string;
+  at: string;
+  kind: "person" | "opus" | "harness";
+  /** A login, "Opus" or "AutoCraft". */
+  actor: string;
+  icon: TimelineIcon;
+  text: string;
+  tone: TimelineTone;
+  costUsd: number | null;
+  /** Shown on its own; the other harness lines fold into runs. */
+  major: boolean;
+  jobId: number | null;
+  /** The review's id in `reviews`. */
+  reviewId: string | null;
+  /** The GitHub-side write this line made, to jump there. */
+  githubId: string | null;
+  /** A pushed commit's short sha. */
+  commit: string | null;
+  /** The pre-approved merge this line belongs to, for Try again and Cancel. */
+  preapproval: { id: number; state: Preapproval["state"]; latest: boolean } | null;
+  calls: HistoryCall[];
+  /** The longer text of the line: a message, a note, instructions. Markdown when `markdown`. */
+  body: string | null;
+  markdown: boolean;
+  /** More detail, one per line: reasons, files, findings. */
+  lines: string[];
+  /** A maintainer's or operator's post on a question: its include-for-Opus source, the question and the option picked. */
+  feedback: { source: string; decisionId: string; pick: string | null; write: boolean; open: boolean } | null;
+}
 export interface ItemPageData {
   repo: RepoName;
   number: number;
@@ -2461,9 +2481,10 @@ export interface ItemPageData {
   /** The live status bar: what is happening to the item now and its path through the pipeline. */
   bar: ItemBar;
   costUsd: number;
+  /** Opus's reviews, newest first: the detail of the review lines of the timeline. */
   reviews: ReviewHistory;
-  results: ResultCard[];
-  history: HistoryEntry[];
+  /** The item's story, oldest first (last 200 lines). */
+  timeline: TimelineEntry[];
   github: GithubSide;
 }
 /** The answer to `since=<stamp>` when nothing on the item page has changed. */

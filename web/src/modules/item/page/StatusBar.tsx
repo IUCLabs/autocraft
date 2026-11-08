@@ -9,6 +9,8 @@ import { useNow } from "../../../lib/useNow";
 import { formatCost } from "../../../lib/trace";
 import { cn } from "../../../ui/cn";
 import { clearStarting, useStarting } from "../starting";
+import { useQuery } from "../../../api/client";
+import { Progress } from "../OpusCards";
 
 const TONE: Record<ItemBarTone, { icon: Icon; box: string; spin?: boolean; pulse?: boolean }> = {
   running: { icon: CircleNotchIcon, box: "bg-accent/10 text-accent-ink", spin: true },
@@ -21,7 +23,7 @@ const TONE: Record<ItemBarTone, { icon: Icon; box: string; spin?: boolean; pulse
 
 const mmss = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
-  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
 /** Elapsed time of a running job, counted on the client from the server's start time. */
@@ -32,7 +34,9 @@ function Elapsed({ since }: { since: string }) {
 
 function Headline({ d }: { d: ItemPageData }) {
   const starting = useStarting(d.repo, d.number);
-  const h = d.bar.headline;
+  const { data: conv } = useQuery(`conversation:${d.repo}#${d.number}`, (a) => a.conversations.get(d.repo, d.number), { pollMs: (x) => (x?.pending ? 4000 : false) });
+  const replying = !!conv?.pending && d.bar.headline.tone !== "running";
+  const h = replying ? { ...d.bar.headline, tone: "running" as const, text: "Opus is replying", model: "opus", startedAt: null, jobId: null, next: null } : d.bar.headline;
   const real = h.tone === "running" || h.tone === "queued";
   // The optimistic line gives way once the server shows the work.
   useEffect(() => {
@@ -46,7 +50,7 @@ function Headline({ d }: { d: ItemPageData }) {
   ) : (
     <>
       {h.text}
-      {h.tone === "running" && h.model && <> · {h.model}</>}
+      {h.tone === "running" && h.model && <> · {h.model.charAt(0).toUpperCase() + h.model.slice(1)}</>}
       {h.tone === "running" && h.startedAt && <> · <Elapsed since={h.startedAt} /></>}
     </>
   );
@@ -57,6 +61,7 @@ function Headline({ d }: { d: ItemPageData }) {
       <div className="min-w-0 text-sm leading-5">
         <p className="font-medium">{text}</p>
         {h.next && !showStarting && <p className="mt-0.5 text-xs text-ink/60">Next: {h.next}</p>}
+        {replying && <Progress lines={conv?.progress} />}
       </div>
     </div>
   );
@@ -65,7 +70,7 @@ function Headline({ d }: { d: ItemPageData }) {
 function StepMark({ s }: { s: ItemBarStep }) {
   if (s.state === "done") return <CheckIcon weight="bold" className="text-ok" />;
   if (s.state === "failed") return <XIcon weight="bold" className="text-bad" />;
-  if (s.state === "current") return s.running ? <CircleNotchIcon weight="bold" className="animate-spin text-accent-ink motion-reduce:animate-none" /> : <PauseCircleIcon weight="fill" className="text-warn" />;
+  if (s.state === "current") return s.running ? <span className="size-2 rounded-full bg-accent" /> : <PauseCircleIcon weight="fill" className="text-warn" />;
   return <span className="size-1.5 rounded-full bg-ink/25" />;
 }
 

@@ -26,7 +26,7 @@ export function Progress({ lines }: { lines?: string[] }) {
   if (!lines?.length) return null;
   const last = lines[lines.length - 1]!;
   return (
-    <div className="group ml-[28px] mt-0.5 text-xs text-ink/40" tabIndex={0} aria-live="off">
+    <div className="group mt-0.5 text-xs text-ink/60" tabIndex={0} aria-live="off">
       <p className="truncate" title={lines.join("\n")}>{last}</p>
       {lines.length > 1 && (
         <ul className="hidden group-hover:block group-focus:block">

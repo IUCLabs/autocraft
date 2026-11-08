@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowsClockwiseIcon, BellIcon, BellSlashIcon, RobotIcon, SpinnerIcon, WarningIcon } from "@phosphor-icons/react";
+import { ArrowsClockwiseIcon, BellIcon, BellSlashIcon, RobotIcon, WarningIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { ActionTag as Tag, ChoiceCore, ChoiceExtra, Decision, DecisionChoices, DoChoiceBody, User } from "../../api/types";
 import { ActionTag, tagWords } from "../../ui/atoms/ActionTag";
@@ -354,8 +354,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
   if (pressed || running)
     return (
       <div className="mt-3" role="status">
-        <p className="flex items-center gap-2 rounded-lg border border-accent/60 bg-accent/[0.05] px-3 py-3 text-sm font-medium">
-          <SpinnerIcon className="shrink-0 animate-spin text-accent-ink" />
+        <p className="rounded-lg border border-accent/60 bg-accent/[0.05] px-3 py-3 text-sm font-medium">
           <span className="min-w-0 break-words">{writes.length ? `Doing it: ${tagWords(writes)}…` : `Doing it: ${core.label}…`}</span>
         </p>
       </div>
@@ -363,11 +362,6 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
 
   return (
     <div className="mt-3">
-      {choices.pick?.reason && (
-        <p className="mb-3 text-sm leading-[21px] text-ink/85">
-          <span className="font-medium">Opus:</span> {choices.pick.reason}
-        </p>
-      )}
       <ErrorLine error={error ?? (choices.run?.state === "failed" ? choices.run.error : undefined)} className="mb-2" />
       <div role="radiogroup" aria-label="What happens to it" onKeyDown={onKey} className="grid grid-cols-[minmax(0,1fr)] gap-2">
         {choices.cores.map((c, i) => {

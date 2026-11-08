@@ -3,17 +3,18 @@
 // viewers get no review text, card details or job errors; a quiet pull request is veiled by the trace context; costs stay visible.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { CiState, DiscordInfo, ItemBar, ItemKind, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, Tier } from "../../../web/src/api/types.ts";
+import type { CiState, TimelineEntry, DiscordInfo, ItemBar, ItemKind, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, Tier } from "../../../web/src/api/types.ts";
 import { statusFromItem, type ItemStatus } from "../../core/item-status.ts";
 import { triggerWhy } from "../../review/trigger.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
-import { fingerprint, context, gather, stepTitle, obj, arr, type Ctx, type Ev, hiddenSql } from "./trace.ts";
+import { fingerprint, context, gather, obj, arr, type Ctx, type Ev, hiddenSql } from "./trace.ts";
+import { timelineOf } from "./item-timeline.ts";
 import { barOf } from "./item-bar.ts";
 import { discordOf } from "./discord.ts";
 import { itemCore } from "./index.ts";
 import { pushedByAutoCraft, writesOf, MATCH_WINDOW_MS, type WriteRow } from "./github-writes.ts";
 import { actionsOf as releasesOf } from "../../operator-actions.ts";
-import { preapprovalOf } from "../../preapproval/index.ts";
+import { preapprovalOf, preapprovalsOf } from "../../preapproval/index.ts";
 import { queueSlots } from "../../rank/position.ts";
 import { visibleRepos } from "./visible.ts";
 import type { Req } from "../types.ts";
@@ -28,16 +29,6 @@ export interface OpusReviewEntry {
   summary: string; fixes: string[]; risks: string[]; claims: { path: string; line: number; text: string }[]; blockedBy: ItemRef[]; costUsd: number;
 }
 export interface ReviewHistory { latest: OpusReviewEntry | null; earlier: OpusReviewEntry[] }
-export type ResultTone = "ok" | "warn" | "bad" | "neutral" | "accent";
-export interface ResultCard {
-  id: string; kind: "verify" | "fixup" | "premerge" | "postmerge" | "classifiers" | "duplicates" | "security" | "patch-checks" | "actions";
-  title: string; outcome: string; tone: ResultTone; at: string; detail: string | null; earlier: { at: string; outcome: string }[]; followups?: ItemRef[];
-}
-export interface HistoryCall { label: string; kind: "model" | "tool"; costUsd: number | null }
-export interface HistoryEntry {
-  id: string; at: string; step: string; outcome: string; model: string | null; costUsd: number | null;
-  kind: "model" | "write" | "decision" | "event"; calls: HistoryCall[]; writeId: string | null;
-}
 export interface GithubEvent {
   id: string; type: "opened" | "comment" | "review" | "label" | "push" | "merged" | "closed"; at: string; actor: string; body: string | null;
   autocraft: { as: string; historyId: string } | null;
@@ -55,7 +46,7 @@ export interface ItemPageHeader {
 }
 export interface ItemPageData {
   repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string; author: string; stamp: string; header: ItemPageHeader;
-  status: ItemStatus; bar: ItemBar; costUsd: number; reviews: ReviewHistory; results: ResultCard[]; history: HistoryEntry[]; github: GithubSide;
+  status: ItemStatus; bar: ItemBar; costUsd: number; reviews: ReviewHistory; timeline: TimelineEntry[]; github: GithubSide;
 }
 export type ItemPageUnchanged = { unchanged: true; stamp: string };
 
@@ -163,114 +154,6 @@ function reviewsOf(c: Ctx, headNow: string | null, events: Ev[]): ReviewHistory 
   return { latest: all[0] ?? null, earlier: all.slice(1) };
 }
 
-// ---- result cards --------------------------------------------------------------------------------------------------
-
-const GOOD = /passed|ok|ci-enough|green|merged|done|kept-green|approve/;
-const BAD = /fail|error|too-large|reject|broke/;
-const toneOf = (s: string): ResultTone => (BAD.test(s) ? "bad" : GOOD.test(s) ? "ok" : "neutral");
-const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
-
-function resultsOf(c: Ctx, it: Item): ResultCard[] {
-  const { db, repo, n, staff } = c;
-  const out: ResultCard[] = [];
-  const detail = (...parts: (string | null | undefined)[]): string | null => (staff ? parts.filter(Boolean).join(". ") || null : null);
-  const v = it.verification;
-  if (v) {
-    const earlier = q<{ head_sha: string; state: string; created_at: string }>(db, "SELECT head_sha, state, created_at FROM verifications WHERE repo = ? AND number = ? ORDER BY created_at DESC", repo, n)
-      .filter((x) => x.head_sha !== v.headSha).map((x) => ({ at: x.created_at, outcome: `${x.state} on ${short(x.head_sha)}` }));
-    out.push({ id: "verify", kind: "verify", title: "Verify", outcome: `${v.state} on ${short(v.headSha)}`, tone: toneOf(v.state), at: v.createdAt, detail: detail(v.reason || v.summary), earlier });
-  }
-  const fixups = [...it.fixups].reverse();
-  if (fixups.length) {
-    const tries = Math.max(...fixups.map((f) => f.attempt));
-    const last = fixups[0]!;
-    out.push({
-      id: "fixup", kind: "fixup", title: "Fix-ups", outcome: `${plural(tries, "try").replace("trys", "tries")}, last ${last.state}`, tone: toneOf(last.state), at: last.createdAt,
-      detail: detail(last.reason, last.files.length ? `Files: ${last.files.join(", ")}` : null), earlier: fixups.slice(1).map((f) => ({ at: f.createdAt, outcome: `try ${f.attempt}: ${f.state}` })),
-    });
-  }
-  const pre = it.premerge ?? [];
-  if (pre.length) {
-    const [p, ...rest] = pre as [(typeof pre)[number], ...typeof pre];
-    const k = p.findings.length;
-    out.push({
-      id: "premerge", kind: "premerge", title: "Pre-merge review", outcome: `${plural(k, "finding")} on ${short(p.head)}`, tone: k ? "warn" : "ok", at: p.at,
-      detail: k ? detail(`${p.findings[0]!.severity}: ${p.findings[0]!.title}`) : null, earlier: rest.map((x) => ({ at: x.at, outcome: `${plural(x.findings.length, "finding")} on ${short(x.head)}` })),
-    });
-  }
-  const pm = it.postmerge;
-  if (pm) {
-    const k = pm.findings.length;
-    const followups: ItemRef[] = pm.findings.flatMap((f) => (f.filing.state === "filed" ? [{ repo, number: f.filing.issue.number }] : []));
-    out.push({
-      id: "postmerge", kind: "postmerge", title: "Post-merge review", outcome: pm.error ? "failed" : `${plural(k, "finding")} on ${short(pm.mergeSha)}`, tone: pm.error ? "bad" : k ? "warn" : "ok", at: pm.at,
-      detail: detail(pm.error ?? (k ? pm.findings[0]!.title : null)), earlier: pm.earlier.map((x) => ({ at: "", outcome: x.state === "filed" ? `filed ${x.title}` : x.title })), followups,
-    });
-  }
-  const cls = it.classifications;
-  if (cls.length) {
-    const labels = new Set(cls.map((x) => x.typeLabel));
-    out.push({
-      id: "classifiers", kind: "classifiers", title: "Classifiers", outcome: `${[...labels].join(" / ")} · ${cls.length === 1 ? "1 classifier" : labels.size === 1 ? `${cls.length} of ${cls.length} agree` : "they differ"}`,
-      tone: labels.size === 1 ? "neutral" : "warn", at: cls[0]!.at, detail: detail(...cls.map((x) => `${x.classifier}: ${x.reason}`)), earlier: [],
-    });
-  }
-  if (it.related.length) out.push({ id: "related", kind: "duplicates", title: "Duplicates and links", outcome: it.related.map((x) => `${x.relation} ${x.repo}#${x.number}`).join(", "), tone: "neutral", at: it.updatedAt, detail: null, earlier: [] });
-  const checks = [...(it.patchChecks ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  if (checks.length) {
-    const [p, ...rest] = checks as [(typeof checks)[number], ...typeof checks];
-    out.push({
-      id: "patch-checks", kind: "patch-checks", title: "Patch checks", outcome: `${p.verdict}, ${p.kind} round ${p.round}`, tone: p.verdict === "approve" ? "ok" : "warn", at: p.createdAt,
-      detail: detail(p.reasons, ...p.problems), earlier: rest.map((x) => ({ at: x.createdAt, outcome: `${x.verdict}, ${x.kind} round ${x.round}` })),
-    });
-  }
-  const acts = [...it.actions].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  if (acts.length) {
-    const [a, ...rest] = acts as [(typeof acts)[number], ...typeof acts];
-    out.push({
-      id: "actions", kind: "actions", title: "Actions", outcome: `${a.kind}: ${a.state}`, tone: a.state === "failed" ? "bad" : a.state === "done" ? "ok" : "neutral", at: a.createdAt,
-      detail: detail(a.reason), earlier: rest.map((x) => ({ at: x.createdAt, outcome: `${x.kind}: ${x.state}` })),
-    });
-  }
-  return out;
-}
-
-// ---- history -------------------------------------------------------------------------------------------------------------
-
-function historyOf(c: Ctx, ev: Ev[]): HistoryEntry[] {
-  const callOf = (e: Ev): HistoryCall => ({ label: `${e.call?.step ?? e.summary} (${e.call?.model ?? e.actor.name})`, kind: "model", costUsd: e.call?.costUsd ?? null });
-  const jobsWithCalls = new Set(ev.filter((e) => e.kind === "job").map((e) => e.ref.jobId));
-  // The calls of a review were taken into it by linkReviewCalls: read them by id.
-  const reviewIds = new Set(ev.filter((e) => e.kind === "review").flatMap((e) => (e.ref.runIds as number[] | undefined) ?? []));
-  const runs = new Map<number, { step: string; model: string; cost_usd: number | null }>();
-  if (reviewIds.size) {
-    for (const r of q<{ id: number; step: string; model: string; cost_usd: number | null }>(c.db, `SELECT r.id, r.step, r.model, r.cost_usd FROM agent_runs r WHERE r.id IN (${[...reviewIds].map(() => "?").join(",")})`, ...reviewIds)) runs.set(r.id, r);
-  }
-  const rows: HistoryEntry[] = [];
-  const row = (e: Ev, kind: HistoryEntry["kind"], step: string, outcome: string, calls: HistoryCall[], model: string | null, cost: number | null, write = false) =>
-    rows.push({ id: e.id, at: e.at, step, outcome, model, costUsd: cost, kind, calls, writeId: write ? e.id : null });
-  for (const e of ev) {
-    const after = e.summary.includes(": ") ? e.summary.slice(e.summary.indexOf(": ") + 2) : e.summary;
-    if (e.kind === "job") {
-      const calls = ev.filter((x) => x.kind === "model-call" && x.ref.jobId === e.ref.jobId);
-      const cost = calls.length ? calls.reduce((s, x) => s + (x.call?.costUsd ?? 0), 0) : null;
-      row(e, "event", e.actor.name, after, calls.map(callOf), calls[0]?.call?.model ?? null, cost);
-    } else if (e.kind === "review") {
-      const calls = ((e.ref.runIds as number[] | undefined) ?? []).flatMap((id) => { const r = runs.get(id); return r ? [{ label: `${stepTitle(r.step)} (${r.model})`, kind: "model" as const, costUsd: r.cost_usd }] : []; });
-      row(e, "model", e.summary.split(":")[0]!, after, calls, e.actor.name, e.costUsd ?? null);
-    } else if (e.kind === "model-call") {
-      if (jobsWithCalls.has(e.ref.jobId)) continue;
-      row(e, "model", e.call?.step ?? "Model call", e.summary.replace(/^[^:]*:\s*/, ""), [], e.call?.model ?? e.actor.name, e.call?.costUsd ?? null);
-    } else if (e.kind === "write") row(e, "write", e.summary.split(":")[0]!, after === e.summary ? "done" : after, [], null, null, true);
-    else if (e.kind === "decision") row(e, "decision", /^Asked/.test(e.summary) ? "Question asked" : "Decision", after, [], null, null);
-    else if (e.kind === "step" || e.kind === "check" || e.kind === "conversation") {
-      const conv = e.kind === "conversation";
-      row(e, "event", e.kind === "check" ? "Check" : conv ? "Conversation with Opus" : e.actor.name, conv ? e.summary.replace(/^Conversation /, "") : e.summary, [], null, null);
-    }
-  }
-  return rows.sort((a, b) => a.at.localeCompare(b.at)).slice(-80);
-}
-
 // ---- GitHub side ---------------------------------------------------------------------------------------------------------
 
 const IDENTITY: Record<string, string> = { legacy: "box account", app: "GitHub App" };
@@ -345,7 +228,8 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
   return {
     repo: c.repo, number: c.n, kind: it.kind, state: it.state, title: it.title, author: it.author, stamp,
     header: headerOf(c, it, it.queue ?? null), status, bar: barOf(c, { kind: it.kind, state: it.state, mergedAt: it.mergedAt, pipelineOn: it.pipelineOn === true }, status), costUsd: cost,
-    reviews: it.kind === "pr" ? reviewsOf(c, row.head_oid, ev) : { latest: null, earlier: [] }, results: resultsOf(c, it), history: historyOf(c, ev),
+    reviews: it.kind === "pr" ? reviewsOf(c, row.head_oid, ev) : { latest: null, earlier: [] },
+    timeline: timelineOf(c, ev, it.kind === "pr" ? preapprovalsOf(db, c.repo, c.n) : []).slice(-200),
     github: githubOf(c, it, ev, row.url ?? "", row.synced_at),
   };
 }
