@@ -2,6 +2,7 @@
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
 import { guardRepo } from "../core/guard.ts";
 import { repoIdentity } from "../github/identity.ts";
+import { claimSettling, pendingAnswerRefusal, releaseSettling, sweepSettling } from "../answers/hold.ts";
 import { initExecState, laneForOperator, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { readLive, writeEffect } from "../act/index.ts";
@@ -500,11 +501,25 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const repos = cardRepos(c, params);
   const writes = params.kind === "comment" || params.kind === "label" || params.kind === "close" || params.kind === "duplicate"
     || (params.kind === "resolution" && params.steps.some((x) => x.kind !== "review" && x.kind !== "fixup"));
+  if (writesItem(params)) {
+    const refusal = pendingAnswerRefusal(db, c.repo, c.number);
+    if (refusal) throw new ConversationError(409, refusal);
+  }
   const lr = writes ? await laneForOperator(db, deps.lane, by, repos) : null;
   if (lr && !("lane" in lr)) throw new ConversationError("transient" in lr ? 503 : 409, "transient" in lr ? `GitHub could not be reached to check your access: ${lr.transient}` : lr.reason);
   const at = (deps.now?.() ?? new Date()).toISOString();
-  const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
-  if (claim.changes !== 1) return { card: c, ran: false };
+  // The card claims the decision it settles in the transaction that starts its run: no dashboard answer or other card settles it meanwhile.
+  const settles = settledDecisionOf(params);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
+    if (claim.changes !== 1) { db.exec("ROLLBACK"); return { card: c, ran: false }; }
+    if (settles) claimSettling(db, settles, id, by);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw new ConversationError(409, String((e as Error).message ?? e));
+  }
   let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
     out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note, deps.exec, lr ? lr.lane : null);
@@ -512,6 +527,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     error = oneLine(String((e as Error).message ?? e));
     posted = e instanceof StepError && e.posted;
   }
+  if (settles) releaseSettling(db, settles, id);
   if (out && skipped.length) out = { ...out, result: `${out.result} (skipped: ${skipped.join("; ")})` };
   const end = (deps.now?.() ?? new Date()).toISOString();
   db.prepare("UPDATE conversation_cards SET state = ?, result = ?, result_url = ?, error = ?, acted_at = ? WHERE id = ?")
@@ -531,9 +547,20 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   return { card: need(db, id), ran: true };
 }
 
+/** The decision the card settles, if any. */
+const settledDecisionOf = (p: CardParams): string | undefined =>
+  p.kind === "answer" || p.kind === "resolve" || p.kind === "backlog" ? p.decision : p.kind === "resolution" ? p.settle?.decision : undefined;
+
+/** Whether the card writes something besides a comment to the item, so it must not run against an answer someone gave and the pipeline has not applied. */
+const WRITING_STEPS = new Set(["close", "duplicate", "transfer", "label", "unlabel", "reopen"]);
+const writesItem = (p: CardParams): boolean =>
+  p.kind === "close" || p.kind === "duplicate" || p.kind === "label" || (p.kind === "resolution" && p.steps.some((x) => WRITING_STEPS.has(x.kind)));
+
 /** A card left 'running' by a crashed process is marked failed: what it did on GitHub is unknown. */
 export const RUNNING_STALE_MS = 10 * 60_000;
 export function sweepRunningCards(db: DatabaseSync, deps?: StoreDeps): number {
   const cutoff = new Date((deps?.now?.() ?? new Date()).getTime() - RUNNING_STALE_MS).toISOString();
-  return db.prepare("UPDATE conversation_cards SET state = 'failed', error = 'outcome unknown; see the GitHub activity page' WHERE state = 'running' AND acted_at < ?").run(cutoff).changes as number;
+  const n = db.prepare("UPDATE conversation_cards SET state = 'failed', error = 'outcome unknown; see the GitHub activity page' WHERE state = 'running' AND acted_at < ?").run(cutoff).changes as number;
+  sweepSettling(db);
+  return n;
 }

@@ -172,11 +172,25 @@ export function createMockApi(): Api {
         changed();
         return wait(d, 30);
       },
+      async dispute(id, reason) {
+        const d = find(id);
+        requireOperator(d);
+        Object.assign(d, { dispute: { by: me.login, reason, at: nowIso() }, undoable: true });
+        changed();
+        return wait(d, 30);
+      },
+      async keepAnswer(id) {
+        const d = find(id);
+        requireOperator(d);
+        Object.assign(d, { dispute: null });
+        changed();
+        return wait(d, 30);
+      },
       async undo(id) {
         const d = find(id);
         requireOperator(d);
         if (!d.undoable) throw new Error("already applied");
-        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [], undoable: false });
+        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [], undoable: false, dispute: null, orphaned: false });
         changed();
         return wait(d, 30);
       },

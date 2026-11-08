@@ -11,12 +11,14 @@ import type {
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
 import { conversationOf, insertTurn, systemBlock } from "../../conversations/store.ts";
-import { BACKLOG, HANDLED, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
+import { BACKLOG, HANDLED, isBacklog, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
 import { heldLookup, type Held } from "../../runner/autopilot.ts";
 import { initExecState, retryDecision } from "../../github/user-lane.ts";
+import { inActiveBatch, mergeRunning } from "../../preapproval/index.ts";
+import { clearDispute, DISPUTED, isDisputed, openDispute, settlingBy, settlingMessage } from "../../answers/hold.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -25,7 +27,7 @@ import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
-import { canSettle, canSettleCached, settleMemo, type SettleMemo } from "../../settlers.ts";
+import { canSettle, canSettleCached, settledBy, settleMemo, type SettleMemo } from "../../settlers.ts";
 import { isQuiet } from "../../security/quiet.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
@@ -167,7 +169,7 @@ export function execReasonFor(state: ExecState, stored: string | null, repo: str
 }
 /** Where an answer's write stands. A write the planner holds back (repo approval, pipeline switch, stage breaker, daily limit) is shown with its reason; operators also get the repo whose approvals to open. */
 export function execOf(db: DatabaseSync, d: DecisionRow, repo: string | null, viewer: Viewer): Decision["exec"] {
-  if (!d.answer || d.applied_at || d.exec_state === "done") return null;
+  if (!d.answer || d.applied_at || d.exec_state === "done" || d.exec_state === DISPUTED) return null;
   const state = (d.exec_state ?? "pending") as ExecState;
   if (state !== "pending") return { state, reason: execReasonFor(state, d.exec_reason ?? null, repo, viewer.staff) };
   let held = d.repo && d.number !== null && !isBatch(d) ? (viewer.held ??= heldLookup(db))(d.repo, d.number, d.id) : null;
@@ -180,9 +182,18 @@ export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, role: re
 /** The viewer with the queue places of the items they may see, computed once for the response. */
 const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db), memo: settleMemo() });
 
-/** Whether Undo would succeed: answered, not acted on, and nothing written to GitHub for a group answer. */
+/** Whether Undo would succeed: answered, not acted on, and no GitHub write for the answer exists: no act comment, no group post, no write by the card that gave the answer. */
 export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
-  !!d.answer && !d.id.includes("~replaced-") && (!d.applied_at || directHandled(db, d)) && !db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id);
+  !!d.answer && !d.id.includes("~replaced-") && (!d.applied_at || directHandled(db, d)) && !wroteToGithub(db, d);
+
+/** Whether a GitHub write already exists for the answer: Act's comment, a duplicate group's post, or another step of the card that answered. */
+export function wroteToGithub(db: DatabaseSync, d: DecisionRow): boolean {
+  if (db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id)) return true;
+  if (db.prepare("SELECT 1 FROM actions WHERE decision_id = ? AND comment_url IS NOT NULL LIMIT 1").get(d.id)) return true;
+  if (!d.repo || d.number === null || !d.answered_at) return false;
+  const cards = db.prepare("SELECT result FROM conversation_cards WHERE repo = ? AND number = ? AND state = 'done' AND acted_by = ? COLLATE NOCASE AND acted_at >= ?").all(d.repo, d.number, d.answered_by, d.answered_at) as { result: string | null }[];
+  return cards.some((c) => (c.result ?? "").split("; ").some((seg) => seg && !seg.startsWith("Answered the decision") && !seg.startsWith("Decision closed as handled")));
+}
 
 /** An operator's own "handled" answer, recorded by its audit source: nothing was written anywhere, so Undo stays possible although it is marked applied (a conversation card's handled answer follows GitHub writes and stays final). A withdrawn question's renamed row (`~replaced-`) never reopens. */
 const directHandled = (db: DatabaseSync, d: DecisionRow): boolean =>
@@ -267,6 +278,9 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     answerNote: viewer.staff ? d.answer_note : null,
     answeredBy: d.answered_by, answeredAt: d.answered_at, appliedAt: d.applied_at,
     exec: execOf(db, d, d.repo ?? refs[0]?.repo ?? null, viewer),
+    settling: settlingBy(d),
+    dispute: isDisputed(d) ? { by: d.dispute_by ?? "", reason: d.dispute_reason ?? "", at: d.dispute_at ?? "" } : null,
+    orphaned: !!d.answer && !d.applied_at && !isBacklog(d.answer) && !isDisputed(d) && !!d.answered_by && d.answered_by !== "pipeline" && !settledBy(db, d, viewer.memo),
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,
     exceptions: exceptionsOf(d),
@@ -320,7 +334,11 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
     params.since = new Date(Date.now() - 7 * 86400_000).toISOString();
   } else if (status === "backlog") where.push(`answer = '${BACKLOG.key}'`);
   else if (status === "snoozed") where.push(SNOOZED_SQL);
-  else if (status === "open" || status === "opinions") where.push(`answer IS NULL AND NOT ${SNOOZED_SQL}`);
+  else if (status === "open" || status === "opinions") {
+    // A disputed answer waits for its answerer and the operators: it is open for them.
+    if (!isOperator(req)) params.me = req.user.login;
+    where.push(`((answer IS NULL AND NOT ${SNOOZED_SQL}) OR (exec_state = '${DISPUTED}' AND answer IS NOT NULL AND applied_at IS NULL${isOperator(req) ? "" : " AND answered_by = :me COLLATE NOCASE"}))`);
+  }
   if (status === "opinions") where.push("(EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL) OR EXISTS (SELECT 1 FROM decision_comments c WHERE c.decision_id = decisions.id))");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
   if (kinds.length) where.push(`kind IN (${kinds.map((k) => `'${k}'`).join(",")})`);
@@ -449,6 +467,8 @@ export async function answer(db: DatabaseSync, req: Req, via?: "mcp"): Promise<D
  */
 export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: Record<string, unknown>, source: string, via?: string): void {
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
+  const applying = settlingBy(d);
+  if (applying) throw new HttpError(409, settlingMessage(applying));
   const keys = new Set(optionsOf(d).map((o) => o.key));
   const handled = b.answer === HANDLED.key;
   if (typeof b.answer !== "string" || !(keys.has(b.answer) || (handled && !isBatch(d) && !d.id.includes(":dupegroup:")))) throw new HttpError(400, "answer must be one of the option keys");
@@ -478,8 +498,8 @@ export function applyAnswer(db: DatabaseSync, d: DecisionRow, login: string, b: 
     const at = new Date().toISOString();
     // Handled writes nothing and no step acts on it, so it counts as applied at once (Undo still works, see directHandled).
     const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
-      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, login, at, handled ? at : null, d.id);
-    if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
+      WHERE id = ? AND answer IS NULL AND exec_state IS NOT 'settling'`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, login, at, handled ? at : null, d.id);
+    if (r.changes !== 1) throw new HttpError(409, settlingBy(getDecision(db, d.id) ?? d) ? settlingMessage(settlingBy(getDecision(db, d.id) ?? d)!) : "someone answered this a moment ago");
     replaceProposedCards(db, d.repo, d.number, d.id);
   });
   if (writeEffect(d.kind, ans)) initExecState(db, d.id);
@@ -530,12 +550,42 @@ export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Dec
   if (d.applied_at && !directHandled(db, d)) throw new HttpError(409, "the pipeline already acted on this answer");
   inTransaction(db, () => {
     if (!canUndo(db, d)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
-    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL, exec_state = NULL, exec_reason = NULL
+    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL, exec_state = NULL, exec_reason = NULL, dispute_by = NULL, dispute_reason = NULL, dispute_at = NULL
       WHERE id = ? AND answer IS NOT NULL AND (applied_at IS NULL OR answer = '${HANDLED.key}')`).run(d.id);
     if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
     resetGroupAnswer(db, d.id);
   });
   audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined, ...(via ? { via } : {}) });
+  if (d.exec_state === DISPUTED) audit(db, req.user.login, "dispute-resolve", d.id, { resolution: "undo", disputedBy: d.dispute_by ?? undefined });
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+}
+
+/**
+ * Someone who can settle, and did not give the answer, disputes an answer the pipeline has not applied. The pipeline stops reading it
+ * until the answerer or an operator keeps it or takes it back. `reason` is required.
+ */
+export async function dispute(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireSettler(db, req, d);
+  const reason = optionalText(body(req).reason, NOTE_MAX, "reason");
+  if (!reason) throw new HttpError(400, "a dispute needs a reason");
+  if (!d.answer || isBacklog(d.answer) || d.applied_at || d.id.includes("~replaced-")) throw new HttpError(409, "only an answer the pipeline has not applied yet can be disputed");
+  if (d.answered_by?.toLowerCase() === req.user.login.toLowerCase()) throw new HttpError(409, "you gave this answer: undo it instead");
+  if (d.exec_state === DISPUTED) throw new HttpError(409, `already disputed by ${d.dispute_by}`);
+  if (wroteToGithub(db, d)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
+  if (d.kind === "merge" && d.repo && d.number !== null && (mergeRunning(db, d.repo) || inActiveBatch(db, d.repo, d.number))) throw new HttpError(409, "the merge is already in progress");
+  if (!openDispute(db, d.id, req.user.login, reason, new Date().toISOString())) throw new HttpError(409, "the pipeline acted on this a moment ago");
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+}
+
+/** The answerer, or an operator, keeps a disputed answer: the pipeline reads it again. */
+export async function keepAnswer(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireSettler(db, req, d, true);
+  if (!isDisputed(d)) throw new HttpError(409, "that answer is not disputed");
+  clearDispute(db, d.id);
+  initExecState(db, d.id);
+  audit(db, req.user.login, "dispute-resolve", d.id, { resolution: "keep", answer: d.answer, disputedBy: d.dispute_by ?? undefined });
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
@@ -577,6 +627,8 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireSettler(db, req, d);
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
+  const applying = settlingBy(d);
+  if (applying) throw new HttpError(409, settlingMessage(applying));
   const oid = body(req).opinionId;
   if (typeof oid !== "string") throw new HttpError(400, "opinionId is required");
   const o = db.prepare("SELECT id, login, option FROM decision_opinions WHERE id = ? AND decision_id = ? AND retracted_at IS NULL").get(oid, d.id) as
@@ -588,8 +640,8 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
     const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, option) : [];
     if (stored.length && body(req).textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
     const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?, snoozed_by = NULL, snoozed_at = NULL
-      WHERE id = ? AND answer IS NULL`).run(option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
-    if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
+      WHERE id = ? AND answer IS NULL AND exec_state IS NOT 'settling'`).run(option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
+    if (r.changes !== 1) throw new HttpError(409, settlingBy(getDecision(db, d.id) ?? d) ? settlingMessage(settlingBy(getDecision(db, d.id) ?? d)!) : "someone answered this a moment ago");
   });
   if (writeEffect(d.kind, option)) initExecState(db, d.id);
   audit(db, req.user.login, "adopt", d.id, { answer: o.option, opinion: o.id, of: o.login });

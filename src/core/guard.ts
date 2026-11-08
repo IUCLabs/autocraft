@@ -19,6 +19,7 @@ import { gateRepo, gates, type Approval, type By, type Want } from "./gates.ts";
 import { loadItemFact } from "./issue-facts.ts";
 import type { ActionKind, PrFacts } from "./plan.ts";
 import { identityOfDecision, type Identity } from "../github/identity.ts";
+import { disputeOn } from "../answers/hold.ts";
 
 declare const guarded: unique symbol;
 
@@ -60,6 +61,7 @@ const make = <K extends ActionKind>(ref: Ref, a: Want<K>, head: string, as: Iden
 
 async function check(db: DatabaseSync, ref: Ref, a: Ask, by: By, live?: Live): Promise<{ f: PrFacts } | Refused> {
   const name = `${ref.repo}#${ref.number}`;
+  if (disputeOn(db, ref.repo, ref.number)) return { refused: `${name}: an answer on it is disputed` };
   let read: LiveRead | null = null;
   if (needsLive(a)) {
     if (!live) return { refused: `${name}: no live read of the PR before the write` };
@@ -121,6 +123,7 @@ export async function guardBatchMerge(db: DatabaseSync, batch: Ref & { head: str
 /** Lets an issue or PR write of the item steps through while decideItem still has the action for the item. No GitHub read: the caller reads what it needs. */
 export async function guardItem(db: DatabaseSync, ref: Ref, action: ItemWant, by: By, asDecision?: string): Promise<GuardedItem | Refused> {
   const name = `${ref.repo}#${ref.number}`;
+  if (disputeOn(db, ref.repo, ref.number)) return { refused: `${name}: an answer on it is disputed` };
   const f = loadItemFact(db, ref.repo, ref.number);
   if (!f) return { refused: `${name}: not an open item the pipeline tracks` };
   const why = gates(f, action, by);

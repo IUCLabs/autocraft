@@ -37,6 +37,7 @@ export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState
 import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { sweepStaleAnswers } from "../answers/sweep.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import { ownerOf } from "../owners.ts";
 
@@ -258,6 +259,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     // A Merge? question open for a PR a maintainer has since blocked no longer applies.
     const withdrawn = withdrawBlockedQuestions(db, buildQueue(db, { repo }).filter((e) => e.state !== "merged"), at());
     if (withdrawn) log(`  withdrew ${withdrawn} Merge? decision${withdrawn === 1 ? "" : "s"} of PRs with changes requested`);
+    sweepStaleAnswers(db, at(), repo);
     const grouped = withdrawGroupedQuestions(db, at(), repo);
     if (grouped) log(`  set aside ${grouped} Merge? decision${grouped === 1 ? "" : "s"} of PRs in a duplicate group`);
   }

@@ -122,6 +122,10 @@ export interface Api {
     undo(id: string): Promise<Decision>;
     /** Operator: runs the GitHub write of a waiting or failed answer again. */
     retry(id: string): Promise<Decision>;
+    /** Someone who settles, other than the answerer, disputes an answer the pipeline has not applied; the reason is required. */
+    dispute(id: string, reason: string): Promise<Decision>;
+    /** The answerer or an operator keeps a disputed answer. */
+    keepAnswer(id: string): Promise<Decision>;
     /** Operator: clear a Backlog answer so the decision is open again. */
     reopen(id: string): Promise<Decision>;
     /** Operator: snooze (`on`) or wake an open decision. */

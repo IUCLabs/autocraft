@@ -176,6 +176,7 @@ function Row({ phone, d, canUndo, active, checked, mine, onOpen, activeRef }: { 
             {d.answer && d.undoable && canUndo && <RowUndo id={d.id} />}
           </span>
         </div>
+        {d.dispute && <p className="mt-1 break-words text-xs text-warn">{d.dispute.by} disputed {d.answeredBy}&rsquo;s answer: {d.dispute.reason}</p>}
         <ExecLine d={d} canRetry={canUndo} compact />
       </div>
     </div>

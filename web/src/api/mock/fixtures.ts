@@ -167,6 +167,10 @@ interface Seed {
   docket?: string;
   /** An answer whose GitHub write has not run: where it stands and why. */
   exec?: [ExecState, string | null] | [ExecState, string | null, string]; // state, reason, repo whose approvals hold it
+  /** An open question whose answer another person's card is applying. */
+  settling?: string;
+  /** An answer someone disputed before the pipeline applied it: who, why, hours ago. */
+  dispute?: [string, string, number];
 }
 
 const SEEDS: Seed[] = [
@@ -211,6 +215,7 @@ const SEEDS: Seed[] = [
     ],
     facts: ["+412 −18 · 6 files", "author: 14 merged, whitelisted", "reference app: Filter › Distort › Wave", "CI passing · mergeable", "classifiers: all say missing feature"],
     ...spread(scopeOpts("take")),
+    settling: "ochre-fox",
     ageH: 71,
     author: "pixel-wrangler",
     size: [412, 18, 6],
@@ -630,7 +635,7 @@ const SEEDS: Seed[] = [
     ageH: 12,
     author: "kiln-and-reed",
     answer: ["close", "ochre-fox", 3, false],
-    exec: ["failed", "GitHub answered 502 while closing the item"],
+    dispute: ["mosswood", "The roadmap lists animated SVG for the next quarter; closing it now loses the discussion.", 2],
   },
   {
     kind: "scope",
@@ -643,8 +648,7 @@ const SEEDS: Seed[] = [
     ...spread(scopeOpts("close")),
     ageH: 1,
     author: "gridlock-9",
-    answer: ["close", "ochre-fox", 0.2, false],
-    exec: ["pending", "Comments in texturecraft are not approved", "texturecraft"],
+    answer: ["close", "kiri-n", 0.2, false],
   },
   // answered
   {
@@ -675,7 +679,7 @@ const SEEDS: Seed[] = [
     recommended: "same",
     ageH: 60,
     author: "pixel-wrangler",
-    answer: ["same", "ochre-fox", 20, false],
+    answer: ["same", "kiri-n", 20, false],
   },
   {
     kind: "duplicate",
@@ -870,6 +874,8 @@ function toDecision(s: Seed): Decision {
     answeredAt: s.answer ? iso(s.answer[2] * H) : null,
     appliedAt: s.answer?.[3] ? iso(s.answer[2] * H - 20 * M) : null,
     exec: s.exec ? { state: s.exec[0], reason: s.exec[1], ...(s.exec[2] ? { approvalsRepo: s.exec[2] } : {}) } : null,
+    settling: s.settling ?? null,
+    dispute: s.dispute ? { by: s.dispute[0], reason: s.dispute[1], at: iso(s.dispute[2] * H) } : null,
     opinions,
     adoptedOpinion: s.answer?.[5] !== undefined ? opinions[s.answer[5]] : null,
     exceptions: [],

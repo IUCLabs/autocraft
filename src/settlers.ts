@@ -91,20 +91,20 @@ export const settlesLoginSql = (login: string, repo: string): string => `(${logi
       AND rp.checked_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${PERM_READ_TTL / 1000} seconds'))))`;
 
 /**
- * SQL condition on a decisions row (`a` is its table name or alias): its answer counts because its answerer is an operator, or a
+ * SQL condition on a decisions row (`a` is its table name or alias): a disputed answer never counts. Otherwise its answer counts because its answerer is an operator, or a
  * maintainer while `maintainer_writes` is on and every repo the decision covers (its own and its batch items') has the app's
  * identity, so the write is made as that person. Checked wherever the pipeline reads answers.
  */
-export const settledBySql = (a: string): string => `(${a}.answered_by IN (SELECT login FROM main.access WHERE role = 'operator')
+export const settledBySql = (a: string): string => `(${a}.exec_state IS NOT 'disputed' AND (${a}.answered_by IN (SELECT login FROM main.access WHERE role = 'operator')
   OR (${a}.answered_by IN ${SETTLER_LOGINS_SQL}
     AND (${a}.repo IS NOT NULL OR json_array_length(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) > 0)
     AND NOT EXISTS (SELECT 1 WHERE ${a}.repo IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${a}.repo AND s.value = 'app'))
     AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) j
-      WHERE json_extract(j.value, '$.repo') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || json_extract(j.value, '$.repo') AND s.value = 'app'))))`;
+      WHERE json_extract(j.value, '$.repo') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || json_extract(j.value, '$.repo') AND s.value = 'app')))))`;
 
 /** The same check for one loaded decision row. */
-export function settledBy(db: DatabaseSync, d: { answered_by: string | null; repo: string | null; items: string | null }, m: SettleMemo = settleMemo()): boolean {
-  if (!d.answered_by) return false;
+export function settledBy(db: DatabaseSync, d: { answered_by: string | null; repo: string | null; items: string | null; exec_state?: string | null }, m: SettleMemo = settleMemo()): boolean {
+  if (!d.answered_by || d.exec_state === "disputed") return false;
   roles(db, m);
   if (m.operators!.has(d.answered_by)) return true;
   if (!m.maintainers!.has(d.answered_by) || !m.on) return false;

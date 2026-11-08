@@ -489,8 +489,8 @@ export function advancePreapprovals(db: DatabaseSync, log: (line: string) => voi
   return n;
 }
 
-const mergeRunning = (db: DatabaseSync, repo: string): boolean => !!db.prepare("SELECT 1 FROM jobs WHERE repo = ? AND step = 'merge' AND state = 'running'").get(repo);
-const inActiveBatch = (db: DatabaseSync, repo: string, n: number): boolean =>
+export const mergeRunning = (db: DatabaseSync, repo: string): boolean => !!db.prepare("SELECT 1 FROM jobs WHERE repo = ? AND step = 'merge' AND state = 'running'").get(repo);
+export const inActiveBatch = (db: DatabaseSync, repo: string, n: number): boolean =>
   !!db.prepare("SELECT 1 FROM main.merge_batch_prs x JOIN main.merge_batches b ON b.id = x.batch_id WHERE b.repo = ? AND x.number = ? AND b.state IN ('checking', 'open')").get(repo, n);
 
 /**

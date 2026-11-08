@@ -39,6 +39,7 @@ import { plannedItems } from "../core/select-items.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { setAsideSupersededQuestions } from "../merge/withdraw.ts";
 import { ownerOf } from "../owners.ts";
+import { sweepStaleAnswers } from "../answers/sweep.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps, type Lane } from "../github/user-lane.ts";
 
 const ACTOR = "act";
@@ -154,6 +155,12 @@ function pending(db: DatabaseSync, repo: string, refs?: string[]): Target[] {
     .map((p): Target => ({ decisionId: p.action.params!.decisionId as string, kind: p.action.params!.bucket as Target["kind"], repo, number: p.facts.number }));
 }
 
+/** The decision still carries the answer the target was planned for: not undone, applied, disputed or answered differently. */
+function answerStands(db: DatabaseSync, id: string, answer: string | null): boolean {
+  const d = getDecision(db, id);
+  return !!d && d.answer === answer && !d.applied_at && d.exec_state !== "disputed";
+}
+
 // ---- GitHub ----------------------------------------------------------------------
 
 export type Live = { id: string; type: "Issue" | "PullRequest"; state: string; head: string | null };
@@ -220,7 +227,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
   // Answers that need no GitHub write are applied whether or not commenting is approved.
   // The group steps compare text hashes with the ones stored at the comparison: a hash cleared by an edit outside sync is filled first, so the edit is seen.
-  if (!dryRun) { fillEmbedHashes(db); applyDuplicateAnswers(db, at()); }
+  if (!dryRun) { fillEmbedHashes(db); applyDuplicateAnswers(db, at()); sweepStaleAnswers(db, at(), repo); }
   if (!commentApprovalOf(db, repo)) {
     summary.note = `commenting in ${repo} is not approved`;
     log(`act ${repo}: ${summary.note}; nothing done`);
@@ -287,6 +294,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       }
       const g = await guardItem(db, { repo: t.repo, number: t.number }, { kind: "act", bucket: t.kind, decisionId: t.decisionId }, params.by ?? CLI_BY);
       if ("refused" in g) { jobItem(db, t.repo, t.number, `not closed: ${g.refused}`, log); continue; }
+      // Read again after every await above: an undo or a dispute that landed meanwhile stops the write.
+      if (!answerStands(db, t.decisionId, dec.answer)) { jobItem(db, t.repo, t.number, "not closed: the answer was taken back or disputed", log); continue; }
       let url = prev?.comment_url ?? null;
       // A duplicate's close reason needs the kept issue, read before the comment is posted and again here on a retry.
       let how: CloseHow | undefined = t.kind === "scope" ? "NOT_PLANNED" : undefined;
@@ -309,6 +318,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);
       }
+      // The comment was awaited above; an undo is refused once it is posted, but a dispute or an answer changed before it is not.
+      if (!answerStands(db, t.decisionId, dec.answer)) { jobItem(db, t.repo, t.number, "not closed: the answer was taken back or disputed", log); continue; }
       await closeItem(w, g, q, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head }, how);
       save(t, "done", null, url);
       db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);

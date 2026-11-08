@@ -147,6 +147,12 @@ export interface Decision {
   /** The GitHub write of the answer while it is not done (repos on the app's identity only): waiting for the answering operator's sign-in or access, failed, or pending. null otherwise. */
   /** `approvalsRepo`: the repo whose approvals hold the write back, for operators who can change them. */
   exec: { state: ExecState; reason: string | null; approvalsRepo?: string } | null;
+  /** Login of the person whose card is applying an answer to this open decision; nobody else may answer meanwhile. */
+  settling?: string | null;
+  /** Someone disputed the answer before the pipeline applied it: the pipeline ignores it until the answerer or an operator keeps it or undoes it. */
+  dispute?: { by: string; reason: string; at: string } | null;
+  /** Answered, not applied, and the answerer can no longer settle (lost the role, or the setting is off): an operator reassigns it. */
+  orphaned?: boolean;
   /** The opinion the operator adopted as the answer, if any. */
   adoptedOpinion: Opinion | null;
   opinions: Opinion[];

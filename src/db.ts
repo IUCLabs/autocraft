@@ -71,6 +71,10 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // Where the GitHub write of an answer stands under repo_identity=app (src/github/user-lane.ts): pending | waiting-token | waiting-permission | done | failed; null before any attempt.
   ["decisions", "exec_state", "TEXT"],
   ["decisions", "exec_reason", "TEXT"],
+  // A dispute of an answered, unapplied decision (src/answers/hold.ts): who, why and when. exec_state is then 'disputed'.
+  ["decisions", "dispute_by", "TEXT"],
+  ["decisions", "dispute_reason", "TEXT"],
+  ["decisions", "dispute_at", "TEXT"],
   // The answerer's role when they answered (null: an operator's or older answer): memory of operator statements reads only operators' words.
   ["decisions", "answered_role", "TEXT"],
   ["classifications", "probs", "TEXT"],

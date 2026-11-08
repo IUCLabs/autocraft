@@ -24,7 +24,7 @@ export const noWriteReason = (repo: string): string => `You have no write access
 
 /** Sets the state shown on the decision. Writes nothing when it is already that, so the planner is not woken for nothing. */
 export function setExecState(db: DatabaseSync, id: string, state: ExecState, reason: string | null = null): void {
-  db.prepare("UPDATE main.decisions SET exec_state = ?, exec_reason = ? WHERE id = ? AND (exec_state IS NOT ? OR exec_reason IS NOT ?)").run(state, reason, id, state, reason);
+  db.prepare("UPDATE main.decisions SET exec_state = ?, exec_reason = ? WHERE id = ? AND exec_state IS NOT 'disputed' AND (exec_state IS NOT ? OR exec_reason IS NOT ?)").run(state, reason, id, state, reason);
 }
 
 /** Decisions the pipeline applied are done. */
@@ -182,11 +182,11 @@ export async function laneForOperator(db: DatabaseSync, deps: LaneDeps | undefin
   return app.length ? resolveLane(deps ?? defaultLaneDeps(db), login, app) : null;
 }
 
-/** A decision that waits for its operator's token or access: the stages leave it out of their work until it is retried. */
+/** A decision that waits for its operator's token or access, or whose answer is disputed: the stages leave it out of their work until it is retried or the dispute is settled. */
 export function isWaiting(db: DatabaseSync, decisionId: string | null | undefined): boolean {
   if (!decisionId) return false;
   const r = db.prepare("SELECT exec_state FROM main.decisions WHERE id = ?").get(decisionId) as { exec_state: string | null } | undefined;
-  return r?.exec_state === "waiting-token" || r?.exec_state === "waiting-permission";
+  return r?.exec_state === "waiting-token" || r?.exec_state === "waiting-permission" || r?.exec_state === "disputed";
 }
 
 /**
