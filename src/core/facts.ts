@@ -25,6 +25,7 @@ import { mergeHolds } from "../merge/holds.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { inPilot, pilotSql, pipelineRepos } from "../pilot.ts";
+import { holdMap } from "../outside.ts";
 import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
 import { operatorTries, operatorTriesLeft, operatorWork, queuedOperatorFix } from "../preapproval/state.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
@@ -233,6 +234,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   };
 
   const holdOf = reviewHolds(db, now);
+  const outsideHolds = holdMap(db);
   const out: PrFacts[] = [];
   for (const r of rows) {
     // The queue leaves merged PRs outside the pilot and our own integration PRs out.
@@ -251,7 +253,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       repo: r.repo, number: r.number, ...(pushedOff ? { pushedOff } : {}), assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
       author: r.author, authorIsPipeline: r.author !== null && own.isOwn(r.repo, r.author), tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
-      inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, quiet: own.quiet.has(ref), mergeHeld: holds.has(ref),
+      inScope, ...(outsideHolds.has(ref) ? { outsideHold: outsideHolds.get(ref)! } : {}), integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, quiet: own.quiet.has(ref), mergeHeld: holds.has(ref),
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
       review: null, post: { postable: false, posted: null },
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", unknown: null, runs: null,

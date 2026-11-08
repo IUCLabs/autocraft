@@ -1,5 +1,8 @@
 // The vocabulary of a Plan: what state an item is in and which actions are due. No imports: the web build may use it.
 
+/** Why an outside author's item waits for model work: over the author's daily budget, or created in a surge. */
+export type OutsideHoldInfo = { reason: "limit" | "surge"; author: string; kind: "pr" | "issue"; /** The author's daily limit for the item's kind. */ limit: number };
+
 /** Queue states of PRs that have a take or take-fix review at their current head (the merge queue's list). */
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "waiting-premerge", "ci-failed", "conflict",
@@ -134,6 +137,8 @@ export type PrFacts = {
   // scope
   /** In scope: fast-tracked, or its repo's Pipeline switch is on and, with a pilot set, it is a pilot item. */
   inScope: boolean;
+  /** Held for model work because its author is outside the team and over a limit or in a surge (src/outside.ts); such an item is not in scope. */
+  outsideHold?: OutsideHoldInfo;
   /** An integration batch PR the pipeline opened itself. */
   integration: boolean;
   /** Any merge batch's own PR (without the author check). */
@@ -280,6 +285,8 @@ export type ItemFacts = {
   draft: boolean;
   /** In scope: fast-tracked, or its repo's Pipeline switch is on and, with a pilot set, it is a pilot item. */
   inScope: boolean;
+  /** Held for model work because its author is outside the team and over a limit or in a surge (src/outside.ts); such an item is not in scope. */
+  outsideHold?: OutsideHoldInfo;
   /** An integration batch PR the pipeline opened itself. */
   integration: boolean;
   /** A Backlog answer or a duplicate decision (pair, group) holds it. */

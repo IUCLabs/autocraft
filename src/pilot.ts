@@ -88,10 +88,11 @@ export function setPilot(db: DatabaseSync, by: string, input: unknown): string[]
 
 const LIST = `(SELECT CASE WHEN json_valid(ps.value) THEN ps.value ELSE '[]' END FROM main.settings ps WHERE ps.key = '${PILOT_KEY}')`;
 
-/** SQL condition on an item given by its repo and number expressions: it is fast-tracked, or its repo's pipeline flag is on and, with a pilot set, it is a pilot item, the Fix PR of a pilot issue, a follow-up issue of a pilot PR or the Fix PR of such an issue. */
+/** SQL condition on an item given by its repo and number expressions: it is fast-tracked, or its repo's pipeline flag is on, an outside-author hold (src/outside.ts) does not keep it back and, with a pilot set, it is a pilot item, the Fix PR of a pilot issue, a follow-up issue of a pilot PR or the Fix PR of such an issue. */
 export const pilotSqlFor = (repo: string, number: string): string =>
   `(EXISTS (SELECT 1 FROM main.fast_track pft WHERE pft.repo = ${repo} AND pft.number = ${number})
     OR (EXISTS (SELECT 1 FROM main.tracked_repos pt WHERE pt.name = ${repo} AND pt.pipeline = 1)
+    AND NOT EXISTS (SELECT 1 FROM main.outside_holds oh WHERE oh.repo = ${repo} AND oh.number = ${number})
     AND (COALESCE(json_array_length(${LIST}), 0) = 0
       OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
       OR ${quietSqlFor(repo, number)}

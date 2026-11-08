@@ -328,3 +328,71 @@ export function JudgementModel({ className }: { className?: string }) {
     </div>
   );
 }
+
+const OUTSIDE_FIELDS = [
+  { key: "prsPerDay", label: "New PRs per author a day" },
+  { key: "issuesPerDay", label: "New issues per author a day" },
+  { key: "surgePerHour", label: "New items an hour that trip the breaker" },
+] as const;
+
+/** The outside-author protections: the daily budget per author, the surge threshold and the surge breaker. 0 turns a protection off. Operators edit; everyone else reads. */
+export function OutsideLimits({ className }: { className?: string }) {
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const q = usePipelineState();
+  const write = useWrite();
+  const o = q.data?.outside;
+  const [text, setText] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (o) setText({ prsPerDay: String(o.prsPerDay), issuesPerDay: String(o.issuesPerDay), surgePerHour: String(o.surgePerHour) });
+  }, [o?.prsPerDay, o?.issuesPerDay, o?.surgePerHour]);
+  if (!o) return null;
+  const valid = OUTSIDE_FIELDS.every((f) => /^\d{1,6}$/.test((text[f.key] ?? "").trim()));
+  const dirty = OUTSIDE_FIELDS.some((f) => (text[f.key] ?? "").trim() !== String(o[f.key]));
+  const held = [o.heldByLimit && `${o.heldByLimit} held for a daily limit`, o.heldBySurge && `${o.heldBySurge} held in the surge`].filter(Boolean).join(", ");
+  return (
+    <div className={className}>
+      <Block title="Outside authors" aside={held || "nothing held"}>
+        {o.tripped && (
+          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-warn/40 bg-warn/10 px-3 py-2.5">
+            <div className="min-w-0 flex-1 basis-60">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium">Outside surge</span>
+                <Badge tone="warn">Tripped</Badge>
+                <TimeAgo iso={o.tripped.since} className="text-xs text-ink/50" />
+              </div>
+              <p className="mt-0.5 break-words text-sm text-ink/70">{o.tripped.reason}</p>
+            </div>
+            {operator && (
+              <ConfirmButton label="Resume" confirmLabel="Confirm resume" loading={write.busy === "resume"} onConfirm={() => void write.run("resume", () => api.pipeline.resumeTrip("outside-surge"))} />
+            )}
+          </div>
+        )}
+        <form
+          className="flex flex-wrap items-end gap-x-4 gap-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void write.run("limits", () => api.pipeline.setOutsideLimits(Object.fromEntries(OUTSIDE_FIELDS.map((f) => [f.key, Number(text[f.key])]))));
+          }}
+        >
+          {OUTSIDE_FIELDS.map((f) => (
+            <label key={f.key} className="flex flex-col gap-1 text-sm">
+              <span className="text-xs text-ink/60">{f.label}</span>
+              {operator ? (
+                <TextInput inputMode="numeric" value={text[f.key] ?? ""} onChange={(e) => setText({ ...text, [f.key]: e.target.value })} className="w-24 text-ink" />
+              ) : (
+                <span className="num h-9 leading-9">{o[f.key] === 0 ? "off" : num(o[f.key])}</span>
+              )}
+            </label>
+          ))}
+          {operator && (
+            <Button type="submit" size="sm" disabled={!dirty || !valid} loading={write.busy === "limits"} className="max-md:h-11">
+              Save
+            </Button>
+          )}
+        </form>
+        <ErrorLine error={write.error} className="mt-2" />
+      </Block>
+    </div>
+  );
+}

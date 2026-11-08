@@ -2,6 +2,7 @@
 // dashboard to read. The planner is its only writer. A pass writes the rows that changed, and deletes the rows of items that
 // left the Plans, in one transaction.
 import type { DatabaseSync } from "node:sqlite";
+import { holdWait } from "../outside.ts";
 import { cifixBucket, fixupOf, queueEntry } from "./decide.ts";
 import { nextStep } from "./decide-item.ts";
 import { mergeDecisionId } from "./rules.ts";
@@ -87,7 +88,7 @@ function viewOf(pr: { facts: PrFacts; plan: Plan } | null, item: { facts: ItemFa
   }
   if (wait !== null && waitKind) v.waitKind = waitKind;
   v.status = {
-    ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, waitKind, scopeAnswered: pr?.facts.scopeAnswer != null, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked", inPipeline: item?.facts.inScope ?? pr?.facts.inScope }),
+    ...statusOf({ gh: pr?.facts.ghState ?? null, state: pr?.plan.state ?? null, itemState: item?.plan.state ?? null, wait, waitKind, scopeAnswered: pr?.facts.scopeAnswer != null, next: v.next ?? null, reviewBlocked: pr?.facts.reviewHold?.kind === "blocked", inPipeline: item?.facts.inScope ?? pr?.facts.inScope, ...((item?.facts.outsideHold ?? pr?.facts.outsideHold) ? { outside: (item?.facts.outsideHold ?? pr?.facts.outsideHold)! } : {}) }),
     since: plannedAt,
   };
   return v;
@@ -103,8 +104,9 @@ export function planRows(plans: PlanSet, plannedAt: string = new Date().toISOStr
     prs.delete(ref);
     const actions = [...item.actions, ...(pr?.plan.actions ?? [])];
     const work = actions.some(isWork);
-    const wait = work ? null : pr?.plan.wait ?? item.wait;
-    const waitKind = work ? null : pr?.plan.wait != null ? pr.plan.waitKind : item.waitKind;
+    const hold = f.outsideHold ?? pr?.facts.outsideHold;
+    const wait = hold ? holdWait(hold) : work ? null : pr?.plan.wait ?? item.wait;
+    const waitKind = hold ? "system" as const : work ? null : pr?.plan.wait != null ? pr.plan.waitKind : item.waitKind;
     rows.push({
       repo: f.repo, number: f.number, kind: f.kind, head: pr?.facts.head ?? null, state: pr ? pr.plan.state : item.state, item_state: item.state,
       actions: JSON.stringify(actions), wait, reasons: JSON.stringify(pr?.plan.reasons ?? []), note: pr?.plan.note ?? null,

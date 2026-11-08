@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "claims" | "preapprovals" | "security" | "discord" | "discord-links";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "outside" | "plans" | "conversations" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "claims" | "preapprovals" | "security" | "discord" | "discord-links";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
@@ -46,7 +46,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["rates-", ["usage", "agents", "accounts"]],
   ["count:", ["decisions", "decision-snooze", "settings", "access"]],
   // Feedback reads comments (in `items`), decisions and conversations; stopped rows read breakers and limits, not job runs.
-  ["needs:", ["decisions", "decision-snooze", "conversations", "items", "limits", "accounts", "settings"]],
+  ["needs:", ["decisions", "decision-snooze", "conversations", "items", "limits", "accounts", "settings", "outside"]],
   // Not items, plans or conversations: they change every few seconds and a row's state follows the decision itself. Settings and access decide which questions a person settles.
   ["decisions?", withSlot("decisions", "decision-snooze", "claims", "limits", "settings", "access")],
   ["decision:", withSlot("decisions", "decision-snooze", "claims", "plans", "settings", "limits")],

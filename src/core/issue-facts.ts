@@ -23,6 +23,7 @@ import { issuesWithOpenPr, type OpenPr, notRustKey, textHash } from "../fixissue
 import { headOf, scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql } from "../pilot.ts";
+import { holdMap } from "../outside.ts";
 import { lockLiveSql } from "../answers/hold.ts";
 import { isPreparing, prepareStateSql, utcDayStart, type PrepareColumns } from "../decide/prepared.ts";
 import type { ItemFacts } from "./plan.ts";
@@ -94,6 +95,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     }
   }
   const memo = settleMemo();
+  const outsideHolds = holdMap(db);
   const answers = scopeAnswers(db);
   const operatorAnswers = scopeAnswers(db, true);
   const unsettled = unsettledScope(db);
@@ -232,7 +234,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const note = labeled.get(ref) ?? null;
     return {
       repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", assignment: assigned(ref, r.assignees), now, pipelineOn, tripped: activeTrips(db), inFlight: r.state === "OPEN" && (["retry", "testing", "passed"].includes(r.a_state ?? "") || (r.kind === "pr" && own.prs.has(ref))), draft: !!r.is_draft,
-      inScope: !!r.in_pilot, integration: !r.not_integration,
+      inScope: !!r.in_pilot, ...(outsideHolds.has(ref) ? { outsideHold: outsideHolds.get(ref)! } : {}), integration: !r.not_integration,
       held: r.held_backlog ? "backlog" : r.held_dup ? "duplicate" : null,
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo), commentApproved: repoOf(r.repo).comment, fixIssueApproved: repoOf(r.repo).fix },
       run,

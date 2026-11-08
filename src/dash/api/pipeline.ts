@@ -10,6 +10,7 @@ import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
 import { JUDGEMENT_MODELS, judgementModel, setJudgementModel } from "../../decide/judgement.ts";
 import { audit } from "../audit.ts";
+import { outsideState } from "../../outside.ts";
 import { resumeStage, TripError } from "../../push-outcomes.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -38,7 +39,7 @@ function requireOperator(req: Req, step?: StepDef): void {
 /** The pipeline state for the requester: reasons that name a hidden repo are left out. */
 async function pipelineState(db: DatabaseSync, req: Req): Promise<PipelineState> {
   const [s, hidden] = await Promise.all([rawPipelineState(db), hiddenRepos(db, req)]);
-  return { ...s, limits: s.limits.map((l) => ({ ...l, pausedReason: blankIfHidden(l.pausedReason, hidden) || null, status: blankIfHidden(l.status, hidden) || null })) };
+  return { ...s, outside: outsideState(db), limits: s.limits.map((l) => ({ ...l, pausedReason: blankIfHidden(l.pausedReason, hidden) || null, status: blankIfHidden(l.status, hidden) || null })) };
 }
 
 /** Viewers read that a job failed, not why: the error carries log and command text. */

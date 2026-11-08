@@ -120,6 +120,12 @@ export async function stopped(db: DatabaseSync, hidden: string[]): Promise<Needs
     if (hidden.includes(a.repo)) continue;
     out.push({ id: `act:${a.decision_id}:${a.number}`, kind: "act", title: `${a.repo}#${a.number}`, reason: blankIfHidden(a.reason ?? "Act stopped after repeated failures", hidden), since: a.created_at, resume: { type: "retry", decision: a.decision_id } });
   }
+  // Items held for an outside author's daily limit or a surge: one group row per author, listed by `/api/needs/outside/:author`.
+  for (const g of db.prepare(`SELECT h.author, COUNT(*) AS n, SUM(h.kind = 'pr') AS prs, MIN(i.created_at) AS since, MAX(h.reason = 'surge') AS surge FROM main.outside_holds h
+    LEFT JOIN items i ON i.repo = h.repo AND i.number = h.number ${hidden.length ? `WHERE h.repo NOT IN (${hidden.map(() => "?").join(",")})` : ""} GROUP BY h.author COLLATE NOCASE ORDER BY n DESC, h.author`).all(...hidden) as { author: string; n: number; prs: number; since: string | null; surge: number }[]) {
+    const parts = [g.prs && `${g.prs} PR${g.prs === 1 ? "" : "s"}`, g.n - g.prs && `${g.n - g.prs} issue${g.n - g.prs === 1 ? "" : "s"}`].filter(Boolean).join(", ");
+    out.push({ id: `outside:${g.author}`, kind: "outside-group", title: g.author, reason: `${parts} waiting for ${g.surge ? "the outside-surge breaker or " : ""}the author's daily limit`, since: g.since, count: g.n, resume: { type: "outside", author: g.author } });
+  }
   // Issues whose fix attempt was skipped or failed wait on a person: one group row per repo, listed by `fixes`.
   const groups = db.prepare(`SELECT p.repo, COUNT(*) AS n, MAX(COALESCE(a.updated_at, p.planned_at)) AS since
     FROM main.item_plans p LEFT JOIN fix_attempts a ON a.repo = p.repo AND a.number = p.number

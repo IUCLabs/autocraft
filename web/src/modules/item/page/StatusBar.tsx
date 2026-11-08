@@ -9,7 +9,11 @@ import { useNow } from "../../../lib/useNow";
 import { formatCost } from "../../../lib/trace";
 import { cn } from "../../../ui/cn";
 import { clearStarting, useStarting } from "../starting";
-import { useQuery } from "../../../api/client";
+import { useApi, useQuery } from "../../../api/client";
+import { useWrite } from "../../../lib/hooks";
+import { useUser } from "../../../shell/UserContext";
+import { ConfirmButton } from "../../../ui/molecules/ConfirmButton";
+import { ErrorLine } from "../../../ui/atoms/ErrorLine";
 import { Progress } from "../OpusCards";
 
 const TONE: Record<ItemBarTone, { icon: Icon; box: string; spin?: boolean; pulse?: boolean }> = {
@@ -33,6 +37,9 @@ function Elapsed({ since }: { since: string }) {
 }
 
 function Headline({ d }: { d: ItemPageData }) {
+  const api = useApi();
+  const write = useWrite();
+  const operator = useUser().role === "operator";
   const starting = useStarting(d.repo, d.number);
   const { data: conv } = useQuery(`conversation:${d.repo}#${d.number}`, (a) => a.conversations.get(d.repo, d.number), { pollMs: (x) => (x?.pending ? 4000 : false) });
   const replying = !!conv?.pending && d.bar.headline.tone !== "running";
@@ -63,6 +70,12 @@ function Headline({ d }: { d: ItemPageData }) {
         {h.next && !showStarting && <p className="mt-0.5 text-xs text-ink/60">Next: {h.next}</p>}
         {replying && <Progress lines={conv?.progress} />}
       </div>
+      {operator && h.outside && (
+        <div className="ml-auto flex shrink-0 flex-col items-end gap-1">
+          <ConfirmButton idle="secondary" label="Release" confirmLabel="Confirm release" loading={write.busy === "release"} onConfirm={() => void write.run("release", () => api.releaseOutside(d.repo, d.number))} />
+          <ErrorLine error={write.error} />
+        </div>
+      )}
     </div>
   );
 }

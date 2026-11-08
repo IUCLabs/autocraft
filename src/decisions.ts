@@ -190,7 +190,8 @@ export function backlogCandidates(db: DatabaseSync, scope: BacklogScope): Decisi
     const refs = [...itemsOf(d), ...(members.all(d.id) as Ref[])];
     if (scope.repo && !reposOf(d).includes(scope.repo) && !refs.some((x) => x.repo === scope.repo)) return false;
     // Outside the scope: no item in a repo whose pipeline is on and, with an item pilot, in that pilot.
-    return !scope.outsidePilot || !refs.some((x) => inPilot(db, x.repo, x.number));
+    // An item held for its outside author (src/outside.ts) is in scope: the hold is temporary.
+    return !scope.outsidePilot || !refs.some((x) => inPilot(db, x.repo, x.number) || !!db.prepare("SELECT 1 FROM main.outside_holds WHERE repo = ? AND number = ?").get(x.repo, x.number));
   });
 }
 

@@ -2,6 +2,7 @@
 import type { Api } from "../client";
 import type { Job, JobDetail, PipelineOverview, PipelineState, PipelineStep, StageLimit, User } from "../types";
 import { NOW, REPOS } from "./fixtures";
+import { outside, releaseAuthorHeld, resumeSurge } from "./outsideMock";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const iso = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -110,7 +111,7 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
   }));
   Object.assign(limits.find((l) => l.step === "fixup")!, { tripped: "fixup", pausedReason: "tripped: 2 of the last 10 fixup pushes broke a required check; an operator resumes it" });
   const pilot: string[] = [];
-  const state = (): PipelineState => ({ ...judgement, ...flag, heartbeat: iso(0), limits, pilot: [...pilot] });
+  const state = (): PipelineState => ({ ...judgement, ...flag, heartbeat: iso(0), limits, pilot: [...pilot], outside: { ...outside } });
   const requireOperator = () => {
     if (me.role !== "operator") throw new Error("only operators run or cancel pipeline steps and change the pipeline switch and limits");
   };
@@ -212,8 +213,20 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
         changed();
         return { ok: true as const };
       },
+      async setOutsideLimits(input) {
+        requireOperator();
+        Object.assign(outside, input);
+        changed();
+        return wait({ ...outside }, 30);
+      },
+      async releaseOutsideAuthor(author) {
+        requireOperator();
+        releaseAuthorHeld(author);
+        changed();
+      },
       async resumeTrip(stage) {
         requireOperator();
+        if (stage === "outside-surge") resumeSurge();
         for (const l of limits) if (l.tripped === stage) { delete l.tripped; l.pausedReason = null; }
         changed();
         return wait(state(), 30);

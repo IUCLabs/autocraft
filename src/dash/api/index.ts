@@ -29,6 +29,7 @@ import * as security from "./security.ts";
 import * as securityPage from "./security-page.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
+import * as outside from "./outside.ts";
 import { prompts } from "./prompts.ts";
 import { queue, queueBatches } from "./queue.ts";
 import { next } from "./next.ts";
@@ -500,6 +501,10 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/pipeline/steps/:step/deadline-ack", operator: true, handler: ok(pipeline.ackStepDeadline) },
     { method: "POST", pattern: "/api/pipeline/trips/:stage/resume", operator: true, handler: ok(pipeline.resumeTrip) },
     { method: "PUT", pattern: "/api/pipeline/pilot", operator: true, handler: ok(adm.putPilot) },
+    { method: "PUT", pattern: "/api/pipeline/outside-limits", operator: true, handler: ok(outside.putLimits) },
+    { method: "POST", pattern: "/api/pipeline/outside/release", operator: true, handler: ok(outside.releaseAll) },
+    { method: "POST", pattern: "/api/items/:repo/:n/release-outside", operator: true, handler: ok(outside.release) },
+    get("/api/needs/outside/:author", outside.held),
     get("/api/prompts", prompts),
     get("/api/accounts", agents.accounts),
     get("/api/accounts/pause", agents.getPause),

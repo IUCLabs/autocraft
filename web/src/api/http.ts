@@ -262,6 +262,8 @@ export function createHttpApi(): Api {
       ackDeadline: (step) => post(`/api/pipeline/steps/${encodeURIComponent(step)}/deadline-ack`),
       resumeTrip: (stage) => post(`/api/pipeline/trips/${encodeURIComponent(stage)}/resume`),
       setPilot: (items) => put("/api/pipeline/pilot", { items }),
+      setOutsideLimits: (input) => put("/api/pipeline/outside-limits", input),
+      releaseOutsideAuthor: async (author) => void (await post("/api/pipeline/outside/release", { author })),
       setJudgementModel: (model) => put("/api/pipeline/judgement-model", { model }),
     },
     accounts: {
@@ -302,6 +304,8 @@ export function createHttpApi(): Api {
     prompts: () => get("/api/prompts"),
     queue: (f) => get(`/api/queue${qs(f)}`),
     needs: (f) => get(`/api/needs${qs(f)}`),
+    needsOutside: (author) => get(`/api/needs/outside/${encodeURIComponent(author)}`),
+    releaseOutside: async (repo, number) => void (await post(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/release-outside`)),
     needsFixes: (repo, cursor) => get(`/api/needs/fixes/${encodeURIComponent(repo)}${qs({ cursor })}`),
     queueBatches: (f) => get(`/api/queue/batches${qs(f)}`),
     batch: (id) => get(`/api/batches/${id}`),
