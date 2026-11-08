@@ -39,7 +39,9 @@ import { plannedItems } from "../core/select-items.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { orderTargets } from "./order.ts";
 import { actRoom } from "../conversations/queue.ts";
-import { setAsideSupersededQuestions } from "../merge/withdraw.ts";
+import { setAsideSupersededQuestions, withdrawHoldQuestion } from "../merge/withdraw.ts";
+import { holdDecisionId, HOLD_OPTIONS } from "../core/rules.ts";
+import { planned } from "../core/select.ts";
 import { ownerOf } from "../owners.ts";
 import { sweepStaleAnswers } from "../answers/sweep.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps, type Lane } from "../github/user-lane.ts";
@@ -92,6 +94,7 @@ export const closeDecisionId = (repo: string, number: number, head: string): str
 const WRITES: Partial<Record<Kind, Record<string, string>>> = {
   scope: { close: "closes it on GitHub" },
   close: { close: "closes the PR on GitHub" },
+  hold: { close: "closes the PR on GitHub" },
   duplicate: { close: "closes it on GitHub", accept: "posts the comments shown and closes the duplicates on GitHub" },
   merge: { merge: "merges on GitHub", close: "closes the PR on GitHub" },
 };
@@ -103,11 +106,11 @@ const short = (sha: string) => sha.slice(0, 7);
 
 // ---- Close this PR? ------------------------------------------------------------
 
-type ReviewRow = { repo: string; number: number; head_oid: string; reason: string; sure: number | null; lines: number; title: string | null; author: string | null };
+type ReviewRow = { verdict?: string; repo: string; number: number; head_oid: string; reason: string; sure: number | null; lines: number; title: string | null; author: string | null };
 
 /** The final close reviews behind the Close? questions the Plans ask for in this repo. */
 function closeRows(db: DatabaseSync, repo: string): ReviewRow[] {
-  const get = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author
+  const get = db.prepare(`SELECT r.verdict, r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author
     FROM final_reviews r JOIN items i ON i.repo = r.repo AND i.number = r.number WHERE r.repo = ? AND r.number = ? AND r.head_oid = ? AND r.verdict = 'close'`);
   return plannedItems(db, "act", { repo }).filter((p) => p.action.params?.ask).map((p) => get.get(repo, p.facts.number, p.action.head) as ReviewRow | undefined).filter((r): r is ReviewRow => !!r);
 }
@@ -133,6 +136,47 @@ export function closeQuestion(r: ReviewRow, why: string | null = null, quiet = f
   };
 }
 
+// ---- Hold: what next? ------------------------------------------------------------
+
+/** The question for a PR whose latest review says hold, asked once per head. Review again and a fix-up first are cores of the prepared answer (src/decide/choices.ts). */
+export function holdQuestion(r: ReviewRow, quiet = false, ci: string | null = null): Record<string, unknown> & { id: string } {
+  const reason = cleanReason(r.reason);
+  return {
+    id: holdDecisionId(r.repo, r.number, r.head_oid), kind: "hold", repo: r.repo, number: r.number,
+    question: ci ? "CI fails and nothing can fix it. What next?" : "The review put this PR on hold. What next?",
+    context: ci ? `${ci}. The review says ${r.verdict}, but the PR cannot merge while CI fails, so a Merge answer would change nothing.`
+      : `The Opus review says hold${r.sure === 0 ? " (Opus was unsure)" : ""}: it neither takes the PR as it is nor closes it, and nothing happens until a person decides.`,
+    facts: [
+      ...(quiet ? [] : [`${REASON_FACT}${r.reason.replace(/\s+/g, " ").trim().slice(0, 300)}`]),
+      `author: ${r.author ?? "unknown"}, size ${sizeOf(r.lines)}`,
+      `${HEAD_FACT}${r.head_oid}`,
+    ],
+    options: Object.values(HOLD_OPTIONS).map((o) => ({ ...o })),
+    ...(quiet ? {} : { public_text: reason }),
+    asked_by: ACTOR,
+  };
+}
+
+/**
+ * Asks the Hold questions the Plans call for and sets aside open ones whose head is no longer held. Writes decisions only.
+ * Returns the ids asked.
+ */
+export function askHoldDecisions(db: DatabaseSync, at: string, repo?: string): string[] {
+  const get = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author
+    FROM final_reviews r JOIN items i ON i.repo = r.repo AND i.number = r.number WHERE r.repo = ? AND r.number = ? AND r.head_oid = ?`);
+  const todo = planned(db, "ask-merge", repo ? { repo } : {}).filter((p) => p.action.params?.hold === true);
+  const qs: (Record<string, unknown> & { id: string })[] = [];
+  for (const p of todo) {
+    if (p.action.params?.withdraw) { withdrawHoldQuestion(db, p.facts.repo, p.facts.number, String(p.action.params?.decisionHead ?? p.action.head ?? ""), at, "the review at that head no longer says hold"); continue; }
+    const r = get.get(p.facts.repo, p.facts.number, p.action.head) as ReviewRow | undefined;
+    if (r) qs.push(holdQuestion(r, isQuiet(db, r.repo, r.number), typeof p.action.params?.ci === "string" ? p.action.params.ci : null));
+  }
+  if (qs.length) { ask(db, qs.map((q) => ({ ...q, asked_at: at }))); setAsideSupersededQuestions(db, at, repo); }
+  else setAsideSupersededQuestions(db, at, repo);
+  fillReviewSummaries(db, at, repo);
+  return qs.map((q) => q.id);
+}
+
 export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): string[] {
   const qs = closeRows(db, repo).map((r) => closeQuestion(r, reviewText(db, r.repo, r.number, r.head_oid)?.why ?? null, isQuiet(db, r.repo, r.number)));
   if (qs.length) { ask(db, qs.map((q) => ({ ...q, asked_at: at }))); setAsideSupersededQuestions(db, at, repo); }
@@ -142,7 +186,7 @@ export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): s
 
 // ---- what to act on ------------------------------------------------------------
 
-type Target = { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; repo: string; number: number };
+type Target = { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge" | "hold"; repo: string; number: number };
 
 type ActionRow = { attempts: number; id: number; decision_id: string; repo: string; number: number; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string };
 const rowOf = (db: DatabaseSync, t: Target): ActionRow | undefined =>
@@ -220,7 +264,7 @@ function commentFor(d: DecisionRow, t: Target, quiet = false): string {
 export function commentPreview(d: DecisionRow): string | null {
   // A group decision shows the stored texts of each option instead (src/dupes/texts.ts).
   if (d.kind === "duplicate" && d.id.includes(":dupegroup:")) return null;
-  if (d.kind === "scope" || d.kind === "close" || d.kind === "merge") return commentFor(d, { decisionId: d.id, kind: d.kind, repo: d.repo ?? "", number: d.number ?? 0 });
+  if (d.kind === "scope" || d.kind === "close" || d.kind === "merge" || d.kind === "hold") return commentFor(d, { decisionId: d.id, kind: d.kind, repo: d.repo ?? "", number: d.number ?? 0 });
   if (d.kind === "duplicate") {
     const orig = factValue(d, DUP_FACT);
     return orig && d.repo ? duplicateComment({ repo: d.repo, original: orig, closed: false }) : null;
@@ -309,7 +353,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       const live = await readLive(q, t.repo, t.number);
       if (!live) { skip(t, "GitHub returned no such item"); continue; }
       if (live.state !== "OPEN") { skip(t, `already ${live.state.toLowerCase()} on GitHub`); continue; }
-      if (t.kind === "close" || t.kind === "merge") {
+      if (t.kind === "close" || t.kind === "merge" || t.kind === "hold") {
         const h = headFact(dec);
         if (live.type !== "PullRequest" || !h || live.head !== h) { skip(t, `head moved since the decision (${h ? short(h) : "no head recorded"} → ${live.head ? short(live.head) : "none"})`); continue; }
       }
@@ -334,7 +378,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
           if (!o) { skip(t, "GitHub returned no such original"); continue; }
           how = duplicateClose({ id: o.id, pr: o.type === "PullRequest" }, `${orig[1]}#${orig[2]}`);
           body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
-        } else body = commentFor(dec, t, t.kind === "close" && isQuiet(db, t.repo, t.number));
+        } else body = commentFor(dec, t, (t.kind === "close" || t.kind === "hold") && isQuiet(db, t.repo, t.number));
         url = await commentOn(w, g, q, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);

@@ -49,7 +49,7 @@ export const reviewFact = (r: ReviewText): string => `review: ${r.verdict}: ${r.
  * Skips decisions the prepare step has written or that have choices (their summary and pick are the judgement model's). Writes only what differs, so a second run changes nothing. Returns how many decisions it changed.
  */
 export function fillReviewSummaries(db: DatabaseSync, at: string, repo?: string): number {
-  const rows = db.prepare(`SELECT * FROM decisions WHERE kind IN ('merge', 'close') AND answer IS NULL AND number IS NOT NULL AND prepared_at IS NULL
+  const rows = db.prepare(`SELECT * FROM decisions WHERE kind IN ('merge', 'close', 'hold') AND answer IS NULL AND number IS NOT NULL AND prepared_at IS NULL
     AND NOT EXISTS (SELECT 1 FROM main.decision_choices c WHERE c.decision_id = decisions.id AND c.state = 'current')
     ${repo ? "AND repo = ?" : ""}`).all(...(repo ? [repo] : [])) as DecisionRow[];
   const upd = db.prepare(`UPDATE main.decisions SET summary = ?, summary_by = ?, summary_at = ?, facts = ?, recommended = ?, recommended_reason = ?, recommended_by = NULL
@@ -60,11 +60,11 @@ export function fillReviewSummaries(db: DatabaseSync, at: string, repo?: string)
     const head = factsOf(d).find((f) => f.startsWith(HEAD_FACT))?.slice(HEAD_FACT.length).trim();
     const r = head ? reviewText(db, d.repo!, d.number!, head) : null;
     if (!r) continue;
-    const line = (f: string) => (d.kind === "merge" && f.startsWith("review: ") ? reviewFact(r) : d.kind === "close" && f.startsWith("review reason: ") ? `review reason: ${r.reason.slice(0, 300)}` : f);
+    const line = (f: string) => (d.kind === "merge" && f.startsWith("review: ") ? reviewFact(r) : (d.kind === "close" || d.kind === "hold") && f.startsWith("review reason: ") ? `review reason: ${r.reason.slice(0, 300)}` : f);
     const facts = JSON.stringify(factsOf(d).map(line));
     // The same rule as the ask: Merge? recommends unless Opus was unsure or the pre-merge review blocked the rule (its facts say so), Close? always; both only with a reason.
     const preMerge = factsOf(d).some((f) => f.startsWith("pre-merge defect: ") || f.startsWith("pre-merge review failed: "));
-    const recommended = r.why && (d.kind === "close" || (r.sure && !preMerge)) ? (d.kind === "close" ? "close" : "merge") : null;
+    const recommended = d.kind === "hold" ? null : r.why && (d.kind === "close" || (r.sure && !preMerge)) ? (d.kind === "close" ? "close" : "merge") : null;
     const same = d.summary === r.summary && (d.summary_by ?? "") === r.by && d.facts === facts && d.recommended === recommended && d.recommended_reason === (recommended ? r.why : null);
     if (same) continue;
     upd.run(r.summary, r.by || null, d.summary === r.summary ? (d.summary_at ?? at) : at, facts, recommended, recommended ? r.why : null, d.id);

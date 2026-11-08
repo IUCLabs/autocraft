@@ -104,6 +104,7 @@ export function autocraftLine(p: ParsedCoreKey, kind: string, itemKind: string):
     case "take": case "small-extra": return itemKind === "pr" ? "keeps working: review, fix-up, merge" : "keeps working: may try a fix";
     case "plugin": return "adds the plugin candidate label later";
     case "need-info": return "keeps it out of later stages until asked again";
+    case "wait": return "keeps it open and leaves it to the author; asks again after a new commit or review";
     case "accept": return "closes the duplicates and keeps the original";
     case "distinct": return "records that they differ and works on each";
   }
@@ -134,6 +135,8 @@ export function coresFor(db: DatabaseSync, d: DecisionRow): Core[] {
   if (!d.repo || !d.number || d.id.includes(":dupegroup:") || !itemOf(db, d.repo, d.number)) return [];
   const applicable = new Set(applicableSteps(db, d.repo, d.number));
   const out: Core[] = [];
+  // A Hold question always offers a new review first: the other cores follow the options.
+  if (d.kind === "hold") { const c = addedCore(db, d, coreKey.review, applicable); if (c) out.push(c); }
   for (const o of optionsOf(d)) {
     if (o.key === "backlog") continue;
     const effect = writeEffect(d.kind, o.key);

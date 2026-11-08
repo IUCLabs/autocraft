@@ -71,7 +71,7 @@ export const utcDayStart = (nowMs: number): string => `${new Date(nowMs).toISOSt
 
 /** A Merge? or Close? decision is made for one head commit: its id ends in `@<sha>`. */
 const idHead = (d: PrepareColumns): string | null => {
-  const m = d.id === undefined || (d.kind !== "merge" && d.kind !== "close") ? null : /:(?:merge|close)@(.+)$/.exec(d.id);
+  const m = d.id === undefined || (d.kind !== "merge" && d.kind !== "close" && d.kind !== "hold") ? null : /:(?:merge|close|hold)@(.+)$/.exec(d.id);
   return m ? m[1]! : null;
 };
 
@@ -83,6 +83,8 @@ const idHead = (d: PrepareColumns): string | null => {
 export const isPrepared = (d: PrepareColumns, head: string | null): boolean => {
   if (d.prepared_at === null) return false;
   if (d.kind === undefined || d.kind === "merge") return (d.prepared_head ?? null) === (head ?? null);
+  // A Hold question is kept through a new hold review at its head: that review's time makes the prepare stale.
+  if (d.kind === "hold") return (d.prepared_head ?? null) === (head ?? null) && !(d.reviewed_at && d.reviewed_at > d.prepared_at);
   if (d.prepared_discussion != null && (d.discussion_key ?? "") !== d.prepared_discussion && ((d.prepares_today ?? 0) < DISCUSSION_PREPARES_PER_DAY || !!d.prepare_requested_at)) return false;
   if (choicesDependOnCode(d.stale_choices)) return false;
   return !(d.reviewed_at && d.reviewed_at > d.prepared_at);

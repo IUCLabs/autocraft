@@ -13,8 +13,8 @@ import { openBlockers } from "./blockers.ts";
 import { isScopeQuestion, settledScope } from "./candidates.ts";
 import { recordReviewFailure, reviewHolds } from "./gate.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
-import { withdrawMergeQuestion } from "../merge/withdraw.ts";
-import { headWasUnsure, mergeDecisionId } from "../merge/queue.ts";
+import { withdrawHoldQuestion, withdrawMergeQuestion } from "../merge/withdraw.ts";
+import { headWasUnsure, mergeDecisionId, holdDecisionId } from "../merge/queue.ts";
 import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
@@ -88,6 +88,11 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
     const worse = r.verdict === "take" || r.verdict === "take-fix" ? "the new review is unsure" : `the new review is a ${r.verdict}`;
     withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at, `superseded by a new review: ${worse}`);
   }
+  // The Hold question belongs to one review: a review made again at the head asks it anew if the verdict is still hold.
+  // An unanswered or Wait-answered question stays while the verdict is still hold: its review time moves, so the prepare is written again.
+  const holdId = holdDecisionId(c.repo, c.number, c.head_oid);
+  const keepsHold = r.verdict === "hold" && !!db.prepare("SELECT 1 FROM decisions WHERE id = ? AND (answer IS NULL OR answer = 'wait')").get(holdId);
+  if (again && !keepsHold) withdrawHoldQuestion(db, c.repo, c.number, c.head_oid, at, "superseded by a new review");
   // The row about to be replaced may predate the history: copy it first.
   db.prepare(`${HISTORY_COPY_SQL} AND o.repo = ? AND o.number = ? AND o.head_oid = ?`).run(c.repo, c.number, c.head_oid);
   const risks = JSON.stringify(r.risks), fixes = r.fixes.length ? JSON.stringify(r.fixes) : null, pub = r.public ? JSON.stringify(r.public) : null, claims = r.claims.length ? JSON.stringify(r.claims) : null;

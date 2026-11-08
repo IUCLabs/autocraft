@@ -38,6 +38,8 @@ import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { sweepStaleAnswers } from "../answers/sweep.ts";
+import { verifyOverride } from "./verify-override.ts";
+import { askHoldDecisions } from "../act/index.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import { ownerOf } from "../owners.ts";
 
@@ -228,12 +230,13 @@ function askDue(db: DatabaseSync, due: QueueEntry[], at: string, log: (line: str
 export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string; log?: (line: string) => void } = {}): string[] {
   const repos = opts.repos && new Set(opts.repos);
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
-  const asks = new Set(planned(db, "ask-merge", { ...(opts.run === undefined ? {} : { run: opts.run }) }).filter((p) => !repos || repos.has(p.facts.repo)).map((p) => `${p.facts.repo}#${p.facts.number}`));
+  const asks = new Set(planned(db, "ask-merge", { ...(opts.run === undefined ? {} : { run: opts.run }) }).filter((p) => !p.action.params?.hold && (!repos || repos.has(p.facts.repo))).map((p) => `${p.facts.repo}#${p.facts.number}`));
   const due = queue.filter((e) => asks.has(`${e.repo}#${e.number}`));
   const at = opts.at ?? new Date().toISOString();
   withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   for (const r of repos ?? new Set(queue.map((e) => e.repo))) withdrawGroupedQuestions(db, at, r);
   const ids = askDue(db, due, at, opts.log);
+  for (const r of repos ?? new Set(planned(db, "ask-merge", {}).filter((p) => p.action.params?.hold).map((p) => p.facts.repo))) ids.push(...askHoldDecisions(db, at, r));
   fillReviewSummaries(db, at);
   return ids;
 }
@@ -276,7 +279,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   // An answered merge that waits for its operator's token or access takes no slot of the limit; it comes back when retried.
   picks = picks.filter((e) => !(e.path === "operator" && isWaiting(db, e.decisionId)));
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
-  const askDueNow = new Set(planned(db, "ask-merge", { repo }).map((p) => p.facts.number));
+  const askDueNow = new Set(planned(db, "ask-merge", { repo }).filter((p) => !p.action.params?.hold).map((p) => p.facts.number));
   const ask1 = open.filter((e) => askDueNow.has(e.number));
   const summary: MergeSummary = { runId, repo, dryRun, states, attempted: [], merged: [], refused: [], asked: [] };
   log(`merge ${repo}: ${queue.length} in the queue (${QUEUE_STATES.filter((s) => states[s]).map((s) => `${states[s]} ${s}`).join(", ") || "none"})`);
@@ -301,6 +304,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     summary.asked = askDue(db, ask1, at(), log);
     log(`  asked ${summary.asked.length} Merge? decision${summary.asked.length === 1 ? "" : "s"}`);
   }
+  const holds = askHoldDecisions(db, at(), repo);
+  if (holds.length) { summary.asked.push(...holds); log(`  asked ${holds.length} Hold decision${holds.length === 1 ? "" : "s"}`); }
   fillReviewSummaries(db, at());
 
   // What GitHub reported for the PR being tried, once known; a refusal records it so the autopilot retries only when it changes.
@@ -343,7 +348,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (ch.state !== "OPEN") { refuse(e, null, `no longer open on GitHub (${ch.state.toLowerCase()})`); continue; }
     if (ch.head_oid !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(ch.head_oid)} since the review`); continue; }
     const ver = verificationOf(db, repo, e.number, ch.head_oid);
-    if (!verifyAllows(e.path, ver?.state)) { refuse(e, null, `verification at ${short(ch.head_oid)} is ${ver?.state ?? "missing"}, not passed`); continue; }
+    if (!verifyAllows(e.path, ver?.state, verifyOverride(db, repo, e.number, ch.head_oid))) { refuse(e, null, `verification at ${short(ch.head_oid)} is ${ver?.state ?? "missing"}, not passed`); continue; }
     if (e.path === "operator") {
       const still = actionable(db).some((a) => a.id === e.decisionId && a.answer === MERGE_OPTIONS.merge.key);
       if (!still) { refuse(e, null, "the operator's merge answer is gone"); continue; }

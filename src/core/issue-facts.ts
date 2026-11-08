@@ -145,7 +145,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const waitingExec = new Set((db.prepare("SELECT id FROM main.decisions WHERE exec_state IN ('waiting-token', 'waiting-permission') AND applied_at IS NULL").all() as { id: string }[]).map((r) => r.id));
   const answeredClose = new Map<string, ItemFacts["answeredClose"]>();
   for (const a of actionable(db)) {
-    if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate" && a.kind !== "merge") continue;
+    if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate" && a.kind !== "merge" && a.kind !== "hold") continue;
     if (a.kind !== "scope" && a.number === null) continue;
     for (const it of a.items) {
       const ex = a.exceptions.find((e) => e.repo === it.repo && e.number === it.number);

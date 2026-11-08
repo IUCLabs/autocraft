@@ -119,7 +119,7 @@ export function clearDispute(db: DatabaseSync, id: string): void {
  */
 export function heldOpenSql(login: string, operator: boolean): string {
   const me = `'${login.replace(/'/g, "''")}'`;
-  const writes = `((decisions.answer = 'close' AND decisions.kind IN ('scope', 'close', 'duplicate', 'merge')) OR (decisions.answer = 'merge' AND decisions.kind = 'merge')
+  const writes = `((decisions.answer = 'close' AND decisions.kind IN ('scope', 'close', 'duplicate', 'merge', 'hold')) OR (decisions.answer = 'merge' AND decisions.kind = 'merge')
     OR (decisions.kind = 'duplicate' AND (decisions.answer = 'accept' OR decisions.answer LIKE 'keep:%')))`;
   // An open decision whose queued press someone disputed: the presser and operators look at it.
   const queuedDispute = `(decisions.answer IS NULL AND decisions.exec_state = '${SETTLING}' AND EXISTS (SELECT 1 FROM main.conversation_cards hc WHERE hc.state = 'queued' AND hc.dispute_by IS NOT NULL

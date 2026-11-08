@@ -2,7 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { clearAskedStage } from "../decisions.ts";
-import { mergeDecisionId, OPEN_GROUP_SQL, type QueueEntry } from "./queue.ts";
+import { holdDecisionId, mergeDecisionId, OPEN_GROUP_SQL, type QueueEntry } from "./queue.ts";
 
 /** Answer value of a question the pipeline set aside; no operator wrote it, so no later step acts on it. */
 export const WITHDRAWN = "withdrawn";
@@ -21,10 +21,18 @@ function renameDecision(db: DatabaseSync, id: string, to: string): void {
  * answered one that was not acted on yet is marked applied with a note.
  */
 export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: number, head: string, at: string, why = "superseded by a new review"): boolean {
-  const id = mergeDecisionId(repo, number, head);
+  return setAside(db, mergeDecisionId(repo, number, head), repo, number, head, at, why, (a) => a !== "merge");
+}
+
+/** Sets the head's Hold question aside the same way. A close answer waiting for Act still stands. */
+export function withdrawHoldQuestion(db: DatabaseSync, repo: string, number: number, head: string, at: string, why = "superseded by a new review"): boolean {
+  return setAside(db, holdDecisionId(repo, number, head), repo, number, head, at, why, (a) => a === "close");
+}
+
+function setAside(db: DatabaseSync, id: string, repo: string, number: number, head: string, at: string, why: string, stands: (answer: string) => boolean): boolean {
   const row = db.prepare("SELECT answer, applied_at FROM decisions WHERE id = ?").get(id) as { answer: string | null; applied_at: string | null } | undefined;
-  // An answer other than merge (close, hold) waiting for Act still stands: the new review doesn't change it.
-  if (!row || (row.answer !== null && row.answer !== "merge" && !row.applied_at)) return false;
+  // An answer that waits for Act and does not depend on the review still stands: the new review doesn't change it.
+  if (!row || (row.answer !== null && stands(row.answer) && !row.applied_at)) return false;
   const old = `${id}~replaced-${at}`;
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -134,7 +142,7 @@ const HEAD_MOVED_NOTE = "the pull request changed since";
  */
 function setAsideOldHeadQuestions(db: DatabaseSync, at: string, repo?: string): number {
   const rows = db.prepare(`SELECT d.id, d.kind, d.repo, d.number FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.answer IS NULL AND d.kind IN ('merge', 'close') AND d.id NOT LIKE '%~replaced-%' AND i.kind = 'pr' AND i.head_oid IS NOT NULL
+    WHERE d.answer IS NULL AND d.kind IN ('merge', 'close', 'hold') AND d.id NOT LIKE '%~replaced-%' AND i.kind = 'pr' AND i.head_oid IS NOT NULL
       AND d.id <> d.repo || '#' || d.number || ':' || d.kind || '@' || i.head_oid AND d.id LIKE d.repo || '#' || d.number || ':' || d.kind || '@%' ${repo ? "AND d.repo = ?" : ""}`)
     .all(...(repo ? [repo] : [])) as { id: string; kind: string; repo: string; number: number }[];
   if (!rows.length) return 0;
@@ -164,7 +172,7 @@ function setAsideOldHeadQuestions(db: DatabaseSync, at: string, repo?: string): 
 export function setAsideSupersededQuestions(db: DatabaseSync, at: string, repo?: string): number {
   const stale = setAsideOldHeadQuestions(db, at, repo);
   const rows = db.prepare(`SELECT id, kind, repo, number FROM decisions WHERE answer IS NULL AND number IS NOT NULL
-    AND kind IN ('scope', 'merge', 'close') AND id NOT LIKE '%:dupegroup:%' AND id NOT LIKE '%~replaced-%' ${repo ? "AND repo = ?" : ""}
+    AND kind IN ('scope', 'merge', 'close', 'hold') AND id NOT LIKE '%:dupegroup:%' AND id NOT LIKE '%~replaced-%' ${repo ? "AND repo = ?" : ""}
     ORDER BY asked_at DESC, rowid DESC`).all(...(repo ? [repo] : [])) as { id: string; kind: string; repo: string; number: number }[];
   const seen = new Set<string>();
   const aside: { r: (typeof rows)[number]; why: string }[] = [];
@@ -205,7 +213,7 @@ const closedWhy = (r: OpenRow): string => r.state === "MERGED" ? "the pull reque
 export function withdrawClosedQuestions(db: DatabaseSync, at: string): number {
   const single = db.prepare(`SELECT d.id, d.kind, d.repo, d.number, i.state, i.kind AS itemKind FROM decisions d
     JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.answer IS NULL AND d.number IS NOT NULL AND d.kind IN ('scope', 'close', 'merge', 'duplicate') AND d.id NOT LIKE '%:dupegroup:%' AND d.id NOT LIKE '%~replaced-%'
+    WHERE d.answer IS NULL AND d.number IS NOT NULL AND d.kind IN ('scope', 'close', 'merge', 'hold', 'duplicate') AND d.id NOT LIKE '%:dupegroup:%' AND d.id NOT LIKE '%~replaced-%'
       AND i.state IN ('CLOSED', 'MERGED')`).all() as OpenRow[];
   const groups = db.prepare(`SELECT d.id, d.kind, d.repo, d.number FROM decisions d
     WHERE d.answer IS NULL AND d.kind = 'duplicate' AND d.id LIKE '%:dupegroup:%' AND d.id NOT LIKE '%~replaced-%'

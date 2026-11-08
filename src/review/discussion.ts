@@ -95,9 +95,10 @@ export type Snapshot = { seen: string; hash: string | null };
 /** The `:own` parameter of NOT_OURS. With no login known, '' stands in, so authorless rows stay out as before. */
 const ownJson = (own: Set<string>): string => JSON.stringify(own.size ? [...own] : [""]);
 
-/** SQL for "written by someone other than us" (`c` is the comments table alias). */
+/** SQL for "written by someone other than us" (`c` is the comments table alias): not our logins, not our review post, and not a comment the pipeline wrote (its audited text) under an operator's own login. */
 const NOT_OURS = `COALESCE(c.author, '') NOT IN (SELECT value FROM json_each(:own))
-  AND c.id NOT IN (SELECT review_id FROM review_posts WHERE repo = c.repo AND number = c.number)`;
+  AND c.id NOT IN (SELECT review_id FROM review_posts WHERE repo = c.repo AND number = c.number)
+  AND NOT EXISTS (SELECT 1 FROM main.audit au WHERE au.target = c.repo || '#' || c.number AND c.body IS NOT NULL AND json_extract(au.details, '$.text') = c.body)`;
 
 type MirrorRow = { id: string; kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null; counted: number | null };
 const mirrorRows = (db: DatabaseSync, repo: string, number: number): MirrorRow[] =>

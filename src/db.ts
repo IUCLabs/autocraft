@@ -323,7 +323,7 @@ function migrateValues(db: DatabaseSync): void {
     db.exec("BEGIN IMMEDIATE");
     db.exec(`UPDATE main.decisions SET prepared_at = NULL, prepared_head = NULL
       WHERE answer IS NULL AND number IS NOT NULL AND id NOT LIKE '%:dupegroup:%' AND prepared_at IS NOT NULL
-        AND NOT (kind IN ('merge', 'close') AND instr(id, '@') > 0
+        AND NOT (kind IN ('merge', 'close', 'hold') AND instr(id, '@') > 0
           AND substr(id, instr(id, '@') + 1) IS NOT (SELECT i.head_oid FROM main.items i WHERE i.repo = decisions.repo AND i.number = decisions.number))
         AND ((recommended IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.conversation_cards c WHERE c.repo = decisions.repo AND c.number = decisions.number AND c.state = 'proposed'
               AND (json_extract(c.params, '$.settle.option') = decisions.recommended OR json_extract(c.params, '$.option') = decisions.recommended)))

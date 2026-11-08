@@ -9,6 +9,7 @@ export const KIND_LABEL: Record<DecisionKind, string> = {
   duplicate: "Duplicates",
   close: "Close approval",
   merge: "Merge approval",
+  hold: "Hold",
   split: "Split",
   other: "Question",
 };

@@ -1,6 +1,7 @@
 // Part 2 of the Verify stage: result collection from finished tasks, the failure summary, the retry of
 // an infrastructure error and the cancel of tasks whose PR moved on. Part 1 (index.ts) only plans and queues.
 // Pass or fail comes from the tasks' exit codes, never from a model; Haiku only describes a failure.
+import { setAsideAnswerBeforeFailure } from "../merge/verify-override.ts";
 import { leaseItem } from "../runner/leases.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { BuildTask, TaskResult, TaskStep } from "../../web/src/api/types.ts";
@@ -233,7 +234,9 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
       const finish = (state: string, summary: string | null, note: string | null): boolean => {
         const r = db.prepare("UPDATE verifications SET state = ?, summary = ?, note = ?, finished_at = ? WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')")
           .run(state, summary, note, now(), v.repo, v.number, v.head_sha);
-        return Number(r.changes) > 0;
+        const changed = Number(r.changes) > 0;
+        if (changed && (state === "failed" || state === "error")) setAsideAnswerBeforeFailure(db, v.repo, v.number, v.head_sha, now());
+        return changed;
       };
 
       if (v.item_state !== "OPEN" || v.item_head !== v.head_sha) {

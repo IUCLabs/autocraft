@@ -29,7 +29,9 @@ import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
 import { operatorTries, operatorTriesLeft, operatorWork, queuedOperatorFix } from "../preapproval/state.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
-import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, OPEN_QUESTION_SQL, UNSURE_AT_SQL, mergeDecisionId } from "./rules.ts";
+import { verifyOverride } from "../merge/verify-override.ts";
+import { unknownOf } from "../merge/mergeable.ts";
+import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, OPEN_QUESTION_SQL, UNSURE_AT_SQL, mergeDecisionId, holdDecisionId } from "./rules.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
@@ -170,7 +172,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const taskEnded = (id: number | null): boolean => { const t = id != null ? getTask(db, id) : null; return !t || TERMINAL.includes(t.state); };
   const lintCifix = db.prepare("SELECT lint_task FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'linting' ORDER BY rowid");
   const lintConflict = db.prepare("SELECT lint_task FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' ORDER BY rowid");
-  const cifixRows = db.prepare("SELECT state, created_at, task_id, runs FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? ORDER BY created_at, rowid");
+  const cifixRows = db.prepare("SELECT state, created_at, task_id, runs, reason FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? ORDER BY created_at, rowid");
   const cifixTotals = db.prepare(`SELECT COALESCE(SUM(state IN (${CIFIX_PUSH_STATES.map(() => "?").join(",")})), 0) AS pushes, COALESCE(SUM(state IN (${CIFIX_TRY_STATES.map(() => "?").join(",")})), 0) AS tries FROM ci_fixes WHERE repo = ? AND number = ?`);
   const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
   const tiers = tiersOf(db, [...new Set(queued.map((r) => r.author!))]);
@@ -190,11 +192,18 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     return m;
   };
 
-  const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
+  const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at, (SELECT COUNT(*) FROM merges m2 WHERE m2.repo = merges.repo AND m2.number = merges.number AND m2.head_oid = merges.head_oid AND m2.outcome = 'refused') AS refusals FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
   const retriedAfter = db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'retry' AND at > ? LIMIT 1");
   const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
   const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
   const decision = db.prepare("SELECT id FROM decisions WHERE id = ?");
+  const holdRow = db.prepare("SELECT answer FROM decisions WHERE id = ?");
+  // An item has one open question at a time (src/merge/withdraw.ts): a Hold question would set another one aside, so it waits for that one.
+  const otherOpen = db.prepare("SELECT 1 FROM decisions WHERE repo = ? AND number = ? AND answer IS NULL AND id NOT LIKE '%~replaced-%' AND id NOT LIKE '%:dupegroup:%' AND kind IN ('scope', 'merge', 'close') LIMIT 1");
+  const holdQuestionOf = (repo: string, number: number, id: string): PrFacts["decision"]["hold"] => {
+    const row = holdRow.get(id) as { answer: string | null } | undefined;
+    return { asked: !!row, open: !!row && row.answer === null, answer: row?.answer ?? null, otherOpen: !!otherOpen.get(repo, number) };
+  };
   const statement = db.prepare("SELECT id, repo, number, text FROM owner_statements WHERE id = ?");
   const openQuestion = db.prepare(OPEN_QUESTION_SQL);
   const answeredAfter = db.prepare(`SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND ${settledBySql("decisions")}`);
@@ -245,9 +254,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, quiet: own.quiet.has(ref), mergeHeld: holds.has(ref),
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
       review: null, post: { postable: false, posted: null },
-      checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", runs: null,
-      lastMerge: null, runsApprovedAfterMerge: false, verification: null, verifyUnavailable: null,
-      decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
+      checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", unknown: null, runs: null,
+      lastMerge: null, runsApprovedAfterMerge: false, verifyOverride: false, verification: null, verifyUnavailable: null,
+      decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: !!otherOpen.get(r.repo, r.number) } },
       premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
@@ -303,6 +312,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
     };
     base.pushChain = chain;
+    base.decision.hold = holdQuestionOf(r.repo, r.number, holdDecisionId(r.repo, r.number, r.r_head));
     if (r.state === "OPEN" && head && head !== r.r_head && (ourFixupHead.get(r.repo, r.number, head) || ourSameDiffMerge.get(r.repo, r.number, head)) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     base.sensitive = sensitiveAt(r.repo, r.number, r.r_head);
@@ -316,6 +326,28 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       postable: (hasPublic || !!p?.review_id) && !!pub,
       posted: p ? { head: p.head_oid, at: p.posted_at, opusAt: p.opus_at } : null,
     };
+    // The CI fix state at one head: the rows it recorded and its limits.
+    const cifixAt = (cfHead: string): NonNullable<PrFacts["cifix"]> => {
+      const prior = cifixRows.all(r.repo, r.number, cfHead) as { state: string; created_at: string; task_id: number | null; runs: string | null; reason: string | null }[];
+      const totals = cifixTotals.get(...CIFIX_PUSH_STATES, ...CIFIX_TRY_STATES, r.repo, r.number) as { pushes: number; tries: number };
+      const formatting = prior.find((x) => x.state === "formatting");
+      const task = formatting?.task_id != null ? getTask(db, formatting.task_id) : null;
+      const infra = prior.find((x) => x.state === "infra");
+      return {
+        states: prior.map((x) => x.state), tries: prior.filter((x) => CIFIX_TRY_STATES.includes(x.state)).length,
+        rerunAt: prior.find((x) => x.state === "rerun" || x.state === "rerunning")?.created_at ?? null,
+        infraRuns: infra ? (parseList(infra.runs ?? "[]") as number[]) : null,
+        formattingTask: formatting?.task_id ?? null, formatterEnded: !task || TERMINAL.includes(task.state),
+        totalPushes: totals.pushes, totalTries: totals.tries, checksAt: r.c_at,
+        skipReason: [...prior].reverse().find((x) => x.state === "skipped")?.reason ?? null,
+      };
+    };
+    // A non-take review at an earlier head while the review gate waits on red CI at the new head: the CI fix cannot start, so the contributor is asked (src/core/decide.ts unreviewedRed).
+    if (!take && r.state === "OPEN" && head && head !== r.r_head && base.reviewHold?.kind === "ci" && base.reviewHold.red && r.c_head === head && effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks) === "failure") {
+      base.ci = "failure";
+      base.gateRed = true;
+      base.cifix = cifixAt(head);
+    }
     if (!take) { out.push(base); continue; }
 
     const wait = waiting.get(r.repo, r.number, r.r_head) as Wait | undefined;
@@ -334,21 +366,25 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
     if (base.tier === "not" && r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref)) base.tier = "whitelisted";
 
-    const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string } | undefined;
+    const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string; refusals: number } | undefined;
     // An operator's Retry after a refusal asks for another try now, without waiting for CI or the mergeable state to change.
-    if (last && !(last.outcome === "refused" && retriedAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at))) {
-      base.lastMerge = { outcome: last.outcome, reason: last.reason, ci: last.ci, mergeable: last.mergeable };
+    // A fresh Merge answer after a refusal asks for another try, as a Retry does.
+    if (last && !(last.outcome === "refused" && (retriedAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at) || answeredAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at)))) {
+      base.lastMerge = { outcome: last.outcome, reason: last.reason, ci: last.ci, mergeable: last.mergeable, refusals: last.refusals };
       base.runsApprovedAfterMerge = !!wait?.approved_at && wait.approved_at > last.at;
     }
     base.verification = (verifs.get(r.repo, r.number, r.r_head) as PrFacts["verification"] | undefined) ?? null;
+    if (base.verification?.state === "failed" || base.verification?.state === "error") base.verifyOverride = verifyOverride(db, r.repo, r.number, r.r_head);
     if (!base.verification || base.verification.state === "stale") {
       base.verifyUnavailable = !rf.pub ? PRIVATE_REASON : rf.f.noCi && cachedRust(r.repo, r.r_head) === false ? NOT_RUST_REASON : null;
     }
+    if (r.state === "OPEN" && base.mergeable !== "MERGEABLE" && base.mergeable !== "CONFLICTING") base.unknown = unknownOf(db, r.repo, r.number, r.r_head);
     const id = mergeDecisionId(r.repo, r.number, r.r_head);
     const given = answers.get(id) ?? null;
     base.decision = {
       asked: !!decision.get(id), openQuestion: r.state === "OPEN" && !!openQuestion.get(r.repo, r.number), answer: given,
       mergeAnswerAfterReview: given === "merge" && !!answeredAfter.get(id, r.r_at), inOpenGroup: grouped.has(ref),
+      hold: base.decision.hold,
     };
     if (r.state !== "OPEN") { out.push(base); continue; }
 
@@ -376,19 +412,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       if (base.lint.length && r.state === "OPEN") base.inFlight = true;
     }
     if (base.ci === "failure" || base.brokeByUs || base.gateRed) {
-      const cfHead = base.brokeByUs || base.gateRed ? head : r.r_head;
-      const prior = cifixRows.all(r.repo, r.number, cfHead) as { state: string; created_at: string; task_id: number | null; runs: string | null }[];
-      const totals = cifixTotals.get(...CIFIX_PUSH_STATES, ...CIFIX_TRY_STATES, r.repo, r.number) as { pushes: number; tries: number };
-      const formatting = prior.find((x) => x.state === "formatting");
-      const task = formatting?.task_id != null ? getTask(db, formatting.task_id) : null;
-      const infra = prior.find((x) => x.state === "infra");
-      base.cifix = {
-        states: prior.map((x) => x.state), tries: prior.filter((x) => CIFIX_TRY_STATES.includes(x.state)).length,
-        rerunAt: prior.find((x) => x.state === "rerun" || x.state === "rerunning")?.created_at ?? null,
-        infraRuns: infra ? (parseList(infra.runs ?? "[]") as number[]) : null,
-        formattingTask: formatting?.task_id ?? null, formatterEnded: !task || TERMINAL.includes(task.state),
-        totalPushes: totals.pushes, totalTries: totals.tries, checksAt: r.c_at,
-      };
+      const cfHead = base.brokeByUs || base.gateRed || (head && head !== r.r_head) ? head : r.r_head;
+      base.cifix = cifixAt(cfHead ?? r.r_head!);
     }
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
     base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);

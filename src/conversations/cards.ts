@@ -430,7 +430,7 @@ export function applicableSteps(db: DatabaseSync, repo: string, n: number): stri
     if (isPr) {
       out.push("request_reviewers", "review", "fixup");
       const d = openDecision(db, repo, n);
-      if (d && (d.kind === "merge" || d.kind === "scope")) out.push("fixup with merge");
+      if (d && (d.kind === "merge" || d.kind === "scope" || d.kind === "hold")) out.push("fixup with merge");
     } else if (!closeRefusal(db, repo, n)) out.push("transfer");
   } else if (f.state === "CLOSED" && !("note" in reopenStep(db, repo, n))) out.push("reopen");
   return quiet ? out.filter((k) => !PUBLIC_TEXT_STEPS.has(k)) : out;
@@ -546,7 +546,7 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
     settle = s.value;
   }
   const fix = steps.find((x) => x.kind === "fixup");
-  if (fix?.kind === "fixup" && fix.merge && (!d || (d.kind !== "merge" && d.kind !== "scope"))) return { note: "dropped a resolution: a fixup that merges needs an open merge or scope decision on the PR" };
+  if (fix?.kind === "fixup" && fix.merge && (!d || (d.kind !== "merge" && d.kind !== "scope" && d.kind !== "hold"))) return { note: "dropped a resolution: a fixup that merges needs an open merge, scope or hold decision on the PR" };
   const settling = steps.find(isSettling);
   if (settling) {
     const keeps = settling.kind === "fixup" && d?.kind === "scope" && settle?.kind === "answer" && KEEP_IN_CORE.includes(settle.option);
