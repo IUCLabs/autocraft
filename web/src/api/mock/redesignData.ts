@@ -13,7 +13,7 @@ const HEADER_1484: Partial<ItemPageHeader> = {
   discord: { count: 2, links: [{ url: "https://discord.example/channels/1/2/3", at: at(3 * H) }], signals: 1, signalLinks: [{ url: "https://discord.example/channels/1/2/3", at: at(3 * H) }] },
   queue: { stage: "Merge", tab: "merge", place: 3 }, tier: "whitelisted", size: "XL",
   releases: { reviewAgain: true, verifyAgain: true, fixAgain: false, batchAgain: true },
-  preapproval: { id: 7, by: "rhea-m", at: at(4 * H), instructions: "Use load_pack for the dictionary, then merge when CI is green.", state: "ci", fromHead: "e6a09b1", head: "f21c0aa", reason: null, updatedAt: at(3 * H) },
+  preapproval: { id: 7, by: "rhea-m", at: at(4 * H), instructions: "Use load_pack for the dictionary, then merge when CI is green.", state: "failed", fromHead: "e6a09b1", head: null, reason: "the fix-up refused: crates/doc/Cargo.toml is not a file a fix-up may edit", updatedAt: at(3 * H) },
 };
 
 type Seed = { repo: string; number: number; kind: "pr" | "issue"; state: "open" | "closed" | "merged"; title: string; author: string; status: ItemStatus; updated: number };

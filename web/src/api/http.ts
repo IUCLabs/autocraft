@@ -135,6 +135,7 @@ export function createHttpApi(): Api {
       include: (repo, number, source, on) => post(conv(repo, number, "/includes"), { source, on }),
       editCard: (id, edit) => post(`/api/conversation-cards/${id}/edit`, edit),
       cancelPreapproval: (repo, n) => post(`/api/items/${repo}/${n}/preapproval/cancel`),
+      retryPreapproval: (repo, n) => post(`/api/items/${repo}/${n}/preapproval/retry`),
       doCard: (id, opts) => post(`/api/conversation-cards/${id}/do`, opts?.skip?.length || opts?.note ? { ...(opts.skip?.length && { skip: opts.skip }), ...(opts.note && { note: opts.note }) } : undefined),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
       // A finding's choices are built from its actions (no decision row): the answer is the finding action itself.

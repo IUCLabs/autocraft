@@ -152,6 +152,8 @@ export interface Api {
     doChoice(choiceId: string, body: DoChoiceBody): Promise<ConversationCard>;
     /** Operator only: stops the item's running pre-approved merge (state becomes "cancelled"); the PR's open question, if any, stays. */
     cancelPreapproval(repo: RepoName, number: number): Promise<Preapproval>;
+    /** Operator only: queues the failed pre-approved merge again with the same instructions at the PR's current head (a new pre-approval). */
+    retryPreapproval(repo: RepoName, number: number): Promise<Preapproval>;
   };
   /** A repo's area list. Reading is for everyone who sees the repo; every write is operator only. */
   areas: {

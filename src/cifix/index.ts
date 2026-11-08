@@ -25,7 +25,7 @@ import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { DIFF_CAP, FILE_CAP, PR_QUERY, TOTAL_CAP, noteLive, scrubReason, whoAmI, type PrNode } from "../fixup/index.ts";
 import { commitIdentity } from "../github/identity.ts";
 import { outsideShown, shownSize, viewFile } from "../fixup/excerpt.ts";
-import { editable, validatePatch } from "../fixup/patch.ts";
+import { buildScriptsAt, editable, validatePatch } from "../fixup/patch.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { patchGiveaway, QUIET_PATCH_REFUSAL } from "../security/rules.ts";
 import { readGate } from "../merge/changes-requested.ts";
@@ -286,9 +286,10 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   const no = (state: "failed" | "refused", reason: string): PatchResult => ({ ok: false, state, reason });
   const { git, ref, title, repo, head, failure } = r;
   const text = failure.checks.flatMap((x) => x.steps.map((s) => s.tail)).join("\n");
+  const scripts = await buildScriptsAt(git, head);
   // Files a compiler error points at come first, then the files the diff changes; nothing else is editable. Test files are not editable by a CI fix.
   const named = [...new Set(errorFiles(text).concat([...r.diffText.matchAll(DIFF_FILE)].map((m) => m[1]!)))]
-    .filter((p) => editable(p) && !TEST_PATH.test(p)).slice(0, MAX_FILES);
+    .filter((p) => editable(p, scripts) && !TEST_PATH.test(p)).slice(0, MAX_FILES);
   // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
   const checkout = (await r.checkout()) ?? undefined;
   const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
@@ -310,10 +311,10 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   }
   if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
   const quiet = !!r.quiet || isQuiet(db, repo, r.number);
-  const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, shown.map((s) => s.path)))) });
+  const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, shown.map((s) => s.path), (x) => editable(x, scripts)))) });
   const reply = await d.ask(db, [{ ref, title, failure: logText(failure), ...(quiet ? { quiet } : {}), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool, r.session);
   if (reply === null) return no("failed", "the model gave no answer");
-  const v = validatePatch(reply, shown.map((s) => s.path));
+  const v = validatePatch(reply, shown.map((s) => s.path), (x) => editable(x, scripts));
   if (!v.ok) return no("refused", v.reason);
   const word = quiet ? patchGiveaway(v.patch) : null;
   if (word) return no("refused", QUIET_PATCH_REFUSAL);
@@ -527,6 +528,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   /** The formatter task ended: its diff, if any, is validated and delivered. Every exit records a state, which closes the `formatting` row. */
   const collectFormat = async (c: CifixCandidate, taskId: number): Promise<void> => {
     const ref = refOf(c);
+    const scripts = await buildScriptsAt(git, c.head);
     const t = getTask(db, taskId);
     const fail = (state: "failed" | "refused", reason: string) => { rec.set(c, "format", state, reason); summary.failed.push({ ref, reason }); log(`  ${ref}: ${state}: ${reason}`); };
     if (!t || t.state !== "done") { fail("failed", `the formatter task ${t?.state ?? "is gone"}`); return; }
@@ -537,7 +539,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     const path = art ? absolute(art.file) : null;
     if (!path) { fail("failed", "the formatter changed nothing, so the failure is not formatting"); return; }
     const text = gitFormatDiff(readFileSync(path, "utf8"));
-    const v = validatePatch(text, allowed);
+    const v = validatePatch(text, allowed, (x) => editable(x, scripts));
     if (!v.ok) { fail("refused", v.reason); return; }
     const pr = await readPr(c);
     if (!pr) { fail("failed", gone.get(c.number) ?? ""); return; }
@@ -583,6 +585,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   const collectLint = async (c: CifixCandidate): Promise<void> => {
     const ref = refOf(c);
     const w = c.lint!;
+    const scripts = await buildScriptsAt(git, c.head);
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
       const reason = scrubReason(raw, d.root);
       rec.set(c, "code", state, reason, { files: w.files });
@@ -605,7 +608,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       dropSessions(w.session);
       const fold = await foldFormat(git, c.head, w.patch, res.formatDiff ?? "", d.root);
       if (!fold.ok) { fail("refused", fold.reason); return; }
-      const v = validatePatch(w.patch, w.files);
+      const v = validatePatch(w.patch, w.files, (x) => editable(x, scripts));
       if (!v.ok) { fail("refused", v.reason); return; }
       await deliver(c, "code", pr, v, "CI", undefined, [], fold.patch);
       return;

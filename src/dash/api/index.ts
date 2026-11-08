@@ -412,6 +412,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/conversation-cards/:id/dismiss", handler: ok(conv.dismiss) },
     { method: "POST", pattern: "/api/decision-choices/:id/do", handler: ok((db, req) => conv.doChoice(db, req)) },
     { method: "POST", pattern: "/api/items/:repo/:n/preapproval/cancel", operator: true, handler: ok(operator.cancelItemPreapproval) },
+    { method: "POST", pattern: "/api/items/:repo/:n/preapproval/retry", operator: true, handler: ok(operator.retryItemPreapproval) },
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },

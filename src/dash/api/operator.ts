@@ -2,7 +2,7 @@
 // They change local tables only; the pipeline picks the item up on its next pass.
 import type { DatabaseSync } from "node:sqlite";
 import { ActionError, batchAgain, fixAgain, reviewAgain, verifyAgain } from "../../operator-actions.ts";
-import { cancelPreapproval } from "../../preapproval/index.ts";
+import { cancelPreapproval, retryPreapproval } from "../../preapproval/index.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { needVisible } from "./visible.ts";
@@ -31,6 +31,20 @@ export async function cancelItemPreapproval(db: DatabaseSync, req: Req) {
   await needVisible(db, req, repo);
   try {
     return await cancelPreapproval(db, req.user.login, repo, n);
+  } catch (e) {
+    throw new HttpError(409, (e as Error).message);
+  }
+}
+
+/** Operator: queues the failed pre-approved merge again with the same instructions. */
+export async function retryItemPreapproval(db: DatabaseSync, req: Req) {
+  if (req.user.role !== "operator") throw new HttpError(403, "only operators can retry a pre-approved merge");
+  const repo = req.params.repo!;
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
+  await needVisible(db, req, repo);
+  try {
+    return await retryPreapproval(db, req.user.login, repo, n);
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }

@@ -905,10 +905,10 @@ export const PREAPPROVALS: Record<string, Preapproval> = {
     by: "ochre-fox",
     at: iso(3 * H),
     instructions: "Cover the range spill case with a test, then merge.",
-    state: "asked",
+    state: "failed",
     fromHead: "c3d4e5f60718293a4b5c6d7e8f9001a2b3c4d5e6",
-    head: "0f1e2d3c4b5a69788796a5b4c3d2e1f001122334",
-    reason: "CI failed on the new test: the spill case wrote into a locked cell.",
+    head: null,
+    reason: "the fix-up refused: crates/grid/Cargo.toml is not a file a fix-up may edit",
     updatedAt: iso(2 * H),
   },
 };

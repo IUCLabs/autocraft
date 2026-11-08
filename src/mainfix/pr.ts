@@ -22,7 +22,7 @@ import { scrubReason, whoAmI } from "../fixup/index.ts";
 import { commitIdentity } from "../github/identity.ts";
 import { ghOpenPr, pushOwnBranch } from "../github/write.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
-import { validatePatch } from "../fixup/patch.ts";
+import { buildScriptsAt, editable, validatePatch } from "../fixup/patch.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, type SessionAsk } from "../prepush/resume.ts";
@@ -204,9 +204,10 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
       }
       if (res.kind === "result" && res.findings.length === 0) {
         dropSessions(w.session);
+        const scripts = await buildScriptsAt(git, head);
         const fold = await foldFormat(git, head, w.patch, res.formatDiff ?? "", c.fix.root);
         if (!fold.ok) return set(live, "fix-failed", fold.reason);
-        const v = validatePatch(w.patch, w.files);
+        const v = validatePatch(w.patch, w.files, (x) => editable(x, scripts));
         if (!v.ok) return set(live, "fix-failed", v.reason);
         applied = await treeOf(fold.patch);
         ({ patch, patchFiles, changed } = { patch: fold.patch, patchFiles: v.files, changed: v.changed });
