@@ -37,19 +37,20 @@ services:
   runner:
     <<: *common
     command: ["runner"]
-    # The worker API (8981) is not published. A build worker on another machine reaches it over a private
-    # network or through a TLS proxy restricted to the worker's address (docs/migration.md, "VPS with Docker
-    # Compose"). To bind it, uncomment one line and replace the address. Never bind it to 0.0.0.0, and never
-    # route it through the dashboard's proxy site.
+    # The worker API (8981) is not published. A build worker on another machine reaches it through a TLS
+    # proxy on its own hostname that accepts only the worker's address (docs/migration.md, "VPS with Docker
+    # Compose"). For that proxy, uncomment the loopback line. Never bind it to 0.0.0.0, and never route it
+    # through the dashboard's proxy site.
     expose:
       - "8981"
     #ports:
-    #  - "10.8.0.1:8981:8981"   # a private-network (VPN) address of this host
-    #  - "127.0.0.1:8981:8981"  # for a TLS proxy on this host
-    # Above AUTOCRAFT_STOP_TIMEOUT (25 s): the runner stops its jobs before Docker kills it.
+    #  - "127.0.0.1:8981:8981"
+    # Must exceed AUTOCRAFT_STOP_TIMEOUT (default 25 s), so the runner stops its jobs before Docker kills it.
     stop_grace_period: 30s
-    # bubblewrap (the sandbox of tool-using Claude calls) needs both settings; see operations.md, "Sandbox (bubblewrap)".
+    # bubblewrap (the sandbox of tool-using Claude calls) needs the two unconfined settings; see operations.md, "Sandbox (bubblewrap)".
+    cap_drop: [ALL]
     security_opt:
+      - no-new-privileges:true
       - seccomp=unconfined
       - systempaths=unconfined
     healthcheck:
@@ -71,12 +72,15 @@ services:
       - -c
       - |
         trap 'exit 0' TERM INT
-        last_backup=$$(date +%s)
+        # Time of the newest daily snapshot (0 when there is none), so a restart does not reset the schedule.
+        last_backup() {
+          f=$$(ls -1t /data/backups/daily-*.db.* 2>/dev/null | head -n 1)
+          if [ -n "$$f" ]; then stat -c %Y "$$f"; else echo 0; fi
+        }
         while true; do
           /app/deploy/entrypoint.sh sync || echo "sync exited $$?" >&2
-          if [ $$(( $$(date +%s) - last_backup )) -ge 86400 ]; then
+          if [ $$(( $$(date +%s) - $$(last_backup) )) -ge 86400 ]; then
             /app/deploy/entrypoint.sh backup daily 7 || echo "backup exited $$?" >&2
-            last_backup=$$(date +%s)
           fi
           sleep 60 & wait $$!
         done
