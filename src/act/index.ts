@@ -357,6 +357,13 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         jobItem(db, t.repo, t.number, `waiting: ${why}`, log);
         continue;
       }
+      // An error of GitHub itself (a server error, timeout, network failure, rate limit) says nothing about this target: the run stops, no try is counted,
+      // and the job ends as failed so the registered failure backoff applies.
+      if (githubWide(e)) {
+        summary.failed.push({ ref: refOf(t), reason: why });
+        jobItem(db, t.repo, t.number, `GitHub is failing, stopping: ${why}`, log);
+        break;
+      }
       const row = rowOf(db, t);
       // The comment of a retry that already posted it is not repeated. After ACT_MAX_ATTEMPTS failed tries the target is stopped and a person is asked; the other targets go on.
       // The job ends as failed (see the step), so the registered failure backoff spaces the tries.
@@ -415,6 +422,13 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   markExecDone(db);
   log(`act ${repo}: ${summary.done.length} closed, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.asked.length} asked`);
   return summary;
+}
+
+/** An error that points at GitHub or the network, not at the target: a 5xx status, a timeout, a dropped connection or a rate limit. */
+export function githubWide(e: unknown): boolean {
+  const status = Number((e as { status?: unknown })?.status ?? 0);
+  if (status >= 500 || status === 429) return true;
+  return /\b(HTTP|status)\s*:?\s*5\d\d\b|timed? ?out|ETIMEDOUT|ECONN\w*|ENOTFOUND|EAI_AGAIN|EPIPE|socket hang up|fetch failed|network|rate.?limit|abuse detection|bad gateway|service unavailable/i.test(String((e as Error)?.message ?? e));
 }
 
 /** True when the decision has close targets in another repo (a batch across repos), which this run does not settle. */

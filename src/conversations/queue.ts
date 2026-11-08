@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { actLimit, actUsedToday } from "./usage.ts";
 import type { CardParams } from "./cards.ts";
 import { RUNNING_STALE_MS } from "../answers/hold.ts";
+import { actBlockedReason } from "../runner/autopilot.ts";
 
 /** What a queued card needs to run later as the press would have run: the presser's choices at the time. */
 export type QueueArgs = { skip?: number[]; note?: string; noteStaysOut?: boolean; role?: string };
@@ -26,12 +27,12 @@ export function cardWriteCount(params: CardParams, text: string | null): number 
 
 /** The writes of cards that run now and have not made them yet: counted as used, so two presses at once cannot both take the last room. */
 function runningReserve(db: DatabaseSync, ms: number): number {
-  const rows = db.prepare("SELECT id, params, text FROM main.conversation_cards WHERE state = 'running' AND acted_at > ?").all(new Date(ms - RUNNING_STALE_MS).toISOString()) as { id: number; params: string; text: string | null }[];
+  const rows = db.prepare("SELECT id, params, text, acted_at FROM main.conversation_cards WHERE state = 'running' AND acted_at > ?").all(new Date(ms - RUNNING_STALE_MS).toISOString()) as { id: number; params: string; text: string | null; acted_at: string }[];
   let n = 0;
   for (const r of rows) {
     let need = 0;
     try { need = cardWriteCount(JSON.parse(r.params) as CardParams, r.text); } catch { continue; }
-    const written = (db.prepare(`SELECT COUNT(*) AS n FROM main.audit WHERE json_valid(details) AND json_extract(details, '$.source') = 'conversation' AND json_extract(details, '$.card') = ? AND json_extract(details, '$.state') = 'done'`).get(r.id) as { n: number }).n;
+    const written = (db.prepare(`SELECT COUNT(*) AS n FROM main.audit WHERE json_valid(details) AND json_extract(details, '$.source') = 'conversation' AND json_extract(details, '$.card') = ? AND json_extract(details, '$.state') = 'done' AND at >= ?`).get(r.id, r.acted_at) as { n: number }).n;
     n += Math.max(0, need - written);
   }
   return n;
@@ -50,8 +51,21 @@ export function actRoom(db: DatabaseSync, need: number, ms: number = Date.now())
 
 export type QueuedRow = { id: number; repo: string; number: number; queued_at: string; acted_by: string | null; dispute_by: string | null; dispute_reason: string | null; dispute_at: string | null };
 
-/** Queued cards in the order they run: higher item priority level first (security raised), then the earlier press. One query. */
-export function queuedCards(db: DatabaseSync): QueuedRow[] {
+/**
+ * Queued cards in the order they run: higher item priority level first (security raised), then the earlier press. One query.
+ * Cards whose repo the pipeline cannot run Act for now are left out, so they hold no place and block nobody; the drain asks for them with `all`.
+ */
+export function queuedCards(db: DatabaseSync, o: { all?: boolean } = {}): QueuedRow[] {
+  const rows = queuedRows(db);
+  if (o.all) return rows;
+  const blocked = new Map<string, boolean>();
+  return rows.filter((r) => {
+    if (!blocked.has(r.repo)) blocked.set(r.repo, actBlockedReason(db, r.repo) !== null);
+    return !blocked.get(r.repo);
+  });
+}
+
+function queuedRows(db: DatabaseSync): QueuedRow[] {
   return db.prepare(`SELECT c.id, c.repo, c.number, COALESCE(c.queued_at, '') AS queued_at, c.acted_by, c.dispute_by, c.dispute_reason, c.dispute_at
     FROM main.conversation_cards c LEFT JOIN main.item_rank r ON r.repo = c.repo AND r.number = c.number
     WHERE c.state = 'queued' ORDER BY COALESCE(CAST(r.score / 10000 AS INTEGER), 2) DESC, c.queued_at, c.id`).all() as QueuedRow[];
@@ -72,7 +86,7 @@ export const queueReason = (place: number | null): string => (place === null ? "
 
 /** Whether any card other than `except` waits in the queue (disputed ones are skipped by the drain and do not hold a place). */
 export const queuedAhead = (db: DatabaseSync, except?: number): boolean =>
-  !!db.prepare("SELECT 1 FROM main.conversation_cards WHERE state = 'queued' AND dispute_by IS NULL AND id <> ? LIMIT 1").get(except ?? 0);
+  queuedCards(db).some((r) => !r.dispute_by && r.id !== except);
 
 /** Records a dispute of a queued press. False when the card is not queued, is the disputer's own, or is already disputed. */
 export function disputeCard(db: DatabaseSync, id: number, by: string, reason: string, at: string): boolean {

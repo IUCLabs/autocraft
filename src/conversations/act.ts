@@ -273,19 +273,32 @@ async function userOf(q: Querier, login: string): Promise<{ id: string; login: s
 }
 
 /** Reads the live permission: `login` must hold write, maintain or admin on the repo. Throws when GitHub cannot tell. */
-async function needLiveWrite(q: Querier, repo: string, login: string): Promise<void> {
+/**
+ * The login's write permission on the repo, read from GitHub now. "no" only when the list is empty or its edge for the login has a lower
+ * permission; a missing repository or collaborators field (a partial or failed read) is "transient".
+ */
+async function livePermission(q: Querier, repo: string, login: string): Promise<"ok" | "no" | "transient"> {
   const d = await q.query(COLLABORATORS, { owner: ownerOf(repo), name: repo, login }) as { repository?: { collaborators?: { edges?: { permission: string; node: { login: string } }[] } | null } | null };
-  const e = d.repository?.collaborators?.edges?.find((x) => x.node.login.toLowerCase() === login.toLowerCase());
-  if (!e || !["WRITE", "MAINTAIN", "ADMIN"].includes(e.permission)) throw new Error(`${login} does not have write access to ${repo}`);
+  const edges = d.repository?.collaborators?.edges;
+  if (!edges) return "transient";
+  if (edges.length === 0) return "no";
+  const e = edges.find((x) => x.node.login.toLowerCase() === login.toLowerCase());
+  if (!e) return "transient";
+  return ["WRITE", "MAINTAIN", "ADMIN"].includes(e.permission) ? "ok" : "no";
 }
 
-/** The presser's write permission on a repo the box acts on, read from GitHub now. */
-async function liveWrite(q: Querier, repo: string, login: string): Promise<"ok" | "no" | "transient"> {
+async function needLiveWrite(q: Querier, repo: string, login: string): Promise<void> {
+  const p = await livePermission(q, repo, login);
+  if (p === "no") throw new Error(`${login} does not have write access to ${repo}`);
+  if (p === "transient") throw new Error(`could not read ${login}'s access to ${repo} from GitHub`);
+}
+
+/** The presser's write permission on a repo the box acts on; a failed read is "transient". */
+export async function liveWrite(q: Querier, repo: string, login: string): Promise<"ok" | "no" | "transient"> {
   try {
-    await needLiveWrite(q, repo, login);
-    return "ok";
-  } catch (e) {
-    return /does not have write access/.test(String((e as Error).message)) ? "no" : "transient";
+    return await livePermission(q, repo, login);
+  } catch {
+    return "transient";
   }
 }
 
@@ -559,7 +572,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     const claim = wait
       ? db.prepare("UPDATE conversation_cards SET state = 'queued', acted_by = ?, acted_at = ?, queued_at = ?, queue_args = ?, error = NULL, dispute_by = NULL, dispute_reason = NULL, dispute_at = NULL WHERE id = ? AND state = 'proposed'")
         .run(by, at, at, JSON.stringify({ ...(deps.skip?.length && { skip: deps.skip }), ...(note && { note }), ...(deps.noteStaysOut && { noteStaysOut: true }), ...(deps.role && { role: deps.role }) } satisfies QueueArgs), id)
-      : db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = ?").run(by, at, id, from);
+      : db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = ? AND dispute_by IS NULL").run(by, at, id, from);
     if (claim.changes !== 1) { db.exec("ROLLBACK"); return { card: need(db, id), ran: false }; }
     // Checked inside the transaction that starts the run, so an answer written a moment ago is seen.
     const refusal = writing ? pendingAnswerRefusal(db, c.repo, c.number, by) : null;
@@ -634,10 +647,11 @@ function failQueued(db: DatabaseSync, c: CardRow, error: string, deps: StoreDeps
  */
 export async function drainQueuedCards(db: DatabaseSync, deps: ActDeps = {}, o: { writes?: number } = {}): Promise<{ ran: number; writes: number }> {
   let ran = 0, used = 0;
-  for (const q of queuedCards(db)) {
+  for (const q of queuedCards(db, { all: true })) {
     if (q.dispute_by) continue;
     const c = cardOf(db, q.id);
-    if (!c || c.state !== "queued" || !c.acted_by) continue;
+    // Read again now: a dispute that landed since the list was taken stops the press.
+    if (!c || c.state !== "queued" || !c.acted_by || c.dispute_by) continue;
     const nowMs = (deps.now?.() ?? new Date()).getTime();
     let args: QueueArgs, params: CardParams, need: number;
     try {
@@ -648,13 +662,16 @@ export async function drainQueuedCards(db: DatabaseSync, deps: ActDeps = {}, o: 
       failQueued(db, c, oneLine(`the queued press cannot be read: ${(e as Error).message}`), deps);
       continue;
     }
-    if (actBlockedReason(db, c.repo)) continue;
+    const block = actBlockedReason(db, c.repo);
+    if (block) { failQueued(db, c, `Act cannot run for ${c.repo} now: ${block}`, deps); continue; }
     if (!actRoom(db, need, nowMs) || (o.writes !== undefined && used + need > o.writes)) break;
     const item = db.prepare("SELECT state FROM main.items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { state: string } | undefined;
     if (item && item.state !== "OPEN") { failQueued(db, c, `the item is already ${item.state.toLowerCase()}`, deps); continue; }
     try {
       const r = await doCard(db, c.id, c.acted_by, { ...deps, drain: true, skip: args.skip, note: args.note, noteStaysOut: args.noteStaysOut, role: args.role, canWrite: undefined });
       if (r.ran) { ran++; used += need; }
+      // Room was taken by someone else between the check and the claim: a smaller card behind this one does not jump it.
+      else if (cardOf(db, c.id)?.state === "queued" && !cardOf(db, c.id)?.dispute_by) break;
     } catch (e) {
       if (e instanceof ConversationError && e.status === 503) continue;
       failQueued(db, c, oneLine(String((e as Error).message ?? e)), deps);

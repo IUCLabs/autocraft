@@ -110,9 +110,11 @@ export function prepareIds(db: DatabaseSync, repos?: string[], nowMs: number = D
     WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} AND NOT ${lockLiveSql("d")}
     ORDER BY d.prepare_requested_at IS NULL, d.prepare_requested_at, d.asked_at, d.id`).all(utcDayStart(nowMs)) as (DueRow & { band: number })[];
   const due = rows.filter((r) => !repos?.length || repos.includes(r.repo)).filter((r) => prepareDue(r, headOf(r), nowMs));
+  const level = (r: { band: number; asked_at: string }): number => r.band + Math.min(4, Math.floor(Math.max(0, nowMs - Date.parse(r.asked_at)) / PREPARE_AGING_MS) || 0);
+  // Within a repo the best (aged level, then oldest) comes first, so its round numbers follow that order.
+  due.sort((x, y) => level(y) - level(x) || (x.asked_at < y.asked_at ? -1 : x.asked_at > y.asked_at ? 1 : 0) || (x.id < y.id ? -1 : 1));
   const round = new Map<string, number>();
   const turn = new Map(due.map((r) => [r.id, r.prepare_requested_at ? -1 : (round.set(r.repo, (round.get(r.repo) ?? -1) + 1), round.get(r.repo)!)]));
-  const level = (r: { band: number; asked_at: string }): number => r.band + Math.min(4, Math.floor(Math.max(0, nowMs - Date.parse(r.asked_at)) / PREPARE_AGING_MS) || 0);
   return due.sort((x, y) => turn.get(x.id)! - turn.get(y.id)! || level(y) - level(x) || (x.asked_at < y.asked_at ? -1 : x.asked_at > y.asked_at ? 1 : 0) || (x.id < y.id ? -1 : 1)).map((r) => r.id);
 }
 

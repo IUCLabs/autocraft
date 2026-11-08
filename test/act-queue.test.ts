@@ -5,7 +5,7 @@ import { afterEach, describe, test } from "node:test";
 import { runAct } from "../src/act/index.ts";
 import { disputeCard, keepCard, queuedCards } from "../src/conversations/queue.ts";
 import { actUsedToday } from "../src/conversations/usage.ts";
-import { doCard } from "../src/conversations/act.ts";
+import { doCard, liveWrite } from "../src/conversations/act.ts";
 import { decisionStamp } from "../src/conversations/cards.ts";
 import { applyAnswer, undo } from "../src/dash/api/decisions.ts";
 import { ask, getDecision } from "../src/decisions.ts";
@@ -16,11 +16,12 @@ let current: World | null = null;
 afterEach(() => current?.close());
 
 /** The world's GitHub with every item an issue, recording comments and closes; `failClose` makes the close of those issues fail. */
-const deps = (w: World, o: { posted?: string[]; closed?: string[]; failClose?: number[]; failComment?: number[]; permission?: string } = {}) => {
+const deps = (w: World, o: { posted?: string[]; closed?: string[]; failClose?: number[]; failComment?: number[]; serverError?: number[]; permission?: string } = {}) => {
   const base = w.gh.actDeps();
   return { ...base, querier: { ...base.querier, query: async (q: string, v: object) => {
     const id = String((v as { id?: string }).id ?? "");
     if (q.includes("collaborators")) return { repository: { collaborators: { edges: [{ permission: o.permission ?? "WRITE", node: { login: String((v as { login: string }).login) } }] } } };
+    if (q.includes("addComment") && o.serverError?.some((n) => id === `P${n}`)) throw new Error("HTTP 502 Bad Gateway");
     if (q.includes("addComment") && o.failComment?.some((n) => id === `P${n}`)) throw new Error("GitHub refused the comment");
     if (q.includes("addComment")) { o.posted?.push(id); return { addComment: { commentEdge: { node: { url: `https://x.test/${id}` } } } }; }
     if (q.includes("closeIssue")) {
@@ -161,5 +162,49 @@ describe("Act failures", () => {
     const ok = deps(w, { closed });
     await run(w, ok);
     assert.ok(closed.includes("P5"));
+  });
+});
+
+describe("blocked repos, GitHub errors and permission reads", () => {
+  test("a queued press whose repo became blocked fails with the reason and blocks nobody", async () => {
+    current = world().repo().issue(1).issue(2);
+    const w = current;
+    const d = deps(w);
+    limit(w, 1);
+    await doCard(w.db, commentCard(w, 2), "op", d as never);
+    const a = settleCard(w, 1);
+    assert.equal((await doCard(w.db, a.card, "op", d as never)).card.state, "queued");
+    w.db.prepare("UPDATE tracked_repos SET pipeline = 0 WHERE name = 'app'").run();
+    limit(w, 10);
+    // The blocked press holds no place: a new press runs at once instead of queueing behind it.
+    assert.equal((await doCard(w.db, commentCard(w, 2), "op", d as never)).card.state, "done");
+    await run(w, d);
+    assert.equal(state(w, a.card).state, "failed");
+    assert.match(state(w, a.card).error ?? "", /Act cannot run for app now: the pipeline is off for app/);
+    assert.equal(getDecision(w.db, a.decision)!.exec_state, null, "its decision is free again");
+  });
+
+  test("a GitHub server error stops the run without counting a try", async () => {
+    current = world().repo().issue(5).issue(6);
+    const w = current;
+    for (const n of [5, 6]) askClose(w, n);
+    const closed: string[] = [];
+    const first = await run(w, deps(w, { closed, serverError: [5] }));
+    assert.equal(first.failed.length, 1);
+    assert.deepEqual(closed, [], "the run stopped at the first target");
+    const attempts = (w.rows("SELECT attempts FROM actions WHERE number = 5")[0] as { attempts: number } | undefined)?.attempts ?? 0;
+    assert.equal(attempts, 0);
+    await run(w, deps(w, { closed }));
+    assert.deepEqual(closed.sort(), ["P5", "P6"]);
+  });
+
+  test("a partial permission read is transient; only an empty list or a lower permission is no", async () => {
+    const q = (r: unknown) => ({ query: async () => r }) as never;
+    assert.equal(await liveWrite(q({ repository: { collaborators: null } }), "app", "op"), "transient");
+    assert.equal(await liveWrite(q({ repository: null }), "app", "op"), "transient");
+    assert.equal(await liveWrite(q({ repository: { collaborators: { edges: [] } } }), "app", "op"), "no");
+    assert.equal(await liveWrite(q({ repository: { collaborators: { edges: [{ permission: "READ", node: { login: "op" } }] } } }), "app", "op"), "no");
+    assert.equal(await liveWrite(q({ repository: { collaborators: { edges: [{ permission: "WRITE", node: { login: "op" } }] } } }), "app", "op"), "ok");
+    assert.equal(await liveWrite({ query: async () => { throw new Error("network"); } } as never, "app", "op"), "transient");
   });
 });
