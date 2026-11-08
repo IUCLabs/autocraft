@@ -5,7 +5,7 @@ import { findingActions } from "../../lib/security";
 import { decisionPath } from "../../lib/links";
 import { setClock } from "../../lib/format";
 import { realData } from "./realStore";
-import { FINDING_HISTORY_11, FIX_ROUNDS_11, FIX_ROUNDS_4, at, findingStatus, itemPageFor, mockHeader, statusRows } from "./redesignData";
+import { FINDING_HISTORY_11, FIX_ROUNDS_11, FIX_ROUNDS_4, at, barFromStatus, findingStatus, itemPageFor, mockHeader, statusRows } from "./redesignData";
 
 const wait = <T,>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope", "Pipeline off"];
@@ -84,11 +84,12 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
     },
     itemPage: async (repo, number) => {
       const p = real?.pages.find((x) => x.repo === repo && x.number === number) ?? itemPageFor(repo, number);
-      if (p) return wait(me.role === "viewer" ? { ...p, reviews: { latest: p.reviews.latest && { ...p.reviews.latest, fixes: [], risks: [], claims: [] }, earlier: [] }, history: p.history.map((h) => ({ ...h, calls: [] })) } : p);
+      if (p) return wait(me.role === "viewer" ? { ...p, reviews: { latest: p.reviews.latest && { ...p.reviews.latest, fixes: [], risks: [], claims: [] }, earlier: [] }, history: p.history.map((h) => ({ ...h, calls: [] })), bar: { ...p.bar, headline: { ...p.bar.headline, text: p.bar.headline.tone === "failed" ? p.bar.headline.text.split(":")[0]! : p.bar.headline.text } } } : p);
       const it = await base.item(repo, number);
+      const status = { phase: it.state === "merged" ? "Merged" : it.state === "closed" ? "Closed" : "Triage", waiting: null, next: null, since: it.updatedAt } as const;
       return wait({
         repo, number, kind: it.kind, state: it.state, title: it.title, author: it.author, costUsd: 0, stamp: "mock", header: mockHeader(it.kind, it.labels),
-        status: { phase: it.state === "merged" ? "Merged" : it.state === "closed" ? "Closed" : "Triage", waiting: null, next: null, since: it.updatedAt },
+        status, bar: barFromStatus(status),
         reviews: { latest: null, earlier: [] }, results: [], history: [],
         github: { description: it.body, url: `https://github.com/storytold/${repo}/${it.kind === "pr" ? "pull" : "issues"}/${number}`, events: [{ id: "g1", type: "opened", at: it.createdAt, actor: it.author, body: it.body, autocraft: null }], checks: [], commits: [], files: [], syncedAt: new Date(Date.now() - 120_000).toISOString() },
       });

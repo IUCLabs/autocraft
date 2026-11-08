@@ -2419,6 +2419,34 @@ export interface ItemPageHeader {
   size: "S" | "M" | "L" | "XL" | null;
 }
 
+export type ItemBarTone = "running" | "queued" | "waiting" | "failed" | "done" | "idle";
+export interface ItemBarHeadline {
+  tone: ItemBarTone;
+  /** What is happening, without the model and the elapsed time of a running job. */
+  text: string;
+  /** What happens next, in words; null when nothing is known. */
+  next: string | null;
+  /** Running: the model of the job's call in flight. */
+  model: string | null;
+  /** Running: when the job started; the page counts the elapsed time from it. */
+  startedAt: string | null;
+  /** The job behind the headline (running, queued or failed), when there is one. */
+  jobId: number | null;
+}
+export interface ItemBarStep {
+  /** Registry stage id. */
+  stage: string;
+  title: string;
+  state: "done" | "current" | "failed" | "next";
+  /** The current stage has a job running (animated); otherwise it is waiting. */
+  running: boolean;
+  /** When a done or failed stage ended. */
+  at: string | null;
+  costUsd: number | null;
+  jobId: number | null;
+}
+export interface ItemBar { headline: ItemBarHeadline; steps: ItemBarStep[] }
+
 export interface ItemPageData {
   repo: RepoName;
   number: number;
@@ -2430,6 +2458,8 @@ export interface ItemPageData {
   stamp: string;
   header: ItemPageHeader;
   status: ItemStatus;
+  /** The live status bar: what is happening to the item now and its path through the pipeline. */
+  bar: ItemBar;
   costUsd: number;
   reviews: ReviewHistory;
   results: ResultCard[];

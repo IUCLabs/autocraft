@@ -1,8 +1,9 @@
 import { useApi } from "../../api/client";
 import type { ConversationCard } from "../../api/types";
+import { markStarting } from "./starting";
 import { OpusCard } from "../../ui/organisms/OpusCard";
 
-export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt-2" }: { a: ConversationCard; operator: boolean; editInstructions?: boolean; className?: string }) {
+export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt-2", item }: { a: ConversationCard; operator: boolean; editInstructions?: boolean; className?: string; item?: { repo: string; number: number } }) {
   const api = useApi();
   return (
     <OpusCard
@@ -12,7 +13,8 @@ export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt
       className={className}
       onRun={async (edit) => {
         if (edit) await api.conversations.editCard(a.id, edit);
-        await api.conversations.doCard(a.id);
+        const ran = await api.conversations.doCard(a.id);
+        if (item && ran.state !== "failed") markStarting(item.repo, item.number, a.title);
       }}
       onDismiss={() => api.conversations.dismissCard(a.id)}
     />

@@ -1,5 +1,5 @@
 // Mock content for the redesign: the curated items, their status lines, reviews, results, history and GitHub sides, and findings.
-import type { FixRound, GithubEvent, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ResultCard } from "../types";
+import type { FixRound, GithubEvent, ItemBar, ItemBarStep, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ResultCard } from "../types";
 import { NOW } from "./fixtures";
 
 export const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -20,6 +20,8 @@ type Seed = { repo: string; number: number; kind: "pr" | "issue"; state: "open" 
 const seeds: Seed[] = [
   { repo: "designcraft", number: 1484, kind: "pr", state: "open", title: "Add Hungarian spellchecking and nonstandard hyphenation", author: "rhea-m", updated: 20, status: status("Waiting for a person", 5 * H, "a Merge? answer", "merge or fix-up on the answer") },
   { repo: "photocraft", number: 9981, kind: "pr", state: "open", title: "Fix crop handles on rotated layers", author: "dana-k", updated: 38, status: status("In queue", 46, "CI on a1b2c3d", "merge in batch #41") },
+  { repo: "wordcraft", number: 2231, kind: "pr", state: "open", title: "Keep the hyperlink run when exporting the last paragraph", author: "linnea-w", updated: 3, status: status("Fixing", 6, "fix-up round 2", "review of the new head, then merge") },
+  { repo: "vectorcraft", number: 1388, kind: "pr", state: "open", title: "Snap guides ignore locked layers", author: "kiri-n", updated: 12, status: status("Fixing", 26, "a fix-up", "review of the new head, then merge") },
   { repo: "wordcraft", number: 2214, kind: "issue", state: "open", title: "Export to PDF drops the hyperlink on the last paragraph", author: "linnea-w", updated: 9, status: status("Fixing", 70, "fix-up round 2 on wordcraft#2231", "review of the new head, then merge") },
   { repo: "photocraft", number: 9970, kind: "pr", state: "merged", title: "Curves: keep the endpoint handles inside the plot", author: "hollowbrook", updated: 98, status: status("Merged", 98, null, null) },
   { repo: "pdfcraft", number: 2210, kind: "pr", state: "open", title: "Add CMYK output profile selection", author: "pixel-wrangler", updated: 1 * D, status: status("Waiting for a person", 1 * D, "a Scope? answer", "review on the answer") },
@@ -34,6 +36,45 @@ const seeds: Seed[] = [
   { repo: "designcraft", number: 2007, kind: "pr", state: "open", title: "Text frames: overset indicator stays after the frame grows", author: "larkspur-dev", updated: 4 * H, status: status("Waiting for a person", 55, "a Duplicates answer", "close the others on the answer") },
   { repo: "pdfcraft", number: 2188, kind: "pr", state: "open", title: "Bookmark panel: add a collapse-all button", author: "rhea-m", updated: 6 * H, status: status("Out of scope", 6 * H, null, null) },
 ];
+
+const step = (stage: string, title: string, state: ItemBarStep["state"], minAgo: number | null, costUsd: number | null, jobId: number | null, running = false): ItemBarStep =>
+  ({ stage, title, state, running, at: minAgo === null ? null : at(minAgo), costUsd, jobId });
+const PR_NEXT = [step("verify", "Verify", "next", null, null, null), step("merge", "Merge", "next", null, null, null), step("postmerge", "Post-merge review", "next", null, null, null)];
+
+/** The status bar of the curated items: a running fix-up, a queued review, a failed fix-up, an issue and a merged PR. */
+const BARS: Record<string, ItemBar> = {
+  "wordcraft#2231": {
+    headline: { tone: "running", text: "Fix-up running", next: "review of the new head, then merge", model: "Opus", startedAt: at(1.2), jobId: 4412 },
+    steps: [step("classify", "Classify", "done", 5 * H, 0.01, 4301), step("review", "Review", "done", 3 * H, 0.92, 4377), step("fixup", "Fix-up", "current", null, 1.4, 4412, true), ...PR_NEXT],
+  },
+  "lightcraft#540": {
+    headline: { tone: "queued", text: "Queued for Opus review · #2 in line", next: "classify, then decide", model: null, startedAt: null, jobId: 4415 },
+    steps: [step("classify", "Classify", "done", 40, 0.01, 4398), step("review", "Review", "current", null, null, 4415), ...PR_NEXT],
+  },
+  "vectorcraft#1388": {
+    headline: { tone: "failed", text: "Fix-up failed: the patch does not compile: fs::metadata returns a Result that is not handled", next: "review of the new head, then merge", model: null, startedAt: null, jobId: 4404 },
+    steps: [step("classify", "Classify", "done", 4 * H, 0.01, 4290), step("review", "Review", "done", 2 * H, 0.88, 4366), step("fixup", "Fix-up", "failed", 26, 1.84, 4404), ...PR_NEXT],
+  },
+  "designcraft#1484": {
+    headline: { tone: "waiting", text: "Waiting for a Merge? answer", next: "merge or fix-up on the answer", model: null, startedAt: null, jobId: null },
+    steps: [step("classify", "Classify", "done", 2 * D, 0.01, 4001), step("review", "Review", "done", 5 * H, 1.35, 4350), step("fixup", "Fix-up", "failed", 3 * H, 0.4, 4380), step("decide", "Decide", "current", null, 0.2, null), ...PR_NEXT],
+  },
+  "filmcraft#1830": {
+    headline: { tone: "running", text: "Classify running", next: "priority and decision", model: "Jev", startedAt: at(0.15), jobId: 4418 },
+    steps: [step("dupes", "Duplicates", "done", 49, 0, 4416), step("classify", "Classify", "current", null, null, 4418, true)],
+  },
+  "photocraft#9970": {
+    headline: { tone: "done", text: "Merged", next: null, model: null, startedAt: null, jobId: null },
+    steps: [step("classify", "Classify", "done", 2 * D, 0.01, 4100), step("review", "Review", "done", 2 * D - 30, 0.9, 4120), step("verify", "Verify", "done", 3 * H, 0.3, 4360), step("merge", "Merge", "done", 98, null, null), step("postmerge", "Post-merge review", "done", 95, 0.4, 4372)],
+  },
+};
+
+const TONE_OF: Partial<Record<ItemPhase, ItemBar["headline"]["tone"]>> = { "Waiting for a person": "waiting", Merged: "done", Closed: "done" };
+/** Items without a curated bar: the headline restates the status line and no steps are known. */
+export const barFromStatus = (s: ItemStatus): ItemBar => ({
+  headline: { tone: TONE_OF[s.phase] ?? "idle", text: s.waiting ? (s.phase === "Waiting for a person" ? `Waiting for ${s.waiting}` : `${s.phase} · waiting for ${s.waiting}`) : s.phase, next: s.next, model: null, startedAt: null, jobId: null },
+  steps: [],
+});
 
 export const findingStatus = (state: string, attempts: number, note: string | null): ItemStatus => {
   if (state === "new" && attempts > 0) return status("Waiting for a person", 40, `a decision: ${note ?? "see the rounds"}`, "Fix again with a note, Backlog or Dismiss");
@@ -234,7 +275,7 @@ const RESULTS_9981: ResultCard[] = [
   { id: "c3", kind: "classifiers", title: "Classifiers", outcome: "Bug fix, 3 of 3 agree", tone: "neutral", at: at(5 * H), detail: null, earlier: [] },
 ];
 
-const FULL: Record<string, Omit<ItemPageData, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header"> & { header?: Partial<ItemPageHeader> }> = {
+const FULL: Record<string, Omit<ItemPageData, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header" | "bar"> & { header?: Partial<ItemPageHeader> }> = {
   "designcraft#1484": { header: HEADER_1484, reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
   "photocraft#9981": { reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981 },
   "wordcraft#2214": {
@@ -260,7 +301,7 @@ export function itemPageFor(repo: string, number: number): ItemPageData | null {
   const s = seeds.find((x) => x.repo === repo && x.number === number);
   if (!s) return null;
   const full = FULL[`${repo}#${number}`];
-  const base = { repo, number, kind: s.kind, state: s.state, title: s.title, author: s.author, status: s.status, stamp: "mock", header: { ...mockHeader(s.kind), ...full?.header } };
+  const base = { repo, number, kind: s.kind, state: s.state, title: s.title, author: s.author, status: s.status, bar: BARS[`${repo}#${number}`] ?? barFromStatus(s.status), stamp: "mock", header: { ...mockHeader(s.kind), ...full?.header } };
   if (full) return { ...base, ...full, header: base.header, costUsd: total(full.history) };
   const history = [hist("h1", s.updated + 20, "Classify", "classified", "Jev", 0), hist("h2", s.updated, s.status.phase, s.status.waiting ?? "done", null, null, "event")];
   return {
