@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SCRATCH } from "./scratch.ts";
 import { connect } from "../src/db.ts";
-import { commentOn, PACE_PER_MINUTE, WritePacedError, type Writer } from "../src/github/write.ts";
+import { closeItem, commentOn, PACE_PER_MINUTE, WritePacedError, type Writer } from "../src/github/write.ts";
 import type { Grant } from "../src/core/guard.ts";
 import type { Querier } from "../src/mirror.ts";
 
@@ -20,8 +20,9 @@ function setup(as: string, repoIdentity = "app", failing = false) {
   const q = { query: async () => { if (failing) throw new Error("You have exceeded a secondary rate limit"); return { addComment: { commentEdge: { node: { url: "u" } } } }; } } as unknown as Querier;
   const g = { scope: "item", repo: "app1", number: 1, as } as unknown as Grant;
   const post = () => commentOn(w, g, q, "act-comment", { repo: "app1", number: 1, id: "x" }, { kind: "none" } as never, "hi");
-  const rows = () => (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'act-comment'").get() as { n: number }).n;
-  return { w, post, rows, sleeps, advance: (ms: number) => { t += ms; } };
+  const closeIt = () => closeItem(w, g as never, q, { repo: "app1", number: 1, id: "x", pr: false });
+  const rows = () => (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action IN ('act-comment', 'act-close')").get() as { n: number }).n;
+  return { w, post, closeIt, rows, sleeps, advance: (ms: number) => { t += ms; } };
 }
 
 test("a write over the minute budget waits for the window and is recorded once", async () => {
@@ -43,7 +44,7 @@ test("a write that would wait past the bound is refused and records nothing", as
 
 test("operator identities are not paced", async () => {
   const s = setup("user:alice");
-  for (let i = 0; i < PACE_PER_MINUTE + 5; i++) await s.post();
+  for (let i = 0; i < PACE_PER_MINUTE + 5; i++) await s.closeIt();
   assert.equal(s.sleeps.length, 0);
   assert.equal(s.rows(), PACE_PER_MINUTE + 5);
 });

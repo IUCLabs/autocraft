@@ -1,6 +1,6 @@
 // Who may settle a decision (answer, undo their own answer, Backlog, press a conversation card). An operator always may.
 // A maintainer may when `settings.maintainer_writes` is on, every repo the decision covers has the app's identity (the
-// GitHub writes then run as that person through the user lane, never as the box account) and the person has write
+// merges and closes then run as that person through the user lane, never as the box account) and the person has write
 // permission on every one of those repos.
 import type { DatabaseSync } from "node:sqlite";
 import { githubIdentity } from "./github/identity.ts";
@@ -93,7 +93,7 @@ export const settlesLoginSql = (login: string, repo: string): string => `(${logi
 /**
  * SQL condition on a decisions row (`a` is its table name or alias): a disputed answer never counts. Otherwise its answer counts because its answerer is an operator, or a
  * maintainer while `maintainer_writes` is on and every repo the decision covers (its own and its batch items') has the app's
- * identity, so the write is made as that person. Checked wherever the pipeline reads answers.
+ * identity, so its merge or close is made as that person. Checked wherever the pipeline reads answers.
  */
 export const settledBySql = (a: string): string => `(${a}.exec_state IS NOT 'disputed' AND (${a}.answered_by IN (SELECT login FROM main.access WHERE role = 'operator')
   OR (${a}.answered_by IN ${SETTLER_LOGINS_SQL}

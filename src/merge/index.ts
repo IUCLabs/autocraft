@@ -327,7 +327,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (!mergeApprovalOf(db, repo)) { log(`  merging in ${repo} is no longer approved; stopping`); break; }
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held since the queue was read; skipped`); continue; }
     if (backlogHeld(db, repo, e.number) || duplicateHeld(db, repo, e.number)) { log(`  ${refOf(e)}: held since the queue was read; skipped`); continue; }
-    // An operator's Merge answer in a repo on the app's identity is carried out as that operator, with their token.
+    // An operator's Merge answer in a repo on the app's identity is made as that operator, with their token.
     let lane: Lane | null = null;
     if (e.path === "operator" && e.decisionId) {
       const lr = await laneForDecision(db, d.lane, e.decisionId, [repo]);
