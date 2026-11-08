@@ -164,20 +164,13 @@ export function noteLive(db: DatabaseSync, repo: string, number: number, pr: PrN
   }
 }
 
-export type Who = { login: string; nodeId: string; email: string };
+import { pipelineAccount, type Who } from "../github/pipeline-account.ts";
+export type { Who };
 
 /** The Plan action's source of a candidate. */
 const sourceOf = (c: FixCandidate): string => (c.carry ? "carry" : c.source ?? "review");
 
-export async function whoAmI(run: Exec): Promise<Who> {
-  // The pipeline's account is the box account in both modes (an app has no user and cannot be assigned); under `app` its
-  // writes are still made as the app.
-  const r = await run("gh", ["api", "user"], { inherit: true });
-  if (r.code !== 0) throw new Error("could not read the pipeline's GitHub account");
-  const u = JSON.parse(r.stdout) as { login?: string; id?: number; node_id?: string };
-  if (!u.login || !u.id || !u.node_id) throw new Error("could not read the pipeline's GitHub account");
-  return { login: u.login, nodeId: u.node_id, email: `${u.id}+${u.login}@users.noreply.github.com` };
-}
+export const whoAmI = (run: Exec): Promise<Who> => pipelineAccount(run);
 
 class Recorder {
   private db: DatabaseSync;

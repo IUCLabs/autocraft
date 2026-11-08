@@ -22,6 +22,7 @@ import { claimForWork } from "../github/claim.ts";
 import { ghClosePr, ghOpenPr, mergeViaCommand, pushOwnBranch, type Writer } from "../github/write.ts";
 import { type Exec, exec, fixupDir } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
+import { setPipelineLogin } from "../github/pipeline-account.ts";
 import { commitIdentity } from "../github/identity.ts";
 import { branchOf, forkOf } from "../fixissue/index.ts";
 import type { Querier } from "../mirror.ts";
@@ -126,7 +127,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const base = await git.fetchMain(ownerOf(repo), repo, branch);
     const who = await whoAmI(d.exec);
     const author = await commitIdentity(db, repo, async () => who);
-    db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(PIPELINE_LOGIN_KEY, who.login);
+    setPipelineLogin(db, who.login);
     const chain: { cand: Cand; commit: string }[] = [];
     let cur = base;
     for (const c of cands) {

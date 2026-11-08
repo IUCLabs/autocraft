@@ -34,7 +34,7 @@ import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
 import { claimForWork } from "../github/claim.ts";
-import { viewerOf } from "../merge/index.ts";
+import { pipelineMe } from "../github/pipeline-account.ts";
 import { ghAskComment, ghComment, ghRerunFailed, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { ghExec, type Gh } from "../merge/safe-merge.ts";
@@ -553,7 +553,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     if (duplicateHeld(db, repo, c.number)) { log(`  ${repo}#${c.number}: not assigned: held`); return; }
     const by = params.by ?? CLI_BY;
     const g = [guardRepo(db, repo, "push", by), guardRepo(db, repo, "comment", by)].find((x) => !("refused" in x));
-    if (g && !("refused" in g)) await claimForWork({ db, login: ACTOR }, g, d.querier, repo, c.number, "pr", () => viewerOf(d.querier), { run: runId }, log);
+    if (g && !("refused" in g)) await claimForWork({ db, login: ACTOR }, g, d.querier, repo, c.number, "pr", () => pipelineMe(log, d.exec), { run: runId }, log);
   };
   const fixCode = async (c: CifixCandidate, pr: PrNode, failure: CiFailure, previous?: LintPrevious, ses: SessionAsk = {}): Promise<void> => {
     const ref = refOf(c);
