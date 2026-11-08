@@ -15,7 +15,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Preapproval } from "../../web/src/api/types.ts";
 import type { Step } from "../conversations/cards.ts";
 import { conversationOf, insertTurn, systemBlock } from "../conversations/store.ts";
-import { cifixBucket, decidePr } from "../core/decide.ts";
+import { cifixBucket, decidePr, fixupOf } from "../core/decide.ts";
 import { loadPrFact } from "../core/facts.ts";
 import { HEAD_FACT, MERGE_OPTIONS, PREMERGE_MAX_TRIES, mergeDecisionId } from "../core/rules.ts";
 import { audit } from "../dash/audit.ts";
@@ -256,7 +256,7 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
   return { done: true };
 }
 
-type ReviewRead = { kind: "none" | "stale" | "take" | "bad"; why: string };
+type ReviewRead = { kind: "none" | "stale" | "take" | "takefix" | "bad"; why: string };
 
 /** The Opus review at `head`: a sure take that is not stale is the only one a pre-approved merge goes on with. */
 function reviewAt(db: DatabaseSync, p: Row, head: string): ReviewRead {
@@ -264,11 +264,14 @@ function reviewAt(db: DatabaseSync, p: Row, head: string): ReviewRead {
   if (!r) return { kind: "none", why: "" };
   if (staleReviews(db, p.repo).has(`${p.repo}#${p.number}@${head}`)) return { kind: "stale", why: "" };
   if (r.verdict === "take" && r.sure === 1) return { kind: "take", why: "" };
+  // A sure take-fix is the pipeline's own fix-up to make; the pre-approval goes on with its push.
+  if (r.verdict === "take-fix" && r.sure === 1) return { kind: "takefix", why: r.reason ? oneLine(r.reason, 160) : "" };
   return { kind: "bad", why: `the review says ${r.verdict}${r.sure === 1 ? "" : " (unsure)"}${r.reason ? `: ${oneLine(r.reason, 160)}` : ""}` };
 }
 
 /** "CI fix" or "conflict merge" when the pipeline itself pushed `cur` on top of the row's head, else null. */
 function ownPush(db: DatabaseSync, p: Row, cur: string): string | null {
+  if (db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND COALESCE(source, 'review') = 'review' AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "fix-up for the review's fixes";
   if (db.prepare("SELECT 1 FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND to_head = ? AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "CI fix";
   if (db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND state IN ('pushing', 'merged')").get(p.repo, p.number, p.head, cur)) return "conflict merge";
   return null;
@@ -362,6 +365,13 @@ function advance(db: DatabaseSync, p: Row): void {
       return;
     }
     if (r.kind === "take") return void move(db, p, "ci", { line: "The review of the fix-up says take; waiting for CI." });
+    if (r.kind === "takefix") {
+      // The planner's fix-up of the review's fixes runs next. Its push is our own (ownPush), so the row stays and the new head is reviewed; when no fix-up can run, a person decides.
+      const f = cur === head ? loadPrFact(db, p.repo, p.number) : null;
+      const fx = f ? fixupOf(f) : null;
+      if (fx && ((fx.bucket === "fix" && !fx.done) || fx.bucket === "hold")) return;
+      return stop("asked", `the review of the fix-up says take-fix and its fix-up cannot run${fx ? ` (${fx.bucket})` : ""}`, head, [`review of the fix-up: take-fix${r.why ? `: ${r.why}` : ""}`, "Recommended: Fix up first, then merge"]);
+    }
     return stop("asked", r.why, head, [`review of the fix-up: ${r.why}`]);
   }
 
@@ -371,6 +381,7 @@ function advance(db: DatabaseSync, p: Row): void {
     // A re-review since the move to ci counts: the hand-over needs a sure take at this head now.
     const r = reviewAt(db, p, head);
     if (r.kind === "none" || r.kind === "stale") return void move(db, p, "review", { line: "The review of the pushed head is out of date; Opus reviews it again." });
+    if (r.kind === "takefix") return void move(db, p, "review", { line: "The review of the pushed head now asks for fixes; the pipeline's fix-up comes first." });
     if (r.kind === "bad") return stop("asked", r.why, head, [`review of the fix-up: ${r.why}`]);
     const c = db.prepare("SELECT overall, mergeable FROM pr_checks WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head) as { overall: string; mergeable: string | null } | undefined;
     if (!c || c.overall === "pending") return;

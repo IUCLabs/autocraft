@@ -3,7 +3,7 @@ import type { NeedsStoppedRow } from "../../api/types";
 import { Badge } from "../atoms/Badge";
 import { TimeAgo } from "../atoms/TimeAgo";
 
-const KIND: Record<NeedsStoppedRow["kind"], string> = { breaker: "Tripped", limit: "Paused", account: "No headroom", act: "Close failed" };
+const KIND: Record<NeedsStoppedRow["kind"], string> = { breaker: "Tripped", limit: "Paused", account: "No headroom", act: "Close failed", "fix-group": "Fix stopped" };
 
 /** A stage or account that stopped; `action` is the control that resumes it. */
 export function StoppedRow({ row, action }: { row: NeedsStoppedRow; action?: ReactNode }) {

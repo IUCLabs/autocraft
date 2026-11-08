@@ -97,6 +97,31 @@ export function withdrawOtherHeadQuestions(db: DatabaseSync, repo: string, numbe
   }
 }
 
+/** Why a scope answer by a maintainer is set aside once it no longer counts. */
+const LAPSED_NOTE = "the maintainer's answer no longer counts";
+
+/**
+ * Sets aside the answered scope decision `id` whose maintainer answer no longer counts (src/settlers.ts): the row is renamed
+ * (`<id>~lapsed-<at>`) with its answer, note and answerer kept and marked applied, so the id is free for a fresh question.
+ * Returns false when there is no answered row.
+ */
+export function setAsideLapsedScope(db: DatabaseSync, id: string, at: string): boolean {
+  const row = db.prepare("SELECT repo, number, answer FROM decisions WHERE id = ? AND kind = 'scope' AND answer IS NOT NULL").get(id) as { repo: string; number: number; answer: string } | undefined;
+  if (!row) return false;
+  const old = `${id}~lapsed-${at}`;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    renameDecision(db, id, old);
+    db.prepare("UPDATE main.decisions SET applied_at = COALESCE(applied_at, ?), answer_note = COALESCE(answer_note || ' — ', '') || ? WHERE id = ?").run(at, LAPSED_NOTE, old);
+    audit(db, "pipeline", "scope-answer-lapsed", old, { repo: row.repo, number: row.number, answer: row.answer });
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return true;
+}
+
 /** Why a question is set aside for a newer one. */
 const NEWER_NOTE = "superseded by a newer question about the item";
 

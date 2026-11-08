@@ -1,7 +1,7 @@
 // "Needs you": feedback people left that nobody has answered, and what the pipeline stopped. Decisions have their own API.
 // Dashboard users' text is shown here and never read by a prompt.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
-import type { NeedsFeedbackPage, NeedsFeedbackRow, NeedsPage, NeedsStoppedRow } from "../../../web/src/api/types.ts";
+import type { NeedsFeedbackPage, NeedsFeedbackRow, NeedsFixPage, NeedsPage, NeedsStoppedRow } from "../../../web/src/api/types.ts";
 import { listAccounts } from "../../agents/accounts.ts";
 import { SNOOZED_SQL, getDecision, reposOf, type DecisionRow } from "../../decisions.ts";
 import { heldOpenSql } from "../../answers/hold.ts";
@@ -11,6 +11,7 @@ import { reviewBots } from "../../review/bots.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./shown.ts";
+import { fixStoppedWait } from "../../core/decide-item.ts";
 import { blankIfHidden, hiddenRepos } from "./visible.ts";
 import { allOwnLogins } from "../../github/identity.ts";
 
@@ -119,7 +120,43 @@ export async function stopped(db: DatabaseSync, hidden: string[]): Promise<Needs
     if (hidden.includes(a.repo)) continue;
     out.push({ id: `act:${a.decision_id}:${a.number}`, kind: "act", title: `${a.repo}#${a.number}`, reason: blankIfHidden(a.reason ?? "Act stopped after repeated failures", hidden), since: a.created_at, resume: { type: "retry", decision: a.decision_id } });
   }
+  // Issues whose fix attempt was skipped or failed wait on a person: one group row per repo, listed by `fixes`.
+  const groups = db.prepare(`SELECT p.repo, COUNT(*) AS n, MAX(COALESCE(a.updated_at, p.planned_at)) AS since
+    FROM main.item_plans p LEFT JOIN fix_attempts a ON a.repo = p.repo AND a.number = p.number
+    WHERE p.kind = 'issue' AND p.wait IN (?, ?) GROUP BY p.repo ORDER BY n DESC, p.repo`).all(fixStoppedWait("skipped"), fixStoppedWait("failed")) as { repo: string; n: number; since: string | null }[];
+  for (const g of groups) {
+    if (hidden.includes(g.repo)) continue;
+    out.push({ id: `fixes:${g.repo}`, kind: "fix-group", title: g.repo, reason: `${g.n} issue${g.n === 1 ? "" : "s"} with a stopped fix`, since: g.since, count: g.n, resume: { type: "fixes", repo: g.repo } });
+  }
   return out;
+}
+
+export const FIXES_PAGE = 25;
+
+const STOP_WORDS: Record<string, string> = { skipped: "was skipped", failed: "failed" };
+
+/** One page of a repo's issues with a stopped fix: higher priority first (unprioritized last), then the newest stop, then the number. The cursor is the last row's `score|since|number`. */
+export async function fixes(db: DatabaseSync, req: Req): Promise<NeedsFixPage> {
+  const repo = req.params.repo ?? req.query.get("repo") ?? "";
+  if ((await hiddenRepos(db, req)).includes(repo)) return { rows: [], nextCursor: null };
+  const c = req.query.get("cursor");
+  const m = c === null ? null : /^(-?\d{1,9})\|([^|]{1,40})\|(\d{1,9})$/.exec(c);
+  if (c !== null && !m) throw new HttpError(400, "bad cursor");
+  const after = m ? { score: Number(m[1]), since: m[2]!, number: Number(m[3]) } : { score: 2_000_000_000, since: "", number: 0 };
+  const rows = db.prepare(`SELECT * FROM (
+      SELECT p.number, i.title, a.state, a.reason, a.summary, COALESCE(a.updated_at, p.planned_at) AS since, pr.impact, COALESCE(pr.score, -1) AS score
+      FROM main.item_plans p JOIN items i ON i.repo = p.repo AND i.number = p.number
+      LEFT JOIN fix_attempts a ON a.repo = p.repo AND a.number = p.number LEFT JOIN item_priority pr ON pr.repo = p.repo AND pr.number = p.number
+      WHERE p.repo = ? AND p.kind = 'issue' AND p.wait IN (?, ?))
+    WHERE ? = 2000000000 OR score < ? OR (score = ? AND (since < ? OR (since = ? AND number < ?)))
+    ORDER BY score DESC, since DESC, number DESC LIMIT ?`).all(repo, fixStoppedWait("skipped"), fixStoppedWait("failed"), after.score, after.score, after.score, after.since, after.since, after.number, FIXES_PAGE + 1) as
+    { number: number; title: string | null; state: string | null; reason: string | null; summary: string | null; since: string; impact: string | null; score: number }[];
+  const page = rows.slice(0, FIXES_PAGE);
+  const last = page[page.length - 1];
+  return {
+    rows: page.map((r) => ({ id: `fix:${repo}#${r.number}`, repo, number: r.number, title: r.title ?? "", reason: `The fix attempt ${STOP_WORDS[r.state ?? ""] ?? "stopped"}${r.reason ?? r.summary ? `: ${r.reason ?? r.summary}` : ""}`, since: r.since, impact: r.impact })),
+    nextCursor: rows.length > FIXES_PAGE && last ? `${last.score}|${last.since}|${last.number}` : null,
+  };
 }
 
 export async function needs(db: DatabaseSync, req: Req): Promise<NeedsPage> {

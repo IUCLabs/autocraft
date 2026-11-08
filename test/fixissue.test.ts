@@ -330,7 +330,7 @@ describe("claim comment of an attempt that ends without a PR", () => {
 test("the fix PR we just opened counts as the issue's open PR until a sync mirrors it", () => {
   const db = fresh();
   db.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, pr_url, created_at, updated_at) VALUES ('app', 5, 'm', 'h', 'pr-opened', 'https://github.com/o/app/pull/6', ?, ?)").run(T0, T0);
-  assert.equal(loadItemFact(db, "app", 5)?.fix.openPr, true);
+  assert.deepEqual(loadItemFact(db, "app", 5)?.fix.openPr, { number: 6, closes: true });
   db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at) VALUES ('app', 6, 'pr', 'CLOSED', 'Fix', '', 'bot', ?, ?)").run(T0, T0);
-  assert.equal(loadItemFact(db, "app", 5)?.fix.openPr, false);
+  assert.equal(loadItemFact(db, "app", 5)?.fix.openPr, null);
 });

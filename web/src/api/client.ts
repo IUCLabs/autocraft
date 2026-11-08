@@ -41,6 +41,7 @@ import type {
   AnswerInput,
   AuditFilter,
   AuditPage,
+  NeedsFixPage,
   NeedsPage,
   Contributor,
   ContributorFilter,
@@ -189,6 +190,8 @@ export interface Api {
   activity(q?: ActivityQuery): Promise<ActivityPage | ItemTraceUnchanged>;
   /** Operator only: review the current head again, plan Verify again, or try the issue fix again. Writes nothing to GitHub. */
   release(repo: RepoName, number: number, action: ReleaseAction): Promise<void>;
+  /** Operator only: puts an issue with a stopped fix in the Backlog or closes it (through a scope decision answered at once). */
+  stopFix(repo: RepoName, number: number, answer: "backlog" | "close"): Promise<void>;
   /** Top bar: jumps by number, logins, words in titles and bodies. */
   search(q: string): Promise<SearchHit[]>;
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */
@@ -304,6 +307,8 @@ export interface Api {
   next(): Promise<NextPage>;
   /** What waits on a person: counts for the tabs, feedback nobody answered yet (newest first, paged by cursor) and stopped stages. */
   needs(filter: { feedback?: boolean; cursor?: string }): Promise<NeedsPage>;
+  /** A repo's issues with a stopped fix, 25 per page. */
+  needsFixes(repo: RepoName, cursor?: string): Promise<NeedsFixPage>;
   /** Integration batches of the merge queue, newest first, with their member PRs. */
   queueBatches(filter: BatchFilter): Promise<BatchList>;
   /** One integration batch with its members, CI and history. */
