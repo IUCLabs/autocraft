@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { runAct } from "../src/act/index.ts";
-import { setRepoIdentity } from "../src/github/identity.ts";
+import { setGithubIdentity } from "../src/github/identity.ts";
 import { plannedItems } from "../src/core/select-items.ts";
 import { authFailure, retryWaiting, type LaneDeps } from "../src/github/user-lane.ts";
 import { OPERATOR, world, type World } from "./world-db.ts";
@@ -31,7 +31,7 @@ test("legacy repos close as before; an app repo without the operator's token wai
 
   // app: no token for the answering operator
   const w = fresh().pr(1).review(1, { verdict: "close", reason: "Does not match the reference app" });
-  setRepoIdentity(w.db, "op", "app", "app");
+  setGithubIdentity(w.db, "op", "app");
   const id = await askedAndAnswered(w);
   const userQuerier = { query: async (_q: string, _v?: object): Promise<Record<string, unknown>> => ({}), spent: 0, remaining: null as number | null };
   let token: string | null = null;
@@ -61,7 +61,7 @@ test("legacy repos close as before; an app repo without the operator's token wai
 
 test("a waiting decision is no act work: the run counts nothing and the planner plans no act for it", async () => {
   const w = fresh().pr(1).review(1, { verdict: "close", reason: "Does not match the reference app" });
-  setRepoIdentity(w.db, "op", "app", "app");
+  setGithubIdentity(w.db, "op", "app");
   const id = await askedAndAnswered(w);
   const lane: LaneDeps = { vault: { userToken: async () => ({ ok: false, needsSignIn: true, why: "no-token" }) } };
   const deps = { ...w.gh.actDeps(), lane };

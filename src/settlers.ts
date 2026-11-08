@@ -3,7 +3,7 @@
 // GitHub writes then run as that person through the user lane, never as the box account) and the person has write
 // permission on every one of those repos.
 import type { DatabaseSync } from "node:sqlite";
-import { repoIdentity } from "./github/identity.ts";
+import { githubIdentity } from "./github/identity.ts";
 import { PERM_READ_TTL } from "./dash/server/sessions.ts";
 
 export const MAINTAINER_WRITES_KEY = "maintainer_writes";
@@ -42,7 +42,7 @@ const roles = (db: DatabaseSync, m: SettleMemo): void => {
 export function allAppIdentity(db: DatabaseSync, repos: string[], m: SettleMemo = settleMemo()): boolean {
   return repos.length > 0 && repos.every((r) => {
     let v = m.app.get(r);
-    if (v === undefined) m.app.set(r, (v = repoIdentity(db, r) === "app"));
+    if (v === undefined) m.app.set(r, (v = githubIdentity(db) === "app"));
     return v;
   });
 }
@@ -86,7 +86,7 @@ export function settlesNow(db: DatabaseSync, login: string | null, repos: string
 /** SQL: `login` (an expression) is an operator, or a maintainer who settles on the repo expression (setting on, app identity, fresh cached write). */
 export const settlesLoginSql = (login: string, repo: string): string => `(${login} IN (SELECT login FROM main.access WHERE role = 'operator')
   OR (${login} IN ${SETTLER_LOGINS_SQL}
-    AND EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${repo} AND s.value = 'app')
+    AND EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'github_identity' AND s.value = 'app')
     AND EXISTS (SELECT 1 FROM main.repo_permissions rp WHERE rp.login = ${login} AND rp.repo = ${repo} AND rp.permission IN ${WRITE}
       AND rp.checked_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${PERM_READ_TTL / 1000} seconds'))))`;
 
@@ -98,9 +98,9 @@ export const settlesLoginSql = (login: string, repo: string): string => `(${logi
 export const settledBySql = (a: string): string => `(${a}.exec_state IS NOT 'disputed' AND (${a}.answered_by IN (SELECT login FROM main.access WHERE role = 'operator')
   OR (${a}.answered_by IN ${SETTLER_LOGINS_SQL}
     AND (${a}.repo IS NOT NULL OR json_array_length(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) > 0)
-    AND NOT EXISTS (SELECT 1 WHERE ${a}.repo IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${a}.repo AND s.value = 'app'))
+    AND NOT EXISTS (SELECT 1 WHERE ${a}.repo IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'github_identity' AND s.value = 'app'))
     AND NOT EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(${a}.items) THEN ${a}.items ELSE '[]' END) j
-      WHERE json_extract(j.value, '$.repo') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || json_extract(j.value, '$.repo') AND s.value = 'app')))))`;
+      WHERE json_extract(j.value, '$.repo') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'github_identity' AND s.value = 'app')))))`;
 
 /** The same check for one loaded decision row. */
 export function settledBy(db: DatabaseSync, d: { answered_by: string | null; repo: string | null; items: string | null; exec_state?: string | null }, m: SettleMemo = settleMemo()): boolean {
@@ -122,7 +122,7 @@ export function canSettleSql(login: string, role: string, a = "decisions"): stri
   if (role === "operator") return "1";
   if (role !== "maintainer") return "0";
   const me = `'${login.replace(/'/g, "''")}'`;
-  const ok = (repo: string): string => `(EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'repo_identity:' || ${repo} AND s.value = 'app')
+  const ok = (repo: string): string => `(EXISTS (SELECT 1 FROM main.settings s WHERE s.key = 'github_identity' AND s.value = 'app')
     AND EXISTS (SELECT 1 FROM main.repo_permissions rp WHERE rp.login = ${me} AND rp.repo = ${repo} AND rp.permission IN ${WRITE}
       AND rp.checked_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${PERM_READ_TTL / 1000} seconds')))`;
   return `(EXISTS (SELECT 1 FROM main.settings WHERE key = '${MAINTAINER_WRITES_KEY}' AND value = '1')

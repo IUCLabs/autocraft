@@ -34,7 +34,7 @@ import { Client, type Querier } from "../mirror.ts";
 import { viewerOf } from "../merge/index.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { claimForWork, issueInfo } from "../github/claim.ts";
-import { commitIdentity, ownLogins, repoIdentity } from "../github/identity.ts";
+import { commitIdentity, ownLogins, githubIdentity } from "../github/identity.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -620,7 +620,7 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
 /** The pipeline account's fork of the repo as owner/name, created when missing; the base repo itself for a repo on the app identity. */
 export async function forkOf(w: Writer, g: GuardedRepo, run: Exec, login: string, repo: string, details: Record<string, unknown> = {}): Promise<string> {
   // The GitHub App has no account to own a fork: its autocraft/* branches live in the base repository.
-  if (g.as === "app" && repoIdentity(w.db, repo) === "app") return slugOf(repo);
+  if (g.as === "app" && githubIdentity(w.db) === "app") return slugOf(repo);
   const find = async (): Promise<string | null> => {
     const r = await run("gh", ["api", `repos/${slugOf(repo)}/forks?per_page=100`, "--jq", `.[] | select(.owner.login == "${login}") | .full_name`]);
     return r.code === 0 ? r.stdout.trim().split("\n")[0] || null : null;
@@ -704,7 +704,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
     // On an app repo the branch lives in the base repository, so its head owner is the org.
-    const headOwners = [who.login, ...(repoIdentity(db, r.repo) === "app" ? [ownerOf(r.repo)] : [])];
+    const headOwners = [who.login, ...(githubIdentity(db) === "app" ? [ownerOf(r.repo)] : [])];
     const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(r.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login as $o | ${JSON.stringify(headOwners)} | index($o)) | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (existing && urlOk(existing, r.repo)) {

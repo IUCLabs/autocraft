@@ -11,6 +11,7 @@ import { AppError, APP_NAME, appManifest, appName, convertManifest, installUrl, 
 import type { Res, Route } from "../types.ts";
 import { envVar } from "../../env.ts";
 import { checkSecretsWritable, removeAppSecrets, writeAppSecrets, type Config } from "./config.ts";
+import { githubIdentity, IdentityRefused, setGithubIdentityChecked } from "../../github/identity.ts";
 import { randomToken } from "./crypto.ts";
 import { esc, plainPage } from "./util.ts";
 import { createLink, openLinks, revokeLink } from "./github-setup.ts";
@@ -21,8 +22,23 @@ const ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
 export const publicBase = (config: Config, req: IncomingMessage): string => config.baseUrl ?? `http://${req.headers.host ?? "localhost"}`;
 
-export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
+export function githubAppRoutes(config: Config, deps: AppDeps, mint?: (owner: string, repo: string) => Promise<string>): Route[] {
   return [{
+    // The instance-wide GitHub identity. Switching ends every dashboard session; the answer says where to sign in again.
+    method: "POST", pattern: "/api/admin/github-app/identity", operator: true,
+    handler: async (db, r): Promise<Res> => {
+      const identity = (r.json as { identity?: unknown } | undefined)?.identity;
+      if (identity !== "box" && identity !== "app") return { status: 400, json: { error: "The GitHub identity must be box or app." } };
+      try {
+        const changed = await setGithubIdentityChecked(db, r.user.login, identity, { registered: () => !!config.secrets.app, mint });
+        if (!changed) return { status: 409, json: { error: `The GitHub identity is already ${identity === "app" ? "the GitHub App" : "the box account"}.` } };
+      } catch (e) {
+        if (e instanceof IdentityRefused) return { status: e.transient ? 503 : 409, json: { error: e.message, repos: e.repos } };
+        throw e;
+      }
+      return { json: { identity, signIn: "/auth/signin" } };
+    },
+  }, {
     method: "GET", pattern: "/api/admin/github-app", operator: true,
     handler: async (db, r): Promise<Res> => ({
       json: {
@@ -38,7 +54,7 @@ export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
     handler: (db, r): Res => {
       const app = config.secrets.app;
       if (!app) return { status: 409, json: { error: "No app is registered." } };
-      if (config.loginApp === "github-app") return { status: 409, json: { error: "Sign-in uses the GitHub App. Switch AUTOCRAFT_LOGIN_APP back to oauth and restart first." } };
+      if (githubIdentity(db) === "app") return { status: 409, json: { error: "GitHub writes and sign-in use the GitHub App. Switch the GitHub identity back to the box account first." } };
       if (!config.secretsFile) return { status: 409, json: { error: "AUTOCRAFT_SECRETS_FILE is not set." } };
       try {
         removeAppSecrets(config.secretsFile);
@@ -48,6 +64,8 @@ export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
       }
       config.secrets.app = null;
       db.prepare("DELETE FROM github_app_states").run();
+      // The stored user tokens belong to the removed app.
+      db.prepare("DELETE FROM user_tokens").run();
       audit(db, r.user.login, "github-app-remove", app.slug, { slug: app.slug, owner: app.owner?.login ?? null });
       return { json: { settingsUrl: settingsUrl(app.slug, app.owner) } };
     },
@@ -71,7 +89,7 @@ export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
 export async function githubAppStatus(db: DatabaseSync, config: Config, deps: AppDeps): Promise<Omit<GithubAppStatus, "csrf" | "authorized">> {
   const app = config.secrets.app;
   const status: Omit<GithubAppStatus, "csrf" | "authorized"> = {
-    configured: !!app, loginMode: config.loginApp, canRegister: !!config.secretsFile,
+    configured: !!app, identity: githubIdentity(db), canRegister: !!config.secretsFile,
     defaultName: envVar("GITHUB_APP_NAME") ?? DEFAULT_APP_NAME, app: null, installations: [], links: openLinks(db), error: null,
   };
   if (!app) return status;
@@ -85,12 +103,6 @@ export async function githubAppStatus(db: DatabaseSync, config: Config, deps: Ap
     status.error = e instanceof AppError ? e.message : "GitHub could not be read";
   }
   return status;
-}
-
-/** Records the login mode the server started with when it differs from the last one recorded. */
-export function auditLoginMode(db: DatabaseSync, config: Config): void {
-  const last = db.prepare("SELECT target FROM audit WHERE action = 'github-app-login-mode' ORDER BY rowid DESC LIMIT 1").get() as { target: string } | undefined;
-  if ((last?.target ?? "oauth") !== config.loginApp) audit(db, "system", "github-app-login-mode", config.loginApp, { from: last?.target ?? "oauth" });
 }
 
 const refuse = (nonce: string, status: number, text: string, to: { back: string; backLabel: string } = { back: "/admin/github-app", backLabel: "GitHub App" }): Res =>

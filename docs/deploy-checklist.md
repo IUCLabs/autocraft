@@ -44,7 +44,6 @@ The image sets every path (`/data/...`, `/config/...`). A deployment sets only t
 |---|---|---|---|
 | `AUTOCRAFT_BASE_URL` | dashboard: yes | none | Public origin, `https://autocraft.example.com`, no path. Used for sign-in callbacks and links. |
 | `AUTOCRAFT_TRUST_PROXY` | behind a proxy | off | `1` reads the client address from the last `X-Forwarded-For` entry, for rate limits. Set it only when the proxy sets that header. |
-| `AUTOCRAFT_LOGIN_APP` | no | `oauth` | `github-app` signs users in through the GitHub App; refused at start unless the app's keys are in `secrets.json`. See "Moving to a new domain". |
 | `GH_TOKEN` | yes, on dashboard, runner and periodic | none | GitHub token for `gh` (the dashboard's image proxy and repository adds, sync, pipeline calls): a classic token with `repo`, `read:org` and `workflow` scopes. Keep it in a Secret. |
 | `AUTOCRAFT_STOP_TIMEOUT` | no | `25` | Seconds the runner may take to stop. Keep the pod's `terminationGracePeriodSeconds` above it (30). |
 | `AUTOCRAFT_HEALTH_LISTEN` | no | off | `host:port` of a runner listener that serves only `/healthz` and `/readyz`. |
@@ -125,11 +124,11 @@ Sign-in and the GitHub App are tied to the public origin. Do these in order. `AU
    - Webhook URL: `https://new.example.com/webhooks/github` (see "Webhooks" in `docs/operations.md` for the events and the secret). A webhook that is off or fails leaves the minute poll in charge.
 
    While both domains are live, the app can list the old and new callback URLs together. `/auth/github-app/callback` is used only while registering a new app from the dashboard (it is the manifest's redirect and GitHub does not store it).
-3. Update the OAuth app (Settings, Developer settings, OAuth Apps): Authorization callback URL `https://new.example.com/auth/callback`. An OAuth app accepts one URL, so the old origin stops working at that moment. This step is needed only while sign-in still uses the OAuth app.
+3. Update the OAuth app (Settings, Developer settings, OAuth Apps): Authorization callback URL `https://new.example.com/auth/callback`. An OAuth app accepts one URL, so the old origin stops working at that moment. This step is needed only while the GitHub identity is the box account.
 4. Make the team instance sign in through the GitHub App, so that it does not depend on one person's OAuth app. The order matters:
-   1. Register the GitHub App from the dashboard's GitHub App page (operators only) while sign-in still uses the OAuth app, or reuse the existing app and make sure its keys are in `secrets.json`.
+   1. Register the GitHub App from the dashboard's GitHub App page (operators only) while the GitHub identity is the box account, or reuse the existing app and make sure its keys are in `secrets.json`.
    2. Install the app on the organization, grant the repositories, and test it: the GitHub App page shows the installation and its repositories.
-   3. Only then set `AUTOCRAFT_LOGIN_APP=github-app` and restart. The server refuses to start if the `github_app_*` keys are missing, which is the guard against doing this too early. To go back, set `oauth` again (the app cannot be removed while it is the login app).
+   3. Only then set the GitHub identity to "GitHub App" on the GitHub App page (operators only; `autocraft identity app` does the same). It is refused unless the app is registered and its installation covers every tracked repo, and the refusal lists the repos that are not covered. Switching ends every dashboard session, so everyone signs in again through the GitHub App. To go back, choose "Box account" (the app cannot be removed while the identity is the GitHub App).
    4. Keep the OAuth app until everyone has signed in once through the GitHub App.
 5. Session cookies (`__Host-craft_session`) belong to the exact host, so a new domain gives every user a new sign-in. Sessions live in the database and expire on their own: 14 days of inactivity, at most 30 days after sign-in, and 7 days at most for operators.
 6. Agent (MCP) tokens are bearer tokens stored as hashes in the database and are not tied to a host. They keep working on the new origin as long as the database carries over (they do not depend on `session_key`). Each user changes the URL in their agent's configuration (`claude mcp add --transport http ... https://new.example.com/mcp --header "Authorization: Bearer <token>"`); the token itself stays. Tokens last 90 days (7 days for an answering token).

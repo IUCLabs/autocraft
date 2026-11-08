@@ -2,8 +2,8 @@
 //  - a decision answered by an operator gives `user:<login>` (the person who pressed the button acts under their own
 //    name, with their own token from the vault);
 //  - everything else (rules, reviews, fix-ups, pushes, automatic labels, CI) gives `app`.
-// The per-repo setting `repo_identity` decides whether that is used at all: under `legacy` (the default) the box
-// account makes every write as before, and `as` only appears in the audit row as a record of what it would be.
+// The instance-wide setting `github_identity` decides whether that is used at all: under `box` (the default) the box
+// account makes every write, and `as` only appears in the audit row as a record of what it would be.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Grant, Guarded } from "../core/guard.ts";
@@ -13,25 +13,26 @@ import { AppError, call, GITHUB_API } from "./app.ts";
 import { AppNotInstalledError, installationToken, readAppSecrets, RepoNotInInstallationError } from "./install-token.ts";
 
 export type Identity = "app" | `user:${string}`;
-export type RepoIdentity = "legacy" | "app";
-export const REPO_IDENTITIES: readonly RepoIdentity[] = ["legacy", "app"];
+export type GithubIdentity = "box" | "app";
+export const GITHUB_IDENTITIES: readonly GithubIdentity[] = ["box", "app"];
 
-const key = (repo: string): string => `repo_identity:${repo}`;
+const KEY = "github_identity";
 
-export function repoIdentity(db: DatabaseSync, repo: string): RepoIdentity {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  return row?.value === "app" ? "app" : "legacy";
+/** The one instance-wide switch: whose account GitHub writes and dashboard sign-in use. Read at every use, never cached. */
+export function githubIdentity(db: DatabaseSync): GithubIdentity {
+  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(KEY) as { value: string } | undefined;
+  return row?.value === "app" ? "app" : "box";
 }
 
-/** Returns false when nothing changed. */
-export function setRepoIdentity(db: DatabaseSync, by: string, repo: string, value: unknown): boolean {
-  if (value !== "legacy" && value !== "app") throw new Error("the repo identity must be legacy or app");
-  if (!db.prepare("SELECT 1 FROM main.tracked_repos WHERE name = ?").get(repo)) throw new Error(`${repo} is not tracked`);
-  const was = repoIdentity(db, repo);
+/** Returns false when nothing changed. A change ends every dashboard session, so everyone signs in again under the new mode. */
+export function setGithubIdentity(db: DatabaseSync, by: string, value: unknown): boolean {
+  if (value !== "box" && value !== "app") throw new Error("the GitHub identity must be box or app");
+  const was = githubIdentity(db);
   if (was === value) return false;
-  if (value === "legacy") db.prepare("DELETE FROM main.settings WHERE key = ?").run(key(repo));
-  else db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key(repo), value);
-  audit(db, by, "repo-identity", repo, { identity: value, was });
+  if (value === "box") db.prepare("DELETE FROM main.settings WHERE key = ?").run(KEY);
+  else db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(KEY, value);
+  audit(db, by, "github-identity", value, { identity: value, was });
+  db.prepare("DELETE FROM sessions").run();
   return true;
 }
 
@@ -45,32 +46,74 @@ export function identityOfDecision(db: DatabaseSync, decisionId: string | undefi
 /** The identity a grant was made for. */
 export const identityFor = (g: Guarded | Grant): Identity => g.as;
 
-/** What an audit row records: `legacy` while the repo is on the box account, else the grant's identity. */
+/** What an audit row records: `legacy` while writes use the box account, else the grant's identity. */
 export function auditIdentity(db: DatabaseSync, g: Guarded | Grant): "legacy" | Identity {
-  return repoIdentity(db, g.repo) === "legacy" ? "legacy" : identityFor(g);
+  return githubIdentity(db) === "box" ? "legacy" : identityFor(g);
 }
 
-/** Why a repo cannot use the app identity (no app registered, not installed, repo outside the installation), or null when it can. */
-export async function appIdentityBlocker(repo: string, mint: (owner: string, repo: string) => Promise<string> = installationToken): Promise<string | null> {
-  const owner = ownerOf(repo);
+/** Whether the app can act on `owner/repo`: covered, not covered (with the reason), or not confirmable now (GitHub 5xx, rate limit, network). */
+export type Coverage = { kind: "covered" } | { kind: "uncovered"; why: string } | { kind: "unconfirmed"; why: string };
+
+export async function appCoverage(owner: string, repo: string, mint: (owner: string, repo: string) => Promise<string> = installationToken): Promise<Coverage> {
   try {
     await mint(owner, repo);
-    return null;
+    return { kind: "covered" };
   } catch (e) {
-    if (e instanceof AppNotInstalledError) return `The GitHub App is not installed on ${owner}.`;
-    if (e instanceof RepoNotInInstallationError) return `${owner}/${repo} is not in the GitHub App's installation.`;
-    if (e instanceof AppError && e.message === "no GitHub App is registered") return "No GitHub App is registered.";
-    return `GitHub could not confirm the installation: ${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 160)}`;
+    if (e instanceof AppNotInstalledError) return { kind: "uncovered", why: `The GitHub App is not installed on ${owner}.` };
+    if (e instanceof RepoNotInInstallationError) return { kind: "uncovered", why: `${owner}/${repo} is not in the GitHub App's installation.` };
+    if (e instanceof AppError && e.message === "no GitHub App is registered") return { kind: "uncovered", why: "No GitHub App is registered." };
+    const transient = !(e instanceof AppError) || e.status === 0 || e.status >= 500 || e.rateLimited;
+    const why = `GitHub could not confirm the installation: ${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 160)}`;
+    return transient ? { kind: "unconfirmed", why } : { kind: "uncovered", why };
   }
 }
 
-/** Sets a repo's identity after checking that the app can act there (checked for `app` only). Returns false when nothing changed. */
-export async function setRepoIdentityChecked(db: DatabaseSync, by: string, repo: string, value: unknown, mint?: (owner: string, repo: string) => Promise<string>): Promise<boolean> {
-  if (value === "app") {
-    const why = await appIdentityBlocker(repo, mint);
-    if (why) throw new Error(why);
+/** Tracked repos by coverage; `unconfirmed` are those GitHub could not answer for. */
+export async function trackedCoverage(db: DatabaseSync, mint?: (owner: string, repo: string) => Promise<string>): Promise<{ uncovered: string[]; unconfirmed: string[] }> {
+  const names = (db.prepare("SELECT name FROM main.tracked_repos ORDER BY name").all() as Array<{ name: string }>).map((r) => r.name);
+  const uncovered: string[] = [], unconfirmed: string[] = [];
+  for (const n of names) {
+    const c = await appCoverage(ownerOf(n), n, mint);
+    if (c.kind === "uncovered") uncovered.push(n);
+    else if (c.kind === "unconfirmed") unconfirmed.push(n);
   }
-  return setRepoIdentity(db, by, repo, value);
+  return { uncovered, unconfirmed };
+}
+
+let coverageMemo: { at: number; running: boolean; uncovered: string[]; unconfirmed: string[] } | null = null;
+/** What the health check shows: the last coverage reading of the tracked repos, refreshed in the background at most every 2 minutes (the minter caches installations). */
+export function coverageSnapshot(db: DatabaseSync): { uncovered: string[]; unconfirmed: string[] } {
+  if (!coverageMemo || (!coverageMemo.running && Date.now() - coverageMemo.at > 120_000)) {
+    const prev = coverageMemo;
+    coverageMemo = { at: Date.now(), running: true, uncovered: prev?.uncovered ?? [], unconfirmed: prev?.unconfirmed ?? [] };
+    void trackedCoverage(db).then((r) => { coverageMemo = { at: Date.now(), running: false, ...r }; }, () => { coverageMemo = { at: Date.now(), running: false, uncovered: [], unconfirmed: prev?.unconfirmed ?? [] }; });
+  }
+  return { uncovered: coverageMemo.uncovered, unconfirmed: coverageMemo.unconfirmed };
+}
+
+/**
+ * Thrown when the instance cannot switch to the app. `repos` are the tracked repos the app does not cover (empty when no app is
+ * registered); `transient` means GitHub could not confirm coverage (try again), and then `repos` lists the unconfirmed ones.
+ */
+export class IdentityRefused extends Error {
+  repos: string[];
+  transient: boolean;
+  constructor(message: string, repos: string[], transient = false) { super(message); this.repos = repos; this.transient = transient; }
+}
+
+/** Sets the identity. Switching to `app` needs a registered app and an installation covering every tracked repo. Returns false when nothing changed. */
+export async function setGithubIdentityChecked(
+  db: DatabaseSync, by: string, value: unknown, deps: { registered: () => boolean; mint?: (owner: string, repo: string) => Promise<string> },
+): Promise<boolean> {
+  if (value === "app" && githubIdentity(db) !== "app") {
+    if (!deps.registered()) throw new IdentityRefused("No GitHub App is registered.", []);
+    const { uncovered, unconfirmed } = await trackedCoverage(db, deps.mint);
+    if (uncovered.length) throw new IdentityRefused(`The GitHub App does not cover ${uncovered.length === 1 ? "this repo" : "these repos"}: ${uncovered.join(", ")}.`, uncovered);
+    if (unconfirmed.length) throw new IdentityRefused(`GitHub could not confirm the installation for ${unconfirmed.join(", ")}. Try again.`, unconfirmed, true);
+    // The app may have been removed while GitHub was asked: check again, with no await before the write.
+    if (!deps.registered()) throw new IdentityRefused("No GitHub App is registered.", []);
+  }
+  return setGithubIdentity(db, by, value);
 }
 
 /** Who a commit is made as, and the login its comments carry. */
@@ -102,7 +145,7 @@ export async function commitIdentity(
   db: DatabaseSync, repo: string, box: () => Promise<{ login: string; email: string }>,
   deps: { slug?: () => string | null; botId?: (slug: string) => Promise<number> } = {},
 ): Promise<CommitIdentity> {
-  if (repoIdentity(db, repo) === "app") {
+  if (githubIdentity(db) === "app") {
     const slug = (deps.slug ?? (() => readAppSecrets()?.slug ?? null))();
     if (slug) {
       const id = await (deps.botId ?? ((s: string) => botUserId(s, () => installationToken(ownerOf(repo), repo))))(slug);
@@ -134,7 +177,7 @@ export function appSlug(): string | null {
 
 /**
  * Logins whose items and comments are ours: the box account (when recorded) and the bot of every app slug ever seen (a bare slug in the
- * mirror, `<slug>[bot]` in REST), on every repo whatever its `repo_identity`, so items from before a switch stay ours.
+ * mirror, `<slug>[bot]` in REST), on every repo whatever the identity setting, so items from before a switch stay ours.
  * `slug` is an extra slug injectable for tests; the registered app's is recorded and included by default.
  */
 export function ownLogins(db: DatabaseSync, _repo: string, slug: string | null = null): Set<string> {

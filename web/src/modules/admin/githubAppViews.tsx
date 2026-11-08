@@ -11,11 +11,17 @@ import { TextLink } from "../../ui/atoms/TextLink";
 import { day } from "../../lib/format";
 import { Block } from "../../ui/molecules/Block";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
+import { Segmented } from "../../ui/molecules/Segmented";
+import { useUser } from "../../shell/UserContext";
 import { Facts } from "../../ui/molecules/Facts";
 import { Page } from "../../ui/organisms/Page";
 import { authorizeHref } from "../decisions/ExecLine";
 
-const LOGIN_MODE = { oauth: "OAuth App", "github-app": "GitHub App" } as const;
+const IDENTITY_LABEL = { box: "Box account", app: "GitHub App" } as const;
+const IDENTITY_LINE = {
+  box: "GitHub writes use the server's own GitHub account; dashboard sign-in uses the OAuth App.",
+  app: "GitHub writes are made by the GitHub App, and answers by the person who gave them; dashboard sign-in uses the GitHub App.",
+} as const;
 
 export function GithubAppView(_: ViewProps) {
   const { data, error, refetch } = useQuery("github-app", (api) => api.githubApp.status());
@@ -24,12 +30,47 @@ export function GithubAppView(_: ViewProps) {
       <ErrorLine error={error?.message} className="mt-3" />
       {data && (
         <>
+          <IdentityBlock s={data} onChange={refetch} />
           <AppBlock s={data} onChange={refetch} />
           <SetupLinks links={data.links} onChange={refetch} />
           {data.app && <Installations s={data} />}
         </>
       )}
     </Page>
+  );
+}
+
+/** The one instance-wide switch. Switching ends every session, so the page goes to sign-in afterwards. */
+function IdentityBlock({ s, onChange }: { s: GithubAppStatus; onChange: () => void }) {
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const [error, setError] = useState<string | null>(null);
+  const [pick, setPick] = useState<"box" | "app" | null>(null);
+  const choose = async (identity: "box" | "app") => {
+    setError(null);
+    try {
+      const done = await api.githubApp.setIdentity(identity);
+      if (done.signIn) window.location.assign(done.signIn);
+      else onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  return (
+    <Block className="mt-4" title="GitHub identity">
+      <div className="px-4 py-3">
+        {operator ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <Segmented label="GitHub identity" value={pick ?? s.identity} options={(["box", "app"] as const).map((v) => ({ value: v, label: IDENTITY_LABEL[v] }))} onChange={(v) => setPick(v === s.identity ? null : v)} />
+            {pick && pick !== s.identity && <ConfirmButton label={`Switch to ${IDENTITY_LABEL[pick]}`} confirmLabel="Switch and end every session" idle="secondary" onConfirm={() => void choose(pick)} />}
+          </div>
+        ) : (
+          <Badge tone={s.identity === "app" ? "ok" : undefined}>{IDENTITY_LABEL[s.identity]}</Badge>
+        )}
+        <p className="mt-2 text-sm text-ink/70">{IDENTITY_LINE[s.identity]}</p>
+        <ErrorLine error={error} className="mt-2" />
+      </div>
+    </Block>
   );
 }
 
@@ -60,7 +101,6 @@ function AppBlock({ s, onChange }: { s: GithubAppStatus; onChange: () => void })
                 ["Name", s.app.name],
                 ["Slug", <code key="slug">{s.app.slug}</code>],
                 ["App id", <code key="id">{s.app.id}</code>],
-                ["Sign-in", LOGIN_MODE[s.loginMode]],
                 ["Acts as you", s.authorized ? "Authorized" : "Not authorized"],
               ]}
             />
@@ -94,7 +134,6 @@ function RegisterForm({ s }: { s: GithubAppStatus }) {
   const [org, setOrg] = useState("");
   return (
     <>
-      <Facts rows={[["Sign-in", LOGIN_MODE[s.loginMode]]]} className="mb-3" />
       <form method="post" action="/auth/github-app/start" className="flex flex-wrap items-center gap-2">
         <input type="hidden" name="csrf" value={s.csrf} />
         <Input name="name" value={name} onChange={(e) => setName(e.target.value)} maxLength={34} aria-label="App name" className="w-full sm:w-52" />

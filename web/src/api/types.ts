@@ -869,8 +869,6 @@ export interface TrackedRepo {
   seenChecks: string[];
   /** Whether the pipeline stages run on this repo; off means sync only. False for repos that are not tracked. */
   pipeline: boolean;
-  /** Who makes the pipeline's GitHub writes here: the box account (legacy) or the GitHub App (app). */
-  identity: "legacy" | "app";
 }
 
 export interface AccessEntry {
@@ -947,8 +945,8 @@ export type AccessToken = McpToken & { login: string };
 export interface GithubAppStatus {
   /** The app's keys are in the secrets file. */
   configured: boolean;
-  /** Which application signs dashboard users in. */
-  loginMode: "oauth" | "github-app";
+  /** The instance-wide GitHub identity: the box account, or the GitHub App (writes and dashboard sign-in). */
+  identity: "box" | "app";
   /** False when the server has no secrets file to keep the keys in. */
   canRegister: boolean;
   defaultName: string;

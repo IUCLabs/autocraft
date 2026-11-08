@@ -9,7 +9,7 @@ import { Block } from "../../ui/molecules/Block";
 import { Switch } from "../../ui/atoms/Switch";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Page } from "../../ui/organisms/Page";
-import { IdentitySwitch, OptionalChecks, PipelineSwitch, Toggle, WRITES, approvalPatch, useRepoWrite, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { OptionalChecks, PipelineSwitch, Toggle, WRITES, approvalPatch, useRepoWrite, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
 import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
@@ -120,12 +120,6 @@ export function RepoDetailView({ params }: ViewProps) {
           <span className="inline-flex items-center gap-3">
             <span className="text-ink/60">Pipeline</span>
             <PipelineSwitch r={r} write={write} />
-          </span>
-        )}
-        {r?.tracked && (
-          <span className="inline-flex flex-wrap items-center gap-3">
-            <span className="text-ink/60">Writes as</span>
-            <IdentitySwitch r={r} write={write} />
           </span>
         )}
       </div>

@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
--- The GitHub App's user token of each login, written at every sign-in while AUTOCRAFT_LOGIN_APP=github-app.
+-- The GitHub App's user token of each login, written at every sign-in while the GitHub identity is the app.
 -- Separate from sessions: later steps act for a login when it has no live session.
 CREATE TABLE IF NOT EXISTS user_tokens (
   login TEXT PRIMARY KEY COLLATE NOCASE,
@@ -290,6 +290,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
   verifier TEXT NOT NULL,             -- PKCE code verifier
   return_to TEXT,
+  identity TEXT,                      -- the GitHub identity (box | app) the sign-in started under
   created_at TEXT NOT NULL
 );
 

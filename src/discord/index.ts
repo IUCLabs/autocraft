@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { loadConfig, type Config } from "../dash/server/config.ts";
 import { TokenBox } from "../dash/server/crypto.ts";
+import { githubIdentity } from "../github/identity.ts";
 import { providerFor } from "../dash/server/provider.ts";
 import { userForLogin } from "../dash/server/sessions.ts";
 import { audit } from "../dash/audit.ts";
@@ -70,7 +71,7 @@ function installDecisionAlerts(db: DatabaseSync, keys: DiscordKeys, rest: RestCl
   let config: Config | null = null;
   try { config = loadConfig(process.env); } catch (e) { log(`runner: Discord alerts use cached permissions only: ${(e as Error).message}`); }
   const box = config ? new TokenBox(config.secrets.sessionKey) : null;
-  const provider = config ? providerFor(config) : null;
+  const provider = config ? providerFor(config, () => githubIdentity(db)) : null;
   const alerts = new DecisionAlerts({
     db, keys, rest, log, baseUrl: config?.baseUrl ?? envVar("BASE_URL") ?? null,
     // Without the dashboard configuration there is no token box: userForLogin then answers from cached permissions, as it does for agent tokens.

@@ -1,5 +1,5 @@
 // user_tokens: the GitHub App user token of each login, written at every
-// sign-in while AUTOCRAFT_LOGIN_APP=github-app. It holds the sealed JSON of
+// sign-in while the GitHub identity is the app. It holds the sealed JSON of
 // the whole token set, like sessions.token_enc, but is keyed by login so the
 // act stage can act for a login without a live session. The vault
 // (src/github/vault.ts) refreshes it.

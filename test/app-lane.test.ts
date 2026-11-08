@@ -6,7 +6,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
-import { setRepoIdentity } from "../src/github/identity.ts";
+import { setGithubIdentity } from "../src/github/identity.ts";
 import { AppNotInstalledError, TOKEN_ENV } from "../src/github/install-token.ts";
 import { ghComment, pushOwnBranch } from "../src/github/write.ts";
 import type { GuardedItem, GuardedRepo } from "../src/core/guard.ts";
@@ -37,7 +37,7 @@ test("app identity: the installation token is the whole child environment; legac
   assert.equal(seen.length, 1);
   assert.equal(seen.pop()!.env, undefined); // legacy: the call is as it always was (gh inherits the box environment)
 
-  setRepoIdentity(db, "op", "lane", "app");
+  setGithubIdentity(db, "op", "app");
   await comment("app");
   const o = seen.pop()!;
   assert.equal(o.replaceEnv, true);

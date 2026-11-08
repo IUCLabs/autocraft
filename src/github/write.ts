@@ -8,7 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { recordPush } from "../push-outcomes.ts";
 import type { Grant, Guarded, GuardedItem, GuardedRepo } from "../core/guard.ts";
-import { auditIdentity, repoIdentity } from "./identity.ts";
+import { auditIdentity, githubIdentity } from "./identity.ts";
 
 /** The PR steps that push to a contributor's branch or ask on the PR where it is closed to us (`lint`: the collect step of a stored patch). */
 export type AskKind = "fixup" | "conflict" | "cifix" | "lint";
@@ -49,14 +49,14 @@ function covers(g: Guarded | Grant, repo: string, number?: number): void {
 const idOf = (w: Writer, g: Guarded | Grant): string => auditIdentity(w.db, g);
 
 // ---- identity lanes -------------------------------------------------------------
-// A write made under a grant `as: "app"` on a repo whose repo_identity is `app` runs with an installation token: gh and
+// A write made under a grant `as: "app"` while the GitHub identity is `app` runs with an installation token: gh and
 // git children get a replaced environment (the box account's tokens are not in it) and GraphQL goes through a client
 // with that environment. Every other write is unchanged: the box account's own credentials.
 // Grants `as: user:<login>` belong to the user lane (the person's own token). They never get the app token: they
 // stay on the box account at the callers of `inAppLane` (laneExec, laneGit, laneQuery, mergeViaCommand), where the
 // user lane plugs in.
 
-const inAppLane = (w: Writer, g: Guarded | Grant): boolean => g.as === "app" && repoIdentity(w.db, g.repo) === "app";
+const inAppLane = (w: Writer, g: Guarded | Grant): boolean => g.as === "app" && githubIdentity(w.db) === "app";
 
 /** The child environment for a grant's repo, holding an installation token. Never falls back to the box account: a failure is a clear error. */
 async function appEnv(w: Writer, g: Guarded | Grant): Promise<Record<string, string>> {

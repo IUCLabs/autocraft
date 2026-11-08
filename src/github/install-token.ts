@@ -133,15 +133,13 @@ export function readAppSecrets(path = envVar("SECRETS_FILE")): AppSecrets | null
   return appSecretsOf(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>);
 }
 
-let shared: InstallTokenMinter | null = null;
-/** The process-wide minter; throws when no app is registered. */
+let shared: { appId: string; minter: InstallTokenMinter } | null = null;
+/** The process-wide minter; throws when no app is registered. Its caches belong to one app: another app (or none) starts them afresh. */
 export function installationToken(owner: string, repo?: string): Promise<string> {
-  shared ??= new InstallTokenMinter(() => {
-    const app = readAppSecrets();
-    if (!app) throw new AppError("no GitHub App is registered");
-    return app;
-  });
-  return shared.token(owner, repo);
+  const app = readAppSecrets();
+  if (!app) { shared = null; throw new AppError("no GitHub App is registered"); }
+  if (shared?.appId !== app.id) shared = { appId: app.id, minter: new InstallTokenMinter(() => readAppSecrets() ?? app) };
+  return shared.minter.token(owner, repo);
 }
 
 // ---- handing a token to a child process ---------------------------------------

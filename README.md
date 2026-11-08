@@ -91,7 +91,7 @@ Write the client ID, client secret and a random session key (at least 32 charact
 
 Point `AUTOCRAFT_SECRETS_FILE` at it. The server refuses to start if the file is missing, incomplete, or readable by group or others.
 
-To sign in through a GitHub App instead, register it from the dashboard's GitHub App page (operators only). The dashboard then adds the `github_app_*` keys (`github_app_id`, `github_app_slug`, `github_app_private_key`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret`, `github_app_owner`) to the same file itself, so the file's directory must be writable by the server user. Set `AUTOCRAFT_LOGIN_APP=github-app` afterwards; the server refuses to start in that mode without the keys. `AUTOCRAFT_GITHUB_APP_NAME` sets the name the registration form suggests.
+To sign in through a GitHub App instead, register it from the dashboard's GitHub App page (operators only). The dashboard then adds the `github_app_*` keys (`github_app_id`, `github_app_slug`, `github_app_private_key`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret`, `github_app_owner`) to the same file itself, so the file's directory must be writable by the server user. Then choose "GitHub App" as the GitHub identity on the same page; it is refused unless the app covers every tracked repo. `AUTOCRAFT_GITHUB_APP_NAME` sets the name the registration form suggests.
 
 | Variable | Meaning |
 |---|---|
@@ -99,7 +99,6 @@ To sign in through a GitHub App instead, register it from the dashboard's GitHub
 | `AUTOCRAFT_LISTEN` | `host:port`, default `127.0.0.1:8993` |
 | `AUTOCRAFT_DB` | Database path |
 | `AUTOCRAFT_SECRETS_FILE` | The secrets file above |
-| `AUTOCRAFT_LOGIN_APP` | `oauth` (default) or `github-app` |
 | `AUTOCRAFT_GITHUB_APP_NAME` | App name suggested on the registration form, default `AutoCraft` |
 | `AUTOCRAFT_WEB_DIST` | Built frontend, default `web/dist` |
 | `AUTOCRAFT_TRUST_PROXY` | `1` behind a proxy that sets `X-Forwarded-For` |

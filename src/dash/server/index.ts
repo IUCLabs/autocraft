@@ -21,9 +21,10 @@ import { discordPrivacyPage, DISCORD_PRIVACY_PATH } from "./discord-privacy.ts";
 import { discordTermsPage, DISCORD_TERMS_PATH } from "./discord-terms.ts";
 import { contactOf } from "../api/discord.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
-import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
+import { finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
 import { OrgSetup } from "./github-setup.ts";
 import { Vault } from "../../github/vault.ts";
+import { githubIdentity } from "../../github/identity.ts";
 import { saveUserTokens } from "./user-tokens.ts";
 import { FakeProvider, GitHubProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { retryWaiting } from "../../github/user-lane.ts";
@@ -151,17 +152,19 @@ function cookie(name: string, value: string, maxAgeSec: number): string {
 
 export function createApp(opts: AppOptions & { routes: Route[] }) {
   const { config, db } = opts;
-  const provider = opts.provider ?? providerFor(config);
+  const provider = opts.provider ?? providerFor(config, () => githubIdentity(db));
   // The org setup link signs in with the OAuth App even when dashboard sign-in uses the GitHub App.
   const setupProvider = opts.provider ?? (config.devAuth ? provider : oauthProviderFor(config));
   const box = new TokenBox(config.secrets.sessionKey);
   // The GitHub App's own provider: it signs users in under login=github-app, and always makes and refreshes their user tokens (the "act as you" authorization).
-  const appKeys = config.secrets.app;
-  const appProvider: Provider | null = opts.provider ?? (config.devAuth ? provider : appKeys ? new GitHubProvider(appKeys.clientId, appKeys.clientSecret) : null);
-  const vault = new Vault(db, box, appProvider ?? provider);
+  // Read at each use: registering or removing the app takes effect without a restart.
+  const appProviderNow = (): Provider | null => {
+    const appKeys = config.secrets.app;
+    return opts.provider ?? (config.devAuth ? provider : appKeys ? new GitHubProvider(appKeys.clientId, appKeys.clientSecret) : null);
+  };
+  const vault = new Vault(db, box, () => appProviderNow() ?? provider);
   const appDeps = { apiBase: opts.githubApi };
   const routes = compile([...opts.routes, ...githubAppRoutes(config, appDeps)]);
-  auditLoginMode(db, config);
   const signinLimit = new RateLimiter(60, 10 * 60_000);
   const writeLimitSession = new RateLimiter(60, 60_000);
   const writeLimitIp = new RateLimiter(300, 60_000);
@@ -280,7 +283,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (route.operator && session.role !== "operator") return out(apiError(403, "operators only"));
     const r: Req = {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
-      user: makeUser(db, box, provider, session, writes, config.loginApp === "github-app"),
+      user: makeUser(db, box, provider, session, writes, githubIdentity(db) === "app"),
       csrf: session.csrf, nonce,
     };
     const res2 = await route.handler(db, r);
@@ -303,10 +306,14 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     live.add(res, () => loadSession(db, cookieId) !== null);
   }
 
+  /** Under the app identity with no app keys, sign-in has nothing to go through: it is refused, never sent to the OAuth App. */
+  const signInBlocked = (): boolean => githubIdentity(db) === "app" && !opts.provider && !config.devAuth && !config.secrets.app;
+  const noAppPage = (nonce: string): Res => errorPage(nonce, 503, "Sign-in unavailable", "GitHub sign-in is set to the GitHub App, but no app keys are available. An operator must restore the app's keys or switch the GitHub identity back to the box account.");
+
   function startOAuth(returnTo: string, selectAccount: boolean, scopes?: string[], p: Provider = provider): { r: Res; cookies: string[] } {
     const state = randomToken(24), verifier = randomToken(48);
-    db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
-      .run(state, verifier, returnTo, new Date().toISOString());
+    db.prepare("INSERT INTO oauth_states (state, verifier, return_to, identity, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(state, verifier, returnTo, githubIdentity(db), new Date().toISOString());
     return {
       r: { redirect: p.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, selectAccount, scopes) },
       cookies: [cookie(STATE_COOKIE, state, 600)],
@@ -332,6 +339,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
       const returnTo = safeReturnTo(url.searchParams.get("return_to"));
       if (loadSession(db, cookies.get(SESSION_COOKIE))) return { r: { redirect: returnTo } };
+      if (signInBlocked()) return { r: noAppPage(nonce) };
       return startOAuth(returnTo, url.searchParams.get("select") === "1");
     }
     if (req.method === "GET" && path === "/auth/authorize-app") {
@@ -340,6 +348,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       const s = loadSession(db, cookies.get(SESSION_COOKIE));
       if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: `/auth/authorize-app?${new URLSearchParams({ return_to: returnTo })}` })}` } };
       if (s.role !== "operator") return { r: errorPage(nonce, 403, "Not authorised", "Only operators authorize AutoCraft to act as them.") };
+      const appProvider = appProviderNow();
       if (!appProvider) return { r: errorPage(nonce, 409, "No GitHub App", "No GitHub App is registered, so there is nothing to authorize.") };
       return startOAuth(`${AUTHORIZE_PREFIX}${returnTo}`, false, undefined, appProvider);
     }
@@ -351,15 +360,21 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       const state = url.searchParams.get("state") ?? "";
       const code = url.searchParams.get("code") ?? "";
-      const row = db.prepare("DELETE FROM oauth_states WHERE state = ? RETURNING verifier, return_to, created_at").get(state) as
-        { verifier: string; return_to: string | null; created_at: string } | undefined;
+      const row = db.prepare("DELETE FROM oauth_states WHERE state = ? RETURNING verifier, return_to, identity, created_at").get(state) as
+        { verifier: string; return_to: string | null; identity: string | null; created_at: string } | undefined;
       const cookieState = cookies.get(STATE_COOKIE) ?? "";
       if (!row || !code || !safeEqual(cookieState, state) || Date.now() - Date.parse(row.created_at) > 600_000) {
         return { r: errorPage(nonce, 400, "Sign-in expired", "Start again from the sign-in link."), cookies: clear };
       }
+      const plainSignIn = !row.return_to?.startsWith("setup:") && !row.return_to?.startsWith(AUTHORIZE_PREFIX);
+      // A sign-in finishes under the identity it started with; if that is no longer the current one, it starts again.
+      const startedAs: "box" | "app" = row.identity === "app" ? "app" : row.identity === "box" ? "box" : githubIdentity(db);
+      const changed = (): boolean => plainSignIn && startedAs !== githubIdentity(db);
+      if (plainSignIn && signInBlocked()) return { r: noAppPage(nonce), cookies: clear };
+      if (changed()) return { r: errorPage(nonce, 400, "Sign-in failed", "The GitHub identity changed during sign-in. Start again."), cookies: clear };
       let tokens: Tokens | null, who: GithubUser | null;
       try {
-        const p = row.return_to?.startsWith("setup:") ? setupProvider : row.return_to?.startsWith(AUTHORIZE_PREFIX) ? (appProvider ?? provider) : provider;
+        const p = row.return_to?.startsWith("setup:") ? setupProvider : row.return_to?.startsWith(AUTHORIZE_PREFIX) ? (appProviderNow() ?? provider) : opts.provider || config.devAuth ? provider : providerFor(config, () => startedAs);
         tokens = await p.exchange(code, row.verifier, callbackUrl);
         who = tokens ? await p.identity(tokens.access) : null;
       } catch (e) {
@@ -378,7 +393,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const s = loadSession(db, cookies.get(SESSION_COOKIE));
         if (!s || s.role !== "operator" || s.login.toLowerCase() !== who.login.toLowerCase() || checkGithubId(db, s.login, who.id) === "mismatch") {
           // The token belongs to an account that may not act here: end it before answering.
-          void (appProvider ?? provider).revoke(tokens.access).catch(() => {});
+          void (appProviderNow() ?? provider).revoke(tokens.access).catch(() => {});
           return { r: errorPage(nonce, 403, "Not authorised", "Sign in to the dashboard as the GitHub account you authorize, then try again."), cookies: clear };
         }
         saveUserTokens(db, box, s.login, who.id, tokens);
@@ -396,8 +411,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         auditRefusedSignIn(db, login, { ip, reason: "github-id-mismatch" });
         return { r: errorPage(nonce, 403, "Not authorised", `The GitHub account ${login} is not the account that was added to this dashboard's access list.`), cookies: clear };
       }
+      if (changed()) return { r: errorPage(nonce, 400, "Sign-in failed", "The GitHub identity changed during sign-in. Start again."), cookies: clear };
       const id = createSession(db, box, access.login, tokens, req.headers["user-agent"]);
-      if (config.loginApp === "github-app") { saveUserTokens(db, box, access.login, who.id, tokens); retryWaiting(db, access.login); }
+      if (startedAs === "app") { saveUserTokens(db, box, access.login, who.id, tokens); retryWaiting(db, access.login); }
       audit(db, access.login, "sign-in", access.login, { ip });
       return {
         r: { redirect: safeReturnTo(row.return_to) },
@@ -576,7 +592,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const href = allowedImage(raw)?.href;
     const owners = href ? imageIndex.reposOf(href) : [];
     if (owners.length) {
-      const visible = new Set(await visibleTo(db, makeUser(db, box, provider, session, false, config.loginApp === "github-app")));
+      const visible = new Set(await visibleTo(db, makeUser(db, box, provider, session, false, githubIdentity(db) === "app")));
       if (!owners.some((o) => visible.has(o))) {
         res.writeHead(404, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
         return void res.end("not an image of a tracked repo");

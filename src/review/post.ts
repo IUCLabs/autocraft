@@ -9,7 +9,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { type Note, editReview, postReview, type Writer } from "../github/write.ts";
 import { guard } from "../core/guard.ts";
-import { auditIdentity, repoIdentity } from "../github/identity.ts";
+import { auditIdentity, githubIdentity } from "../github/identity.ts";
 import { planned } from "../core/select.ts";
 import { isQueueState } from "../core/plan.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
@@ -46,7 +46,7 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
   const posted = db.prepare("SELECT review_id, posted_as FROM review_posts WHERE repo = ? AND number = ?");
   // A review is edited only by the lane that posted it: a NULL `posted_as` is a row from before it was recorded, written by the box account.
   const lane = (as: string | null | undefined): "legacy" | "app" => (as && as !== "legacy" ? "app" : "legacy");
-  const nowLane = repoIdentity(db, repo);
+  const nowLane = githubIdentity(db) === "app" ? "app" : "legacy";
   const out: PostCandidate[] = [];
   for (const { facts: f, plan, action } of planned(db, "post-review", { repo })) {
     const head = action.head!;

@@ -256,8 +256,6 @@ export interface Api {
     setOptionalCheck(name: RepoName, check: string, on: boolean): Promise<TrackedRepo>;
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
     setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo>;
-    /** Sets who makes the pipeline's GitHub writes here; `app` needs the GitHub App registered and installed on the repo. */
-    setIdentity(name: RepoName, identity: "legacy" | "app"): Promise<TrackedRepo>;
   };
   /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
   mcp: {
@@ -284,6 +282,8 @@ export interface Api {
     revokeLink(id: string): Promise<{ links: GithubSetupLink[] }>;
     /** Clears the app's keys; `settingsUrl` is where to delete the app on GitHub. */
     remove(): Promise<{ settingsUrl: string }>;
+    /** Sets the instance-wide GitHub identity. `app` is refused (with the uncovered repos in the message) unless the app is registered and covers every tracked repo. Every session ends; `signIn` is where to go next. */
+    setIdentity(identity: "box" | "app"): Promise<{ identity: "box" | "app"; signIn: string }>;
   };
   /** Optional Discord mention counting. Operators change it; everyone signed in may read it. */
   discord: {
