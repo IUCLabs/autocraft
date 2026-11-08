@@ -4,7 +4,6 @@
 import { cleanReason } from "../act/templates.ts";
 import { isInstructionPath } from "../sandbox/instruction-paths.ts";
 import { QUOTE_WORDS } from "../replylint.ts";
-import type { Git } from "./git.ts";
 import type { ShownFile } from "./excerpt.ts";
 
 export const MAX_CHANGED_LINES = 300;
@@ -118,7 +117,13 @@ export function buildScripts(files: string[], read: (path: string) => string | n
 }
 
 /** The build scripts at commit `sha` of a bare repository; null when it can't be read (callers then refuse every build.rs). */
-export async function buildScriptsAt(git: Pick<Git, "git" | "file">, sha: string): Promise<BuildScripts> {
+// A structural type, not Git itself: this file is part of the web build, which must not pull in the git module graph.
+type TreeReader = {
+  git(args: string[]): Promise<{ code: number | null; stdout: string }>;
+  file(sha: string, path: string): Promise<{ ok: true; content: string } | { ok: false }>;
+};
+
+export async function buildScriptsAt(git: TreeReader, sha: string): Promise<BuildScripts> {
   const ls = await git.git(["ls-tree", "-r", "--name-only", sha]);
   if (ls.code !== 0) return null;
   const files = ls.stdout.split("\n").filter(Boolean);
