@@ -909,6 +909,8 @@ export interface DiscordChannel {
   watched: boolean;
   /** Tracked repo whose new-issue page the bot's "File a new issue" button opens; null uses the top search result's repo. */
   defaultRepo: string | null;
+  /** Name of the category the channel sits in; null when it has none. The list arrives in Discord's sidebar order. */
+  category: string | null;
 }
 
 export interface DiscordSetup {

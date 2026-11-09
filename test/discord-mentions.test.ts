@@ -10,6 +10,7 @@ import { FakeProvider } from "../src/dash/server/provider.ts";
 import { DiscordKeys } from "../src/discord/keys.ts";
 import { parseRefs } from "../src/discord/refs.ts";
 import { handleMeta } from "../src/discord/index.ts";
+import { setup } from "../src/dash/api/discord.ts";
 import { countOf, forgetAuthor, handleDispatch, linksOf } from "../src/discord/store.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -130,5 +131,21 @@ describe("privacy page", () => {
     assert.match(await terms.text(), /terms of use[\s\S]*ask-us@example\.org/i);
     const other = await fetch(`${base}/items`, { headers: { accept: "text/html" }, redirect: "manual" });
     assert.match(await other.text(), /http-equiv="refresh" content="0;url=\/auth\/signin/);
+  });
+});
+
+describe("channel list order", () => {
+  const op = { user: { role: "operator" } } as never;
+  const names = () => setup(db, op).channels.filter((c) => c.guildId === "gs").map((c) => `${c.category ?? "-"}/${c.name}`);
+  test("lists channels like Discord's sidebar, and follows a channel moved to another category", () => {
+    const ch = (id: string, name: string, position: number, parent_id: string | null) => ({ id, name, type: 0, position, parent_id });
+    handleMeta(db, "GUILD_CREATE", { id: "gs", name: "Sidebar", channels: [
+      ch("s5", "late", 1, "k2"), { id: "k2", name: "Second", type: 4, position: 2 }, ch("s1", "b-free", 1, null), ch("s2", "a-free", 0, null),
+      { id: "k1", name: "First", type: 4, position: 1 }, ch("s3", "zed", 0, "k1"), ch("s4", "alpha", 1, "k1"), ch("s6", "early", 0, "k2"),
+    ] });
+    assert.deepEqual(names(), ["-/a-free", "-/b-free", "First/zed", "First/alpha", "Second/early", "Second/late"]);
+    handleMeta(db, "CHANNEL_UPDATE", { id: "s3", guild_id: "gs", name: "zed", type: 0, position: 0, parent_id: "k2" });
+    handleMeta(db, "CHANNEL_UPDATE", { id: "k1", guild_id: "gs", name: "First", type: 4, position: 3 });
+    assert.deepEqual(names(), ["-/a-free", "-/b-free", "Second/zed", "Second/early", "Second/late", "First/alpha"]);
   });
 });

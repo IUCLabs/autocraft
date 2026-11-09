@@ -108,10 +108,16 @@ export const countOf = (db: DatabaseSync, repo: string, number: number): number 
   (db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE repo = ? AND number = ?").get(repo, number) as { n: number }).n;
 
 /** What the bot reports about a guild and its channels, for the admin page. The watched flag is kept across updates. */
-export function upsertChannel(db: DatabaseSync, c: { channelId: string; guildId: string; guildName: string | null; name: string | null; parentId?: string | null }): void {
-  db.prepare(`INSERT INTO discord_channels (channel_id, guild_id, guild_name, name, parent_id) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(channel_id) DO UPDATE SET guild_id = excluded.guild_id, guild_name = COALESCE(excluded.guild_name, guild_name), name = COALESCE(excluded.name, name), parent_id = excluded.parent_id`)
-    .run(c.channelId, c.guildId, c.guildName, c.name, c.parentId ?? null);
+export function upsertChannel(db: DatabaseSync, c: { channelId: string; guildId: string; guildName: string | null; name: string | null; parentId?: string | null; position?: number | null; categoryId?: string | null }): void {
+  db.prepare(`INSERT INTO discord_channels (channel_id, guild_id, guild_name, name, parent_id, position, category_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET guild_id = excluded.guild_id, guild_name = COALESCE(excluded.guild_name, guild_name), name = COALESCE(excluded.name, name), parent_id = excluded.parent_id,
+      position = excluded.position, category_id = excluded.category_id`)
+    .run(c.channelId, c.guildId, c.guildName, c.name, c.parentId ?? null, c.position ?? null, c.categoryId ?? null);
+}
+
+export function upsertCategory(db: DatabaseSync, c: { categoryId: string; guildId: string; name: string | null; position: number | null }): void {
+  db.prepare(`INSERT INTO discord_categories (category_id, guild_id, name, position) VALUES (?, ?, ?, ?)
+    ON CONFLICT(category_id) DO UPDATE SET guild_id = excluded.guild_id, name = excluded.name, position = excluded.position`).run(c.categoryId, c.guildId, c.name, c.position);
 }
 
 export function setStatus(db: DatabaseSync, state: string, detail: string | null): void {

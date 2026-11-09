@@ -1749,7 +1749,16 @@ CREATE TABLE IF NOT EXISTS discord_channels (
   name TEXT,
   watched INTEGER NOT NULL DEFAULT 0,
   parent_id TEXT,
-  default_repo TEXT                   -- tracked repo whose new-issue page the bot's "File a new issue" button opens
+  default_repo TEXT,                  -- tracked repo whose new-issue page the bot's "File a new issue" button opens
+  position INTEGER,                   -- Discord's sort key within its category; NULL until the bot next connects
+  category_id TEXT                    -- the channel's category (discord_categories), not the thread parent
+);
+-- Channel categories (type 4), for ordering the admin list like Discord's sidebar.
+CREATE TABLE IF NOT EXISTS discord_categories (
+  category_id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  name TEXT,
+  position INTEGER
 );
 -- Gateway connection state, one row.
 CREATE TABLE IF NOT EXISTS discord_status (
