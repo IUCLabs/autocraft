@@ -74,19 +74,20 @@ const modelJudge: NonNullable<FileHooks["judge"]> = {
   haiku: async (db, a) => { const r = await runModelStep(db, HAIKU_STEP, a, { maxWaitMs: MODEL_WAIT_MS }); return r.ok ? r.value : null; },
 };
 
-/** True when the draft is junk. Jev first, Haiku where Jev is unsure or unavailable; with no model answer the draft passes (the limits still apply). The texts of the calls are deleted when they end. */
-async function isJunk(db: DatabaseSync, a: JunkAsk, judge: NonNullable<FileHooks["judge"]>, log: (l: string) => void): Promise<boolean> {
+/** Jev first, Haiku where Jev is unsure or unavailable. With no model answer the draft is not filed ("unknown"): the person still has the GitHub link. The texts of the calls are deleted when they end. */
+async function junkCheck(db: DatabaseSync, a: JunkAsk, judge: NonNullable<FileHooks["judge"]>, log: (l: string) => void): Promise<"junk" | "ok" | "unknown"> {
   try {
     if (jevAvailable(db)) {
       const p = await judge.jev(db, a);
       const band = p === null ? "unsure" : junkBand(p);
-      if (band === "yes") return true;
-      if (band === "no") return false;
+      if (band === "yes") return "junk";
+      if (band === "no") return "ok";
     }
-    return (await judge.haiku(db, a)) === true;
+    const v = await judge.haiku(db, a);
+    return v === null ? "unknown" : v ? "junk" : "ok";
   } catch (e) {
     log(`discord: junk check failed: ${(e as Error).message.slice(0, 200)}`);
-    return false;
+    return "unknown";
   } finally {
     try {
       db.prepare("DELETE FROM agent_run_texts WHERE run_id IN (SELECT id FROM agent_runs WHERE step = 'discord-issue' AND state <> 'running')").run();
@@ -127,7 +128,9 @@ export async function fileIssue(deps: FileDeps, req: FileRequest, hooks: FileHoo
   if (count(db, "SELECT COUNT(*) AS c FROM discord_filed WHERE repo = ? AND at >= ?", req.repo, since) >= PER_REPO) return { status: "refused", reason: "This repo has reached its limit of issues filed from Discord today." };
   if (count(db, "SELECT COUNT(*) AS c FROM audit WHERE action = ? AND at >= ? AND json_extract(details, '$.state') <> 'failed'", AUDIT_ACTION, since) >= DAILY_WRITES) return { status: "refused", reason: "Filing from Discord has reached its daily limit." };
 
-  if (await isJunk(db, { title, body }, hooks.judge ?? modelJudge, log)) return { status: "refused", reason: "That does not look like a bug report or a feature request." };
+  const junk = await junkCheck(db, { title, body }, hooks.judge ?? modelJudge, log);
+  if (junk === "junk") return { status: "refused", reason: "That does not look like a bug report or a feature request." };
+  if (junk === "unknown") return { status: "refused", reason: "The report could not be checked just now. Try again in a few minutes." };
 
   const run = hooks.exec ?? defaultExec;
   const text = `${body}\n\n${FOOTER}`;
