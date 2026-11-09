@@ -39,8 +39,8 @@ export function parseQuestions(text: string): FollowUpId[] | null {
   return FOLLOW_UPS.filter((q) => ids.has(q.id)).map((q) => q.id);
 }
 
-/** The raw title and body of a draft reply; null when it has no object or either is missing. Checking is the caller's job. */
-export function parseDraft(text: string): { title: string; body: string } | null {
-  const v = first(text) as { title?: unknown; body?: unknown } | null;
-  return typeof v?.title === "string" && typeof v.body === "string" && v.title.trim() && v.body.trim() ? { title: v.title, body: v.body } : null;
+/** The raw title, body and kind of a draft reply; null when it has no object or title or body is missing. A missing or unknown kind is "bug". Checking is the caller's job. */
+export function parseDraft(text: string): { title: string; body: string; kind: "bug" | "feature" } | null {
+  const v = first(text) as { title?: unknown; body?: unknown; kind?: unknown } | null;
+  return typeof v?.title === "string" && typeof v.body === "string" && v.title.trim() && v.body.trim() ? { title: v.title, body: v.body, kind: v.kind === "feature" ? "feature" : "bug" } : null;
 }

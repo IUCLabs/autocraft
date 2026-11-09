@@ -35,7 +35,7 @@ export interface DiscordRest {
   editMessage(channelId: string, messageId: string, body: EditBody): Promise<void>;
   deleteMessage(channelId: string, messageId: string): Promise<void>;
   /** Answers an interaction: a message (type 4), a deferral (type 5) or autocomplete choices (type 8); `ephemeral` shows a message to the caller only. */
-  interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8 | 9, data?: CallbackData): Promise<void>;
+  interactionCallback(interactionId: string, token: string, type: 4 | 5 | 6 | 8 | 9, data?: CallbackData): Promise<void>;
   /** Replaces the deferred or first response of an interaction. */
   editInteractionResponse(applicationId: string, token: string, body: EditBody): Promise<void>;
   /** Makes the guild's commands exactly `commands`. */
@@ -52,12 +52,13 @@ export class RestError extends Error {
 
 export type RestDeps = { token: string; fetch?: typeof fetch; sleep?: (ms: number) => Promise<void>; now?: () => number };
 
-export function callbackPayload(type: 4 | 5 | 8 | 9, data: Omit<CallbackData, "ephemeral">, ephemeral: boolean): { type: number; data: Record<string, unknown> } {
+export function callbackPayload(type: 4 | 5 | 6 | 8 | 9, data: Omit<CallbackData, "ephemeral">, ephemeral: boolean): { type: number; data: Record<string, unknown> } {
   const flags = ephemeral ? { flags: EPHEMERAL } : {};
   // A modal (type 9) takes its custom_id, title and components only.
   if (type === 9) { const m = data as Record<string, unknown>; return { type, data: { custom_id: m.custom_id, title: m.title, components: m.components } }; }
   if (type === CALLBACK_CHOICES) return { type, data: { choices: data.choices ?? [] } };
   if (type === CALLBACK_DEFERRED) return { type, data: flags };
+  if (type === 6) return { type, data: {} };
   return { type, data: { ...(data.content !== undefined && { content: data.content }), ...(data.components && { components: data.components }), allowed_mentions: { parse: [] }, ...flags } };
 }
 
@@ -108,7 +109,7 @@ export class RestClient implements DiscordRest {
     await this.#queue("PUT", `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`, undefined, true);
   }
 
-  async interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8 | 9, data?: CallbackData): Promise<void> {
+  async interactionCallback(interactionId: string, token: string, type: 4 | 5 | 6 | 8 | 9, data?: CallbackData): Promise<void> {
     const { ephemeral, ...rest } = data ?? {};
     // Autocomplete results (type 8) take only `choices`; a deferral (type 5) takes flags only; a modal (type 9) its own fields; a message (type 4) also takes content, components and allowed_mentions.
     const payload = callbackPayload(type, rest, !!ephemeral);

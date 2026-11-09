@@ -1229,7 +1229,7 @@ const DISCORD_ISSUE_DRAFT: ClaudePrompt = {
   id: "discord.issue-draft",
   stage: "Discord",
   runner: "claude",
-  purpose: "Writes a clear issue title and body from the form and the answers to the follow-up questions. The person opens it on GitHub themselves; the bot never posts it.",
+  purpose: "Writes a clear issue title and body from the form and the answers to the follow-up questions, and says whether it is a bug report or a feature request. The person files it under their own GitHub account or opens it on GitHub themselves.",
   models: ["haiku"],
   effort: "medium",
   placeholders: { form: "A JSON object indented by one space: repo, title, description and the answers (question and answer pairs)." },
@@ -1239,17 +1239,18 @@ const DISCORD_ISSUE_DRAFT: ClaudePrompt = {
 - Body: Markdown, at most ${ISSUE_BODY_CHARS} characters, short sections such as "What happens", "Steps to reproduce", "Expected result", "Environment" (only those the text supports).
 - Use only what the person wrote. Do not invent details, versions or causes. Keep their meaning.
 - No @mentions and no links.
+- Kind: "bug" when something does not work as it should, "feature" when the person asks for something new or different.
 
 ${ISSUE_RULES}
 
 Reply with ONLY one JSON object:
-{"title": "<title>", "body": "<markdown body>"}
+{"title": "<title>", "body": "<markdown body>", "kind": "bug" | "feature"}
 
 <form>
 {{form}}
 </form>`,
-  output: `One JSON object: {"title", "body"}.`,
-  validation: `${CLAUDE_RESULT} The text from the first "{" to the last "}" is parsed as JSON. Title and body are collapsed and cut to the limits, mentions are removed and any link other than an issue or pull request of a public tracked repo is replaced. A call without a usable title and body counts as no answer, and the draft is built from the form itself.`,
+  output: `One JSON object: {"title", "body", "kind"}.`,
+  validation: `${CLAUDE_RESULT} The text from the first "{" to the last "}" is parsed as JSON. The kind is "bug" unless the reply says "feature". Title and body are collapsed and cut to the limits, mentions are removed and any link other than an issue or pull request of a public tracked repo is replaced. A call without a usable title and body counts as no answer, and the draft is built from the form itself.`,
   limits: { perCall: 1, attempts: 1, timeoutSeconds: 120 },
   extra: [{ label: "Run", value: "Outside the pipeline, once for each new-issue draft, under the daily dollar cap of the new-issue helper; no tools; the text is not kept" }],
 };
