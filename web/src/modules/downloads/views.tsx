@@ -11,7 +11,7 @@ import { BarList, compact, type Bar } from "../../ui/molecules/BarList";
 import { Block } from "../../ui/molecules/Block";
 import { Segmented } from "../../ui/molecules/Segmented";
 import { Stat } from "../../ui/molecules/Stat";
-import { when } from "../../lib/format";
+import { clock, when } from "../../lib/format";
 import { cn } from "../../ui/cn";
 import { useIsPhone } from "../../shell/useMedia";
 
@@ -38,7 +38,15 @@ const ALL = new Set<string>([...DAY_RANGES, ...HOUR_RANGES].map((r) => r.value))
 
 const PLATFORM_TONE: Record<string, string> = { windows: "bg-c1", linux: "bg-c3", macos: "bg-c2", web: "bg-c4", freebsd: "bg-c5" };
 
-const bars = (rows: DownloadsBar[], tones?: Record<string, string>): Bar[] => rows.map((r) => ({ key: r.key, label: r.label, value: r.count, tone: tones?.[r.key.toLowerCase()] }));
+/** Largest first, whatever order the server sent; "Other versions" stays last. */
+const bars = (rows: DownloadsBar[], tones?: Record<string, string>): Bar[] =>
+  rows
+    .map((r) => ({ key: r.key, label: r.label, value: r.count, tone: tones?.[r.key.toLowerCase()] }))
+    .sort((a, b) => (a.key === "other" ? 1 : b.key === "other" ? -1 : b.value - a.value));
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Oct 23, 07:15" in the viewer's time zone. */
+const shortWhen = (iso: string) => `${MONTHS[new Date(iso).getMonth()]} ${new Date(iso).getDate()}, ${clock(iso)}`;
 
 function Controls({ r, range, app, set }: { r: DownloadsReport | undefined; range: DownloadsRange; app: string; set: (p: { range?: DownloadsRange; app?: string }) => void }) {
   return (
@@ -61,7 +69,7 @@ function Tiles({ r }: { r: DownloadsReport }) {
   const t = r.totals;
   // Ranges that start before the first recorded poll only count from that poll.
   const since = r.from && r.historyFrom && Date.parse(r.historyFrom) > Date.parse(r.from);
-  const sub = since ? `Since ${when(r.historyFrom)}` : RANGE_NAME[r.range];
+  const sub = since ? `Since ${shortWhen(r.historyFrom!)}` : RANGE_NAME[r.range];
   const per = t.issuesPer1k === null ? "–" : t.issuesPer1k >= 10 ? t.issuesPer1k.toFixed(1) : t.issuesPer1k.toFixed(2);
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
