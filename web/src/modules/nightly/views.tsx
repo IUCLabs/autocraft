@@ -73,7 +73,6 @@ function CheckRow({ repo, check, nights, operator, write, onSelect }: {
       {operator && check.takes && (
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-ink/55">
           <Names repo={repo.repo} check={check} busy={busy} onSave={(n) => onSelect(check, check.enabled, n)} />
-          {check.needs && <span>{check.needs === "fuzz-dir" ? "Needs a fuzz directory" : "Needs benches"}</span>}
         </div>
       )}
     </li>
