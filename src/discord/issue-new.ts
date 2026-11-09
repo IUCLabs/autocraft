@@ -14,7 +14,7 @@ import { BUTTON_URL_MAX, ISSUE_URL_MAX, cleanDraft, followUp, formDraft, issueUr
 import { FOLLOW_UPS, ISSUE_ANSWER_CHARS, ISSUE_BODY_CHARS, ISSUE_FORM_BODY_CHARS, ISSUE_TITLE_CHARS, parseDraft, parseQuestions, type FollowUpId, type IssueDraftInput, type IssueQuestionsInput } from "./issue-prompt.ts";
 import type { Call, Interactions } from "./interactions.ts";
 import type { DiscordKeys } from "./keys.ts";
-import { fileIssue, type FileDeps, type FileRequest, type FileResult, type IssueKind } from "./file-issue.ts";
+import { FILING_IN_DISCORD, fileIssue, type FileDeps, type FileRequest, type FileResult, type IssueKind } from "./file-issue.ts";
 import { fileRepoUrl, plain, renderMatches } from "./reply.ts";
 import { QUESTION_CHARS, type Match, type Search } from "./search.ts";
 import { trackedRepos } from "./store.ts";
@@ -75,6 +75,8 @@ export type IssueNewDeps = {
   db: DatabaseSync; keys: DiscordKeys; search: Search; log: (line: string) => void; ask?: IssueAsk; now?: () => number;
   /** Replaced in tests. */
   file?: (deps: FileDeps, req: FileRequest) => Promise<FileResult>;
+  /** Whether the draft offers File it; FILING_IN_DISCORD unless a test sets it. */
+  filing?: boolean;
 };
 
 const field = (custom_id: string, label: string, style: 1 | 2, max: number, opts: { required?: boolean; value?: string; placeholder?: string } = {}) => ({
@@ -95,6 +97,10 @@ export class IssueNew {
 
   constructor(deps: IssueNewDeps) {
     this.#d = deps;
+  }
+
+  get #filing(): boolean {
+    return this.#d.filing ?? FILING_IN_DISCORD;
   }
 
   #now = (): number => (this.#d.now ?? Date.now)();
@@ -270,9 +276,9 @@ export class IssueNew {
       components: [
         { type: 1, components: [{ type: 3, custom_id: `inewi:kind:${sid}`, options: KINDS.map((k) => ({ label: k.label, value: k.value, default: k.value === s.kind })) }] },
         { type: 1, components: [
-          button("File it", `inewi:file:${sid}`, 1),
+          ...(this.#filing ? [button("File it", `inewi:file:${sid}`, 1)] : []),
           button("Edit", `inewi:edit:${sid}`),
-          ...(asButton ? [{ type: 2, style: 5, label: "Open on GitHub instead", url }] : []),
+          ...(asButton ? [{ type: 2, style: 5, label: this.#filing ? "Open on GitHub instead" : "Open on GitHub", url }] : []),
         ] },
       ],
     };
@@ -351,7 +357,7 @@ export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew 
     else if (action === "none") await flow.none(call, a ?? "");
     else if (action === "edit") await flow.edit(call, a ?? "");
     else if (action === "kind") await flow.kind(call, a ?? "");
-    else if (action === "file") await flow.file(call, a ?? "");
+    else if (action === "file" && (deps.filing ?? FILING_IN_DISCORD)) await flow.file(call, a ?? "");
     else await call.reply({ content: "This form has expired. Start again with /autocraft search." });
   }, { immediate: true });
   ix.component("inew", async (call) => {

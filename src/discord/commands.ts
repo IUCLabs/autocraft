@@ -33,7 +33,7 @@ export function formatStatus(s: PublicStatus): string {
 /** Lists what the slash-command picker does not show: pings, the message command and the reaction. */
 export const HELP = [
   "**AutoCraft**",
-  "`/autocraft search`: opens a form. Pick the app and describe the problem or the idea to see matching issues; if none fits, AutoCraft helps write a new issue, which you can file under your GitHub account or open on GitHub yourself.",
+  "`/autocraft search`: opens a form. Pick the app and describe the problem or the idea to see matching issues; if none fits, AutoCraft helps write a new issue and opens it on GitHub, ready to submit.",
   "`/autocraft status item:photocraft#123`: where an issue or pull request is.",
   "`/autocraft stats`: counts for the public repos.",
   "`/autocraft link` and `unlink`: connect this Discord account to your AutoCraft login (the code is under Link Discord in the dashboard menu).",

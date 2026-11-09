@@ -64,7 +64,7 @@ const search = new Search({ db, embedder, index: new VectorIndex(embedder), log:
 installSearchCommands(ix, { db, keys, search });
 const filed: { reporter: string; repo: string; title: string; body: string; kind: string }[] = [];
 let fileResult: FileResult = { status: "refused", reason: "x" };
-installIssueNew(ix, { db, keys, search, log: (l) => assert.fail(l), ask, file: async (_d, req) => { filed.push(req); return fileResult; } });
+installIssueNew(ix, { db, keys, search, log: (l) => assert.fail(l), ask, filing: true, file: async (_d, req) => { filed.push(req); return fileResult; } });
 
 let n = 0;
 const send = async (type: number, user: string, data: unknown, channel = "c1") => {

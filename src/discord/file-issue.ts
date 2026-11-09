@@ -16,6 +16,9 @@ import { isPublicRepo } from "../public/status.ts";
 import { jevJunk, junkBand, junkState, parseJunk, type JunkAsk } from "./junk-ask.ts";
 import { failReporter, forgetReporterRow, newReporterState, readReporter, reporterToken } from "./reporter.ts";
 
+/** Filing from Discord under the person's account is built but off: the sign-in needs a Discord identity step first, so a forwarded sign-in link cannot link someone else's GitHub account. While off, the draft offers only the prefilled GitHub link and the sign-in routes answer 404. */
+export const FILING_IN_DISCORD = false;
+
 export type IssueKind = "bug" | "feature";
 
 export type FileRequest = {
