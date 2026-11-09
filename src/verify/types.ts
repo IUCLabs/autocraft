@@ -60,8 +60,8 @@ export const MAX_SHOT_STEPS = 8;
 export const MAX_SHOTS = 3;
 export const MAX_SHOT_REASON_WORDS = 25;
 
-/** A parameter validator: one of a fixed set of values, an integer range, or an anchored regular expression. */
-export type ParamSpec = { enum: string[] } | { int: [number, number] } | { re: string };
+/** A parameter validator: one of a fixed set of values, an integer range, or a bounded run of characters from a restricted set. */
+export type ParamSpec = { enum: string[] } | { int: [number, number] } | { chars: string; min: number; max: number };
 /** One command of the repo's screenshot config, as the planner sees it. */
 export type ScreenshotCommandInfo = { name: string; doc: string; params: Record<string, ParamSpec>; capture: boolean };
 /** A step the planner chose: a command name from the config and a value for each of its params. */

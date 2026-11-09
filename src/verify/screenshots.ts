@@ -3,7 +3,8 @@
 // path, a planning call chooses a script from the config's commands and two display tasks render it at the base
 // and at the head. It never touches the `verifications` rows that gate merges; its own state is `screenshot_runs`.
 import { createHash } from "node:crypto";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { open, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -28,7 +29,7 @@ import { getConfig, type ScreenshotConfig } from "./screenshot-config.ts";
 import type { CompareParsed, ScreenshotParsed } from "./plan.ts";
 import type { VerifyCandidate } from "./candidates.ts";
 import type { VerifyDeps } from "./index.ts";
-import { queueScreenshotTasks } from "./tasks.ts";
+import { SCREENSHOT_STEP, cloneTask, queueScreenshotTasks } from "./tasks.ts";
 import type { ScreenshotCompareInput, ScreenshotPlanInput, ShotStep } from "./types.ts";
 import type { CollectDeps } from "./results.ts";
 
@@ -58,9 +59,7 @@ export function insertRun(db: DatabaseSync, c: { repo: string; number: number; h
 }
 
 function stage(db: DatabaseSync, c: Cand, name: "screenshot-planned" | "screenshot-skipped", note: string, log: (line: string) => void): void {
-  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(c.repo, c.number, name, nowIso(), "verify", `${note} at ${c.head_oid.slice(0, 7)}`.slice(0, 300));
-  jobItem(db, c.repo, c.number, `${name}: ${note}`, log);
+  jobItem(db, c.repo, c.number, `${name}: ${note} at ${c.head_oid.slice(0, 7)}`, log);
 }
 
 /** Whether any changed path of the diff matches one of the repo's UI globs. */
@@ -133,7 +132,24 @@ type Run = {
 };
 const TERMINAL_SQL = TERMINAL.map((x) => `'${x}'`).join(", ");
 const SHOT_RE = /^s\d+\.png$/;
-const sha256 = (file: string): string => createHash("sha256").update(readFileSync(file)).digest("hex");
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_IMAGE_SIDE = 8192;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** The sha256 of a stored screenshot, or null when it is not a PNG of at most 8 MB and 8192 x 8192 pixels. Checks the size and the header before reading the whole file. */
+async function validImageHash(file: string): Promise<string | null> {
+  try {
+    const st = await stat(file);
+    if (!st.isFile() || st.size < 33 || st.size > MAX_IMAGE_BYTES) return null;
+    const fh = await open(file, "r");
+    const head = Buffer.alloc(24);
+    try { await fh.read(head, 0, 24, 0); } finally { await fh.close(); }
+    if (!head.subarray(0, 8).equals(PNG_SIGNATURE) || head.readUInt32BE(8) !== 13 || head.subarray(12, 16).toString("latin1") !== "IHDR") return null;
+    const w = head.readUInt32BE(16), h = head.readUInt32BE(20);
+    if (w < 1 || h < 1 || w > MAX_IMAGE_SIDE || h > MAX_IMAGE_SIDE) return null;
+    return createHash("sha256").update(await readFile(file)).digest("hex");
+  } catch { return null; }
+}
 
 /** Whether a run in flight has work: its tasks ended or started, its PR moved or closed, or the repo's switch went off. */
 export function screenshotsDue(db: DatabaseSync): boolean {
@@ -142,12 +158,12 @@ export function screenshotsDue(db: DatabaseSync): boolean {
     LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
     LEFT JOIN build_tasks h ON h.id = r.head_task_id
     LEFT JOIN build_tasks b ON b.id = r.base_task_id
-    WHERE r.state IN ('planned', 'running') AND (
+    WHERE r.state IN ('planned', 'running') AND ${pilotSqlFor("r.repo", "r.number")} AND NOT ${backlogHeldSql("r")} AND (
       i.state IS NOT 'OPEN' OR (${CURRENT_HEAD_SQL}) IS NOT r.head_sha
       OR (h.state IN (${TERMINAL_SQL}) AND (b.id IS NULL OR b.state IN (${TERMINAL_SQL})))
       OR (r.state = 'planned' AND (h.state IN ('claimed', 'running') OR b.state IN ('claimed', 'running'))))
     LIMIT 1`).get()) return true;
-  const repos = db.prepare("SELECT DISTINCT repo FROM screenshot_runs WHERE state IN ('planned', 'running')").all() as { repo: string }[];
+  const repos = db.prepare(`SELECT DISTINCT r.repo FROM screenshot_runs r WHERE r.state IN ('planned', 'running') AND ${pilotSqlFor("r.repo", "r.number")} AND NOT ${backlogHeldSql("r")}`).all() as { repo: string }[];
   return repos.some((r) => !featureOn(db, "screenshots", r.repo));
 }
 
@@ -187,10 +203,8 @@ async function collectOne(db: DatabaseSync, r: Run, deps: Pick<CollectDeps, "scr
     Number(db.prepare(`UPDATE screenshot_runs SET state = ?, reason = COALESCE(?, reason), verdict = ?, clear = ?, comparison = ?, model = ?, finished_at = ?
       WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')`)
       .run(state, f.reason ?? null, f.verdict ?? null, f.clear === undefined ? null : f.clear ? 1 : 0, f.comparison ?? null, f.model ?? null, at(), r.repo, r.number, r.head_sha).changes) > 0;
-  const row = (stageName: string, note: string, quiet = false): void => {
-    db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(r.repo, r.number, stageName, at(), "verify", `${note} at ${sha7}`.slice(0, 300));
-    if (!quiet) jobItem(db, r.repo, r.number, `${stageName}: ${note}`, log);
-  };
+  // The only stage row a screenshot run writes is `hold`; its other outcomes are read from screenshot_runs.
+  const row = (stageName: string, note: string): void => { jobItem(db, r.repo, r.number, `${stageName}: ${note} at ${sha7}`, log); };
   const ids = [r.head_task_id, r.base_task_id];
 
   if (!featureOn(db, "screenshots", r.repo)) {
@@ -219,8 +233,20 @@ async function collectOne(db: DatabaseSync, r: Run, deps: Pick<CollectDeps, "scr
     row("screenshot-error", w);
     return true;
   };
-  for (const [role, t] of [["head", head], ["base", base]] as const) {
-    const o = outcomeOf(t);
+  // A lost task or a build-environment error says nothing about the change: the pair is queued again once, as Verify does.
+  const outcomes = [["head", head, outcomeOf(head)], ["base", base, outcomeOf(base)]] as const;
+  if (outcomes.some(([, t, o]) => o.kind === "error" && t.state !== "cancelled")) {
+    const tries = (db.prepare("SELECT COUNT(*) AS n FROM build_tasks WHERE step = ? AND repo = ? AND number = ? AND head_sha = ? AND warm_role = 'use'").get(SCREENSHOT_STEP, r.repo, r.number, r.head_sha) as { n: number }).n;
+    if (tries <= 1) {
+      try {
+        const [h, b] = [head.id, base.id].map((id) => cloneTask(db, id)) as [number, number];
+        db.prepare("UPDATE screenshot_runs SET head_task_id = ?, base_task_id = ?, state = 'planned' WHERE repo = ? AND number = ? AND head_sha = ?").run(h, b, r.repo, r.number, r.head_sha);
+        jobItem(db, r.repo, r.number, "screenshot render failed in the build environment; queued the tasks again", log);
+        return true;
+      } catch (e) { if (!(e instanceof BuildError)) throw e; }
+    }
+  }
+  for (const [role, , o] of outcomes) {
     if (o.kind === "fail") return fail(`${role} render step "${o.step}" ${o.timedOut ? "timed out" : `failed (exit ${o.exitCode ?? "none"})`}`);
     if (o.kind === "error") return fail(`${role}: ${o.reason}`);
   }
@@ -234,8 +260,14 @@ async function collectOne(db: DatabaseSync, r: Run, deps: Pick<CollectDeps, "scr
   const files = (m: Map<string, string>, name: string): string | null => absolute(m.get(name)!);
   const pairs = names.map((name) => ({ name, b: files(before, name), a: files(after, name) }));
   if (pairs.some((p) => !p.a || !p.b)) return fail("a stored screenshot is missing");
-  let same: boolean;
-  try { same = pairs.every((p) => sha256(p.a!) === sha256(p.b!)); } catch { return fail("a stored screenshot could not be read"); }
+  // Images are the render's output, so they are untrusted: PNG signature, size and dimensions are checked before anything reads or copies them.
+  const hashes: [string, string][] = [];
+  for (const p of pairs) {
+    const [a, b] = [await validImageHash(p.a!), await validImageHash(p.b!)];
+    if (!a || !b) return fail("the render stored an invalid image");
+    hashes.push([a, b]);
+  }
+  const same = hashes.every(([a, b]) => a === b);
   if (same) {
     if (!finish("compared", { verdict: "unchanged", comparison: "The screens are identical before and after." })) return false;
     row("screenshot-compared", "unchanged");
@@ -265,15 +297,16 @@ async function collectOne(db: DatabaseSync, r: Run, deps: Pick<CollectDeps, "scr
   if (!finish("compared", { verdict, clear, comparison: summary, model })) return false;
 
   if (verdict === "regression" && clear) {
-    // The head may have moved while the model looked: only a hold on the head that was compared is meaningful.
+    // The head may have moved, or the switch gone off, while the model looked: hold only the head that was compared, and only while the feature is on.
     const now = db.prepare(`SELECT i.state AS s, ${CURRENT_HEAD_SQL} AS h FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number WHERE i.repo = ? AND i.number = ?`).get(r.repo, r.number) as { s: string; h: string | null } | undefined;
-    if (now?.s === "OPEN" && now.h === r.head_sha) {
+    if (featureOn(db, "screenshots", r.repo) && now?.s === "OPEN" && now.h === r.head_sha) {
       try {
-        holdMerge(db, "screenshots", r.repo, r.number, { head: r.head_sha, summary });
-        db.prepare("UPDATE screenshot_runs SET held = 1 WHERE repo = ? AND number = ? AND head_sha = ?").run(r.repo, r.number, r.head_sha);
-        row("screenshot-regression", summary);
-        row("hold", `screenshots show a regression: ${summary}`, true);
-        return true;
+        if (holdMerge(db, "screenshots", r.repo, r.number, { head: r.head_sha, summary })) {
+          db.prepare("UPDATE screenshot_runs SET held = 1 WHERE repo = ? AND number = ? AND head_sha = ?").run(r.repo, r.number, r.head_sha);
+          db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'hold', ?, 'verify', ?)").run(r.repo, r.number, at(), `screenshots show a regression: ${summary}`.slice(0, 300));
+          row("screenshot-regression", summary);
+          return true;
+        }
       } catch (e) { if (!(e instanceof ControlError)) throw e; }
     }
   }

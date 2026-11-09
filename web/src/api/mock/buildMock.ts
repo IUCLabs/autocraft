@@ -127,7 +127,7 @@ export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs"
     config: {
       package: "photocraft-ui-egui", example: "snapshot", driver: "args", size: "1440x900",
       ui_paths: ["crates/ui*/**", "**/*.ftl"],
-      commands: { snap: { doc: "Render the main window.", params: { size: { enum: ["1440x900", "1024x768"] } }, argv: ["--out", "{out}", "--size", "{size}", "--scale", "2"], capture: true } },
+      commands: { snap: { doc: "Render the main window.", params: { size: { enum: ["1440x900", "1024x768"] } }, argv: ["--out", "{out}", "--size", "{size}", "--scale", "2"], capture: true }, open_doc: { doc: "Open a document by name.", params: { name: { chars: "A-Za-z0-9_. -", min: 1, max: 60 } }, argv: ["--open", "{name}"] } },
     },
   }];
   const setupsOut = () => ({ setups: structuredClone(setups) });

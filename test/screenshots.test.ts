@@ -6,7 +6,8 @@ import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { storeArtifact, tempPath } from "../src/build/artifacts.ts";
 import { setFeature } from "../src/build/features.ts";
-import { getTask } from "../src/build/tasks.ts";
+import { createEnv, hello } from "../src/build/envs.ts";
+import { claim, createTask, getTask } from "../src/build/tasks.ts";
 import { connect } from "../src/db.ts";
 import { parseCompareReply, parseScreenshotReply, type CompareParsed } from "../src/verify/plan.ts";
 import { runCollect, collectDue, type CollectDeps } from "../src/verify/results.ts";
@@ -25,7 +26,12 @@ const CFG: ScreenshotConfigBody = {
   commands: { snap: { doc: "Render the main window.", params: { size: { enum: ["1440x900"] } }, argv: ["--out", "{out}", "--size", "{size}"], capture: true } },
 };
 const UI_DIFF = "diff --git a/crates/ui/src/dialog.rs b/crates/ui/src/dialog.rs\n--- a/crates/ui/src/dialog.rs\n+++ b/crates/ui/src/dialog.rs\n@@ -1,1 +1,2 @@\n fn a() {}\n+fn b() {}\n";
-const png = (tag: string): Buffer => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(tag)]);
+/** A PNG header (signature, IHDR of w x h) followed by `tag`, enough for the size and dimension checks. */
+const png = (tag: string, w = 10, h = 10): Buffer => {
+  const ihdr = Buffer.alloc(25);
+  ihdr.writeUInt32BE(13, 0); ihdr.write("IHDR", 4, "latin1"); ihdr.writeUInt32BE(w, 8); ihdr.writeUInt32BE(h, 12);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), ihdr, Buffer.from(tag)]);
+};
 
 let planCalls = 0, compareCalls = 0;
 function fresh(): DatabaseSync {
@@ -51,13 +57,13 @@ const count = (db: DatabaseSync, sql: string): number => db.prepare(sql).all().l
 const switchOn = (db: DatabaseSync): void => { setFeature(db, "screenshots", true, "op"); setFeature(db, "screenshots", true, "op", "app"); };
 
 /** Plans a run, then ends both tasks as a worker would: results for every step, one screenshot each. */
-async function rendered(db: DatabaseSync, shots: { head: string; base: string }, o: { headFails?: boolean } = {}): Promise<{ head: number; base: number }> {
+async function rendered(db: DatabaseSync, shots: { head: string; base: string; headSize?: [number, number] }, o: { headFails?: boolean } = {}): Promise<{ head: number; base: number }> {
   await runVerify(db, { repo: "app" }, () => {}, verifyDeps);
   const run = db.prepare("SELECT head_task_id AS h, base_task_id AS b FROM screenshot_runs").get() as { h: number; b: number };
   for (const [id, tag, fails] of [[run.h, shots.head, o.headFails === true], [run.b, shots.base, false]] as const) {
     const t = getTask(db, id)!;
     const results = t.plan.map((s, i) => ({ step: s.name, exitCode: fails && i === t.plan.length - 1 ? 1 : 0, timedOut: false, durationMs: 1 }));
-    if (!fails) { const tmp = tempPath(id); writeFileSync(tmp, png(tag)); storeArtifact(db, id, "s1.png", tmp); }
+    if (!fails) { const tmp = tempPath(id); writeFileSync(tmp, png(tag, ...(id === run.h ? shots.headSize ?? [10, 10] : [10, 10]))); storeArtifact(db, id, "s1.png", tmp); }
     db.prepare("UPDATE build_tasks SET state = ?, results = ?, ended_at = ? WHERE id = ?").run(fails ? "failed" : "done", JSON.stringify(results), T0, id);
   }
   return { head: run.h, base: run.b };
@@ -85,7 +91,8 @@ describe("screenshots switch off (test A)", () => {
     switchOn(db);
     const t = await rendered(db, { head: "x", base: "y" });
     db.prepare("UPDATE build_tasks SET state = 'queued', ended_at = NULL WHERE id = ?").run(t.head);
-    setFeature(db, "screenshots", false, "op");
+    // Off by hand, so the collect-side guard is what ends the run (setFeature itself stops it at once).
+    db.prepare("UPDATE settings SET value = 'off' WHERE key = 'build_feature:screenshots'").run();
     assert.equal(collectDue(db), true);
     await collect(db, reply("regression", true));
     assert.equal(compareCalls, 0);
@@ -104,7 +111,7 @@ describe("screenshots collect (test B)", () => {
     assert.equal(compareCalls, 1);
     assert.deepEqual({ ...db.prepare("SELECT state, verdict, clear, held FROM screenshot_runs").get() }, { state: "compared", verdict: "regression", clear: 1, held: 1 });
     assert.equal(count(db, "SELECT 1 FROM merge_holds WHERE repo = 'app' AND number = 7"), 1);
-    assert.equal(count(db, "SELECT 1 FROM stages WHERE stage = 'screenshot-regression'"), 1);
+    assert.deepEqual(db.prepare("SELECT stage FROM stages WHERE stage LIKE '%hold%' OR stage LIKE 'screenshot%'").all().map((r) => r.stage), ["hold"]);
     assert.deepEqual(db.prepare("SELECT * FROM verifications").all(), before);
   });
 
@@ -134,5 +141,55 @@ describe("screenshots collect (test B)", () => {
     assert.equal(compareCalls, 0);
     assert.equal(db.prepare("SELECT verdict FROM screenshot_runs").get()!.verdict, "unchanged");
     assert.equal(count(db, "SELECT 1 FROM merge_holds"), 0);
+  });
+});
+
+describe("screenshots review fixes", () => {
+  test("a screenshot task does not use up the verification's retry", async () => {
+    const db = fresh(); switchOn(db);
+    await rendered(db, { head: "a", base: "b" });
+    assert.equal(count(db, "SELECT 1 FROM build_tasks WHERE step = 'screenshot'"), 2);
+    assert.equal(count(db, "SELECT 1 FROM build_tasks WHERE step = 'verify'"), 0);
+    const lost = createTask(db, { step: "verify", repo: "app", number: 7, headSha: HEAD, baseSha: BASE, requires: { os: "linux", toolchains: ["rust-stable"] },
+      plan: [{ name: "fetch deps", cmd: ["true"], network: "fetch", timeoutSec: 10 }], warm: { key: "app", role: "use" } });
+    db.prepare("UPDATE build_tasks SET state = 'lost', ended_at = ? WHERE id = ?").run(T0, lost);
+    db.prepare("DELETE FROM verifications").run();
+    db.prepare(`INSERT INTO verifications (repo, number, head_sha, base_sha, kind, reason, head_task_id, state, created_at) VALUES ('app', 7, ?, ?, 'tests', 'r', ?, 'planned', '${T0}')`).run(HEAD, BASE, lost);
+    const s = await runCollect(db, {}, () => {}, { model: "haiku", screenshots: { compare: async () => null } });
+    assert.equal(s.retried, 1);
+  });
+
+  test("an invalid image fails the run without a model call; a lost render task is queued again once", async () => {
+    let db = fresh(); switchOn(db);
+    await rendered(db, { head: "a", base: "b", headSize: [9000, 10] });
+    await collect(db, reply("regression", true));
+    assert.equal(compareCalls, 0);
+    assert.deepEqual({ ...db.prepare("SELECT state, reason FROM screenshot_runs").get() }, { state: "error", reason: "the render stored an invalid image" });
+
+    db = fresh(); switchOn(db);
+    const t = await rendered(db, { head: "a", base: "b" });
+    db.prepare("UPDATE build_tasks SET state = 'lost', results = '[]' WHERE id = ?").run(t.head);
+    await collect(db, reply("regression", true));
+    assert.equal(db.prepare("SELECT state FROM screenshot_runs").get()!.state, "planned");
+    assert.equal(count(db, "SELECT 1 FROM build_tasks WHERE step = 'screenshot'"), 4);
+    db.prepare("UPDATE build_tasks SET state = 'lost', results = '[]' WHERE state = 'queued'").run();
+    await collect(db, reply("regression", true));
+    assert.equal(db.prepare("SELECT state FROM screenshot_runs").get()!.state, "error");
+    assert.equal(count(db, "SELECT 1 FROM merge_holds"), 0);
+  });
+
+  test("switching the feature off cancels render tasks and skips open runs; the claim skips them while off", async () => {
+    const db = fresh(); switchOn(db);
+    createEnv(db, { id: "env-one", label: "env-one", kind: "local-sandbox", slots: 4 }, "op");
+    hello(db, "env-one", { version: "1", capabilities: { os: "linux", arch: "x86_64", cpus: 8, memGb: 32, diskGb: 200, display: true, gpu: false, toolchains: ["rust-stable"] }, slots: 4 });
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('base_scope', 'app')").run();
+    await runVerify(db, { repo: "app" }, () => {}, verifyDeps);
+    // Off by hand (not through setFeature): the claim alone must refuse the queued render tasks.
+    db.prepare("UPDATE settings SET value = 'off' WHERE key = 'build_feature:screenshots:app'").run();
+    assert.deepEqual(claim(db, "env-one", 4).tasks.filter((t) => t.repo === "app"), []);
+    setFeature(db, "screenshots", true, "op", "app");
+    setFeature(db, "screenshots", false, "op", "app");
+    assert.equal(count(db, "SELECT 1 FROM build_tasks WHERE step = 'screenshot' AND state = 'cancelled'"), 2);
+    assert.deepEqual({ ...db.prepare("SELECT state, reason FROM screenshot_runs").get() }, { state: "skipped", reason: "screenshots switched off" });
   });
 });

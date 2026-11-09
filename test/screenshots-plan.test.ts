@@ -28,7 +28,7 @@ const ARGS: ScreenshotConfigBody = {
 const JSONL: ScreenshotConfigBody = {
   package: "app-ui", example: "ui_shot", driver: "jsonl", ui_paths: ["crates/ui*/**"],
   commands: {
-    open: { doc: "Open a page.", params: { n: { int: [1, 9] }, name: { re: "^[A-Za-z0-9 ]{1,20}$" } }, line: { open: "{name}", page: "{n}" } },
+    open: { doc: "Open a page.", params: { n: { int: [1, 9] }, name: { chars: "A-Za-z0-9 ", min: 1, max: 20 } }, line: { open: "{name}", page: "{n}" } },
     shot: { doc: "Save an image.", params: {}, line: { shot: "{out}" }, capture: true },
   },
 };
@@ -136,6 +136,6 @@ describe("runVerify with screenshots", () => {
     assert.equal(rows(db, "SELECT 1 FROM build_tasks WHERE requires LIKE '%\"display\":true%'").length, 2);
     const v = db.prepare("SELECT kind, state FROM verifications WHERE repo = 'app' AND number = 7").all();
     assert.deepEqual(v.map((r) => ({ ...r })), [{ kind: "ci-enough", state: "ci-enough" }]);
-    assert.equal(rows(db, "SELECT 1 FROM stages WHERE stage = 'screenshot-planned'").length, 1);
+    assert.equal(rows(db, "SELECT 1 FROM stages WHERE stage LIKE 'screenshot%'").length, 0);
   });
 });

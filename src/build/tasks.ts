@@ -192,6 +192,7 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
           // Untrusted-code builds run only while their feature's switch is on for the repo.
           if (t.step === "pr-build" && !featureOn(db, "pr-builds", t.repo)) continue;
           if (t.step === "nightly" && !featureOn(db, "nightly", t.repo)) continue;
+          if (t.step === "screenshot" && !featureOn(db, "screenshots", t.repo)) continue;
           // Operator smoke tests and the security fix's builds (an operator's request, under the finding's real repo) run anywhere; pipeline builds only for repos in scope, or for fast-tracked items of any repo.
           if (t.step !== "smoke-test" && t.step !== "fix-check" && !scope.has(t.repo) && !fastTask(db, t)) continue;
           take.run(envId, at, at, t.id);

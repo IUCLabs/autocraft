@@ -34,7 +34,7 @@ export function setFeature(db: DatabaseSync, f: BuildFeature, on: boolean, by: s
 }
 
 /** Build tasks of the features whose untrusted work is queued by the pipeline; a switch turned off stops them. */
-const FEATURE_STEP: Partial<Record<BuildFeature, string>> = { "pr-builds": "pr-build", nightly: "nightly" };
+const FEATURE_STEP: Partial<Record<BuildFeature, string>> = { "pr-builds": "pr-build", nightly: "nightly", screenshots: "screenshot" };
 
 /** Cancels the queued and running tasks of a feature that was switched off (for one repo, or every repo), and marks the PR builds stale. */
 function stopQueuedTasks(db: DatabaseSync, f: BuildFeature, by: string, repo?: string): void {
@@ -43,6 +43,9 @@ function stopQueuedTasks(db: DatabaseSync, f: BuildFeature, by: string, repo?: s
   const open = TERMINAL.map((s) => `'${s}'`).join(", ");
   const rows = db.prepare(`SELECT id FROM build_tasks WHERE step = ? AND state NOT IN (${open}) ${repo ? "AND repo = ?" : ""}`).all(...(repo ? [step, repo] : [step])) as { id: number }[];
   for (const r of rows) cancelTask(db, r.id, by);
+  if (f === "screenshots") {
+    db.prepare(`UPDATE main.screenshot_runs SET state = 'skipped', reason = 'screenshots switched off', finished_at = ? WHERE state IN ('planned', 'running') ${repo ? "AND repo = ?" : ""}`).run(...(repo ? [new Date().toISOString(), repo] : [new Date().toISOString()]));
+  }
   if (f === "pr-builds") {
     db.prepare(`UPDATE main.pr_builds SET state = 'stale', finished_at = ? WHERE state = 'queued' ${repo ? "AND repo = ?" : ""}`).run(...(repo ? [new Date().toISOString(), repo] : [new Date().toISOString()]));
   }
