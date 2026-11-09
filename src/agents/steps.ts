@@ -17,9 +17,10 @@ import { lintReply, parseFindings, publicTexts as postmergeTexts, type Finding, 
 import { commentTexts } from "../conversations/cards.ts";
 import { choicesTexts, parseTurn, type TurnReply as ConversationReply } from "../decide/choices-parse.ts";
 import type { ConversationInput } from "../conversations/types.ts";
-import { parsePlanReply, type Parsed as PlanReply } from "../verify/plan.ts";
+import { parsePlanReply, parseScreenshotReply, type Parsed as PlanReply, type ScreenshotParsed } from "../verify/plan.ts";
+import type { ScreenshotConfigBody } from "../verify/screenshot-config.ts";
 import type { Crate } from "../verify/types.ts";
-import type { VerifyPlanInput } from "../verify/types.ts";
+import type { ScreenshotPlanInput, VerifyPlanInput } from "../verify/types.ts";
 import { referenceProblems, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
 
@@ -207,6 +208,17 @@ export const VERIFY_PLAN: ClaudeStep<VerifyPlanInput, PlanReply, PlanCtx> = {
   toPrompt: (x) => [x], size: () => 1,
   parse: (text, x, _ctx, c) => {
     const value = parsePlanReply(text, c.ref, c.crates, c.label, c.ci);
+    return { value, ...(!value.ok && { rest: x }) };
+  },
+};
+
+/** The screenshot plan as parsed, valid or not: an invalid script is asked for again. `config` is the repo's screenshot config, the only source of commands. */
+export type ScreenshotCtx = { ref: string; config: Pick<ScreenshotConfigBody, "commands"> };
+export const VERIFY_SCREENSHOT: ClaudeStep<ScreenshotPlanInput, ScreenshotParsed, ScreenshotCtx> = {
+  provider: "claude", id: "verify.screenshot", attempts: 2,
+  toPrompt: (x) => [x], size: () => 1,
+  parse: (text, x, _ctx, c) => {
+    const value = parseScreenshotReply(text, c.ref, c.config);
     return { value, ...(!value.ok && { rest: x }) };
   },
 };

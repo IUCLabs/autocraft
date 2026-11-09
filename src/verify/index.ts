@@ -27,6 +27,7 @@ import { selectCandidates, unavailableCandidates } from "./select.ts";
 import { type VerifyPlan } from "./plan.ts";
 import { repoChecksKnown, repoHasNoCi } from "../merge/no-ci.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
+import { maybeScreenshot, type ScreenshotDeps } from "./screenshots.ts";
 import { regressionName, type Crate, type VerifyPlanInput } from "./types.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { slugOf } from "../owners.ts";
@@ -49,6 +50,8 @@ export type VerifyDeps = {
   model: string;
   /** Host directory with a read-only checkout of the PR head for the sandboxed planner call, or null to ask without tools. Absent: no tools. */
   checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
+  /** Replaces the screenshot planner's model call (tests). */
+  screenshots?: ScreenshotDeps;
 };
 
 async function sha(path: string, jq: string): Promise<string | null> {
@@ -141,6 +144,8 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
         summary.kinds["ci-enough"] = (summary.kinds["ci-enough"] ?? 0) + 1;
         handle();
       };
+      // Screenshots of a UI change: its own table and tasks; the verification rows below are saved exactly as without it.
+      await maybeScreenshot(db, c, deps, log, runId).catch((e: unknown) => log(`  ${refOf(c)}: screenshots: ${(e as Error).message}`));
       if (ci) {
         // Only a bugfix that adds or changes a test file may get a regression test; everything else is covered by CI.
         if (c.label !== "bugfix") { byCi(); return; }

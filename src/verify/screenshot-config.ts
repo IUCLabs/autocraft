@@ -3,12 +3,12 @@
 // from this config and from validated arguments, never from model text.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import type { ParamSpec } from "./types.ts";
 
 export const SCREENSHOT_DRIVERS = ["args", "jsonl"] as const;
 export type ScreenshotDriver = (typeof SCREENSHOT_DRIVERS)[number];
 
-/** A parameter validator: one of a fixed set of values, an integer range, or an anchored regular expression. */
-export type ParamSpec = { enum: string[] } | { int: [number, number] } | { re: string };
+export type { ParamSpec };
 /** `argv` (driver "args") is appended to the example's command line; `line` (driver "jsonl") is one JSON line of the script. Templates use `{param}`, and `{out}` only when `capture` is set. */
 export type CommandSpec = {
   doc: string;

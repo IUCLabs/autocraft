@@ -52,3 +52,41 @@ export const SAMPLE_VERIFY_SUMMARY: VerifySummaryInput[] = [{
   ref: "photocraft#1287", step: "test", command: "cargo test --offline --locked -p codecs",
   log: "running 2 tests\ntest png::decode_16bit_rgba ... FAILED\ntest png::decode_8bit ... ok\n\nfailures:\n\n---- png::decode_16bit_rgba stdout ----\nthread 'png::decode_16bit_rgba' (16-bit PNG with an alpha channel) panicked at crates/codecs/src/png.rs:91:9:\nassertion `left == right` failed\n  left: 4096\n right: 8192\n\nerror: test failed, to rerun pass `-p codecs --lib`\n",
 }];
+
+// Before/after screenshots of a UI pull request (switch: build feature "screenshots").
+export const SCREENSHOT_KIND = "screenshot";
+/** Steps in a screenshot script, and how many of them may capture an image. */
+export const MAX_SHOT_STEPS = 8;
+export const MAX_SHOTS = 3;
+export const MAX_SHOT_REASON_WORDS = 25;
+
+/** A parameter validator: one of a fixed set of values, an integer range, or an anchored regular expression. */
+export type ParamSpec = { enum: string[] } | { int: [number, number] } | { re: string };
+/** One command of the repo's screenshot config, as the planner sees it. */
+export type ScreenshotCommandInfo = { name: string; doc: string; params: Record<string, ParamSpec>; capture: boolean };
+/** A step the planner chose: a command name from the config and a value for each of its params. */
+export type ShotStep = { cmd: string; args: Record<string, string | number> };
+
+/** What the screenshot planner prompt is rendered from: one PR. `ref` is "repo#number". */
+export type ScreenshotPlanInput = {
+  /** Where the call may read the repository in the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
+  ref: string; title: string; body: string; label: string | null;
+  review: { verdict: string; reason: string; risks: string[]; fixes: { file: string; change: string }[] };
+  files: string[]; diff: string;
+  commands: ScreenshotCommandInfo[];
+  /** The repo's usual window size, e.g. "1440x900"; absent when the config has none. */
+  size?: string;
+};
+
+export const SAMPLE_SCREENSHOT_PLAN: ScreenshotPlanInput[] = [{
+  ref: "photocraft#1301", title: "Show the file size next to the export format in the export dialog",
+  body: "The export dialog now shows the estimated file size beside each format, so people can compare before exporting.\n\nFixes #1290",
+  label: "feature", review: { verdict: "take", reason: "Small, focused UI change with a clear purpose.", risks: [], fixes: [] },
+  files: ["crates/ui/src/export_dialog.rs"], size: "1440x900",
+  commands: [
+    { name: "snap", doc: "Render the main window at the given size and save it as an image.", params: { size: { enum: ["1440x900", "1024x768"] } }, capture: true },
+    { name: "export_dialog", doc: "Render the export dialog for the chosen format and save it as an image.", params: { format: { enum: ["png", "jpeg", "webp"] } }, capture: true },
+  ],
+  diff: "diff --git a/crates/ui/src/export_dialog.rs b/crates/ui/src/export_dialog.rs\n--- a/crates/ui/src/export_dialog.rs\n+++ b/crates/ui/src/export_dialog.rs\n@@ -42,6 +42,7 @@ fn format_row(ui: &mut Ui, f: &Format) {\n     ui.label(f.name());\n+    ui.weak(human_size(f.estimate()));\n }\n",
+}];
