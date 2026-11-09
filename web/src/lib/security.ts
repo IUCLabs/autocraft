@@ -1,5 +1,5 @@
 import type { Tone } from "../ui/atoms/Badge";
-import type { FindingAction, FindingState, FindingSummary, FindingSeverity, ScanState } from "../api/types";
+import type { FindingAction, FindingState, FindingSummary, FindingSeverity, ScanState, ScanTestState } from "../api/types";
 
 export const SEVERITY: Record<FindingSeverity, { label: string; tone: Tone }> = {
   critical: { label: "Critical", tone: "bad" },
@@ -20,6 +20,14 @@ export const FINDING_STATE: Record<FindingState, { label: string; tone: Tone }> 
   advisory: { label: "Advisory", tone: "merged" },
   "awaiting-admin": { label: "Awaiting admin", tone: "warn" },
   published: { label: "Published", tone: "merged" },
+};
+
+/** Badge of a finding's scan test: the written test failing on the pinned commit shows the defect; passing there does not. */
+export const SCAN_TEST: Record<ScanTestState, { label: string; tone: Tone }> = {
+  building: { label: "Test running", tone: "warn" },
+  confirmed: { label: "Test confirmed", tone: "ok" },
+  "not-shown": { label: "Test did not show it", tone: "warn" },
+  "could-not-build": { label: "Test could not be built", tone: "neutral" },
 };
 
 export const SCAN_STATE: Record<ScanState, { label: string; tone: Tone }> = {

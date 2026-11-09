@@ -21,6 +21,7 @@ import { prunePlanHistory } from "../core/plan-cache.ts";
 import { checkPendingUpdate } from "../build/worker-update.ts";
 import { endJob, JOB_KEEP_MS, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { advanceSecurityFixes, autoFixConfirmed } from "../security/actions.ts";
+import { advanceScanTests } from "../security/scantest.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
 import { jobBlock } from "./concurrency.ts";
@@ -230,6 +231,13 @@ export class Runner {
       const next = await advanceSecurityFixes(this.db, isEnabled(this.db));
       if (next) this.o.log(`security: continued the private fix of ${next} findings after their builds`);
     } catch (e) { this.o.log(`security fixes: ${(e as Error).message}`); }
+    // The build task of a scan test is read here (database only); a finding whose test ended can then start its automatic fix.
+    try {
+      for (const t of advanceScanTests(this.db)) {
+        this.o.log(`security: scan test of ${t.repo} finding ${t.number}: ${t.state}`);
+        if (isEnabled(this.db) && t.state !== "not-shown") await autoFixConfirmed(this.db, t.repo, t.number);
+      }
+    } catch (e) { this.o.log(`security scan tests: ${(e as Error).message}`); }
     // Pre-approved merges move on rows other steps wrote; they are read here, not on a timer of their own.
     try { advancePreapprovals(this.db, this.o.log); } catch (e) { this.o.log(`preapprovals: ${(e as Error).message}`); }
     if (this.planning || !planDue(this.db)) return;

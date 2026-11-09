@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { dropSessions } from "../prepush/resume.ts";
 import { slugOf } from "../owners.ts";
 import { securityRepo } from "./rules.ts";
-import type { FindingCall, FindingRef, FindingSeverity, FindingState, FindingSummary, FindingVerification, FindingView, ScanArea, ScanCall, ScanDetail, ScanEntryPoint, ScanState, ScanView, SecurityOverview } from "../../web/src/api/types.ts";
+import type { FindingCall, FindingRef, FindingSeverity, FindingState, FindingSummary, FindingVerification, FindingView, ScanArea, ScanCall, ScanDetail, ScanEntryPoint, ScanState, ScanTestState, FindingScanTest, ScanView, SecurityOverview } from "../../web/src/api/types.ts";
 
 export const ACTIVE_STATES: ScanState[] = ["modeling", "scanning", "verifying"];
 /** Findings in these states are the scan's own bookkeeping, never listed. */
@@ -75,6 +75,19 @@ const summary = (r: FindingRow): FindingSummary => ({
   state: r.state, createdAt: r.created_at, updatedAt: r.updated_at,
 });
 
+/** The finding's scan test, or null when it has none. */
+export function scanTestOf(db: DatabaseSync, repo: string, n: number): FindingScanTest | null {
+  const r = db.prepare("SELECT state, detail, test_path, test_source FROM security_scan_tests WHERE repo = ? AND number = ?").get(repo, n) as { state: ScanTestState; detail: string | null; test_path: string; test_source: string } | undefined;
+  return r ? { state: r.state, detail: r.detail, path: r.test_path, source: r.test_source } : null;
+}
+
+/** Adds each finding's scan-test state; findings without a scan test (every finding while the switch is off) keep no key. */
+function withScanTests(db: DatabaseSync, rows: FindingSummary[]): FindingSummary[] {
+  if (!rows.length) return rows;
+  const states = new Map((db.prepare("SELECT repo, number, state FROM security_scan_tests").all() as { repo: string; number: number; state: ScanTestState }[]).map((t) => [`${t.repo}#${t.number}`, t.state]));
+  return states.size ? rows.map((r) => (states.has(`${r.repo}#${r.number}`) ? { ...r, scanTest: states.get(`${r.repo}#${r.number}`)! } : r)) : rows;
+}
+
 const SEVERITY_ORDER = "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END";
 
 /** Forgets the rounds of a finding's fix (it ended, ready or not) and removes the sessions they still keep. The rounds stay in security_fix_log, without patches. */
@@ -114,7 +127,7 @@ export function overview(db: DatabaseSync, repo: string): SecurityOverview {
   reconcileFindings(db, repo);
   const scans = (db.prepare("SELECT * FROM security_scans WHERE repo = ? ORDER BY id DESC LIMIT 20").all(repo) as ScanRow[]).map((r) => toScan(db, r));
   const findings = (db.prepare(`SELECT * FROM security_findings WHERE repo = ? AND state NOT IN (${HIDDEN}) ORDER BY ${SEVERITY_ORDER}, number LIMIT 500`).all(repo) as FindingRow[]).map(summary);
-  return { scans, findings };
+  return { scans, findings: withScanTests(db, findings) };
 }
 
 export const findingRow = (db: DatabaseSync, repo: string, n: number): FindingRow | undefined =>
@@ -123,7 +136,7 @@ export const findingRow = (db: DatabaseSync, repo: string, n: number): FindingRo
 export function toFinding(db: DatabaseSync, r: FindingRow): FindingView {
   const area = db.prepare("SELECT idx FROM security_areas WHERE scan_id = ? AND name = ?").get(r.scan_id, r.area) as { idx: number } | undefined;
   const calls = db.prepare(`SELECT kind, started_at, ended_at, ok, cost_usd FROM security_calls
-    WHERE scan_id = ? AND (kind = 'model' OR (kind = 'area' AND area_idx = ?) OR (kind IN ('verify', 'fix', 'review') AND finding_number = ?)) ORDER BY id`).all(r.scan_id, area?.idx ?? -1, r.number) as
+    WHERE scan_id = ? AND (kind = 'model' OR (kind = 'area' AND area_idx = ?) OR (kind IN ('verify', 'test', 'fix', 'review') AND finding_number = ?)) ORDER BY id`).all(r.scan_id, area?.idx ?? -1, r.number) as
     { kind: FindingCall["kind"]; started_at: string; ended_at: string | null; ok: number; cost_usd: number | null }[];
   const repeats = db.prepare("SELECT created_at FROM security_findings WHERE repo = ? AND duplicate_of = ? ORDER BY created_at").all(r.repo, r.number) as { created_at: string }[];
   const timeline: FindingCall[] = [
@@ -131,7 +144,7 @@ export function toFinding(db: DatabaseSync, r: FindingRow): FindingView {
     ...repeats.map((d): FindingCall => ({ kind: "duplicate", at: d.created_at, endedAt: null, ok: true, costUsd: null })),
   ].sort((a, b) => a.at.localeCompare(b.at));
   return {
-    ...summary(r), refs: parse<FindingRef[]>(r.refs, []), reach: r.reach, impact: r.impact, verification: parse<FindingVerification | null>(r.verification, null),
+    ...summary(r), scanTestResult: scanTestOf(db, r.repo, r.number), refs: parse<FindingRef[]>(r.refs, []), reach: r.reach, impact: r.impact, verification: parse<FindingVerification | null>(r.verification, null),
     fixDiff: r.fix_patch, fixPr: r.fix_pr, fixPrUrl: r.fix_pr === null ? null : `https://github.com/${r.fork ?? slugOf(r.repo)}/pull/${r.fix_pr}`,
     ghsaId: r.ghsa_id, advisoryUrl: r.ghsa_id ? `https://github.com/${slugOf(r.repo)}/security/advisories/${r.ghsa_id}` : null, note: r.note,
     reason: r.reason, decidedBy: r.decided_by,
@@ -214,6 +227,6 @@ export function scanDetail(db: DatabaseSync, r: ScanRow): ScanDetail {
   const areas = (db.prepare("SELECT idx, name, paths, risk, why, state, cost_usd FROM security_areas WHERE scan_id = ? ORDER BY idx").all(r.id) as
     { idx: number; name: string; paths: string; risk: number; why: string | null; state: string; cost_usd: number }[])
     .map((a): ScanArea => ({ idx: a.idx, name: a.name, risk: a.risk, why: a.why, paths: parse<string[]>(a.paths, []), state: a.state === "done" || a.state === "failed" ? a.state : runningAreas.has(a.idx) ? "running" : "pending", costUsd: a.cost_usd }));
-  const findings = (db.prepare(`SELECT * FROM security_findings WHERE scan_id = ? AND state NOT IN (${HIDDEN}) ORDER BY ${SEVERITY_ORDER}, number`).all(r.id) as FindingRow[]).map(summary);
+  const findings = withScanTests(db, (db.prepare(`SELECT * FROM security_findings WHERE scan_id = ? AND state NOT IN (${HIDDEN}) ORDER BY ${SEVERITY_ORDER}, number`).all(r.id) as FindingRow[]).map(summary));
   return { scan: toScan(db, r), summary: model.summary ?? null, entryPoints: model.entryPoints ?? [], areas, calls, findings };
 }

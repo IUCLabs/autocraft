@@ -5,11 +5,14 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { FindingVerification } from "../../web/src/api/types.ts";
+import { featureOn } from "../build/features.ts";
 import { audit } from "../dash/audit.ts";
+import type { CratesResult } from "../verify/crates.ts";
+import { writeAndQueue } from "./scantest.ts";
 import { ACTIVE_STATES, findingKey, finishScan, scanRow } from "./store.ts";
 import {
-  securityRepo, parseCandidates, parseThreatModel, parseVerdict, survives, titleKey,
-  type Candidate, type SecurityAreaInput, type SecurityModelInput, type SecurityVerifyInput, type ThreatArea, type ThreatModel,
+  securityRepo, parseCandidates, parseScanTest, parseThreatModel, parseVerdict, survives, titleKey,
+  type Candidate, type SecurityAreaInput, type SecurityModelInput, type SecurityScanTestInput, type SecurityVerifyInput, type ThreatArea, type ThreatModel,
 } from "./rules.ts";
 
 /** One model call. `text` is null when the call gave no answer; `cost` is what it cost whatever the outcome, null when unknown. */
@@ -28,6 +31,10 @@ export type ScanDeps = {
   cancelled: () => boolean;
   log: (line: string) => void;
   progress?: (line: string) => void;
+  /** The model call that writes a finding's scan test (feature scan-tests); with `crates`, absent means no scan tests. */
+  writeTest?: (input: SecurityScanTestInput) => Promise<Reply | null>;
+  /** The crates of the workspace at a commit, for placing a scan test. */
+  crates?: (repo: string, sha: string) => Promise<CratesResult>;
   /** Called when verify confirms finding `n`, to start its private fix. */
   confirmed?: (n: number) => Promise<unknown>;
 };
@@ -35,6 +42,7 @@ export type ScanDeps = {
 /** What a call is expected to cost before any has run, in dollars. The area guess grows with the size of the area's files. */
 export const MODEL_GUESS_USD = 2;
 export const VERIFY_GUESS_USD = 0.6;
+export const SCAN_TEST_GUESS_USD = 0.5;
 export const areaGuessUsd = (bytes: number): number => Math.min(6, 1 + bytes / 200_000);
 const BYTES_CAP = 2_000_000;
 const MAX_FILE = 2 * 1024 * 1024;
@@ -159,7 +167,7 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
   let areaGuess = areaGuessUsd(0);
 
   /** One call with the cap and stop checks before it; the call's cost goes to the scan and, for area work, to the area. */
-  async function call<T>(kind: "model" | "area" | "verify", expected: number, meta: { area?: number; finding?: number; bill?: number }, run: () => Promise<Reply | null>, readReply: (text: string) => T | null): Promise<{ value: T; cost: number } | null> {
+  async function call<T>(kind: "model" | "area" | "verify" | "test", expected: number, meta: { area?: number; finding?: number; bill?: number }, run: () => Promise<Reply | null>, readReply: (text: string) => T | null): Promise<{ value: T; cost: number } | null> {
     let spent = 0;
     for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
       if (stopped()) throw new Stopped();
@@ -287,7 +295,18 @@ export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps):
           const verdict = checked.value;
           const v: FindingVerification = { kind: "reasoning", result: verdict.result, notes: verdict.notes, score: verdict.score, proposedTest: verdict.proposedTest };
           db.prepare("UPDATE security_findings SET state = ?, verification = ?, updated_at = ? WHERE repo = ? AND number = ?").run(survives(verdict) ? "new" : "disproved", JSON.stringify(v), now(), repo, f.number);
-          if (survives(verdict)) await deps.confirmed?.(f.number);
+          if (survives(verdict)) {
+            // The test row is written before `confirmed`, so the automatic fix sees it and waits for the result.
+            if (verdict.proposedTest?.trim() && deps.writeTest && deps.crates && featureOn(db, "scan-tests")) {
+              const crates = await deps.crates(repo, co.sha).catch((e: Error): CratesResult => ({ ok: false, error: e.message }));
+              await writeAndQueue(db, {
+                repo, number: f.number, sha: co.sha, crates, proposedTest: verdict.proposedTest, log: deps.log,
+                finding: { title: f.c.title, severity: f.c.severity, refs: f.c.refs, reach: f.c.reach, impact: f.c.impact, area: area.name },
+                write: (input) => call("test", SCAN_TEST_GUESS_USD, { finding: f.number, bill: idx }, () => deps.writeTest!({ ...base, ...input }), parseScanTest),
+              });
+            }
+            await deps.confirmed?.(f.number);
+          }
         }
       }
       db.prepare("UPDATE security_areas SET state = CASE state WHEN 'failed' THEN 'failed' ELSE 'done' END WHERE scan_id = ? AND idx = ?").run(scanId, idx);

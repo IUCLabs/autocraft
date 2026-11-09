@@ -9,7 +9,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { BuildEnv, BuildFeatureState, ScreenshotSetups, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, TaskFilter, TaskPage, TaskState } from "../../../web/src/api/types.ts";
 import { absolute } from "../../build/artifacts.ts";
 import { BuildError, createEnv, listEnvs, rotateKey, updateEnv } from "../../build/envs.ts";
-import { FIX_CHECK_STEP, cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks.ts";
+import { PRIVATE_STEPS, PRIVATE_STEPS_SQL, cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks.ts";
 import { BUILD_FEATURES, REPO_SCOPED, featureStates, isFeature, setFeature } from "../../build/features.ts";
 import { ScreenshotConfigError, deleteConfig, listConfigs, putConfig } from "../../verify/screenshot-config.ts";
 import { audit } from "../audit.ts";
@@ -56,7 +56,7 @@ async function visibleTask(db: DatabaseSync, req: Req): Promise<BuildTaskDetail>
   if (!/^\d{1,15}$/.test(req.params.id ?? "")) throw new HttpError(400, "not a task id");
   const t = getTaskDetail(db, Number(req.params.id));
   // The same answer for a task that does not exist and one of a repo the viewer cannot see.
-  if (!t || (await hiddenRepos(db, req)).includes(t.repo) || (t.step === FIX_CHECK_STEP && !canSeeInternals(req))) throw new HttpError(404, "no such task");
+  if (!t || (await hiddenRepos(db, req)).includes(t.repo) || (PRIVATE_STEPS.includes(t.step) && !canSeeInternals(req))) throw new HttpError(404, "no such task");
   return t;
 }
 

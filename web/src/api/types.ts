@@ -2313,18 +2313,26 @@ export interface FindingSummary {
   state: FindingState;
   createdAt: string;
   updatedAt: string;
+  /** State of the finding's scan test; absent when it has none. */
+  scanTest?: ScanTestState;
 }
+
+/** building: the test is being built and run; confirmed: it fails on the pinned commit; not-shown: it passes there; could-not-build: it did not build or run. */
+export type ScanTestState = "building" | "confirmed" | "not-shown" | "could-not-build";
+/** A test the scan wrote for the finding and ran in the build worker on the pinned commit. */
+export interface FindingScanTest { state: ScanTestState; detail: string | null; path: string; source: string }
 
 export interface FindingRef { path: string; line: number; /** What the line shows; empty when the model gave none. */ claim: string }
 export interface FindingVerification { kind: "test" | "reasoning"; result: string; notes: string; /** Verify score, 1 to 10; null for a finding that was not verified. */ score: number | null; /** A failing test the model proposed; the scan does not run it. */ proposedTest: string | null }
 /** One event of the finding's scan that concerns it: the threat model, its area's scan, its verification (model calls, with cost), or a later scan that found it again (`duplicate`, no cost). */
-export interface FindingCall { kind: "model" | "area" | "verify" | "fix" | "review" | "duplicate"; at: string; endedAt: string | null; ok: boolean; costUsd: number | null }
+export interface FindingCall { kind: "model" | "area" | "verify" | "test" | "fix" | "review" | "duplicate"; at: string; endedAt: string | null; ok: boolean; costUsd: number | null }
 
 export interface FindingView extends FindingSummary {
   refs: FindingRef[];
   reach: string;
   impact: string;
   verification: FindingVerification | null;
+  scanTestResult: FindingScanTest | null;
   /** The unified diff of the private fix, once there is one. */
   fixDiff: string | null;
   fixPr: number | null;

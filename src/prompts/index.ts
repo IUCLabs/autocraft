@@ -32,9 +32,9 @@ import { PREPARE_BODY_LIMIT, PREPARE_REASON_MAX, PREPARE_SUMMARY_MAX, PREPARE_SU
 import { SAMPLE_COMPARE_ISSUES, SAMPLE_COMPARE_PRS, SAMPLE_CONFLICT_PRS, SAMPLE_DUPE_PAIRS, SAMPLE_FIXUP_PRS, SAMPLE_ITEMS, SAMPLE_OPUS_PRS, SAMPLE_PREMERGE_PRS } from "./samples.ts";
 import { QUOTE_WORDS, REFERENCE_JEV_ACCEPT, REFERENCE_JEV_REJECT, SAMPLE_REFERENCE_LINT, type ReferenceLintInput } from "../replylint.ts";
 import { LEVELS, LEVEL_MEANING } from "../priority/score.ts";
-import { SAMPLE_SECURITY_AREA, SAMPLE_SECURITY_FIX, SAMPLE_SECURITY_FIXCHECK, SAMPLE_SECURITY_MODEL, SAMPLE_SECURITY_VERIFY } from "../security/samples.ts";
-import { QUIET, SECURITY_AREA_TEMPLATE, SECURITY_FIXCHECK_TEMPLATE, SECURITY_FIX_TEMPLATE, SECURITY_MODEL_TEMPLATE, SECURITY_VERIFY_TEMPLATE } from "../security/prompts.ts";
-import { AREAS_MAX as SECURITY_AREAS_MAX, FIX_ROUNDS, MIN_CONFIDENCE, MIN_VERIFY_SCORE, type SecurityAreaInput, type SecurityFixCheckInput, type SecurityFixInput, type SecurityModelInput, type SecurityVerifyInput } from "../security/rules.ts";
+import { SAMPLE_SECURITY_AREA, SAMPLE_SECURITY_FIX, SAMPLE_SECURITY_FIXCHECK, SAMPLE_SECURITY_MODEL, SAMPLE_SECURITY_SCANTEST, SAMPLE_SECURITY_VERIFY } from "../security/samples.ts";
+import { QUIET, SCAN_TEST_RULE, SECURITY_AREA_TEMPLATE, SECURITY_FIXCHECK_TEMPLATE, SECURITY_FIX_TEMPLATE, SECURITY_MODEL_TEMPLATE, SECURITY_SCANTEST_TEMPLATE, SECURITY_VERIFY_TEMPLATE } from "../security/prompts.ts";
+import { AREAS_MAX as SECURITY_AREAS_MAX, FIX_ROUNDS, MIN_CONFIDENCE, MIN_VERIFY_SCORE, type SecurityAreaInput, type SecurityFixCheckInput, type SecurityFixInput, type SecurityModelInput, type SecurityScanTestInput, type SecurityVerifyInput } from "../security/rules.ts";
 import { CLAIM_COMMENT_TEMPLATE as FIXISSUE_CLAIM, COMMENT_TEMPLATE as FIXISSUE_COMMENT, PR_BODY_TEMPLATE, PR_TITLE_TEMPLATE } from "../fixissue/template.ts";
 import { MAX_FILES, MAX_PATHS, MAX_ROUNDS, ISSUE_BODY_LIMIT, SAMPLE_PATCH, SAMPLE_TRIAGE, TRIAGE_REASON_WORDS, type PatchInput, type TriageInput } from "../fixissue/types.ts";
 import { FOLLOW_UPS, ISSUE_BODY_CHARS, ISSUE_TITLE_CHARS, SAMPLE_ISSUE_DRAFT, SAMPLE_ISSUE_QUESTIONS, type IssueDraftInput, type IssueQuestionsInput } from "../discord/issue-prompt.ts";
@@ -1442,6 +1442,21 @@ const SECURITY_FIX: ClaudePrompt = {
   limits: { perCall: 1, attempts: 1, timeoutSeconds: 1800 },
 };
 
+const SECURITY_SCANTEST: ClaudePrompt = {
+  id: "security.scantest",
+  stage: "Security",
+  runner: "claude",
+  purpose: "Optional (the Run scan tests switch): writes the test file for a verified finding from the test Verify proposed. The build worker runs it on the pinned commit; a failing test marks the finding as shown, a passing one as not shown. The reply is never applied to the repository and never leaves the private finding.",
+  models: ["opus"],
+  effort: "medium",
+  placeholders: { finding: "The finding as a JSON object: project, commit, finding (title, severity, refs, reach, impact, area), crate (name and dir), test_path (the one file to write) and proposed_test (the test Verify proposed).", repo_access: "One sentence: the permission to read the repository checkout at the pinned commit." },
+  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 30 },
+  template: SECURITY_SCANTEST_TEMPLATE,
+  output: "The complete contents of one Rust test file, optionally in one fenced block.",
+  validation: `${CLAUDE_RESULT} The reply must contain a Rust test function and at most 150 lines. Our code turns it into a diff that adds exactly the one file at test_path, with the same check as a regression test, so the model's wording never reaches a diff header. An unreadable reply is asked once more; after that the finding has no scan test and goes on as without the switch.`,
+  limits: { perCall: 1, attempts: 2, timeoutSeconds: 900 },
+};
+
 const SECURITY_FIXCHECK: ClaudePrompt = {
   id: "security.fixcheck",
   stage: "Security",
@@ -1501,7 +1516,7 @@ Reply with ONLY one JSON object:
   extra: [{ label: "Run", value: "Outside the pipeline, once when someone presses File it and Jev is unsure or unavailable; no tools" }],
 };
 
-export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.screenshot": VERIFY_SCREENSHOT, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW, "premerge.opus": PREMERGE, "postmerge.opus": POSTMERGE, "dupes.compare-prs.opus": DUPES_COMPARE_PRS, "dupes.compare-issues.sonnet": DUPES_COMPARE_ISSUES, "decide.prepare": PREPARE, "conversation.turn": CONVERSATION, "areas.haiku": AREAS_HAIKU, "areas.propose": AREAS_PROPOSE, "areas.suggest": AREAS_SUGGEST, "discord.search": DISCORD_SEARCH, "discord.issue-questions": DISCORD_ISSUE_QUESTIONS, "discord.issue-draft": DISCORD_ISSUE_DRAFT, "discord.signal.haiku": DISCORD_SIGNAL_HAIKU, "discord.junk.haiku": DISCORD_JUNK_HAIKU, "fixup.conflict": FIXUP_CONFLICT, "lint.reference.haiku": REFERENCE_HAIKU, "cifix.patch": CIFIX, "mainfix.classify": MAINFIX_CLASSIFY, "security.model": SECURITY_MODEL, "security.area": SECURITY_AREA, "security.verify": SECURITY_VERIFY, "security.fix": SECURITY_FIX, "security.fixcheck": SECURITY_FIXCHECK } as const;
+export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.screenshot": VERIFY_SCREENSHOT, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW, "premerge.opus": PREMERGE, "postmerge.opus": POSTMERGE, "dupes.compare-prs.opus": DUPES_COMPARE_PRS, "dupes.compare-issues.sonnet": DUPES_COMPARE_ISSUES, "decide.prepare": PREPARE, "conversation.turn": CONVERSATION, "areas.haiku": AREAS_HAIKU, "areas.propose": AREAS_PROPOSE, "areas.suggest": AREAS_SUGGEST, "discord.search": DISCORD_SEARCH, "discord.issue-questions": DISCORD_ISSUE_QUESTIONS, "discord.issue-draft": DISCORD_ISSUE_DRAFT, "discord.signal.haiku": DISCORD_SIGNAL_HAIKU, "discord.junk.haiku": DISCORD_JUNK_HAIKU, "fixup.conflict": FIXUP_CONFLICT, "lint.reference.haiku": REFERENCE_HAIKU, "cifix.patch": CIFIX, "mainfix.classify": MAINFIX_CLASSIFY, "security.model": SECURITY_MODEL, "security.area": SECURITY_AREA, "security.verify": SECURITY_VERIFY, "security.fix": SECURITY_FIX, "security.scantest": SECURITY_SCANTEST, "security.fixcheck": SECURITY_FIXCHECK } as const;
 /** TypeSafe's published price per input token for jev-1.13.0, jev-1.14.0 and jev-latest ($0.042 per million); output tokens are free. */
 /** Models of the operator sessions that write text AutoCraft posts on their behalf (not a registered prompt's model): the security scan's questions. */
 export const OPERATOR_MODELS = { security: "claude-opus-5-5" } as const;
@@ -1514,7 +1529,7 @@ export type JevPromptId = keyof typeof JEV_PROMPTS;
 export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, FIXUP, VERIFY_PLAN, VERIFY_SCREENSHOT, VERIFY_SUMMARY, PRIORITY_JEV, PRIORITY_HAIKU, DUPES_JEV, DUPES_HAIKU, FIXISSUE_TRIAGE, FIXISSUE_PATCH, FIXUP_CHECK, FIXISSUE_CHECK, OPUS_REVIEW, PREMERGE, POSTMERGE, DUPES_COMPARE_PRS, DUPES_COMPARE_ISSUES, PREPARE, CONVERSATION, AREAS_JEV, AREAS_HAIKU, AREAS_PROPOSE, AREAS_SUGGEST, DISCORD_SEARCH, DISCORD_ISSUE_QUESTIONS, DISCORD_ISSUE_DRAFT, DISCORD_SIGNAL_JEV, DISCORD_SIGNAL_HAIKU, DISCORD_JUNK_JEV, DISCORD_JUNK_HAIKU, FIXUP_CONFLICT, REFERENCE_JEV, REFERENCE_HAIKU, CIFIX, MAINFIX_CLASSIFY, SECURITY_MODEL, SECURITY_AREA, SECURITY_VERIFY, SECURITY_FIX, SECURITY_FIXCHECK];
 
 /** What each Claude prompt is rendered from. */
-export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "fixup.patch": FixupPr[]; "verify.plan": VerifyPlanInput[]; "verify.screenshot": ScreenshotPlanInput[]; "verify.summary": VerifySummaryInput[]; "priority.haiku": Item[]; "dupes.haiku": DupePair[]; "fixissue.triage": TriageInput[]; "fixissue.patch": PatchInput[]; "fixup.check": FixupCheckInput[]; "fixissue.check": FixIssueCheckInput[], "review.opus": OpusPr[]; "premerge.opus": OpusPr[]; "postmerge.opus": PostmergePr[]; "dupes.compare-prs.opus": ComparePrs[]; "dupes.compare-issues.sonnet": CompareIssues[]; "decide.prepare": PrepareInput[]; "conversation.turn": ConversationInput[]; "areas.haiku": AreaAsk[]; "areas.propose": AreaProposeInput[]; "areas.suggest": AreaSuggestInput[]; "discord.search": PickInput[]; "discord.issue-questions": IssueQuestionsInput[]; "discord.issue-draft": IssueDraftInput[]; "discord.signal.haiku": SignalAsk[]; "discord.junk.haiku": JunkAsk[]; "fixup.conflict": ConflictPr[]; "lint.reference.haiku": ReferenceLintInput[]; "cifix.patch": CifixPr[]; "mainfix.classify": MainFixInput[]; "security.model": SecurityModelInput[]; "security.area": SecurityAreaInput[]; "security.verify": SecurityVerifyInput[]; "security.fix": SecurityFixInput[]; "security.fixcheck": SecurityFixCheckInput[] };
+export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "fixup.patch": FixupPr[]; "verify.plan": VerifyPlanInput[]; "verify.screenshot": ScreenshotPlanInput[]; "verify.summary": VerifySummaryInput[]; "priority.haiku": Item[]; "dupes.haiku": DupePair[]; "fixissue.triage": TriageInput[]; "fixissue.patch": PatchInput[]; "fixup.check": FixupCheckInput[]; "fixissue.check": FixIssueCheckInput[], "review.opus": OpusPr[]; "premerge.opus": OpusPr[]; "postmerge.opus": PostmergePr[]; "dupes.compare-prs.opus": ComparePrs[]; "dupes.compare-issues.sonnet": CompareIssues[]; "decide.prepare": PrepareInput[]; "conversation.turn": ConversationInput[]; "areas.haiku": AreaAsk[]; "areas.propose": AreaProposeInput[]; "areas.suggest": AreaSuggestInput[]; "discord.search": PickInput[]; "discord.issue-questions": IssueQuestionsInput[]; "discord.issue-draft": IssueDraftInput[]; "discord.signal.haiku": SignalAsk[]; "discord.junk.haiku": JunkAsk[]; "fixup.conflict": ConflictPr[]; "lint.reference.haiku": ReferenceLintInput[]; "cifix.patch": CifixPr[]; "mainfix.classify": MainFixInput[]; "security.model": SecurityModelInput[]; "security.area": SecurityAreaInput[]; "security.verify": SecurityVerifyInput[]; "security.fix": SecurityFixInput[]; "security.scantest": SecurityScanTestInput[]; "security.fixcheck": SecurityFixCheckInput[] };
 
 /** Pretty JSON for text a stranger wrote, safe inside a tagged frame: JSON leaves "<" alone, so "</pr>" in a body would close the tag. */
 export const untrustedJson = (v: unknown): string => JSON.stringify(v, null, 1).replace(/</g, "\\u003c");
@@ -1686,6 +1701,10 @@ const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string,
   },
   "security.fix": ([s]) => {
     const { repo_dir, repo: _r, number: _n, ...rest } = s!;
+    return { finding: untrustedJson(rest), repo_access: repoDir(repo_dir) + (rest.scan_test ? SCAN_TEST_RULE : "") };
+  },
+  "security.scantest": ([s]) => {
+    const { repo_dir, repo: _r, number: _n, ...rest } = s!;
     return { finding: untrustedJson(rest), repo_access: repoDir(repo_dir) };
   },
   "security.fixcheck": ([s]) => {
@@ -1733,6 +1752,7 @@ const EXAMPLES: { [K in ClaudePromptId]: { input: ClaudeInput[K]; refs: string[]
   "security.area": { input: withRepo(SAMPLE_SECURITY_AREA), refs: [] },
   "security.verify": { input: withRepo(SAMPLE_SECURITY_VERIFY), refs: [] },
   "security.fix": { input: withRepo(SAMPLE_SECURITY_FIX), refs: [] },
+  "security.scantest": { input: withRepo(SAMPLE_SECURITY_SCANTEST), refs: [] },
   "security.fixcheck": { input: withRepo(SAMPLE_SECURITY_FIXCHECK), refs: [] },
 };
 

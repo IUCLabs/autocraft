@@ -144,7 +144,26 @@ export type SecurityFixInput = Base & {
   /** The test Verify proposed; the regression test follows it where it can. */
   proposed_test: string | null;
   previous?: { patch: string; failure: string };
+  /** The scan's own test of the finding and what running it showed (feature scan-tests); absent when there is none. */
+  scan_test?: { result: "confirmed" | "not-shown" | "could-not-build"; path: string; source: string };
 };
+/** What the security.scantest prompt is rendered from: the finding, the crate that holds it and the test Verify proposed. */
+export type SecurityScanTestInput = Base & {
+  finding: { title: string; severity: string; refs: { path: string; line: number; claim: string }[]; reach: string; impact: string; area: string };
+  crate: { name: string; dir: string };
+  test_path: string;
+  proposed_test: string;
+};
+/** Lines of the test file the scan test may have; the file is added by a diff that the test patch check bounds the same way. */
+export const SCAN_TEST_MAX_LINES = 150;
+/** The test file in the model's reply: the whole reply, or the one fenced block in it; null when it is empty or has no test function. */
+export function parseScanTest(text: string): string | null {
+  const fenced = /```(?:rust|rs)?[ \t]*\n([\s\S]*?)\n```/.exec(text);
+  const body = (fenced ? fenced[1]! : text).replace(/\r\n/g, "\n").trim();
+  if (!body || !/#\[(?:\w+::)*test\b/.test(body)) return null;
+  if (body.split("\n").length > SCAN_TEST_MAX_LINES) return null;
+  return `${body}\n`;
+}
 /** What the security.fixcheck prompt is rendered from: the private diff and the finding it fixes. */
 export type SecurityFixCheckInput = Base & {
   finding: { title: string; refs: { path: string; line: number; claim: string }[]; reach: string; impact: string };

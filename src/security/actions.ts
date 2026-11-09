@@ -2,6 +2,7 @@
 // functions check the state of the scan or finding and throw a SecurityError that carries an HTTP-style status.
 import type { DatabaseSync } from "node:sqlite";
 import type { FindingAction, FindingState, FindingView, ScanView } from "../../web/src/api/types.ts";
+import { featureOn } from "../build/features.ts";
 import { audit } from "../dash/audit.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
@@ -113,7 +114,8 @@ export async function actOnFindingAs(db: DatabaseSync, repo: string, n: number, 
 /**
  * Starts the private fix of each confirmed finding (of `repo`, or finding `n` of it) that has never had a fix job (a cancelled one does not count):
  * verify held it up, so the fix is ready when an operator opens it, and Land stays the operator's. A fix that fails
- * leaves the finding new with its note, for the operator's Fix. Returns how many fixes it queued.
+ * leaves the finding new with its note, for the operator's Fix. With the scan-tests switch on, a finding whose scan test is
+ * still building, or passed on the current code, waits for a person. Returns how many fixes it queued.
  */
 export async function autoFixConfirmed(db: DatabaseSync, repo?: string, n?: number): Promise<number> {
   // A fix whose job was cancelled (the pipeline was switched off) left the finding fixing; it goes back to new first.
@@ -122,6 +124,7 @@ export async function autoFixConfirmed(db: DatabaseSync, repo?: string, n?: numb
   const rows = db.prepare(`SELECT repo, number FROM security_findings f WHERE state = 'new' AND json_extract(verification, '$.score') >= ?
       AND (? IS NULL OR repo = ?) AND (? IS NULL OR number = ?)
       AND NOT EXISTS (SELECT 1 FROM jobs WHERE step = 'security-fix' AND state != 'cancelled' AND json_extract(params, '$.repo') = f.repo AND json_extract(params, '$.number') = f.number)
+      ${featureOn(db, "scan-tests") ? "AND NOT EXISTS (SELECT 1 FROM security_scan_tests t WHERE t.repo = f.repo AND t.number = f.number AND t.state IN ('building', 'not-shown'))" : ""}
       ORDER BY repo, number`).all(MIN_VERIFY_SCORE, repo ?? null, repo ?? null, n ?? null, n ?? null) as { repo: string; number: number }[];
   let queued = 0;
   for (const r of rows) {

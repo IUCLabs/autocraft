@@ -6,7 +6,7 @@ import { useQuery } from "../../api/client";
 import type { ScanArea, ScanCall, ScanDetail, ScanView } from "../../api/types";
 import { nowMs, span } from "../../lib/format";
 import { findingPath, scanPath } from "../../lib/links";
-import { FINDING_STATE, SEVERITY, SCAN_STATE, scanActive, sortFindings } from "../../lib/security";
+import { FINDING_STATE, SEVERITY, SCAN_STATE, SCAN_TEST, scanActive, sortFindings } from "../../lib/security";
 import { formatCost } from "../../lib/trace";
 import { useNow } from "../../lib/useNow";
 import type { ViewProps } from "../../registry/types";
@@ -92,7 +92,7 @@ const CALL_STATE: Record<ScanCall["state"], { label: string; tone: Tone }> = {
   done: { label: "Done", tone: "ok" },
   failed: { label: "Failed", tone: "bad" },
 };
-const KIND = { model: "Threat model", area: "Area scan", verify: "Verification", fix: "Fix", review: "Fix review", duplicate: "Found again" } as const;
+const KIND = { model: "Threat model", area: "Area scan", verify: "Verification", test: "Scan test", fix: "Fix", review: "Fix review", duplicate: "Found again" } as const;
 
 function ThreatModel({ d }: { d: ScanDetail }) {
   if (!d.summary && !d.areas.length) return null;
@@ -201,7 +201,7 @@ export function ScanView({ params }: ViewProps) {
                     <Badge tone={sev.tone} className="mt-0.5 w-16 justify-center">{sev.label}</Badge>
                     <span className="min-w-0 flex-1">
                       <span className="block break-words text-sm [overflow-wrap:anywhere]">{f.title}</span>
-                      <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/55"><span className="num">{f.area}</span><Badge tone={st.tone}>{st.label}</Badge></span>
+                      <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/55"><span className="num">{f.area}</span><Badge tone={st.tone}>{st.label}</Badge>{f.scanTest && <Badge tone={SCAN_TEST[f.scanTest].tone}>{SCAN_TEST[f.scanTest].label}</Badge>}</span>
                     </span>
                   </Link>
                 </li>

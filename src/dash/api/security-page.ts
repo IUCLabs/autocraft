@@ -113,7 +113,7 @@ export async function securityFindings(db: DatabaseSync, req: Req): Promise<Secu
   return { groups: GROUPS.map((group) => ({ group, rows: rows.filter((r) => GROUP[r.state] === group).sort(byRank) })).filter((g) => g.rows.length) };
 }
 
-const STEP: Record<string, string> = { area: "Area scan", verify: "Verification", model: "Threat model", fix: "Fix", review: "Fix review", duplicate: "Found again" };
+const STEP: Record<string, string> = { area: "Area scan", verify: "Verification", test: "Scan test", model: "Threat model", fix: "Fix", review: "Fix review", duplicate: "Found again" };
 
 function history(f: FindingView): HistoryEntry[] {
   return f.timeline.map((c, i) => ({

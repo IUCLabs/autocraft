@@ -425,10 +425,14 @@ const FILTER_STATES = ["queued", "claimed", "running", "done", "failed", "cancel
 
 /** The step of a security fix's builds: its tasks run under the finding's real repo, so viewers must not see them. */
 export const FIX_CHECK_STEP = "fix-check";
+/** Steps whose tasks hold a private finding: staff only. */
+export const PRIVATE_STEPS = [FIX_CHECK_STEP, "scan-test"];
+/** SQL for the steps hidden from viewers, for `step NOT IN (...)`. */
+export const PRIVATE_STEPS_SQL = PRIVATE_STEPS.map((x) => `'${x}'`).join(", ");
 
 /** Newest first, keyset-paged by id. `hidden` repos are left out, and the security fix's tasks unless `staff`. */
 export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = [], staff = true): TaskPage {
-  const where: string[] = staff ? [] : [`t.step <> '${FIX_CHECK_STEP}'`];
+  const where: string[] = staff ? [] : [`t.step NOT IN (${PRIVATE_STEPS_SQL})`];
   const params: Record<string, SQLInputValue> = {};
   const hide = excludeHidden("t.repo", hidden, params);
   if (hide) where.push(hide);
@@ -457,7 +461,7 @@ export type { BuildSummary };
 export function summary(db: DatabaseSync, hidden: string[] = [], staff = true): BuildSummary {
   const params: Record<string, SQLInputValue> = {};
   const hide = excludeHidden("repo", hidden, params);
-  const c = db.prepare(`SELECT COALESCE(SUM(state = 'queued'), 0) AS queued, COALESCE(SUM(state IN ('claimed', 'running')), 0) AS running FROM build_tasks WHERE state IN ('queued', 'claimed', 'running')${staff ? "" : ` AND step <> '${FIX_CHECK_STEP}'`}${hide ? ` AND ${hide}` : ""}`).get(params) as { queued: number; running: number };
+  const c = db.prepare(`SELECT COALESCE(SUM(state = 'queued'), 0) AS queued, COALESCE(SUM(state IN ('claimed', 'running')), 0) AS running FROM build_tasks WHERE state IN ('queued', 'claimed', 'running')${staff ? "" : ` AND step NOT IN (${PRIVATE_STEPS_SQL})`}${hide ? ` AND ${hide}` : ""}`).get(params) as { queued: number; running: number };
   const all = db.prepare("SELECT * FROM build_envs WHERE enabled = 1 AND last_seen_at > ?").all(new Date(Date.now() - 60_000).toISOString()) as { slots: number; reported_slots: number | null; id: string }[];
   const used = db.prepare("SELECT env_id AS id, COUNT(*) AS n FROM build_tasks WHERE state IN ('claimed', 'running') GROUP BY env_id").all() as { id: string; n: number }[];
   const byEnv = new Map(used.map((u) => [u.id, u.n]));

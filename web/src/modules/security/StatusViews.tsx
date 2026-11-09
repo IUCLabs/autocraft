@@ -13,7 +13,7 @@ import { Section } from "../../ui/molecules/Section";
 import { StatusLine } from "../../ui/molecules/StatusLine";
 import { SecurityPage } from "./SecurityPage";
 import { cn } from "../../ui/cn";
-import { FINDING_STATE, SEVERITY } from "../../lib/security";
+import { FINDING_STATE, SCAN_TEST, SEVERITY } from "../../lib/security";
 import { formatCost } from "../../lib/trace";
 import { findingPath, githubBlobUrl } from "../../lib/links";
 import { useUser } from "../../shell/UserContext";
@@ -181,6 +181,12 @@ function FindingAutoCraft({ d }: { d: FindingPageData }) {
           <H>Verification</H>
           <div className="flex flex-wrap items-center gap-2 text-sm"><Badge tone={f.verification.kind === "test" ? "ok" : "neutral"}>{f.verification.kind === "test" ? "Test" : "Reasoning"}</Badge>{f.verification.score !== null && <Badge tone="ok"><span className="num">{f.verification.score}/10</span></Badge>}<span>{f.verification.result}</span></div>
           {f.verification.proposedTest && <CodeBlock className="mt-2" title="Proposed test" text={f.verification.proposedTest} lines={10} />}
+          {f.scanTestResult && (
+            <>
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm"><Badge tone={SCAN_TEST[f.scanTestResult.state].tone}>{SCAN_TEST[f.scanTestResult.state].label}</Badge>{f.scanTestResult.detail && <span className="text-ink/70">{f.scanTestResult.detail}</span>}</div>
+              <CodeBlock className="mt-2" title="Scan test" text={f.scanTestResult.source} lines={10} />
+            </>
+          )}
         </section>
       )}
       <section className="px-4 py-4 md:px-6">

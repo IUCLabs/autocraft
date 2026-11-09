@@ -1,6 +1,6 @@
 // Mock security deep scan: a running, a capped and a done scan, and findings in several states.
 import type { Api } from "../client";
-import type { FindingAction, FindingCall, FindingState, FindingView, FindingSummary, ScanArea, ScanCall, ScanDetail, ScanView, User } from "../types";
+import type { FindingAction, FindingCall, FindingScanTest, FindingState, FindingView, FindingSummary, ScanArea, ScanCall, ScanDetail, ScanView, User } from "../types";
 import { NOW } from "./fixtures";
 
 const iso = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -19,6 +19,9 @@ function scans(): ScanView[] {
   ];
 }
 
+const withTest = (t: FindingScanTest): Pick<FindingView, "scanTest" | "scanTestResult"> => ({ scanTest: t.state, scanTestResult: t });
+const TEST_SOURCE = "use doc_io::open_bytes;\n\n#[test]\nfn oversize_chunk_is_rejected() {\n    let doc = chunk_with_len(u32::MAX);\n    assert!(open_bytes(&doc).is_err());\n}\n\nfn chunk_with_len(len: u32) -> Vec<u8> {\n    let mut v = b\"DOC1\".to_vec();\n    v.extend_from_slice(&len.to_le_bytes());\n    v\n}\n";
+
 function findings(): FindingView[] {
   const f = (number: number, p: Partial<FindingView> & Pick<FindingView, "title" | "severity" | "state" | "area">): FindingView => ({
     repo: "designcraft", number, key: `designcraft:finding:${number}`, scanId: 1, urgent: false, createdAt: iso(9 * 1440 - 60), updatedAt: iso(9 * 1440 - 60 + number * 700),
@@ -26,18 +29,20 @@ function findings(): FindingView[] {
     reach: "The file is opened from the Open dialog, a recent-files entry or a double click in the file manager. The reader passes the length field of each chunk straight to the allocator.",
     impact: "A crafted document makes the reader write outside its buffer while the file opens.",
     verification: { kind: "reasoning", result: "Confirmed by reading the code path", notes: "No bound check between the chunk header and the copy at open.rs:218.", score: 9, proposedTest: null },
-    reason: null, decidedBy: null, fixPr: null, fixPrUrl: null, ghsaId: null, advisoryUrl: null, note: null, fixDiff: null,
+    reason: null, decidedBy: null, scanTestResult: null, fixPr: null, fixPrUrl: null, ghsaId: null, advisoryUrl: null, note: null, fixDiff: null,
     timeline: [call("model", 9 * 1440 - 70, 0.82), call("area", 9 * 1440 - 20, 1.34), call("verify", 9 * 1440 - 40, 0.61)],
     ...p,
   });
   return [
     f(1, {
+      timeline: [call("model", 9 * 1440 - 70, 0.82), call("area", 9 * 1440 - 20, 1.34), call("verify", 9 * 1440 - 40, 0.61), call("test", 9 * 1440 - 43, 0.38)],
+      ...withTest({ state: "confirmed", detail: "The test failed on the pinned commit.", path: "crates/doc-io/tests/autocraft_regression_5d0c9a41e2.rs", source: TEST_SOURCE }),
       title: "Chunk length in document files is trusted when copying into the read buffer", severity: "critical", urgent: true, state: "new", area: "doc-io",
       refs: [{ path: "crates/doc-io/src/open.rs", line: 212, claim: "Length is read from the chunk header" }, { path: "crates/doc-io/src/chunk.rs", line: 57, claim: "Passed to the allocator unchecked" }, { path: "crates/doc-io/src/open.rs", line: 218, claim: "Copied into the buffer" }],
       verification: { kind: "test", result: "A failing test reproduces it", notes: "The reader aborts on a 4 GiB chunk length.", score: 10, proposedTest: "#[test]\nfn open_rejects_oversize_chunk() {\n    let doc = doc_with_chunk_len(u32::MAX);\n    assert!(open(&doc).is_err());\n}" },
     }),
-    f(2, { title: "Plugin loader runs scripts from a document's embedded folder", severity: "high", state: "new", area: "plugins", refs: [{ path: "crates/plugins/src/load.rs", line: 88, claim: "" }], reach: "A document can ship a plugins folder. The loader scans it on open and runs every script it finds.", impact: "Opening a document runs code from it with the user's rights." }),
-    f(3, { title: "Font parser accepts table offsets past the end of the file", severity: "high", state: "fixing", area: "fonts", decidedBy: "kiri-n", refs: [{ path: "crates/fonts/src/sfnt.rs", line: 143, claim: "" }] }),
+    f(2, { ...withTest({ state: "not-shown", detail: "The proposed test passes on the current code.", path: "crates/plugins/tests/autocraft_regression_71ab03c9d4.rs", source: TEST_SOURCE }), title: "Plugin loader runs scripts from a document's embedded folder", severity: "high", state: "new", area: "plugins", refs: [{ path: "crates/plugins/src/load.rs", line: 88, claim: "" }], reach: "A document can ship a plugins folder. The loader scans it on open and runs every script it finds.", impact: "Opening a document runs code from it with the user's rights." }),
+    f(3, { ...withTest({ state: "building", detail: null, path: "crates/fonts/tests/autocraft_regression_0e9b3f6a17.rs", source: TEST_SOURCE }), title: "Font parser accepts table offsets past the end of the file", severity: "high", state: "fixing", area: "fonts", decidedBy: "kiri-n", refs: [{ path: "crates/fonts/src/sfnt.rs", line: 143, claim: "" }] }),
     f(4, {
       title: "Update check follows redirects to any host", severity: "medium", state: "ready", area: "updater", decidedBy: "kiri-n", refs: [{ path: "crates/updater/src/check.rs", line: 61, claim: "" }],
       fixDiff: "--- a/crates/updater/src/check.rs\n+++ b/crates/updater/src/check.rs\n@@ -58,4 +58,6 @@\n-    let client = Client::new();\n+    let client = Client::builder()\n+        .redirect(Policy::none())\n+        .build()?;\n",
@@ -58,6 +63,7 @@ function findings(): FindingView[] {
       fixDiff: "--- a/crates/templates/src/import.rs\n+++ b/crates/templates/src/import.rs\n@@ -52,3 +52,5 @@\n-    let data = fs::read(base.join(rel))?;\n+    let path = base.join(rel).canonicalize()?;\n+    let data = fs::read(path)?;\n",
     }),
     f(11, {
+      ...withTest({ state: "could-not-build", detail: "the build step failed before the test ran", path: "crates/ipc/tests/autocraft_regression_c2f84a60b9.rs", source: TEST_SOURCE }),
       title: "Recent-files list opens paths without checking the file type", severity: "high", state: "new", area: "ipc", refs: [{ path: "crates/ipc/src/recent.rs", line: 33, claim: "" }],
       note: "Round 3 failed: the regression test passes without the fix, so it does not show the defect.",
     }),
@@ -72,6 +78,8 @@ const AREAS: [name: string, risk: number, why: string][] = [
   ["fonts", 3, "Parses font tables from documents and the system"],
   ["updater", 3, "Fetches and applies releases over the network"],
   ["ipc", 2, "Handles deep links and local sockets"],
+  ["images", 2, "Decodes image files placed in documents"],
+  ["templates", 2, "Imports templates and the files they reference"],
 ];
 
 /** Threat model, calls and findings of a mock scan; scan 3 is mid-run with its third area running. */
@@ -95,7 +103,7 @@ function detailOf(scan: ScanView, fs: FindingView[]): ScanDetail {
     }
   }
   if (running && done < total) calls.push({ id: id++, kind: "area", areaName: areas[done]!.name, findingNumber: null, state: "running", startedAt: at(min), endedAt: null, costUsd: null, runId: run++, progress: "Reading crates/bundles/src/unpack.rs" });
-  const mine = fs.filter((f) => f.scanId === scan.id).map((f): FindingSummary => ({ repo: f.repo, number: f.number, key: f.key, scanId: f.scanId, title: f.title, severity: f.severity, urgent: f.urgent, area: f.area, state: f.state, createdAt: f.createdAt, updatedAt: f.updatedAt }));
+  const mine = fs.filter((f) => f.scanId === scan.id).map((f): FindingSummary => ({ repo: f.repo, number: f.number, key: f.key, scanId: f.scanId, title: f.title, severity: f.severity, urgent: f.urgent, area: f.area, state: f.state, createdAt: f.createdAt, updatedAt: f.updatedAt, ...(f.scanTest && { scanTest: f.scanTest }) }));
   return {
     scan, summary: "A desktop document editor that opens files from disk, downloads, plugins and deep links; most of the risk sits in the file readers and the plugin loader.",
     entryPoints: [{ name: "Open document", kind: "file-open", where: "crates/doc-io/src/open.rs:40" }, { name: "Deep link", kind: "url-handler", where: "crates/ipc/src/deeplink.rs:12" }, { name: "Update check", kind: "network", where: "crates/updater/src/check.rs:20" }],
@@ -114,7 +122,7 @@ export function createSecurityMock(me: User, changed: () => void): Pick<Api, "se
   };
   const sc = scans();
   const fs = findings();
-  const summary = (f: FindingView): FindingSummary => ({ repo: f.repo, number: f.number, key: f.key, scanId: f.scanId, title: f.title, severity: f.severity, urgent: f.urgent, area: f.area, state: f.state, createdAt: f.createdAt, updatedAt: f.updatedAt });
+  const summary = (f: FindingView): FindingSummary => ({ repo: f.repo, number: f.number, key: f.key, scanId: f.scanId, title: f.title, severity: f.severity, urgent: f.urgent, area: f.area, state: f.state, createdAt: f.createdAt, updatedAt: f.updatedAt, ...(f.scanTest && { scanTest: f.scanTest }) });
   const find = (repo: string, n: number) => {
     const f = fs.find((x) => x.repo === repo && x.number === n);
     if (!f) throw new Error("Not found");

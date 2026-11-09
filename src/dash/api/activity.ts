@@ -2,7 +2,7 @@
 // rows by time through an index (never every event of every item), the sources are merged and cut to the page, and the
 // cursor is time + id. The row to event mapping is the item trace's (trace.ts).
 import { createHash } from "node:crypto";
-import { FIX_CHECK_STEP } from "../../build/tasks.ts";
+import { PRIVATE_STEPS_SQL } from "../../build/tasks.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { ActivityEvent, ActivityItem, ActivityPage, TraceKind } from "../../../web/src/api/types.ts";
 import { getDecision, reposOf } from "../../decisions.ts";
@@ -91,7 +91,7 @@ export const SOURCES: Source[] = [
     }),
   },
   plain<Parameters<typeof checkEvent>[0] & At>("check", "model_checks", "started_at", "repo, number, id, run_id, step, head, command, crate, test_name, task_id, outcome, started_at", checkEvent),
-  plain<Parameters<typeof taskEvent>[0] & At>("check", "build_tasks", "queued_at", "repo, number, id, job_id, step, head_sha, state, summary, queued_at", taskEvent, { where: `step <> '${FIX_CHECK_STEP}'` }),
+  plain<Parameters<typeof taskEvent>[0] & At>("check", "build_tasks", "queued_at", "repo, number, id, job_id, step, head_sha, state, summary, queued_at", taskEvent, { where: `step NOT IN (${PRIVATE_STEPS_SQL})` }),
   plain<Parameters<typeof pushEvent>[0] & At>("check", "push_outcomes", "at", "repo, number, id, at, stage, action, to_oid, before_res, after_res, outcome", pushEvent),
   plain<Parameters<typeof patchCheckEvent>[0] & At>("check", "patch_checks", "created_at", "repo, number, id, kind, subject, round, verdict, model, reasons, created_at", patchCheckEvent),
   plain<OpusRow & At & { rowid: number }>("review", "opus_review_history", "at", "repo, number, rowid, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, claims", (r) => opusEvent(r, `opus:${r.rowid}`)),
