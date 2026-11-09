@@ -2560,3 +2560,26 @@ export type SecurityGroup = "Needs a person" | "Fixing" | "Ready to land" | "Lan
 export interface SecurityList { groups: { group: SecurityGroup; rows: FindingRow[] }[] }
 export interface FixRound { round: number; outcome: "passed" | "failed"; why: string; at: string; costUsd: number }
 export interface FindingPageData { finding: FindingView; /** The finding's open question and its choices, in the shape decisions use; null when nothing is open. */ decision: Decision | null; choices: DecisionChoices | null; status: ItemStatus; attempts: number; rounds: FixRound[]; history: HistoryEntry[]; costUsd: number }
+
+export type DownloadsRange = "all" | "today" | "yesterday" | "7d" | "30d" | "90d" | "12m" | "1h" | "3h" | "6h" | "12h";
+
+export interface DownloadsBar { key: string; label: string; count: number }
+
+export interface DownloadsReport {
+  range: DownloadsRange;
+  from: string | null;
+  to: string;
+  /** First recorded poll; ranges starting earlier only count from here. Null before the first poll. */
+  historyFrom: string | null;
+  apps: { repo: string; name: string }[];
+  totals: { downloads: number; issuesOpened: number; issuesClosed: number; prsMerged: number; stars: number; issuesPer1k: number | null };
+  /** `stars` is gained in the range, or the total for "all". */
+  byApp: { repo: string; name: string; downloads: number; stars: number }[];
+  platforms: DownloadsBar[];
+  processors: DownloadsBar[];
+  formats: DownloadsBar[];
+  /** Top 7 releases ("<App> v<x>") and "Other versions". */
+  versions: DownloadsBar[];
+  /** Newest 50. */
+  releases: { repo: string; app: string; tag: string; publishedAt: string; latest: boolean; downloads: number; issues: number; per1k: number | null }[];
+}

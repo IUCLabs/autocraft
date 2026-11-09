@@ -9,6 +9,7 @@ import { progressModule } from "../modules/progress";
 import { itemsModule } from "../modules/items";
 import { classifiersModule } from "../modules/classifiers";
 import { costModule } from "../modules/cost";
+import { downloadsModule } from "../modules/downloads";
 import { accessModule, auditModule, contributorsModule, githubAppModule, discordModule, reposModule } from "../modules/admin";
 import { aboutModule } from "../modules/about";
 import { connectModule } from "../modules/connect";
@@ -28,4 +29,4 @@ import { securityModule } from "../modules/security";
 import { homeModule } from "../modules/home";
 import { hubModule } from "../modules/hub";
 
-export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, stuckModule, batchModule, securityModule];
+export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, downloadsModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, stuckModule, batchModule, securityModule];
