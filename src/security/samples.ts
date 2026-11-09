@@ -1,5 +1,5 @@
 // Made-up input for the Prompts page examples of the security prompts.
-import { securityRepo, type SecurityAreaInput, type SecurityFixCheckInput, type SecurityFixInput, type SecurityModelInput, type SecurityVerifyInput } from "./rules.ts";
+import { securityRepo, type SecurityAreaInput, type SecurityFixCheckInput, type SecurityFixInput, type SecurityModelInput, type SecurityScanTestInput, type SecurityVerifyInput } from "./rules.ts";
 
 const base = { repo: securityRepo("photocraft"), number: 1, project: "photocraft", commit: "0123456789abcdef0123456789abcdef01234567" } as const;
 const entry = { name: "Open PSD file", kind: "file-open", where: "src/open.rs:40" };
@@ -27,4 +27,8 @@ export const SAMPLE_SECURITY_FIX: SecurityFixInput[] = [{
 export const SAMPLE_SECURITY_FIXCHECK: SecurityFixCheckInput[] = [{
   ...base, finding: found, test_path: "crates/psd/tests/autocraft_regression_3f2a9c1b7e.rs",
   patch: "diff --git a/crates/psd/src/layer.rs b/crates/psd/src/layer.rs\n--- a/crates/psd/src/layer.rs\n+++ b/crates/psd/src/layer.rs\n@@ -112,3 +112,6 @@\n     let len = reader.read_u32()? as usize;\n+    if len > reader.remaining() {\n+        return Err(Error::Truncated);\n+    }\n     copy_layer(&mut buf, reader, len)\n",
+}];
+export const SAMPLE_SECURITY_SCANTEST: SecurityScanTestInput[] = [{
+  ...base, finding: { ...found, severity: "high", area: "PSD reader" }, crate: { name: "psd", dir: "crates/psd" }, test_path: "crates/psd/tests/autocraft_regression_8c41d07e52.rs",
+  proposed_test: "A layer record whose length field is larger than the remaining data is rejected with an error.",
 }];

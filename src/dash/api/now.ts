@@ -2,7 +2,7 @@
 // Every query leaves out repos the viewer cannot see, as the pipeline, agents and build endpoints do.
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef, ItemShown, Now, NowEntry, NowFeed, NowHealth, NowProblem } from "../../../web/src/api/types.ts";
-import { FIX_CHECK_STEP } from "../../build/tasks.ts";
+import { PRIVATE_STEPS_SQL } from "../../build/tasks.ts";
 import { listAccounts } from "../../agents/accounts.ts";
 import { jevEnabled, jevOutage } from "../../agents/jev.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
@@ -226,7 +226,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
     }
     for (const t of all<{ id: number; job_id: number | null; step: string; repo: string; number: number | null; state: string; queued_at: string; started_at: string | null; summary: string | null; label: string | null }>(db,
       `SELECT t.id, t.job_id, t.step, t.repo, t.number, t.state, t.queued_at, t.started_at, t.summary, e.label FROM build_tasks t LEFT JOIN build_envs e ON e.id = t.env_id
-       WHERE t.state IN ('queued', 'claimed', 'running')${notHidden("t.repo", hidden)}${staff ? "" : ` AND t.step <> '${FIX_CHECK_STEP}'`} ORDER BY t.id`, ...hidden)) {
+       WHERE t.state IN ('queued', 'claimed', 'running')${notHidden("t.repo", hidden)}${staff ? "" : ` AND t.step NOT IN (${PRIVATE_STEPS_SQL})`} ORDER BY t.id`, ...hidden)) {
       const one = t.number === null ? null : item(t.repo, t.number);
       placeChild(t.job_id, base({
         key: `task:${t.id}`, kind: "task", state: t.state === "queued" ? "queued" : "running", at: t.started_at ?? t.queued_at, title: `Build task, ${stepTitle(t.step)}`, what: t.label, progress: t.summary,
@@ -315,7 +315,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
       title: `${stepTitle(r.step)}: model call failed${r.error && staff ? `, ${clip(r.error, 100)}` : ""}` }));
   }
   const tasks = all<{ id: number; step: string; repo: string; number: number | null; state: string; at: string; summary: string | null }>(db,
-    `SELECT id, step, repo, number, state, COALESCE(ended_at, queued_at) AS at, summary FROM build_tasks WHERE state IN ('failed', 'lost') AND job_id IS NULL${staff ? "" : ` AND step <> '${FIX_CHECK_STEP}'`}${notHidden("repo", hidden)}${cut("COALESCE(ended_at, queued_at)")} ORDER BY at DESC LIMIT ?`, ...hidden, ...when, SCAN);
+    `SELECT id, step, repo, number, state, COALESCE(ended_at, queued_at) AS at, summary FROM build_tasks WHERE state IN ('failed', 'lost') AND job_id IS NULL${staff ? "" : ` AND step NOT IN (${PRIVATE_STEPS_SQL})`}${notHidden("repo", hidden)}${cut("COALESCE(ended_at, queued_at)")} ORDER BY at DESC LIMIT ?`, ...hidden, ...when, SCAN);
   bound(tasks);
   for (const t of tasks) {
     out.push(base({ key: `failed-task:${t.id}`, kind: "failure", state: "failed", at: t.at, repo: t.repo, item: t.number === null ? null : item(t.repo, t.number), event: t.number === null ? null : `task:${t.id}`, detail: `/envs/${t.id}`,

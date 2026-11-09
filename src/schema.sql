@@ -1757,6 +1757,24 @@ CREATE TABLE IF NOT EXISTS security_fix_rounds (
   PRIMARY KEY (repo, number, round)
 );
 
+-- The scan test of a finding (feature scan-tests): a test the model wrote from the verify step's proposed test, built and run
+-- in the worker on the pinned commit. state: building | confirmed (fails at its test step) | not-shown (passes on the current
+-- code) | could-not-build.
+CREATE TABLE IF NOT EXISTS security_scan_tests (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  test_path TEXT NOT NULL,
+  crate TEXT NOT NULL,
+  test_patch TEXT NOT NULL,           -- the diff that adds the test file
+  test_source TEXT NOT NULL,          -- the file as written
+  task_id INTEGER NOT NULL,
+  retried INTEGER NOT NULL DEFAULT 0, -- 1 once the task was queued again after an environment error
+  state TEXT NOT NULL DEFAULT 'building',
+  detail TEXT,
+  created_at TEXT NOT NULL,
+  ended_at TEXT,
+  PRIMARY KEY (repo, number)
+);
+
 -- The history of those rounds, kept when a fix ends (ready or given up), without the patches. attempt is the finding's
 -- fix_attempts at that time, so one finding's rounds group by attempt.
 CREATE TABLE IF NOT EXISTS security_fix_log (

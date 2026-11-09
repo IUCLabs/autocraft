@@ -29,7 +29,7 @@ import {
   FIX_RUN_BASE, FIX_ROUNDS, fixBranch, giveaway, parseFixReply, patchGiveaway, quietProblem, securityRepo,
   type SecurityFixCheckInput, type SecurityFixInput,
 } from "./rules.ts";
-import { advance, clearRounds, rawFinding, recordFixCall, scanRow } from "./store.ts";
+import { advance, clearRounds, rawFinding, recordFixCall, scanRow, scanTestOf } from "./store.ts";
 import { usageRunId } from "./real.ts";
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -143,6 +143,9 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     const base = { repo: securityRepo(repo), number: FIX_RUN_BASE + n, project: repo, commit: sha, ...(checkout && { repo_dir: REPO_PATH }) };
     const finding = { title: row.title, severity: row.severity, refs, reach: row.reach, impact: row.impact, area: row.area };
     const run = usageRunId(row.scan_id);
+    // The scan's own test of the finding, once it has been run (feature scan-tests); no row, no key.
+    const ran = scanTestOf(db, repo, n);
+    const scanTest = ran && ran.state !== "building" ? { result: ran.state, path: ran.path, source: ran.source } : null;
     /** The rest of a round whose build passed: formatter changes, the fresh Opus review, the local commit. */
     const finalize = async (r: RoundRow, formatDiff: string | null): Promise<{ ok: true; summary: string } | { ok: false; why: string }> => {
       const v = validateFixPatch(r.patch, allowed, testPath, crate.dir, testName);
@@ -236,7 +239,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
         failRound(r.why, done.row.patch);
         continue;
       }
-      const input: SecurityFixInput = { ...base, finding, crate: { name: crate.name, dir: crate.dir }, test_path: testPath, proposed_test: verification?.proposedTest ?? null, ...(previous && { previous }) };
+      const input: SecurityFixInput = { ...base, finding, crate: { name: crate.name, dir: crate.dir }, test_path: testPath, proposed_test: verification?.proposedTest ?? null, ...(scanTest && { scan_test: scanTest }), ...(previous && { previous }) };
       const tool = new CheckTool({ db, step: "fix-check", repo, number: null, recordRepo: securityRepo(repo), head: sha, base: sha, applies: applyCheck(git, d.root, sha, (p) => refusal(validateFixPatch(p, allowed, testPath, crate.dir, testName))) });
       const started = new Date().toISOString();
       // A later round continues the earlier session within the window; `input` (with `previous`) is the new call it falls back to.
