@@ -18,6 +18,7 @@ import { withRealDecisions } from "./realDecisions";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
 import { semanticHits, similarFor } from "./similarFixtures";
+import { downloadsReport } from "./downloadsMock";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { pickDecision, shortRepo } from "../../lib/links";
 import { itemList, mockDiscordCount, mockDiscordLinks, settledFor } from "./itemsFixtures";
@@ -345,6 +346,7 @@ export function createMockApi(): Api {
       disagreements: (f) => wait(disagreementList(f), 60),
     },
     cost: (run) => wait(costReport(run), 80),
+    downloads: (range, app) => wait(downloadsReport(range, app), 80),
     ...createPipelineMock(me, changed),
     ...createAgentsMock(me, changed),
     ...createTraceMock(),

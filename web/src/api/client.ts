@@ -50,6 +50,8 @@ import type {
   ContributorList,
   ClassifierReport,
   CostReport,
+  DownloadsReport,
+  DownloadsRange,
   Decision,
   RepoAreas,
   Flow,
@@ -306,6 +308,8 @@ export interface Api {
   };
   /** Token use and spend for one run, or all runs when `run` is empty. */
   cost(run?: string): Promise<CostReport>;
+  /** Release downloads, issues, PRs and stars over a range; `app` is a repo name or "all". */
+  downloads(range: DownloadsRange, app: string): Promise<DownloadsReport>;
   /** The merge queue: every PR with a take or take-fix review at its head, and what it waits on. */
   queue(filter: QueueFilter): Promise<QueueList>;
   /** Per pipeline step, the items its next job takes, in order, and what each step waits on. */

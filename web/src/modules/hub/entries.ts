@@ -1,4 +1,4 @@
-import { BookOpenIcon, BroadcastIcon, FlowArrowIcon, BrainIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
+import { DownloadSimpleIcon, BookOpenIcon, BroadcastIcon, FlowArrowIcon, BrainIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
 import { modules } from "../../registry";
 import { can } from "../../registry/permissions";
 import type { User } from "../../api/types";
@@ -10,6 +10,7 @@ export const REPORTS: Entry[] = [
   { label: "Progress", to: "/progress", path: "progress", icon: ChartLineUpIcon },
   { label: "Activity", to: "/activity", path: "activity", icon: ClockCounterClockwiseIcon },
   { label: "Cost", to: "/cost", path: "cost", icon: CoinsIcon },
+  { label: "Downloads", to: "/downloads", path: "downloads", icon: DownloadSimpleIcon },
   { label: "Rates", to: "/rates", path: "rates", icon: GaugeIcon },
   { label: "Model calls", to: "/agents", path: "agents", icon: RobotIcon },
   { label: "Classifiers", to: "/classifiers", path: "classifiers", icon: ScalesIcon },

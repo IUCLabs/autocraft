@@ -250,6 +250,7 @@ export function createHttpApi(): Api {
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),
     },
     cost: (run) => get(`/api/cost${qs({ run })}`),
+    downloads: (range, app) => get(`/api/downloads${qs({ range, app })}`),
     pipeline: {
       overview: () => get("/api/pipeline"),
       jobs: (f) => get(`/api/pipeline/jobs${qs(f)}`),
