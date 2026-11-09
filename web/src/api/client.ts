@@ -293,6 +293,7 @@ export interface Api {
     setChannel(channelId: string, watched: boolean): Promise<DiscordSetup>;
     setChannelRepo(channelId: string, repo: string | null): Promise<DiscordSetup>;
     setContact(contact: string): Promise<DiscordSetup>;
+    setReact(on: boolean): Promise<DiscordSetup>;
     removeLink(id: string): Promise<DiscordSetup>;
     account(): Promise<DiscordAccount>;
     unlinkOwn(): Promise<DiscordAccount>;

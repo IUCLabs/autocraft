@@ -103,6 +103,11 @@ export class RestClient implements DiscordRest {
     }
   }
 
+  /** Adds the bot's own reaction (a unicode emoji) to a message. */
+  async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    await this.#queue("PUT", `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`, undefined, true);
+  }
+
   async interactionCallback(interactionId: string, token: string, type: 4 | 5 | 8 | 9, data?: CallbackData): Promise<void> {
     const { ephemeral, ...rest } = data ?? {};
     // Autocomplete results (type 8) take only `choices`; a deferral (type 5) takes flags only; a modal (type 9) its own fields; a message (type 4) also takes content, components and allowed_mentions.
