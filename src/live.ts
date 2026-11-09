@@ -17,6 +17,8 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
   classifications: ["at", "input_hash"],
   pr_checks: ["fetched_at"],
   main_ci: ["updated_at"],
+  release_assets: ["updated_at"],
+  release_apps: ["updated_at"],
   ci_run_approvals: ["checked_at"],
   item_priority: ["at"],
   item_rank: ["computed_at"],
@@ -89,6 +91,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   // Discord mention counts and the bot's channel list; not planner input.
   discord: [{ table: "discord_mentions" }, { table: "discord_channels" }, { table: "discord_status" }],
   "discord-links": [{ table: "discord_links" }],
+  downloads: [{ table: "release_assets" }, { table: "release_apps" }, { table: "download_deltas" }, { table: "star_samples" }],
   // Operator and maintainer pages only; not planner input.
   security: [{ table: "security_scans" }, { table: "security_areas" }, { table: "security_findings" }, { table: "security_calls" }, { table: "security_fix_rounds" }, { table: "security_fix_log" }],
   postmerge: [{ table: "postmerge_reviews" }, { table: "postmerge_followups" }, { table: "premerge_reviews" }],

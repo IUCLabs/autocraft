@@ -39,6 +39,7 @@ import { now, nowFeed } from "./now.ts";
 import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
 import { activity } from "./activity.ts";
+import { downloads } from "./downloads.ts";
 import { itemPage } from "./item-page.ts";
 import { trace as itemTrace, traceDetail as itemTraceDetail } from "./trace.ts";
 import { postmergeOf } from "./postmerge.ts";
@@ -405,6 +406,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/items/:repo/:n", itemCore),
     get("/api/items/:repo/:n/page", itemPage),
     get("/api/activity", activity),
+    get("/api/downloads", downloads),
     get("/api/items/:repo/:n/trace", itemTrace),
     get("/api/items/:repo/:n/trace/event", itemTraceDetail),
     get("/api/items/:repo/:n/decision", dec.forItem),
