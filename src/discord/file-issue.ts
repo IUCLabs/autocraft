@@ -145,7 +145,7 @@ export async function fileIssue(deps: FileDeps, req: FileRequest, hooks: FileHoo
     const w = { db, login: tok.login, now: () => now };
     let made: { number: number; url: string };
     try {
-      made = await createReporterIssue(w, asUser, { repo: req.repo, login: tok.login, title, body: `${body}\n\n${FOOTER}` });
+      made = await createReporterIssue(w, asUser, { repo: req.repo, title, body: `${body}\n\n${FOOTER}` });
     } catch (e) {
       const err = String((e as Error).message ?? e);
       if (/HTTP 401|bad credentials/i.test(err)) {
@@ -158,7 +158,7 @@ export async function fileIssue(deps: FileDeps, req: FileRequest, hooks: FileHoo
     filed = true;
     db.prepare("UPDATE discord_filed SET number = ? WHERE rowid = ?").run(made.number, slot);
     // A label is a courtesy: GitHub refuses it when the repo has no such label or the account may not set labels.
-    await labelReporterIssue(w, asUser, { repo: req.repo, login: tok.login, number: made.number, label: LABEL[req.kind] });
+    await labelReporterIssue(w, asUser, { repo: req.repo, number: made.number, label: LABEL[req.kind] });
     return { status: "filed", number: made.number, url: made.url, login: tok.login };
   } finally {
     if (!filed) db.prepare("DELETE FROM discord_filed WHERE rowid = ?").run(slot);
