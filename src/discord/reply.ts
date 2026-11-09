@@ -1,5 +1,5 @@
-// What the bot says about search results: up to three lines, a GitHub link button for each, and a "File a new issue"
-// link button. Shared by ping replies and the commands.
+// What the bot says about search results: a line per match, a GitHub link button for each, and a "File a new issue"
+// button. Shared by ping replies and the commands.
 import type { DatabaseSync } from "node:sqlite";
 import type { Match } from "./search.ts";
 import { publicRepoNames } from "../public/status.ts";
@@ -7,6 +7,10 @@ import { formButtonId } from "./issue-draft.ts";
 import { trackedRepos } from "./store.ts";
 
 const TITLE_CHARS = 80;
+/** Discord refuses message content over 2,000 characters; matches that don't fit are left out with their buttons. */
+const CONTENT_CHARS = 1900;
+/** Discord allows five buttons per action row. */
+const ROW_BUTTONS = 5;
 
 const oneLine = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 /** Titles and reasons are plain text in the line: markdown characters are replaced so a title cannot format or link. */
@@ -26,12 +30,20 @@ export function fileRepoUrl(db: DatabaseSync, channelId: string | undefined, mat
 export type Rendered = { content: string; components: unknown[] };
 
 export function renderMatches(db: DatabaseSync, matches: Match[], question: string, channelId: string | undefined): Rendered {
-  const lines = matches.map((m) => `${m.repo}#${m.number} ${oneLine(plain(m.title), TITLE_CHARS)}${m.closed ? " (closed)" : ""}${m.reason ? `\n> ${plain(m.reason)}` : ""}`);
-  const buttons: unknown[] = matches.map((m) => ({ type: 2, style: 5, label: `${m.repo}#${m.number}`.slice(0, 80), url: m.url }));
-  const repo = fileRepoUrl(db, channelId, matches);
+  const lines: string[] = [];
+  const shown: Match[] = [];
+  let size = 0;
+  for (const m of matches) {
+    const line = `${m.repo}#${m.number} ${oneLine(plain(m.title), TITLE_CHARS)}${m.closed ? " (closed)" : ""}${m.reason ? `\n> ${plain(m.reason)}` : ""}`;
+    if (size + line.length + 1 > CONTENT_CHARS) break;
+    size += line.length + 1;
+    lines.push(line);
+    shown.push(m);
+  }
+  const buttons: unknown[] = shown.map((m) => ({ type: 2, style: 5, label: `${m.repo}#${m.number}`.slice(0, 80), url: m.url }));
+  const repo = fileRepoUrl(db, channelId, shown);
   if (repo) buttons.push({ type: 2, style: 2, label: "File a new issue", custom_id: formButtonId(repo.split("/").pop()!, question) });
-  return {
-    content: lines.length ? lines.join("\n") : "No matching issue found.",
-    components: buttons.length ? [{ type: 1, components: buttons }] : [],
-  };
+  const rows: unknown[] = [];
+  for (let i = 0; i < buttons.length; i += ROW_BUTTONS) rows.push({ type: 1, components: buttons.slice(i, i + ROW_BUTTONS) });
+  return { content: lines.length ? lines.join("\n") : "No matching issue found.", components: rows };
 }

@@ -20,6 +20,8 @@ export type PingMessage = {
 };
 type Role = { id: string; tags?: { bot_id?: string } };
 
+/** Matches in a public ping reply. */
+const PING_MATCHES = 3;
 const MENTION = /<@[!&]?\d+>/g;
 const strip = (s: string): string => s.replace(MENTION, " ").replace(/\s+/g, " ").trim();
 
@@ -96,7 +98,8 @@ export class Pings {
     this.#inflight.add(pingHash);
     try {
       const found = await search.find(question.slice(0, QUESTION_CHARS));
-      const r = renderMatches(db, found.matches, question, m.channel_id);
+      // A ping reply is public in the channel: the best few only.
+      const r = renderMatches(db, found.matches.slice(0, PING_MATCHES), question, m.channel_id);
       const quoted = quotedId ? keys.hash("message", quotedId) : null;
       // Deleted while the search ran: nothing to reply to.
       if (this.#deletedMeanwhile.has(pingHash) || (quoted && this.#deletedMeanwhile.has(quoted))) return;

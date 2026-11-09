@@ -1,7 +1,7 @@
-// The model step of Discord issue search: from the candidates the embedding search found, pick up to three that answer
+// The model step of Discord issue search: from the candidates the embedding search found, pick up to ten that answer
 // the question, each with a one-line reason. Pure; no Node imports (the Prompts page imports it).
-export const PICK_MAX = 3;
-export const PICK_CANDIDATES = 10;
+export const PICK_MAX = 10;
+export const PICK_CANDIDATES = 20;
 export const PICK_BODY_CHARS = 300;
 export const PICK_REASON_CHARS = 140;
 
