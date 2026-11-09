@@ -17,6 +17,8 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
   classifications: ["at", "input_hash"],
   pr_checks: ["fetched_at"],
   main_ci: ["updated_at"],
+  release_assets: ["updated_at"],
+  release_apps: ["updated_at"],
   ci_run_approvals: ["checked_at"],
   item_priority: ["at"],
   item_rank: ["computed_at"],
@@ -31,7 +33,7 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
 const BOOKKEEPING_SETTINGS = [
   "runner_heartbeat", "schema_stamp", "fts_built", "hashes_built", "mentions_built", "item_stage_built", "tracking_started_at",
   "pipeline_planned_at", "pipeline_seqs_seen", "pipeline_wake_at", "pipeline_status", "pipeline_sync_seen", "pipeline_sync_at", "pipeline_review_cursor", "pipeline_verify_cursor",
-  "full_sync_cursor", "org_high_water", "main_ci_polled_at", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining", "sync_rate_reset_at",
+  "full_sync_cursor", "org_high_water", "main_ci_polled_at", "releases_polled_at", "releases_offset", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining", "sync_rate_reset_at",
   "flow_summary_marks", "liveness_at", "liveness_open", "classify_run", "worker_update_pending", "worker_update_failures",
 ];
 const BOOKKEEPING_SETTING_LIKE = ["%\\_points\\_last\\_run", "pipeline\\_fp:%"];
@@ -89,6 +91,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   // Discord mention counts and the bot's channel list; not planner input.
   discord: [{ table: "discord_mentions" }, { table: "discord_channels" }, { table: "discord_status" }],
   "discord-links": [{ table: "discord_links" }],
+  downloads: [{ table: "release_assets" }, { table: "release_apps" }, { table: "download_deltas" }, { table: "star_samples" }],
   // Operator and maintainer pages only; not planner input.
   security: [{ table: "security_scans" }, { table: "security_areas" }, { table: "security_findings" }, { table: "security_calls" }, { table: "security_fix_rounds" }, { table: "security_fix_log" }],
   postmerge: [{ table: "postmerge_reviews" }, { table: "postmerge_followups" }, { table: "premerge_reviews" }],

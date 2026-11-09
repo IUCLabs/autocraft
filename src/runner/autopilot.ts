@@ -168,7 +168,7 @@ function repoAllows(plans: PlanSet, repo: string, want: Want): boolean {
 }
 
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, audit entries the item-trace bookkeeping and the limits topic (its tables are already read through the jobs topic) do not. */
-export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits", "claims", "conversation-includes", "decision-choices", "decision-snooze", "security", "discord", "discord-links"].includes(t));
+export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits", "claims", "conversation-includes", "decision-choices", "decision-snooze", "security", "discord", "discord-links", "downloads"].includes(t));
 
 /** Sandbox tasks that ended, for lanes that read their results. */
 const tasksSig = (db: DatabaseSync): string =>

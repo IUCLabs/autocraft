@@ -1844,3 +1844,51 @@ CREATE TABLE IF NOT EXISTS outside_admitted (
   repo TEXT NOT NULL, number INTEGER NOT NULL, at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 );
+
+-- Downloads report (src/downloads). One row per release asset with GitHub's running download count; platform, processor
+-- and format are recomputed from the file name on each poll (null format: not a package, not counted).
+CREATE TABLE IF NOT EXISTS release_assets (
+  asset_id INTEGER PRIMARY KEY,
+  repo TEXT NOT NULL,
+  release_id INTEGER NOT NULL,
+  tag TEXT NOT NULL,
+  release_name TEXT,
+  published_at TEXT,
+  prerelease INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL,
+  platform TEXT,
+  processor TEXT,
+  format TEXT,
+  downloads INTEGER NOT NULL DEFAULT 0,
+  first_seen TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  gone_at TEXT                        -- set while GitHub no longer lists the asset; its history stays
+);
+CREATE INDEX IF NOT EXISTS release_assets_repo ON release_assets(repo);
+
+-- One row per repo that has release files: the app's display name and its star count.
+CREATE TABLE IF NOT EXISTS release_apps (
+  repo TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  stars INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+-- Increases of an asset's download count between polls. t is the start of an ISO hour (span 'h') or of a UTC day (span 'd');
+-- hour buckets older than 14 days are folded into day buckets.
+CREATE TABLE IF NOT EXISTS download_deltas (
+  asset_id INTEGER NOT NULL,
+  t TEXT NOT NULL,
+  span TEXT NOT NULL,
+  delta INTEGER NOT NULL,
+  PRIMARY KEY (asset_id, t, span)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS download_deltas_t ON download_deltas(t);
+
+-- A repo's star count, one row per hour in which it changed (and the first poll's reading).
+CREATE TABLE IF NOT EXISTS star_samples (
+  repo TEXT NOT NULL,
+  t TEXT NOT NULL,
+  stars INTEGER NOT NULL,
+  PRIMARY KEY (repo, t)
+) WITHOUT ROWID;

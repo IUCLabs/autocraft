@@ -964,6 +964,14 @@ async function sync(args: string[]): Promise<void> {
           console.log(`main-ci: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
         }
       }
+      // Release download and star counts for the Downloads report; one failing repo is logged and skipped.
+      if (!opts.full && !opts.only.length) {
+        try {
+          await (await import("./downloads/poll.ts")).pollReleasesIfDue(db, undefined, Date.now(), (l) => console.log(l));
+        } catch (e) {
+          console.log(`releases: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        }
+      }
       // Findings whose fix is landing: a merged pull request, or a fix that reached the default branch through an advisory.
       if (!opts.full && !opts.only.length) {
         try {
