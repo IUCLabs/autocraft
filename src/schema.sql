@@ -1861,7 +1861,8 @@ CREATE TABLE IF NOT EXISTS release_assets (
   format TEXT,
   downloads INTEGER NOT NULL DEFAULT 0,
   first_seen TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  gone_at TEXT                        -- set while GitHub no longer lists the asset; its history stays
 );
 CREATE INDEX IF NOT EXISTS release_assets_repo ON release_assets(repo);
 

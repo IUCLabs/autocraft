@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
 import { pollReleases, type GhRelease, type RepoReleases } from "../src/downloads/poll.ts";
+import { readSeqs } from "../src/live.ts";
 import { downloadsReport } from "../src/downloads/report.ts";
 
 const T0 = Date.parse("2026-11-01T10:20:00Z");
@@ -28,7 +29,7 @@ test("the first poll is a baseline, later increases and new assets are recorded,
   let r = dl(db, "all", T0);
   assert.equal(r.totals.downloads, 150, "the running counts are the all-time total; checksums are not counted");
   assert.equal(dl(db, "today", T0 + H).totals.downloads, 0, "the baseline records no increase");
-  assert.equal(r.historyFrom, "2026-11-01T10:20:00.000Z");
+  assert.equal(r.historyFrom, "2026-11-01T10:20:00Z");
 
   // Two hours later: 7 more of one asset, and a new release whose whole count is new.
   r1.assets[0]!.download_count = 107;
@@ -65,7 +66,7 @@ test("range sums count issues, merged PRs and release health from the mirror", a
   const now = Date.parse("2026-11-09T12:00:00Z");
   const a = release(1, "v1.0.0", "2026-10-01T00:00:00Z", [asset(11, "photocraft-1.0.0-linux-x86_64.deb", 0)]);
   set({ stars: 5, releases: [a] });
-  await poll(now - 2 * D);
+  await poll(now - 9 * H);
   const b = release(2, "v1.1.0", "2026-11-08T00:00:00Z", [asset(21, "photocraft-1.1.0-linux-x86_64.deb", 2000)]);
   set({ stars: 5, releases: [a, b] });
   await poll(now - 5 * H);
@@ -83,4 +84,34 @@ test("range sums count issues, merged PRs and release health from the mirror", a
   assert.deepEqual([newer!.tag, newer!.latest, newer!.issues, newer!.per1k], ["v1.1.0", true, 2, 1]);
   assert.deepEqual([older!.tag, older!.latest, older!.issues, older!.per1k], ["v1.0.0", false, 1, null]);
   assert.equal(downloadsReport(db, [], "all", null, now).totals.downloads, 0, "repos the requester cannot see are left out");
+});
+
+test("an asset GitHub stops listing keeps its history and resumes from its stored count when it returns", async () => {
+  const { db, poll, set } = setup();
+  const a = asset(11, "photocraft-1.0.0-windows-x64.msi", 100);
+  const r1 = release(1, "v1.0.0", "2026-10-01T00:00:00Z", [a]);
+  set({ stars: 1, releases: [r1] });
+  await poll(T0);
+  a.download_count = 110;
+  await poll(T0 + H);
+  r1.assets = [];
+  await poll(T0 + 2 * H);
+  assert.equal(dl(db, "all", T0 + 2 * H).totals.downloads, 0, "all matches what GitHub lists");
+  assert.equal(dl(db, "today", T0 + 2 * H).totals.downloads, 10, "ranges keep the history of a gone asset");
+  r1.assets = [{ ...a, download_count: 115 }];
+  await poll(T0 + 3 * H);
+  assert.equal(dl(db, "all", T0 + 3 * H).totals.downloads, 115);
+  assert.equal(dl(db, "today", T0 + 3 * H).totals.downloads, 15, "only the increase since the stored count is added");
+  assert.equal((db.prepare("SELECT gone_at FROM release_assets WHERE asset_id = 11").get() as { gone_at: string | null }).gone_at, null);
+});
+
+test("a poll with no new counts does not move the settings topic the planner listens to", async () => {
+  const { db, poll, set } = setup();
+  set({ stars: 1, releases: [release(1, "v1.0.0", "2026-10-01T00:00:00Z", [asset(11, "photocraft-1.0.0-windows-x64.msi", 5)])] });
+  await poll(T0);
+  const before = readSeqs(db);
+  await poll(T0 + 20 * 60_000);
+  const after = readSeqs(db);
+  assert.equal(after.settings, before.settings);
+  assert.equal(after.steps, before.steps);
 });

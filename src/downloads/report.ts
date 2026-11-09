@@ -47,12 +47,13 @@ export function downloadsReport(db: DatabaseSync, repos: string[], range: Downlo
   const appRows = (db.prepare("SELECT repo, name, stars FROM release_apps ORDER BY name COLLATE NOCASE").all() as { repo: string; name: string; stars: number }[]).filter((a) => repos.includes(a.repo));
   const scope = app && appRows.some((a) => a.repo === app) ? [app] : appRows.map((a) => a.repo);
   const list = scope.length ? scope.map(() => "?").join(",") : "NULL";
-  const historyFrom = (db.prepare("SELECT MIN(first_seen) AS t FROM release_assets").get() as { t: string | null }).t;
+  const firstSeen = (db.prepare(`SELECT MIN(first_seen) AS t FROM release_assets WHERE repo IN (${list})`).get(...scope) as { t: string | null }).t;
+  const historyFrom = firstSeen ? iso(Date.parse(firstSeen)) : null;
 
   // Downloads per counted asset in range: the running count for "all", the recorded increases otherwise.
   const perAsset = (db.prepare(
     from === null
-      ? `SELECT a.asset_id, a.repo, a.tag, a.release_id, a.platform, a.processor, a.format, a.downloads AS n FROM release_assets a WHERE a.format IS NOT NULL AND a.repo IN (${list})`
+      ? `SELECT a.asset_id, a.repo, a.tag, a.release_id, a.platform, a.processor, a.format, a.downloads AS n FROM release_assets a WHERE a.format IS NOT NULL AND a.gone_at IS NULL AND a.repo IN (${list})`
       : `SELECT a.asset_id, a.repo, a.tag, a.release_id, a.platform, a.processor, a.format, SUM(d.delta) AS n FROM download_deltas d JOIN release_assets a ON a.asset_id = d.asset_id
          WHERE d.t >= ? AND d.t < ? AND a.format IS NOT NULL AND a.repo IN (${list}) GROUP BY a.asset_id`,
   ).all(...(from === null ? [] : [from, rangeEnd(range, to)]), ...scope) as { asset_id: number; repo: string; tag: string; release_id: number; platform: Platform; processor: Processor; format: Format; n: number }[]);
@@ -83,13 +84,15 @@ export function downloadsReport(db: DatabaseSync, repos: string[], range: Downlo
   })).sort((a, b) => b.downloads - a.downloads || a.name.localeCompare(b.name));
 
   // Releases with counted files, newest first.
-  const rel = db.prepare(`SELECT repo, tag, release_id, MAX(published_at) AS published, MAX(prerelease) AS pre FROM release_assets WHERE format IS NOT NULL AND repo IN (${list}) GROUP BY repo, release_id`)
-    .all(...scope) as { repo: string; tag: string; release_id: number; published: string | null; pre: number }[];
-  rel.sort((a, b) => (b.published ?? "").localeCompare(a.published ?? ""));
+  const relAll = db.prepare(`SELECT repo, tag, release_id, MAX(published_at) AS published, MAX(prerelease) AS pre, MAX(gone_at IS NULL) AS live FROM release_assets WHERE format IS NOT NULL AND repo IN (${list}) GROUP BY repo, release_id`)
+    .all(...scope) as { repo: string; tag: string; release_id: number; published: string | null; pre: number; live: number }[];
+  relAll.sort((a, b) => (b.published ?? "").localeCompare(a.published ?? ""));
   const nameOf = new Map(appRows.map((a) => [a.repo, a.name]));
   const label = (repo: string, tag: string): string => `${nameOf.get(repo) ?? repo} v${/\d/.test(tag) ? tag.replace(/^\D*(?=\d)/, "") : tag}`;
   const perRelease = new Map<number, number>();
   for (const r of perAsset) perRelease.set(r.release_id, (perRelease.get(r.release_id) ?? 0) + r.n);
+  // A release GitHub no longer lists stays only where it had downloads in the range.
+  const rel = relAll.filter((r) => r.live || (perRelease.get(r.release_id) ?? 0) > 0);
 
   const versionRows = rel.map((r) => ({ key: `${r.repo}@${r.tag}`, n: perRelease.get(r.release_id) ?? 0, text: label(r.repo, r.tag) })).filter((r) => r.n > 0).sort((a, b) => b.n - a.n);
   const versions: DownloadsBar[] = versionRows.slice(0, 7).map((r) => ({ key: r.key, label: r.text, count: r.n }));

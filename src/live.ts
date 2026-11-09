@@ -33,7 +33,7 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
 const BOOKKEEPING_SETTINGS = [
   "runner_heartbeat", "schema_stamp", "fts_built", "hashes_built", "mentions_built", "item_stage_built", "tracking_started_at",
   "pipeline_planned_at", "pipeline_seqs_seen", "pipeline_wake_at", "pipeline_status", "pipeline_sync_seen", "pipeline_sync_at", "pipeline_review_cursor", "pipeline_verify_cursor",
-  "full_sync_cursor", "org_high_water", "main_ci_polled_at", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining", "sync_rate_reset_at",
+  "full_sync_cursor", "org_high_water", "main_ci_polled_at", "releases_polled_at", "releases_offset", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining", "sync_rate_reset_at",
   "flow_summary_marks", "liveness_at", "liveness_open", "classify_run", "worker_update_pending", "worker_update_failures",
 ];
 const BOOKKEEPING_SETTING_LIKE = ["%\\_points\\_last\\_run", "pipeline\\_fp:%"];
