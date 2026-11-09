@@ -519,10 +519,11 @@ export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: st
  * Opens an issue as a Discord reporter (the person's own token is in `exec`'s environment): audited under their GitHub
  * login as `discord-issue-open`, with the URL and number but not the text. Throws an IssueError like createIssue.
  */
-export async function createReporterIssue(w: Writer, exec: Exec, o: { repo: string; login: string; title: string; body: string }): Promise<{ number: number; url: string }> {
+/** Files an issue with a Discord reporter's own token; `w.login` is the reporter's GitHub login. */
+export async function createReporterIssue(w: Writer, exec: Exec, o: { repo: string; title: string; body: string }): Promise<{ number: number; url: string }> {
   let r: ExecResult;
   try {
-    r = await recorded(w, `user:${o.login}`, "discord-issue-open", o.repo, {}, () => exec("gh", ["issue", "create", "--repo", slugOf(o.repo), "--title", o.title, "--body-file", "-"], { input: o.body }),
+    r = await recorded(w, `user:${w.login}`, "discord-issue-open", o.repo, {}, () => exec("gh", ["issue", "create", "--repo", slugOf(o.repo), "--title", o.title, "--body-file", "-"], { input: o.body }),
       (x) => { const m = x.stdout.match(/https:\/\/github\.com\/\S+\/issues\/(\d+)/); return m ? { url: m[0], number: Number(m[1]) } : {}; },
       (x) => (x.code === 0 && /https:\/\/github\.com\/\S+\/issues\/\d+/.test(x.stdout) ? null : oneLine(x.stderr || x.stdout) || `exit code ${x.code}`));
   } catch (e) {
@@ -535,9 +536,9 @@ export async function createReporterIssue(w: Writer, exec: Exec, o: { repo: stri
 }
 
 /** Adds a label to an issue a Discord reporter filed, with their token; audited as `discord-issue-label`. A refusal is recorded and returned as false, never thrown. */
-export async function labelReporterIssue(w: Writer, exec: Exec, o: { repo: string; login: string; number: number; label: string }): Promise<boolean> {
+export async function labelReporterIssue(w: Writer, exec: Exec, o: { repo: string; number: number; label: string }): Promise<boolean> {
   try {
-    const r = await recorded(w, `user:${o.login}`, "discord-issue-label", refOf(o.repo, o.number), { label: o.label },
+    const r = await recorded(w, `user:${w.login}`, "discord-issue-label", refOf(o.repo, o.number), { label: o.label },
       () => exec("gh", ["issue", "edit", String(o.number), "--repo", slugOf(o.repo), "--add-label", o.label]), undefined, (x) => (x.code === 0 ? null : oneLine(x.stderr || x.stdout) || `exit code ${x.code}`));
     return r.code === 0;
   } catch {
