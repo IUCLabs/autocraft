@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS items (
   labels TEXT,                        -- JSON array of names
   assignees TEXT,                     -- JSON array of logins
   comments_count INTEGER,
+  reactions_count INTEGER,
   -- PR only
   additions INTEGER, deletions INTEGER, changed_files INTEGER,
   head_ref TEXT, head_oid TEXT, head_repo TEXT, base_ref TEXT,
