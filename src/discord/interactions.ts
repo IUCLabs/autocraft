@@ -6,12 +6,16 @@
 import { createHash } from "node:crypto";
 import type { CommandDef, DiscordRest, EditBody } from "./rest.ts";
 
+/** A submitted modal's components: action rows hold `components`; a Label (type 18) holds one `component`. A select gives `values`, a text input `value`. */
+export type ModalComponent = { type?: number; custom_id?: string; value?: string; values?: string[]; component?: ModalComponent; components?: ModalComponent[] };
+
 export type Interaction = {
   id: string; token: string; type: number; application_id?: string; guild_id?: string; channel_id?: string;
   member?: { user?: { id: string } }; user?: { id: string };
   data?: {
     name?: string; type?: number; custom_id?: string; target_id?: string;
-    components?: { components?: { custom_id?: string; value?: string }[] }[];
+    values?: string[];
+    components?: ModalComponent[];
     options?: { name: string; type: number; value?: unknown; focused?: boolean; options?: { name: string; type: number; value?: unknown; focused?: boolean }[] }[];
     resolved?: { messages?: Record<string, { content?: string }> };
   };
@@ -29,8 +33,12 @@ export type Call = {
   targetText(): string | undefined;
   /** Replaces the deferred response. */
   edit(body: EditBody): Promise<void>;
-  /** The values of a submitted modal, by the custom_id of each text input. */
+  /** The values of a submitted modal, by custom_id: the text of an input, or the first chosen value of a select. */
   fields(): Record<string, string>;
+  /** The chosen values of a select menu that was used in a message. */
+  values(): string[];
+  /** For handlers added with `immediate`: acknowledges a select or button without changing the message. */
+  ack(): Promise<void>;
   /** For handlers added with `immediate`: shows a modal as the answer (it must come within 3 seconds). */
   showModal(modal: { custom_id: string; title: string; components: unknown[] }): Promise<void>;
   /** For handlers added with `immediate`: answers with a message only the caller sees. */
@@ -130,7 +138,7 @@ export class Interactions {
     if (!find) return;
     try {
       const opts = sub?.options ?? i.data?.options ?? [];
-      const call = { interaction: i, userId: i.member?.user?.id ?? i.user?.id ?? null, option: () => undefined, targetText: () => undefined, edit: async () => {}, fields: () => ({}), showModal: async () => {}, reply: async () => {}, defer: async () => {},
+      const call = { interaction: i, userId: i.member?.user?.id ?? i.user?.id ?? null, option: () => undefined, targetText: () => undefined, edit: async () => {}, fields: () => ({}), values: () => [], ack: async () => {}, showModal: async () => {}, reply: async () => {}, defer: async () => {},
         focused: () => { const o = opts.find((x) => x.focused); return o ? { name: o.name, value: typeof o.value === "string" ? o.value : "" } : undefined; } } as Call;
       await this.#rest.interactionCallback(i.id, i.token, 8, { choices: find(call).slice(0, 25) });
     } catch (e) {
@@ -165,7 +173,9 @@ export class Interactions {
         focused: () => { const o = opts.find((x) => x.focused); return o ? { name: o.name, value: typeof o.value === "string" ? o.value : "" } : undefined; },
         targetText: () => (i.data?.type === MESSAGE_COMMAND && i.data.target_id ? i.data.resolved?.messages?.[i.data.target_id]?.content : undefined),
         edit: (body) => this.#rest.editInteractionResponse(appId, i.token, body),
-        fields: () => Object.fromEntries((i.data?.components ?? []).flatMap((r) => r.components ?? []).filter((c) => c.custom_id).map((c) => [c.custom_id!, c.value ?? ""])),
+        fields: () => Object.fromEntries((i.data?.components ?? []).flatMap((r) => (r.component ? [r.component] : (r.components ?? []))).filter((c) => c.custom_id).map((c) => [c.custom_id!, c.value ?? c.values?.[0] ?? ""])),
+        values: () => i.data?.values ?? [],
+        ack: async () => { answered = true; await this.#rest.interactionCallback(i.id, i.token, 6); },
         showModal: async (m) => { answered = true; await this.#rest.interactionCallback(i.id, i.token, 9, m); },
         reply: async (b) => { answered = true; await this.#rest.interactionCallback(i.id, i.token, 4, { ...b, ephemeral: true }); },
         defer: async () => { answered = true; await this.#rest.interactionCallback(i.id, i.token, 5, { ephemeral: true }); },

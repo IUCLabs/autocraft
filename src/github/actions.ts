@@ -35,4 +35,6 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "cifix-comment": "Commented",
   "postmerge-file": "Opened issue",
   "act-open-issue": "Opened issue",
+  "discord-issue-open": "Opened issue",
+  "discord-issue-label": "Labelled",
 };

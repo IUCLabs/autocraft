@@ -29,7 +29,7 @@ export function fileRepoUrl(db: DatabaseSync, channelId: string | undefined, mat
 
 export type Rendered = { content: string; components: unknown[] };
 
-export function renderMatches(db: DatabaseSync, matches: Match[], question: string, channelId: string | undefined): Rendered {
+export function renderMatches(db: DatabaseSync, matches: Match[], question: string, channelId: string | undefined, noneId?: string): Rendered {
   const lines: string[] = [];
   const shown: Match[] = [];
   let size = 0;
@@ -42,7 +42,9 @@ export function renderMatches(db: DatabaseSync, matches: Match[], question: stri
   }
   const buttons: unknown[] = shown.map((m) => ({ type: 2, style: 5, label: `${m.repo}#${m.number}`.slice(0, 80), url: m.url }));
   const repo = fileRepoUrl(db, channelId, shown);
-  if (repo) buttons.push({ type: 2, style: 2, label: "File a new issue", custom_id: formButtonId(repo.split("/").pop()!, question) });
+  // `noneId` is the button of the search form's reply: it continues that session instead of opening the form again.
+  if (noneId) buttons.push({ type: 2, style: 2, label: "None of these, file a new one", custom_id: noneId });
+  else if (repo) buttons.push({ type: 2, style: 2, label: "File a new issue", custom_id: formButtonId(repo.split("/").pop()!, question) });
   const rows: unknown[] = [];
   for (let i = 0; i < buttons.length; i += ROW_BUTTONS) rows.push({ type: 1, components: buttons.slice(i, i + ROW_BUTTONS) });
   return { content: lines.length ? lines.join("\n") : "No matching issue found.", components: rows };

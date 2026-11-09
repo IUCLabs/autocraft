@@ -18,6 +18,7 @@ import { Signals, dropSignalTexts } from "./signals.ts";
 import { deleteRepliesOf } from "./replies.ts";
 import { RestClient } from "./rest.ts";
 import { Reactor } from "./react.ts";
+import { forgetReporter } from "./file-issue.ts";
 import { forgetLink } from "./links.ts";
 import { Search, dropTexts } from "./search.ts";
 import { installAccountCommands } from "./commands.ts";
@@ -173,8 +174,9 @@ async function discord(args: string[]): Promise<void> {
     } else {
       const n = forgetAuthor(db, keys, id);
       const links = forgetLink(db, keys, id);
-      audit(db, "cli", "discord-forget", "user", { rows: n, links });
-      console.log(`deleted ${n} mention ${n === 1 ? "row" : "rows"} and ${links} ${links === 1 ? "link" : "links"}`);
+      const signedIn = forgetReporter(db, keys.hash("author", id));
+      audit(db, "cli", "discord-forget", "user", { rows: n, links, signedIn });
+      console.log(`deleted ${n} mention ${n === 1 ? "row" : "rows"} and ${links} ${links === 1 ? "link" : "links"}${signedIn ? " and the GitHub sign-in" : ""}`);
     }
   } else if (sub === "channels") {
     for (const c of db.prepare("SELECT channel_id, guild_name, name, watched FROM discord_channels ORDER BY guild_name, name").all() as { channel_id: string; guild_name: string | null; name: string | null; watched: number }[])

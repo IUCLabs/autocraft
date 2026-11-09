@@ -18,6 +18,8 @@ import { TokenBucket } from "./limits.ts";
 import { dbReady, serveHealth } from "../../health.ts";
 import { serveChecks } from "../../health-checks.ts";
 import { discordPrivacyPage, DISCORD_PRIVACY_PATH } from "./discord-privacy.ts";
+import { reporterSignIn, REPORTER_CALLBACK_PATH, REPORTER_START_PATH } from "./reporter-signin.ts";
+import { FILING_IN_DISCORD } from "../../discord/file-issue.ts";
 import { discordTermsPage, DISCORD_TERMS_PATH } from "./discord-terms.ts";
 import { contactOf } from "../api/discord.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
@@ -496,6 +498,12 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
       if (method === "GET" && url.pathname === DISCORD_PRIVACY_PATH) return send(res, nonce, { html: discordPrivacyPage(nonce, contactOf(db)) });
+      // Public: a Discord reporter's GitHub sign-in for filing issues (no dashboard session).
+      if (FILING_IN_DISCORD && method === "GET" && (url.pathname === REPORTER_START_PATH || url.pathname === REPORTER_CALLBACK_PATH)) {
+        if (!signinLimit.allow(clientIp(req))) return send(res, nonce, errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again."));
+        const out = await reporterSignIn({ db, box, provider: appProviderNow(), baseUrl: config.baseUrl }, url, cookies, nonce);
+        if (out) return send(res, nonce, out.r, out.cookies);
+      }
       if (method === "GET" && url.pathname === DISCORD_TERMS_PATH) return send(res, nonce, { html: discordTermsPage(nonce, contactOf(db)) });
       // Public: the favicon and the preview image, which sign-in pages and link-preview crawlers load without a session.
       if (method === "GET" && PUBLIC_FILES.has(url.pathname)) return await sendWeb(res, nonce, url.pathname);

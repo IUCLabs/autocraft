@@ -5,6 +5,7 @@ import { audit } from "../dash/audit.ts";
 import { publicRepoNames, publicStats, publicStatus, type PublicStats, type PublicStatus } from "../public/status.ts";
 import type { Call, Interactions } from "./interactions.ts";
 import type { DiscordKeys } from "./keys.ts";
+import { forgetReporter } from "./file-issue.ts";
 import { forgetLink, redeemLinkCode } from "./links.ts";
 import { plain } from "./reply.ts";
 
@@ -32,8 +33,7 @@ export function formatStatus(s: PublicStatus): string {
 /** Lists what the slash-command picker does not show: pings, the message command and the reaction. */
 export const HELP = [
   "**AutoCraft**",
-  "`/autocraft search`: find existing issues. Pick a repo (or All repos) and describe the problem.",
-  "`/autocraft new-issue`: help writing a new issue, after a look for an existing one.",
+  "`/autocraft search`: opens a form. Pick the app and describe the problem or the idea to see matching issues; if none fits, AutoCraft helps write a new issue and opens it on GitHub, ready to submit.",
   "`/autocraft status item:photocraft#123`: where an issue or pull request is.",
   "`/autocraft stats`: counts for the public repos.",
   "`/autocraft link` and `unlink`: connect this Discord account to your AutoCraft login (the code is under Link Discord in the dashboard menu).",
@@ -81,8 +81,9 @@ export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSyn
   });
   ix.command("autocraft unlink", null, async (call) => {
     const n = call.userId ? forgetLink(db, keys, call.userId) : 0;
-    if (n) audit(db, "discord", "discord-unlink", null, { by: "discord" });
-    await call.edit({ content: n ? "Link removed." : "This Discord account is not linked." });
+    const signedIn = call.userId ? forgetReporter(db, keys.hash("author", call.userId)) : false;
+    if (n || signedIn) audit(db, "discord", "discord-unlink", null, { by: "discord", link: n > 0, signedIn });
+    await call.edit({ content: n || signedIn ? "Unlinked." : "This Discord account is not linked." });
   });
   ix.command("autocraft stats", null, async (call: Call) => {
     if (!mayRead(call)) return void (await call.edit({ content: TOO_MANY }));
