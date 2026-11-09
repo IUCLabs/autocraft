@@ -81,6 +81,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   "build-features": [{ table: "settings", when: "new_key LIKE 'build\\_feature:%' ESCAPE '\\' OR new_key LIKE 'pr\\_builds\\_%' ESCAPE '\\'" }, { table: "screenshot_config" }],
   // Our workspace builds of PR heads (pr-builds feature); read by the item page and queue cards, not planner input.
   "pr-builds": [{ table: "pr_builds" }],
+  // The nightly selection, runs, results and bench points; written by the nightly step's bookkeeping, not planner input.
+  nightly: [{ table: "nightly_selection" }, { table: "nightly_runs" }, { table: "nightly_results" }, { table: "nightly_bench" }],
   tasks: [{ table: "build_tasks" }, { table: "build_task_logs" }, { table: "build_artifacts" }],
   actions: [{ table: "actions" }],
   // Which maintainer posts an operator shared with Opus; not planner input.

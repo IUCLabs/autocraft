@@ -103,6 +103,9 @@ import type {
   BuildFeatures,
   ScreenshotConfigJson,
   ScreenshotSetups,
+  NightlyGrid,
+  NightlySeries,
+  NightlySelectInput,
   BuildSummary,
   BuildTask,
   BuildTaskDetail,
@@ -399,6 +402,12 @@ export interface Api {
   buildFeatures: {
     list(): Promise<BuildFeatures>;
     set(input: BuildFeatureInput): Promise<BuildFeatures>;
+  };
+  /** Nightly checks: the grid, one benchmark series, and (operators) the per-repo selection. */
+  nightly: {
+    grid(): Promise<NightlyGrid>;
+    series(repo: string, bench: string): Promise<NightlySeries>;
+    select(input: NightlySelectInput): Promise<NightlyGrid>;
   };
   /** The per-repo screenshot setup. Anyone who sees internals reads; operators write. */
   screenshotSetup: {

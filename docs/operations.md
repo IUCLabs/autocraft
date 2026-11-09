@@ -287,6 +287,29 @@ podman image inspect --format '{{index .RepoDigests 0}}' docker.io/library/rust:
 
 Put the printed `...@sha256:...` reference into `images`. The reported capabilities list the keys of `images`. A task that requires several toolchains runs in the first one that has an image.
 
+#### Nightly toolchain images
+
+The nightly checks (Nightly report) need three more images, defined in `deploy/container`:
+
+| Toolchain | Containerfile | Contains |
+| --- | --- | --- |
+| `rust-nightly` | `Containerfile.rust-nightly` | nightly, miri with its sysroot built at image time, rust-src, llvm-tools, clang, cargo-fuzz, the wasm32 target |
+| `rust-cross` | `Containerfile.rust-cross` | stable, wasm32-unknown-unknown, x86_64-pc-windows-gnu, mingw-w64 |
+| `rust-audit` | `Containerfile.rust-audit` | stable, cargo-audit |
+
+On the worker host, as the sandbox user, build each one, then pin it by digest and add it to `images` in the worker config:
+
+```
+podman build -f deploy/container/Containerfile.rust-nightly -t localhost/rust-nightly deploy/container
+podman image inspect --format '{{.Id}}' localhost/rust-nightly
+```
+
+```
+"images": { "rust-nightly": "localhost/rust-nightly", "rust-cross": "localhost/rust-cross", "rust-audit": "localhost/rust-audit" }
+```
+
+Restart the worker; the environment then reports the toolchains. A check whose toolchain no enabled, online environment reports is recorded as skipped (no toolchain). Images pushed to a registry are referenced by `name@sha256:...` like the defaults.
+
 ### What a step runs in
 
 Every step is `podman run --rm` with: `--network none` (the `fetchNetwork` for steps marked `fetch`), `--read-only` root with a 2 GB tmpfs on `/tmp`, `--cap-drop all`, `--security-opt no-new-privileges`, `--userns keep-id`, `--cpus`, `--memory` (swap equal), `--pids-limit`, and four mounts: `/src` (the source as an overlay: steps may write next to the sources, as tests in a CI checkout can, and the writes are dropped when the step ends), `/target` (build output), `/cache` (CARGO_HOME) and `/out` (artifacts). No other mounts and no environment from the host. A step that exceeds its timeout is killed and recorded as timed out; a failing step ends the plan. The work dir and containers are removed after each task and at worker start.

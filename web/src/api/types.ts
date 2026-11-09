@@ -1799,6 +1799,24 @@ export type ScreenshotCommand = { doc: string; params: Record<string, Screenshot
 export type ScreenshotConfigJson = { package: string; example: string; driver: "args" | "jsonl"; commands: Record<string, ScreenshotCommand>; ui_paths: string[]; size?: string };
 export type ScreenshotSetup = { repo: string; config: ScreenshotConfigJson; updatedBy: string; updatedAt: string };
 export type ScreenshotSetups = { setups: ScreenshotSetup[] };
+// ---- Nightly page (/api/nightly) ---------------------------------------------
+
+export type NightlyState = "queued" | "pass" | "fail" | "error" | "skipped" | "warn";
+/** One check on one night; `taskId` links to the build task, null while nothing ran (skipped). */
+export type NightlyCell = { state: NightlyState; taskId: number | null; summary: string | null; issueNumber: number | null };
+/** `cells` align with the repo's `nights`, newest first; null where the check had no result that night. */
+export type NightlyCheckRow = {
+  id: string; label: string; enabled: boolean; experimental: boolean; needs: "fuzz-dir" | "benches" | null;
+  /** Which selection inputs the check takes. */
+  takes: "crates" | "targets" | null;
+  crates: string[]; targets: string[]; cells: (NightlyCell | null)[];
+};
+export type NightlyBench = { name: string; unit: string; latest: number; /** Latest against the median of the 7 nights before it, in percent (positive = slower); null with too little history. */ deltaPct: number | null; points: number[]; at: string };
+export type NightlyRepo = { repo: string; on: boolean; nights: { runId: number; startedAt: string; sha: string }[]; checks: NightlyCheckRow[]; benches: NightlyBench[] };
+export type NightlyGrid = { repos: NightlyRepo[] };
+export type NightlySeries = { repo: string; bench: string; unit: string; points: { sha: string; at: string; value: number }[] };
+export type NightlySelectInput = { repo: string; check: string; enabled: boolean; crates?: string[]; targets?: string[] };
+
 export type BuildSummary = { queued: number; running: number; slots: number; free: number; online: number };
 
 // ---- Queue page (/api/queue/page) -------------------------------------------

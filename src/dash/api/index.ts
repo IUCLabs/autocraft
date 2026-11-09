@@ -44,6 +44,7 @@ import { downloads } from "./downloads.ts";
 import { itemPage } from "./item-page.ts";
 import { trace as itemTrace, traceDetail as itemTraceDetail } from "./trace.ts";
 import { postmergeOf } from "./postmerge.ts";
+import * as nightly from "./nightly.ts";
 import { canSeeInternals } from "./staff.ts";
 import * as operator from "./operator.ts";
 import * as stuck from "./stuck.ts";
@@ -538,6 +539,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/tasks/:id", build.task),
     { method: "POST", pattern: "/api/tasks/:id/cancel", operator: true, handler: ok(build.cancel) },
     { method: "GET", pattern: "/api/tasks/:id/artifacts/:name", handler: build.artifact },
+    get("/api/nightly", nightly.grid),
+    get("/api/nightly/bench/:repo/:bench", nightly.series),
+    { method: "POST", pattern: "/api/nightly/select", operator: true, handler: ok(nightly.select) },
     get("/api/build/summary", build.buildSummary),
     get("/api/build/features", build.features),
     { method: "POST", pattern: "/api/build/features", operator: true, handler: ok(build.postFeature) },

@@ -301,6 +301,11 @@ export function createHttpApi(): Api {
       list: () => get("/api/build/features"),
       set: (input) => post("/api/build/features", input),
     },
+    nightly: {
+      grid: () => get("/api/nightly"),
+      series: (repo, bench) => get(`/api/nightly/bench/${encodeURIComponent(repo)}/${encodeURIComponent(bench)}`),
+      select: (input) => post("/api/nightly/select", input),
+    },
     screenshotSetup: {
       list: () => get("/api/build/screenshots"),
       put: (repo, config) => put(`/api/build/screenshots/${encodeURIComponent(repo)}`, config),

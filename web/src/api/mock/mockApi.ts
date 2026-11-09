@@ -13,6 +13,7 @@ import { createConversationMock } from "./conversationMock";
 import { createSecurityMock } from "./securityMock";
 import { createRedesignMock, withFindingChoices, type RedesignApi } from "./redesignMock";
 import { createBuildMock } from "./buildMock";
+import { createNightlyMock } from "./nightlyMock";
 import { realData } from "./realStore";
 import { withRealDecisions } from "./realDecisions";
 import { createPipelineMock } from "./pipelineMock";
@@ -356,6 +357,7 @@ export function createMockApi(): Api {
     ...createNowMock(changed),
     ...createActivityMock(),
     ...createBuildMock(me, changed),
+    ...createNightlyMock(me, changed),
     ...createSecurityMock(me, changed),
     ...createQueueMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),

@@ -1,4 +1,4 @@
-import { DownloadSimpleIcon, BookOpenIcon, BroadcastIcon, FlowArrowIcon, BrainIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
+import { DownloadSimpleIcon, BookOpenIcon, BroadcastIcon, FlowArrowIcon, BrainIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, MoonIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
 import { modules } from "../../registry";
 import { can } from "../../registry/permissions";
 import type { User } from "../../api/types";
@@ -15,6 +15,7 @@ export const REPORTS: Entry[] = [
   { label: "Model calls", to: "/agents", path: "agents", icon: RobotIcon },
   { label: "Classifiers", to: "/classifiers", path: "classifiers", icon: ScalesIcon },
   { label: "Main CI", to: "/main-ci", path: "main-ci", icon: HeartbeatIcon },
+  { label: "Nightly", to: "/nightly", path: "nightly", icon: MoonIcon },
 ];
 
 export const SETTINGS: Entry[] = [
