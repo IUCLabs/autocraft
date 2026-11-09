@@ -214,8 +214,8 @@ describe("commands", () => {
     ix.dispatch("GUILD_CREATE", { id: "g1" });
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(rest.commands.length, 1);
-    assert.deepEqual(rest.commands[0]!.commands.map((c) => [c.name, c.type]), [["issue", 1], ["Find issue", 3]]);
-    ix.dispatch("INTERACTION_CREATE", { id: "i1", token: "t", type: 2, application_id: "app1", channel_id: "c1", member: { user: { id: "u9" } }, data: { name: "issue", type: 1, options: [{ name: "search", type: 1, options: [{ name: "query", type: 3, value: "dark mode layers" }] }] } });
+    assert.deepEqual(rest.commands[0]!.commands.map((c) => [c.name, c.type]), [["autocraft", 1], ["Find issue", 3]]);
+    ix.dispatch("INTERACTION_CREATE", { id: "i1", token: "t", type: 2, application_id: "app1", channel_id: "c1", member: { user: { id: "u9" } }, data: { name: "autocraft", type: 1, options: [{ name: "search", type: 1, options: [{ name: "query", type: 3, value: "dark mode layers" }] }] } });
     await new Promise((r) => setTimeout(r, 50));
     assert.deepEqual(rest.callbacks.at(-1), { type: 5, ephemeral: true, choices: undefined });
     assert.match(rest.edits.at(-1)!.content!, /photocraft#2 Dark mode for the layers panel\n> Same panel/);

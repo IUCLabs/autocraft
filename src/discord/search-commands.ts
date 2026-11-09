@@ -1,4 +1,4 @@
-// `/issue search query:<text>` and the message command "Find issue". Replies are visible to the caller only.
+// `/autocraft search query:<text> [repo]` and the message command "Find issue". Replies are visible to the caller only.
 import type { DatabaseSync } from "node:sqlite";
 import type { Call, Interactions } from "./interactions.ts";
 import type { DiscordKeys } from "./keys.ts";
@@ -19,11 +19,11 @@ export function installSearchCommands(ix: Interactions, deps: { db: DatabaseSync
     const r = renderMatches(db, found.matches, question, i.channel_id);
     await call.edit({ content: r.content, components: r.components });
   };
-  ix.command("issue search", {
-    name: "issue", type: 1, description: "Find GitHub issues", dm_permission: false,
+  ix.command("autocraft search", {
+    name: "autocraft", type: 1, description: "AutoCraft", dm_permission: false,
     options: [{ type: 1, name: "search", description: "Search the issues for a question or a description", options: [{ type: 3, name: "query", description: "What to look for", required: true, max_length: 500 }, { type: 3, name: "repo", description: "Only search this repo", autocomplete: true }] }],
   }, (call) => run(call, call.option("query"), call.option("repo")?.trim() || undefined));
-  ix.autocomplete("issue search", (call) => {
+  ix.autocomplete("autocraft search", (call) => {
     const typed = (call.focused()?.value ?? "").toLowerCase();
     return publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
   });

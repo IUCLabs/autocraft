@@ -1,4 +1,4 @@
-// `/issue new` and the "File a new issue" button: a form, a look for an existing issue, up to three follow-up
+// `/autocraft new-issue` and the "File a new issue" button: a form, a look for an existing issue, up to three follow-up
 // questions, and a draft the person opens on GitHub themselves. The bot never posts to GitHub.
 //
 // What a person typed lives in memory for the session only (15 minutes) and is never stored or logged. The model calls
@@ -27,7 +27,7 @@ const MODEL_WAIT_MS = 20_000;
 const MAX_MATCHES = 3;
 const MESSAGE_CHARS = 1900;
 const MAX_CALLS = 2;
-const USED = "That button was already used. Start again with /issue new.";
+const USED = "That button was already used. Start again with /autocraft new-issue.";
 
 /** The model step; tests replace it. Null when the call failed or got no answer. */
 export type IssueAsk = {
@@ -125,11 +125,11 @@ export class IssueNew {
     }
   }
 
-  /** `/issue new` and the "File a new issue" button: checks the limits and shows the first form. */
+  /** `/autocraft new-issue` and the "File a new issue" button: checks the limits and shows the first form. */
   async open(call: Call, repo: string | null, question = ""): Promise<void> {
     const { db, keys } = this.#d;
     const url = repo ? trackedRepos(db).filter((t) => publicRepoNames(db).includes(t.name)).find((t) => t.name === repo) : undefined;
-    if (!repo || !url) return void (await call.reply({ content: repo === null ? "Choose a repo: /issue new repo:<name>" : "No public repo by that name." }));
+    if (!repo || !url) return void (await call.reply({ content: repo === null ? "Choose a repo: /autocraft new-issue repo:<name>" : "No public repo by that name." }));
     if (!call.userId || !this.allow(keys.hash("author", call.userId), keys.hash("channel", call.interaction.channel_id ?? "?")))
       return void (await call.reply({ content: "Too many new issues just now. Try again later." }));
     const sid = randomBytes(6).toString("base64url");
@@ -149,12 +149,12 @@ export class IssueNew {
   /** The form was submitted: the existing issues are searched and, in parallel, the follow-up questions are chosen. */
   async form(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
-    if (!s) return void (await call.edit({ content: "This form has expired. Start again with /issue new." }));
+    if (!s) return void (await call.edit({ content: "This form has expired. Start again with /autocraft new-issue." }));
     if (s.stage !== "form") return void (await call.edit({ content: USED }));
     const f = call.fields();
     s.title = (f.title ?? "").replace(/\s+/g, " ").trim().slice(0, 100);
     s.description = (f.description ?? "").trim().slice(0, ISSUE_FORM_BODY_CHARS);
-    if (!s.title || !s.description) return void (await call.edit({ content: "Both the title and the description are needed. Start again with /issue new." }));
+    if (!s.title || !s.description) return void (await call.edit({ content: "Both the title and the description are needed. Start again with /autocraft new-issue." }));
     s.stage = "matched";
     s.capped = this.#overCap();
     if (!s.capped) s.calls++;
@@ -182,7 +182,7 @@ export class IssueNew {
   async match(call: Call, sid: string, n: number): Promise<void> {
     const s = this.#session(call, sid);
     const m = s?.matches[n];
-    if (!s || !m || s.stage !== "matched") return void (await call.edit({ content: "This form has expired. Start again with /issue new." }));
+    if (!s || !m || s.stage !== "matched") return void (await call.edit({ content: "This form has expired. Start again with /autocraft new-issue." }));
     this.#sessions.delete(sid);
     await call.edit({ content: `${m.repo}#${m.number}: ${m.url}` });
   }
@@ -190,7 +190,7 @@ export class IssueNew {
   /** "None of these" or "Continue": the follow-up questions in a second form, or the draft at once when there are none. */
   async none(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
-    if (!s) return void (await call.reply({ content: "This form has expired. Start again with /issue new." }));
+    if (!s) return void (await call.reply({ content: "This form has expired. Start again with /autocraft new-issue." }));
     if (s.stage !== "matched" && !(s.stage === "asking" && s.questions.length)) return void (await call.reply({ content: USED }));
     if (!s.questions.length) {
       s.stage = "drafted";
@@ -206,7 +206,7 @@ export class IssueNew {
 
   async answers(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
-    if (!s) return void (await call.edit({ content: "This form has expired. Start again with /issue new." }));
+    if (!s) return void (await call.edit({ content: "This form has expired. Start again with /autocraft new-issue." }));
     if (s.stage !== "asking") return void (await call.edit({ content: USED }));
     s.stage = "drafted";
     const f = call.fields();
@@ -247,7 +247,7 @@ export class IssueNew {
   /** "Edit": the draft's title and body in a form. */
   async edit(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
-    if (!s?.draft) return void (await call.reply({ content: "This draft has expired. Start again with /issue new." }));
+    if (!s?.draft) return void (await call.reply({ content: "This draft has expired. Start again with /autocraft new-issue." }));
     await call.showModal({
       custom_id: `inew:fix:${sid}`, title: "Edit the draft",
       components: [field("title", "Title", 1, ISSUE_TITLE_CHARS, { value: s.draft.title }), field("body", "Body", 2, 4000, { value: s.draft.body })],
@@ -256,7 +256,7 @@ export class IssueNew {
 
   async fix(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
-    if (!s?.draft) return void (await call.edit({ content: "This draft has expired. Start again with /issue new." }));
+    if (!s?.draft) return void (await call.edit({ content: "This draft has expired. Start again with /autocraft new-issue." }));
     const f = call.fields();
     const d = cleanDraft({ title: f.title ?? "", body: f.body ?? "" }, this.#repos());
     if (d) s.draft = d;
@@ -267,13 +267,13 @@ export class IssueNew {
 export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew {
   const { db } = deps;
   const flow = new IssueNew(deps);
-  const sub = { type: 1, name: "new", description: "Get help writing a new issue", options: [{ type: 3, name: "repo", description: "The repo the issue is for", autocomplete: true }] };
-  ix.command("issue new", { name: "issue", type: 1, description: "Find GitHub issues", dm_permission: false, options: [sub] }, async (call) => {
+  const sub = { type: 1, name: "new-issue", description: "Get help writing a new issue", options: [{ type: 3, name: "repo", description: "The repo the issue is for", autocomplete: true }] };
+  ix.command("autocraft new-issue", { name: "autocraft", type: 1, description: "AutoCraft", dm_permission: false, options: [sub] }, async (call) => {
     const named = call.option("repo")?.trim();
     const repo = named || (fileRepoUrl(db, call.interaction.channel_id, [])?.split("/").pop() ?? null);
     await flow.open(call, repo);
   }, { immediate: true });
-  ix.autocomplete("issue new", (call) => {
+  ix.autocomplete("autocraft new-issue", (call) => {
     const typed = (call.focused()?.value ?? "").toLowerCase();
     return publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
   });
@@ -283,7 +283,7 @@ export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew 
     if (action === "open") await flow.open(call, a ?? null, seedOf(b));
     else if (action === "none") await flow.none(call, a ?? "");
     else if (action === "edit") await flow.edit(call, a ?? "");
-    else await call.reply({ content: "This form has expired. Start again with /issue new." });
+    else await call.reply({ content: "This form has expired. Start again with /autocraft new-issue." });
   }, { immediate: true });
   ix.component("inew", async (call) => {
     const [, action, sid, n] = (call.interaction.data?.custom_id ?? "").split(":");
@@ -291,7 +291,7 @@ export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew 
     else if (action === "it") await flow.match(call, sid ?? "", Number(n));
     else if (action === "ans") await flow.answers(call, sid ?? "");
     else if (action === "fix") await flow.fix(call, sid ?? "");
-    else await call.edit({ content: "This form has expired. Start again with /issue new." });
+    else await call.edit({ content: "This form has expired. Start again with /autocraft new-issue." });
   });
   return flow;
 }

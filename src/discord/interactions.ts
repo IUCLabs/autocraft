@@ -63,7 +63,7 @@ export class Interactions {
   }
 
   /**
-   * Adds a command. `key` is the command name, with the subcommand after a space ("issue search"); it is the
+   * Adds a command. `key` is the command name, with the subcommand after a space ("autocraft search"); it is the
    * definition's name for a command without subcommands. The definition of a command with subcommands may be given by each
    * handler (their options are merged) or once, with null for the others.
    */

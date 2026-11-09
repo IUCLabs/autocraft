@@ -71,7 +71,7 @@ const modalId = (): string => rest.callbacks.find((c) => c.type === 9)!.data!.cu
 const submit = (user: string, custom_id: string, values: Record<string, string>) =>
   send(5, user, { custom_id, components: Object.entries(values).map(([id, value]) => ({ type: 1, components: [{ type: 4, custom_id: id, value }] })) });
 const press = (user: string, custom_id: string) => send(3, user, { custom_id });
-const newCmd = (user: string, channel = "c1") => send(2, user, { name: "issue", type: 1, options: [{ name: "new", type: 1, options: [{ name: "repo", type: 3, value: "photocraft" }] }] }, channel);
+const newCmd = (user: string, channel = "c1") => send(2, user, { name: "autocraft", type: 1, options: [{ name: "new-issue", type: 1, options: [{ name: "repo", type: 3, value: "photocraft" }] }] }, channel);
 const rows = (b: EditBody) => (b.components as { components: { label: string; custom_id?: string; url?: string }[] }[]).flatMap((r) => r.components);
 
 before(async () => {
