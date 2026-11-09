@@ -1,4 +1,4 @@
-// `/autocraft search query:<text> [repo]` and the message command "Find issue". Replies are visible to the caller only.
+// `/autocraft search repo:<repo|all> query:<text>` and the message command "Find issue". Replies are visible to the caller only.
 import type { DatabaseSync } from "node:sqlite";
 import type { Call, Interactions } from "./interactions.ts";
 import type { DiscordKeys } from "./keys.ts";
@@ -7,6 +7,7 @@ import { renderMatches } from "./reply.ts";
 import { QUESTION_CHARS, type Search } from "./search.ts";
 
 export const FIND_ISSUE = "Find issue";
+const ALL_REPOS = "all";
 
 export function installSearchCommands(ix: Interactions, deps: { db: DatabaseSync; keys: DiscordKeys; search: Search }): void {
   const { db, keys, search } = deps;
@@ -21,11 +22,19 @@ export function installSearchCommands(ix: Interactions, deps: { db: DatabaseSync
   };
   ix.command("autocraft search", {
     name: "autocraft", type: 1, description: "AutoCraft", dm_permission: false,
-    options: [{ type: 1, name: "search", description: "Search the issues for a question or a description", options: [{ type: 3, name: "query", description: "What to look for", required: true, max_length: 500 }, { type: 3, name: "repo", description: "Only search this repo", autocomplete: true }] }],
-  }, (call) => run(call, call.option("query"), call.option("repo")?.trim() || undefined));
+    // Both fields are required so Discord shows them at once; "All repos" keeps a search across every public repo one pick away.
+    options: [{ type: 1, name: "search", description: "Search the issues for a question or a description", options: [
+      { type: 3, name: "repo", description: "The repo to search, or All repos", required: true, autocomplete: true },
+      { type: 3, name: "query", description: "What to look for", required: true, max_length: 500 },
+    ] }],
+  }, (call) => {
+    const repo = call.option("repo")?.trim();
+    return run(call, call.option("query"), repo && repo !== ALL_REPOS ? repo : undefined);
+  });
   ix.autocomplete("autocraft search", (call) => {
     const typed = (call.focused()?.value ?? "").toLowerCase();
-    return publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
+    const repos = publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
+    return [{ name: "All repos", value: ALL_REPOS }, ...repos].slice(0, 25);
   });
   ix.command(FIND_ISSUE, { name: FIND_ISSUE, type: 3, dm_permission: false }, (call) => run(call, call.targetText()));
 }
