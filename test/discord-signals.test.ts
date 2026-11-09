@@ -84,12 +84,13 @@ describe("attention signals", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_run_texts").get()!.n, 0);
   });
 
-  test("the Items filter returns the flagged items only", async () => {
+  test("the Items filter returns every mentioned item, asked about or not", async () => {
     const req = (q: string) => ({ query: new URLSearchParams(q), user: { role: "operator", login: "o", canRead: async () => true } }) as unknown as Req;
     const rows = async (q: string) => (await statusList(db, req(q))).rows.map((r) => r.number).sort();
-    assert.deepEqual(await rows("asked=1"), [3, 4]);
+    // m1 (photocraft#1) was deleted; #2 is a plain mention, #3 and #4 were asked about.
+    assert.deepEqual(await rows("discord=1"), [2, 3, 4]);
     assert.deepEqual(await rows(""), [1, 2, 3, 4]);
-    assert.equal((await statusList(db, req("asked=1"))).total, 2);
+    assert.equal((await statusList(db, req("discord=1"))).total, 3);
   });
 
   test("limits per author and channel, two calls at a time, and a message naming many items is skipped", async () => {

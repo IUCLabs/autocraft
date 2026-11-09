@@ -61,7 +61,7 @@ export function StatusItemsView(_: ViewProps) {
           <button key={l} onClick={() => update({ kind: k ?? null })} aria-pressed={kind === k} className="h-7 rounded px-2 text-xs text-ink/60 hover:text-ink aria-pressed:bg-ink/[0.08] aria-pressed:font-medium aria-pressed:text-ink max-md:h-11">{l}</button>
         ))}
         <button onClick={() => update({ discord: discord ? null : "1" })} aria-pressed={discord} className="ml-1 inline-flex h-7 items-center gap-1 rounded px-2 text-xs text-ink/60 hover:text-ink aria-pressed:bg-ink/[0.08] aria-pressed:font-medium aria-pressed:text-ink max-md:h-11">
-          <ChatsCircleIcon aria-hidden /> Mentioned on Discord
+          <ChatsCircleIcon aria-hidden /> Seen on Discord
         </button>
       </div>
       {!rows ? <Pending error={error} /> : rows.length === 0 ? <p className="py-8 text-sm text-ink/55">No items match.</p> : (
