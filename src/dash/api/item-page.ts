@@ -4,7 +4,7 @@
 import { prBuildView } from "../../prbuild/view.ts";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { CiState, TimelineEntry, DiscordInfo, ItemBar, ItemKind, ItemPrBuild, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, Tier } from "../../../web/src/api/types.ts";
+import type { CiState, TimelineEntry, DiscordInfo, ItemBar, ItemKind, ItemPrBuild, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, ScreenshotRun, Tier } from "../../../web/src/api/types.ts";
 import { statusFromItem, type ItemStatus } from "../../core/item-status.ts";
 import { triggerWhy } from "../../review/trigger.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
@@ -50,6 +50,8 @@ export interface ItemPageData {
   status: ItemStatus; bar: ItemBar; costUsd: number; reviews: ReviewHistory; timeline: TimelineEntry[]; github: GithubSide;
   /** PRs: our own build of the newest head; null when the pr-builds switch is off or there is none. */
   prBuild: ItemPrBuild | null;
+  /** The screenshot run of the PR's latest head, for staff; empty when there is none. */
+  screenshots: ScreenshotRun[];
 }
 export type ItemPageUnchanged = { unchanged: true; stamp: string };
 
@@ -81,6 +83,7 @@ const EXTRA = [
   "SELECT group_concat(state) FROM postmerge_followups WHERE repo = ?1 AND number = ?2",
   "SELECT id, state, updated_at FROM preapprovals WHERE repo = ?1 AND number = ?2 ORDER BY id DESC LIMIT 1",
   "SELECT id FROM fast_track WHERE repo = ?1 AND number = ?2",
+  "SELECT group_concat(head_sha || state || COALESCE(verdict, '') || held) FROM screenshot_runs WHERE repo = ?1 AND number = ?2",
   "SELECT pipeline FROM tracked_repos WHERE name = ?1 AND ?2 IS NOT NULL",
   "SELECT COUNT(*), MAX(id), group_concat(state) FROM jobs WHERE state IN ('queued', 'running') AND repo = ?1 AND json_extract(params, '$.number') = ?2",
   "SELECT group_concat((SELECT COUNT(*) FROM jobs q WHERE q.state = 'queued' AND q.step = j.step AND q.id < j.id)) FROM jobs j WHERE j.state = 'queued' AND j.repo = ?1 AND json_extract(j.params, '$.number') = ?2",
@@ -225,6 +228,25 @@ function githubOf(c: Ctx, it: Item, ev: Ev[], url: string, syncedAt: string | nu
   };
 }
 
+// ---- screenshots -----------------------------------------------------------------------------------------------------
+
+type ShotRow = { head_sha: string; state: string; reason: string | null; plan: string | null; head_task_id: number | null; base_task_id: number | null; verdict: string | null; clear: number | null; comparison: string | null; model: string | null; held: number; created_at: string; finished_at: string | null };
+
+/** The latest screenshot run of the PR: one entry for staff, none for anyone else or a veiled PR. Images are served by the task artifact route. */
+function screenshotsOf(c: Ctx, headNow: string | null): ScreenshotRun[] {
+  if (!c.staff || c.veiled) return [];
+  const r = c.db.prepare("SELECT * FROM screenshot_runs WHERE repo = ? AND number = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(c.repo, c.n) as ShotRow | undefined;
+  if (!r) return [];
+  const names = (id: number | null): Set<string> => new Set(id === null ? [] : (c.db.prepare("SELECT name FROM build_artifacts WHERE task_id = ? AND content_type = 'image/png'").all(id) as { name: string }[]).map((x) => x.name));
+  const before = names(r.base_task_id), after = names(r.head_task_id);
+  const shots = [...after].filter((n) => before.has(n)).sort((a, b) => parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10))
+    .map((name) => ({ name, before: { taskId: r.base_task_id!, name }, after: { taskId: r.head_task_id!, name } }));
+  return [{
+    head: short(r.head_sha), current: r.head_sha === headNow, state: r.state as ScreenshotRun["state"], verdict: r.verdict as ScreenshotRun["verdict"], clear: r.clear === null ? null : r.clear === 1,
+    comparison: r.comparison, held: r.held === 1, reason: r.reason, model: r.model, at: r.finished_at ?? r.created_at, shots,
+  }];
+}
+
 // ---- the route -------------------------------------------------------------------------------------------------------------
 
 export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData | ItemPageUnchanged> {
@@ -244,5 +266,6 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
     timeline: timelineOf(c, ev, it.kind === "pr" ? preapprovalsOf(db, c.repo, c.n) : []).slice(-200),
     github: githubOf(c, it, ev, row.url ?? "", row.synced_at),
     prBuild: prBuildOf(c),
+    screenshots: screenshotsOf(c, row.head_oid),
   };
 }

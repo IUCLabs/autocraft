@@ -1,6 +1,6 @@
 // The planner's reply, validated hard: anything that does not check out is an error and creates no task.
 import { paramValueError, type ScreenshotConfigBody } from "./screenshot-config.ts";
-import { KINDS, MAX_CRATES, MAX_FILTERS, MAX_SHOT_REASON_WORDS, MAX_SHOT_STEPS, MAX_SHOTS, MAX_TEST_LINES, regressionName, type Crate, type Kind, type ShotStep } from "./types.ts";
+import { COMPARE_VERDICTS, KINDS, MAX_COMPARE_WORDS, MAX_CRATES, MAX_FILTERS, MAX_SHOT_REASON_WORDS, MAX_SHOT_STEPS, MAX_SHOTS, MAX_TEST_LINES, regressionName, type CompareVerdict, type Crate, type Kind, type ShotStep } from "./types.ts";
 
 export const FILTER_RE = /^[A-Za-z0-9_:]{1,100}$/;
 const MAX_REASON_WORDS = 25;
@@ -132,4 +132,26 @@ export function parseScreenshotReply(text: string, ref: string, config: Pick<Scr
   if (shots < 1) return shotFail("the script needs at least one capture command");
   if (shots > MAX_SHOTS) return shotFail(`at most ${MAX_SHOTS} capture commands`);
   return { ok: true, plan: { screenshot: true, reason, steps } };
+}
+
+/** The comparison of the before and after screenshots of one PR. */
+export type CompareResult = { verdict: CompareVerdict; clear: boolean; summary: string };
+export type CompareParsed = { ok: true; result: CompareResult } | { ok: false; error: string };
+
+/** Parses the comparison reply for the PR `ref`: one object with a verdict, `clear` and a summary cut to MAX_COMPARE_WORDS words. */
+export function parseCompareReply(text: string, ref: string): CompareParsed {
+  const bad = (error: string): CompareParsed => ({ ok: false, error });
+  const a = text.indexOf("["), b = text.lastIndexOf("]");
+  if (a < 0 || b < a) return bad("no JSON list in the reply");
+  let arr: unknown;
+  try { arr = JSON.parse(text.slice(a, b + 1)); } catch { return bad("reply is not valid JSON"); }
+  if (!Array.isArray(arr) || arr.length !== 1 || !isObj(arr[0])) return bad("reply must be a list of one object");
+  const o = arr[0];
+  const extra = Object.keys(o).find((k) => !["ref", "verdict", "clear", "summary"].includes(k));
+  if (extra) return bad(`unknown key "${extra}"`);
+  if (o.ref !== ref) return bad("reply is for another PR");
+  if (typeof o.verdict !== "string" || !(COMPARE_VERDICTS as readonly string[]).includes(o.verdict)) return bad("unknown verdict");
+  if (typeof o.clear !== "boolean") return bad("clear must be true or false");
+  if (typeof o.summary !== "string" || !o.summary.trim()) return bad("summary is missing");
+  return { ok: true, result: { verdict: o.verdict as CompareVerdict, clear: o.clear, summary: o.summary.trim().split(/\s+/).slice(0, MAX_COMPARE_WORDS).join(" ") } };
 }

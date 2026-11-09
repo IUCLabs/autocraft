@@ -17,10 +17,10 @@ import { lintReply, parseFindings, publicTexts as postmergeTexts, type Finding, 
 import { commentTexts } from "../conversations/cards.ts";
 import { choicesTexts, parseTurn, type TurnReply as ConversationReply } from "../decide/choices-parse.ts";
 import type { ConversationInput } from "../conversations/types.ts";
-import { parsePlanReply, parseScreenshotReply, type Parsed as PlanReply, type ScreenshotParsed } from "../verify/plan.ts";
+import { parseCompareReply, parsePlanReply, parseScreenshotReply, type CompareParsed, type Parsed as PlanReply, type ScreenshotParsed } from "../verify/plan.ts";
 import type { ScreenshotConfigBody } from "../verify/screenshot-config.ts";
 import type { Crate } from "../verify/types.ts";
-import type { ScreenshotPlanInput, VerifyPlanInput } from "../verify/types.ts";
+import type { ScreenshotCompareInput, ScreenshotPlanInput, VerifyPlanInput } from "../verify/types.ts";
 import { referenceProblems, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
 
@@ -219,6 +219,17 @@ export const VERIFY_SCREENSHOT: ClaudeStep<ScreenshotPlanInput, ScreenshotParsed
   toPrompt: (x) => [x], size: () => 1,
   parse: (text, x, _ctx, c) => {
     const value = parseScreenshotReply(text, c.ref, c.config);
+    return { value, ...(!value.ok && { rest: x }) };
+  },
+};
+
+/** The before/after comparison as parsed, valid or not: an invalid reply is asked for again. The images are read from the call's checkout. */
+export type CompareCtx = { ref: string };
+export const VERIFY_COMPARE: ClaudeStep<ScreenshotCompareInput, CompareParsed, CompareCtx> = {
+  provider: "claude", id: "verify.compare", attempts: 2,
+  toPrompt: (x) => [x], size: () => 1,
+  parse: (text, x, _ctx, c) => {
+    const value = parseCompareReply(text, c.ref);
     return { value, ...(!value.ok && { rest: x }) };
   },
 };
