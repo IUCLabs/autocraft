@@ -257,6 +257,34 @@ CREATE TABLE IF NOT EXISTS user_token_revocations (
   attempts INTEGER NOT NULL DEFAULT 0 -- failed sweeps so far
 );
 
+-- The GitHub App user token of a Discord reporter (src/discord/reporter.ts), keyed by the Discord user's keyed hash. Not a
+-- dashboard login: it grants no access, it only lets the bot file an issue as that GitHub account.
+CREATE TABLE IF NOT EXISTS reporter_tokens (
+  reporter TEXT PRIMARY KEY,          -- keys.hash("author", discord user id)
+  github_id INTEGER NOT NULL,
+  login TEXT NOT NULL,
+  token_enc TEXT NOT NULL,            -- sealed JSON of the token set; aad names this table and the reporter
+  version INTEGER NOT NULL DEFAULT 1, -- compare-and-swap counter for refreshes
+  updated_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ok'   -- ok; refresh-failed: the reporter must sign in again
+);
+-- Single-use sign-in states of reporters; only the hash of the state is kept.
+CREATE TABLE IF NOT EXISTS reporter_states (
+  state_hash TEXT PRIMARY KEY,
+  reporter TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  verifier TEXT NOT NULL              -- PKCE verifier of the authorization
+);
+-- Issues filed from Discord, for the per-login and per-repo daily limits.
+CREATE TABLE IF NOT EXISTS discord_filed (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  login TEXT NOT NULL COLLATE NOCASE,
+  reporter TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS discord_filed_at ON discord_filed (at);
+
 -- One row per started GitHub App registration: the manifest flow's single-use state nonce.
 CREATE TABLE IF NOT EXISTS github_app_states (
   state TEXT PRIMARY KEY,
