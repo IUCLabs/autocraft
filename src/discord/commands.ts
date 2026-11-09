@@ -5,6 +5,7 @@ import { audit } from "../dash/audit.ts";
 import { publicRepoNames, publicStats, publicStatus, type PublicStats, type PublicStatus } from "../public/status.ts";
 import type { Call, Interactions } from "./interactions.ts";
 import type { DiscordKeys } from "./keys.ts";
+import { forgetReporter } from "./file-issue.ts";
 import { forgetLink, redeemLinkCode } from "./links.ts";
 import { plain } from "./reply.ts";
 
@@ -81,8 +82,9 @@ export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSyn
   });
   ix.command("autocraft unlink", null, async (call) => {
     const n = call.userId ? forgetLink(db, keys, call.userId) : 0;
-    if (n) audit(db, "discord", "discord-unlink", null, { by: "discord" });
-    await call.edit({ content: n ? "Link removed." : "This Discord account is not linked." });
+    const signedIn = call.userId ? forgetReporter(db, keys.hash("author", call.userId)) : false;
+    if (n || signedIn) audit(db, "discord", "discord-unlink", null, { by: "discord", link: n > 0, signedIn });
+    await call.edit({ content: n || signedIn ? "Unlinked." : "This Discord account is not linked." });
   });
   ix.command("autocraft stats", null, async (call: Call) => {
     if (!mayRead(call)) return void (await call.edit({ content: TOO_MANY }));

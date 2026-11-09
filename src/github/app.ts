@@ -38,7 +38,7 @@ export function appManifest(name: string, baseUrl: string): Manifest {
     hook_attributes: { url: `${baseUrl}/webhooks/github`, active: false },
     redirect_url: `${baseUrl}/auth/github-app/callback`,
     setup_url: `${baseUrl}/auth/github-app/setup`,
-    callback_urls: [`${baseUrl}/auth/callback`],
+    callback_urls: [`${baseUrl}/auth/callback`, `${baseUrl}/discord/github/callback`],
     public: false,
     default_permissions: {
       metadata: "read", contents: "write", pull_requests: "write", issues: "write", actions: "write", repository_advisories: "write",

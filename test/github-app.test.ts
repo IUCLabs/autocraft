@@ -162,7 +162,7 @@ describe("github app registration", () => {
     const state = /settings\/apps\/new\?state=([A-Za-z0-9_-]+)/.exec(page)?.[1];
     assert.ok(state, "the start page posts to GitHub with a state");
     assert.match(page, /&#34;active&#34;:false/);
-    assert.match(page, /&#34;callback_urls&#34;:\[&#34;http:\/\/127\.0\.0\.1:\d+\/auth\/callback&#34;\]/);
+    assert.match(page, /&#34;callback_urls&#34;:\[&#34;http:\/\/127\.0\.0\.1:\d+\/auth\/callback&#34;,&#34;http:\/\/127\.0\.0\.1:\d+\/discord\/github\/callback&#34;\]/);
 
     const done = await boss.req(`/auth/github-app/callback?code=good-code&state=${state}`);
     assert.equal(done.status, 303);

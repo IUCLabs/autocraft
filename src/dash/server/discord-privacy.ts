@@ -12,7 +12,7 @@ export function discordPrivacyPage(nonce: string, contact: string): string {
 <h2>How it is used</h2>
 <p>To count references to GitHub issues and pull requests, to answer searches and commands, and to recognise linked accounts.</p>
 <h2>What is kept</h2>
-<p>References to GitHub issues and pull requests with the IDs of the messages that made them, and account links. Message text is not kept.</p>
+<p>References to GitHub issues and pull requests with the IDs of the messages that made them, and account links. Message text is not kept. If you sign in with GitHub to file an issue, an encrypted GitHub token linked to your Discord account is kept until you unlink it, and the issue is posted publicly on GitHub under your account.</p>
 <h2>Sharing</h2>
 <p>Search text, issue drafts and messages that mention an issue or pull request (to check whether they ask for attention) may be processed by an AI service provider. They are not stored or sold.</p>
 <h2>Deletion</h2>
