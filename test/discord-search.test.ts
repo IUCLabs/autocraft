@@ -302,6 +302,6 @@ describe("repo named in the question", () => {
     assert.deepEqual(await repos("PhotoCraft crash in layers"), ["photocraft"]);
     assert.deepEqual(await repos("photocraft crash in layers", "vectorcraft"), ["vectorcraft"]);
     assert.deepEqual(await repos("photocraft or vectorcraft crash in layers"), ["photocraft", "vectorcraft"]);
-    assert.deepEqual(await repos("crash in layers", "secret"), []);
+    assert.deepEqual(await repos("crash in layers", "secret"), ["photocraft", "vectorcraft"]);
   });
 });

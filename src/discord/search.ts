@@ -102,7 +102,7 @@ export class Search {
     // An explicit repo wins; otherwise a repo named in the question restricts the search and its word is left out of the embedded text.
     let only = repo && isPublicRepo(db, repo) ? repo : undefined;
     let text = question;
-    if (!only && !repo) {
+    if (!only) {
       const n = namedRepo(db, question);
       if (n) { only = n.repo; text = n.rest; }
     }
