@@ -2554,7 +2554,7 @@ export interface ItemStatusRow {
   status: ItemStatus;
   updatedAt: string;
 }
-export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind; repo?: RepoName[]; /** Only items a Discord message asked attention on. */ asked?: boolean; cursor?: string }
+export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind; repo?: RepoName[]; /** Only items mentioned in a watched Discord channel. */ discord?: boolean; cursor?: string }
 /** `byPhase` and `total` count every row that matches the filter except `phase`; `nextCursor` is null on the last page. */
 export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number; nextCursor: string | null }
 
