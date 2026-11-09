@@ -150,6 +150,20 @@ test("a deleted item reads as null; a missing repository still fails", async () 
   await assert.rejects(c.query("q", {}));
 });
 
+test("search results GitHub refuses for lack of access are dropped; other errors still fail", async () => {
+  const c = new Client(0);
+  const answer = (errors: unknown[]) => () => ({
+    data: { rateLimit: { cost: 1, remaining: 4000, resetAt: "2026-11-09T15:00:00Z" }, search: { nodes: [{ number: 1 }, null], pageInfo: { hasNextPage: false } } },
+    errors, text: "", failed: true, stderr: "gh: Resource not accessible by integration",
+  });
+  (c as unknown as { run: unknown }).run = answer([{ type: "FORBIDDEN", path: ["search", "nodes", 1], message: "Resource not accessible by integration" }]);
+  assert.deepEqual((await c.query("q", {})).search.nodes, [{ number: 1 }, null]);
+  (c as unknown as { run: unknown }).run = answer([{ type: "FORBIDDEN", path: ["search", "nodes", 0, "author"], message: "Resource not accessible by integration" }]);
+  assert.deepEqual((await c.query("q", {})).search.nodes, [null, null]);
+  (c as unknown as { run: unknown }).run = answer([{ type: "FORBIDDEN", path: ["rateLimit"], message: "Resource not accessible by integration" }]);
+  await assert.rejects(c.query("q", {}));
+});
+
 // ---- mergeable keeps its known value at one head ----
 import { tmpdir } from "node:os";
 import { saveChecks } from "../src/review/checks.ts";
