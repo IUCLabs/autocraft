@@ -33,11 +33,11 @@ export function formatStatus(s: PublicStatus): string {
 /** Lists what the slash-command picker does not show: pings, the message command and the reaction. */
 export const HELP = [
   "**AutoCraft**",
-  "`/autocraft search`: opens a form. Pick the app and describe the problem or the idea to see matching issues; if none fits, AutoCraft helps write a new issue and opens it on GitHub, ready to submit.",
-  "`/autocraft status item:photocraft#123`: where an issue or pull request is.",
-  "`/autocraft stats`: counts for the public repos.",
-  "`/autocraft link` and `unlink`: connect this Discord account to your AutoCraft login (the code is under Link Discord in the dashboard menu).",
-  "`/autocraft alerts on|off`: direct messages about decisions you can settle, once linked.",
+  "`/autocraft search` opens a form. Pick the app and describe the problem or the idea to see matching issues; if none fits, AutoCraft helps write a new issue and opens it on GitHub, ready to submit.",
+  "`/autocraft status item:photocraft#123` shows where an issue or pull request is.",
+  "`/autocraft stats` shows counts for the public repos.",
+  "`/autocraft link` and `unlink` connect this Discord account to your AutoCraft login and remove the link (the code is under Link Discord in the dashboard menu).",
+  "`/autocraft alerts on|off` turns on direct messages about decisions you can settle, once linked.",
   "Mention @AutoCraft with a question in a watched channel, or reply to a message and mention it, to get matching issues.",
   "Right-click a message, then Apps › Find issue, to search with that message's text.",
   "A ✅ on a message means AutoCraft counted it for the issues it names.",
