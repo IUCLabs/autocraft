@@ -47,8 +47,11 @@ const body = (req: Req): Record<string, unknown> => (req.json && typeof req.json
 
 function setupOf(db: DatabaseSync): DiscordSetup {
   const st = db.prepare("SELECT state, detail, at FROM discord_status WHERE id = 1").get() as { state: DiscordSetup["state"]; detail: string | null; at: string } | undefined;
-  const channels = db.prepare("SELECT channel_id AS channelId, guild_id AS guildId, guild_name AS guildName, name, watched, default_repo AS defaultRepo FROM discord_channels WHERE parent_id IS NULL ORDER BY guild_name, name, channel_id").all() as
-    { channelId: string; guildId: string; guildName: string | null; name: string | null; watched: number; defaultRepo: string | null }[];
+  const channels = db.prepare(`SELECT c.channel_id AS channelId, c.guild_id AS guildId, c.guild_name AS guildName, c.name, c.watched, c.default_repo AS defaultRepo, k.name AS category
+    FROM discord_channels c LEFT JOIN discord_categories k ON k.category_id = c.category_id AND k.guild_id = c.guild_id
+    WHERE c.parent_id IS NULL
+    ORDER BY c.guild_name, c.guild_id, k.category_id IS NOT NULL, k.position IS NULL, k.position, k.category_id, c.position IS NULL, c.position, c.channel_id`).all() as
+    { channelId: string; guildId: string; guildName: string | null; name: string | null; watched: number; defaultRepo: string | null; category: string | null }[];
   return {
     state: st?.state ?? "off", detail: st?.detail ?? null, at: st?.at ?? null,
     channels: channels.map((c) => ({ ...c, watched: !!c.watched })),

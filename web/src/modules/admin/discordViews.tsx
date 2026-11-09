@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useApi, useQuery } from "../../api/client";
 import type { DiscordSetup } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
@@ -50,8 +50,12 @@ export function DiscordView(_: ViewProps) {
                   <span className="num text-2xs font-normal text-ink/45">{g}</span>
                 </div>
                 <ul>
-                  {data.channels.filter((c) => c.guildId === g).map((c) => (
-                    <li key={c.channelId} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-1.5 first:border-0">
+                  {data.channels.filter((c) => c.guildId === g).map((c, i, all) => (
+                    <Fragment key={c.channelId}>
+                    {c.category !== null && c.category !== (all[i - 1]?.category ?? null) && (
+                      <li className="border-t border-line bg-ink/[0.02] px-4 pb-1 pt-2 text-2xs font-medium uppercase tracking-wide text-ink/45 first:border-0">{c.category}</li>
+                    )}
+                    <li className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-1.5 first:border-0">
                       <div className="min-w-0 max-md:basis-full md:flex-1">
                         <div className="truncate text-sm">#{c.name ?? "unnamed"}</div>
                         <div className="num truncate text-2xs text-ink/45">{c.channelId}</div>
@@ -69,6 +73,7 @@ export function DiscordView(_: ViewProps) {
                       </Select>
                       <Switch on={c.watched} label={`Watch #${c.name ?? c.channelId}`} busy={write.busy === c.channelId} onChange={(on) => void write.run(c.channelId, () => api.discord.setChannel(c.channelId, on)).then(() => refetch())} />
                     </li>
+                    </Fragment>
                   ))}
                 </ul>
               </div>

@@ -25,6 +25,8 @@ export function dbPath(): string {
 // NOT EXISTS leaves an older table as it was, so these are added here.
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["discord_channels", "default_repo", "TEXT"],
+  ["discord_channels", "position", "INTEGER"],
+  ["discord_channels", "category_id", "TEXT"],
   ["oauth_states", "identity", "TEXT"],
   ["discord_mentions", "signal", "INTEGER NOT NULL DEFAULT 0"],
   ["user_token_revocations", "kind", "TEXT NOT NULL DEFAULT 'grant'"],

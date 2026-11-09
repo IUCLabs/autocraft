@@ -100,10 +100,13 @@ export function createMockApi(): Api {
       { id: "l2", login: "tomas-vale", linkedAt: new Date(Date.now() - 40 * 3_600_000).toISOString() },
     ],
     channels: [
-      { channelId: "9000000000000002", guildId: "9000000000000001", guildName: "Glasswing Community", name: "dev-chat", watched: true, defaultRepo: "photocraft" },
-      { channelId: "9000000000000003", guildId: "9000000000000001", guildName: "Glasswing Community", name: "support", watched: true, defaultRepo: null },
-      { channelId: "9000000000000004", guildId: "9000000000000001", guildName: "Glasswing Community", name: "general", watched: false, defaultRepo: null },
-      { channelId: "9000000000000005", guildId: "9000000000000001", guildName: "Glasswing Community", name: "announcements", watched: false, defaultRepo: null },
+      { channelId: "9000000000000004", guildId: "9000000000000001", guildName: "Glasswing Community", name: "general", watched: false, defaultRepo: null, category: null },
+      { channelId: "9000000000000005", guildId: "9000000000000001", guildName: "Glasswing Community", name: "announcements", watched: false, defaultRepo: null, category: null },
+      { channelId: "9000000000000006", guildId: "9000000000000001", guildName: "Glasswing Community", name: "rules", watched: false, defaultRepo: null, category: null },
+      { channelId: "9000000000000002", guildId: "9000000000000001", guildName: "Glasswing Community", name: "dev-chat", watched: true, defaultRepo: "photocraft", category: "Development" },
+      { channelId: "9000000000000007", guildId: "9000000000000001", guildName: "Glasswing Community", name: "release-notes", watched: false, defaultRepo: null, category: "Development" },
+      { channelId: "9000000000000003", guildId: "9000000000000001", guildName: "Glasswing Community", name: "support", watched: true, defaultRepo: null, category: "Community" },
+      { channelId: "9000000000000008", guildId: "9000000000000001", guildName: "Glasswing Community", name: "help-desk", watched: false, defaultRepo: null, category: "Community" },
     ],
   };
   const find = (id: string) => {
