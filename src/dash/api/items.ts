@@ -382,9 +382,9 @@ export async function quickSearch(db: DatabaseSync, req: Req): Promise<SearchHit
 
 type StatusRowRaw = { repo: string; number: number; kind: string; state: string; title: string | null; updated_at: string | null; merged_at: string | null; closed_at: string | null; view: string | null };
 
-const ASKED_SQL = "EXISTS (SELECT 1 FROM main.discord_mentions d WHERE d.repo = i.repo AND d.number = i.number AND d.signal = 1)";
+const DISCORD_SQL = "EXISTS (SELECT 1 FROM main.discord_mentions d WHERE d.repo = i.repo AND d.number = i.number)";
 
-/** `GET /api/items/status`: every item with its status line, newest update first. Filters: q, repo, kind (as /api/items), phase, asked=1 (a Discord message asked attention on the item), cursor, limit. `byPhase` and `total` count every match except the phase filter. */
+/** `GET /api/items/status`: every item with its status line, newest update first. Filters: q, repo, kind (as /api/items), phase, discord=1 (mentioned in a watched Discord channel, asked about or not), cursor, limit. `byPhase` and `total` count every match except the phase filter. */
 export async function statusList(db: DatabaseSync, req: Req): Promise<ItemStatusList> {
   const phase = req.query.get("phase");
   if (phase && !(ITEM_PHASES as readonly string[]).includes(phase)) throw new HttpError(400, "unknown phase");
@@ -397,8 +397,8 @@ export async function statusList(db: DatabaseSync, req: Req): Promise<ItemStatus
   const from = (cols: string) => (b.text ? `WITH ${HIT_IDS} SELECT ${cols} FROM hits h JOIN items i ON i.rowid = h.rid` : `SELECT ${cols} FROM items i`) +
     " LEFT JOIN main.item_plans p ON p.repo = i.repo AND p.number = i.number";
   const whereSql = (w: string[]) => (w.length ? ` WHERE ${w.join(" AND ")}` : "");
-  // Items a Discord message asked attention on (display only; src/discord/signals.ts).
-  const base = req.query.get("asked") === "1" ? [...b.where, ASKED_SQL] : b.where;
+  // Items mentioned on Discord (display only; src/discord/store.ts).
+  const base = req.query.get("discord") === "1" ? [...b.where, DISCORD_SQL] : b.where;
 
   const byPhase = Object.fromEntries(ITEM_PHASES.map((x) => [x, 0])) as Record<ItemPhase, number>;
   for (const r of db.prepare(from(`${PHASE_SQL} AS phase, COUNT(*) AS n`) + whereSql(base) + " GROUP BY 1").all(b.params) as { phase: ItemPhase; n: number }[])
