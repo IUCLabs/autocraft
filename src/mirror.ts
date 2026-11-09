@@ -194,6 +194,13 @@ export class Client {
       await this.sleepUntilReset("rate limit exhausted");
       throw new Transient("rate limited");
     }
+    // An org search also lists items of repos the app cannot read (one it is not installed on): GitHub nulls those results
+    // and reports each beside them. Dropping them keeps the page; a tracked repo without access shows on the app-coverage check.
+    const refused = r.data?.search?.nodes ? refusedSearchNodes(r.errors) : null;
+    if (refused) {
+      for (const i of refused) r.data.search.nodes[i] = null;
+      console.warn(`  skipped ${refused.size} search result${refused.size === 1 ? "" : "s"} GitHub refused for lack of access`);
+    }
     if (r.errors.length && !r.data?.repository && !r.data?.repositoryOwner && !r.data?.search) {
       if (/node_limit|resource_limits|timeout|something went wrong/.test(r.text)) throw new Transient("query too heavy");
       const typed = r.errors.find((e: Node) => e.type === "FORBIDDEN" || e.type === "NOT_FOUND") ?? r.errors[0];
@@ -201,7 +208,7 @@ export class Client {
     }
     // A deleted or transferred item is a NOT_FOUND error beside a null field, and gh exits non-zero; with the repository
     // present the answer is that null field, which callers handle.
-    const missingOnly = r.errors.length > 0 && r.errors.every((e: Node) => e.type === "NOT_FOUND") && !!r.data?.repository;
+    const missingOnly = (r.errors.length > 0 && r.errors.every((e: Node) => e.type === "NOT_FOUND") && !!r.data?.repository) || refused !== null;
     if (r.failed && !missingOnly) {
       if (/502|503|504|timeout|eof|connection|unexpected end of json/.test(r.text)) throw new Transient(r.stderr.trim().slice(0, 200));
       throw new GithubError(`gh failed: ${r.stderr.trim().slice(0, 500)}`, httpStatusOf(r.stderr), null);
@@ -435,6 +442,19 @@ const SEARCH_CAP = 1000;
 const FULL_KEEP = 2500;
 const META_REFRESH_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 6 * 3600 * 1000;
+
+/** Indexes of search results GitHub refused for lack of access, when every error of the answer is one; else null. */
+export function refusedSearchNodes(errors: Node[]): Set<number> | null {
+  if (!errors.length) return null;
+  const out = new Set<number>();
+  for (const e of errors) {
+    const p = e.path;
+    const refusal = e.type === "FORBIDDEN" || /not accessible by integration/i.test(String(e.message ?? ""));
+    if (!refusal || !Array.isArray(p) || p[0] !== "search" || p[1] !== "nodes" || typeof p[2] !== "number") return null;
+    out.add(p[2]);
+  }
+  return out;
+}
 
 export const SEARCH_QUERY = `
 query($q: String!, $first: Int!, $after: String) {
