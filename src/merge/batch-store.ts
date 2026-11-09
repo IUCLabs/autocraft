@@ -1,6 +1,7 @@
 // Tables and pure rules of the merge queue's integration batches (see batch.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { mergeApprovalOf as mergeApprovalOfSafe } from "./approval.ts";
+import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 
 export const BATCH_STATES = ["checking", "open", "merged", "failed", "split", "superseded"] as const;
 export type BatchState = (typeof BATCH_STATES)[number];
@@ -16,6 +17,12 @@ export const PUBLISH_FAILED = "could not open the batch PR";
 export const MAX_PUBLISH_FAILURES = 5;
 /** Wait before a batch whose push or PR creation failed is tried again: 1, 2, 4, 8 minutes, at most 30. */
 export const publishDelayMs = (failures: number): number => (failures === 0 ? 0 : Math.min(60_000 * 2 ** (failures - 1), 30 * 60_000));
+/** Wait before a batch's build task is queued again after a build-environment error: none for the first retry, then doubling from 5 minutes up to 30 minutes. */
+export const retryDelayMs = (retries: number): number => (retries <= 0 ? 0 : Math.min(5 * 60_000 * 2 ** (retries - 1), 30 * 60_000));
+/** Builds a batch's task may take, counting every try, before the batch PR opens without the build. */
+export const MAX_BUILD_TRIES = 3;
+/** How long a batch waits for its build task before the PR opens anyway. */
+export const BUILD_MAX_MS = 3 * 3600_000;
 /** Shown on a batch PR whose workflow runs wait for a maintainer's approval. */
 export const RUNS_WAIT_NOTE = "batch PR runs wait for a maintainer's approval";
 
@@ -30,6 +37,10 @@ export type BatchRow = {
   task_id: number | null; retries: number; pr_number: number | null; pr_url: string | null; summary: string | null; created_at: string; updated_at: string;
   /** `<owner>/<repo>` the branch was pushed to; null before the push and on rows from before it was stored. */
   fork: string | null;
+  /** The batch-build feature's state: null (never queued), pending, passed, failed or skipped. */
+  build_state?: "pending" | "passed" | "failed" | "skipped" | null;
+  /** Build tasks queued for the batch (the first, flake reruns and environment retries). */
+  build_tries?: number;
   /** Merge commit of the batch PR; null until merged and on rows from before it was stored. */
   merge_sha?: string | null;
 };
@@ -63,10 +74,17 @@ export function getBatch(db: DatabaseSync, id: number): BatchRow {
   return db.prepare("SELECT * FROM main.merge_batches WHERE id = ?").get(id) as BatchRow;
 }
 
-export function updateBatch(db: DatabaseSync, id: number, at: string, set: Partial<Pick<BatchRow, "state" | "task_id" | "retries" | "pr_number" | "pr_url" | "summary" | "fork" | "merge_sha">>): void {
+export function updateBatch(db: DatabaseSync, id: number, at: string, set: Partial<Pick<BatchRow, "state" | "task_id" | "retries" | "pr_number" | "pr_url" | "summary" | "fork" | "merge_sha" | "build_state" | "build_tries">>): void {
   const cols = Object.keys(set);
   db.prepare(`UPDATE main.merge_batches SET ${cols.map((c) => `${c} = ?`).join(", ")}${cols.length ? ", " : ""}updated_at = ? WHERE id = ?`)
     .run(...(Object.values(set) as (string | number | null)[]), at, id);
+}
+
+/** Cancels the build task of a batch that is ending before its build was read. */
+export function cancelBuild(db: DatabaseSync, b: BatchRow, by: string): void {
+  if (b.build_state !== "pending" || b.task_id === null) return;
+  const t = getTask(db, b.task_id);
+  if (t && !TERMINAL.includes(t.state)) cancelTask(db, t.id, by);
 }
 
 /** `integration-<repo>-<yyyymmdd>-<n>`, n counting the repo's batches of that day. */

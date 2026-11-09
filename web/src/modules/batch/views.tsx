@@ -34,6 +34,10 @@ const EVENT_ICON: Record<BatchEventKind, PhosphorIcon> = {
   opened: GitBranchIcon, task: HammerIcon, push: UploadSimpleIcon, pr: GitPullRequestIcon, ci: CheckIcon, removed: SignOutIcon, stopped: ProhibitIcon, failed: WarningIcon, split: SplitHorizontalIcon, superseded: GitBranchIcon, merged: GitMergeIcon,
 };
 
+const BUILD: Record<NonNullable<BatchDetail["buildState"]>, [string, Tone]> = {
+  pending: ["Build running", "warn"], passed: ["Build passed", "ok"], failed: ["Build failed", "bad"], skipped: ["Build skipped", "neutral"],
+};
+
 function Header({ b }: { b: BatchDetail }) {
   const [label, tone] = BATCH_STATE[b.state];
   const prState = b.state === "merged" ? "merged" : active(b) ? "open" : "closed";
@@ -46,6 +50,7 @@ function Header({ b }: { b: BatchDetail }) {
     <Block className="mt-3" title="Batch">
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
         <Badge tone={tone}>{label}</Badge>
+        {b.buildState && <Badge tone={BUILD[b.buildState][1]}>{BUILD[b.buildState][0]}</Badge>}
         {b.fork ? (
           <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" className={cn("font-mono text-sm [overflow-wrap:anywhere]", ext)}>
             {b.branch}
@@ -66,6 +71,7 @@ function Header({ b }: { b: BatchDetail }) {
           ["Branch head", b.fork ? commit(b.commitSha, b.fork) : <span className="code text-xs">{sha7(b.commitSha)}</span>],
           ["Came from", b.parentId !== null ? <Link to={batchPath(b.parentId)} className="text-accent-ink hover:underline">Batch #{b.parentId}</Link> : null],
           ["Led to", b.childIds.length ? b.childIds.map((c, i) => <span key={c}>{i > 0 && ", "}<Link to={batchPath(c)} className="text-accent-ink hover:underline">Batch #{c}</Link></span>) : null],
+          ["Build skipped", b.buildSkipped],
           ["Why it ended", b.summary && !active(b) ? <span className="text-bad">{b.summary}</span> : null],
         ]}
       />

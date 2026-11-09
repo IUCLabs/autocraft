@@ -53,12 +53,13 @@ export function batchDetail(db: DatabaseSync, id: number, staff: boolean): Batch
   // Audit rows about the batch itself (target `repo:branch`), its members (target `repo#n`, details.batch the branch) and its PR.
   const audit = db.prepare(
     `SELECT rowid, at, login, action, target, details FROM main.audit
-      WHERE (target = ? AND action IN ('batch-start', 'batch-push', 'batch-pr', 'batch-stop', 'batch-end-too-late', 'batch-merged-after-end'))
+      WHERE (target = ? AND action IN ('batch-start', 'batch-build-skip', 'batch-push', 'batch-pr', 'batch-stop', 'batch-end-too-late', 'batch-merged-after-end'))
          OR (action IN ('batch-remove', 'batch-hold') AND json_extract(details, '$.batch') = ? AND target IN (${marks(nums)}))
          ${b.pr_number === null ? "" : "OR (target = ? AND action IN ('ci-run-approve', 'ci-rerun'))"}
       ORDER BY at, rowid`,
   ).all(ref, b.branch, ...nums.map(prRef), ...(b.pr_number === null ? [] : [prRef(b.pr_number)])) as AuditRow[];
 
+  let buildSkipped: string | null = null;
   const left = new Map<number, { state: BatchMemberState; reason: string }>();
   const events: BatchEvent[] = [];
   const by = (login: string) => (staff ? login : null);
@@ -86,6 +87,7 @@ export function batchDetail(db: DatabaseSync, id: number, staff: boolean): Batch
     const num = a.target?.startsWith(`${b.repo}#`) ? Number(a.target.slice(b.repo.length + 1)) : undefined;
     const base = { id: `audit:${a.rowid}`, at: a.at };
     switch (a.action) {
+      case "batch-build-skip": if (typeof d.reason === "string") buildSkipped = d.reason; break;
       case "batch-push": ev({ ...base, kind: "push", summary: "Integration branch pushed" }); break;
       case "batch-pr": ev({ ...base, kind: "pr", summary: "Batch PR opened" }); break;
       case "batch-stop": ev({ ...base, kind: "stopped", summary: "Stopped by an operator; the batch PR is closed and its PRs are held", by: by(a.login) }); break;
@@ -134,7 +136,7 @@ export function batchDetail(db: DatabaseSync, id: number, staff: boolean): Batch
   return {
     id: b.id, repo: b.repo, branch: b.branch, fork: b.fork, state, baseSha: b.base_sha, commitSha: b.commit_sha, parentId: b.parent_id,
     childIds: children.map((c) => c.id), prNumber: b.pr_number, prUrl: b.pr_url, summary: b.summary, createdAt: b.created_at, updatedAt: b.updated_at,
-    mergedAt: state === "merged" ? b.updated_at : null, taskId: b.task_id, mergeSha: b.merge_sha ?? null, ci: ciOf(db, b.repo, b.pr_number), members, events,
+    mergedAt: state === "merged" ? b.updated_at : null, taskId: b.task_id, buildState: b.build_state ?? null, buildTries: b.build_tries ?? 0, buildSkipped: b.build_state === "skipped" ? buildSkipped : null, mergeSha: b.merge_sha ?? null, ci: ciOf(db, b.repo, b.pr_number), members, events,
   };
 }
 

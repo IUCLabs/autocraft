@@ -12,7 +12,7 @@ import { FastTrackError, parseItemRef } from "../fasttrack.ts";
 import { type Exec, exec as defaultExec } from "../fixup/git.ts";
 import { ghClosePr } from "../github/write.ts";
 import { isTracked } from "../repos.ts";
-import { ACTIVE_BATCH, activeBatches, getBatch, membersOf, updateBatch } from "./batch-store.ts";
+import { ACTIVE_BATCH, activeBatches, cancelBuild, getBatch, membersOf, updateBatch } from "./batch-store.ts";
 import { slugOf } from "../owners.ts";
 
 export class ControlError extends Error {
@@ -51,6 +51,7 @@ export function releaseMerge(db: DatabaseSync, by: string, repo: string, number:
 /** Marks the batch superseded and closes its integration PR, when it has one; the row goes back to its state if the close fails, so a later Stop, Remove or merge run retries. The PRs go back to the queue; the next merge run builds batches from what is eligible. */
 async function endBatch(db: DatabaseSync, by: string, id: number, why: string, comment: string, run: Exec): Promise<{ closed: number | null }> {
   const b = getBatch(db, id);
+  cancelBuild(db, b, by);
   updateBatch(db, id, new Date().toISOString(), { state: "superseded", summary: why });
   if (b.pr_number === null) return { closed: null };
   const g = guardRepo(db, b.repo, null, { operator: by });
