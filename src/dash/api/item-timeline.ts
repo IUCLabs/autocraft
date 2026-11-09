@@ -1,6 +1,7 @@
 // The item page's story: one oldest-first list of what people, Opus and the harness did to the item. People's answers and messages and
 // Opus's reviews and replies are turns; the harness's work (jobs, checks, writes, fix-ups, merges) is lines the page folds into runs.
 // Redaction: viewers get lines without prompts, texts, model calls or job errors; a quiet pull request keeps what the trace context already veils.
+import { featureOn } from "../../build/features.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { HistoryCall, TimelineEntry, TimelineTone } from "../../../web/src/api/types.ts";
 import type { Preapproval } from "../../../web/src/api/types.ts";
@@ -140,6 +141,13 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
     }
   }
 
+  // Our build failed where upstream CI passed: a note on the item (from pr_builds, not a stage row, so it never becomes the latest stage).
+  for (const b of q<{ head_sha: string; summary: string | null; finished_at: string | null }>(db, "SELECT head_sha, summary, finished_at FROM main.pr_builds WHERE repo = ? AND number = ? AND disagree = 1 AND finished_at IS NOT NULL", repo, n)) {
+    if (!featureOn(db, "pr-builds", repo)) break;
+    const t = base(`pr-build:${b.head_sha}`, b.finished_at!, "harness", "AutoCraft", "check", `Our build failed at ${short(b.head_sha)} where CI passed${staff && b.summary ? `: ${clip(b.summary, 140)}` : ""}`);
+    t.tone = "bad";
+    out.push(t);
+  }
   // People answer and post: one line each, with the option's label.
   const decisions = q<DecisionRow>(db, `SELECT id, question, options, answer, answer_note, answered_by, answered_at, answered_role FROM decisions WHERE repo = ? AND number = ? AND answered_at IS NOT NULL AND answered_role IS NOT NULL AND answer NOT IN ('withdrawn', 'superseded')`, repo, n);
   for (const d of decisions) {

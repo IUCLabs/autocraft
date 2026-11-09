@@ -12,6 +12,7 @@ import { BuildError, slotsOf } from "./envs.ts";
 import { draining } from "./worker-update.ts";
 import { baseScopeRepos } from "../pilot.ts";
 import { fastTask } from "../fasttrack.ts";
+import { featureOn } from "./features.ts";
 import { slugOf } from "../owners.ts";
 
 export const LOST_AFTER_MS = 2 * 60_000;
@@ -188,6 +189,9 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
         for (const t of queued) {
           if (out.length >= room) break;
           if (!satisfies(caps, json<Requires>(t.requires, {}))) continue;
+          // Untrusted-code builds run only while their feature's switch is on for the repo.
+          if (t.step === "pr-build" && !featureOn(db, "pr-builds", t.repo)) continue;
+          if (t.step === "nightly" && !featureOn(db, "nightly", t.repo)) continue;
           // Operator smoke tests and the security fix's builds (an operator's request, under the finding's real repo) run anywhere; pipeline builds only for repos in scope, or for fast-tracked items of any repo.
           if (t.step !== "smoke-test" && t.step !== "fix-check" && !scope.has(t.repo) && !fastTask(db, t)) continue;
           take.run(envId, at, at, t.id);

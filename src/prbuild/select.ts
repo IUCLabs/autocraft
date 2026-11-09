@@ -3,6 +3,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isOutsideAuthor, holdMap } from "../outside.ts";
 import { CURRENT_HEAD_SQL } from "../verify/results.ts";
+import { baseScopeRepos } from "../pilot.ts";
+import { isFastTracked } from "../fasttrack.ts";
 import { cachedRust, type RustCheck } from "../verify/candidates.ts";
 
 export type PrBuildScope = "outside" | "all";
@@ -36,6 +38,11 @@ export type PrBuildCandidate = { repo: string; number: number; head: string; /**
 
 type Row = { number: number; author: string | null; author_association: string | null; author_type: string | null; head: string | null };
 
+/** Whether the worker would claim a build task for the PR: its repo is in the pipeline's scope, or the PR is fast-tracked (as `claim` in src/build/tasks.ts). */
+export function inBuildScope(db: DatabaseSync, repo: string, number: number, scope: Set<string> = baseScopeRepos(db)): boolean {
+  return scope.has(repo) || isFastTracked(db, repo, number);
+}
+
 /** The PRs to build now, oldest first, within the repo's daily cap. Writes nothing. */
 export function selectPrBuilds(db: DatabaseSync, repo: string, o: { rust?: RustCheck; now?: number } = {}): PrBuildCandidate[] {
   if (!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo)) return [];
@@ -49,9 +56,11 @@ export function selectPrBuilds(db: DatabaseSync, repo: string, o: { rust?: RustC
   const all = scopeOf(db, repo) === "all";
   const held = holdMap(db);
   const have = db.prepare("SELECT 1 FROM main.pr_builds WHERE repo = ? AND number = ? AND head_sha = ?");
+  const scope = baseScopeRepos(db);
   const out: PrBuildCandidate[] = [];
   for (const r of rows) {
     if (!r.head || have.get(repo, r.number, r.head) || held.has(`${repo}#${r.number}`)) continue;
+    if (!inBuildScope(db, repo, r.number, scope)) continue;
     if (!all && !isOutsideAuthor(db, r)) continue;
     const isRust = rust(repo, r.head);
     if (isRust === false) continue;
