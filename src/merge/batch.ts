@@ -16,6 +16,13 @@ import { closeMergedQuestions } from "./withdraw.ts";
 import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { createTask, getTask, MAX_PATCH_BYTES, TERMINAL, warmKeyOf } from "../build/tasks.ts";
+import { featureOn } from "../build/features.ts";
+import { failureTail } from "../build/rounds.ts";
+import { cloneTask } from "../verify/tasks.ts";
+import { outcomeOf } from "../verify/results.ts";
+import { scrub } from "../runner/scrub.ts";
+import { rustPlan } from "../worker/rust.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardBatchMerge, guardRepo, liveOf, type GuardedRepo } from "../core/guard.ts";
 import { claimForWork } from "../github/claim.ts";
@@ -28,7 +35,7 @@ import { branchOf, forkOf } from "../fixissue/index.ts";
 import type { Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { BatchGit } from "./batch-git.ts";
-import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES, PUBLISH_FAILED, RUNS_WAIT_NOTE, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, publishDelayMs, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
+import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES, PUBLISH_FAILED, RUNS_WAIT_NOTE, BUILD_MAX_MS, MAX_BUILD_TRIES, activeBatches, admits, batchSizeOf, cancelBuild, retryDelayMs, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, publishDelayMs, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { allowFailedArgs, prInfo, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
@@ -72,6 +79,10 @@ export type BatchSummary = { runId: string; repo: string; started: string[]; pub
 
 const short = (sha: string) => sha.slice(0, 7);
 const oneLine = (s: string, n = 200) => s.replace(/\s+/g, " ").trim().slice(0, n);
+
+/** Why a text diff cannot be applied by a build task, or "". */
+const diffProblem = (patch: string): string =>
+  Buffer.byteLength(patch) > MAX_PATCH_BYTES ? "larger than the task limit" : /^Binary files |^GIT binary patch/m.test(patch) ? "binary" : "";
 
 type Cand = { number: number; head: string; size: string; lines: number };
 
@@ -143,16 +154,41 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     }
     if (!chain.length) return null;
     const tip = chain[chain.length - 1]!.commit;
+    // With Build batches on, a build task checks the combined tree before the batch PR opens. Any trouble queueing it
+    // opens the PR as usual: upstream CI stays the authority.
+    let taskId: number | null = null;
+    let skipped = "";
+    if (fullScope && featureOn(db, "batch-build", repo)) {
+      try {
+        const patch = await git.diffText(base, tip);
+        skipped = diffProblem(patch) && `the combined diff is ${diffProblem(patch)}`;
+        if (!skipped) {
+          taskId = createTask(db, {
+            step: "merge-batch", repo, headSha: base, baseSha: base, requires: { os: "linux", toolchains: ["rust-stable"] },
+            plan: rustPlan({ cargoArgs: ["--workspace"] }), patch, warm: { key: warmKeyOf(repo), role: "use" },
+          });
+        }
+      } catch (e) { skipped = `the build could not be queued: ${oneLine(String((e as Error).message ?? e), 120)}`; }
+    }
     const name = nextBranch(db, repo, d.now());
     const members: BatchMember[] = chain.map((x) => ({ number: x.cand.number, head_oid: x.cand.head }));
-    const id = insertBatch(db, { repo, branch: name, baseSha: base, commitSha: tip, parentId, members, at: at() });
+    const id = insertBatch(db, { repo, branch: name, baseSha: base, commitSha: tip, parentId, taskId, members, at: at() });
+    if (taskId !== null) updateBatch(db, id, at(), { build_state: "pending", build_tries: 1 });
+    else if (skipped) skipBuild(getBatch(db, id), skipped);
     audit(db, ACTOR, "batch-start", `${repo}:${name}`, { run: runId, base, prs: members.map((m) => m.number) });
     s.started.push(name);
     const ag = grant();
     if (ag) for (const m of members) await claimForWork(w, ag, d.querier, repo, m.number, "pr", { id: who.nodeId, login: who.login }, { run: runId, batch: name }, log);
-    log(`  ${name}: ${members.length} PR${members.length === 1 ? "" : "s"} (${members.map((m) => `#${m.number}`).join(", ")}) on ${short(base)}; opening the batch PR`);
-    await publish(getBatch(db, id), members);
+    log(`  ${name}: ${members.length} PR${members.length === 1 ? "" : "s"} (${members.map((m) => `#${m.number}`).join(", ")}) on ${short(base)}; ${taskId === null ? "opening the batch PR" : `building and testing it in task #${taskId} first`}`);
+    if (taskId === null) await publish(getBatch(db, id), members);
     return id;
+  }
+
+  /** The batch PR opens without a passed build: records why. */
+  function skipBuild(b: BatchRow, why: string): void {
+    updateBatch(db, b.id, at(), { build_state: "skipped" });
+    audit(db, ACTOR, "batch-build-skip", `${repo}:${b.branch}`, { run: runId, reason: oneLine(why, 200) });
+    log(`  ${b.branch}: build skipped: ${why}`);
   }
 
   const asCands = (ms: BatchMember[]): Cand[] => ms.map((m) => ({ number: m.number, head: m.head_oid, size: "S", lines: 0 }));
@@ -161,6 +197,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   async function supersede(b: BatchRow, keep: BatchMember[], why: string): Promise<void> {
     // A control may have ended the batch while the caller's GitHub calls ran.
     if (!ACTIVE_BATCH.includes(getBatch(db, b.id).state)) return;
+    cancelBuild(db, b, ACTOR);
     updateBatch(db, b.id, at(), { state: "superseded", summary: why });
     await closePr(b, `Closing: ${why}. The PRs are rebuilt in a new batch.`);
     s.superseded.push(b.branch);
@@ -386,6 +423,42 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     }
   }
 
+  /** Reads the build task of a batch that has no PR yet: opens the PR when it passed, fails the batch when the tree is red, waits or fails open otherwise. */
+  async function readBuild(b: BatchRow, members: BatchMember[]): Promise<void> {
+    const open = (why?: string) => { if (why) skipBuild(b, why); return publish(getBatch(db, b.id), members); };
+    const task = b.task_id === null ? null : getTask(db, b.task_id);
+    if (!task) return open("the build task is gone");
+    if (!TERMINAL.includes(task.state)) {
+      if (d.now().getTime() - Date.parse(task.queuedAt) <= BUILD_MAX_MS) { s.waiting.push(b.branch); return; }
+      cancelBuild(db, b, ACTOR);
+      return open("the build took longer than 3 hours");
+    }
+    const out = outcomeOf(task);
+    const tries = b.build_tries ?? 0;
+    if (out.kind === "pass") {
+      updateBatch(db, b.id, at(), { build_state: "passed" });
+      return open();
+    }
+    if (out.kind === "fail") {
+      // One rerun of a failed test step tells a flake from a red tree.
+      if (out.step === "test" && tries < 2) {
+        updateBatch(db, b.id, at(), { task_id: cloneTask(db, task.id), build_tries: tries + 1 });
+        log(`  ${b.branch}: the test step failed; queued the build again to rule out a flake`);
+        s.waiting.push(b.branch);
+        return;
+      }
+      updateBatch(db, b.id, at(), { build_state: "failed" });
+      const tail = oneLine(scrub(failureTail(db, task.id, out.step)), 150);
+      return fail(getBatch(db, b.id), `the combined tree failed at ${out.step}${tail ? `: ${tail}` : ""}`);
+    }
+    // A build-environment error says nothing about the PRs: try again with growing waits, then open the PR anyway; never split or hold.
+    if (tries >= MAX_BUILD_TRIES) return open(`${out.reason} (${tries} tries)`);
+    if (d.now().getTime() - Date.parse(b.updated_at) < retryDelayMs(tries - 1)) { s.waiting.push(b.branch); return; }
+    updateBatch(db, b.id, at(), { task_id: cloneTask(db, task.id), build_tries: tries + 1 });
+    log(`  ${b.branch}: ${out.reason}; queued the build again (try ${tries + 1})`);
+    s.waiting.push(b.branch);
+  }
+
   async function advance(id: number): Promise<void> {
     const b = getBatch(db, id);
     if (!ACTIVE_BATCH.includes(b.state)) return;
@@ -395,6 +468,13 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const keep = members.filter((m) => q.some((e) => e.number === m.number && e.head === m.head_oid && e.path !== null && !e.held && (e.state === "batch-checking" || e.state === "in-batch")));
     if (keep.length < members.length) return supersede(b, keep, "a PR in the batch changed or is no longer ready");
     if (b.state === "open") return land(b, members, q);
+    if (b.state === "checking" && b.build_state === "pending") {
+      if (featureOn(db, "batch-build", repo)) return readBuild(b, members);
+      // The switch went off while the build was in flight: the PR opens without it.
+      cancelBuild(db, b, ACTOR);
+      skipBuild(b, "Build batches was switched off");
+      return publish(getBatch(db, b.id), members);
+    }
     // A checking batch has no PR yet: its push or PR creation failed earlier, so it is tried again once the wait is over.
     if (d.now().getTime() - Date.parse(b.updated_at) < publishDelayMs(b.retries)) { s.waiting.push(b.branch); return; }
     return publish(b, members);

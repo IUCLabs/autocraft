@@ -127,6 +127,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["dupe_comparisons", "why", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
   ["merge_batches", "merge_sha", "TEXT"],
+  ["merge_batches", "build_state", "TEXT"],
+  ["merge_batches", "build_tries", "INTEGER NOT NULL DEFAULT 0"],
   ["fixups", "source", "TEXT"],
   // A model patch waiting for its lint task: the patch, the task, the lint round and the lint state (pending, requeued).
   ["fixups", "patch", "TEXT"],

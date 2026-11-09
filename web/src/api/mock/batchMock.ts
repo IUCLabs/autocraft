@@ -19,7 +19,7 @@ function rich(): BatchDetail {
   return {
     id: 98, repo: "designcraft", branch: "integration-designcraft-20261103-2", fork: "pipeline-bot/designcraft", state: "open", baseSha: "7c1e9a04b3d5a9f1c2e4078615a4d3b2",
     commitSha: "e41f0a92c7d83b5a6190fe2d4c8b7a35", parentId: 96, childIds: [], prNumber: 2201, prUrl: "https://github.com/storytold/designcraft/pull/2201", summary: null,
-    createdAt: iso(190), updatedAt: iso(12), mergedAt: null, taskId: 41, mergeSha: null,
+    createdAt: iso(190), updatedAt: iso(12), mergedAt: null, taskId: 41, buildState: "passed", buildTries: 1, buildSkipped: null, mergeSha: null,
     ci: {
       state: "pending", fetchedAt: iso(3), checks: [
         { name: "gate / fmt", state: "success", url: "https://github.com/storytold/designcraft/pull/2201/checks" },
@@ -47,11 +47,12 @@ function rich(): BatchDetail {
 
 export const batchDetailMock = (id: number): BatchDetail => {
   if (id === 98) return rich();
+  if (id === 97) return { ...rich(), id: 97, buildState: "skipped", buildSkipped: "the combined diff is binary", taskId: null, events: rich().events.filter((e) => e.kind !== "task") };
   const b = queueBatchList({ limit: 100 }).batches.find((x) => x.id === id);
   if (!b) throw new Error(`no batch ${id}`);
   return {
     id: b.id, repo: b.repo, branch: b.branch, fork: b.fork, state: b.state, baseSha: b.baseSha, commitSha: b.baseSha, parentId: null, childIds: [], prNumber: b.prNumber, prUrl: b.prUrl,
-    summary: b.summary, createdAt: b.createdAt, updatedAt: b.updatedAt, mergedAt: b.state === "merged" ? b.updatedAt : null, taskId: null, mergeSha: b.state === "merged" ? "5d0c7be913a2f4680b1c9e7d3a5f2468" : null, ci: null,
+    summary: b.summary, createdAt: b.createdAt, updatedAt: b.updatedAt, mergedAt: b.state === "merged" ? b.updatedAt : null, taskId: null, buildState: null, buildTries: 0, buildSkipped: null, mergeSha: b.state === "merged" ? "5d0c7be913a2f4680b1c9e7d3a5f2468" : null, ci: null,
     members: b.prs.map((r) => ({ repo: r.repo, number: r.number, title: r.title, itemState: b.state === "merged" ? "merged" : "open", headOid: "0".repeat(16), state: b.state === "merged" ? "merged" : "in", reason: null })),
     events: [{ id: "opened", at: b.createdAt, kind: "opened", summary: `Opened with ${b.size} PRs`, by: null }],
   };
