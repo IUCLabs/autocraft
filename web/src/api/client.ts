@@ -99,6 +99,8 @@ import type {
   PipelineState,
   StageLimit,
   BuildEnv,
+  BuildFeatureInput,
+  BuildFeatures,
   BuildSummary,
   BuildTask,
   BuildTaskDetail,
@@ -390,6 +392,11 @@ export interface Api {
     create(input: EnvCreate): Promise<{ env: BuildEnv; key: string }>;
     update(id: string, input: EnvInput): Promise<BuildEnv>;
     rotateKey(id: string): Promise<{ key: string }>;
+  };
+  /** The build feature switches. Anyone who sees internals reads; operators write. */
+  buildFeatures: {
+    list(): Promise<BuildFeatures>;
+    set(input: BuildFeatureInput): Promise<BuildFeatures>;
   };
   tasks: {
     list(filter: TaskFilter): Promise<TaskPage>;

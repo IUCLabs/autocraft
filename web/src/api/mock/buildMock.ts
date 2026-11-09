@@ -1,7 +1,7 @@
 // Build environments and tasks on fake data: a local sandbox, two remote servers (one paused for disk, one offline), a disabled one,
 // and a few dozen tasks in every state.
 import type { Api } from "../client";
-import type { ItemShown, BuildEnv, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
+import type { ItemShown, BuildEnv, BuildFeatureName, BuildFeatures, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
 import { NOW, REPOS } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -109,12 +109,32 @@ TASKS.sort((a, b) => b.id - a.id);
 const used = (e: string) => TASKS.filter((t) => t.envId === e && (t.state === "running" || t.state === "claimed")).length;
 for (const e of envs) e.running = used(e.id);
 
-export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs" | "tasks"> {
+export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs" | "tasks" | "buildFeatures"> {
+  const featureOn = new Set<string>(["screenshots", "screenshots:photocraft", "screenshots:pdfcraft"]);
+  const SCOPED: Record<BuildFeatureName, boolean> = { screenshots: true, "push-tests": true, "batch-build": true, "scan-tests": false, nightly: true, "pr-builds": true };
+  const features = (): BuildFeatures => ({
+    features: (Object.keys(SCOPED) as BuildFeatureName[]).map((feature) => ({
+      feature, on: featureOn.has(feature), repoScoped: SCOPED[feature],
+      repos: SCOPED[feature] ? REPOS.filter((r) => featureOn.has(`${feature}:${r}`)) : [],
+    })),
+    repos: [...REPOS],
+  });
   const visible = (t: BuildTask) => me.role === "operator" || t.repo !== "vault";
   const operator = () => {
     if (me.role !== "operator") throw new Error("only operators change build environments");
   };
   return {
+    buildFeatures: {
+      list: () => wait(features()),
+      async set(input) {
+        operator();
+        const k = input.repo ? `${input.feature}:${input.repo}` : input.feature;
+        if (input.on) featureOn.add(k);
+        else featureOn.delete(k);
+        changed();
+        return wait(features());
+      },
+    },
     envs: {
       list: () => wait(envs.filter((e) => e.enabled || me.role !== "viewer")),
       async create(input) {

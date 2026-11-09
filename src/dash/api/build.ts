@@ -6,13 +6,14 @@
 // `nosniff` and `Content-Security-Policy: sandbox`.
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, TaskFilter, TaskPage, TaskState } from "../../../web/src/api/types.ts";
+import type { BuildEnv, BuildFeatureState, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, TaskFilter, TaskPage, TaskState } from "../../../web/src/api/types.ts";
 import { absolute } from "../../build/artifacts.ts";
 import { BuildError, createEnv, listEnvs, rotateKey, updateEnv } from "../../build/envs.ts";
 import { FIX_CHECK_STEP, cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks.ts";
+import { BUILD_FEATURES, REPO_SCOPED, featureStates, isFeature, setFeature } from "../../build/features.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, Res } from "../types.ts";
-import { hiddenRepos } from "./visible.ts";
+import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { canSeeInternals } from "./staff.ts";
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
@@ -67,6 +68,33 @@ export const cancel = (db: DatabaseSync, req: Req): Promise<BuildTask> => wrap(a
 });
 
 export const buildSummary = async (db: DatabaseSync, req: Req): Promise<BuildSummary> => summary(db, await hiddenRepos(db, req), canSeeInternals(req));
+
+async function featuresOf(db: DatabaseSync, req: Req): Promise<BuildFeatures> {
+  const tracked = new Set((db.prepare("SELECT name FROM main.tracked_repos").all() as { name: string }[]).map((r) => r.name));
+  const repos = (await visibleRepos(db, req)).filter((r) => tracked.has(r)).sort();
+  const shown = new Set(repos);
+  const features: BuildFeatureState[] = featureStates(db).map((s) => ({ ...s, repoScoped: REPO_SCOPED[s.feature], repos: s.repos.filter((r) => shown.has(r)) }));
+  return { features, repos };
+}
+
+export const features = async (db: DatabaseSync, req: Req): Promise<BuildFeatures> => {
+  if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the build features");
+  return featuresOf(db, req);
+};
+
+export const postFeature = async (db: DatabaseSync, req: Req): Promise<BuildFeatures> => {
+  const b = (req.json ?? {}) as { feature?: unknown; on?: unknown; repo?: unknown };
+  if (!isFeature(b.feature)) throw new HttpError(400, `feature must be one of ${BUILD_FEATURES.join(", ")}`);
+  if (typeof b.on !== "boolean") throw new HttpError(400, "on must be true or false");
+  let repo: string | undefined;
+  if (b.repo !== undefined && b.repo !== null) {
+    if (typeof b.repo !== "string" || !db.prepare("SELECT 1 FROM main.tracked_repos WHERE name = ?").get(b.repo)) throw new HttpError(400, "repo must be a tracked repo");
+    if (!REPO_SCOPED[b.feature]) throw new HttpError(400, `${b.feature} has no per-repo switch`);
+    repo = b.repo;
+  }
+  setFeature(db, b.feature, b.on, req.user.login, repo);
+  return featuresOf(db, req);
+};
 
 export async function artifact(db: DatabaseSync, req: Req): Promise<Res> {
   try {

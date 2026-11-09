@@ -292,6 +292,10 @@ export function createHttpApi(): Api {
       update: (id, input) => put(`/api/envs/${encodeURIComponent(id)}`, input),
       rotateKey: (id) => post(`/api/envs/${encodeURIComponent(id)}/rotate-key`),
     },
+    buildFeatures: {
+      list: () => get("/api/build/features"),
+      set: (input) => post("/api/build/features", input),
+    },
     tasks: {
       list: (f) => get(`/api/tasks${qs(f)}`),
       get: (id) => get(`/api/tasks/${id}`),
