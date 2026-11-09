@@ -142,6 +142,20 @@ describe("ping replies", () => {
     assert.doesNotMatch(sent, /evil|#99/);
   });
 
+  test("picks are shown open first, then by comments plus reactions, whatever order the model gave", async () => {
+    const set = db.prepare("UPDATE items SET comments_count = ?, reactions_count = ? WHERE repo = 'photocraft' AND number = ?");
+    set.run(40, 10, 3); // closed, most active
+    set.run(1, null, 1); // open, little activity (no reactions stored)
+    set.run(2, 5, 2); // open, more activity
+    reply = () => JSON.stringify({ picks: [{ ref: "photocraft#3", reason: "c" }, { ref: "photocraft#1", reason: "a" }, { ref: "photocraft#2", reason: "b" }] });
+    try {
+      const found = await search.find("webp export quality dark mode layers");
+      assert.deepEqual(found.matches.map((m) => m.number), [2, 1, 3]);
+    } finally {
+      db.prepare("UPDATE items SET comments_count = NULL, reactions_count = NULL WHERE repo = 'photocraft'").run();
+    }
+  });
+
   test("over the daily cap the closest issues come from the embeddings, without a model call", async () => {
     db.prepare(`INSERT INTO agent_runs (step, stage, prompt_id, prompt_version, provider, model, items, item_count, state, started_at, cost_usd)
       VALUES ('discord-search', 3, 'discord.search', '1', 'claude', 'haiku', '[]', 0, 'done', ?, 2.5)`).run(new Date().toISOString());

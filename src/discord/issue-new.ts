@@ -267,15 +267,18 @@ export class IssueNew {
 export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew {
   const { db } = deps;
   const flow = new IssueNew(deps);
-  const sub = { type: 1, name: "new-issue", description: "Get help writing a new issue", options: [{ type: 3, name: "repo", description: "The repo the issue is for", autocomplete: true }] };
+  const sub = { type: 1, name: "new-issue", description: "Get help writing a new issue", options: [{ type: 3, name: "repo", description: "The repo the issue is for", required: true, autocomplete: true }] };
   ix.command("autocraft new-issue", { name: "autocraft", type: 1, description: "AutoCraft", dm_permission: false, options: [sub] }, async (call) => {
     const named = call.option("repo")?.trim();
     const repo = named || (fileRepoUrl(db, call.interaction.channel_id, [])?.split("/").pop() ?? null);
     await flow.open(call, repo);
   }, { immediate: true });
+  // The channel's default repo comes first.
   ix.autocomplete("autocraft new-issue", (call) => {
     const typed = (call.focused()?.value ?? "").toLowerCase();
-    return publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
+    const first = fileRepoUrl(db, call.interaction.channel_id, [])?.split("/").pop();
+    const repos = publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).sort((a, b) => Number(b === first) - Number(a === first));
+    return repos.slice(0, 25).map((r) => ({ name: r, value: r }));
   });
   // Pressing the "File a new issue" button of a search result: `inewi:open:<repo>[:<seed>]`.
   ix.component("inewi", async (call) => {

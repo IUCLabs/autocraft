@@ -27,7 +27,12 @@ const MODEL_WAIT_MS = 20_000;
 export type Match = { repo: string; number: number; title: string; url: string; closed: boolean; reason?: string };
 export type Found = { matches: Match[]; /** Whether a model chose and explained them. */ judged: boolean };
 
-type Candidate = Match & { body: string; score: number };
+type Candidate = Match & { body: string; score: number; activity: number; updatedAt: string };
+
+/** Open first, then by comments plus reactions (highest first), then by the latest update. */
+function byActivity(a: Candidate, b: Candidate): number {
+  return Number(a.closed) - Number(b.closed) || b.activity - a.activity || b.updatedAt.localeCompare(a.updatedAt);
+}
 
 /** The model step; tests replace it. Returns the reply text, or null when the call failed or got no answer. */
 export type Ask = (db: DatabaseSync, input: PickInput) => Promise<string | null>;
@@ -109,7 +114,7 @@ export class Search {
     const [vec] = await embedder.embed([text], "query");
     if (!vec) return [];
     await index.ready(db);
-    const get = db.prepare(`SELECT i.title, i.body, i.state, i.state_reason, i.closed_at,
+    const get = db.prepare(`SELECT i.title, i.body, i.state, i.state_reason, i.closed_at, i.updated_at, i.comments_count, i.reactions_count,
         COALESCE(i.url, 'https://github.com/' || COALESCE(r.owner, '${DEFAULT_OWNER}') || '/' || i.repo || '/issues/' || i.number) AS url
       FROM main.items i JOIN main.repos r ON r.name = i.repo WHERE i.repo = ? AND i.number = ? AND i.kind = 'issue' AND NOT ${hiddenSql("i.repo", "i.number", "i.labels")}`);
     const isPublic = new Map<string, boolean>();
@@ -118,11 +123,12 @@ export class Search {
     for (const h of index.nearest(db, vec, SCAN, undefined, only)) {
       if (!isPublic.has(h.repo)) isPublic.set(h.repo, isPublicRepo(db, h.repo));
       if (!isPublic.get(h.repo)) continue;
-      const r = get.get(h.repo, h.number) as { title: string | null; body: string | null; state: string; state_reason: string | null; closed_at: string | null; url: string } | undefined;
+      const r = get.get(h.repo, h.number) as { title: string | null; body: string | null; state: string; state_reason: string | null; closed_at: string | null; updated_at: string | null; comments_count: number | null; reactions_count: number | null; url: string } | undefined;
       if (!r) continue;
       const open = r.state === "OPEN";
       if (!open && !(r.state === "CLOSED" && r.state_reason === "COMPLETED" && now - Date.parse(r.closed_at ?? "") <= CLOSED_WINDOW_MS)) continue;
-      out.push({ repo: h.repo, number: h.number, title: r.title ?? "", body: r.body ?? "", url: r.url, closed: !open, score: h.score });
+      out.push({ repo: h.repo, number: h.number, title: r.title ?? "", body: r.body ?? "", url: r.url, closed: !open, score: h.score,
+        activity: (r.comments_count ?? 0) + (r.reactions_count ?? 0), updatedAt: r.updated_at ?? "" });
       if (out.length >= PICK_CANDIDATES) break;
     }
     return out;
@@ -133,8 +139,8 @@ export class Search {
     const { db, log } = this.#d;
     const q = question.slice(0, QUESTION_CHARS);
     const cands = await this.candidates(q, repo);
-    const strip = ({ body: _b, score: _s, ...m }: Candidate): Match => m;
-    const fallback = (): Found => ({ matches: cands.filter((c) => c.score >= FALLBACK_MIN_SCORE).slice(0, PICK_MAX).map(strip), judged: false });
+    const strip = ({ body: _b, score: _s, activity: _a, updatedAt: _u, ...m }: Candidate): Match => m;
+    const fallback = (): Found => ({ matches: cands.filter((c) => c.score >= FALLBACK_MIN_SCORE).slice(0, PICK_MAX).sort(byActivity).map(strip), judged: false });
     if (!cands.length) return { matches: [], judged: true };
     if (spentTodayUsd(db, (this.#d.now ?? Date.now)()) >= dailyCapUsd(db)) return fallback();
     const input: PickInput = { ref: "discord", question: q, candidates: cands.map((c) => ({ ref: `${c.repo}#${c.number}`, title: c.title, body: c.body, closed: c.closed })) };
@@ -143,7 +149,8 @@ export class Search {
       const picks = text === null ? null : parsePicks(text, input.candidates);
       if (!picks) return fallback();
       const by = new Map(cands.map((c) => [`${c.repo}#${c.number}`, c]));
-      return { matches: picks.map((p) => ({ ...strip(by.get(p.ref)!), ...(p.reason && { reason: p.reason }) })), judged: true };
+      return { matches: picks.map((p) => ({ c: by.get(p.ref)!, reason: p.reason })).sort((a, b) => byActivity(a.c, b.c))
+        .map(({ c, reason }) => ({ ...strip(c), ...(reason && { reason }) })), judged: true };
     } catch (e) {
       log(`discord: search model call failed: ${oneLine((e as Error).message, 200)}`);
       return fallback();

@@ -29,6 +29,20 @@ export function formatStatus(s: PublicStatus): string {
   return `${s.ref} ${plain(s.title).slice(0, 100)}\n${s.step}${place}`;
 }
 
+/** Lists what the slash-command picker does not show: pings, the message command and the reaction. */
+export const HELP = [
+  "**AutoCraft**",
+  "`/autocraft search`: find existing issues. Pick a repo (or All repos) and describe the problem.",
+  "`/autocraft new-issue`: help writing a new issue, after a look for an existing one.",
+  "`/autocraft status item:photocraft#123`: where an issue or pull request is.",
+  "`/autocraft stats`: counts for the public repos.",
+  "`/autocraft link` and `unlink`: connect this Discord account to your AutoCraft login (the code is under Link Discord in the dashboard menu).",
+  "`/autocraft alerts on|off`: direct messages about decisions you can settle, once linked.",
+  "Mention @AutoCraft with a question in a watched channel, or reply to a message and mention it, to get matching issues.",
+  "Right-click a message, then Apps › Find issue, to search with that message's text.",
+  "A ✅ on a message means AutoCraft counted it for the issues it names.",
+].join("\n");
+
 export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSync; keys: DiscordKeys; now?: () => number }): void {
   const { db, keys } = deps;
   const tries = new Map<string, number[]>();
@@ -54,6 +68,7 @@ export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSyn
       { type: 1, name: "alerts", description: "Direct messages about new decisions you can settle", options: [{ type: 3, name: "state", description: "on or off", required: true, choices: [{ name: "on", value: "on" }, { name: "off", value: "off" }] }] },
       { type: 1, name: "stats", description: "Counts for the public repos", options: [{ type: 3, name: "repo", description: "One repo; all public repos when left out", autocomplete: true }] },
       { type: 1, name: "status", description: "Where an issue or pull request is in AutoCraft", options: [{ type: 3, name: "item", description: "For example photocraft#123", required: true, max_length: 100 }] },
+      { type: 1, name: "help", description: "What the AutoCraft bot can do" },
     ],
   };
   ix.command("autocraft link", def, async (call) => {
@@ -78,6 +93,9 @@ export function installAccountCommands(ix: Interactions, deps: { db: DatabaseSyn
   ix.autocomplete("autocraft stats", (call) => {
     const typed = (call.focused()?.value ?? "").toLowerCase();
     return publicRepoNames(db).filter((r) => r.toLowerCase().includes(typed)).map((r) => ({ name: r, value: r }));
+  });
+  ix.command("autocraft help", null, async (call) => {
+    await call.edit({ content: HELP });
   });
   ix.command("autocraft status", null, async (call) => {
     if (!mayRead(call)) return void (await call.edit({ content: TOO_MANY }));
