@@ -10,6 +10,8 @@ import { FORMAT_ARTIFACT, FORMAT_SCRIPT, gitFormatDiff } from "../cifix/index.ts
 import { formattingOnly } from "../cifix/guard.ts";
 import type { Git } from "../fixup/git.ts";
 import { rustPlan } from "../worker/rust.ts";
+import { ghCrates, type CratesFetcher } from "../verify/crates.ts";
+import { classifyTests, testFindings, testsFeatureCrates, testsStep, TESTS_ARTIFACT, TESTS_EXIT_ARTIFACT, TESTS_RERUN_ARTIFACT, TESTS_RERUN_EXIT_ARTIFACT, TESTS_STEP } from "./tests.ts";
 
 export const CLIPPY_ARTIFACT = "clippy.txt";
 export const CLIPPY_ERR_ARTIFACT = "clippy-err.txt";
@@ -26,12 +28,12 @@ export function changedRsFiles(patch: string): string[] {
   return [...new Set(patchLines(patch).keys())].filter((p) => p.endsWith(".rs"));
 }
 
-/** Fetch, rustfmt on the named files (diff artifact), clippy (JSON artifact). null when the patch changes no `.rs` file. */
-export function lintPlan(changedRs: string[]): TaskStep[] | null {
+/** Fetch, rustfmt on the named files (diff artifact), clippy (JSON artifact), and the tests of `crates` when given. null when the patch changes no `.rs` file. */
+export function lintPlan(changedRs: string[], crates?: string[]): TaskStep[] | null {
   const files = [...new Set(changedRs.filter((f) => f.endsWith(".rs")))];
   if (!files.length) return null;
   const [fetch] = rustPlan({ test: false });
-  return [fetch!, ...lintSteps(files)];
+  return [fetch!, ...lintSteps(files), ...(crates?.length ? [testsStep(crates)] : [])];
 }
 
 /** The formatter and clippy steps alone, for a task that fetched and built already (fix issue's round task). */
@@ -51,11 +53,13 @@ export type LintJob = {
   files?: string[];
   /** Default: the repo's key, role `use`, as the fix-issue rounds do. */
   warm?: Warm;
+  /** Crates whose tests run after clippy (Tests before push); queueLintFor fills it. */
+  crates?: string[];
 };
 
 /** Queues the lint task for the patch; null when it changes no `.rs` file. */
 export function queueLint(db: DatabaseSync, j: LintJob): number | null {
-  const plan = lintPlan(j.files ?? changedRsFiles(j.patch ?? ""));
+  const plan = lintPlan(j.files ?? changedRsFiles(j.patch ?? ""), j.crates);
   if (!plan) return null;
   return createTask(db, {
     step: j.step, repo: j.repo, number: j.number, headSha: j.head, baseSha: j.base ?? j.head, requires: { os: "linux", toolchains: ["rust-stable"] },
@@ -63,8 +67,14 @@ export function queueLint(db: DatabaseSync, j: LintJob): number | null {
   });
 }
 
+/** queueLint, with the affected crates' tests added when Tests before push is on for the repo. Off: no crate lookup, today's plan. */
+export async function queueLintFor(db: DatabaseSync, j: LintJob, fetch: CratesFetcher = ghCrates): Promise<number | null> {
+  const crates = await testsFeatureCrates(db, j, fetch);
+  return queueLint(db, crates ? { ...j, crates } : j);
+}
+
 export type Finding = { level: "warning" | "error"; code: string | null; message: string; file: string; line: number; rendered: string };
-export type LintRead = { kind: "pending" } | { kind: "infra-failed"; reason: string } | { kind: "result"; formatDiff: string | null; findings: Finding[] };
+export type LintRead = { kind: "pending" } | { kind: "infra-failed"; reason: string } | { kind: "result"; formatDiff: string | null; findings: Finding[]; /** Why the tests gave no verdict (timeout, flake, environment); never blocks the push. */ testsNote?: string };
 
 /** Lines each file's patch adds or changes, by new-side line number. */
 export function patchLines(patch: string): Map<string, Set<number>> {
@@ -150,12 +160,22 @@ export function readLint(db: DatabaseSync, taskId: number, o: { /** A diff whose
   const t = getTask(db, taskId);
   if (!t) return { kind: "infra-failed", reason: "the lint task is gone" };
   if (t.state === "queued" || t.state === "claimed" || t.state === "running") return { kind: "pending" };
-  if (t.state !== "done") return { kind: "infra-failed", reason: `the lint task ${t.state}${t.summary ? `: ${t.summary.slice(0, 200)}` : ""}` };
+  // A tests step that timed out fails the task, but everything before it finished: its output is read as an inconclusive test run.
+  const testsTimedOut = t.state === "failed" && t.plan.some((p) => p.name === TESTS_STEP) && t.results.some((r) => r.step === TESTS_STEP && r.timedOut) && t.results.filter((r) => r.step !== TESTS_STEP).every((r) => r.exitCode === 0 && !r.timedOut);
+  if (t.state !== "done" && !testsTimedOut) return { kind: "infra-failed", reason: `the lint task ${t.state}${t.summary ? `: ${t.summary.slice(0, 200)}` : ""}` };
   const patch = (db.prepare("SELECT patch FROM build_tasks WHERE id = ?").get(taskId) as { patch: string | null } | undefined)?.patch ?? "";
   const fmt = artifactText(db, taskId, FORMAT_ARTIFACT);
   const clippy = artifactText(db, taskId, CLIPPY_ARTIFACT);
   if (clippy === null) return { kind: "infra-failed", reason: "the lint task returned no clippy output" };
-  return { kind: "result", formatDiff: fmt && fmt.trim() ? gitFormatDiff(fmt) : null, findings: [...formatErrorFindings(artifactText(db, taskId, FORMAT_ERR_ARTIFACT) ?? ""), ...findingsOf(clippy, artifactText(db, taskId, CLIPPY_ERR_ARTIFACT) ?? "", o.against ?? patch)] };
+  const findings = [...formatErrorFindings(artifactText(db, taskId, FORMAT_ERR_ARTIFACT) ?? ""), ...findingsOf(clippy, artifactText(db, taskId, CLIPPY_ERR_ARTIFACT) ?? "", o.against ?? patch)];
+  let testsNote: string | undefined;
+  if (t.plan.some((p) => p.name === TESTS_STEP)) {
+    const num = (name: string): number | null => { const v = artifactText(db, taskId, name); const n = v === null ? NaN : Number(v.trim()); return Number.isInteger(n) ? n : null; };
+    const c = classifyTests({ text: artifactText(db, taskId, TESTS_ARTIFACT), exit: num(TESTS_EXIT_ARTIFACT), rerunText: artifactText(db, taskId, TESTS_RERUN_ARTIFACT), rerunExit: num(TESTS_RERUN_EXIT_ARTIFACT), timedOut: testsTimedOut });
+    if (c.kind === "failed") findings.push(...testFindings(c));
+    else if (c.kind === "inconclusive") testsNote = c.note;
+  }
+  return { kind: "result", formatDiff: fmt && fmt.trim() ? gitFormatDiff(fmt) : null, findings, ...(testsNote ? { testsNote } : {}) };
 }
 
 export type Fold = { ok: true; patch: string } | { ok: false; reason: string };

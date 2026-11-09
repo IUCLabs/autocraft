@@ -28,7 +28,7 @@ export const SESSION_TABLES = ["fixups", "ci_fixes", "conflict_merges", "main_fi
 const WAITING: Record<(typeof SESSION_TABLES)[number], string> = { fixups: "linting", ci_fixes: "linting", conflict_merges: "linting", main_fixes: "linting", security_fix_rounds: "building" };
 
 export function resumeMessage(findings: string[]): string {
-  return `The harness linted your answer. Rustfmt and clippy report these findings on lines it changed:\n\n${findings.map((f) => f.trim()).join("\n\n")}\n\nFix them. Reply with your corrected answer in the same reply format as before: complete, not a change to your earlier answer.`;
+  return `The harness linted your answer. Rustfmt, clippy and the tests of the affected crates report these findings (rustfmt and clippy findings are on lines it changed):\n\n${findings.map((f) => f.trim()).join("\n\n")}\n\nFix them. Reply with your corrected answer in the same reply format as before: complete, not a change to your earlier answer.`;
 }
 
 /** A row's sessions by key: the patch stages keep one (key ""), the conflict step one per resolved file. */

@@ -32,9 +32,9 @@ import { patchGiveaway, QUIET_PATCH_REFUSAL } from "../security/rules.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
-import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
-import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
+import { foldFormat, queueLintFor, readLint } from "../prepush/index.ts";
+import { findingsWord, lintVerdict, testsNoteOf } from "../prepush/tests.ts";
 import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, type SessionAsk } from "../prepush/resume.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
@@ -239,7 +239,7 @@ class Recorder {
         .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at, c.source ?? null, c.operator?.id ?? null);
     }
     const hold = state === "cannot-push" || state === "too-large" || state === "push-denied";
-    const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`
+    const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}${reason ? `; ${reason}` : ""}`
       : state === "asked" ? `asked the contributor for changes at ${short(c.head)}: ${files.join(", ")}` : `fix-up ${state} at ${short(c.head)}: ${reason}`;
     this.db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, hold ? "hold" : "take", at, ACTOR, hold ? reason : note);
@@ -452,21 +452,24 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // A stored patch: the lint task's outcome decides whether it is pushed (clean), asked for again (findings) or queued again (lost task).
       let findings: string[] = [];
       let folded: string | null = null;
+      let testsNote: string | null = null;
       if (c.lint) {
         const res = readLint(db, c.lint.task ?? -1);
         if (res.kind === "pending") { log(`  ${ref}: the lint task is still running`); return; }
         if (res.kind === "infra-failed") {
           if (c.lint.state === "requeued") { fail("failed", `lint: ${res.reason}`); return; }
-          const again = queueLint(db, { step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, patch: c.lint.patch });
+          const again = await queueLintFor(db, { step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, patch: c.lint.patch });
           if (again === null) { fail("failed", `lint: ${res.reason}`); return; }
           rec.linting(c, c.lint.patch, files, again, "requeued", c.lint.round, c.lint.session, c.lint.changes);
           log(`  ${ref}: lint task failed (${res.reason}); queued again as task ${again}`);
           return;
         }
-        if (res.findings.length) {
-          if (c.lint.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${c.lint.round} rounds: ${oneLine(res.findings[0]!.message)}`); return; }
-          findings = res.findings.map((x) => x.rendered);
-        } else {
+        const verdict = lintVerdict(res.findings, c.lint.round);
+        if (verdict.action === "fail") { fail("rejected", `${findingsWord(res.findings)} remain after ${c.lint.round} rounds: ${oneLine(verdict.first.message)}`); return; }
+        if (verdict.action === "ask") findings = verdict.texts;
+        else {
+          testsNote = testsNoteOf(verdict, res.testsNote);
+          if (testsNote) jobItem(db, repo, c.number, testsNote, log);
           const fold = await foldFormat(git, head, c.lint.patch, res.formatDiff ?? "", d.root);
           if (!fold.ok) { fail("refused", fold.reason); return; }
           folded = fold.patch;
@@ -532,7 +535,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       // A model patch is stored and linted before it is pushed (the collect step above pushes it); a patch without a Rust file needs no lint.
       if (folded === null) {
         const round = c.lint ? c.lint.round + 1 : 1;
-        const task = queueLint(db, { step: "fixup", repo, number: c.number, head, base: now.baseRefOid ?? null, patch: v.patch });
+        const task = await queueLintFor(db, { step: "fixup", repo, number: c.number, head, base: now.baseRefOid ?? null, patch: v.patch });
         if (task !== null) {
           rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null, split.changes);
           if (ses.kept) ledger.stored({ "": ses.kept });
@@ -551,7 +554,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         else fail("failed", `push failed: ${err}`);
         return;
       }
-      rec.fixup(c, "pushed", null, v.files, commit);
+      rec.fixup(c, "pushed", testsNote, v.files, commit);
       summary.pushed.push(ref);
       jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 

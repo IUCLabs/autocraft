@@ -50,9 +50,9 @@ import { formattingOnly, guardPatch, TEST_PATH } from "./guard.ts";
 import { readFailure } from "./logs.ts";
 import { askCiText, askText, commentText, commitMessage } from "./template.ts";
 import { formatDiffPaths, matchPrFiles, triage } from "./triage.ts";
-import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
-import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
+import { foldFormat, queueLintFor, readLint } from "../prepush/index.ts";
+import { findingsWord, lintVerdict, testsNoteOf } from "../prepush/tests.ts";
 import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, type SessionAsk } from "../prepush/resume.ts";
 import type { LintPrevious } from "../fixup/patch.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
@@ -472,7 +472,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       const early = outsideShown(shown, await git.diffText(head, applied.tree));
       if (early) { fail("refused", early); return; }
       const round = c.lint ? c.lint.round + 1 : 1;
-      const task = queueLint(db, { step: "cifix", repo, number: c.number, head: c.head, base: now.baseRefOid ?? null, patch: v.patch });
+      const task = await queueLintFor(db, { step: "cifix", repo, number: c.number, head: c.head, base: now.baseRefOid ?? null, patch: v.patch });
       if (task !== null) {
         rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null);
         if (ses.kept) ledger.stored({ "": ses.kept });
@@ -598,14 +598,17 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     if (!pr) return;
     params.onHandled?.(++handled);
     if (res.kind === "infra-failed") {
-      const again = w.state === "requeued" ? null : queueLint(db, { step: "cifix", repo, number: c.number, head: c.head, base: pr.baseRefOid ?? null, patch: w.patch });
+      const again = w.state === "requeued" ? null : await queueLintFor(db, { step: "cifix", repo, number: c.number, head: c.head, base: pr.baseRefOid ?? null, patch: w.patch });
       if (again === null) { fail("failed", `lint: ${res.reason}`); return; }
       rec.linting(c, w.patch, w.files, again, "requeued", w.round, w.session);
       log(`  ${ref}: lint task failed (${res.reason}); queued again as task ${again}`);
       return;
     }
-    if (res.findings.length === 0) {
+    const verdict = lintVerdict(res.findings, w.round);
+    if (verdict.action === "clean" || verdict.action === "push") {
       dropSessions(w.session);
+      const testsNote = testsNoteOf(verdict, res.testsNote);
+      if (testsNote) jobItem(db, repo, c.number, testsNote, log);
       const fold = await foldFormat(git, c.head, w.patch, res.formatDiff ?? "", d.root);
       if (!fold.ok) { fail("refused", fold.reason); return; }
       const v = validatePatch(w.patch, w.files, (x) => editable(x, scripts));
@@ -613,10 +616,10 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       await deliver(c, "code", pr, v, "CI", undefined, [], fold.patch);
       return;
     }
-    if (w.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${w.round} rounds: ${oneLine(res.findings[0]!.message)}`); return; }
+    if (verdict.action === "fail") { fail("rejected", `${findingsWord(res.findings)} remain after ${w.round} rounds: ${oneLine(verdict.first.message)}`); return; }
     const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
     if (reading.kind === "skip") { fail("failed", reading.why); return; }
-    const findings = res.findings.map((x) => x.rendered);
+    const findings = verdict.texts;
     await fixCode(c, pr, reading.failure, { patch: w.patch, findings }, sessionAsk(w.session, "", findings, new Date(at())));
   };
 
