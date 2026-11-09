@@ -9,7 +9,7 @@ import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { parseCheck, checkLine } from "../patchcheck/index.ts";
-import { queueLint, readLint } from "../prepush/index.ts";
+import { queueLintFor, readLint } from "../prepush/index.ts";
 import { cachedDiff } from "../review/diff.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { parseFixes } from "./candidates.ts";
@@ -97,7 +97,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   else if (!verdict.ok) log(`\nOpus check: no valid answer: ${verdict.error}`);
   else { log(`\nOpus check: ${verdict.check.verdict}: ${checkLine(verdict.check)}`); if (verdict.check.verdict === "reject") code = 2; }
 
-  const task = queueLint(db, { step: "fixup", repo, number, head, base, patch: v.patch });
+  const task = await queueLintFor(db, { step: "fixup", repo, number, head, base, patch: v.patch });
   if (task === null) { log("\nlint: the patch changes no .rs file; no lint task"); return code; }
   log(`\nlint task ${task} queued`);
   const l0 = Date.now();

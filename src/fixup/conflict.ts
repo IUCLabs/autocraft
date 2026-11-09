@@ -13,8 +13,8 @@ import { guard, liveOf } from "../core/guard.ts";
 import { ownLogins } from "../github/identity.ts";
 import type { Note } from "../github/note.ts";
 import { ghAskComment, ghComment, ghEditComment, pushBranch, type Writer } from "../github/write.ts";
-import { LINT_MAX_ROUNDS } from "../core/rules.ts";
-import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
+import { foldFormat, queueLintFor, readLint } from "../prepush/index.ts";
+import { findingsWord, lintVerdict, testsNoteOf } from "../prepush/tests.ts";
 import { cachedDiff } from "../review/diff.ts";
 import { MAX_DIFF_CHARS } from "../review/opus.ts";
 import { changedHunks, hasBinary, ownDiffKey } from "../review/own-diff.ts";
@@ -224,10 +224,10 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       const res = readLint(db, c.lint.task ?? -1, { against: resolutionDiff });
       if (res.kind === "pending") { x.log(`  ${ref}: the lint task is still running`); return; }
       if (res.kind === "infra-failed") { fail("failed", `lint: ${res.reason}`); return; }
-      if (res.findings.length) {
-        if (c.lint.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${c.lint.round} rounds: ${oneLine(res.findings[0]!.message)}`); return; }
-        again = { diff: resolutionDiff.slice(0, PREVIOUS_CAP), findings: res.findings.map((f) => f.rendered) };
-      }
+      const verdict = lintVerdict(res.findings, c.lint.round);
+      if (verdict.action === "fail") { fail("rejected", `${findingsWord(res.findings)} remain after ${c.lint.round} rounds: ${oneLine(verdict.first.message)}`); return; }
+      if (verdict.action === "ask") again = { diff: resolutionDiff.slice(0, PREVIOUS_CAP), findings: verdict.texts };
+      else { const note = testsNoteOf(verdict, res.testsNote); if (note) x.log(`  ${ref}: ${note}`); }
       formatDiff = res.formatDiff;
     }
     if (c.lint && !again) {
@@ -331,7 +331,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       // A resolution with Rust files is stored and linted before it is pushed (the collect step above pushes it, or asks again with the findings).
       const rs = resFiles.map((f) => f.path).filter((p) => p.endsWith(".rs"));
       dropSessions(c.lint?.session, keptNow);
-      const task = rs.length ? queueLint(db, { step: "conflict", repo: x.repo, number: c.number, head, base: baseSha, patch: await git.diffText(head, tree), files: rs }) : null;
+      const task = rs.length ? await queueLintFor(db, { step: "conflict", repo: x.repo, number: c.number, head, base: baseSha, patch: await git.diffText(head, tree), files: rs }) : null;
       if (task !== null) {
         const round = c.lint ? c.lint.round + 1 : 1;
         if (c.lint) db.prepare("UPDATE conflict_merges SET patch = ?, files = ?, lint_task = ?, lint_round = ?, session = ? WHERE rowid = ?").run(JSON.stringify(resFiles), JSON.stringify(files), task, round, storeSessions(keptNow, new Date(x.at())), c.lint.rowid);
