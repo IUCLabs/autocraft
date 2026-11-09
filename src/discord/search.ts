@@ -8,7 +8,7 @@ import { askClaude } from "../classify/run.ts";
 import type { Embedder } from "../embed/model.ts";
 import type { VectorIndex } from "../embed/vectors.ts";
 import { DEFAULT_OWNER } from "../owners.ts";
-import { hiddenSql, isPublicRepo } from "../public/status.ts";
+import { hiddenSql, isPublicRepo, publicRepoNames } from "../public/status.ts";
 import { PICK_CANDIDATES, PICK_MAX, parsePicks, type PickInput } from "./pick.ts";
 
 const CLOSED_WINDOW_MS = 180 * 86_400_000;
@@ -60,6 +60,17 @@ export function dropTexts(db: DatabaseSync, all = false): void {
   db.prepare(`DELETE FROM agent_run_texts WHERE run_id IN (SELECT id FROM agent_runs WHERE step = 'discord-search'${all ? "" : " AND state <> 'running'"})`).run();
 }
 
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The one public tracked repo a question names as a whole word (case-insensitive), with the question minus that word; null when none or several are named. */
+export function namedRepo(db: DatabaseSync, question: string): { repo: string; rest: string } | null {
+  const hits = publicRepoNames(db).filter((r) => new RegExp(`(?<![\\w-])${escapeRe(r)}(?![\\w-])`, "i").test(question));
+  const repo = hits.length === 1 ? hits[0]! : null;
+  if (!repo) return null;
+  const rest = question.replace(new RegExp(`(?<![\\w-])${escapeRe(repo)}(?![\\w-])`, "gi"), " ").replace(/\s+/g, " ").trim();
+  return { repo, rest: rest || question };
+}
+
 export class Search {
   #d: SearchDeps;
   #hits = new Map<string, number[]>();
@@ -86,9 +97,16 @@ export class Search {
   }
 
   /** The ten closest public issues: open ones, and ones closed as completed in the last 180 days. */
-  async candidates(question: string): Promise<Candidate[]> {
+  async candidates(question: string, repo?: string): Promise<Candidate[]> {
     const { db, embedder, index } = this.#d;
-    const [vec] = await embedder.embed([question], "query");
+    // An explicit repo wins; otherwise a repo named in the question restricts the search and its word is left out of the embedded text.
+    let only = repo && isPublicRepo(db, repo) ? repo : undefined;
+    let text = question;
+    if (!only) {
+      const n = namedRepo(db, question);
+      if (n) { only = n.repo; text = n.rest; }
+    }
+    const [vec] = await embedder.embed([text], "query");
     if (!vec) return [];
     await index.ready(db);
     const get = db.prepare(`SELECT i.title, i.body, i.state, i.state_reason, i.closed_at,
@@ -97,7 +115,7 @@ export class Search {
     const isPublic = new Map<string, boolean>();
     const now = (this.#d.now ?? Date.now)();
     const out: Candidate[] = [];
-    for (const h of index.nearest(db, vec, SCAN)) {
+    for (const h of index.nearest(db, vec, SCAN, undefined, only)) {
       if (!isPublic.has(h.repo)) isPublic.set(h.repo, isPublicRepo(db, h.repo));
       if (!isPublic.get(h.repo)) continue;
       const r = get.get(h.repo, h.number) as { title: string | null; body: string | null; state: string; state_reason: string | null; closed_at: string | null; url: string } | undefined;
@@ -111,10 +129,10 @@ export class Search {
   }
 
   /** Embedding search, then the model's pick when today's spend is under the cap. A failed call falls back to the embedding answer. */
-  async find(question: string): Promise<Found> {
+  async find(question: string, repo?: string): Promise<Found> {
     const { db, log } = this.#d;
     const q = question.slice(0, QUESTION_CHARS);
-    const cands = await this.candidates(q);
+    const cands = await this.candidates(q, repo);
     const strip = ({ body: _b, score: _s, ...m }: Candidate): Match => m;
     const fallback = (): Found => ({ matches: cands.filter((c) => c.score >= FALLBACK_MIN_SCORE).slice(0, PICK_MAX).map(strip), judged: false });
     if (!cands.length) return { matches: [], judged: true };

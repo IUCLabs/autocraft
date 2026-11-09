@@ -214,8 +214,8 @@ describe("commands", () => {
     ix.dispatch("GUILD_CREATE", { id: "g1" });
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(rest.commands.length, 1);
-    assert.deepEqual(rest.commands[0]!.commands.map((c) => [c.name, c.type]), [["issue", 1], ["Find issue", 3]]);
-    ix.dispatch("INTERACTION_CREATE", { id: "i1", token: "t", type: 2, application_id: "app1", channel_id: "c1", member: { user: { id: "u9" } }, data: { name: "issue", type: 1, options: [{ name: "search", type: 1, options: [{ name: "query", type: 3, value: "dark mode layers" }] }] } });
+    assert.deepEqual(rest.commands[0]!.commands.map((c) => [c.name, c.type]), [["autocraft", 1], ["Find issue", 3]]);
+    ix.dispatch("INTERACTION_CREATE", { id: "i1", token: "t", type: 2, application_id: "app1", channel_id: "c1", member: { user: { id: "u9" } }, data: { name: "autocraft", type: 1, options: [{ name: "search", type: 1, options: [{ name: "query", type: 3, value: "dark mode layers" }] }] } });
     await new Promise((r) => setTimeout(r, 50));
     assert.deepEqual(rest.callbacks.at(-1), { type: 5, ephemeral: true, choices: undefined });
     assert.match(rest.edits.at(-1)!.content!, /photocraft#2 Dark mode for the layers panel\n> Same panel/);
@@ -284,5 +284,24 @@ describe("rest", () => {
     assert.deepEqual(callbackPayload(8, { choices: [{ name: "a", value: "a" }], content: "x", components: [] }, false), { type: 8, data: { choices: [{ name: "a", value: "a" }] } });
     assert.deepEqual(callbackPayload(5, {}, true), { type: 5, data: { flags: 64 } });
     assert.deepEqual(callbackPayload(4, { content: "hi" }, true), { type: 4, data: { content: "hi", allowed_mentions: { parse: [] }, flags: 64 } });
+  });
+});
+
+describe("repo named in the question", () => {
+  before(async () => {
+    db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('vectorcraft')").run();
+    db.prepare("INSERT INTO repos (name, owner, visibility) VALUES ('vectorcraft', 'storytold', 'public') ON CONFLICT(name) DO UPDATE SET visibility = excluded.visibility").run();
+    const title = "Crash in layers";
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, body, url) VALUES ('vectorcraft', 1, 'issue', 'OPEN', ?, '', 'https://github.com/storytold/vectorcraft/issues/1')").run(title);
+    db.prepare("INSERT INTO item_embeddings (repo, number, model, hash, vec, at) VALUES ('vectorcraft', 1, 'fake', 'h', ?, ?)").run(toBlob((await embedder.embed([title], "item"))[0]!), new Date().toISOString());
+  });
+  const repos = async (q: string, repo?: string) => [...new Set((await new Search({ db, embedder, index: new VectorIndex(embedder), log: () => {}, ask }).candidates(q, repo)).map((c) => c.repo))].sort();
+
+  test("a named repo restricts the search, an explicit repo wins, two named repos search everything", async () => {
+    assert.deepEqual(await repos("crash in layers"), ["photocraft", "vectorcraft"]);
+    assert.deepEqual(await repos("PhotoCraft crash in layers"), ["photocraft"]);
+    assert.deepEqual(await repos("photocraft crash in layers", "vectorcraft"), ["vectorcraft"]);
+    assert.deepEqual(await repos("photocraft or vectorcraft crash in layers"), ["photocraft", "vectorcraft"]);
+    assert.deepEqual(await repos("crash in layers", "secret"), ["photocraft", "vectorcraft"]);
   });
 });
