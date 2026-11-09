@@ -1770,6 +1770,14 @@ export type BuildFeatureState = { feature: BuildFeatureName; on: boolean; repoSc
 /** `repos` is every tracked repo the viewer can see. */
 export type BuildFeatures = { features: BuildFeatureState[]; repos: string[] };
 export type BuildFeatureInput = { feature: BuildFeatureName; on: boolean; repo?: string };
+
+/** Validator of one screenshot command parameter: a fixed set of values, an integer range, or an anchored regular expression. */
+export type ScreenshotParam = { enum: string[] } | { int: [number, number] } | { re: string };
+export type ScreenshotCommand = { doc: string; params: Record<string, ScreenshotParam>; argv?: string[]; line?: Record<string, string | number | boolean>; capture?: boolean };
+/** The operator-edited setup of one repo; also the body of PUT /api/build/screenshots/:repo. */
+export type ScreenshotConfigJson = { package: string; example: string; driver: "args" | "jsonl"; commands: Record<string, ScreenshotCommand>; ui_paths: string[]; size?: string };
+export type ScreenshotSetup = { repo: string; config: ScreenshotConfigJson; updatedBy: string; updatedAt: string };
+export type ScreenshotSetups = { setups: ScreenshotSetup[] };
 export type BuildSummary = { queued: number; running: number; slots: number; free: number; online: number };
 
 // ---- Queue page (/api/queue/page) -------------------------------------------

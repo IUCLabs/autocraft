@@ -864,6 +864,25 @@ CREATE TABLE IF NOT EXISTS verifications (
   PRIMARY KEY (repo, number, head_sha)
 );
 CREATE INDEX IF NOT EXISTS verifications_state ON verifications(state);
+-- Per-repo setup for before/after UI screenshots (edited by operators; validated by src/verify/screenshot-config.ts).
+-- driver: args | jsonl. commands: JSON of named commands with validated parameters. ui_paths: JSON list of globs; a PR touching none is not screenshotted.
+CREATE TABLE IF NOT EXISTS screenshot_config (
+  repo TEXT PRIMARY KEY, package TEXT NOT NULL, example TEXT NOT NULL,
+  driver TEXT NOT NULL,
+  commands TEXT NOT NULL,
+  ui_paths TEXT NOT NULL,
+  size TEXT, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL);
+-- One screenshot run per PR head. state: planned | running | rendered | compared | error | stale | skipped.
+-- verdict: unchanged | as-claimed | unrelated | unclear | regression. reason: the planner's 25-word reason; plan: the validated script JSON.
+CREATE TABLE IF NOT EXISTS screenshot_runs (
+  repo TEXT NOT NULL, number INTEGER NOT NULL, head_sha TEXT NOT NULL, base_sha TEXT,
+  state TEXT NOT NULL,
+  reason TEXT, plan TEXT,
+  head_task_id INTEGER, base_task_id INTEGER,
+  verdict TEXT,
+  clear INTEGER, comparison TEXT, model TEXT, held INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, finished_at TEXT, PRIMARY KEY (repo, number, head_sha));
+CREATE INDEX IF NOT EXISTS screenshot_runs_state ON screenshot_runs(state);
 -- Priority of an open item (Prioritize step). text_hash is the item's embed_hash when the models ran;
 -- the models run again only when it changes, while score is recomputed from the mirror on each pass.
 -- impact: the priority level, P0 (critical) to P4 (backlog). score: reach 0-99, the tie-breaker inside a level. model: jev (sure) | haiku | jev-unsure (no Haiku answer).

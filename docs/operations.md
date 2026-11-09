@@ -268,6 +268,8 @@ Run the worker as a separate OS user without access to the operator's home, toke
 }
 ```
 
+`"display": true` says the worker can run tasks that render a UI (such as screenshot tasks, which require `display`); without it those tasks stay queued. For such a task the derived image adds software Vulkan and GL drivers (`mesa-vulkan-drivers`, `libvulkan1`, `libgl1-mesa-dri`, `libegl1`) and sets `WGPU_BACKEND=vulkan`; images of other tasks are unchanged. `gpu` is separate and only passes a GPU device through.
+
 Only `coordinatorUrl`, `keyFile` and `workDir` are required. `workDir` must not contain commas, colons or spaces. Other keys: `userns` (default `keep-id`), `maxSourceMb` (300), `maxStepSec` (14400), `warmDir` (default `<workDir>/../warm`, same path rules as `workDir`) and `warmMaxGb` (60).
 
 The worker records each step's peak memory from the container's cgroup (v2) while the step runs and sends it as `peakMemBytes`; `oomKilled` is true when the kernel killed the step for reaching the memory limit (`limits.memoryGb`). Both are omitted when the cgroup cannot be read.

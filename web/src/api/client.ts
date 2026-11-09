@@ -101,6 +101,8 @@ import type {
   BuildEnv,
   BuildFeatureInput,
   BuildFeatures,
+  ScreenshotConfigJson,
+  ScreenshotSetups,
   BuildSummary,
   BuildTask,
   BuildTaskDetail,
@@ -397,6 +399,12 @@ export interface Api {
   buildFeatures: {
     list(): Promise<BuildFeatures>;
     set(input: BuildFeatureInput): Promise<BuildFeatures>;
+  };
+  /** The per-repo screenshot setup. Anyone who sees internals reads; operators write. */
+  screenshotSetup: {
+    list(): Promise<ScreenshotSetups>;
+    put(repo: string, config: ScreenshotConfigJson): Promise<ScreenshotSetups>;
+    remove(repo: string): Promise<ScreenshotSetups>;
   };
   tasks: {
     list(filter: TaskFilter): Promise<TaskPage>;

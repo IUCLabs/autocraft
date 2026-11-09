@@ -6,11 +6,12 @@
 // `nosniff` and `Content-Security-Policy: sandbox`.
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { BuildEnv, BuildFeatureState, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, TaskFilter, TaskPage, TaskState } from "../../../web/src/api/types.ts";
+import type { BuildEnv, BuildFeatureState, ScreenshotSetups, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, TaskFilter, TaskPage, TaskState } from "../../../web/src/api/types.ts";
 import { absolute } from "../../build/artifacts.ts";
 import { BuildError, createEnv, listEnvs, rotateKey, updateEnv } from "../../build/envs.ts";
 import { FIX_CHECK_STEP, cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks.ts";
 import { BUILD_FEATURES, REPO_SCOPED, featureStates, isFeature, setFeature } from "../../build/features.ts";
+import { ScreenshotConfigError, deleteConfig, listConfigs, putConfig } from "../../verify/screenshot-config.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, Res } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
@@ -94,6 +95,37 @@ export const postFeature = async (db: DatabaseSync, req: Req): Promise<BuildFeat
   }
   setFeature(db, b.feature, b.on, req.user.login, repo);
   return featuresOf(db, req);
+};
+
+async function screenshotSetups(db: DatabaseSync, req: Req): Promise<ScreenshotSetups> {
+  const shown = new Set(await visibleRepos(db, req));
+  return { setups: listConfigs(db).filter((c) => shown.has(c.repo)).map(({ repo, updatedBy, updatedAt, ...config }) => ({ repo, config, updatedBy, updatedAt })) };
+}
+
+function trackedRepo(db: DatabaseSync, repo: string): string {
+  if (!db.prepare("SELECT 1 FROM main.tracked_repos WHERE name = ?").get(repo)) throw new HttpError(400, "repo must be a tracked repo");
+  return repo;
+}
+
+export const screenshots = async (db: DatabaseSync, req: Req): Promise<ScreenshotSetups> => {
+  if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the screenshot setup");
+  return screenshotSetups(db, req);
+};
+
+export const putScreenshots = async (db: DatabaseSync, req: Req): Promise<ScreenshotSetups> => {
+  const repo = trackedRepo(db, req.params.repo);
+  try {
+    putConfig(db, req.user.login, repo, req.json);
+  } catch (e) {
+    if (e instanceof ScreenshotConfigError) throw new HttpError(400, e.message);
+    throw e;
+  }
+  return screenshotSetups(db, req);
+};
+
+export const deleteScreenshots = async (db: DatabaseSync, req: Req): Promise<ScreenshotSetups> => {
+  if (!deleteConfig(db, req.user.login, req.params.repo)) throw new HttpError(404, "no screenshot setup for that repo");
+  return screenshotSetups(db, req);
 };
 
 export async function artifact(db: DatabaseSync, req: Req): Promise<Res> {

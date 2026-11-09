@@ -17,7 +17,7 @@ export type User = {
 };
 
 export type Req = {
-  method: "GET" | "POST" | "PUT";
+  method: "GET" | "POST" | "PUT" | "DELETE";
   path: string;
   params: Record<string, string>;   // from the route pattern, e.g. /item/:repo/:n
   query: URLSearchParams;
@@ -38,7 +38,7 @@ export type Res = {
 };
 
 export type Route = {
-  method: "GET" | "POST" | "PUT";
+  method: "GET" | "POST" | "PUT" | "DELETE";
   pattern: string;                  // "/api/items/:repo/:n"
   operator?: boolean;               // server returns 403 unless user.role is operator
   handler: (db: DatabaseSync, req: Req) => Res | Promise<Res>;

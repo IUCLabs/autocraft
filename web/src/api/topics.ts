@@ -89,6 +89,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["accounts", ["accounts", "settings"]],
   ["envs-repos", ["repos"]],
   ["build-features", ["build-features", "repos"]],
+  ["screenshot-setup", ["build-features"]],
   ["envs", ["envs", "tasks"]],
   ["tasks:", ["tasks", "envs"]],
   ["task-", ["tasks", "envs"]],

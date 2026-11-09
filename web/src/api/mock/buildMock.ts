@@ -1,7 +1,7 @@
 // Build environments and tasks on fake data: a local sandbox, two remote servers (one paused for disk, one offline), a disabled one,
 // and a few dozen tasks in every state.
 import type { Api } from "../client";
-import type { ItemShown, BuildEnv, BuildFeatureName, BuildFeatures, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
+import type { ItemShown, BuildEnv, BuildFeatureName, BuildFeatures, ScreenshotConfigJson, ScreenshotSetup, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
 import { NOW, REPOS } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -109,7 +109,7 @@ TASKS.sort((a, b) => b.id - a.id);
 const used = (e: string) => TASKS.filter((t) => t.envId === e && (t.state === "running" || t.state === "claimed")).length;
 for (const e of envs) e.running = used(e.id);
 
-export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs" | "tasks" | "buildFeatures"> {
+export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs" | "tasks" | "buildFeatures" | "screenshotSetup"> {
   const featureOn = new Set<string>(["screenshots", "screenshots:photocraft", "screenshots:pdfcraft"]);
   const SCOPED: Record<BuildFeatureName, boolean> = { screenshots: true, "push-tests": true, "batch-build": true, "scan-tests": false, nightly: true, "pr-builds": true };
   const features = (): BuildFeatures => ({
@@ -119,11 +119,41 @@ export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs"
     })),
     repos: [...REPOS],
   });
+  const setups: ScreenshotSetup[] = [{
+    repo: "photocraft", updatedBy: "dylan", updatedAt: iso(3 * 86_400_000),
+    config: {
+      package: "photocraft-ui-egui", example: "snapshot", driver: "args", size: "1440x900",
+      ui_paths: ["crates/ui*/**", "**/*.ftl"],
+      commands: { snap: { doc: "Render the main window.", params: { size: { enum: ["1440x900", "1024x768"] } }, argv: ["--out", "{out}", "--size", "{size}", "--scale", "2"], capture: true } },
+    },
+  }];
+  const setupsOut = () => ({ setups: structuredClone(setups) });
   const visible = (t: BuildTask) => me.role === "operator" || t.repo !== "vault";
   const operator = () => {
     if (me.role !== "operator") throw new Error("only operators change build environments");
   };
   return {
+    screenshotSetup: {
+      list: () => wait(setupsOut()),
+      async put(repo: string, config: ScreenshotConfigJson) {
+        operator();
+        if (!config.package || !config.commands || !config.ui_paths) throw new Error("package, commands and ui_paths are required");
+        const row: ScreenshotSetup = { repo, config, updatedBy: me.login, updatedAt: new Date().toISOString() };
+        const i = setups.findIndex((x) => x.repo === repo);
+        if (i < 0) setups.push(row);
+        else setups[i] = row;
+        changed();
+        return wait(setupsOut());
+      },
+      async remove(repo: string) {
+        operator();
+        const i = setups.findIndex((x) => x.repo === repo);
+        if (i < 0) throw new Error("no screenshot setup for that repo");
+        setups.splice(i, 1);
+        changed();
+        return wait(setupsOut());
+      },
+    },
     buildFeatures: {
       list: () => wait(features()),
       async set(input) {
