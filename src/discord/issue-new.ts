@@ -63,8 +63,8 @@ type Session = {
   kind: IssueKind;
   /** True while File it runs, so a second press cannot file twice. */
   filing: boolean;
-  /** The person is over the session limit: matches are shown but no new issue is started. */
-  limited: boolean;
+  /** The new-issue limit's slot was taken. */
+  counted: boolean;
   /** Where the session is: the buttons of an earlier step stop working once a later one is reached. */
   stage: "form" | "matched" | "asking" | "drafted";
   /** Model calls made; at most MAX_CALLS (the questions and one draft). */
@@ -85,6 +85,7 @@ const field = (custom_id: string, label: string, style: 1 | 2, max: number, opts
 const labelled = (label: string, component: Record<string, unknown>) => ({ type: 18, label: label.slice(0, 45), component });
 const KINDS: { value: IssueKind; label: string }[] = [{ value: "bug", label: "Bug report" }, { value: "feature", label: "Feature request" }];
 const titleOf = (description: string): string => { const t = description.replace(/\s+/g, " ").trim(); return t.length > 80 ? `${t.slice(0, 79)}…` : t; };
+const TOO_MANY = "\nToo many new issues just now. Try again later.";
 const button = (label: string, custom_id: string, style: 1 | 2 = 2) => ({ type: 2, style, label: label.slice(0, 80), custom_id });
 
 export class IssueNew {
@@ -158,7 +159,7 @@ export class IssueNew {
     const sid = randomBytes(6).toString("base64url");
     this.#sessions.set(sid, {
       user: call.userId, repo: "", repoUrl: "", expires: this.#now() + SESSION_MS,
-      title: "", description: "", matches: [], questions: [], capped: false, answers: [], stage: "form", calls: 0, kind: "bug", filing: false, limited: false,
+      title: "", description: "", matches: [], questions: [], capped: false, answers: [], stage: "form", calls: 0, kind: "bug", filing: false, counted: false,
     });
     await call.showModal({
       custom_id: `inew:form:${sid}`, title: "Find or report an issue",
@@ -185,30 +186,32 @@ export class IssueNew {
     s.repo = repo.name; s.repoUrl = `https://github.com/${repo.owner}/${repo.name}`;
     s.description = description; s.title = titleOf(description);
     s.stage = "matched";
-    s.limited = !this.allow(userKey, channelKey);
-    s.capped = s.limited || this.#overCap();
+    s.capped = this.#overCap();
     if (!s.capped) s.calls++;
     const asking = s.capped ? Promise.resolve(null) : this.#model("discord.issue-questions", { ref: "discord", repo: s.repo, title: s.title, description: s.description });
     const [found, reply] = await Promise.all([this.#d.search.find(description.slice(0, QUESTION_CHARS), s.repo), asking]);
     s.matches = found.matches.filter((m) => m.repo === s.repo);
     // A failed or unparseable call asks the first three of the list; a model that finds nothing missing asks none.
     s.questions = s.capped ? [] : ((reply === null ? null : parseQuestions(reply)) ?? FOLLOW_UPS.map((q) => q.id)).slice(0, 3);
-    const tail = s.limited ? "\nToo many new issues just now. Try again later." : "";
     if (!s.matches.length) {
-      if (s.limited) return void (await call.edit({ content: `No matching issue found.${tail}` }));
-      // Nothing to compare with: go on at once. A form needs a button press, so questions wait behind one.
-      if (!s.questions.length) { s.stage = "drafted"; return void (await this.#finish(call, s, sid)); }
+      // Nothing to compare with: go on at once. A form needs a button press, so questions wait behind one. Starting the new issue takes a slot of the new-issue limit.
+      if (!s.questions.length) {
+        if (!this.#slot(s, call)) return void (await call.edit({ content: `No matching issue found.${TOO_MANY}` }));
+        s.stage = "drafted";
+        return void (await this.#finish(call, s, sid));
+      }
       return void (await call.edit({ content: "No existing issue looks like this.", components: [{ type: 1, components: [button("Continue", `inewi:none:${sid}`, 1)] }] }));
     }
-    const r = renderMatches(db, s.matches, description, call.interaction.channel_id, s.limited ? undefined : `inewi:none:${sid}`);
-    await call.edit({ content: `${r.content}${tail}`, components: r.components });
+    const r = renderMatches(db, s.matches, description, call.interaction.channel_id, `inewi:none:${sid}`);
+    await call.edit({ content: r.content, components: r.components });
   }
 
   /** "None of these" or "Continue": the follow-up questions in a second form, or the draft at once when there are none. */
   async none(call: Call, sid: string): Promise<void> {
     const s = this.#session(call, sid);
-    if (!s || s.limited) return void (await call.reply({ content: "This form has expired. Start again with /autocraft search." }));
+    if (!s) return void (await call.reply({ content: "This form has expired. Start again with /autocraft search." }));
     if (s.stage !== "matched" && !(s.stage === "asking" && s.questions.length)) return void (await call.reply({ content: USED }));
+    if (!this.#slot(s, call)) return void (await call.reply({ content: `${TOO_MANY.trim()}` }));
     if (!s.questions.length) {
       s.stage = "drafted";
       await call.defer();
@@ -243,6 +246,14 @@ export class IssueNew {
     }
     s.draft = draft ?? formDraft(s, repos);
     await call.edit(this.#render(s, sid));
+  }
+
+  /** Takes one slot of the new-issue limit, once per session: when the person chooses to file a new issue, not at each search. */
+  #slot(s: Session, call: Call): boolean {
+    if (s.counted) return true;
+    const ok = this.allow(this.#d.keys.hash("author", s.user), this.#d.keys.hash("channel", call.interaction.channel_id ?? "?"));
+    if (ok) s.counted = true;
+    return ok;
   }
 
   #render(s: Session, sid: string): { content: string; components: unknown[] } {
@@ -285,7 +296,10 @@ export class IssueNew {
     s.filing = true;
     await call.defer();
     const { url } = issueUrl(s.repoUrl, s.draft.title, s.draft.body, ISSUE_URL_MAX);
+    // Discord refuses a link button over BUTTON_URL_MAX; a longer link goes into the text, as in #render.
+    const asButton = url.length <= BUTTON_URL_MAX;
     const github = { type: 2, style: 5, label: "Open on GitHub instead", url };
+    const githubText = asButton ? "" : `\n[Open on GitHub instead](<${url}>)`;
     try {
       const r = await (this.#d.file ?? fileIssue)({ db: this.#d.db, log }, { reporter: keys.hash("author", s.user), repo: s.repo, title: s.draft.title, body: s.draft.body, kind: s.kind });
       if (r.status === "sign-in") {
@@ -296,7 +310,7 @@ export class IssueNew {
         this.#sessions.delete(sid);
         await call.edit({ content: `Filed as ${s.repo}#${r.number}`, components: [{ type: 1, components: [{ type: 2, style: 5, label: `${s.repo}#${r.number}`.slice(0, 80), url: r.url }] }] });
       } else {
-        await call.edit({ content: `${plain(r.reason)}\nYou can still open it on GitHub yourself.`, components: [{ type: 1, components: [github] }] });
+        await call.edit({ content: `${plain(r.reason)}\nYou can still open it on GitHub yourself.${githubText}`, components: asButton ? [{ type: 1, components: [github] }] : [] });
       }
     } finally {
       s.filing = false;

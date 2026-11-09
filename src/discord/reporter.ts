@@ -13,11 +13,18 @@ const hashOf = (state: string): string => createHash("sha256").update(state).dig
 const EXPIRY_MARGIN = 60_000;
 export const STATE_TTL_MS = 10 * 60_000;
 
+/** Stores the sign-in. A token the reporter had before is queued for revocation (a new sign-in replaces it). */
 export function saveReporter(db: DatabaseSync, box: TokenBox, reporter: string, githubId: number, login: string, tokens: Tokens, now = Date.now()): void {
+  const old = db.prepare("SELECT login, token_enc FROM reporter_tokens WHERE reporter = ?").get(reporter) as { login: string; token_enc: string } | undefined;
+  if (old) queueRevoke(db, reporter, old.login, old.token_enc, now);
   db.prepare(`INSERT INTO reporter_tokens (reporter, github_id, login, token_enc, version, updated_at, status) VALUES (?, ?, ?, ?, 1, ?, 'ok')
               ON CONFLICT (reporter) DO UPDATE SET github_id = excluded.github_id, login = excluded.login, token_enc = excluded.token_enc,
                 version = reporter_tokens.version + 1, updated_at = excluded.updated_at, status = 'ok'`)
     .run(reporter, githubId, login, box.seal(JSON.stringify(tokens), aad(reporter)), new Date(now).toISOString());
+}
+
+function queueRevoke(db: DatabaseSync, reporter: string, login: string, tokenEnc: string, now: number): void {
+  db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at, kind, aad) VALUES (?, ?, ?, 'token', ?)").run(login, tokenEnc, new Date(now).toISOString(), aad(reporter));
 }
 
 type Row = { login: string; token_enc: string; version: number; status: string };
@@ -98,11 +105,12 @@ export function takeReporterState(db: DatabaseSync, state: string, now = Date.no
   return r && Date.parse(r.expires_at) >= now ? { reporter: r.reporter, verifier: r.verifier } : null;
 }
 
-/** Removes the reporter's sign-in and queues its token for revocation at GitHub (the dashboard's vault sweeps the queue). Returns whether one existed. */
+/** Removes the reporter's sign-in and filing records and queues the token's revoke. Returns whether one existed. */
 export function forgetReporterRow(db: DatabaseSync, reporter: string, now = Date.now()): boolean {
   db.prepare("DELETE FROM reporter_states WHERE reporter = ?").run(reporter);
+  db.prepare("DELETE FROM discord_filed WHERE reporter = ?").run(reporter);
   const row = db.prepare("DELETE FROM reporter_tokens WHERE reporter = ? RETURNING login, token_enc").get(reporter) as { login: string; token_enc: string } | undefined;
   if (!row) return false;
-  db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at, kind, aad) VALUES (?, ?, ?, 'token', ?)").run(row.login, row.token_enc, new Date(now).toISOString(), aad(reporter));
+  queueRevoke(db, reporter, row.login, row.token_enc, now);
   return true;
 }

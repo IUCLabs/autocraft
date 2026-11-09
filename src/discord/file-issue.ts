@@ -9,8 +9,8 @@ import { TokenBox } from "../dash/server/crypto.ts";
 import { readSecrets } from "../dash/server/config.ts";
 import { GitHubProvider, type Provider } from "../dash/server/provider.ts";
 import { exec as defaultExec, type Exec } from "../fixup/git.ts";
+import { createReporterIssue, IssueError, labelReporterIssue } from "../github/write.ts";
 import { appChildEnv } from "../github/install-token.ts";
-import { slugOf } from "../owners.ts";
 import { JEV_PROMPTS } from "../prompts/index.ts";
 import { isPublicRepo } from "../public/status.ts";
 import { jevJunk, junkBand, junkState, parseJunk, type JunkAsk } from "./junk-ask.ts";
@@ -124,50 +124,42 @@ export async function fileIssue(deps: FileDeps, req: FileRequest, hooks: FileHoo
   if (!tok.ok) return { status: "refused", reason: "GitHub did not answer. Try again in a minute." };
 
   const since = new Date(now - DAY_MS).toISOString();
+  db.prepare("DELETE FROM discord_filed WHERE at < ?").run(since);
   if (count(db, "SELECT COUNT(*) AS c FROM discord_filed WHERE login = ? AND at >= ?", tok.login, since) >= PER_LOGIN) return { status: "refused", reason: `You have filed ${PER_LOGIN} issues from Discord in the last 24 hours.` };
   if (count(db, "SELECT COUNT(*) AS c FROM discord_filed WHERE repo = ? AND at >= ?", req.repo, since) >= PER_REPO) return { status: "refused", reason: "This repo has reached its limit of issues filed from Discord today." };
   if (count(db, "SELECT COUNT(*) AS c FROM audit WHERE action = ? AND at >= ? AND json_extract(details, '$.state') <> 'failed'", AUDIT_ACTION, since) >= DAILY_WRITES) return { status: "refused", reason: "Filing from Discord has reached its daily limit." };
-
-  const junk = await junkCheck(db, { title, body }, hooks.judge ?? modelJudge, log);
-  if (junk === "junk") return { status: "refused", reason: "That does not look like a bug report or a feature request." };
-  if (junk === "unknown") return { status: "refused", reason: "The report could not be checked just now. Try again in a few minutes." };
-
-  const run = hooks.exec ?? defaultExec;
-  const text = `${body}\n\n${FOOTER}`;
-  const slug = slugOf(req.repo);
-  const env = appChildEnv(tok.access);
-  const identity = `user:${tok.login}`;
-  const auditId = Number(db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, ?, ?, ?, ?)")
-    .run(new Date(now).toISOString(), tok.login, AUDIT_ACTION, req.repo, JSON.stringify({ identity, state: "started", title, text })).lastInsertRowid);
-  const finish = (d: Record<string, unknown>, target = req.repo): void => {
-    db.prepare("UPDATE audit SET target = ?, details = ? WHERE rowid = ?").run(target, JSON.stringify({ identity, title, text, ...d }), auditId);
-  };
-
-  let r;
+  // The slot is reserved before any await, so parallel sessions of one person cannot pass the limit together; every failure below frees it.
+  const slot = Number(db.prepare("INSERT INTO discord_filed (repo, number, login, reporter, at) VALUES (?, 0, ?, ?, ?)").run(req.repo, tok.login, req.reporter, new Date(now).toISOString()).lastInsertRowid);
+  let filed = false;
   try {
-    r = await run("gh", ["issue", "create", "--repo", slug, "--title", title, "--body-file", "-"], { input: text, env, replaceEnv: true });
-  } catch (e) {
-    finish({ state: "failed", error: String((e as Error).message ?? e).slice(0, 300) });
-    return { status: "refused", reason: "GitHub could not be reached. Try again in a minute." };
-  }
-  const out = r.stdout.match(/https:\/\/github\.com\/\S+\/issues\/(\d+)/);
-  if (r.code !== 0 || !out) {
-    const err = (r.stderr || r.stdout).replace(/\s+/g, " ").trim().slice(0, 300) || `exit code ${r.code}`;
-    finish({ state: "failed", error: err });
-    if (/HTTP 401|bad credentials/i.test(err)) {
-      failReporter(db, req.reporter, readReporter(db, keys.box, req.reporter)?.version ?? tok.version, now);
-      return { status: "sign-in", url: `${baseUrl}/discord/github/start?state=${encodeURIComponent(newReporterState(db, req.reporter, now))}` };
+    const junk = await junkCheck(db, { title, body }, hooks.judge ?? modelJudge, log);
+    if (junk === "junk") return { status: "refused", reason: "That does not look like a bug report or a feature request." };
+    if (junk === "unknown") return { status: "refused", reason: "The report could not be checked just now. Try again in a few minutes." };
+
+    const run = hooks.exec ?? defaultExec;
+    const env = appChildEnv(tok.access);
+    const asUser: Exec = (cmd, args, opts) => run(cmd, args, { ...opts, env, replaceEnv: true });
+    const w = { db, login: tok.login, now: () => now };
+    let made: { number: number; url: string };
+    try {
+      made = await createReporterIssue(w, asUser, { repo: req.repo, login: tok.login, title, body: `${body}\n\n${FOOTER}` });
+    } catch (e) {
+      const err = String((e as Error).message ?? e);
+      if (/HTTP 401|bad credentials/i.test(err)) {
+        failReporter(db, req.reporter, tok.version, now);
+        return { status: "sign-in", url: `${baseUrl}/discord/github/start?state=${encodeURIComponent(newReporterState(db, req.reporter, now))}` };
+      }
+      if (e instanceof IssueError && !e.clear) { filed = true; /* the issue may exist: the slot stays used */ return { status: "refused", reason: "GitHub could not be reached. Try again in a minute." }; }
+      return { status: "refused", reason: "GitHub did not accept the issue." };
     }
-    return { status: "refused", reason: "GitHub did not accept the issue." };
+    filed = true;
+    db.prepare("UPDATE discord_filed SET number = ? WHERE rowid = ?").run(made.number, slot);
+    // A label is a courtesy: GitHub refuses it when the repo has no such label or the account may not set labels.
+    await labelReporterIssue(w, asUser, { repo: req.repo, login: tok.login, number: made.number, label: LABEL[req.kind] });
+    return { status: "filed", number: made.number, url: made.url, login: tok.login };
+  } finally {
+    if (!filed) db.prepare("DELETE FROM discord_filed WHERE rowid = ?").run(slot);
   }
-  const number = Number(out[1]);
-  finish({ state: "done", url: out[0] }, `${req.repo}#${number}`);
-  db.prepare("INSERT INTO discord_filed (repo, number, login, reporter, at) VALUES (?, ?, ?, ?, ?)").run(req.repo, number, tok.login, req.reporter, new Date(now).toISOString());
-  // A label is a courtesy: GitHub refuses it when the repo has no such label or the account may not set labels.
-  try {
-    await run("gh", ["issue", "edit", String(number), "--repo", slug, "--add-label", LABEL[req.kind]], { env, replaceEnv: true });
-  } catch { /* the issue is filed */ }
-  return { status: "filed", number, url: out[0], login: tok.login };
 }
 
 /** Removes the person's GitHub sign-in (on /autocraft unlink and `discord forget --user`) and queues its token's revoke. Returns whether one existed. */

@@ -211,12 +211,32 @@ describe("search and filing flow", () => {
     pickReply = JSON.stringify({ picks: [{ ref: "photocraft#1", reason: "Same problem" }] });
   });
 
-  test("a person gets three new-issue sessions an hour; over it the matches show without the None button", async () => {
-    for (let k = 0; k < 3; k++) { await searchCmd("u7"); await submitForm("u7", "photocraft", "webp export quality"); assert.ok(rows(rest.edits[0]!).some((x) => x.label === NONE)); }
+  test("only choosing a new issue takes a slot of the three an hour; searches do not", async () => {
+    for (let k = 0; k < 1; k++) { await searchCmd("u7"); await submitForm("u7", "photocraft", "webp export quality"); assert.ok(rows(rest.edits[0]!).some((x) => x.label === NONE)); }
+    for (let k = 0; k < 3; k++) {
+      await searchCmd("u7");
+      await submitForm("u7", "photocraft", "webp export quality");
+      await press("u7", rows(rest.edits[0]!).find((x) => x.label === NONE)!.custom_id!);
+      assert.equal(rest.callbacks[0]!.type, 9, "the follow-up form opens");
+    }
     await searchCmd("u7");
     await submitForm("u7", "photocraft", "webp export quality");
-    assert.match(rest.edits[0]!.content!, /Too many new issues/);
-    assert.ok(!rows(rest.edits[0]!).some((x) => x.label === NONE));
+    await press("u7", rows(rest.edits[0]!).find((x) => x.label === NONE)!.custom_id!);
+    assert.match(rest.callbacks[0]!.data!.content!, /Too many new issues/);
+  });
+
+  test("a link too long for a button goes into the text when filing is refused", async () => {
+    draftReply = JSON.stringify({ title: "Long one", kind: "bug", body: "Details. ".repeat(150) });
+    await searchCmd("u8");
+    await submitForm("u8", "photocraft", "webp export quality slider does nothing");
+    await press("u8", rows(rest.edits[0]!).find((x) => x.label === NONE)!.custom_id!);
+    const modal = rest.callbacks[0]!;
+    await submit("u8", modal.data!.custom_id!, { steps: "x", env: "y" });
+    fileResult = { status: "refused", reason: "No." };
+    await press("u8", rows(rest.edits[0]!).find((x) => x.label === "File it")!.custom_id!);
+    const e = rest.edits[0]!;
+    assert.match(e.content!, /\[Open on GitHub instead\]\(<https:\/\/github\.com\//);
+    assert.ok(!rows(e).some((x) => x.url && x.url.length > 512));
   });
 });
 

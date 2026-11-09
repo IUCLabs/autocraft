@@ -69,7 +69,10 @@ describe("filing from Discord", () => {
     assert.equal(calls[0]!.input, "Quality 40 gives the same size as 100.\n\nFiled from Discord with AutoCraft.");
     assert.ok(calls[1]!.args.includes("bug"), "labelled");
     const a = db.prepare("SELECT login, target, details FROM audit WHERE action = 'discord-issue-open'").get() as { login: string; target: string; details: string };
-    assert.deepEqual([a.login, a.target, JSON.parse(a.details).state], ["octo", "photocraft#41", "done"]);
+    const det = JSON.parse(a.details);
+    assert.deepEqual([a.login, a.target, det.state, det.number, det.url], ["octo", "photocraft", "done", 41, "https://github.com/storytold/photocraft/issues/41"]);
+    assert.ok(!a.details.includes("Quality 40"), "the text is not kept in the audit row");
+    assert.equal((db.prepare("SELECT COUNT(*) AS c FROM audit WHERE action = 'discord-issue-label'").get() as { c: number }).c, 1);
   });
 
   test("a fourth issue in 24 hours by the same login is refused", async () => {
@@ -79,8 +82,17 @@ describe("filing from Discord", () => {
     assert.equal(r.status, "refused");
   });
 
+  test("a refused filing gives its slot back", async () => {
+    const before = (db.prepare("SELECT COUNT(*) AS c FROM discord_filed").get() as { c: number }).c;
+    junk = true;
+    await fileIssue(deps, req, hooks);
+    junk = false;
+    assert.equal((db.prepare("SELECT COUNT(*) AS c FROM discord_filed").get() as { c: number }).c, before);
+  });
+
   test("forgetReporter removes the token and queues its revoke", () => {
     assert.equal(forgetReporter(db, "rep1"), true);
+    assert.equal((db.prepare("SELECT COUNT(*) AS c FROM discord_filed WHERE reporter = 'rep1'").get() as { c: number }).c, 0);
     assert.equal(readReporter(db, box, "rep1"), null);
     const q = db.prepare("SELECT login, kind, aad FROM user_token_revocations").get() as { login: string; kind: string; aad: string };
     assert.deepEqual({ ...q }, { login: "octo", kind: "token", aad: "reporter_tokens:rep1" });
