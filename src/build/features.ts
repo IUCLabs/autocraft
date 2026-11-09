@@ -2,6 +2,7 @@
 // features, `build_feature:<f>:<repo>`; a missing row means off.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { TERMINAL, cancelTask } from "./tasks.ts";
 
 export const BUILD_FEATURES = ["screenshots", "push-tests", "batch-build", "scan-tests", "nightly", "pr-builds"] as const;
 export type BuildFeature = (typeof BUILD_FEATURES)[number];
@@ -29,6 +30,22 @@ export function setFeature(db: DatabaseSync, f: BuildFeature, on: boolean, by: s
   const scoped = REPO_SCOPED[f] ? repo : undefined;
   db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(keyOf(f, scoped), on ? "on" : "off");
   audit(db, by, "build-feature", f, { feature: f, on, repo: scoped ?? null });
+  if (!on) stopQueuedTasks(db, f, by, scoped);
+}
+
+/** Build tasks of the features whose untrusted work is queued by the pipeline; a switch turned off stops them. */
+const FEATURE_STEP: Partial<Record<BuildFeature, string>> = { "pr-builds": "pr-build", nightly: "nightly" };
+
+/** Cancels the queued and running tasks of a feature that was switched off (for one repo, or every repo), and marks the PR builds stale. */
+function stopQueuedTasks(db: DatabaseSync, f: BuildFeature, by: string, repo?: string): void {
+  const step = FEATURE_STEP[f];
+  if (!step) return;
+  const open = TERMINAL.map((s) => `'${s}'`).join(", ");
+  const rows = db.prepare(`SELECT id FROM build_tasks WHERE step = ? AND state NOT IN (${open}) ${repo ? "AND repo = ?" : ""}`).all(...(repo ? [step, repo] : [step])) as { id: number }[];
+  for (const r of rows) cancelTask(db, r.id, by);
+  if (f === "pr-builds") {
+    db.prepare(`UPDATE main.pr_builds SET state = 'stale', finished_at = ? WHERE state = 'queued' ${repo ? "AND repo = ?" : ""}`).run(...(repo ? [new Date().toISOString(), repo] : [new Date().toISOString()]));
+  }
 }
 
 export function featureStates(db: DatabaseSync): { feature: BuildFeature; on: boolean; repos: string[] }[] {

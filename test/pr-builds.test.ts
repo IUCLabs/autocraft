@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
+import { claim } from "../src/build/tasks.ts";
+import { createEnv, hello } from "../src/build/envs.ts";
 import { setFeature } from "../src/build/features.ts";
 import { collectPrBuilds, prBuildDue, runPrBuilds } from "../src/prbuild/index.ts";
 import { selectPrBuilds, setPerDay, setScope } from "../src/prbuild/select.ts";
@@ -79,11 +81,65 @@ test("collect: pass, a failure where CI passed is noted without a hold, a moved 
   assert.deepEqual([state(2).state, state(2).disagree, state(2).summary], ["failed", 1, "test failed with exit code 101"]);
   assert.equal(state(5).state, "stale");
   assert.equal((db.prepare("SELECT state FROM build_tasks WHERE id = ?").get(id(5)) as { state: string }).state, "cancelled");
-  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM stages WHERE stage = 'pr-build-disagree'").get() as { n: number }).n, 1);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM stages WHERE stage = 'pr-build-disagree'").get() as { n: number }).n, 0, "the note never becomes the item's latest stage");
   assert.equal((db.prepare("SELECT COUNT(*) AS n FROM stages WHERE stage = 'hold'").get() as { n: number }).n, 0);
   assert.equal(JSON.stringify(db.prepare("SELECT * FROM verifications").all()), verifsBefore);
   assert.equal(prBuildView(db, "app", 2, sha("b"), true)?.disagree, true);
   assert.equal(prBuildView(db, "app", 2, sha("b"), false)?.summary, null, "viewers get the state only");
   setFeature(db, "pr-builds", false, "op", "app");
   assert.equal(prBuildView(db, "app", 2, sha("b"), true), null, "hidden while the switch is off");
+});
+
+const claimer = (db: ReturnType<typeof connect>) => {
+  createEnv(db, { id: "env-one", label: "env-one", kind: "local-sandbox", slots: 4 }, "op");
+  hello(db, "env-one", { version: "1", capabilities: { os: "linux", arch: "x86_64", cpus: 8, memGb: 32, diskGb: 200, display: false, gpu: false, toolchains: ["rust-stable"] }, slots: 4 });
+  return () => claim(db, "env-one", 4).tasks.map((t) => t.repo);
+};
+
+test("switching off stops queued builds, and the worker does not claim them while it is off", async () => {
+  const { db, tasks } = setup();
+  setFeature(db, "pr-builds", true, "op");
+  setFeature(db, "pr-builds", true, "op", "app");
+  await runPrBuilds(db, "app", () => {}, noFetch);
+  assert.equal(tasks().length, 1);
+  // Off by the settings alone (as a stale row would be): the claim skips it.
+  db.prepare("UPDATE settings SET value = 'off' WHERE key = 'build_feature:pr-builds:app'").run();
+  assert.deepEqual(claimer(db)(), []);
+  db.prepare("UPDATE settings SET value = 'on' WHERE key = 'build_feature:pr-builds:app'").run();
+  setFeature(db, "pr-builds", false, "op", "app");
+  assert.equal((db.prepare("SELECT state FROM build_tasks").get() as { state: string }).state, "cancelled");
+  assert.equal((db.prepare("SELECT state FROM pr_builds").get() as { state: string }).state, "stale");
+});
+
+test("an operator's cancel is not retried; a lost task is retried once", async () => {
+  const { db, tasks } = setup();
+  setFeature(db, "pr-builds", true, "op");
+  setFeature(db, "pr-builds", true, "op", "app");
+  await runPrBuilds(db, "app", () => {}, noFetch);
+  db.prepare("UPDATE build_tasks SET state = 'cancelled'").run();
+  collectPrBuilds(db, "app", () => {});
+  assert.equal(tasks().length, 1);
+  assert.deepEqual({ ...(db.prepare("SELECT state, summary FROM pr_builds").get() as object) }, { state: "error", summary: "the build task was cancelled" });
+
+  const t2 = setup();
+  setFeature(t2.db, "pr-builds", true, "op");
+  setFeature(t2.db, "pr-builds", true, "op", "app");
+  await runPrBuilds(t2.db, "app", () => {}, noFetch);
+  t2.db.prepare("UPDATE build_tasks SET state = 'lost'").run();
+  assert.equal(collectPrBuilds(t2.db, "app", () => {}).retried, 1);
+  assert.equal(t2.tasks().length, 2);
+});
+
+test("a failure that CI later contradicts is noted once, when CI turns green", async () => {
+  const { db } = setup();
+  setFeature(db, "pr-builds", true, "op");
+  setFeature(db, "pr-builds", true, "op", "app");
+  await runPrBuilds(db, "app", () => {}, noFetch);
+  db.prepare("UPDATE build_tasks SET state = 'failed', results = ?").run(JSON.stringify([{ step: "fetch deps", exitCode: 0, durationMs: 1, timedOut: false }, { step: "build", exitCode: 1, durationMs: 1, timedOut: false }]));
+  assert.equal(collectPrBuilds(db, "app", () => {}).disagreements, 0);
+  db.prepare("INSERT INTO pr_checks (repo, number, head_oid, overall, checks, fetched_at) VALUES ('app', 1, ?, 'success', '[]', '2099-01-01T00:00:00Z')").run(sha("a"));
+  assert.equal(prBuildDue(db, "app"), true);
+  assert.equal(collectPrBuilds(db, "app", () => {}).disagreements, 1);
+  assert.equal(collectPrBuilds(db, "app", () => {}).disagreements, 0);
+  assert.equal(prBuildView(db, "app", 1, sha("a"), true)?.disagree, true);
 });

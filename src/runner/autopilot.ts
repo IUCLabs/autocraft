@@ -35,7 +35,7 @@ import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
 import { featureOn } from "../build/features.ts";
 import { nightlyRepos } from "../nightly/index.ts";
-import { prBuildDue } from "../prbuild/index.ts";
+import { prBuildDue, reposWithQueuedBuilds } from "../prbuild/index.ts";
 import { actLimit, actUsedToday } from "../conversations/usage.ts";
 import { queueHead } from "../conversations/queue.ts";
 import { compareKeys, targetKeys } from "../act/order.ts";
@@ -474,7 +474,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "pr-build",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, ctx) => ctx.tracked.filter((repo) => prBuildDue(db, repo)).sort().map((repo) => ({ step: "pr-build", params: { repo } })),
+    detect: (db, ctx) => [...new Set([...ctx.tracked, ...reposWithQueuedBuilds(db)])].filter((repo) => prBuildDue(db, repo)).sort().map((repo) => ({ step: "pr-build", params: { repo } })),
   },
   {
     name: "fixissue",
