@@ -93,7 +93,7 @@ export function createMockApi(): Api {
   const changed = () => listeners.forEach((fn) => fn());
   let discordLinked = true;
   const discord: DiscordSetup = {
-    state: "connected", detail: null, at: nowIso(), repos: ["photocraft", "pdfcraft", "wordcraft"], contact: "discord-privacy@example.org", privacyPath: "/privacy",
+    state: "connected", detail: null, at: nowIso(), repos: ["photocraft", "pdfcraft", "wordcraft"], contact: "discord-privacy@example.org", reactOn: true, privacyPath: "/privacy",
     links: [
       { id: "l1", login: "mira-anders", linkedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
       { id: "l2", login: "tomas-vale", linkedAt: new Date(Date.now() - 40 * 3_600_000).toISOString() },
@@ -302,6 +302,12 @@ export function createMockApi(): Api {
         discordLinked = false;
         changed();
         return wait({ linked: false, at: null, configured: true });
+      },
+      setReact(on) {
+        if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");
+        discord.reactOn = on;
+        changed();
+        return wait(structuredClone(discord));
       },
       setContact(contact) {
         if (mockRole() !== "operator") throw new Error("only operators change the Discord settings");

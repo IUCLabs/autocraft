@@ -9,6 +9,7 @@ import { HttpError } from "../server/util.ts";
 import { DISCORD_PRIVACY_PATH } from "../server/discord-privacy.ts";
 import { readKeyFile, type DiscordKeys } from "../../discord/keys.ts";
 import { countOf, linksOf } from "../../discord/store.ts";
+import { reactOn } from "../../discord/react.ts";
 import { signalCountOf, signalLinks } from "../../discord/signals.ts";
 import { createLinkCode, linkedSince, listLinks, unlinkLogin, unlinkRow } from "../../discord/links.ts";
 import type { Req } from "../types.ts";
@@ -52,7 +53,7 @@ function setupOf(db: DatabaseSync): DiscordSetup {
     state: st?.state ?? "off", detail: st?.detail ?? null, at: st?.at ?? null,
     channels: channels.map((c) => ({ ...c, watched: !!c.watched })),
     repos: publicRepoNames(db),
-    contact: contactOf(db), privacyPath: PRIVACY_PATH, links: listLinks(db),
+    contact: contactOf(db), reactOn: reactOn(db), privacyPath: PRIVACY_PATH, links: listLinks(db),
   };
 }
 
@@ -88,6 +89,15 @@ export function putContact(db: DatabaseSync, req: Req): DiscordSetup {
   if (typeof c !== "string" || c.length > 300) throw new HttpError(400, "contact must be text of at most 300 characters");
   db.prepare("INSERT INTO settings (key, value) VALUES ('discord_contact', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(c.trim());
   audit(db, req.user.login, "discord-contact", null);
+  return setupOf(db);
+}
+
+export function putReact(db: DatabaseSync, req: Req): DiscordSetup {
+  operator(req);
+  const on = body(req).on;
+  if (typeof on !== "boolean") throw new HttpError(400, "on must be true or false");
+  db.prepare("INSERT INTO settings (key, value) VALUES ('discord_react', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(on ? "on" : "off");
+  audit(db, req.user.login, on ? "discord-react-on" : "discord-react-off", null);
   return setupOf(db);
 }
 

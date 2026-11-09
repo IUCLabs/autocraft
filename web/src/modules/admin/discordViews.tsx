@@ -75,6 +75,12 @@ export function DiscordView(_: ViewProps) {
             ))}
           </Block>
           <LinksBlock links={data.links} busy={write.busy} onRemove={(id) => write.run(id, () => api.discord.removeLink(id)).then(() => refetch())} />
+          <Block className="mt-4" title="Reactions">
+            <div className="flex min-h-11 items-center gap-3">
+              <span className="min-w-0 flex-1 text-sm">React to recorded messages</span>
+              <Switch on={data.reactOn} label="React to recorded messages" busy={write.busy === "react"} onChange={(on) => void write.run("react", () => api.discord.setReact(on)).then(() => refetch())} />
+            </div>
+          </Block>
           <ContactBlock contact={data.contact} onSave={(c) => write.run("contact", () => api.discord.setContact(c)).then(() => refetch())} busy={write.busy === "contact"} />
         </>
       )}

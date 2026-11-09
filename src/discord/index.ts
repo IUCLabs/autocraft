@@ -17,6 +17,7 @@ import { Pings } from "./pings.ts";
 import { Signals, dropSignalTexts } from "./signals.ts";
 import { deleteRepliesOf } from "./replies.ts";
 import { RestClient } from "./rest.ts";
+import { Reactor } from "./react.ts";
 import { forgetLink } from "./links.ts";
 import { Search, dropTexts } from "./search.ts";
 import { installAccountCommands } from "./commands.ts";
@@ -56,9 +57,10 @@ export function handleMeta(db: DatabaseSync, type: string, d: unknown): void {
  * The one handler of gateway events. Order matters: the mention rows and channel list change first; the pings then see
  * `discord_replies` intact, so a deleted ping or quoted message finds our reply and deletes it in Discord.
  */
-export function dispatcher(db: DatabaseSync, keys: DiscordKeys, interactions: Interactions, pings: Pings, signals?: Signals): (type: string, d: unknown) => void {
+export function dispatcher(db: DatabaseSync, keys: DiscordKeys, interactions: Interactions, pings: Pings, signals?: Signals, reactor?: Reactor): (type: string, d: unknown) => void {
   return (type, d) => {
-    handleDispatch(db, keys, type, d);
+    const recorded = handleDispatch(db, keys, type, d);
+    if (recorded) reactor?.recorded(recorded.channelId, recorded.messageId);
     handleMeta(db, type, d);
     interactions.dispatch(type, d);
     pings.dispatch(type, d);
@@ -107,13 +109,14 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
   installDecisionAlerts(db, keys, rest, interactions, signal, log);
   const pings = new Pings({ db, keys, rest, search, log });
   const signals = new Signals({ db, keys, log });
+  const reactor = new Reactor({ db, rest, log });
   // A crash during a call can leave the question in a recorded prompt.
   try { dropTexts(db, true); dropIssueTexts(db, true); dropSignalTexts(db, true); } catch (e) { log(`runner: removing search texts failed: ${(e as Error).message}`); }
   const gw = new Gateway({
     token,
     log,
     onState: (state, detail) => setStatus(db, state, detail),
-    onDispatch: dispatcher(db, keys, interactions, pings, signals),
+    onDispatch: dispatcher(db, keys, interactions, pings, signals, reactor),
   });
   log("runner: Discord mention counting, pings and search started");
   void gw.run(signal).catch((e: Error) => log(`runner: Discord stopped: ${e.message}`));

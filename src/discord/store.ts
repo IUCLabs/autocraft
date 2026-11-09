@@ -19,7 +19,7 @@ export const isWatched = (db: DatabaseSync, channelId: string): boolean =>
   !!db.prepare(`SELECT 1 FROM discord_channels c WHERE c.channel_id = ? AND (c.watched = 1
     OR EXISTS (SELECT 1 FROM discord_channels p WHERE p.channel_id = c.parent_id AND p.watched = 1))`).get(channelId);
 
-/** Sets a message's rows to exactly the items its text names. Returns the number of items it now counts for. */
+/** Sets a message's rows to exactly the items its text names. Returns the number of rows newly recorded (0 for a repeat), or -1 when the event carries no text. */
 export function recordMessage(db: DatabaseSync, keys: DiscordKeys, m: DiscordMessage, guildId: string | undefined): number {
   if (m.content === undefined || !guildId) return -1;
   const msgHash = keys.hash("message", m.id);
@@ -31,16 +31,17 @@ export function recordMessage(db: DatabaseSync, keys: DiscordKeys, m: DiscordMes
   const sealed = keys.seal({ guildId, channelId: m.channel_id, messageId: m.id, at: m.timestamp ?? new Date().toISOString(), ...(author && { author }) }, msgHash);
   const del = db.prepare("DELETE FROM discord_mentions WHERE msg_hash = ? AND repo = ? AND number = ?");
   const ins = db.prepare("INSERT OR IGNORE INTO discord_mentions (msg_hash, channel_hash, repo, number, sealed) VALUES (?, ?, ?, ?, ?)");
+  let added = 0;
   db.exec("BEGIN");
   try {
     for (const h of have) if (!want.has(`${h.repo}#${h.number}`)) del.run(msgHash, h.repo, h.number);
-    for (const r of refs) ins.run(msgHash, keys.hash("channel", m.channel_id), r.repo, r.number, sealed);
+    for (const r of refs) added += Number(ins.run(msgHash, keys.hash("channel", m.channel_id), r.repo, r.number, sealed).changes);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
   }
-  return refs.length;
+  return added;
 }
 
 /** Mention rows only: our replies live in Discord and are deleted with it (src/discord/replies.ts). */
@@ -68,12 +69,13 @@ export function forgetAuthor(db: DatabaseSync, keys: DiscordKeys, userId: string
   return n;
 }
 
-/** Gateway events that change mention rows. Reads and edits happen in watched channels only; a delete always applies. */
-export function handleDispatch(db: DatabaseSync, keys: DiscordKeys, type: string, d: unknown): void {
+/** Gateway events that change mention rows. Reads and edits happen in watched channels only; a delete always applies. Returns the message when this event newly recorded it against items, else null. */
+export function handleDispatch(db: DatabaseSync, keys: DiscordKeys, type: string, d: unknown): { channelId: string; messageId: string } | null {
   const x = d as Record<string, unknown> & Partial<DiscordMessage> & { ids?: unknown; unavailable?: boolean };
   if (type === "MESSAGE_CREATE" || type === "MESSAGE_UPDATE") {
-    if (typeof x.id !== "string" || typeof x.channel_id !== "string" || !isWatched(db, x.channel_id)) return;
-    recordMessage(db, keys, x as DiscordMessage, typeof x.guild_id === "string" ? x.guild_id : channelGuild(db, x.channel_id));
+    if (typeof x.id !== "string" || typeof x.channel_id !== "string" || !isWatched(db, x.channel_id)) return null;
+    const added = recordMessage(db, keys, x as DiscordMessage, typeof x.guild_id === "string" ? x.guild_id : channelGuild(db, x.channel_id));
+    return added > 0 ? { channelId: x.channel_id, messageId: x.id } : null;
   } else if (type === "MESSAGE_DELETE") {
     if (typeof x.id === "string") forgetMessages(db, keys, [x.id]);
   } else if (type === "MESSAGE_DELETE_BULK") {
@@ -84,6 +86,7 @@ export function handleDispatch(db: DatabaseSync, keys: DiscordKeys, type: string
   } else if (type === "GUILD_DELETE" && typeof x.id === "string" && !x.unavailable) {
     for (const c of db.prepare("SELECT channel_id FROM discord_channels WHERE guild_id = ?").all(x.id) as { channel_id: string }[]) forgetChannel(db, keys, c.channel_id);
   }
+  return null;
 }
 
 const channelGuild = (db: DatabaseSync, channelId: string): string | undefined =>

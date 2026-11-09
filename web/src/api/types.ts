@@ -920,6 +920,8 @@ export interface DiscordSetup {
   /** Tracked repos a channel's default can be. */
   repos: string[];
   contact: string;
+  /** Whether the bot adds a reaction to messages it recorded against items. */
+  reactOn: boolean;
   /** The public privacy page. */
   privacyPath: string;
   /** Linked Discord accounts: the opaque row id, the dashboard login and when. */
