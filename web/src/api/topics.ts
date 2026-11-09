@@ -44,7 +44,6 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["similar:", ["items"]],
   ["work:", ["items", "ranks", "classify", "checks", "decisions", "reviews", "verify", "fixes"]],
   ["cost:", ["usage", "agents"]],
-  ["downloads", ["downloads"]],
   ["rates-", ["usage", "agents", "accounts"]],
   ["count:", ["decisions", "decision-snooze", "settings", "access"]],
   // Feedback reads comments (in `items`), decisions and conversations; stopped rows read breakers and limits, not job runs.
