@@ -143,7 +143,7 @@ export function ItemsView(_: ViewProps) {
           ))}
         </div>
         <button aria-pressed={!!filter.discord} data-active={!!filter.discord} className="chip max-md:h-11" onClick={() => set({ discord: filter.discord ? null : "1" })}>
-          <ChatsCircleIcon aria-hidden /> Mentioned on Discord
+          <ChatsCircleIcon aria-hidden /> Seen on Discord
         </button>
         {FLAGS.map(([k, l]) => {
           const on = filter.flag?.includes(k) ?? false;
