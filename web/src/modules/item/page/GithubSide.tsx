@@ -4,6 +4,7 @@ import { CheckCircleIcon, CircleNotchIcon, GitCommitIcon, GitMergeIcon, GithubLo
 import type { CiState, GithubEvent, GithubTab, ItemPageData } from "../../../api/types";
 import { Avatar } from "../../../ui/atoms/Avatar";
 import { TimeAgo } from "../../../ui/atoms/TimeAgo";
+import { PrBuildLine } from "../../../ui/molecules/PrBuildLine";
 import { Markdown } from "../../../ui/molecules/Markdown";
 import { cn } from "../../../ui/cn";
 import { clock, num } from "../../../lib/format";
@@ -59,6 +60,7 @@ export function GithubSide({ d, flash }: { d: ItemPageData; flash: string | null
             Checks: {g.checks.filter((c) => c.state === "passing").length} passed{g.checks.some((c) => c.state === "pending") && `, ${g.checks.filter((c) => c.state === "pending").length} pending`}{g.checks.some((c) => c.state === "failing") && `, ${g.checks.filter((c) => c.state === "failing").length} failed`}
           </p>
         )}
+        {tab === "conversation" && isPr && <PrBuildLine b={d.prBuild} className="mt-2" />}
       </div>
     </div>
   );

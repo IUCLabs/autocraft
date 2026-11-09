@@ -277,6 +277,8 @@ export interface Item extends ItemRef {
   settled: Settled;
   /** PRs: the Verify stage's result for the newest head it looked at; null when none. */
   verification: ItemVerification | null;
+  /** PRs: our own build of the newest head; null when the pr-builds switch is off or there is none. Absent in mocks without one. */
+  prBuild?: ItemPrBuild | null;
   /** PRs: the Fix-up step's tries, oldest first. */
   fixups: ItemFixup[];
   /** PRs the pipeline merged: the post-merge review; null or absent when there is none. */
@@ -338,6 +340,20 @@ export interface ItemVerification {
   finishedAt: string | null;
   /** Head task first, then the base task of a regression. */
   tasks: { id: number; role: "head" | "base"; state: TaskState; results: TaskResult[]; endedAt: string | null }[];
+}
+
+/** Our own workspace build of a PR head: a second opinion beside upstream CI, never a merge gate. `disagree`: it failed while CI passed at the same head. */
+export interface ItemPrBuild {
+  headSha: string;
+  /** False when the PR has a newer head than the one built. */
+  current: boolean;
+  state: "queued" | "running" | "passed" | "failed" | "error" | "stale";
+  /** The failing step and exit code, or the error; null for viewers and for a pass. */
+  summary: string | null;
+  disagree: boolean;
+  ci: string | null;
+  createdAt: string;
+  finishedAt: string | null;
 }
 
 export type ReviewVerdictName = "take" | "take-fix" | "hold" | "close";
@@ -1451,6 +1467,8 @@ export interface QueueRow {
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
   /** For a conflicting PR: what Fix-up does about it, e.g. "conflict: merging main". */
   conflictNote?: string | null;
+  /** Our own build of the PR head; absent when the switch is off or there is none. */
+  prBuild?: ItemPrBuild | null;
 }
 
 export interface QueueFilter {
@@ -1762,9 +1780,11 @@ export type TaskPage = { tasks: BuildTask[]; next: string | null };
 export type BuildFeatureName = "screenshots" | "push-tests" | "batch-build" | "scan-tests" | "nightly" | "pr-builds";
 /** `repos` lists the repos whose own switch is on; scan-tests has none. */
 export type BuildFeatureState = { feature: BuildFeatureName; on: boolean; repoScoped: boolean; repos: string[] };
-/** `repos` is every tracked repo the viewer can see. */
-export type BuildFeatures = { features: BuildFeatureState[]; repos: string[] };
-export type BuildFeatureInput = { feature: BuildFeatureName; on: boolean; repo?: string };
+export type PrBuildScope = "outside" | "all";
+/** `repos` is every tracked repo the viewer can see. `prBuilds`: the scope of each of those repos and the builds a repo may start a day. */
+export type BuildFeatures = { features: BuildFeatureState[]; repos: string[]; prBuilds: { scopes: Record<string, PrBuildScope>; perDay: number } };
+/** `on` switches; `scope` (with `repo`, pr-builds only) and `perDay` (pr-builds only) set the build scope and the daily cap. At least one of the three. */
+export type BuildFeatureInput = { feature: BuildFeatureName; on?: boolean; repo?: string; scope?: PrBuildScope; perDay?: number };
 export type BuildSummary = { queued: number; running: number; slots: number; free: number; online: number };
 
 // ---- Queue page (/api/queue/page) -------------------------------------------
@@ -2546,6 +2566,8 @@ export interface ItemPageData {
   /** The item's story, oldest first (last 200 lines). */
   timeline: TimelineEntry[];
   github: GithubSide;
+  /** PRs: our own build of the newest head; null or absent when the pr-builds switch is off or there is none. */
+  prBuild?: ItemPrBuild | null;
 }
 /** The answer to `since=<stamp>` when nothing on the item page has changed. */
 export type ItemPageUnchanged = { unchanged: true; stamp: string };

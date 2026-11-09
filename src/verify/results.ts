@@ -25,7 +25,7 @@ const FETCH = "fetch deps";
 export const MAX_RETRIES = 1;
 export const NOT_FAILING_REASON = "regression test passes on base";
 /** The PR's current head, as src/review/candidates.ts headOf picks it: the checks table's when fetched after the mirror last saw the PR change. */
-const CURRENT_HEAD_SQL = `CASE WHEN c.head_oid IS NOT NULL AND c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at)
+export const CURRENT_HEAD_SQL = `CASE WHEN c.head_oid IS NOT NULL AND c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at)
   THEN c.head_oid ELSE COALESCE(i.head_oid, c.head_oid) END`;
 const ERROR_LIMIT = 200;
 

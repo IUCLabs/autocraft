@@ -2,6 +2,7 @@
 // server has already checked the session, and on POSTs the Origin, the CSRF
 // header and the per-session limits; these handlers check roles and GitHub
 // permissions themselves. Item and comment text is returned as data only.
+import { prBuildView } from "../../prbuild/view.ts";
 import { checksOf } from "../../patchcheck/index.ts";
 import { priorityOf } from "../../priority/read.ts";
 import { preapprovalOf } from "../../preapproval/index.ts";
@@ -151,7 +152,7 @@ export async function itemCore(db: DatabaseSync, req: Req): Promise<Item> {
     discord: discord.discordOf(db, repo, n),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: unflagged(settledOf(db, repo, n), isQuiet(db, repo, n), !veil) as Item["settled"], priority: priorityOf(db, repo, n),
-    ...(it.kind === "pr" ? prWork(db, repo, n, canSeeInternals(req)) : { verification: null, fixups: [] }),
+    ...(it.kind === "pr" ? prWork(db, repo, n, canSeeInternals(req)) : { verification: null, fixups: [], prBuild: null }),
     // The reviewer's reasons quote the patch, so viewers get the verdict only.
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) =>
       ({ kind, subject, patchHash, round, verdict, reasons: canSeeInternals(req) ? reasons : "", problems: canSeeInternals(req) ? problems : [], model, createdAt })),
@@ -237,7 +238,7 @@ function reviewsOf(db: DatabaseSync, repo: string, n: number, internals: boolean
 }
 
 /** `internals` false (viewers): states only, without job errors or model output. */
-function prWork(db: DatabaseSync, repo: string, n: number, internals: boolean): Pick<Item, "verification" | "fixups"> {
+function prWork(db: DatabaseSync, repo: string, n: number, internals: boolean): Pick<Item, "verification" | "fixups" | "prBuild"> {
   const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
   const latest = db.prepare("SELECT head_sha FROM verifications WHERE repo = ? AND number = ? ORDER BY (head_sha = ?) DESC, created_at DESC LIMIT 1").get(repo, n, head) as { head_sha: string } | undefined;
   const v = latest ? verificationOf(db, repo, n, latest.head_sha) : null;
@@ -262,6 +263,7 @@ function prWork(db: DatabaseSync, repo: string, n: number, internals: boolean): 
   fixups.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return {
     fixups,
+    prBuild: prBuildView(db, repo, n, head, internals),
     verification: !v ? null : {
       headSha: v.headSha, baseSha: v.baseSha, current: v.headSha === head, kind: v.kind as ItemVerification["kind"], reason: internals ? v.reason : "",
       plan: !plan ? null : { crates: plan.crate ? [String(plan.crate)] : strings(plan.crates), tests: strings(plan.tests), testLines: typeof plan.test_lines === "number" ? plan.test_lines : null },

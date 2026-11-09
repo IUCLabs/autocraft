@@ -33,6 +33,7 @@ import { isQueueState } from "../core/plan.ts";
 import { isWork } from "../core/assignment.ts";
 import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
+import { prBuildDue } from "../prbuild/index.ts";
 import { actLimit, actUsedToday } from "../conversations/usage.ts";
 import { queueHead } from "../conversations/queue.ts";
 import { compareKeys, targetKeys } from "../act/order.ts";
@@ -168,7 +169,7 @@ function repoAllows(plans: PlanSet, repo: string, want: Want): boolean {
 }
 
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, audit entries the item-trace bookkeeping and the limits topic (its tables are already read through the jobs topic) do not. */
-export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits", "claims", "conversation-includes", "decision-choices", "decision-snooze", "security", "discord", "discord-links", "downloads", "build-features"].includes(t));
+export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits", "claims", "conversation-includes", "decision-choices", "decision-snooze", "security", "discord", "discord-links", "downloads", "build-features", "pr-builds"].includes(t));
 
 /** Sandbox tasks that ended, for lanes that read their results. */
 const tasksSig = (db: DatabaseSync): string =>
@@ -465,6 +466,13 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "verify-collect",
     extra: tasksSig,
     detect: (db) => (collectDue(db) ? [{ step: "verify-collect", params: {} }] : []),
+  },
+  {
+    // Our own build of PR heads (pr-builds feature): queues new builds and collects finished ones, no model call. Off: no repo is detected.
+    name: "pr-build",
+    perRepo: true,
+    extra: tasksSig,
+    detect: (db, ctx) => ctx.tracked.filter((repo) => prBuildDue(db, repo)).sort().map((repo) => ({ step: "pr-build", params: { repo } })),
   },
   {
     name: "fixissue",
@@ -1067,7 +1075,7 @@ export const LANE_KINDS: Record<string, ActionKind[]> = {
 };
 
 /** Lanes whose jobs are not about listed items (counters, collection, operator messages, per-repo scans); every other lane needs a LANE_KINDS entry. */
-export const NO_ITEM_LANES = ["rank", "verify-collect", "conversation", "postmerge", "postmerge-file", "main-fix", "cifix-rerun"];
+export const NO_ITEM_LANES = ["rank", "verify-collect", "pr-build", "conversation", "postmerge", "postmerge-file", "main-fix", "cifix-rerun"];
 
 export type LaneItem = {
   repo: string; number: number; kind: "pr" | "issue"; action: string; bucket: string | null;

@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { CheckIcon, CopyIcon, DownloadSimpleIcon, PencilSimpleIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
-import type { BuildEnv, BuildFeatureName, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
+import type { BuildEnv, BuildFeatureName, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, PrBuildScope, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { memSize, nowMs, num, span, eventTime } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -286,6 +286,10 @@ function FeaturesPanel() {
   const write = useWrite();
   const set = (feature: BuildFeatureName, on: boolean, repo?: string) =>
     void write.run(`${feature}:${repo ?? ""}`, () => api.buildFeatures.set({ feature, on, repo })).then(() => q.refetch());
+  const setPrBuilds = (key: string, input: { repo?: string; scope?: PrBuildScope; perDay?: number }) =>
+    void write.run(`pr-builds-${key}`, () => api.buildFeatures.set({ feature: "pr-builds", ...input })).then(() => q.refetch());
+  const pb = q.data?.prBuilds;
+  const perDayOptions = [...new Set([0, 5, 10, 20, 50, 100, pb?.perDay ?? 10])].sort((a, b) => a - b);
   return (
     <Block title="Build features">
       <ErrorLine error={q.error?.message ?? write.error} />
@@ -302,9 +306,26 @@ function FeaturesPanel() {
                   <li key={r} className="flex min-h-8 items-center gap-2 text-xs text-ink/75">
                     <span className="num">{r}</span>
                     <FeatureState on={f.repos.includes(r)} label={`${FEATURE_LABEL[f.feature]} on ${r}`} operator={operator} busy={write.busy === `${f.feature}:${r}`} onChange={(on) => set(f.feature, on, r)} />
+                    {f.feature === "pr-builds" && f.repos.includes(r) && (
+                      <select
+                        aria-label={`Which pull requests to build in ${r}`} disabled={!operator || write.busy === `pr-builds-${r}`} value={pb?.scopes[r] ?? "outside"}
+                        onChange={(e) => setPrBuilds(r, { repo: r, scope: e.target.value as PrBuildScope })} className={selectCls}
+                      >
+                        <option value="outside">Outside contributors</option>
+                        <option value="all">Every PR</option>
+                      </select>
+                    )}
                   </li>
                 ))}
               </ul>
+            )}
+            {f.feature === "pr-builds" && f.on && pb && (
+              <label className="mb-1 flex min-h-8 items-center gap-2 pl-3 text-xs text-ink/75">
+                <span>Builds a day in each repo</span>
+                <select aria-label="Builds a day in each repo" disabled={!operator || write.busy === "pr-builds-perDay"} value={pb.perDay} onChange={(e) => setPrBuilds("perDay", { perDay: Number(e.target.value) })} className={selectCls}>
+                  {perDayOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
             )}
           </li>
         ))}

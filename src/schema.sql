@@ -864,6 +864,24 @@ CREATE TABLE IF NOT EXISTS verifications (
   PRIMARY KEY (repo, number, head_sha)
 );
 CREATE INDEX IF NOT EXISTS verifications_state ON verifications(state);
+-- Our own workspace build of a PR head (pr-builds feature), a second opinion beside upstream CI; never part of the merge decision.
+-- scope: outside | all (the repo's setting when queued). state: queued | passed | failed | error | stale. disagree: failed while CI passed at the same head.
+CREATE TABLE IF NOT EXISTS pr_builds (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  base_sha TEXT,
+  scope TEXT NOT NULL,
+  task_id INTEGER,
+  retried INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL,
+  summary TEXT,                       -- why it failed or errored
+  ci_overall TEXT,                    -- upstream CI at the head when the build ended
+  disagree INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  finished_at TEXT,
+  PRIMARY KEY (repo, number, head_sha)
+);
+CREATE INDEX IF NOT EXISTS pr_builds_state ON pr_builds(state);
 -- Priority of an open item (Prioritize step). text_hash is the item's embed_hash when the models ran;
 -- the models run again only when it changes, while score is recomputed from the mirror on each pass.
 -- impact: the priority level, P0 (critical) to P4 (backlog). score: reach 0-99, the tie-breaker inside a level. model: jev (sure) | haiku | jev-unsure (no Haiku answer).

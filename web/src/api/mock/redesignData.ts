@@ -282,8 +282,8 @@ const RESULTS_9981: ResultCard[] = [
 ];
 
 const FULL: Record<string, Omit<MockPage, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header" | "bar"> & { header?: Partial<ItemPageHeader> }> = {
-  "designcraft#1484": { header: HEADER_1484, reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
-  "photocraft#9981": { reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981 },
+  "designcraft#1484": { prBuild: { headSha: "9f3a1c2", current: true, state: "failed", summary: "test failed with exit code 101", disagree: true, ci: "success", createdAt: at(80), finishedAt: at(35) }, header: HEADER_1484, reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
+  "photocraft#9981": { prBuild: { headSha: "b51e7d0", current: true, state: "running", summary: null, disagree: false, ci: "pending", createdAt: at(12), finishedAt: null }, reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981 },
   "wordcraft#2214": {
     reviews: { latest: null, earlier: [] },
     results: [

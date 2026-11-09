@@ -1,9 +1,10 @@
 // The item page: one GET with everything the two-sided page draws (status, header, Opus reviews, result cards, AutoCraft's history and
 // the GitHub side). Built from the item API (`itemCore`), the item trace and the write records. Redaction follows the helpers it reuses:
 // viewers get no review text, card details or job errors; a quiet pull request is veiled by the trace context; costs stay visible.
+import { prBuildView } from "../../prbuild/view.ts";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { CiState, TimelineEntry, DiscordInfo, ItemBar, ItemKind, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, Tier } from "../../../web/src/api/types.ts";
+import type { CiState, TimelineEntry, DiscordInfo, ItemBar, ItemKind, ItemPrBuild, ItemRef, ItemReleases, ItemState, Preapproval, QueueSlot, RepoName, Tier } from "../../../web/src/api/types.ts";
 import { statusFromItem, type ItemStatus } from "../../core/item-status.ts";
 import { triggerWhy } from "../../review/trigger.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
@@ -47,6 +48,8 @@ export interface ItemPageHeader {
 export interface ItemPageData {
   repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string; author: string; stamp: string; header: ItemPageHeader;
   status: ItemStatus; bar: ItemBar; costUsd: number; reviews: ReviewHistory; timeline: TimelineEntry[]; github: GithubSide;
+  /** PRs: our own build of the newest head; null when the pr-builds switch is off or there is none. */
+  prBuild: ItemPrBuild | null;
 }
 export type ItemPageUnchanged = { unchanged: true; stamp: string };
 
@@ -83,11 +86,16 @@ const EXTRA = [
   "SELECT group_concat((SELECT COUNT(*) FROM jobs q WHERE q.state = 'queued' AND q.step = j.step AND q.id < j.id)) FROM jobs j WHERE j.state = 'queued' AND j.repo = ?1 AND json_extract(j.params, '$.number') = ?2",
 ];
 
+const prBuildOf = (c: Ctx): ItemPrBuild | null => {
+  const r = c.db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?").get(c.repo, c.n) as { kind: string; head_oid: string | null } | undefined;
+  return r?.kind === "pr" ? prBuildView(c.db, c.repo, c.n, r.head_oid, c.staff) : null;
+};
+
 async function stampOf(c: Ctx, req: Req): Promise<string> {
   const { db, repo, n, ref } = c;
   const parts: unknown[] = [fingerprint(c, "page"), c.veiled];
   for (const sql of EXTRA) parts.push(Object.values((db.prepare(sql).get(repo, n) ?? {}) as object));
-  parts.push(queueSlots(db, await visibleRepos(db, req)).get(ref) ?? null, discordOf(db, repo, n), releasesOf(db, repo, n));
+  parts.push(queueSlots(db, await visibleRepos(db, req)).get(ref) ?? null, discordOf(db, repo, n), releasesOf(db, repo, n), prBuildOf(c));
   return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
 }
 
@@ -235,5 +243,6 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
     reviews: it.kind === "pr" ? reviewsOf(c, row.head_oid, ev) : { latest: null, earlier: [] },
     timeline: timelineOf(c, ev, it.kind === "pr" ? preapprovalsOf(db, c.repo, c.n) : []).slice(-200),
     github: githubOf(c, it, ev, row.url ?? "", row.synced_at),
+    prBuild: prBuildOf(c),
   };
 }

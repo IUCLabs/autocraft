@@ -324,8 +324,8 @@ export const STAGES: StageDef[] = [
   {
     id: "verify", title: "Verify", order: 10, runStage: 6, docSection: "Verify", mode: "steps",
     description: "Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.",
-    steps: [{ name: "verify", maxMin: 10, label: "Verify", limit: null, seeded: 30 }, { name: "verify-collect", maxMin: 10 }],
-    lanes: [{ name: "verify", steps: ["checks", "verify"], order: 14 }, { name: "verify-collect", steps: ["verify-collect"], order: 15 }],
+    steps: [{ name: "verify", maxMin: 10, label: "Verify", limit: null, seeded: 30 }, { name: "verify-collect", maxMin: 10 }, { name: "pr-build", maxMin: 10 }],
+    lanes: [{ name: "verify", steps: ["checks", "verify"], order: 14 }, { name: "verify-collect", steps: ["verify-collect"], order: 15 }, { name: "pr-build", steps: ["pr-build"], order: 29 }],
     reads: ["Taken PRs", "CI results"],
     sets: ["Verification tasks and results"],
     states: [
@@ -341,6 +341,7 @@ export const STAGES: StageDef[] = [
     promptIds: ["verify.plan", "verify.summary"], promptStage: "Verify",
     waits: [
       { name: "Sandbox build", why: "External", howLong: "Until the task ends; a build-environment error queues it again once per head", showsAs: "Verification state `planned` or `running`", kind: "external" },
+      { name: "PR build", why: "External", howLong: "Until the task ends; a build-environment error queues it again once per head", showsAs: "Our build on the item: running", kind: "external" },
       { name: "Warm build of the default branch", why: "Limits sandbox load; never blocks a PR", howLong: "Once a day per repo", showsAs: "Sandbox tasks", kind: "backoff" },
     ],
     writes: [],

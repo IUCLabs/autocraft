@@ -11,6 +11,9 @@ import { absolute } from "../../build/artifacts.ts";
 import { BuildError, createEnv, listEnvs, rotateKey, updateEnv } from "../../build/envs.ts";
 import { FIX_CHECK_STEP, cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks.ts";
 import { BUILD_FEATURES, REPO_SCOPED, featureStates, isFeature, setFeature } from "../../build/features.ts";
+import { audit } from "../audit.ts";
+import { scopeOf, perDayOf, setScope, setPerDay } from "../../prbuild/select.ts";
+import type { PrBuildScope } from "../../../web/src/api/types.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, Res } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
@@ -74,7 +77,9 @@ async function featuresOf(db: DatabaseSync, req: Req): Promise<BuildFeatures> {
   const repos = (await visibleRepos(db, req)).filter((r) => tracked.has(r)).sort();
   const shown = new Set(repos);
   const features: BuildFeatureState[] = featureStates(db).map((s) => ({ ...s, repoScoped: REPO_SCOPED[s.feature], repos: s.repos.filter((r) => shown.has(r)) }));
-  return { features, repos };
+  const scopes: Record<string, PrBuildScope> = {};
+  for (const r of repos) scopes[r] = scopeOf(db, r);
+  return { features, repos, prBuilds: { scopes, perDay: perDayOf(db) } };
 }
 
 export const features = async (db: DatabaseSync, req: Req): Promise<BuildFeatures> => {
@@ -83,8 +88,21 @@ export const features = async (db: DatabaseSync, req: Req): Promise<BuildFeature
 };
 
 export const postFeature = async (db: DatabaseSync, req: Req): Promise<BuildFeatures> => {
-  const b = (req.json ?? {}) as { feature?: unknown; on?: unknown; repo?: unknown };
+  const b = (req.json ?? {}) as { feature?: unknown; on?: unknown; repo?: unknown; scope?: unknown; perDay?: unknown };
   if (!isFeature(b.feature)) throw new HttpError(400, `feature must be one of ${BUILD_FEATURES.join(", ")}`);
+  if (b.scope !== undefined || b.perDay !== undefined) {
+    if (b.feature !== "pr-builds") throw new HttpError(400, "only pr-builds has a scope and a daily cap");
+    if (b.scope !== undefined) {
+      if (b.scope !== "outside" && b.scope !== "all") throw new HttpError(400, "scope must be outside or all");
+      if (typeof b.repo !== "string" || !db.prepare("SELECT 1 FROM main.tracked_repos WHERE name = ?").get(b.repo)) throw new HttpError(400, "repo must be a tracked repo");
+      if (scopeOf(db, b.repo) !== b.scope) { setScope(db, b.repo, b.scope); audit(db, req.user.login, "build-feature", "pr-builds", { feature: "pr-builds", scope: b.scope, repo: b.repo }); }
+    }
+    if (b.perDay !== undefined) {
+      if (typeof b.perDay !== "number" || !Number.isInteger(b.perDay) || b.perDay < 0 || b.perDay > 1000) throw new HttpError(400, "perDay must be a whole number from 0 to 1000");
+      if (perDayOf(db) !== b.perDay) { setPerDay(db, b.perDay); audit(db, req.user.login, "build-feature", "pr-builds", { feature: "pr-builds", perDay: b.perDay }); }
+    }
+    if (b.on === undefined) return featuresOf(db, req);
+  }
   if (typeof b.on !== "boolean") throw new HttpError(400, "on must be true or false");
   let repo: string | undefined;
   if (b.repo !== undefined && b.repo !== null) {

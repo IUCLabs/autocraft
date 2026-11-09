@@ -23,6 +23,19 @@ function verifyFor(state: QueueState, i: number): QueueRow["verify"] {
   }
 }
 
+const at = (min: number): string => new Date(NOW - min * 60_000).toISOString();
+
+/** Our own build of the head, for the repos with the pr-builds switch on. */
+function prBuildFor(state: QueueState, i: number): QueueRow["prBuild"] {
+  const base = { headSha: "c0ffee1", current: true, createdAt: at(50), ci: "success" };
+  switch (state) {
+    case "ready": return i % 2 ? { ...base, state: "passed", summary: null, disagree: false, finishedAt: at(20) } : { ...base, state: "failed", summary: "test failed with exit code 101", disagree: true, finishedAt: at(25) };
+    case "waiting-verify": return { ...base, state: i % 2 ? "running" : "queued", summary: null, disagree: false, finishedAt: null };
+    case "verify-error": return { ...base, state: "error", summary: "fetch deps failed (exit 101)", disagree: false, finishedAt: at(10) };
+    default: return null;
+  }
+}
+
 const ROWS: QueueRow[] = (() => {
   const r = rng(606);
   const mergeDecision = DECISIONS.find((d) => d.kind === "merge")?.id ?? null;
@@ -57,6 +70,7 @@ const ROWS: QueueRow[] = (() => {
         note: state === "changes-requested" ? "changes requested by a maintainer (reviewer)" : null,
         reviewedAt: new Date(NOW - (k + 1) * 3_600_000 * 5).toISOString(),
         verify: verifyFor(state, i),
+        prBuild: prBuildFor(state, i),
       });
     }
   }
