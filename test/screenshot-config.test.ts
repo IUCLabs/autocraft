@@ -26,7 +26,18 @@ test("a valid setup parses; unknown placeholders, shell characters and validator
   assert.ok("error" in mutate((c) => { c.package = "x; rm -rf /"; }));
   assert.ok("error" in mutate((c) => { c.package = "-p"; }));
   assert.ok("error" in mutate((c) => { (c.commands.snap.params as Record<string, unknown>).size = {}; }));
-  assert.ok("error" in mutate((c) => { (c.commands.snap.params as Record<string, unknown>).size = { re: "^(a+)+$" }; }));
+  const size = (spec: unknown) => mutate((c) => { (c.commands.snap.params as Record<string, unknown>).size = spec; });
+  // No regular-expression syntax can be expressed: groups, alternation, quantifiers, escapes and classes are refused.
+  for (const chars of ["(a+)+", "a|b", "a*", "\\d", "[a]", "a-Z", "z-a", "^a", "a-z-9"]) assert.ok("error" in size({ chars, min: 1, max: 5 }), chars);
+  assert.ok("error" in size({ re: "^(a+)+$" }));
+  assert.ok("error" in size({ chars: "a-z", min: 1, max: 201 }));
+  assert.ok("error" in size({ chars: "a-z", min: 0, max: 5 }));
+  assert.ok("ok" in size({ chars: "A-Za-z0-9_./ -", min: 1, max: 60 }));
+  // A negative int that fills a whole argv element could read as an option.
+  assert.ok("error" in mutate((c) => { (c.commands.snap.params as Record<string, unknown>).n = { int: [-1, 3] }; c.commands.snap.argv.push("{n}"); }));
+  assert.ok("ok" in mutate((c) => { (c.commands.snap.params as Record<string, unknown>).n = { int: [-1, 3] }; c.commands.snap.argv.push("--n={n}"); }));
+  // Placeholder names are own keys of params.
+  assert.ok("error" in mutate((c) => { c.commands.snap.argv.push("{constructor}"); }));
   assert.ok("error" in mutate((c) => { c.commands.snap.capture = false; }));
   assert.ok("error" in mutate((c) => { c.ui_paths = ["../x"]; }));
 });
@@ -42,6 +53,8 @@ test("put, get and delete are audited; a bad config is not stored; arguments are
   assert.equal(getConfig(db, "app"), null);
   assert.equal((db.prepare("SELECT count(*) AS n FROM audit WHERE action = 'screenshot-config'").get() as { n: number }).n, 2);
   assert.equal(paramValueError({ enum: ["a"] }, "a"), null);
-  assert.notEqual(paramValueError({ re: "^[a-z-]+$" }, "-x"), null);
+  assert.notEqual(paramValueError({ chars: "a-z-", min: 1, max: 5 }, "-x"), null);
+  assert.equal(paramValueError({ chars: "a-z-", min: 1, max: 5 }, "ab-c"), null);
+  assert.notEqual(paramValueError({ chars: "a-z", min: 1, max: 3 }, "abcd"), null);
   assert.notEqual(paramValueError({ int: [1, 3] }, 4), null);
 });

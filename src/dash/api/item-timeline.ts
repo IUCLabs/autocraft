@@ -27,11 +27,6 @@ const PLAIN: Record<string, string> = {
   checks: "CI read", merge: "Merge queue run", conversation: "Opus replied", act: "Action run", postmerge: "Post-merge review", "postmerge-file": "Follow-up issues filed", premerge: "Pre-merge review",
 };
 
-/** The screenshot stage rows the timeline shows. */
-const SHOT_LABELS: Record<string, string> = {
-  "screenshot-planned": "Screenshots planned", "screenshot-compared": "Screenshots compared", "screenshot-regression": "Screenshot regression: held", "screenshot-error": "Screenshots failed",
-};
-
 const PLAIN_BY_TITLE = new Map(Object.entries(PLAIN).map(([id, text]) => [stepTitle(id), text]));
 
 type Turn = { id: number; kind: string; login: string; at: string; body: string; status: string | null; error: string | null };
@@ -56,17 +51,7 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
       if (e.id === "gh:merged" && !mergeSteps.length) { const t = base(e.id, e.at, "harness", "GitHub", "merge", e.summary); t.major = true; t.tone = "ok"; out.push(t); }
       continue;
     }
-    if (e.kind === "plan") {
-      // Screenshot stages are the only stage rows the page shows: staff only, as the images are.
-      const m = /^Stage (screenshot-[a-z]+)/.exec(e.summary);
-      if (m && staff && !c.veiled && SHOT_LABELS[m[1]!]) {
-        const t = base(e.id, e.at, "harness", "AutoCraft", "check", SHOT_LABELS[m[1]!]!);
-        t.tone = m[1] === "screenshot-regression" ? "bad" : m[1] === "screenshot-error" ? "warn" : "neutral"; t.major = m[1] === "screenshot-regression"; t.body = e.summary.includes(": ") ? after : null;
-        out.push(t);
-      }
-      continue;
-    }
-    if (e.kind === "decision" || e.kind === "conversation") continue;
+    if (e.kind === "plan" || e.kind === "decision" || e.kind === "conversation") continue;
     if (e.kind === "model-call") {
       if (jobsWithCalls.has(e.ref.jobId)) continue;
       const title = e.call?.step ?? "Model call";
@@ -147,6 +132,24 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
     const t = base(`pr-build:${b.head_sha}`, b.finished_at!, "harness", "AutoCraft", "check", `Our build failed at ${short(b.head_sha)} where CI passed${staff && b.summary ? `: ${clip(b.summary, 140)}` : ""}`);
     t.tone = "bad";
     out.push(t);
+  }
+  // Screenshot runs (staff only, as the images are): planned when the run was queued, then its outcome. From screenshot_runs, not stage rows.
+  if (staff && !c.veiled) {
+    type Shot = { head_sha: string; state: string; reason: string | null; verdict: string | null; clear: number | null; comparison: string | null; held: number; has_plan: number; created_at: string; finished_at: string | null };
+    for (const r of q<Shot>(db, "SELECT head_sha, state, reason, verdict, clear, comparison, held, plan IS NOT NULL AS has_plan, created_at, finished_at FROM main.screenshot_runs WHERE repo = ? AND number = ?", repo, n)) {
+      if (r.state === "skipped" || r.state === "stale") continue;
+      const id = `screenshots:${r.head_sha}`;
+      if (r.has_plan) {
+        const planned = base(`${id}:planned`, r.created_at, "harness", "AutoCraft", "check", `Screenshots planned at ${short(r.head_sha)}`);
+        if (r.reason && r.state !== "error") planned.body = clip(r.reason, 200);
+        out.push(planned);
+      }
+      if (!r.finished_at || r.state === "planned" || r.state === "running") continue;
+      const done = base(`${id}:done`, r.finished_at, "harness", "AutoCraft", "check", r.state === "error" ? "Screenshots failed" : r.held === 1 ? "Screenshot regression: held" : "Screenshots compared");
+      done.tone = r.state === "error" ? "warn" : r.held === 1 ? "bad" : "neutral"; done.major = r.held === 1;
+      done.body = clip((r.state === "error" ? r.reason : r.comparison) ?? "", 300) || null;
+      out.push(done);
+    }
   }
   // People answer and post: one line each, with the option's label.
   const decisions = q<DecisionRow>(db, `SELECT id, question, options, answer, answer_note, answered_by, answered_at, answered_role FROM decisions WHERE repo = ? AND number = ? AND answered_at IS NOT NULL AND answered_role IS NOT NULL AND answer NOT IN ('withdrawn', 'superseded')`, repo, n);

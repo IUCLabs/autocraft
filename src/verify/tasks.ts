@@ -66,6 +66,8 @@ export function cloneTask(db: DatabaseSync, id: number): number {
 const RENDER_TIMEOUT_SEC = 120;
 const OUT_DIR = "/out";
 /** The artifact a capture step at 1-based position `i` of the script writes. */
+/** The task step of render tasks. Not "verify": the verification retry counts the verify tasks of a head. */
+export const SCREENSHOT_STEP = "screenshot";
 export const shotName = (i: number): string => `s${i}.png`;
 
 /** Replaces `{param}` and `{out}` in one pass, so a value is never expanded again. `out` is null outside a capture command. */
@@ -98,7 +100,7 @@ function lineOf(config: Pick<ScreenshotConfigBody, "commands">, step: ShotStep, 
  */
 export function screenshotTasks(script: ShotStep[], config: Pick<ScreenshotConfigBody, "package" | "example" | "driver" | "commands">, c: { repo: string; number: number; head: string; base: string }): NewTask[] {
   const common = {
-    step: "verify", repo: c.repo, number: c.number, warm: { key: warmKeyOf(c.repo), role: "use" as const },
+    step: SCREENSHOT_STEP, repo: c.repo, number: c.number, warm: { key: warmKeyOf(c.repo), role: "use" as const },
     requires: { os: "linux" as const, toolchains: ["rust-stable"], display: true },
   };
   const run = ["cargo", "run", "--offline", "--locked", "-p", config.package, "--example", config.example];

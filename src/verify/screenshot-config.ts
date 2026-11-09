@@ -50,21 +50,37 @@ function extraKeys(o: Obj, allowed: string[], where: string): string | null {
   return extra ? `${where}: unknown key "${extra}"` : null;
 }
 
-/** Why `re` is not an acceptable validator, or null. Only anchored, bounded patterns without quantified groups or backreferences. */
-function regexError(re: string): string | null {
-  if (re.length > 100) return "re is longer than 100 characters";
-  if (!re.startsWith("^") || !re.endsWith("$") || re.endsWith("\\$")) return "re must start with ^ and end with $";
-  if (/\)[*+{]/.test(re) || /\\[1-9k]/.test(re)) return "re must not quantify a group or use a backreference";
-  try {
-    new RegExp(re);
-  } catch {
-    return "re is not a valid regular expression";
+export const MAX_CHARS_LEN = 200;
+const ALNUM_CLASS = [/[a-z]/, /[A-Z]/, /[0-9]/];
+const LITERAL_RE = /^[A-Za-z0-9_./ ]$/;
+
+/**
+ * Why `chars` is not an acceptable character-class body, or null: ranges of letters or digits (a-z, A-Z, 0-9, each end in the
+ * same class) and the literal characters _ . / space, plus a - as the first or last character. No other syntax, so the compiled
+ * pattern `^[chars]{min,max}$` is linear.
+ */
+function charsError(chars: string): string | null {
+  if (chars.length < 1 || chars.length > 60) return "chars is 1 to 60 characters";
+  let i = 0;
+  while (i < chars.length) {
+    const c = chars[i]!;
+    if (chars[i + 1] === "-" && i + 2 < chars.length) {
+      const d = chars[i + 2]!;
+      const cls = ALNUM_CLASS.find((r) => r.test(c));
+      if (!cls || !cls.test(d) || c > d) return `chars: "${c}-${d}" is not a range of letters or digits`;
+      i += 3;
+    } else if (LITERAL_RE.test(c) || (c === "-" && (i === 0 || i === chars.length - 1))) i++;
+    else return `chars: "${c}" is not allowed (letters and digits as ranges or characters, and _ . / space; - only first or last)`;
   }
   return null;
 }
 
+/** The pattern a `chars` validator stands for. Call only with a spec that passed paramError. */
+const charsPattern = (s: { chars: string; min: number; max: number }): RegExp => new RegExp(`^[${s.chars}]{${s.min},${s.max}}$`);
+
 function paramError(spec: unknown): string | null {
-  if (!isObj(spec) || Object.keys(spec).length !== 1) return "needs exactly one of enum, int or re";
+  if (!isObj(spec)) return "needs exactly one of enum, int or chars";
+  if (Object.keys(spec).length !== ("chars" in spec ? 3 : 1)) return "needs exactly one of enum, int or chars (chars with min and max)";
   if ("enum" in spec) {
     const e = spec.enum;
     if (!Array.isArray(e) || e.length < 1 || e.length > MAX_ENUM) return `enum needs 1 to ${MAX_ENUM} values`;
@@ -76,8 +92,16 @@ function paramError(spec: unknown): string | null {
     if (!Array.isArray(i) || i.length !== 2 || !i.every((n) => Number.isSafeInteger(n)) || (i[0] as number) > (i[1] as number)) return "int is [min, max] with integers, min <= max";
     return null;
   }
-  if ("re" in spec) return typeof spec.re === "string" ? regexError(spec.re) : "re is a string";
-  return "needs exactly one of enum, int or re";
+  if ("chars" in spec) {
+    if (typeof spec.chars !== "string") return "chars is a string";
+    const bad = charsError(spec.chars);
+    if (bad) return bad;
+    const { min, max } = spec as { min?: unknown; max?: unknown };
+    if (Object.keys(spec).length !== 3 || !("min" in spec) || !("max" in spec)) return "chars needs min and max";
+    if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || (min as number) < 1 || (max as number) > MAX_CHARS_LEN || (min as number) > (max as number)) return `chars: min and max are integers, 1 <= min <= max <= ${MAX_CHARS_LEN}`;
+    return null;
+  }
+  return "needs exactly one of enum, int or chars";
 }
 
 /** The `{name}` placeholders of a template string, or an error when braces are left over. */
@@ -108,6 +132,12 @@ function commandError(name: string, c: unknown, driver: ScreenshotDriver): strin
     const a = c.argv;
     if (!Array.isArray(a) || a.length < 1 || a.length > MAX_ARGV || !a.every((x) => typeof x === "string" && x.length >= 1 && x.length <= 200 && !CONTROL_RE.test(x))) return `${at}: argv is 1 to ${MAX_ARGV} printable strings of at most 200 characters`;
     templates = a as string[];
+    // A whole argv element that is a negative number could be read as an option.
+    for (const t of a as string[]) {
+      const w = /^\{([^{}]*)\}$/.exec(t);
+      const spec = w && Object.hasOwn(c.params, w[1]!) ? (c.params as Record<string, Obj>)[w[1]!] : undefined;
+      if (spec && Array.isArray(spec.int) && (spec.int[0] as number) < 0) return `${at}: param ${w![1]} is an int that can be negative and fills a whole argument; its min must be 0 or more`;
+    }
   } else {
     if (c.argv !== undefined) return `${at}: argv belongs to the args driver`;
     const l = c.line;
@@ -129,7 +159,7 @@ function commandError(name: string, c: unknown, driver: ScreenshotDriver): strin
       if (n === "out") {
         if (!capture) return `${at}: {out} is only for capture commands`;
         usesOut = true;
-      } else if (!(n in c.params)) return `${at}: unknown placeholder {${n}}`;
+      } else if (!Object.hasOwn(c.params, n)) return `${at}: unknown placeholder {${n}}`;
     }
   }
   if (capture && !usesOut) return `${at}: a capture command must use {out}`;
@@ -179,7 +209,7 @@ export function paramValueError(spec: ParamSpec, value: unknown): string | null 
   }
   if (typeof value !== "string" || value.length < 1 || value.length > 200 || CONTROL_RE.test(value) || value.startsWith("-")) return "must be printable text that does not start with -";
   if ("enum" in spec) return spec.enum.includes(value) ? null : `must be one of ${spec.enum.join(", ")}`;
-  return new RegExp(spec.re).test(value) ? null : `must match ${spec.re}`;
+  return charsPattern(spec).test(value) ? null : `must be ${spec.min} to ${spec.max} characters of ${spec.chars}`;
 }
 
 type Row = { repo: string; package: string; example: string; driver: string; commands: string; ui_paths: string; size: string | null; updated_by: string; updated_at: string };
