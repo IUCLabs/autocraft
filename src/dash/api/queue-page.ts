@@ -1,6 +1,8 @@
 // The Queue page: tabs All, Review, Fix, Verify and Merge over one repo filter, with fast-tracked items first, plus
 // the operator's fast-track, hold and batch controls. Reads are for anyone signed in, limited to the repos the
 // requester may see; every write is for operators (the route says so) and audited.
+import { prBuildView } from "../../prbuild/view.ts";
+import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
 import { cachedQueue, openViews, type CachedEntry } from "../../core/plan-read.ts";
@@ -112,7 +114,8 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const hidden = trackedNames(db).filter((r) => !visibleSet.has(r));
   const hiddenSet = new Set(hidden);
   const entries = allEntries.filter((e) => e.state !== "merged" && !hiddenSet.has(e.repo) && inScope(e.repo, e.number));
-  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e), fast: fastOf(e.repo, e.number), held: e.held });
+  const internals = canSeeInternals(req);
+  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals) });
   const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOfNext(w.next) === t).length);
   const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
 

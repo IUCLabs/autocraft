@@ -6,6 +6,7 @@ import { CaretRightIcon } from "@phosphor-icons/react";
 import type { BatchState, QueueBatch, QueueMergeRow, QueueRow, QueueState, Tier } from "../../api/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { ItemRef } from "../../ui/molecules/ItemRef";
+import { PrBuildLine } from "../../ui/molecules/PrBuildLine";
 import { cn } from "../../ui/cn";
 import { when } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -224,6 +225,7 @@ export function PrRows({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) 
       <tr className="border-b border-line last:border-0">
         <td colSpan={9} className="px-3 pb-2 pt-0.5">
           <ReviewText r={r} />
+          <PrBuildLine b={r.prBuild} className="ml-5 mt-1" />
         </td>
       </tr>
     </>
@@ -305,6 +307,7 @@ export function PrCard({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) 
           <VerifyCell row={r} />
         </div>
       )}
+      <PrBuildLine b={r.prBuild} className="mt-1.5" />
       <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
         <Why row={r} />
         {r.decisionId && (

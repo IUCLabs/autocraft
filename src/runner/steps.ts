@@ -428,6 +428,22 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "pr-build",
+    priority: 1,
+    title: "Build pull requests",
+    description: "Queues our own workspace build of open pull request heads of one repo (outside authors' PRs, or every PR, as the repo's scope says) and records the finished ones. A second opinion beside upstream CI: it never holds a PR; a build that fails where CI passed is noted on the item. No model call, nothing written to GitHub.",
+    stage: runStage("pr-build"),
+    requires: "operator",
+    models: [],
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    run: async (ctx) => {
+      const { runPrBuilds } = await import("../prbuild/index.ts");
+      const r = await runPrBuilds(ctx.db, String(ctx.params.repo), ctx.log);
+      ctx.handled(r.queued + r.passed + r.failed + r.errors + r.stale + r.retried);
+      return `${ctx.params.repo}: ${r.queued} queued, ${r.passed} passed, ${r.failed} failed (${r.disagreements} where CI passed), ${r.errors} errors, ${r.stale} stale, ${r.retried} retried`;
+    },
+  },
+  {
     name: "prioritize",
     title: "Prioritize open items",
     description: "Jev rates the priority level (P0 to P4, P4 = backlog) of open items whose text has no priority yet; Haiku decides where Jev is under 90 % sure. Then every item's reach (the tie-breaker inside a level) is recomputed from comments, linked PRs, duplicates, age and the security flag.",

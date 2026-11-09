@@ -1,7 +1,7 @@
 // Build environments and tasks on fake data: a local sandbox, two remote servers (one paused for disk, one offline), a disabled one,
 // and a few dozen tasks in every state.
 import type { Api } from "../client";
-import type { ItemShown, BuildEnv, BuildFeatureName, BuildFeatures, ScreenshotConfigJson, ScreenshotSetup, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
+import type { ItemShown, BuildEnv, BuildFeatureName, BuildFeatures, ScreenshotConfigJson, ScreenshotSetup, BuildTask, PrBuildScope, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
 import { NOW, REPOS } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -110,7 +110,9 @@ const used = (e: string) => TASKS.filter((t) => t.envId === e && (t.state === "r
 for (const e of envs) e.running = used(e.id);
 
 export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs" | "tasks" | "buildFeatures" | "screenshotSetup"> {
-  const featureOn = new Set<string>(["screenshots", "screenshots:photocraft", "screenshots:pdfcraft"]);
+  const featureOn = new Set<string>(["screenshots", "screenshots:photocraft", "screenshots:pdfcraft", "pr-builds", "pr-builds:photocraft", "pr-builds:pdfcraft"]);
+  const scopes: Record<string, PrBuildScope> = { pdfcraft: "all" };
+  let perDay = 10;
   const SCOPED: Record<BuildFeatureName, boolean> = { screenshots: true, "push-tests": true, "batch-build": true, "scan-tests": false, nightly: true, "pr-builds": true };
   const features = (): BuildFeatures => ({
     features: (Object.keys(SCOPED) as BuildFeatureName[]).map((feature) => ({
@@ -118,6 +120,7 @@ export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs"
       repos: SCOPED[feature] ? REPOS.filter((r) => featureOn.has(`${feature}:${r}`)) : [],
     })),
     repos: [...REPOS],
+    prBuilds: { scopes: Object.fromEntries(REPOS.map((r) => [r, scopes[r] ?? "outside"])), perDay },
   });
   const setups: ScreenshotSetup[] = [{
     repo: "photocraft", updatedBy: "dylan", updatedAt: iso(3 * 86_400_000),
@@ -159,8 +162,10 @@ export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs"
       async set(input) {
         operator();
         const k = input.repo ? `${input.feature}:${input.repo}` : input.feature;
-        if (input.on) featureOn.add(k);
-        else featureOn.delete(k);
+        if (input.scope && input.repo) scopes[input.repo] = input.scope;
+        if (input.perDay !== undefined) perDay = input.perDay;
+        if (input.on === true) featureOn.add(k);
+        else if (input.on === false) featureOn.delete(k);
         changed();
         return wait(features());
       },

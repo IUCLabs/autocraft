@@ -73,9 +73,15 @@ const isBotAuthor = (r: { author: string; author_type: string | null }): boolean
 /** Once, on the first run: items that already have pipeline work (a decision, review, classification, stage row, fix-up, ...) count as admitted, so nothing in flight is held on deploy. */
 function backfillAdmitted(db: DatabaseSync, since: string, now: number): void {
   if (db.prepare("SELECT 1 FROM main.settings WHERE key = 'outside_admitted_backfill'").get()) return;
-  const has = ["decisions", "opus_reviews", "classifications", "fixups", "ci_fixes", "fix_attempts", "verifications", "stages"].map((t) => `EXISTS (SELECT 1 FROM main.${t} x WHERE x.repo = i.repo AND x.number = i.number)`).join(" OR ");
+  const has = ["decisions", "opus_reviews", "classifications", "fixups", "ci_fixes", "fix_attempts", "verifications", "pr_builds", "stages"].map((t) => `EXISTS (SELECT 1 FROM main.${t} x WHERE x.repo = i.repo AND x.number = i.number)`).join(" OR ");
   db.prepare(`INSERT OR IGNORE INTO main.outside_admitted (repo, number, at) SELECT i.repo, i.number, ? FROM items i WHERE i.created_at >= ? AND (${has})`).run(new Date(now).toISOString(), since);
   db.prepare("INSERT OR IGNORE INTO main.settings (key, value) VALUES ('outside_admitted_backfill', '1')").run();
+}
+
+/** Whether a PR or issue row is by an outside author: not a collaborator by association, not a bot, not an operator, maintainer or own pipeline login. `inside` may be passed when many rows are judged. */
+export function isOutsideAuthor(db: DatabaseSync, r: { author: string | null; author_association: string | null; author_type: string | null }, inside: Set<string> = insiders(db)): boolean {
+  if (!r.author) return false;
+  return !INSIDE_ASSOCIATIONS.has(r.author_association ?? "") && !isBotAuthor({ author: r.author, author_type: r.author_type }) && !inside.has(r.author.toLowerCase());
 }
 
 /** Logins that are never outside authors: the dashboard's operators and maintainers and the pipeline's own accounts (lowercase). */
@@ -119,7 +125,7 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
       if (v === undefined) { v = isWhitelisted(db, login).ok; memo.set(k, v); }
       return v;
     };
-    const cheap = rows.filter((r) => !INSIDE_ASSOCIATIONS.has(r.author_association ?? "") && !isBotAuthor(r) && !inside.has(r.author.toLowerCase()));
+    const cheap = rows.filter((r) => isOutsideAuthor(db, r, inside));
 
     // Surge: outside-author items of the last hour since the last resume.
     if (lim.surgePerHour > 0 && !tripped?.active) {

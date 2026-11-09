@@ -7,15 +7,15 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "outside" | "plans" | "conversations" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "claims" | "preapprovals" | "security" | "discord" | "discord-links" | "downloads" | "build-features";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "outside" | "plans" | "conversations" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "claims" | "preapprovals" | "security" | "discord" | "discord-links" | "downloads" | "build-features" | "pr-builds";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
 
 /** Everything an item page shows about a pull request. */
-const ITEM: Topic[] = withSlot("discord", "items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "checks", "preapprovals");
+const ITEM: Topic[] = withSlot("discord", "items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "checks", "preapprovals", "pr-builds", "build-features");
 
-const TRACE: Topic[] = withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "preapprovals");
+const TRACE: Topic[] = withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "preapprovals", "pr-builds", "build-features");
 
 const RULES: [prefix: string, topics: Topic[]][] = [
   // Agent progress lines arrive through `agents`; the shared 3 s window in live.tsx limits the refetch.
@@ -79,11 +79,11 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["agents-running", ["agents"]],
   ["agents-recent:", ["agents"]],
   ["agent-", ["agents"]],
-  ["queue:", ["queue", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos"]],
+  ["queue:", ["queue", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos", "pr-builds", "build-features"]],
   ["next-page", ["plans", "jobs", "settings", "repos", "items", "ranks", "fasttrack", "usage", "accounts", "stages", "tasks"]],
   ["batch:", ["queue", "tasks", "items", "checks", "access"]],
   ["queue-batches:", ["queue", "tasks", "items"]],
-  ["queue-page:", ["queue", "fasttrack", "ranks", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos"]],
+  ["queue-page:", ["queue", "fasttrack", "ranks", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos", "pr-builds", "build-features"]],
   ["fast-track", ["fasttrack", "items"]],
   ["merge-held", ["queue"]],
   ["accounts", ["accounts", "settings"]],

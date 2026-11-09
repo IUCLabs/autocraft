@@ -22,7 +22,7 @@ const base = (id: string, at: string, kind: TimelineEntry["kind"], actor: string
 const PLAIN: Record<string, string> = {
   fixup: "Fix-up started", cifix: "CI fix started", decide: "Opus prepared the question", "merge-ask": "Opus prepared the merge question", "classify-new": "Classified", "classify-all": "Classified", prioritize: "Priority set", rank: "Queue position updated",
   embed: "Indexed for similar items", dupes: "Checked for duplicates", "dupes-compare": "Compared duplicates", referee: "Label disagreement settled", "labels-apply": "Labels applied", "review-post": "Review posted",
-  "review-carry": "Earlier review carried over", "review-batch": "Review prepared", unassign: "Unassigned", "ci-approve": "CI runs approved", verify: "Verification planned", "verify-collect": "Verification result read",
+  "review-carry": "Earlier review carried over", "review-batch": "Review prepared", unassign: "Unassigned", "ci-approve": "CI runs approved", verify: "Verification planned", "verify-collect": "Verification result read", "pr-build": "Pull request build",
   checks: "CI read", merge: "Merge queue run", conversation: "Opus replied", act: "Action run", postmerge: "Post-merge review", "postmerge-file": "Follow-up issues filed", premerge: "Pre-merge review",
 };
 
