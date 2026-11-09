@@ -1,5 +1,6 @@
 // The planner's reply, validated hard: anything that does not check out is an error and creates no task.
-import { KINDS, MAX_CRATES, MAX_FILTERS, MAX_TEST_LINES, regressionName, type Crate, type Kind } from "./types.ts";
+import { paramValueError, type ScreenshotConfigBody } from "./screenshot-config.ts";
+import { KINDS, MAX_CRATES, MAX_FILTERS, MAX_SHOT_REASON_WORDS, MAX_SHOT_STEPS, MAX_SHOTS, MAX_TEST_LINES, regressionName, type Crate, type Kind, type ShotStep } from "./types.ts";
 
 export const FILTER_RE = /^[A-Za-z0-9_:]{1,100}$/;
 const MAX_REASON_WORDS = 25;
@@ -80,4 +81,55 @@ export function parsePlanReply(text: string, ref: string, crates: Crate[], label
   const problem = patchProblem(patch, regressionPath(c.dir, test));
   if (problem) return fail(problem);
   return { ok: true, plan: { kind, reason, crate: c.name, dir: c.dir, test, patch } };
+}
+
+/** The screenshot planner's decision: no screenshot, or the script to run. */
+export type ScreenshotPlan = { screenshot: false; reason: string } | { screenshot: true; reason: string; steps: ShotStep[] };
+export type ScreenshotParsed = { ok: true; plan: ScreenshotPlan } | { ok: false; error: string };
+
+const shotFail = (error: string): ScreenshotParsed => ({ ok: false, error });
+
+/**
+ * Parses and validates the reply for the PR `ref` against the repo's screenshot config: every command is one of the
+ * config's, every argument passes its validator, and the script has 1 to MAX_SHOT_STEPS steps of which 1 to MAX_SHOTS capture.
+ */
+export function parseScreenshotReply(text: string, ref: string, config: Pick<ScreenshotConfigBody, "commands">): ScreenshotParsed {
+  const a = text.indexOf("["), b = text.lastIndexOf("]");
+  if (a < 0 || b < a) return shotFail("no JSON list in the reply");
+  let arr: unknown;
+  try { arr = JSON.parse(text.slice(a, b + 1)); } catch { return shotFail("reply is not valid JSON"); }
+  if (!Array.isArray(arr) || arr.length !== 1 || !isObj(arr[0])) return shotFail("reply must be a list of one object");
+  const o = arr[0];
+  const extra = Object.keys(o).find((k) => !["ref", "screenshot", "reason", "steps"].includes(k));
+  if (extra) return shotFail(`unknown key "${extra}"`);
+  if (o.ref !== ref) return shotFail("reply is for another PR");
+  if (typeof o.screenshot !== "boolean") return shotFail("screenshot must be true or false");
+  if (typeof o.reason !== "string" || !o.reason.trim()) return shotFail("reason is missing");
+  const reason = o.reason.trim().split(/\s+/).slice(0, MAX_SHOT_REASON_WORDS).join(" ");
+  if (!o.screenshot) return { ok: true, plan: { screenshot: false, reason } };
+  const raw = o.steps;
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_SHOT_STEPS) return shotFail(`steps must list 1 to ${MAX_SHOT_STEPS} steps`);
+  const steps: ShotStep[] = [];
+  let shots = 0;
+  for (const [i, s] of raw.entries()) {
+    const at = `step ${i + 1}`;
+    if (!isObj(s)) return shotFail(`${at} must be an object`);
+    const k = Object.keys(s).find((x) => x !== "cmd" && x !== "args");
+    if (k) return shotFail(`${at}: unknown key "${k}"`);
+    const spec = typeof s.cmd === "string" && Object.hasOwn(config.commands, s.cmd) ? config.commands[s.cmd] : undefined;
+    if (!spec || typeof s.cmd !== "string") return shotFail(`${at}: cmd is not one of the listed commands`);
+    const args = s.args ?? {};
+    if (!isObj(args)) return shotFail(`${at}: args must be an object`);
+    for (const name of Object.keys(args)) if (!Object.hasOwn(spec.params, name)) return shotFail(`${at}: unknown argument "${name}"`);
+    for (const [name, p] of Object.entries(spec.params)) {
+      if (!Object.hasOwn(args, name)) return shotFail(`${at}: argument "${name}" is missing`);
+      const why = paramValueError(p, args[name]);
+      if (why) return shotFail(`${at}: argument "${name}" ${why}`);
+    }
+    if (spec.capture) shots++;
+    steps.push({ cmd: s.cmd, args: args as Record<string, string | number> });
+  }
+  if (shots < 1) return shotFail("the script needs at least one capture command");
+  if (shots > MAX_SHOTS) return shotFail(`at most ${MAX_SHOTS} capture commands`);
+  return { ok: true, plan: { screenshot: true, reason, steps } };
 }
