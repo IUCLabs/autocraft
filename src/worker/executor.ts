@@ -121,7 +121,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
     }
     let prepared: PreparedEnv;
     try {
-      prepared = await prepareEnvironment(cfg, task, toolchain!, image, paths.src, { fetchImpl: o.fetchImpl, log: (s) => void emit("environment", s), note });
+      prepared = await prepareEnvironment(cfg, { ...task, display: task.requires.display === true }, toolchain!, image, paths.src, { fetchImpl: o.fetchImpl, log: (s) => void emit("environment", s), note });
     } catch (e) {
       await emit("environment", `environment failed: ${(e as Error).message}\n`);
       return { results, summary: `environment failed: ${(e as Error).message}`.slice(0, 300), cancelled: false };

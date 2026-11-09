@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { CheckIcon, CopyIcon, DownloadSimpleIcon, PencilSimpleIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
-import type { BuildEnv, BuildFeatureName, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
+import type { BuildEnv, BuildFeatureName, ScreenshotConfigJson, ScreenshotSetups, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { memSize, nowMs, num, span, eventTime } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -13,6 +13,7 @@ import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { Switch } from "../../ui/atoms/Switch";
+import { Textarea } from "../../ui/atoms/Textarea";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { repoSlug } from "../../lib/links";
 import { cn } from "../../ui/cn";
@@ -279,6 +280,60 @@ function FeatureState({ on, label, operator, busy, onChange }: { on: boolean; la
   return operator ? <Switch on={on} label={label} busy={busy} onChange={onChange} /> : <Badge tone={on ? "ok" : "neutral"}>{on ? "On" : "Off"}</Badge>;
 }
 
+/** Per-repo screenshot commands as JSON. The setup is stored whether or not the switch is on; editing waits for the switch. */
+function ScreenshotSetupBlock({ repos, enabled, operator }: { repos: string[]; enabled: boolean; operator: boolean }) {
+  const api = useApi();
+  const q = useQuery<ScreenshotSetups>("screenshot-setup", (a) => a.screenshotSetup.list());
+  const write = useWrite();
+  const [picked, setPicked] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ repo: string; text: string } | null>(null);
+  const repo = picked && repos.includes(picked) ? picked : repos[0];
+  const stored = q.data?.setups.find((x) => x.repo === repo);
+  const storedText = stored ? JSON.stringify(stored.config, null, 2) : "";
+  const text = draft && draft.repo === repo ? draft.text : storedText;
+  let parsed: ScreenshotConfigJson | null = null;
+  let parseError: string | null = null;
+  if (text.trim()) {
+    try {
+      parsed = JSON.parse(text) as ScreenshotConfigJson;
+    } catch (e) {
+      parseError = (e as Error).message;
+    }
+  }
+  if (!repo) return null;
+  const off = !enabled || !operator;
+  const save = () => parsed && void write.run("save", () => api.screenshotSetup.put(repo, parsed!)).then((ok) => ok && (setDraft(null), q.refetch()));
+  const remove = () => void write.run("remove", () => api.screenshotSetup.remove(repo)).then((ok) => ok && (setDraft(null), q.refetch()));
+  return (
+    <div className="mb-2 mt-1 space-y-2 border-l border-line pl-3" aria-label="Screenshot setup">
+      <div className="flex min-h-11 flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">Screenshot setup</span>
+        <select aria-label="Repo" className={selectCls} value={repo} onChange={(e) => setPicked(e.target.value)}>
+          {repos.map((r) => <option key={r} value={r}>{r}{q.data?.setups.some((x) => x.repo === r) ? "" : " (none)"}</option>)}
+        </select>
+        {stored && <span className="text-xs text-ink/60">saved by {stored.updatedBy} <TimeAgo iso={stored.updatedAt} /></span>}
+      </div>
+      <Textarea
+        aria-label={`Screenshot setup JSON for ${repo}`}
+        rows={10}
+        spellCheck={false}
+        value={text}
+        disabled={off}
+        invalid={parseError !== null}
+        onChange={(e) => setDraft({ repo, text: e.target.value })}
+        className="font-mono text-xs"
+      />
+      <ErrorLine error={parseError ?? write.error ?? q.error?.message} />
+      {operator && (
+        <div className="flex gap-2">
+          <Button size="sm" variant="primary" disabled={off || !parsed || text === storedText} loading={write.busy === "save"} onClick={save} className="max-md:h-11">Save</Button>
+          {stored && <ConfirmButton label="Remove" confirmLabel="Confirm remove" loading={write.busy === "remove"} onConfirm={remove} className={off ? "pointer-events-none opacity-50" : undefined} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FeaturesPanel() {
   const api = useApi();
   const q = useQuery<BuildFeatures>("build-features", (a) => a.buildFeatures.list());
@@ -296,6 +351,7 @@ function FeaturesPanel() {
               <span className="min-w-0 flex-1 text-sm">{FEATURE_LABEL[f.feature]}</span>
               <FeatureState on={f.on} label={FEATURE_LABEL[f.feature]} operator={operator} busy={write.busy === `${f.feature}:`} onChange={(on) => set(f.feature, on)} />
             </div>
+            {f.feature === "screenshots" && <ScreenshotSetupBlock repos={q.data?.repos ?? []} enabled={f.on} operator={operator} />}
             {f.repoScoped && f.on && (
               <ul className="mb-1 flex flex-wrap gap-x-5 pl-3">
                 {q.data!.repos.map((r) => (

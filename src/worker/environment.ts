@@ -121,6 +121,9 @@ export function readI18nRev(srcDir: string): string | null {
   return rev;
 }
 
+/** Software Vulkan/GL drivers for tasks that render a UI (requires.display): the derived image adds them, other images keep their tags. */
+export const DISPLAY_PACKAGES = ["mesa-vulkan-drivers", "libvulkan1", "libgl1-mesa-dri", "libegl1"];
+
 export type PrepareOptions = { fetchImpl?: typeof fetch; log: (s: string) => void; note?: (s: string) => void };
 
 /**
@@ -128,18 +131,26 @@ export type PrepareOptions = { fetchImpl?: typeof fetch; log: (s: string) => voi
  * A repo whose CI does not call the suite's gate runs in the stock image. Throws on any failure, so
  * a task never runs in a weaker environment than CI without saying so.
  */
-export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string; baseSha: string | null; headSha: string }, toolchain: string, baseImage: string, srcDir: string, o: PrepareOptions): Promise<PreparedEnv> {
+export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string; baseSha: string | null; headSha: string; display?: boolean }, toolchain: string, baseImage: string, srcDir: string, o: PrepareOptions): Promise<PreparedEnv> {
   const toolImage = componentsFor(toolchain).length ? await ensureImage(cfg, toolchain, baseImage, [], (s) => o.log(`${s}\n`)) : baseImage;
+  const display = task.display === true;
   const stock: PreparedEnv = { image: toolImage, env: {}, mounts: [], info: { image: toolImage, baseImage, packages: [], craftFontsRef: null, craftI18nRev: null } };
   const gate = await resolveGate(task.repo, task.baseSha ?? task.headSha, o.fetchImpl);
   if (!gate) {
-    o.log("no CI gate for this repo at the base commit; using the stock image\n");
-    return stock;
+    if (!display) {
+      o.log("no CI gate for this repo at the base commit; using the stock image\n");
+      return stock;
+    }
+    o.log("no CI gate for this repo at the base commit; using the stock image plus display packages\n");
+    const image = await ensureImage(cfg, toolchain, baseImage, DISPLAY_PACKAGES, (s) => o.log(`${s}\n`));
+    return { image, env: { WGPU_BACKEND: "vulkan" }, mounts: [], info: { ...stock.info, image, packages: [...DISPLAY_PACKAGES] } };
   }
   const env: Record<string, string> = { ...gate.env };
+  const packages = display ? [...new Set([...gate.packages, ...DISPLAY_PACKAGES])] : gate.packages;
+  if (display) env.WGPU_BACKEND = "vulkan";
   const mounts: ExtraMount[] = [];
   let image = toolImage;
-  if (gate.packages.length) image = await ensureImage(cfg, toolchain, baseImage, gate.packages, (s) => o.log(`${s}\n`));
+  if (packages.length) image = await ensureImage(cfg, toolchain, baseImage, packages, (s) => o.log(`${s}\n`));
   if (gate.craftFontsRef) {
     const dir = await ensureCheckout(cfg, "craft-fonts", gate.craftFontsRef, o.fetchImpl);
     mounts.push({ source: dir, target: "/craft-fonts" });
@@ -154,5 +165,5 @@ export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string
   }
   if (gate.dropped.length) o.log(`gate env left out: ${gate.dropped.join(", ")}\n`);
   o.log(`environment: image ${image}, craft-fonts ${gate.craftFontsRef?.slice(0, 12) ?? "none"}, craft-i18n ${rev?.slice(0, 12) ?? "none"}, gate env ${Object.keys(gate.env).join(", ") || "none"}\n`);
-  return { image, env, mounts, info: { image, baseImage, packages: gate.packages, craftFontsRef: gate.craftFontsRef, craftI18nRev: rev } };
+  return { image, env, mounts, info: { image, baseImage, packages, craftFontsRef: gate.craftFontsRef, craftI18nRev: rev } };
 }

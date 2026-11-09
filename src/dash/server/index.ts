@@ -263,7 +263,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const method = req.method;
     const out = (r: Res, cookies?: string[]) =>
       send(res, nonce, { ...r, headers: { ...r.headers, [CSRF_HEADER]: session.csrf } }, cookies);
-    if (method !== "GET" && method !== "POST" && method !== "PUT") return out(apiError(405, "method not allowed"));
+    if (method !== "GET" && method !== "POST" && method !== "PUT" && method !== "DELETE") return out(apiError(405, "method not allowed"));
     const writes = method !== "GET";
     let json: unknown;
     if (writes) {

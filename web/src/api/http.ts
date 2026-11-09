@@ -25,7 +25,7 @@ export function createHttpApi(): Api {
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
 
-  async function call<T>(method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<T> {
+  async function call<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { accept: "application/json" };
     if (method !== "GET") {
       // Every /api/ response carries the session's token; a POST before any GET fetches it first.
@@ -74,6 +74,11 @@ export function createHttpApi(): Api {
   }
   async function put<T>(path: string, body?: unknown): Promise<T> {
     const v = await call<T>("PUT", path, body);
+    changed();
+    return v;
+  }
+  async function del<T>(path: string): Promise<T> {
+    const v = await call<T>("DELETE", path);
     changed();
     return v;
   }
@@ -295,6 +300,11 @@ export function createHttpApi(): Api {
     buildFeatures: {
       list: () => get("/api/build/features"),
       set: (input) => post("/api/build/features", input),
+    },
+    screenshotSetup: {
+      list: () => get("/api/build/screenshots"),
+      put: (repo, config) => put(`/api/build/screenshots/${encodeURIComponent(repo)}`, config),
+      remove: (repo) => del(`/api/build/screenshots/${encodeURIComponent(repo)}`),
     },
     tasks: {
       list: (f) => get(`/api/tasks${qs(f)}`),
