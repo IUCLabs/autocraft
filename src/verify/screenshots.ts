@@ -2,21 +2,35 @@
 // runVerify for a PR head: when the repo's switch is on, it has a screenshot config and the diff touches a UI
 // path, a planning call chooses a script from the config's commands and two display tasks render it at the base
 // and at the head. It never touches the `verifications` rows that gate merges; its own state is `screenshot_runs`.
+import { createHash } from "node:crypto";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { absolute } from "../build/artifacts.ts";
 import { BuildError } from "../build/envs.ts";
+import { TERMINAL, getTask } from "../build/tasks.ts";
+import { holdMerge, ControlError } from "../merge/controls.ts";
+import { pilotSqlFor } from "../pilot.ts";
+import { backlogHeldSql } from "../dupes/held.ts";
+import { leaseItem } from "../runner/leases.ts";
+import { scrub } from "../runner/scrub.ts";
+import { CLAUDE_PROMPTS } from "../prompts/index.ts";
+import { CURRENT_HEAD_SQL, cancelOpen, oneLine, outcomeOf } from "./results.ts";
 import { featureOn } from "../build/features.ts";
 import { runModelStep } from "../agents/step.ts";
-import { VERIFY_SCREENSHOT } from "../agents/steps.ts";
+import { VERIFY_COMPARE, VERIFY_SCREENSHOT } from "../agents/steps.ts";
 import { cachedDiff, codeDiff, splitDiff } from "../review/diff.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { matchesGlob } from "node:path";
 import { getConfig, type ScreenshotConfig } from "./screenshot-config.ts";
-import type { ScreenshotParsed } from "./plan.ts";
+import type { CompareParsed, ScreenshotParsed } from "./plan.ts";
 import type { VerifyCandidate } from "./candidates.ts";
 import type { VerifyDeps } from "./index.ts";
 import { queueScreenshotTasks } from "./tasks.ts";
-import type { ScreenshotPlanInput } from "./types.ts";
+import type { ScreenshotCompareInput, ScreenshotPlanInput, ShotStep } from "./types.ts";
+import type { CollectDeps } from "./results.ts";
 
 /** Characters of diff the screenshot planner is shown. */
 export const MAX_SHOT_DIFF_CHARS = 60_000;
@@ -24,6 +38,8 @@ export const MAX_SHOT_DIFF_CHARS = 60_000;
 /** Injectable parts, so tests need no model. `plan` returns the parsed reply, or null when the call gave no answer. */
 export type ScreenshotDeps = {
   plan?: (input: ScreenshotPlanInput, ctx: { ref: string; config: ScreenshotConfig }) => Promise<ScreenshotParsed | null>;
+  /** The model comparison of the before/after images; `dir` holds `before/` and `after/`. Null when the call gave no answer. */
+  compare?: (input: ScreenshotCompareInput, ctx: { ref: string; dir: string }) => Promise<CompareParsed | null>;
 };
 
 type Env = Pick<VerifyDeps, "fetchDiff" | "baseOf" | "model" | "checkout"> & { screenshots?: ScreenshotDeps };
@@ -106,4 +122,161 @@ export async function maybeScreenshot(db: DatabaseSync, c: Cand, deps: Env, log:
     insertRun(db, c, { state: "error", reason: `tasks not queued: ${e.message}`.slice(0, 300), baseSha: base });
     return false;
   }
+}
+
+// ---- collecting ---------------------------------------------------------------
+
+type Run = {
+  repo: string; number: number; head_sha: string; base_sha: string | null; state: string; plan: string | null;
+  head_task_id: number | null; base_task_id: number | null; item_state: string | null; item_head: string | null;
+  title: string | null; body: string | null;
+};
+const TERMINAL_SQL = TERMINAL.map((x) => `'${x}'`).join(", ");
+const SHOT_RE = /^s\d+\.png$/;
+const sha256 = (file: string): string => createHash("sha256").update(readFileSync(file)).digest("hex");
+
+/** Whether a run in flight has work: its tasks ended or started, its PR moved or closed, or the repo's switch went off. */
+export function screenshotsDue(db: DatabaseSync): boolean {
+  if (db.prepare(`SELECT 1 FROM screenshot_runs r
+    LEFT JOIN items i ON i.repo = r.repo AND i.number = r.number
+    LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
+    LEFT JOIN build_tasks h ON h.id = r.head_task_id
+    LEFT JOIN build_tasks b ON b.id = r.base_task_id
+    WHERE r.state IN ('planned', 'running') AND (
+      i.state IS NOT 'OPEN' OR (${CURRENT_HEAD_SQL}) IS NOT r.head_sha
+      OR (h.state IN (${TERMINAL_SQL}) AND (b.id IS NULL OR b.state IN (${TERMINAL_SQL})))
+      OR (r.state = 'planned' AND (h.state IN ('claimed', 'running') OR b.state IN ('claimed', 'running'))))
+    LIMIT 1`).get()) return true;
+  const repos = db.prepare("SELECT DISTINCT repo FROM screenshot_runs WHERE state IN ('planned', 'running')").all() as { repo: string }[];
+  return repos.some((r) => !featureOn(db, "screenshots", r.repo));
+}
+
+/** The default comparison: Opus reads the image pairs from `dir`, mounted as the call's read-only checkout (a plain directory works: nothing of the sandbox needs a repository). */
+async function compareWithModel(db: DatabaseSync, input: ScreenshotCompareInput, ctx: { ref: string; dir: string }, runId: string, n: number): Promise<CompareParsed | null> {
+  const r = await runModelStep(db, VERIFY_COMPARE, { ...input, repo_dir: REPO_PATH }, {
+    checkout: ctx.dir, ctx: { ref: ctx.ref },
+    usage: { run: runId, agent: `screenshot-compare-${n}`, stage: "verify", items: (ok: boolean) => (ok ? 1 : 0) },
+  });
+  return r.ok ? r.value : null;
+}
+
+/**
+ * Reads the screenshot runs that are planned or running: ends them when their PR moved on or the switch went off,
+ * and when both tasks have ended compares the images. Returns how many runs left planned/running. Only a clear
+ * regression holds the merge, and only while the head is still the run's head; any error holds nothing.
+ */
+export async function collectScreenshots(db: DatabaseSync, deps: Pick<CollectDeps, "screenshots">, log: (line: string) => void, runId: string, stopping?: () => boolean): Promise<number> {
+  const rows = db.prepare(`SELECT r.*, i.state AS item_state, ${CURRENT_HEAD_SQL} AS item_head, i.title AS title, i.body AS body FROM screenshot_runs r
+    LEFT JOIN items i ON i.repo = r.repo AND i.number = r.number
+    LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
+    WHERE r.state IN ('planned', 'running') AND ${pilotSqlFor("r.repo", "r.number")} AND NOT ${backlogHeldSql("r")} ORDER BY r.created_at, r.number`).all() as Run[];
+  let changed = 0;
+  for (const r of rows) {
+    if (stopping?.()) break;
+    const release = leaseItem(db, `pr:${r.repo}#${r.number}`, log);
+    if (!release) continue;
+    try { if (await collectOne(db, r, deps, log, runId)) changed++; } catch (e) { log(`  ${r.repo}#${r.number}: screenshots: ${(e as Error).message}`); } finally { release(); }
+  }
+  return changed;
+}
+
+async function collectOne(db: DatabaseSync, r: Run, deps: Pick<CollectDeps, "screenshots">, log: (line: string) => void, runId: string): Promise<boolean> {
+  const ref = `${r.repo}#${r.number}`, sha7 = r.head_sha.slice(0, 7);
+  const at = (): string => new Date().toISOString();
+  const finish = (state: string, f: { reason?: string | null; verdict?: string; clear?: boolean; comparison?: string; model?: string } = {}): boolean =>
+    Number(db.prepare(`UPDATE screenshot_runs SET state = ?, reason = COALESCE(?, reason), verdict = ?, clear = ?, comparison = ?, model = ?, finished_at = ?
+      WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('planned', 'running')`)
+      .run(state, f.reason ?? null, f.verdict ?? null, f.clear === undefined ? null : f.clear ? 1 : 0, f.comparison ?? null, f.model ?? null, at(), r.repo, r.number, r.head_sha).changes) > 0;
+  const row = (stageName: string, note: string, quiet = false): void => {
+    db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(r.repo, r.number, stageName, at(), "verify", `${note} at ${sha7}`.slice(0, 300));
+    if (!quiet) jobItem(db, r.repo, r.number, `${stageName}: ${note}`, log);
+  };
+  const ids = [r.head_task_id, r.base_task_id];
+
+  if (!featureOn(db, "screenshots", r.repo)) {
+    cancelOpen(db, ids);
+    return finish("skipped", { reason: "screenshots switched off" });
+  }
+  if (r.item_state !== "OPEN" || r.item_head !== r.head_sha) {
+    cancelOpen(db, ids);
+    if (finish("stale", {})) { jobItem(db, r.repo, r.number, `screenshots stale (${r.item_state === "OPEN" ? "head moved" : "no longer open"})`, log); return true; }
+    return false;
+  }
+  const head = r.head_task_id === null ? null : getTask(db, r.head_task_id);
+  const base = r.base_task_id === null ? null : getTask(db, r.base_task_id);
+  if (!head || !base) { const w = "the build task is gone"; if (finish("error", { reason: w })) { row("screenshot-error", w); return true; } return false; }
+  if (![head, base].every((t) => TERMINAL.includes(t.state))) {
+    if (r.state === "planned" && [head, base].some((t) => t.state === "claimed" || t.state === "running")) {
+      db.prepare("UPDATE screenshot_runs SET state = 'running' WHERE repo = ? AND number = ? AND head_sha = ? AND state = 'planned'").run(r.repo, r.number, r.head_sha);
+      return true;
+    }
+    return false;
+  }
+
+  const fail = (why: string): boolean => {
+    const w = oneLine(why);
+    if (!finish("error", { reason: w })) return false;
+    row("screenshot-error", w);
+    return true;
+  };
+  for (const [role, t] of [["head", head], ["base", base]] as const) {
+    const o = outcomeOf(t);
+    if (o.kind === "fail") return fail(`${role} render step "${o.step}" ${o.timedOut ? "timed out" : `failed (exit ${o.exitCode ?? "none"})`}`);
+    if (o.kind === "error") return fail(`${role}: ${o.reason}`);
+  }
+
+  const shotsOf = (id: number): Map<string, string> => new Map((db.prepare("SELECT name, file FROM build_artifacts WHERE task_id = ? ORDER BY name").all(id) as { name: string; file: string }[])
+    .filter((a) => SHOT_RE.test(a.name)).map((a) => [a.name, a.file]));
+  const before = shotsOf(base.id), after = shotsOf(head.id);
+  const names = [...after.keys()].sort((a, b) => Number(a.slice(1, -4)) - Number(b.slice(1, -4)));
+  if (!names.length) return fail("the render stored no screenshot");
+  if (names.length !== before.size || names.some((x) => !before.has(x))) return fail("the base and the head produced different sets of screenshots");
+  const files = (m: Map<string, string>, name: string): string | null => absolute(m.get(name)!);
+  const pairs = names.map((name) => ({ name, b: files(before, name), a: files(after, name) }));
+  if (pairs.some((p) => !p.a || !p.b)) return fail("a stored screenshot is missing");
+  let same: boolean;
+  try { same = pairs.every((p) => sha256(p.a!) === sha256(p.b!)); } catch { return fail("a stored screenshot could not be read"); }
+  if (same) {
+    if (!finish("compared", { verdict: "unchanged", comparison: "The screens are identical before and after." })) return false;
+    row("screenshot-compared", "unchanged");
+    return true;
+  }
+
+  const script: ShotStep[] = (() => { try { return (JSON.parse(r.plan ?? "{}") as { steps?: ShotStep[] }).steps ?? []; } catch { return []; } })();
+  const rev = db.prepare("SELECT verdict, reason FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(r.repo, r.number, r.head_sha) as { verdict: string; reason: string | null } | undefined;
+  const input: ScreenshotCompareInput = {
+    ref, title: r.title ?? "", body: r.body ?? "", script, review: rev ? { verdict: rev.verdict, reason: rev.reason ?? "" } : null,
+    shots: names.map((name) => ({ name, before: `before/${name}`, after: `after/${name}` })),
+  };
+  const dir = mkdtempSync(join(tmpdir(), "shots-"));
+  let parsed: CompareParsed | null;
+  try {
+    mkdirSync(join(dir, "before")); mkdirSync(join(dir, "after"));
+    for (const p of pairs) { copyFileSync(p.b!, join(dir, "before", p.name)); copyFileSync(p.a!, join(dir, "after", p.name)); }
+    parsed = await (deps.screenshots?.compare ?? ((i, x) => compareWithModel(db, i, x, runId, r.number)))(input, { ref, dir });
+  } catch (e) {
+    return fail(`the comparison failed: ${(e as Error).message}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  if (!parsed) return fail("no answer from the comparison");
+  if (!parsed.ok) return fail(`invalid comparison: ${parsed.error}`);
+  const { verdict, clear } = parsed.result;
+  const summary = scrub(parsed.result.summary);
+  const model = CLAUDE_PROMPTS["verify.compare"].models[0];
+  if (!finish("compared", { verdict, clear, comparison: summary, model })) return false;
+
+  if (verdict === "regression" && clear) {
+    // The head may have moved while the model looked: only a hold on the head that was compared is meaningful.
+    const now = db.prepare(`SELECT i.state AS s, ${CURRENT_HEAD_SQL} AS h FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number WHERE i.repo = ? AND i.number = ?`).get(r.repo, r.number) as { s: string; h: string | null } | undefined;
+    if (now?.s === "OPEN" && now.h === r.head_sha) {
+      try {
+        holdMerge(db, "screenshots", r.repo, r.number, { head: r.head_sha, summary });
+        db.prepare("UPDATE screenshot_runs SET held = 1 WHERE repo = ? AND number = ? AND head_sha = ?").run(r.repo, r.number, r.head_sha);
+        row("screenshot-regression", summary);
+        row("hold", `screenshots show a regression: ${summary}`, true);
+        return true;
+      } catch (e) { if (!(e instanceof ControlError)) throw e; }
+    }
+  }
+  row("screenshot-compared", `${verdict}${clear ? "" : ", not clear"}: ${summary}`);
+  return true;
 }

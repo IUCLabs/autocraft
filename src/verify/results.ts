@@ -16,6 +16,7 @@ import { MAX_SUMMARY_WORDS, SUMMARY_LOG_BYTES, type VerifySummaryInput } from ".
 import { pilotSqlFor } from "../pilot.ts";
 import { backlogHeldSql } from "../dupes/held.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { collectScreenshots, screenshotsDue, type ScreenshotDeps } from "./screenshots.ts";
 
 const PROMPT = CLAUDE_PROMPTS["verify.summary"];
 const ACTOR = "verify";
@@ -25,7 +26,7 @@ const FETCH = "fetch deps";
 export const MAX_RETRIES = 1;
 export const NOT_FAILING_REASON = "regression test passes on base";
 /** The PR's current head, as src/review/candidates.ts headOf picks it: the checks table's when fetched after the mirror last saw the PR change. */
-const CURRENT_HEAD_SQL = `CASE WHEN c.head_oid IS NOT NULL AND c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at)
+export const CURRENT_HEAD_SQL = `CASE WHEN c.head_oid IS NOT NULL AND c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at)
   THEN c.head_oid ELSE COALESCE(i.head_oid, c.head_oid) END`;
 const ERROR_LIMIT = 200;
 
@@ -102,7 +103,7 @@ export function collectDue(db: DatabaseSync): boolean {
       i.state IS NOT 'OPEN' OR (${CURRENT_HEAD_SQL}) IS NOT v.head_sha
       OR (h.state IN (${TERMINAL_SQL}) AND (b.id IS NULL OR b.state IN (${TERMINAL_SQL})))
       OR (v.state = 'planned' AND (h.state IN ('claimed', 'running') OR b.state IN ('claimed', 'running'))))
-    LIMIT 1`).get();
+    LIMIT 1`).get() || screenshotsDue(db);
 }
 
 // ---- judging tasks -----------------------------------------------------------
@@ -112,7 +113,7 @@ export type Outcome =
   | { kind: "fail"; step: string; exitCode: number | null; timedOut: boolean }
   | { kind: "error"; reason: string };
 
-const oneLine = (s: string): string => scrub(s).replace(/\s+/g, " ").trim().slice(0, ERROR_LIMIT);
+export const oneLine = (s: string): string => scrub(s).replace(/\s+/g, " ").trim().slice(0, ERROR_LIMIT);
 const ok = (r: TaskResult): boolean => r.exitCode === 0 && !r.timedOut;
 
 /** What a finished task says, from its state and exit codes. Callers pass only terminal tasks. */
@@ -149,11 +150,13 @@ export type CollectDeps = {
   model: string;
   /** The head commit of a repo's default branch, or null; used to cancel queued warm builds of a branch that moved on. */
   mainHead?: (repo: string, branch: string) => Promise<string | null>;
+  /** The screenshot comparison, replaceable in tests. */
+  screenshots?: ScreenshotDeps;
 };
 
 export type CollectSummary = {
   runId: string; looked: number; passed: number; failed: number; errors: number; retried: number; stale: number; running: number;
-  warmCancelled: number; /** Verifications that left planned/running, plus warm builds cancelled. */ changed: number;
+  warmCancelled: number; /** Screenshot runs that left planned/running. */ shots: number; /** Verifications that left planned/running, plus warm builds cancelled. */ changed: number;
 };
 
 const now = (): string => new Date().toISOString();
@@ -195,7 +198,7 @@ export async function summariseFailure(db: DatabaseSync, v: { repo: string; numb
 }
 
 /** Cancels the tasks of a verification that are not finished. */
-function cancelOpen(db: DatabaseSync, ids: (number | null)[]): void {
+export function cancelOpen(db: DatabaseSync, ids: (number | null)[]): void {
   for (const id of ids) {
     const t = id === null ? null : getTask(db, id);
     if (t && !TERMINAL.includes(t.state)) cancelTask(db, t.id, ACTOR);
@@ -209,7 +212,7 @@ const retriesOf = (db: DatabaseSync, v: Row): number =>
 export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /** True when no new item should start (cancel, deadline, pipeline off). */ stopping?: () => boolean } = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {
   const d: CollectDeps = deps ?? { model: PROMPT.models[0]!, mainHead: (await import("./index.ts")).defaultDeps().mainHead };
   const runId = `verify-collect-${now().replace(/[-:]/g, "").slice(0, 15)}`;
-  const s: CollectSummary = { runId, looked: 0, passed: 0, failed: 0, errors: 0, retried: 0, stale: 0, running: 0, warmCancelled: 0, changed: 0 };
+  const s: CollectSummary = { runId, looked: 0, passed: 0, failed: 0, errors: 0, retried: 0, stale: 0, running: 0, warmCancelled: 0, shots: 0, changed: 0 };
   const rows = db.prepare(`SELECT v.*, i.state AS item_state, ${CURRENT_HEAD_SQL} AS item_head FROM verifications v
     LEFT JOIN items i ON i.repo = v.repo AND i.number = v.number
     LEFT JOIN pr_checks c ON c.repo = v.repo AND c.number = v.number
@@ -301,6 +304,9 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
   for (const v of rows) byPr.set(`${v.repo}#${v.number}`, [...(byPr.get(`${v.repo}#${v.number}`) ?? []), v]);
   await pool([...byPr.values()].map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), () => queueRoom(db), { max: POOL_MAX.verifyCollect });
 
+  // Screenshot runs: one read of an empty table while the Screenshots feature has never run.
+  s.shots = await collectScreenshots(db, d, log, runId, params.stopping);
+  s.changed += s.shots;
   s.warmCancelled = await cancelMovedWarmBuilds(db, d, log);
   s.changed += s.warmCancelled;
   log(`verify-collect: ${s.looked} pending: ${s.passed} passed, ${s.failed} failed, ${s.errors} errors, ${s.retried} retried, ${s.stale} stale, ${s.running} running; ${s.warmCancelled} warm builds cancelled`);

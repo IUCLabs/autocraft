@@ -16,7 +16,7 @@ export interface ResultCard {
   followups?: ItemRef[];
 }
 
-export type MockPage = Omit<ItemPageData, "timeline"> & { results: ResultCard[]; history: HistoryEntry[] };
+export type MockPage = Omit<ItemPageData, "timeline" | "screenshots"> & { screenshots?: ItemPageData["screenshots"]; results: ResultCard[]; history: HistoryEntry[] };
 
 const TONE = { ok: "ok", warn: "warn", bad: "bad", neutral: "neutral", accent: "neutral" } as const;
 
@@ -35,5 +35,5 @@ export function withTimeline(p: MockPage): ItemPageData {
   });
   for (const r of results) if (["verify", "fixup", "premerge", "postmerge"].includes(r.kind)) out.push(line(`result:${r.id}`, r.at, "harness", "AutoCraft", r.kind === "fixup" ? "fixup" : "review", `${r.title}: ${r.outcome}`, { major: true, tone: TONE[r.tone], lines: r.detail ? [r.detail] : [] }));
   out.sort((a, b) => a.at.localeCompare(b.at));
-  return { ...rest, timeline: out };
+  return { ...rest, screenshots: rest.screenshots ?? [], timeline: out };
 }

@@ -90,3 +90,26 @@ export const SAMPLE_SCREENSHOT_PLAN: ScreenshotPlanInput[] = [{
   ],
   diff: "diff --git a/crates/ui/src/export_dialog.rs b/crates/ui/src/export_dialog.rs\n--- a/crates/ui/src/export_dialog.rs\n+++ b/crates/ui/src/export_dialog.rs\n@@ -42,6 +42,7 @@ fn format_row(ui: &mut Ui, f: &Format) {\n     ui.label(f.name());\n+    ui.weak(human_size(f.estimate()));\n }\n",
 }];
+
+export const MAX_COMPARE_WORDS = 60;
+export const COMPARE_VERDICTS = ["as-claimed", "unrelated", "unclear", "regression"] as const;
+export type CompareVerdict = (typeof COMPARE_VERDICTS)[number];
+
+/** What the before/after comparison prompt is rendered from: one PR and its screenshot pairs. `ref` is "repo#number". */
+export type ScreenshotCompareInput = {
+  /** Where the call reads the images in the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
+  ref: string; title: string; body: string;
+  /** The commands that were run, in order, with their arguments. */
+  script: { cmd: string; args: Record<string, string | number> }[];
+  review: { verdict: string; reason: string } | null;
+  /** Paths are relative to the image directory: `before/<name>` at the base, `after/<name>` at the head. */
+  shots: { name: string; before: string; after: string }[];
+};
+
+export const SAMPLE_SCREENSHOT_COMPARE: ScreenshotCompareInput[] = [{
+  ref: "photocraft#1301", title: "Show the file size next to the export format in the export dialog",
+  body: "The export dialog now shows the estimated file size beside each format, so people can compare before exporting.\n\nFixes #1290",
+  script: [{ cmd: "export_dialog", args: { format: "png" } }], review: { verdict: "take", reason: "Small, focused UI change with a clear purpose." },
+  shots: [{ name: "s1.png", before: "before/s1.png", after: "after/s1.png" }],
+}];

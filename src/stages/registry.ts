@@ -323,11 +323,11 @@ export const STAGES: StageDef[] = [
   },
   {
     id: "verify", title: "Verify", order: 10, runStage: 6, docSection: "Verify", mode: "steps",
-    description: "Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.",
+    description: "Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures. With the Screenshots feature on, a UI pull request is also rendered at the base and at the head, and a model compares the images; a clear regression holds the merge.",
     steps: [{ name: "verify", maxMin: 10, label: "Verify", limit: null, seeded: 30 }, { name: "verify-collect", maxMin: 10 }, { name: "nightly", maxMin: 10, label: "Nightly checks" }],
     lanes: [{ name: "verify", steps: ["checks", "verify"], order: 14 }, { name: "verify-collect", steps: ["verify-collect"], order: 15 }, { name: "nightly", steps: ["nightly"], order: 29 }],
     reads: ["Taken PRs", "CI results"],
-    sets: ["Verification tasks and results"],
+    sets: ["Verification tasks and results", "Screenshot runs"],
     states: [
       { id: "waiting", label: "Not planned yet", waitsOn: "model", tone: "neutral", hint: "Taken, CI not failing, no verification at the head commit" },
       { id: "planned", label: "Planned", waitsOn: "sandbox", tone: "neutral", hint: "Tasks queued for a worker" },
@@ -337,10 +337,11 @@ export const STAGES: StageDef[] = [
       { id: "failed", label: "Failed", waitsOn: "person", tone: "bad", hint: "Tests failed; the PR is on hold" },
       { id: "error", label: "Error", waitsOn: "person", tone: "bad", hint: "The plan was invalid or a task errored; retried once" },
     ],
-    models: [{ model: "sonnet", use: "Plans a regression test (bugfixes that change a test file) or, in a repo without CI, the build and tests" }, { model: "haiku", use: "Failure summaries" }],
-    promptIds: ["verify.plan", "verify.summary"], promptStage: "Verify",
+    models: [{ model: "sonnet", use: "Plans a regression test (bugfixes that change a test file) or, in a repo without CI, the build and tests" }, { model: "haiku", use: "Failure summaries" }, { model: "sonnet", use: "Plans screenshots" }, { model: "opus", use: "Compares before and after" }],
+    promptIds: ["verify.plan", "verify.screenshot", "verify.compare", "verify.summary"], promptStage: "Verify",
     waits: [
       { name: "Sandbox build", why: "External", howLong: "Until the task ends; a build-environment error queues it again once per head", showsAs: "Verification state `planned` or `running`", kind: "external" },
+      { name: "Screenshot render", why: "External", howLong: "Until both tasks end", showsAs: "Screenshot run `planned` or `running`", kind: "external" },
       { name: "Warm build of the default branch", why: "Limits sandbox load; never blocks a PR", howLong: "Once a day per repo", showsAs: "Sandbox tasks", kind: "backoff" },
       { name: "Nightly checks", why: "The nightly schedule of the Nightly checks build feature: queued at most once a day per repo, below all PR work", howLong: "Once a day per repo; a failure backs off to the next night", showsAs: "Sandbox tasks of the step `nightly`", kind: "backoff" },
       { name: "Nightly build", why: "External", howLong: "Until the task ends", showsAs: "Nightly results in state `queued`", kind: "external" },

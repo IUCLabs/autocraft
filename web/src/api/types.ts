@@ -2540,6 +2540,23 @@ export interface TimelineEntry {
   /** A maintainer's or operator's post on a question: its include-for-Opus source, the question and the option picked. */
   feedback: { source: string; decisionId: string; pick: string | null; write: boolean; open: boolean } | null;
 }
+/** The screenshot run of a pull request's latest head: images at the base ("before") and at the head ("after"), served by the task artifact route. */
+export interface ScreenshotRun {
+  head: string;
+  /** Whether `head` is still the PR's head. */
+  current: boolean;
+  state: "planned" | "running" | "rendered" | "compared" | "error" | "stale" | "skipped";
+  verdict: "unchanged" | "as-claimed" | "unrelated" | "unclear" | "regression" | null;
+  clear: boolean | null;
+  comparison: string | null;
+  /** The run's clear regression holds the merge. */
+  held: boolean;
+  /** The planner's reason, or the error text of a run in state error. */
+  reason: string | null;
+  model: string | null;
+  at: string;
+  shots: { name: string; before: { taskId: number; name: string }; after: { taskId: number; name: string } }[];
+}
 export interface ItemPageData {
   repo: RepoName;
   number: number;
@@ -2559,6 +2576,8 @@ export interface ItemPageData {
   /** The item's story, oldest first (last 200 lines). */
   timeline: TimelineEntry[];
   github: GithubSide;
+  /** The latest head's screenshot run, for operators and maintainers; empty otherwise. */
+  screenshots: ScreenshotRun[];
 }
 /** The answer to `since=<stamp>` when nothing on the item page has changed. */
 export type ItemPageUnchanged = { unchanged: true; stamp: string };

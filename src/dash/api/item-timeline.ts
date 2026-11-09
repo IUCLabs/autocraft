@@ -26,6 +26,11 @@ const PLAIN: Record<string, string> = {
   checks: "CI read", merge: "Merge queue run", conversation: "Opus replied", act: "Action run", postmerge: "Post-merge review", "postmerge-file": "Follow-up issues filed", premerge: "Pre-merge review",
 };
 
+/** The screenshot stage rows the timeline shows. */
+const SHOT_LABELS: Record<string, string> = {
+  "screenshot-planned": "Screenshots planned", "screenshot-compared": "Screenshots compared", "screenshot-regression": "Screenshot regression: held", "screenshot-error": "Screenshots failed",
+};
+
 const PLAIN_BY_TITLE = new Map(Object.entries(PLAIN).map(([id, text]) => [stepTitle(id), text]));
 
 type Turn = { id: number; kind: string; login: string; at: string; body: string; status: string | null; error: string | null };
@@ -50,7 +55,17 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
       if (e.id === "gh:merged" && !mergeSteps.length) { const t = base(e.id, e.at, "harness", "GitHub", "merge", e.summary); t.major = true; t.tone = "ok"; out.push(t); }
       continue;
     }
-    if (e.kind === "plan" || e.kind === "decision" || e.kind === "conversation") continue;
+    if (e.kind === "plan") {
+      // Screenshot stages are the only stage rows the page shows: staff only, as the images are.
+      const m = /^Stage (screenshot-[a-z]+)/.exec(e.summary);
+      if (m && staff && !c.veiled && SHOT_LABELS[m[1]!]) {
+        const t = base(e.id, e.at, "harness", "AutoCraft", "check", SHOT_LABELS[m[1]!]!);
+        t.tone = m[1] === "screenshot-regression" ? "bad" : m[1] === "screenshot-error" ? "warn" : "neutral"; t.major = m[1] === "screenshot-regression"; t.body = e.summary.includes(": ") ? after : null;
+        out.push(t);
+      }
+      continue;
+    }
+    if (e.kind === "decision" || e.kind === "conversation") continue;
     if (e.kind === "model-call") {
       if (jobsWithCalls.has(e.ref.jobId)) continue;
       const title = e.call?.step ?? "Model call";

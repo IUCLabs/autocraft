@@ -9,6 +9,7 @@ import { HeldAnswers, visibleHeld } from "../../decisions/AnswerHold";
 import { OpenQuestions, useItemDecisions } from "../ItemDecisions";
 import { ActionCard } from "../OpusCards";
 import { Composer } from "../Composer";
+import { ScreenshotCard } from "./ScreenshotCard";
 import { SimilarCard } from "./SimilarCard";
 import { Story } from "./Story";
 
@@ -41,6 +42,7 @@ export function AutoCraftSide({ d, flash }: { d: ItemPageData; flash: string | n
           <OpenQuestions ds={(ds ?? []).filter((x) => x.answer || open.includes(x))} choices={choices} updating={updating?.decisionId} />
         </div>
       )}
+      {d.screenshots.map((r) => <ScreenshotCard key={r.head} run={r} />)}
       <Story d={d} flash={flash} conv={conv} />
       {!updating && suggestions.length > 0 && (
         <div className="space-y-2 px-4 md:px-6">

@@ -1,5 +1,5 @@
 // Mock content for the redesign: the curated items, their status lines, reviews, results, history and GitHub sides, and findings.
-import type { FixRound, GithubEvent, ItemBar, ItemBarStep, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry } from "../types";
+import type { FixRound, GithubEvent, ItemBar, ItemBarStep, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ScreenshotRun } from "../types";
 import { withTimeline, type MockPage, type ResultCard } from "./storyMock";
 import { NOW } from "./fixtures";
 
@@ -281,9 +281,18 @@ const RESULTS_9981: ResultCard[] = [
   { id: "c3", kind: "classifiers", title: "Classifiers", outcome: "Bug fix, 3 of 3 agree", tone: "neutral", at: at(5 * H), detail: null, earlier: [] },
 ];
 
+const SCREENSHOTS_9981: ScreenshotRun = {
+  head: "a1b2c3d", current: true, state: "compared", verdict: "regression", clear: true, held: true, model: "opus", at: at(52), reason: null,
+  comparison: "The handles now sit outside the layer outline and the right-hand handle is clipped by the canvas edge; before, all eight handles were inside it.",
+  shots: [
+    { name: "s1.png", before: { taskId: 901, name: "s1.png" }, after: { taskId: 902, name: "s1.png" } },
+    { name: "s2.png", before: { taskId: 901, name: "s2.png" }, after: { taskId: 902, name: "s2.png" } },
+  ],
+};
+
 const FULL: Record<string, Omit<MockPage, "repo" | "number" | "kind" | "state" | "title" | "author" | "status" | "costUsd" | "stamp" | "header" | "bar"> & { header?: Partial<ItemPageHeader> }> = {
   "designcraft#1484": { header: HEADER_1484, reviews: REVIEWS_1484, results: RESULTS_1484, history: HISTORY_1484, github: GITHUB_1484 },
-  "photocraft#9981": { reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981 },
+  "photocraft#9981": { reviews: REVIEWS_9981, results: RESULTS_9981, history: HISTORY_9981, github: GITHUB_9981, screenshots: [SCREENSHOTS_9981] },
   "wordcraft#2214": {
     reviews: { latest: null, earlier: [] },
     results: [
