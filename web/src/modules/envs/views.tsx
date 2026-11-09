@@ -5,13 +5,14 @@ import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { CheckIcon, CopyIcon, DownloadSimpleIcon, PencilSimpleIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
-import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
+import type { BuildEnv, BuildFeatureName, BuildFeatures, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { memSize, nowMs, num, span, eventTime } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
+import { Switch } from "../../ui/atoms/Switch";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { repoSlug } from "../../lib/links";
 import { cn } from "../../ui/cn";
@@ -263,6 +264,51 @@ function EnvsPanel() {
           ))}
         </ul>
       )}
+    </Block>
+  );
+}
+
+// ---- build features ----------------------------------------------------------------
+
+const FEATURE_LABEL: Record<BuildFeatureName, string> = {
+  screenshots: "Screenshots", "push-tests": "Tests before push", "batch-build": "Build batches",
+  "scan-tests": "Run scan tests", nightly: "Nightly checks", "pr-builds": "Build pull requests",
+};
+
+function FeatureState({ on, label, operator, busy, onChange }: { on: boolean; label: string; operator: boolean; busy: boolean; onChange: (on: boolean) => void }) {
+  return operator ? <Switch on={on} label={label} busy={busy} onChange={onChange} /> : <Badge tone={on ? "ok" : "neutral"}>{on ? "On" : "Off"}</Badge>;
+}
+
+function FeaturesPanel() {
+  const api = useApi();
+  const q = useQuery<BuildFeatures>("build-features", (a) => a.buildFeatures.list());
+  const operator = useUser().role === "operator";
+  const write = useWrite();
+  const set = (feature: BuildFeatureName, on: boolean, repo?: string) =>
+    void write.run(`${feature}:${repo ?? ""}`, () => api.buildFeatures.set({ feature, on, repo })).then(() => q.refetch());
+  return (
+    <Block title="Build features">
+      <ErrorLine error={q.error?.message ?? write.error} />
+      <ul className="divide-y divide-line">
+        {(q.data?.features ?? []).map((f) => (
+          <li key={f.feature} className="py-1">
+            <div className="flex min-h-11 items-center gap-3">
+              <span className="min-w-0 flex-1 text-sm">{FEATURE_LABEL[f.feature]}</span>
+              <FeatureState on={f.on} label={FEATURE_LABEL[f.feature]} operator={operator} busy={write.busy === `${f.feature}:`} onChange={(on) => set(f.feature, on)} />
+            </div>
+            {f.repoScoped && f.on && (
+              <ul className="mb-1 flex flex-wrap gap-x-5 pl-3">
+                {q.data!.repos.map((r) => (
+                  <li key={r} className="flex min-h-8 items-center gap-2 text-xs text-ink/75">
+                    <span className="num">{r}</span>
+                    <FeatureState on={f.repos.includes(r)} label={`${FEATURE_LABEL[f.feature]} on ${r}`} operator={operator} busy={write.busy === `${f.feature}:${r}`} onChange={(on) => set(f.feature, on, r)} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
     </Block>
   );
 }
@@ -571,10 +617,12 @@ export function DetailPanel({ params }: ViewProps) {
 
 export function EnvsView({ params }: ViewProps) {
   const id = params.id ? Number(params.id) : undefined;
+  const canSee = useUser().role !== "viewer";
   return (
     <Page title="Build environments" sub="Where builds and tests run">
       <div className="mt-4 space-y-4">
         <EnvsPanel />
+        {canSee && <FeaturesPanel />}
         <Tasks selected={id} />
       </div>
     </Page>

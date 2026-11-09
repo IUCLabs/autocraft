@@ -537,6 +537,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/tasks/:id/cancel", operator: true, handler: ok(build.cancel) },
     { method: "GET", pattern: "/api/tasks/:id/artifacts/:name", handler: build.artifact },
     get("/api/build/summary", build.buildSummary),
+    get("/api/build/features", build.features),
+    { method: "POST", pattern: "/api/build/features", operator: true, handler: ok(build.postFeature) },
     get("/api/next", next),
     get("/api/queue", queue),
     get("/api/queue/batches", queueBatches),

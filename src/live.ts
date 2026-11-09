@@ -36,7 +36,7 @@ const BOOKKEEPING_SETTINGS = [
   "full_sync_cursor", "org_high_water", "main_ci_polled_at", "releases_polled_at", "releases_offset", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining", "sync_rate_reset_at",
   "flow_summary_marks", "liveness_at", "liveness_open", "classify_run", "worker_update_pending", "worker_update_failures",
 ];
-const BOOKKEEPING_SETTING_LIKE = ["%\\_points\\_last\\_run", "pipeline\\_fp:%"];
+const BOOKKEEPING_SETTING_LIKE = ["%\\_points\\_last\\_run", "pipeline\\_fp:%", "build\\_feature:%"];
 
 /** SQL condition on `key` that is true for the settings that matter to a page. */
 function shownSettings(key: string): string {
@@ -77,6 +77,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   agents: [{ table: "agent_runs" }, { table: "agent_run_items" }, { table: "agent_run_texts" }],
   // Every worker poll writes last_seen_at; only changes to what an environment is or reports matter.
   envs: [{ table: "build_envs", ops: ["INSERT", "DELETE"] }, { table: "build_envs", ops: ["UPDATE"], when: "old.label IS NOT new.label OR old.kind IS NOT new.kind OR old.enabled IS NOT new.enabled OR old.slots IS NOT new.slots OR old.key_hash IS NOT new.key_hash OR old.capabilities IS NOT new.capabilities OR old.reported_slots IS NOT new.reported_slots OR old.version IS NOT new.version OR old.paused_reason IS NOT new.paused_reason" }],
+  // The build feature switches (settings rows `build_feature:*`); not planner input.
+  "build-features": [{ table: "settings", when: "new_key LIKE 'build\\_feature:%' ESCAPE '\\'" }],
   tasks: [{ table: "build_tasks" }, { table: "build_task_logs" }, { table: "build_artifacts" }],
   actions: [{ table: "actions" }],
   // Which maintainer posts an operator shared with Opus; not planner input.
@@ -161,7 +163,7 @@ export function liveSql(db?: DatabaseSync): string {
     for (const { table, ops = ALL_OPS, when } of sources) {
       for (const op of ops) {
         // `steps`, `trace`, `limits` and `decision-snooze` read tables other topics already watch; their triggers need names of their own.
-        const name = `live_${topic === "steps" || topic === "trace" || topic === "limits" || topic === "decision-snooze" ? `${topic.replace(/\W/g, "_")}_` : ""}${table}_${op[0]!.toLowerCase()}`;
+        const name = `live_${topic === "steps" || topic === "trace" || topic === "limits" || topic === "decision-snooze" || topic === "build-features" ? `${topic.replace(/\W/g, "_")}_` : ""}${table}_${op[0]!.toLowerCase()}`;
         const key = op === "DELETE" ? "old.key" : "new.key";
         let cond = when ? when.replaceAll("new_key", key) : "";
         if (op === "UPDATE" && !when) {

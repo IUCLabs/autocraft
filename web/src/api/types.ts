@@ -1759,6 +1759,12 @@ export type BuildTaskDetail = BuildTask & { /** null (with the patch) for viewer
 export type TaskFilter = { state?: TaskState | "active"; env?: string; repo?: string; cursor?: string; limit?: number };
 export type TaskPage = { tasks: BuildTask[]; next: string | null };
 /** Queued and running tasks and the slots left over the online, enabled environments (the flowchart's Verify node). */
+export type BuildFeatureName = "screenshots" | "push-tests" | "batch-build" | "scan-tests" | "nightly" | "pr-builds";
+/** `repos` lists the repos whose own switch is on; scan-tests has none. */
+export type BuildFeatureState = { feature: BuildFeatureName; on: boolean; repoScoped: boolean; repos: string[] };
+/** `repos` is every tracked repo the viewer can see. */
+export type BuildFeatures = { features: BuildFeatureState[]; repos: string[] };
+export type BuildFeatureInput = { feature: BuildFeatureName; on: boolean; repo?: string };
 export type BuildSummary = { queued: number; running: number; slots: number; free: number; online: number };
 
 // ---- Queue page (/api/queue/page) -------------------------------------------
