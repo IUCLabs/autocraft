@@ -33,6 +33,8 @@ import { isQueueState } from "../core/plan.ts";
 import { isWork } from "../core/assignment.ts";
 import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
+import { featureOn } from "../build/features.ts";
+import { nightlyRepos } from "../nightly/index.ts";
 import { actLimit, actUsedToday } from "../conversations/usage.ts";
 import { queueHead } from "../conversations/queue.ts";
 import { compareKeys, targetKeys } from "../act/order.ts";
@@ -583,6 +585,14 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     },
     detect: (db, { tracked }) => tracked.filter((repo) => mainFixDue(db, repo)).sort().map((repo) => ({ step: "main-fix", params: { repo } })),
   },
+  {
+    // The nightly checks of repos with the build feature on: queued once a day per repo (in data, from the last run's time), collected when their tasks end.
+    name: "nightly",
+    perRepo: true,
+    // The day's schedule moves with the clock, not with a change in the data.
+    extra: (db) => (featureOn(db, "nightly") ? String(Math.floor(Date.now() / 3_600_000)) : ""),
+    detect: (db, { tracked }) => nightlyRepos(db, tracked).map((repo) => ({ step: "nightly", params: { repo } })),
+  },
 ];
 
 export const LANES: Lane[] = buildLanes(LANE_CODE);
@@ -1067,7 +1077,7 @@ export const LANE_KINDS: Record<string, ActionKind[]> = {
 };
 
 /** Lanes whose jobs are not about listed items (counters, collection, operator messages, per-repo scans); every other lane needs a LANE_KINDS entry. */
-export const NO_ITEM_LANES = ["rank", "verify-collect", "conversation", "postmerge", "postmerge-file", "main-fix", "cifix-rerun"];
+export const NO_ITEM_LANES = ["rank", "verify-collect", "conversation", "postmerge", "postmerge-file", "main-fix", "cifix-rerun", "nightly"];
 
 export type LaneItem = {
   repo: string; number: number; kind: "pr" | "issue"; action: string; bucket: string | null;

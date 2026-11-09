@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { byOfJob } from "../core/gates.ts";
+import { featureOn } from "../build/features.ts";
 import { envVar } from "../env.ts";
 import { stageOfStep } from "../stages/registry.ts";
 
@@ -97,6 +98,11 @@ async function checkMergeApproved(db: DatabaseSync, p: Params): Promise<string |
 async function checkCiApproved(db: DatabaseSync, p: Params): Promise<string | null> {
   const { ciApprovalOf } = await import("../merge/ci-approval.ts");
   return ciApprovalOf(db, String(p.repo)) ? null : `approving CI runs in ${p.repo} is not approved`;
+}
+
+/** The nightly checks run only for repos whose build feature is switched on. */
+function checkNightlyOn(db: DatabaseSync, p: Params): string | null {
+  return featureOn(db, "nightly", String(p.repo)) ? null : `the Nightly checks feature is off for ${p.repo}`;
 }
 
 /** Acting on a red default branch is opt-in per repo. */
@@ -924,6 +930,23 @@ export const STEPS: StepDef[] = [
       const r = await runMainFix(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled, stopping: ctx.stopping, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.reran + r.asked + r.needsFix + r.issues + r.prs);
       return `${r.repo}: classified ${r.classified} heads, reran ${r.reran}, asked ${r.asked}, ${r.needsFix} need a fix, ${r.issues} issues opened, ${r.prs} fix PRs opened`;
+    },
+  },
+  {
+    name: "nightly",
+    title: "Nightly checks",
+    description: "For a repo with the Nightly checks build feature on, queues its selected checks (dependency audit, cross builds, Miri, benchmarks) once a day as low-priority sandbox tasks at the default branch head, and collects the results of finished ones. A check that fails two nights in a row becomes an operator decision about opening an issue. Calls no model.",
+    stage: runStage("nightly"),
+    requires: "operator",
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    check: (db, p) => checkNightlyOn(db, p),
+    run: async (ctx) => {
+      const { runNightly } = await import("../nightly/index.ts");
+      const refused = checkNightlyOn(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runNightly(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
+      ctx.acted(r.queued + r.issues);
+      return `${r.repo}: queued ${r.queued}, skipped ${r.skipped}, collected ${r.collected}, asked ${r.asked}, ${r.issues} issues opened`;
     },
   },
 ];

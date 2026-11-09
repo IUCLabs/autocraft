@@ -1951,3 +1951,50 @@ CREATE TABLE IF NOT EXISTS star_samples (
   stars INTEGER NOT NULL,
   PRIMARY KEY (repo, t)
 ) WITHOUT ROWID;
+
+-- Nightly checks (src/nightly): per repo, which checks of the catalogue run and with which crates or fuzz targets.
+-- A repo with no enabled row runs nothing. params: JSON {crates?: string[], targets?: string[]}.
+CREATE TABLE IF NOT EXISTS nightly_selection (
+  repo TEXT NOT NULL,
+  check_id TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  params TEXT,
+  PRIMARY KEY (repo, check_id)
+) WITHOUT ROWID;
+
+-- One row per repo and night; started_at is what the once-a-day schedule reads. state: running | done.
+CREATE TABLE IF NOT EXISTS nightly_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  sha TEXT NOT NULL,                  -- the default branch head the checks ran at
+  started_at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'running'
+);
+CREATE INDEX IF NOT EXISTS nightly_runs_repo ON nightly_runs(repo, started_at);
+
+-- One row per check of a run. state: queued | pass | fail | error | skipped | warn. summary: one scrubbed line.
+-- decision_id / issue_number: the operator decision about opening an issue for a failure streak, and the issue it led to.
+CREATE TABLE IF NOT EXISTS nightly_results (
+  run_id INTEGER NOT NULL,
+  check_id TEXT NOT NULL,
+  task_id INTEGER,
+  state TEXT NOT NULL,
+  summary TEXT,
+  issue_number INTEGER,
+  decision_id TEXT,
+  finished_at TEXT,
+  PRIMARY KEY (run_id, check_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS nightly_results_task ON nightly_results(task_id);
+
+-- Benchmark values parsed from a finished bench check; kept 180 days.
+CREATE TABLE IF NOT EXISTS nightly_bench (
+  repo TEXT NOT NULL,
+  bench TEXT NOT NULL,
+  sha TEXT NOT NULL,
+  at TEXT NOT NULL,
+  value REAL NOT NULL,
+  unit TEXT NOT NULL,
+  PRIMARY KEY (repo, bench, sha)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS nightly_bench_at ON nightly_bench(repo, bench, at);
