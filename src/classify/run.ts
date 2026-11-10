@@ -23,6 +23,7 @@ import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS } from "../sandbox/index.ts";
+import { childEnv } from "../agents/status.ts";
 import { cliErrorText, credentialsNearExpiry, isAuthFailure, markTokenRejected, readToken, tokenEnv, usesToken } from "../agents/token.ts";
 import { REFERENCE_PATH, REPO_DOCS_PATH, type SandboxSpec } from "../sandbox/command.ts";
 import { repoDocsFor, repoOfCheckout } from "../sandbox/repo-docs.ts";
@@ -463,14 +464,14 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
           release();
         }
         runProgress.flush();
-      } else r = await runner("claude", [...args, ...extra], stdin, cwd, timeoutMs, { CLAUDE_CONFIG_DIR: run.configDir, ...(usedToken && tokenEnv(db, run.accountId, run.configDir)) });
-      // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
-      if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
+      } else r = await runner("claude", [...args, ...extra], stdin, cwd, timeoutMs, childEnv(run.configDir, usedToken ? tokenEnv(db, run.accountId, run.configDir) : {}), undefined, true);
+      // Stderr is scrubbed up front. The reply text is scrubbed after parsing, so a match cannot break the JSON.
+      r = { ...r, stderr: scrub(r.stderr) };
       // Stopped by the idle watchdog: a failed call with the tokens the stream showed, so the usual failure and retry path applies.
       if (r.idle) {
         let tokens: ReturnType<typeof streamTokens>;
         try { const p = parseOutput(r.stdout); saveTools(db, runId, p, clock); tokens = streamTokens(Array.isArray(p) ? p : [p]); } catch { tokens = undefined; }
-        finish({ state: "failed", ...(tokens && { tokens }), error: `no output for ${Math.round(callIdleMs() / 60_000 * 10) / 10} min; stopped`, summary: "no output; stopped", output: sandboxed ? scrub(r.stdout) : r.stdout });
+        finish({ state: "failed", ...(tokens && { tokens }), error: `no output for ${Math.round(callIdleMs() / 60_000 * 10) / 10} min; stopped`, summary: "no output; stopped", output: scrub(r.stdout) });
         return null;
       }
       // A call that used the long-lived token and failed with an authentication error: the token is marked rejected; this call fails as before and later calls take the regular sign-in path. Only stderr and the CLI's own error fields are tested, never assistant or tool text.
@@ -483,25 +484,25 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         const j = lastResult(parsed) as { result?: string; is_error?: boolean; session_id?: string; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
         if (!j) {
           authFailed(`${r.stderr} ${cliErrorText(parsed)}`);
-          finish({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
+          finish({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: scrub(r.stdout) });
           return null;
         }
         const { usage, all: tokens } = resultUsage(j, model);
         const costUsd = typeof j.total_cost_usd === "number" ? j.total_cost_usd : usage.cost;
         if (j.is_error || typeof j.result !== "string") {
           if (j.is_error) authFailed(typeof j.result === "string" ? j.result : "");
-          finish({ state: "failed", tokens, costUsd, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
+          finish({ state: "failed", tokens, costUsd, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: scrub(r.stdout) });
           return null;
         }
         const turns = sandboxed ? j.num_turns : undefined;
         // Backstop: nothing that looks like a token or key leaves the sandbox call.
-        const text = sandboxed ? scrub(j.result) : j.result;
+        const text = scrub(j.result);
         const sessionId = typeof j.session_id === "string" ? j.session_id : (Array.isArray(parsed) ? parsed.find((e) => typeof (e as { session_id?: unknown }).session_id === "string") as { session_id?: string } | undefined : undefined)?.session_id;
         finish({ state: "done", tokens, costUsd, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: text });
         return { text, usage, ...(turns !== undefined && { turns }), ...(sessionId && { sessionId }) };
       } catch {
         authFailed(r.stderr);
-        finish({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: sandboxed ? scrub(r.stdout) : r.stdout });
+        finish({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: scrub(r.stdout) });
         return null;
       }
     };

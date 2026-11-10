@@ -54,7 +54,8 @@ export type Check = {
   /** Dashboard page that shows the cause. */
   to: string;
 };
-export type CheckCtx = { db: DatabaseSync; nowMs: number };
+/** `probe`: the unauthenticated endpoint; it reads stored and cached state only (no account inserts, no GitHub App token work). */
+export type CheckCtx = { db: DatabaseSync; nowMs: number; probe?: boolean };
 
 const ok = (id: string, to: string, extra: Partial<Check> = {}): Check => ({ id, state: "ok", text: "", brief: "", since: null, to, ...extra });
 const minutes = (ms: number): string => (ms < 90 * 60_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : `${Math.round(ms / 3_600_000)} h`);
@@ -129,8 +130,8 @@ function syncRepoChecks({ db }: CheckCtx): Check[] {
   });
 }
 
-function accountsCheck({ db, nowMs }: CheckCtx): Check[] {
-  const on = listAccounts(db, nowMs).filter((a) => a.enabled);
+function accountsCheck({ db, nowMs, probe }: CheckCtx): Check[] {
+  const on = listAccounts(db, nowMs, !probe).filter((a) => a.enabled);
   if (on.length && on.every((a) => a.pausedReason || a.auth.loggedIn === false)) {
     const text = on.length === 1 ? "The Claude account is paused" : "All Claude accounts are paused";
     return [{ id: "accounts", state: "fail", text, brief: text, since: null, to: "/accounts" }];
@@ -171,7 +172,7 @@ function livenessCheck({ db }: CheckCtx): Check[] {
 }
 
 /** Under the GitHub App identity: the app's keys must be readable (fail), and every tracked repo should be in its installation (warn). Nothing is listed under the box account. */
-function appIdentityChecks({ db }: CheckCtx): Check[] {
+function appIdentityChecks({ db, probe }: CheckCtx): Check[] {
   if (githubIdentity(db) !== "app") return [];
   let keys = false;
   try { keys = readAppSecrets() !== null; } catch { keys = false; }
@@ -179,7 +180,7 @@ function appIdentityChecks({ db }: CheckCtx): Check[] {
     const text = "The GitHub identity is the GitHub App, but no app keys are available";
     return [{ id: "app-keys", state: "fail", text, brief: "GitHub sign-in and writes are unavailable", since: null, to: "/admin/github-app" }];
   }
-  const { uncovered } = coverageSnapshot(db);
+  const { uncovered } = coverageSnapshot(db, !probe);
   if (!uncovered.length) return [ok("app-keys", "/admin/github-app"), ok("app-coverage", "/admin/github-app")];
   const text = `The GitHub App does not cover ${uncovered.length} tracked repo${uncovered.length === 1 ? "" : "s"}: ${clip(uncovered.join(", "), 120)}`;
   return [ok("app-keys", "/admin/github-app"), { id: "app-coverage", state: "warn", text, brief: "The GitHub App does not cover every tracked repo", since: null, count: uncovered.length, to: "/admin/github-app" }];
@@ -196,8 +197,8 @@ function outsideSurgeCheck({ db }: CheckCtx): Check[] {
 /** Every check, in the order the lists show them. */
 const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, outsideSurgeCheck];
 
-export function computeChecks(db: DatabaseSync, nowMs: number = Date.now()): Check[] {
-  return SOURCES.flatMap((f) => f({ db, nowMs }));
+export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
+  return SOURCES.flatMap((f) => f({ db, nowMs, probe }));
 }
 
 /** The answer of GET /healthz/checks: states, times and counts only; no repo, environment, account or error text. */
@@ -229,7 +230,7 @@ export function serveChecks(req: IncomingMessage, res: ServerResponse, db: Datab
   if (!cached || cached.db !== db || Date.now() - cached.at >= ttlMs) {
     let body: ReturnType<typeof publicChecks>;
     try {
-      body = publicChecks(computeChecks(db, nowMs));
+      body = publicChecks(computeChecks(db, nowMs, true));
     } catch {
       body = { status: "fail", checks: [{ id: "database", state: "fail", since: null }] };
     }

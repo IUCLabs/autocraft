@@ -117,10 +117,10 @@ function toAccount(r: Row, token: ClaudeAccount["token"], running: number, readi
   };
 }
 
-/** Every account of the box config, enabled or not, in config order. */
-export function listAccounts(db: DatabaseSync, nowMs: number = Date.now()): ClaudeAccount[] {
+/** Every account of the box config, enabled or not, in config order. With `sync` false nothing is written: accounts without a stored row are left out. */
+export function listAccounts(db: DatabaseSync, nowMs: number = Date.now(), sync = true): ClaudeAccount[] {
   const box = boxAccounts(db);
-  syncAccounts(db, box);
+  if (sync) syncAccounts(db, box);
   const counts = runningCounts(db, nowMs), limits = usagePause(db);
   return rows(db, box).map((r) => toAccount(r, tokenView(db, r.id, box.find((b) => b.id === r.id)!.configDir), counts.get(r.id) ?? 0, readUsage(r.id), nowMs, authOf(db, r.id), limits));
 }

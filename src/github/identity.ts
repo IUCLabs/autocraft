@@ -88,8 +88,9 @@ export async function trackedCoverage(db: DatabaseSync, mint?: (owner: string, r
 }
 
 let coverageMemo: { at: number; running: boolean; uncovered: string[]; unconfirmed: string[] } | null = null;
-/** What the health check shows: the last coverage reading of the tracked repos, refreshed in the background at most every 2 minutes (the minter caches installations). */
-export function coverageSnapshot(db: DatabaseSync): { uncovered: string[]; unconfirmed: string[] } {
+/** What the health check shows: the last coverage reading of the tracked repos, refreshed in the background at most every 2 minutes (the minter caches installations). With `refresh` false it only returns the cached reading. */
+export function coverageSnapshot(db: DatabaseSync, refresh = true): { uncovered: string[]; unconfirmed: string[] } {
+  if (!refresh) return { uncovered: coverageMemo?.uncovered ?? [], unconfirmed: coverageMemo?.unconfirmed ?? [] };
   if (!coverageMemo || (!coverageMemo.running && Date.now() - coverageMemo.at > 120_000)) {
     const prev = coverageMemo;
     coverageMemo = { at: Date.now(), running: true, uncovered: prev?.uncovered ?? [], unconfirmed: prev?.unconfirmed ?? [] };
