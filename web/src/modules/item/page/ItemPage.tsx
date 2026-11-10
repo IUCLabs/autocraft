@@ -17,6 +17,7 @@ import { AutoCraftSide } from "./AutoCraftSide";
 import { GithubSide } from "./GithubSide";
 import { ItemMenu } from "./ItemMenu";
 import { StatusBar } from "./StatusBar";
+import { safeHref } from "../../../ui/safeHref";
 
 type Side = "autocraft" | "github";
 
@@ -123,18 +124,18 @@ function Header({ d }: { d: ItemPageData }) {
             {!h.pipelineOn && <Badge>Pipeline off</Badge>}
             {h.discord && h.discord.count > 0 && (
               <Badge icon={<ChatsCircleIcon className="text-[12px]" />}>
-                {h.discord.links[0] ? <a href={h.discord.links[0].url} target="_blank" rel="noopener noreferrer" className="hover:underline">Discord {h.discord.count}</a> : <>Discord {h.discord.count}</>}
+                {h.discord.links[0] ? <a href={safeHref(h.discord.links[0].url)} target="_blank" rel="noopener noreferrer" className="hover:underline">Discord {h.discord.count}</a> : <>Discord {h.discord.count}</>}
               </Badge>
             )}
             {h.discord && !!h.discord.signals && (
               <Badge tone="accent" icon={<ChatsCircleIcon className="text-[12px]" />}>
-                {h.discord.signalLinks?.[0] ? <a href={h.discord.signalLinks[0].url} target="_blank" rel="noopener noreferrer" className="hover:underline">Asked about on Discord ×{h.discord.signals}</a> : <>Asked about on Discord ×{h.discord.signals}</>}
+                {h.discord.signalLinks?.[0] ? <a href={safeHref(h.discord.signalLinks[0].url)} target="_blank" rel="noopener noreferrer" className="hover:underline">Asked about on Discord ×{h.discord.signals}</a> : <>Asked about on Discord ×{h.discord.signals}</>}
               </Badge>
             )}
           </div>
           {h.labels.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1.5">{h.labels.map((l) => <Badge key={l}>{l}</Badge>)}</div>}
         </div>
-        <a href={d.github.url} target="_blank" rel="noopener noreferrer" className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded border border-line-strong bg-raised px-2.5 text-xs font-medium hover:bg-ink/[0.06] max-md:h-11">
+        <a href={safeHref(d.github.url)} target="_blank" rel="noopener noreferrer" className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded border border-line-strong bg-raised px-2.5 text-xs font-medium hover:bg-ink/[0.06] max-md:h-11">
           See in GitHub <ArrowSquareOutIcon />
         </a>
         {user.role === "operator" && <ItemMenu d={d} />}

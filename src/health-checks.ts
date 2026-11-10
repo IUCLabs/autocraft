@@ -11,6 +11,7 @@ import { trackedNames } from "./repos.ts";
 import { storedLiveness } from "./liveness.ts";
 import { coverageSnapshot, githubIdentity } from "./github/identity.ts";
 import { readAppSecrets } from "./github/install-token.ts";
+import { PROBE_HEADERS } from "./health.ts";
 
 /** Thresholds, in one place. */
 export const THRESHOLDS = {
@@ -234,7 +235,7 @@ export function serveChecks(req: IncomingMessage, res: ServerResponse, db: Datab
     }
     cached = { db, at: Date.now(), text: JSON.stringify({ ...body, at: new Date(nowMs).toISOString() }), fail: body.status === "fail" };
   }
-  res.writeHead(cached.fail ? 503 : 200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(cached.text) });
+  res.writeHead(cached.fail ? 503 : 200, { ...PROBE_HEADERS, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(cached.text) });
   res.end(req.method === "HEAD" ? undefined : cached.text);
   return true;
 }

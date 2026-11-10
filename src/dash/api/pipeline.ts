@@ -40,7 +40,7 @@ function requireOperator(req: Req, step?: StepDef): void {
 /** The pipeline state for the requester: reasons that name a hidden repo are left out. */
 async function pipelineState(db: DatabaseSync, req: Req): Promise<PipelineState> {
   const [s, hidden] = await Promise.all([rawPipelineState(db), hiddenRepos(db, req)]);
-  return { ...s, outside: outsideState(db), limits: s.limits.map((l) => ({ ...l, pausedReason: blankIfHidden(l.pausedReason, hidden) || null, status: blankIfHidden(l.status, hidden) || null })) };
+  return { ...s, outside: outsideState(db, hidden), limits: s.limits.map((l) => ({ ...l, pausedReason: blankIfHidden(l.pausedReason, hidden) || null, status: blankIfHidden(l.status, hidden) || null })) };
 }
 
 /** Viewers read that a job failed, not why: the error carries log and command text. */

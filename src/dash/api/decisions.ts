@@ -339,7 +339,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
   };
   if (!veil) return out;
   return {
-    ...out, question: "", summary: "", context: [], facts: [], recommendedReason: "", risks: [], publicText: null, optionTexts: [],
+    ...out, title: "", question: "", summary: "", body: null, shown: out.shown && { ...out.shown, title: null }, context: [], facts: [], recommendedReason: "", risks: [], publicText: null, optionTexts: [],
     group: out.group.map((m) => ({ ...m, better: [], carry: [], adds: [] })),
     opinions: out.opinions.map((o) => ({ ...o, note: "" })), adoptedOpinion: out.adoptedOpinion && { ...out.adoptedOpinion, note: "" },
     dispute: out.dispute && { ...out.dispute, reason: "" }, classifications: out.classifications.map((c) => ({ ...c, reason: "" })), priority: out.priority && { ...out.priority, reason: null },

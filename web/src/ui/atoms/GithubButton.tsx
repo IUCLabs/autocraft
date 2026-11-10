@@ -1,5 +1,6 @@
 import { GithubLogoIcon } from "@phosphor-icons/react";
 import { cn } from "../cn";
+import { safeHref } from "../safeHref";
 
 /**
  * A small secondary button with the GitHub logo, a link to `href` in a new tab. The negative margin keeps the row's
@@ -9,7 +10,7 @@ import { cn } from "../cn";
 export function GithubButton({ href, label, className }: { href: string; label: string; className?: string }) {
   return (
     <a
-      href={href}
+      href={safeHref(href)}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={label}

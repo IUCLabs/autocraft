@@ -339,7 +339,10 @@ export function ciApproval(db: DatabaseSync, req: Req, approved: boolean): Track
   return oneRepo(db, name);
 }
 
-export const workspaceInfo = (db: DatabaseSync): { excluded: string[] } => ({ excluded: workspaceExcluded(db) });
+export async function workspaceInfo(db: DatabaseSync, req: Req): Promise<{ excluded: string[] }> {
+  const visible = new Set(await visibleRepos(db, req));
+  return { excluded: workspaceExcluded(db).filter((r) => visible.has(r)) };
+}
 
 // Only an operator changes which tracked repositories Opus calls cannot read.
 export function setWorkspaceInfo(db: DatabaseSync, req: Req): { excluded: string[] } {
@@ -533,7 +536,7 @@ export async function auditLog(db: DatabaseSync, req: Req): Promise<AuditPage> {
   if (!operator) {
     // Security rows name their repo first in the target (`<repo>:scan:<id>`, `<repo>:finding:<n>`); a maintainer sees those of repos they can see.
     const visible = await visibleRepos(db, req);
-    where.push(`(action NOT LIKE 'security-%' OR substr(target, 1, instr(target, ':') - 1) IN (${["", ...visible].map(() => "?").join(", ")}))`);
+    where.push(`(action NOT LIKE 'security-%' OR CASE WHEN instr(target, ':') > 0 THEN substr(target, 1, instr(target, ':') - 1) ELSE target END IN (${["", ...visible].map(() => "?").join(", ")}))`);
     args.push("", ...visible);
   }
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";

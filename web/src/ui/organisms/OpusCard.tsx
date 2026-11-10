@@ -6,6 +6,7 @@ import { TimeAgo } from "../atoms/TimeAgo";
 import { StepDraft } from "../molecules/StepDraft";
 import { QueuedPress } from "../molecules/QueuedPress";
 import { cn } from "../cn";
+import { safeHref } from "../safeHref";
 
 const area = "block w-full [field-sizing:content] max-h-[60vh] min-h-24 resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60";
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -153,7 +154,7 @@ export function OpusCard({ card: a, operator, viewer, editInstructions = true, o
       {a.state === "done" && a.done && (
         <p className="mt-2 text-xs text-ink/55">
           {a.done.link ? (
-            <a href={a.done.link} target="_blank" rel="noreferrer" className="text-accent-ink hover:underline">
+            <a href={safeHref(a.done.link)} target="_blank" rel="noreferrer" className="text-accent-ink hover:underline">
               {a.done.label}
             </a>
           ) : (

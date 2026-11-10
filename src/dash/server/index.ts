@@ -1,7 +1,7 @@
 // HTTP server: sign-in, sessions, CSRF, rate limits, security headers and
 // routing for the dashboard. Handlers only ever see authenticated requests.
 import { maintainerWritesOn } from "../../settlers.ts";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -207,6 +207,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     headers["referrer-policy"] = "same-origin";
     headers["x-content-type-options"] = "nosniff";
     headers["cross-origin-opener-policy"] = "same-origin";
+    headers["cross-origin-resource-policy"] = "same-origin";
+    headers["permissions-policy"] = "camera=(), microphone=(), geolocation=()";
     if (config.baseUrl?.startsWith("https:")) headers["strict-transport-security"] = "max-age=31536000; includeSubDomains";
     return headers;
   }
@@ -625,7 +627,11 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const r = relative(config.webDist, full);
     if (!r || r === ".." || r.startsWith(`..${sep}`) || isAbsolute(r)) return null;
     try {
-      return await readFile(full);
+      const real = await realpath(full);
+      const root = await realpath(config.webDist);
+      const rr = relative(root, real);
+      if (!rr || rr === ".." || rr.startsWith(`..${sep}`) || isAbsolute(rr)) return null;
+      return await readFile(real);
     } catch {
       return null;    // missing, or a directory
     }

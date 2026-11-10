@@ -18,6 +18,7 @@ import { cn } from "../../ui/cn";
 import { when } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite } from "../admin/parts";
 import { BATCH_STATE } from "../queue/mergeParts";
+import { safeHref } from "../../ui/safeHref";
 
 const gh = (path: string) => `https://github.com/${path}`;
 const ext = "inline-flex items-center gap-1 text-accent-ink hover:underline";
@@ -94,7 +95,7 @@ function Ci({ b }: { b: BatchDetail }) {
               const [Icon, cls] = CHECK_ICON[c.state];
               return (
                 <li key={c.name}>
-                  <a href={c.url} target="_blank" rel="noopener noreferrer" className="flex min-h-9 items-center gap-2 py-1.5 text-sm hover:underline max-md:min-h-11">
+                  <a href={safeHref(c.url)} target="_blank" rel="noopener noreferrer" className="flex min-h-9 items-center gap-2 py-1.5 text-sm hover:underline max-md:min-h-11">
                     <Icon className={cn("shrink-0", cls)} size={16} />
                     <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{c.name}</span>
                     <ArrowSquareOutIcon size={14} className="shrink-0 text-ink/40" />

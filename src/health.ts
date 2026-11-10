@@ -13,13 +13,16 @@ export function dbReady(db: DatabaseSync): boolean {
   }
 }
 
+/** Headers every probe answer carries: no sniffing, no framing, no loading of anything. */
+export const PROBE_HEADERS = { "x-content-type-options": "nosniff", "x-frame-options": "DENY", "content-security-policy": "default-src 'none'" };
+
 /** Answers GET/HEAD /healthz (process up) and /readyz (`ready()`); returns false for any other request. */
 export function serveHealth(req: IncomingMessage, res: ServerResponse, ready: () => boolean): boolean {
   const path = (req.url ?? "").split("?")[0];
   if ((req.method !== "GET" && req.method !== "HEAD") || (path !== "/healthz" && path !== "/readyz")) return false;
   const ok = path === "/healthz" || ready();
   const body = ok ? "ok\n" : "not ready\n";
-  res.writeHead(ok ? 200 : 503, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(body) });
+  res.writeHead(ok ? 200 : 503, { ...PROBE_HEADERS, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(body) });
   res.end(req.method === "HEAD" ? undefined : body);
   return true;
 }
@@ -29,7 +32,7 @@ export async function startHealthServer(listen: string, ready: () => boolean): P
   const { host, port } = parseListen(listen);
   const server: Server = createServer({ requestTimeout: 10_000, headersTimeout: 5_000, maxHeaderSize: 4 * 1024 }, (req, res) => {
     if (!serveHealth(req, res, ready)) {
-      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.writeHead(404, { ...PROBE_HEADERS, "content-type": "text/plain; charset=utf-8" });
       res.end("not found\n");
     }
   });
