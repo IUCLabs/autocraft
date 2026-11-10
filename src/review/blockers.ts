@@ -3,6 +3,15 @@ import type { DatabaseSync } from "node:sqlite";
 
 const REF = /^([\w.-]+)#(\d+)$/;
 
+/** The end of a review wait on blocking items: "<ref>, <ref>, which blocks its review". */
+export const BLOCKS_REVIEW = ", which blocks its review";
+
+/** The items a review wait names as its blockers; empty for any other wait. */
+export function blockersOfWait(wait: string | null): string[] {
+  if (!wait?.endsWith(BLOCKS_REVIEW)) return [];
+  return wait.slice(0, -BLOCKS_REVIEW.length).split(", ").filter((r) => REF.test(r));
+}
+
 /** The stored `blocked_by` value (JSON array of refs) as a list. */
 export function storedBlockedBy(s: string | null | undefined): string[] {
   try {

@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi } from "../optional-checks.ts";
-import { activeBlockers, hasOpenQuestion, storedBlockedBy } from "./blockers.ts";
+import { BLOCKS_REVIEW, activeBlockers, hasOpenQuestion, storedBlockedBy } from "./blockers.ts";
 import { MAX_RERUNS_PER_DAY, discussionState, markedStaleSince, maintainerSince, reviewRequestedSince, type DiscussionState } from "./discussion.ts";
 import { ourCommitsSince } from "./ours.ts";
 
@@ -103,7 +103,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
     let settled = false;
     if (last?.verdict === "hold" && storedBlockedBy(last.blocked_by).length) {
       const open = activeBlockers(db, `${repo}#${number}`, last.blocked_by, last.at, nowMs);
-      if (open.length) return { kind: "blocked", wait: `${open.join(", ")}, which blocks its review`, ...(hasOpenQuestion(db, open) ? { person: true } : {}) };
+      if (open.length) return { kind: "blocked", wait: `${open.join(", ")}${BLOCKS_REVIEW}`, ...(hasOpenQuestion(db, open) ? { person: true } : {}) };
       settled = true;
     }
     const ci = headCi(db, repo, number, head);
