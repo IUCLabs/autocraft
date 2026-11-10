@@ -5,6 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { fixStoppedWait, TRIAGE_WAIT } from "./core/decide-item.ts";
 import type { WaitKind } from "./core/plan.ts";
+import { blockersOfWait } from "./review/blockers.ts";
 
 export type LivenessVerdict = "stuck" | "long";
 /** Why an item is live (`live` causes) or stuck (`stuck` causes). */
@@ -107,16 +108,18 @@ export function computeLiveness(db: DatabaseSync, nowMs: number = Date.now()): L
     open++;
     const key = `${r.repo}#${r.number}`;
     const since = v.status?.since ?? r.planned_at;
+    // A review held by other items waits on the questions about those items.
+    const asked = flags.question.has(key) || blockersOfWait(r.wait).some((b) => flags.question.has(b));
     const verdict = classify(
       { kind: r.kind, state: r.state, itemState: r.item_state, phase, wait: r.wait, waitKind: v.waitKind ?? null, actions: (JSON.parse(r.actions) as unknown[]).length, since },
-      { question: flags.question.has(key), answered: flags.answered.has(key), dispute: flags.dispute.has(key), stopped: flags.stopped.has(key) },
+      { question: asked, answered: flags.answered.has(key), dispute: flags.dispute.has(key), stopped: flags.stopped.has(key) },
     );
     const base = { repo: r.repo, number: r.number, kind: r.kind, state: r.state, wait: r.wait, phase, since };
     if (!verdict.live) {
       items.push({ ...base, verdict: "stuck", cause: verdict.cause });
       causes[verdict.cause] = (causes[verdict.cause] ?? 0) + 1;
     } else if (verdict.cause !== "parked" && verdict.cause !== "question" && verdict.cause !== "dispute" && verdict.cause !== "stopped"
-      && !flags.question.has(key) && nowMs - Date.parse(since) > longMs) {
+      && !asked && nowMs - Date.parse(since) > longMs) {
       items.push({ ...base, verdict: "long", cause: verdict.cause });
     }
   }

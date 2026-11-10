@@ -26,3 +26,10 @@ test("an item nobody will move or answer is stuck", () => {
   assert.equal(cause({ state: "not-reviewed", wait: "the label referee", waitKind: "system" }), "stuck:internal-wait");
   assert.equal(cause({ state: "needs-decision", wait: "an operator's Merge? answer", waitKind: "person" }, { question: true }), "live:question");
 });
+
+test("a review wait names its blockers, whose questions keep the item live", async () => {
+  const { blockersOfWait } = await import("../src/review/blockers.ts");
+  assert.deepEqual(blockersOfWait("deckcraft#1424, deckcraft#990, which blocks its review"), ["deckcraft#1424", "deckcraft#990"]);
+  assert.deepEqual(blockersOfWait("CI on the latest commit to pass"), []);
+  assert.deepEqual(blockersOfWait(null), []);
+});
