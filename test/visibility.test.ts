@@ -252,4 +252,31 @@ describe("repo visibility", () => {
     assert.equal(viewer.needs.total, maint.needs.total);
   });
 
+  test("rows of an untracked repo and of a private repo the user cannot read are operator-only", async () => {
+    const now = new Date().toISOString();
+    const rows = (repo: string) => {
+      const job = db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, repo) VALUES ('classify', '{}', 'cli', ?, 'done', ?)").run(now, repo);
+      const task = db.prepare("INSERT INTO build_tasks (step, repo, number, head_sha, requires, plan, state, queued_at, patch, log_bytes) VALUES ('verify', ?, 7, 'h', '{}', '[]', 'done', ?, 'diff', 0)").run(repo, now);
+      const run = insertRun(db, { jobId: null, step: "classify", stage: 1, promptId: "p", promptVersion: "1", provider: "claude", model: "m", accountId: null, items: [{ repo, number: 7 }], prompt: `prompt for ${repo}` });
+      finishRun(db, run, { state: "done", output: `output for ${repo}` });
+      return { job: Number(job.lastInsertRowid), task: Number(task.lastInsertRowid), run };
+    };
+    const gone = rows("gone-app"), vault = rows("vault");
+    const paths = (r: { job: number; task: number; run: number }) => [`/api/pipeline/jobs/${r.job}`, `/api/tasks/${r.task}`, `/api/agents/${r.run}`];
+    const boss = await signedIn("boss");
+    for (const p of [...paths(gone), ...paths(vault)]) assert.equal(await boss.status(p), 200, p);
+    const clients: Record<string, Awaited<ReturnType<typeof signedIn>>> = {};
+    for (const login of ["reader", "maint", "outsider"]) {
+      const c = (clients[login] = await signedIn(login));
+      for (const p of paths(gone)) assert.equal(await c.status(p), 404, `${login} ${p}`);
+      const list = await c.get<{ jobs: { repo: string }[] }>("/api/pipeline/jobs");
+      assert.ok(!list.jobs.some((j) => j.repo === "gone-app"), login);
+    }
+    const { outsider, maint } = clients as Record<string, (typeof clients)[string]>;
+    for (const p of paths(vault)) {
+      assert.equal(await outsider.status(p), 404, p);
+      assert.equal(await maint.status(p), 200, p);
+    }
+  });
+
 });
