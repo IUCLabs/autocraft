@@ -10,6 +10,7 @@ import { LOGIN, checkGithubId, getAccess } from "../../access.ts";
 import { audit, auditRefusedSignIn } from "../audit.ts";
 import type { Req, Res, Route } from "../types.ts";
 import { isLoopbackHost, type Config } from "./config.ts";
+import { resealLegacyValues } from "./reseal.ts";
 import { pkceChallenge, randomToken, safeEqual, TokenBox } from "./crypto.ts";
 import { ImageIndex } from "./image-index.ts";
 import { visibleTo } from "../api/visible.ts";
@@ -72,15 +73,16 @@ export type AppOptions = {
   live?: LiveOptions;        // GET /api/live timing; defaults suit production
   // Opinions and comments per login per hour. The dashboard's routes and the MCP server's feedback must share one instance.
   feedbackLimiter?: RateLimiter;
+  githubUserId?: (login: string) => Promise<number | null>; // numeric GitHub id of a login for new access entries; default: GitHub's API
   githubApi?: string;        // base URL of the GitHub API for the GitHub App calls; default: api.github.com
 };
 
 type Compiled = Route & { parts: string[] };
 
 
-export async function defaultRoutes(feedbackLimiter?: RateLimiter): Promise<Route[]> {
+export async function defaultRoutes(feedbackLimiter?: RateLimiter, githubUserId?: AppOptions["githubUserId"]): Promise<Route[]> {
   const { apiRoutes } = await import("../api/index.ts");
-  return apiRoutes({ limiter: feedbackLimiter });
+  return apiRoutes({ limiter: feedbackLimiter, ...(githubUserId && { githubUserId }) });
 }
 
 function compile(routes: Route[]): Compiled[] {
@@ -158,6 +160,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The org setup link signs in with the OAuth App even when dashboard sign-in uses the GitHub App.
   const setupProvider = opts.provider ?? (config.devAuth ? provider : oauthProviderFor(config));
   const box = new TokenBox(config.secrets.sessionKey);
+  const resealed = resealLegacyValues(db, box);
+  const resealedTotal = Object.values(resealed).reduce((a, b) => a + b, 0);
+  if (resealedTotal) console.log(`re-sealed ${resealedTotal} stored token values under the current key (${Object.entries(resealed).map(([t, n]) => `${t} ${n}`).join(", ")})`);
   // The GitHub App's own provider: it signs users in under login=github-app, and always makes and refreshes their user tokens (the "act as you" authorization).
   // Read at each use: registering or removing the app takes effect without a restart.
   const appProviderNow = (): Provider | null => {
@@ -686,7 +691,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
 
 export async function startServer(opts: AppOptions): Promise<{ server: Server; url: string; app: ReturnType<typeof createApp>; close(): Promise<void> }> {
   const feedbackLimiter = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
-  const app = createApp({ ...opts, feedbackLimiter, routes: opts.routes ?? (await defaultRoutes(feedbackLimiter)) });
+  const app = createApp({ ...opts, feedbackLimiter, routes: opts.routes ?? (await defaultRoutes(feedbackLimiter, opts.githubUserId)) });
   const server = createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, (req, res) => void app.handle(req, res));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

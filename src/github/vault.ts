@@ -13,6 +13,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { envVar } from "../env.ts";
 import { TokenBox } from "../dash/server/crypto.ts";
+import { resealLegacyValues } from "../dash/server/reseal.ts";
 import { readSecrets } from "../dash/server/config.ts";
 import { GitHubProvider, RevokeRefused, type Provider, type Tokens } from "../dash/server/provider.ts";
 import { failUserTokens, readUserTokens, revocationAad, shareRefresh, swapUserTokens } from "../dash/server/user-tokens.ts";
@@ -164,5 +165,8 @@ export class Vault {
 export function openVault(db: DatabaseSync, env: NodeJS.ProcessEnv = process.env): Vault | null {
   const secrets = readSecrets(envVar("SECRETS_FILE", env));
   if (!secrets.app) return null;
-  return new Vault(db, new TokenBox(secrets.sessionKey), new GitHubProvider(secrets.app.clientId, secrets.app.clientSecret));
+  const box = new TokenBox(secrets.sessionKey);
+  // The runner may start before the dashboard has re-sealed values under the current key.
+  resealLegacyValues(db, box);
+  return new Vault(db, box, new GitHubProvider(secrets.app.clientId, secrets.app.clientSecret));
 }

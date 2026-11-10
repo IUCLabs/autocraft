@@ -21,9 +21,10 @@ export function listAccess(db: DatabaseSync): AccessRow[] {
   return db.prepare("SELECT login, role, added_by, added_at, note FROM access ORDER BY login COLLATE NOCASE").all() as AccessRow[];
 }
 
-// The access entry's GitHub id is stored at the first sign-in. Later sign-ins
-// must present the same id: a login that was renamed or released and taken by
-// someone else is not the person who was added.
+// The access entry's GitHub id is stored when the entry is added (or, for an
+// entry added without one, at the first sign-in). Sign-ins must present the
+// same id: a login that was renamed or released and taken by someone else is
+// not the person who was added.
 export function checkGithubId(db: DatabaseSync, login: string, id: number): "ok" | "bound" | "mismatch" {
   const row = db.prepare("SELECT github_id FROM access WHERE login = ?").get(login) as { github_id: number | null } | undefined;
   if (!row) return "mismatch";
@@ -56,13 +57,13 @@ function tx<T>(db: DatabaseSync, f: () => T): T {
   }
 }
 
-export function addLogin(db: DatabaseSync, by: string, login: string, role: Role, note: string | null): void {
+export function addLogin(db: DatabaseSync, by: string, login: string, role: Role, note: string | null, githubId: number | null = null): void {
   if (!LOGIN.test(login)) throw new AccessError(`not a GitHub login: ${JSON.stringify(login)}`);
   if (!isRole(role)) throw new AccessError(`role must be ${ROLES.join(", ")}`);
   tx(db, () => {
     if (getAccess(db, login)) throw new AccessError(`${login} is already on the access list`);
-    db.prepare("INSERT INTO access (login, role, added_by, added_at, note) VALUES (?, ?, ?, ?, ?)")
-      .run(login, role, by, new Date().toISOString(), note || null);
+    db.prepare("INSERT INTO access (login, role, added_by, added_at, note, github_id) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(login, role, by, new Date().toISOString(), note || null, githubId);
     audit(db, by, "access-add", login, { role });
   });
 }

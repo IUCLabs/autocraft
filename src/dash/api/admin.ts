@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   AccessOverview, AuditEntry, AuditPage, Contributor, ContributorList, ContributorSort, RulePreview, RepoApproval, RepoLabels, Tier, TrackedRepo, WhitelistRule,
 } from "../../../web/src/api/types.ts";
-import { AccessError, addLogin, isRole, listAccess, removeLogin, ROLES, setRole } from "../../access.ts";
+import { AccessError, addLogin, getAccess, isRole, LOGIN, listAccess, removeLogin, ROLES, setRole } from "../../access.ts";
 import { approvalOf, setApproval } from "../../labels/approval.ts";
 import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
 import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
@@ -465,10 +465,28 @@ const roleOf = (v: unknown) => {
   return v;
 };
 
-export function accessAdd(db: DatabaseSync, req: Req): AccessOverview {
+/** The numeric GitHub id of a login: null when GitHub has no such user; throws when GitHub can't be reached. */
+export type GithubUserLookup = (login: string) => Promise<number | null>;
+
+export async function accessAdd(db: DatabaseSync, req: Req, lookup: GithubUserLookup): Promise<AccessOverview> {
   requireOperator(req, "manage access");
   const b = body(req);
-  refused(() => addLogin(db, req.user.login, required(b.login, "login"), roleOf(b.role), text(b.note, ACCESS_NOTE_MAX, "note")));
+  const login = required(b.login, "login");
+  const role = roleOf(b.role);
+  const note = text(b.note, ACCESS_NOTE_MAX, "note");
+  // Validates and rejects duplicates before GitHub is asked.
+  refused(() => {
+    if (!LOGIN.test(login)) throw new AccessError(`not a GitHub login: ${JSON.stringify(login)}`);
+    if (getAccess(db, login)) throw new AccessError(`${login} is already on the access list`);
+  });
+  let id: number | null;
+  try {
+    id = await lookup(login);
+  } catch {
+    throw new HttpError(502, "GitHub could not be reached to look up that login. Try again.");
+  }
+  if (id === null) throw new HttpError(400, `${login} is not a GitHub user`);
+  refused(() => addLogin(db, req.user.login, login, role, note, id));
   return accessOverview(db, req);
 }
 

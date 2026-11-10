@@ -19,6 +19,7 @@ import { HttpError, RateLimiter } from "../server/util.ts";
 import { findingsOf, type PremergeRow } from "../../premerge/store.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
+import { githubUserId } from "../../github/users.ts";
 import * as discord from "./discord.ts";
 import * as agents from "./agents.ts";
 import * as build from "./build.ts";
@@ -73,6 +74,8 @@ export type ApiOptions = {
   embedder?: Embedder;
   // Runs `gh` for the batch controls that close a PR; default: the real one. Tests fake it.
   exec?: Exec;
+  // Looks up a login's numeric GitHub id when an access entry is added; default: GitHub's API. Tests fake it.
+  githubUserId?: adm.GithubUserLookup;
 };
 
 const ok = (fn: (db: DatabaseSync, req: Req) => unknown) => async (db: DatabaseSync, req: Req): Promise<Res> => {
@@ -485,7 +488,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/pipeline-on", (db, req) => adm.pipelineSwitch(db, req, true)),
     post("/api/repos/pipeline-off", (db, req) => adm.pipelineSwitch(db, req, false)),
     { method: "GET", pattern: "/api/access", operator: true, handler: ok(adm.accessOverview) },
-    { method: "POST", pattern: "/api/access/add", operator: true, handler: ok(adm.accessAdd) },
+    { method: "POST", pattern: "/api/access/add", operator: true, handler: ok((db, req) => adm.accessAdd(db, req, opts.githubUserId ?? githubUserId)) },
     { method: "POST", pattern: "/api/access/remove", operator: true, handler: ok(adm.accessRemove) },
     { method: "POST", pattern: "/api/access/role", operator: true, handler: ok(adm.accessRole) },
     { method: "POST", pattern: "/api/access/sessions/revoke", operator: true, handler: ok(adm.revokeSession) },

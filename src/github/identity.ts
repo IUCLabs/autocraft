@@ -6,6 +6,7 @@
 // The instance-wide setting `github_identity` decides whether that is used at all: under `box` (the default) the box
 // account makes every write, and `as` only appears in the audit row as a record of what it would be.
 import type { DatabaseSync } from "node:sqlite";
+import { dropSessionTokens } from "../dash/server/user-tokens.ts";
 import { audit } from "../dash/audit.ts";
 import type { Grant, Guarded } from "../core/guard.ts";
 import { ownerOf } from "../owners.ts";
@@ -33,7 +34,14 @@ export function setGithubIdentity(db: DatabaseSync, by: string, value: unknown):
   if (value === "box") db.prepare("DELETE FROM main.settings WHERE key = ?").run(KEY);
   else db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(KEY, value);
   audit(db, by, "github-identity", value, { identity: value, was });
-  db.prepare("DELETE FROM sessions").run();
+  // Each session's own token set is revoked as well (it may differ from the login's stored one).
+  const sessions = db.prepare("DELETE FROM sessions RETURNING login, id_hash, token_enc").all() as { login: string; id_hash: string; token_enc: string | null }[];
+  for (const s of sessions) dropSessionTokens(db, s.login, s.id_hash, s.token_enc);
+  // The stored user tokens belong to the mode being left: queue their revocation at GitHub (the vault's sweep).
+  const stored = db.prepare("DELETE FROM user_tokens RETURNING login, token_enc").all() as { login: string; token_enc: string }[];
+  const queue = db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at, kind) VALUES (?, ?, ?, 'grant')");
+  const at = new Date().toISOString();
+  for (const t of stored) queue.run(t.login, t.token_enc, at);
   return true;
 }
 
