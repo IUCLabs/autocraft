@@ -156,13 +156,14 @@ export class Signals {
     const { db, log } = this.#d;
     const judge = this.#d.judge ?? modelJudge;
     try {
+      // The daily cap comes first: a spent cap (or a cap of 0) makes no Jev or model call.
+      if (signalSpentUsd(db, (this.#d.now ?? Date.now)()) >= signalCapUsd(db)) return null;
       if (jevAvailable(db)) {
         const p = await judge.jev(db, a);
         const band = p === null ? "unsure" : signalBand(p);
         if (band === "yes") return true;
         if (band === "no") return false;
       }
-      if (signalSpentUsd(db, (this.#d.now ?? Date.now)()) >= signalCapUsd(db)) return null;
       return await judge.haiku(db, a);
     } catch (e) {
       log(`discord: signal model call failed: ${(e as Error).message.slice(0, 200)}`);

@@ -248,7 +248,8 @@ export const ownedTask = mine;
 export function startTask(db: DatabaseSync, envId: string, id: number): { cancel: number[] } {
   const t = mine(db, envId, id);
   const at = nowIso();
-  db.prepare("UPDATE build_tasks SET state = 'running', started_at = COALESCE(started_at, ?), heartbeat_at = ? WHERE id = ?").run(at, at, t.id);
+  const r = db.prepare("UPDATE build_tasks SET state = 'running', started_at = COALESCE(started_at, ?), heartbeat_at = ? WHERE id = ? AND env_id = ? AND state IN ('claimed', 'running')").run(at, at, t.id, envId);
+  if (r.changes !== 1) throw new BuildError(409, "this task is not running on this environment");
   return { cancel: cancelIds(db, envId) };
 }
 
@@ -332,8 +333,14 @@ export function finishTask(db: DatabaseSync, envId: string, id: number, body: un
   const sandbox = parseSandboxEnv(o.environment);
   const ok = results.length > 0 && results.every((r) => r.exitCode === 0 && !r.timedOut);
   const state: TaskState = t.cancel_requested_at ? "cancelled" : ok ? "done" : "failed";
-  db.prepare("UPDATE build_tasks SET state = ?, ended_at = ?, results = ?, summary = ?, sandbox_env = ? WHERE id = ?")
-    .run(state, nowIso(), JSON.stringify(results), summary, sandbox ? JSON.stringify(sandbox) : null, id);
+  const r = db.prepare("UPDATE build_tasks SET state = ?, ended_at = ?, results = ?, summary = ?, sandbox_env = ? WHERE id = ? AND env_id = ? AND state IN ('claimed', 'running')")
+    .run(state, nowIso(), JSON.stringify(results), summary, sandbox ? JSON.stringify(sandbox) : null, id, envId);
+  if (r.changes !== 1) {
+    // An operator cancelled it between the read and the write: the cancel stands.
+    const now = db.prepare("SELECT state FROM build_tasks WHERE id = ?").get(id) as { state: TaskState } | undefined;
+    if (now && TERMINAL.includes(now.state)) return { state: now.state };
+    throw new BuildError(409, "this task is not running on this environment");
+  }
   return { state };
 }
 
@@ -342,10 +349,15 @@ export function cancelTask(db: DatabaseSync, id: unknown, by: string): BuildTask
   const n = typeof id === "number" ? id : Number(id);
   const t = Number.isInteger(n) ? (db.prepare("SELECT * FROM build_tasks WHERE id = ?").get(n) as TaskRow | undefined) : undefined;
   if (!t) throw new BuildError(404, "no such task");
-  if (TERMINAL.includes(t.state)) throw new BuildError(409, `the task is already ${t.state}`);
   const at = nowIso();
-  if (t.state === "queued") db.prepare("UPDATE build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?, summary = 'Cancelled before it started.' WHERE id = ? AND state = 'queued'").run(at, at, t.id);
-  else db.prepare("UPDATE build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?, summary = 'Cancelled by an operator.' WHERE id = ? AND state IN ('claimed', 'running')").run(at, at, t.id);
+  // One statement, so a worker claiming the task in another process cannot slip between the check and the write.
+  const r = db.prepare(`UPDATE build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?,
+      summary = CASE state WHEN 'queued' THEN 'Cancelled before it started.' ELSE 'Cancelled by an operator.' END
+    WHERE id = ? AND state IN ('queued', 'claimed', 'running') `).run(at, at, t.id);
+  if (r.changes !== 1) {
+    const now = db.prepare("SELECT state FROM build_tasks WHERE id = ?").get(t.id) as { state: TaskState } | undefined;
+    throw new BuildError(409, `the task is already ${now?.state ?? t.state}`);
+  }
   audit(db, by, "task-cancel", `task:${t.id}`, { repo: t.repo, was: t.state });
   return getTask(db, t.id)!;
 }

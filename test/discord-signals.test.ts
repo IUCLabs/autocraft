@@ -6,7 +6,7 @@ import { after, before, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { setJevEnabled } from "../src/agents/jev.ts";
 import { DiscordKeys } from "../src/discord/keys.ts";
-import { Signals, signalCountOf, signalLinks, type Judge } from "../src/discord/signals.ts";
+import { SIGNAL_CAP_KEY, Signals, signalCountOf, signalLinks, type Judge } from "../src/discord/signals.ts";
 import { handleDispatch } from "../src/discord/store.ts";
 import { statusList } from "../src/dash/api/items.ts";
 import type { Req } from "../src/dash/types.ts";
@@ -115,5 +115,17 @@ describe("attention signals", () => {
     await run(from("c0", "u8", "photocraft#1 photocraft#2 photocraft#3 photocraft#4 photocraft#5 photocraft#6 review"));
     await s.idle();
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM discord_mentions WHERE signal = 1").get() as { n: number }).n, 11, "six items: not checked");
+  });
+
+  test("a daily cap of 0 makes no Jev or Haiku call", async () => {
+    db.prepare("INSERT INTO settings (key, value) VALUES (?, '0') ON CONFLICT(key) DO UPDATE SET value = '0'").run(SIGNAL_CAP_KEY);
+    try {
+      const jev = calls.jev, haiku = calls.haiku;
+      jevP = 0.9; await send("MESSAGE_CREATE", msg("cap1", "please review photocraft#3"));
+      assert.equal(calls.jev, jev);
+      assert.equal(calls.haiku, haiku);
+    } finally {
+      db.prepare("DELETE FROM settings WHERE key = ?").run(SIGNAL_CAP_KEY);
+    }
   });
 });

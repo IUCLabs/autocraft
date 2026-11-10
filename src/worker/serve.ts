@@ -1,7 +1,7 @@
 // The worker loop: hello, claim, run tasks, heartbeats, cancel.
 import type { WorkerConfig } from "./config.ts";
 import { freeDiskGb } from "./config.ts";
-import type { WorkerApi } from "./client.ts";
+import { ApiError, type WorkerApi } from "./client.ts";
 import { removeStaleContainers } from "./container.ts";
 import { cleanWarm } from "./warm.ts";
 import { executeTask, removeStaleWorkDirs } from "./executor.ts";
@@ -133,7 +133,16 @@ async function runTask(d: ServeDeps, task: ClaimedTask, ac: AbortController, run
   log(`task ${task.id} (${task.repo}@${task.headSha.slice(0, 12)}) started`);
   let finishArgs: Parameters<typeof api.finish> extends [number, ...infer R] ? R : never;
   try {
-    await api.start(task.id).catch((e) => log(`start of task ${task.id} failed (${(e as Error).message})`));
+    // A 409 means the task is no longer ours (cancelled after the claim): run nothing and report nothing.
+    let gone = false;
+    await api.start(task.id).catch((e) => {
+      if (e instanceof ApiError && e.status === 409) gone = true;
+      else log(`start of task ${task.id} failed (${(e as Error).message})`);
+    });
+    if (gone) {
+      log(`task ${task.id} was cancelled before it started`);
+      return;
+    }
     const r = await executeTask(d.cfg, task, {
       log: (step, chunk) => sink.write(step, chunk),
       artifact: (name, body, ct) => api.upload(task.id, name, body, ct).then(() => {}),

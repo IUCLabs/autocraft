@@ -174,7 +174,8 @@ export function handler(o: WorkerServerOptions) {
 
 export async function startWorkerServer(o: WorkerServerOptions): Promise<{ url: string; server: Server; close: () => Promise<void> }> {
   const { host, port } = parseListen(o.listen ?? envVar("WORKER_LISTEN") ?? DEFAULT_WORKER_LISTEN);
-  const server = createServer({ requestTimeout: 120_000, headersTimeout: 15_000, maxHeaderSize: 8 * 1024 }, (req, res) => void handler(o)(req, res));
+  const serve = handler(o);
+  const server = createServer({ requestTimeout: 120_000, headersTimeout: 15_000, maxHeaderSize: 8 * 1024 }, (req, res) => void serve(req, res));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, host, resolve);
