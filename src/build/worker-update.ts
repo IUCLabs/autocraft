@@ -26,7 +26,20 @@ export type WorkerAdmin = {
   update(spec: UpdateSpec): Promise<void>;
 };
 
-const sshArgs = (s: UpdateSpec): string[] => ["-i", s.keyFile, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", s.ssh];
+/** True when every field has the expected shape; the values reach ssh and git argument lists. */
+export function validSpec(s: UpdateSpec): boolean {
+  return (
+    typeof s.sha === "string" && /^[0-9a-f]{40,64}$/.test(s.sha) &&
+    typeof s.ssh === "string" && /^[A-Za-z0-9._-]+@[A-Za-z0-9.:_-]+$/.test(s.ssh) && !s.ssh.startsWith("-") &&
+    typeof s.gitDir === "string" && s.gitDir.startsWith("/") &&
+    typeof s.keyFile === "string" && s.keyFile.startsWith("/")
+  );
+}
+
+const sshArgs = (s: UpdateSpec): string[] => {
+  if (!validSpec(s)) throw new Error("invalid worker update spec");
+  return ["-i", s.keyFile, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", s.ssh];
+};
 
 function collect(cmd: string, args: string[], input?: NodeJS.ReadableStream): Promise<{ code: number | null; out: string; err: string }> {
   return new Promise((resolve, reject) => {
@@ -50,6 +63,7 @@ export const sshAdmin: WorkerAdmin = {
     }
   },
   async update(s) {
+    if (!validSpec(s)) throw new Error("invalid worker update spec");
     const git = spawn("git", [`--git-dir=${s.gitDir}`, "archive", s.sha], { stdio: ["ignore", "pipe", "pipe"] });
     let gitErr = "";
     git.stderr.on("data", (d) => (gitErr += d));
@@ -72,7 +86,7 @@ export function pendingUpdate(db: DatabaseSync): UpdateSpec | null {
   if (!raw) return null;
   try {
     const s = JSON.parse(raw) as UpdateSpec;
-    return s && typeof s.sha === "string" ? s : null;
+    return s && validSpec(s) ? s : null;
   } catch {
     return null;
   }

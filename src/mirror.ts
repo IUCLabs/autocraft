@@ -275,9 +275,9 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
     repo, number: n.number, kind, state: n.state, title: n.title, body: n.body, url: n.url,
     author: login(n.author), author_type: n.author?.__typename ?? null, author_association: n.authorAssociation,
     created_at: n.createdAt, updated_at: n.updatedAt, closed_at: n.closedAt,
-    labels: JSON.stringify(n.labels.nodes.map((x: Node) => x.name)),
-    assignees: JSON.stringify(n.assignees.nodes.map((x: Node) => x.login)),
-    comments_count: n.commentCount.totalCount, reactions_count: n.reactionCount?.totalCount ?? null, detail_level: detail,
+    labels: JSON.stringify((n.labels?.nodes ?? []).map((x: Node) => x?.name)),
+    assignees: JSON.stringify((n.assignees?.nodes ?? []).map((x: Node) => x?.login)),
+    comments_count: n.commentCount?.totalCount ?? 0, reactions_count: n.reactionCount?.totalCount ?? null, detail_level: detail,
   });
   if (kind === "issue") {
     r.state_reason = n.stateReason;
@@ -288,12 +288,12 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
     additions: n.additions, deletions: n.deletions, changed_files: n.changedFiles,
     head_ref: n.headRefName, head_oid: n.headRefOid, head_repo: n.headRepository?.nameWithOwner ?? null,
     base_ref: n.baseRefName,
-    closing_issues: JSON.stringify(n.closingIssuesReferences.nodes.map((x: Node) => x.number)),
+    closing_issues: JSON.stringify((n.closingIssuesReferences?.nodes ?? []).map((x: Node) => x?.number)),
   });
   if (detail === "full") {
     Object.assign(r, {
       maintainer_can_modify: Number(n.maintainerCanModify), mergeable: n.mergeable,
-      review_decision: n.reviewDecision, ci_state: n.commits.nodes[0]?.commit.statusCheckRollup?.state ?? null,
+      review_decision: n.reviewDecision, ci_state: n.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state ?? null,
     });
   }
   return r;
@@ -309,10 +309,10 @@ const mentions = (body: unknown, names: string[]): number => {
 function commentRows(repo: string, kind: Kind, n: Node, own: string[]): SQLInputValue[][] {
   // `counted`: whether the entry counts as new discussion for the review stage (src/review/discussion.ts).
   const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body, inline: c.comments?.totalCount }));
-  const rows = n.comments.nodes.map((c: Node) =>
+  const rows = (n.comments?.nodes ?? []).filter(Boolean).map((c: Node) =>
     [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c), c.authorAssociation ?? null, mentions(c.body, own), c.url ?? null]);
   if (kind === "pr") {
-    for (const c of n.reviews.nodes) {
+    for (const c of (n.reviews?.nodes ?? []).filter(Boolean)) {
       // A review without a body still counts: its inline threads are the discussion, and it makes earlier reviews stale.
       rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c), c.authorAssociation ?? null, mentions(c.body, own), c.url ?? null]);
     }

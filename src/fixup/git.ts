@@ -37,6 +37,9 @@ const spawned = (cmd: string, args: string[], opts: ExecOpts, env: NodeJS.Proces
   p.stdin.end(opts.input ?? "");
 });
 
+/** Largest file read whole into memory for a conflict. */
+const MAX_FILE_BYTES = 1024 * 1024;
+
 export function fixupDir(): string {
   return envVar("FIXUP_DIR") ?? join(homedir(), ".cache/autocraft/fixups");
 }
@@ -111,11 +114,14 @@ export class Git {
   }
 
   /** The blob at `sha:path` as text with its mode, or why it can't be used. */
-  async file(sha: string, path: string): Promise<{ ok: true; mode: string; content: string } | { ok: false; reason: string }> {
+  async file(sha: string, path: string): Promise<{ ok: true; mode: string; content: string } | { ok: false; reason: string; tooLarge?: true }> {
     const t = await this.git(["ls-tree", sha, "--", path]);
     const m = t.stdout.match(/^(\d+) (\w+) [0-9a-f]+\t/);
     if (t.code !== 0 || !m) return { ok: false, reason: `${path} does not exist at the head commit` };
     if (m[2] !== "blob" || (m[1] !== "100644" && m[1] !== "100755")) return { ok: false, reason: `${path} is not a regular file` };
+    const size = await this.git(["cat-file", "-s", `${sha}:${path}`]);
+    if (size.code !== 0) return { ok: false, reason: `could not read ${path}` };
+    if (Number(size.stdout.trim()) > MAX_FILE_BYTES) return { ok: false, reason: `${path} is over the size limit`, tooLarge: true };
     const r = await this.git(["cat-file", "blob", `${sha}:${path}`]);
     if (r.code !== 0) return { ok: false, reason: `could not read ${path}` };
     if (r.stdout.includes("\0")) return { ok: false, reason: `${path} is binary` };

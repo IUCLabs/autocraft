@@ -4,6 +4,7 @@
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { exec, fixupDir, Git } from "../fixup/git.ts";
+import { SHARED_NAME } from "./command.ts";
 import { pruneSessionStores } from "./session-store.ts";
 import { buildCheckout, checkoutRoot, pruneCheckouts } from "./checkout.ts";
 
@@ -66,7 +67,7 @@ export async function checkoutForCommit(repo: string, branch: string, sha: strin
 }
 
 async function checkoutOf(repo: string, sha: string, label: string, log: (line: string) => void, fetch: (g: Git) => Promise<string | null>): Promise<string | null> {
-  if (!sandboxAvailable()) return null;
+  if (!sandboxAvailable() || !SHARED_NAME.test(repo)) return null;
   try {
     const dest = join(checkoutRoot(), repo, sha);
     pruneCheckouts(checkoutRoot(), MAX_AGE_MS);

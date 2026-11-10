@@ -573,6 +573,8 @@ export function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { re
 /** Pushes `sha` to a PR's branch `branch` of `remote` (owner/name); refused by git when the branch is no longer at the guarded head. */
 export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: Guarded<AskKind>, o: { remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
   const b = g.action.bucket;
+  // The remote is the PR's head repository, which is a fork for an outside PR: only its shape can be checked here.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+$/.test(o.remote) || o.branch.startsWith("-") || !/^[0-9a-f]{40,64}$/.test(o.sha)) throw new Error("the push target is not a repository and branch");
   if ((g.action.kind === "fixup" && b === "ask") || (g.action.kind === "cifix" && b === "rerun")) throw new Error(`a ${g.action.kind}:${b} grant does not allow a push`);
   return pushed(w, g, git, action, refOf(g.repo, g.number), o, `--force-with-lease=refs/heads/${o.branch}:${g.head}`, details, { repo: g.repo, number: g.number });
 }
