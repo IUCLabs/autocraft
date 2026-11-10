@@ -38,7 +38,7 @@ export class TokenBox {
   #openWith(key: Buffer, sealed: string, aad: string): string | null {
     try {
       const buf = Buffer.from(sealed, "base64url");
-      const d = createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
+      const d = createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12), { authTagLength: 16 });
       d.setAAD(Buffer.from(aad));
       d.setAuthTag(buf.subarray(12, 28));
       return Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString("utf8");

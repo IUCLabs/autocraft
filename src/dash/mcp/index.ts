@@ -70,7 +70,7 @@ function args(raw: unknown, spec: Record<string, Kind>, required: string[] = [])
   if (raw === undefined || raw === null) raw = {};
   if (typeof raw !== "object" || Array.isArray(raw)) throw new BadArgs("arguments must be an object");
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (!(k in spec)) throw new BadArgs(`unknown argument "${k}"`);
+  for (const k of Object.keys(o)) if (!Object.hasOwn(spec, k)) throw new BadArgs(`unknown argument "${k}"`);
   for (const k of required) if (o[k] === undefined || o[k] === null) throw new BadArgs(`missing argument "${k}"`);
   const out: Record<string, string | number> = {};
   for (const [k, v] of Object.entries(o)) {
