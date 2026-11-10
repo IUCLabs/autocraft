@@ -41,6 +41,32 @@ export function cleanLine(s: string | null | undefined, max = ITEM_MAX): string 
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
 }
 
+const SAME_OWNER_HOSTS = new Set(["github.com", "www.github.com"]);
+
+function keptLink(url: string, owner: string | undefined): boolean {
+  if (!owner) return false;
+  try {
+    const u = new URL(url);
+    return (u.protocol === "https:" || u.protocol === "http:") && SAME_OWNER_HOSTS.has(u.hostname.toLowerCase())
+      && u.pathname.split("/")[1]?.toLowerCase() === owner.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Review text without links, except links to github.com under `owner`. A markdown link elsewhere becomes its text; a bare
+ * URL elsewhere becomes "(link removed)".
+ */
+export function stripLinks(s: string, owner?: string): string {
+  const md = s.replace(/\[([^\]]*)\]\(\s*<?([^\s)>]*)>?[^)]*\)/g, (all, text: string, url: string) => (keptLink(url, owner) ? all : text));
+  return md.replace(/\b(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (url) => {
+    const tail = /[.,;:!?]+$/.exec(url)?.[0] ?? "";
+    const bare = tail ? url.slice(0, -tail.length) : url;
+    return keptLink(bare, owner) ? url : `(link removed)${tail}`;
+  });
+}
+
 /** What the pipeline will do next with the PR, as far as the posting moment shows. */
 export type RecommendInput = {
   verdict: string;
@@ -80,6 +106,8 @@ export type ReviewPostInput = {
   points: string[];
   /** The head the review was written at. */
   head: string;
+  /** Owner (org or user) of the reviewed repo: links to github.com under it stay in the posted text. */
+  owner?: string;
   /** The short head of the commit our fix-up pushed after the review; set only for a carried review. */
   fixedIn?: string | null;
   /** The claims of the title and body that the review checked, listed after the points. */
@@ -93,14 +121,15 @@ export function reviewBody(r: ReviewPostInput): string {
   const fixedIn = r.fixedIn ? short(r.fixedIn) : null;
   const head = verdictLine(r.verdict, r.sure, fixedIn && r.verdict === "take-fix" ? `Small fixes needed, made in ${fixedIn}:` : undefined);
   const foot = `Reviewed at ${short(r.head)}.${fixedIn ? ` Fixes pushed in ${fixedIn}.` : ""}`;
-  const summary = cleanLine(r.summary);
+  const clean = (t: string, max?: number): string => cleanLine(stripLinks(t, r.owner), max);
+  const summary = clean(r.summary);
   const items: string[] = [];
   for (const p of r.points.slice(0, MAX_POINTS)) {
-    const line = cleanLine(p);
+    const line = clean(p);
     if (line) items.push(`- ${line}`);
   }
   const claims = (r.claims ?? []).slice(0, MAX_CLAIM_LINES).flatMap((c) => {
-    const line = cleanLine(`${c.claim} (${c.evidence})`, 300);
+    const line = clean(`${c.claim} (${c.evidence})`, 300);
     return line ? [`- ${c.status}: ${line}`] : [];
   });
   const rec = r.recommendation;
