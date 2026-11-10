@@ -8,7 +8,7 @@ import type { BuildTaskDetail, TaskPage } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { sniff } from "../src/build/artifacts.ts";
 import { authenticate, createEnv, hello, listEnvs, rotateKey, updateEnv } from "../src/build/envs.ts";
-import { claim, createTask, getTask } from "../src/build/tasks.ts";
+import { cancelTask, claim, createTask, getTask } from "../src/build/tasks.ts";
 import { startWorkerServer } from "../src/build/worker-api.ts";
 import { connect } from "../src/db.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
@@ -252,5 +252,35 @@ describe("dashboard API", () => {
     assert.equal((await v.send(`/api/tasks/${id}/artifacts/..%2F..%2Fbuild.db`)).status, 404);
     const hidden = task({ repo: "vault" });
     assert.equal((await v.send(`/api/tasks/${hidden}/artifacts/x.txt`)).status, 404);
+  });
+});
+
+describe("cancel and the worker API limiter", () => {
+  test("cancelling a claimed task records the cancel; a finished task is a 409 with no audit row", () => {
+    clear();
+    const e = env();
+    const id = task();
+    claim(db, e.id, 1);
+    assert.equal(getTask(db, id)!.state, "claimed");
+    const t = cancelTask(db, id, "op");
+    assert.equal(t.state, "cancelled");
+    assert.equal(t.cancelRequested, true);
+    assert.equal(t.summary, "Cancelled by an operator.");
+    const audits = () => (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'task-cancel'").get() as { n: number }).n;
+    const before = audits();
+    assert.throws(() => cancelTask(db, id, "op"), /already cancelled/);
+    assert.equal(audits(), before);
+  });
+
+  test("the failed-key limiter persists across requests: the 31st wrong key is a 429", async () => {
+    const w = await startWorkerServer({ db, listen: "127.0.0.1:0" });
+    try {
+      const statuses: number[] = [];
+      for (let i = 0; i < 31; i++) statuses.push((await fetch(`${w.url}/worker/hello`, { method: "POST", headers: { authorization: "Bearer wrong-key" } })).status);
+      assert.ok(statuses.slice(0, 30).every((s) => s === 401), statuses.join());
+      assert.equal(statuses[30], 429);
+    } finally {
+      await w.close();
+    }
   });
 });

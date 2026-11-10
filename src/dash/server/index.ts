@@ -181,7 +181,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // GET endpoints that aggregate the mirror or run the embedder: a burst, then 30 a minute, per session.
   const expensiveGets = new TokenBucket(20, 0.5);
   const isExpensive = (path: string, q: URLSearchParams) =>
-    path === "/api/queue" || path === "/api/queue/batches" || path.startsWith("/api/contributors") || (path === "/api/search" && q.get("mode") === "semantic");
+    path === "/api/queue" || path === "/api/queue/batches" || path.startsWith("/api/contributors") || path.startsWith("/api/similar/") || (path === "/api/search" && q.get("mode") === "semantic");
   const live = new LiveHub(db, opts.live);
   // The Inbox MCP server (POST /mcp): calls per login and failed authentications per client address, and feedback posts per login as on the dashboard.
   const mcpLimitToken = new RateLimiter(120, 60_000);
