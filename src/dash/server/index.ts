@@ -186,6 +186,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The Inbox MCP server (POST /mcp): calls per login and failed authentications per client address, and feedback posts per login as on the dashboard.
   const mcpLimitToken = new RateLimiter(120, 60_000);
   const mcpLimitIp = new RateLimiter(300, 60_000);
+  const webhookLimitIp = new RateLimiter(600, 60_000);  // before the body is read or the signature checked
   // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
   const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
   // list_repos and list_fixups aggregate the mirror like the dashboard's expensive GETs: a burst, then 30 a minute, per login.
@@ -305,7 +306,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       [CSRF_HEADER]: session.csrf,
     }, "default-src 'none'");
     res.writeHead(200, headers);
-    live.add(res, () => loadSession(db, cookieId) !== null);
+    live.add(res, () => loadSession(db, cookieId) !== null, session.idHash);
   }
 
   /** Under the app identity with no app keys, sign-in has nothing to go through: it is refused, never sent to the OAuth App. */
@@ -544,6 +545,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       res.end("");
     };
     if (req.method !== "POST") return reply(405, "POST");
+    if (!webhookLimitIp.allow(clientIp(req))) return reply(429);
     let raw: Buffer;
     try {
       raw = await readRaw(req, WEBHOOK_BODY_LIMIT);

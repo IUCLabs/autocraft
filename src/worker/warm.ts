@@ -70,7 +70,7 @@ export function warmKeys(cfg: WorkerConfig): string[] {
 
 /** At startup: drops half-finished replacements and dirs without a record. */
 export function cleanWarm(cfg: WorkerConfig): void {
-  mkdirSync(cfg.warmDir, { recursive: true });
+  mkdirSync(cfg.warmDir, { recursive: true, mode: 0o700 });
   for (const e of readdirSync(cfg.warmDir)) {
     const key = e.replace(/\.json$/, "");
     if (e.startsWith(".") || e.endsWith(".tmp") || !WARM_KEY.test(key) || !existsSync(recOf(cfg, key)) || !existsSync(dirOf(cfg, key))) {
@@ -96,7 +96,7 @@ export function storeWarm(cfg: WorkerConfig, key: string, commit: string, target
   return locked(key, async () => {
     if (opts.replaceIf && !opts.replaceIf(readRecord(cfg, key))) return;
     done = true;
-    mkdirSync(cfg.warmDir, { recursive: true });
+    mkdirSync(cfg.warmDir, { recursive: true, mode: 0o700 });
     const bytes = await diskBytes(target);
     const tag = `${process.pid}-${Date.now()}`;
     const stage = join(cfg.warmDir, `.new-${key}-${tag}`);

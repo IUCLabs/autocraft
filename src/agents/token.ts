@@ -8,7 +8,8 @@
 // The token itself is read from the rendered screen of `setup-token` (login.ts);
 // `extractToken` tells whether the stripped output shows a complete token.
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeBin } from "./box.ts";
@@ -78,11 +79,11 @@ export function isAuthFailure(text: string): boolean {
   return AUTH_FAILURE.test(text);
 }
 
-/** Writes the token through a temporary file in the same directory, then renames it into place. */
+/** Writes the token through a new temporary file (random name, never an existing file) in the same directory, then renames it into place. */
 export function writeToken(configDir: string, token: string): void {
-  const file = tokenFile(configDir), tmp = `${file}.tmp`;
+  const file = tokenFile(configDir), tmp = `${file}.${randomBytes(8).toString("hex")}.tmp`;
   try {
-    writeFileSync(tmp, `${token}\n`, { mode: 0o600 });
+    writeFileSync(tmp, `${token}\n`, { mode: 0o600, flag: "wx" });
     chmodSync(tmp, 0o600);
     renameSync(tmp, file);
   } catch (e) {
@@ -91,7 +92,24 @@ export function writeToken(configDir: string, token: string): void {
   }
 }
 
+const swept = new Set<string>();
+/** Removes `token-check-*` directories a crashed check left in the config directory; once per directory and process. */
+function sweepTokenChecks(configDir: string): void {
+  if (swept.has(configDir)) return;
+  swept.add(configDir);
+  try {
+    for (const e of readdirSync(configDir)) {
+      if (!e.startsWith("token-check-")) continue;
+      const p = join(configDir, e);
+      try {
+        if (Date.now() - statSync(p).mtimeMs > 3600_000) rmSync(p, { recursive: true, force: true });
+      } catch { /* best effort */ }
+    }
+  } catch { /* no such directory */ }
+}
+
 export function readToken(configDir: string): string | null {
+  sweepTokenChecks(configDir);
   try {
     const t = readFileSync(tokenFile(configDir), "utf8").trim();
     return t || null;

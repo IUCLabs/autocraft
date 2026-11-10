@@ -2,7 +2,7 @@
 // `.tar.zst` snapshot per repo key plus a JSON record. Reads need the read
 // key, writes the write key. Plain HTTP: run it behind TLS or on a private network.
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, fstatSync, mkdirSync, statSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { isAbsolute, join } from "node:path";
 import { Transform } from "node:stream";
@@ -43,7 +43,7 @@ const COMMIT = /^[0-9a-f]{7,64}$/;
 
 export function createStore(cfg: StoreConfig): Server {
   mkdirSync(cfg.dir, { recursive: true, mode: 0o700 });
-  for (const e of readdirSync(cfg.dir)) if (e.startsWith(".up-")) rmSync(join(cfg.dir, e), { force: true });
+  for (const e of readdirSync(cfg.dir)) if (e.startsWith(".up-")) rmSync(join(cfg.dir, e), { recursive: true, force: true });
   const recPath = (k: string) => join(cfg.dir, `${k}.json`);
   // The blob name carries its hash, so renaming the record is the single commit point.
   const blobPath = (k: string, sha: string) => join(cfg.dir, `${k}.${sha}.tar.zst`);
@@ -110,7 +110,9 @@ export function createStore(cfg: StoreConfig): Server {
       if (!req.complete || size === 0) throw new Error("incomplete upload");
     } catch (e) {
       rmSync(tmp, { force: true });
-      if (!res.writableEnded && !res.destroyed) send(res, (e as Error).message === "body too large" ? 413 : 400, { error: (e as Error).message });
+      const tooLarge = (e as Error).message === "body too large";
+      if (!tooLarge) console.error(`store: upload for ${key} failed: ${(e as Error).message}`);
+      if (!res.writableEnded && !res.destroyed) send(res, tooLarge ? 413 : 400, { error: tooLarge ? "too large" : "bad upload" });
       return;
     }
     const sha256 = hash.digest("hex");
@@ -131,6 +133,27 @@ export function createStore(cfg: StoreConfig): Server {
     send(res, 200, rec);
   }
 
+  // Failed authentications per remote address: past the limit inside the window, the address is refused.
+  const fails = new Map<string, { start: number; n: number }>();
+  const FAIL_LIMIT = 20;
+  const FAIL_WINDOW_MS = 60_000;
+  const authBlocked = (addr: string): boolean => {
+    const f = fails.get(addr);
+    if (!f) return false;
+    if (Date.now() - f.start >= FAIL_WINDOW_MS) {
+      fails.delete(addr);
+      return false;
+    }
+    return f.n >= FAIL_LIMIT;
+  };
+  const authFailed = (addr: string): void => {
+    const now = Date.now();
+    if (fails.size > 10_000) for (const [k, v] of fails) if (now - v.start >= FAIL_WINDOW_MS) fails.delete(k);
+    const f = fails.get(addr);
+    if (!f || now - f.start >= FAIL_WINDOW_MS) fails.set(addr, { start: now, n: 1 });
+    else f.n++;
+  };
+
   const handle = (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://x");
     const m = /^\/store\/([^/]+)(\/blob)?$/.exec(url.pathname);
@@ -138,7 +161,12 @@ export function createStore(cfg: StoreConfig): Server {
     const [, key, blob] = m as unknown as [string, string, string | undefined];
     const auth = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ""))?.[1] ?? "";
     const write = req.method === "PUT";
-    if (!auth || !(sameKey(auth, cfg.writeKey) || (!write && sameKey(auth, cfg.readKey)))) return send(res, 401, { error: "unauthorized" });
+    const addr = req.socket.remoteAddress ?? "?";
+    if (authBlocked(addr)) return send(res, 429, { error: "too many failed attempts" });
+    if (!auth || !(sameKey(auth, cfg.writeKey) || (!write && sameKey(auth, cfg.readKey)))) {
+      authFailed(addr);
+      return send(res, 401, { error: "unauthorized" });
+    }
     if (write && !blob) {
       void put(req, res, key, url.searchParams).catch(() => res.destroy());
       return;
@@ -174,6 +202,7 @@ export function createStore(cfg: StoreConfig): Server {
   server.requestTimeout = cfg.requestTimeoutSec * 1000;
   server.headersTimeout = Math.min(30_000, server.requestTimeout || 30_000);
   server.setTimeout(cfg.idleTimeoutSec * 1000);
+  server.maxConnections = 256;
   return server;
 }
 
@@ -185,12 +214,17 @@ export function generateSigningKeys(privateFile: string, publicFile: string): vo
 }
 
 export async function storeServe(configPath: string): Promise<void> {
+  const mode = statSync(configPath).mode & 0o777;
+  if (mode & 0o077) throw new Error(`${configPath} holds the store keys and must not be accessible to group or others (mode ${mode.toString(8)}); run chmod 600`);
   const cfg = parseStoreConfig(JSON.parse(readFileSync(configPath, "utf8")));
   const server = createStore(cfg);
   const i = cfg.listen.lastIndexOf(":");
   await new Promise<void>((resolve) => server.listen(Number(cfg.listen.slice(i + 1)), cfg.listen.slice(0, i), resolve));
   console.log(`${new Date().toISOString()} snapshot store listening on ${cfg.listen}`);
   await new Promise<void>((resolve) => {
-    for (const s of ["SIGINT", "SIGTERM"] as const) process.on(s, () => server.close(() => resolve()));
+    for (const s of ["SIGINT", "SIGTERM"] as const) process.on(s, () => {
+        server.close(() => resolve());
+        setTimeout(() => server.closeAllConnections(), 10_000).unref();
+      });
   });
 }

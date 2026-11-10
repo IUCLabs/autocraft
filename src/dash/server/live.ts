@@ -9,9 +9,11 @@ export type LiveOptions = {
   pollMs?: number;       // how often the markers are read
   heartbeatMs?: number;  // idle streams are dropped by proxies after 100 s
   maxClients?: number;
+  maxPerSession?: number;  // the oldest stream of a session is closed when it opens more
+  stallMs?: number;        // a client whose socket stays backed up this long is dropped
 };
 
-type Client = { res: ServerResponse; alive: () => boolean };
+type Client = { res: ServerResponse; alive: () => boolean; session: string; stalled?: NodeJS.Timeout };
 
 export class LiveHub {
   private clients = new Set<Client>();
@@ -21,6 +23,8 @@ export class LiveHub {
   private readonly pollMs: number;
   private readonly heartbeatMs: number;
   private readonly maxClients: number;
+  private readonly maxPerSession: number;
+  private readonly stallMs: number;
 
   private readonly db: DatabaseSync;
 
@@ -29,6 +33,8 @@ export class LiveHub {
     this.pollMs = o.pollMs ?? 500;
     this.heartbeatMs = o.heartbeatMs ?? 25_000;
     this.maxClients = o.maxClients ?? 200;
+    this.maxPerSession = o.maxPerSession ?? 8;
+    this.stallMs = o.stallMs ?? 5000;
   }
 
   get size(): number {
@@ -40,8 +46,13 @@ export class LiveHub {
   }
 
   /** Takes over `res` (headers already written). `alive` tells whether the session still exists. */
-  add(res: ServerResponse, alive: () => boolean): void {
-    const c = { res, alive };
+  add(res: ServerResponse, alive: () => boolean, session = ""): void {
+    const c: Client = { res, alive, session };
+    const mine = [...this.clients].filter((x) => x.session === session);
+    for (const old of mine.slice(0, Math.max(0, mine.length + 1 - this.maxPerSession))) {
+      old.res.end();
+      this.remove(old);
+    }
     this.clients.add(c);
     if (this.clients.size === 1) this.start();
     const seqs = this.read();
@@ -66,6 +77,7 @@ export class LiveHub {
   }
 
   private remove(c: Client): void {
+    clearTimeout(c.stalled);
     this.clients.delete(c);
     if (!this.clients.size) this.stop();
   }
@@ -106,6 +118,13 @@ export class LiveHub {
   }
 
   private send(frame: string): void {
-    for (const c of this.clients) c.res.write(frame);
+    for (const c of this.clients) {
+      if (c.res.write(frame) || c.stalled) continue;
+      // Backed up: wait for 'drain', and drop the client when it does not come.
+      const drop = () => { c.res.destroy(); this.remove(c); };
+      c.stalled = setTimeout(drop, this.stallMs);
+      c.stalled.unref();
+      c.res.once("drain", () => { clearTimeout(c.stalled); c.stalled = undefined; });
+    }
   }
 }
