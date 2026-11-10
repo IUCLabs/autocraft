@@ -64,11 +64,38 @@ function loadKey(file: string, make: (pem: Buffer) => KeyObject): KeyObject {
   }
 }
 
+/** Hosts that plain http may reach: loopback, private ranges, and cluster-internal names. Anything else needs https. */
+export function plainHttpHostAllowed(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h === "::1") return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  if (h.includes(":")) return /^f[cd][0-9a-f]{2}:/.test(h);
+  return !h.includes(".") || /\.(svc|cluster\.local|internal)$/.test(h);
+}
+
+/** Throws unless `url` is https, or http to a host plainHttpHostAllowed accepts. */
+export function checkCoordinatorUrl(url: string): void {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    throw new Error("config: coordinatorUrl must be an http(s) URL");
+  }
+  if (u.protocol === "http:" && !plainHttpHostAllowed(u.hostname)) {
+    throw new Error("config: coordinatorUrl uses plain http, which is accepted only for loopback, private-network and cluster-internal hosts (single-label names, .svc, .cluster.local, .internal); use https");
+  }
+}
+
 export function parseWorkerConfig(raw: unknown): WorkerConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("config: expected a JSON object");
   const o = raw as Record<string, unknown>;
   const coordinatorUrl = str(o, "coordinatorUrl").replace(/\/+$/, "");
   if (!/^https?:\/\/[^\s]+$/.test(coordinatorUrl)) throw new Error("config: coordinatorUrl must be an http(s) URL");
+  checkCoordinatorUrl(coordinatorUrl);
   const keyFile = expand(str(o, "keyFile"));
   const workDir = expand(str(o, "workDir"));
   const warmDir = expand(typeof o.warmDir === "string" && o.warmDir ? o.warmDir : join(dirname(workDir), "warm"));

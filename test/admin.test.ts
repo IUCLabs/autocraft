@@ -43,7 +43,15 @@ before(async () => {
   addLogin(db, "cli", "maint", "maintainer", null);
   scopeToTracked(db);
   const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
-  const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes() });
+  const provider = new FakeProvider(permsFile);
+  // The id GitHub would give a login: the one the fake provider signs it in with.
+  const githubUserId = async (l: string): Promise<number | null> => {
+    if (l === "ghost") return null;
+    const id = 5000 + l.length;
+    provider.ids.set(l.toLowerCase(), id);
+    return id;
+  };
+  const s = await startServer({ config, db, provider, routes: apiRoutes({ githubUserId }) });
   base = s.url;
   close = s.close;
 });
@@ -192,6 +200,7 @@ describe("admin api", () => {
     assert.equal(a.entries.find((e) => e.login === "second")!.role, "operator");
     await boss.post("/api/access/add", { login: "second", role: "viewer" }, 400);
     await boss.post("/api/access/add", { login: "x", role: "owner" }, 400);
+    await boss.post("/api/access/add", { login: "ghost", role: "viewer" }, 400);
 
     const victim = await signedIn("second");
     a = await boss.get<AccessOverview>("/api/access");
