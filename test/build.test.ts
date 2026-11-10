@@ -8,7 +8,7 @@ import type { BuildTaskDetail, TaskPage } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { sniff } from "../src/build/artifacts.ts";
 import { authenticate, createEnv, hello, listEnvs, rotateKey, updateEnv } from "../src/build/envs.ts";
-import { cancelTask, claim, createTask, getTask } from "../src/build/tasks.ts";
+import { appendLog, MAX_LOG_BYTES, cancelTask, claim, createTask, getTask } from "../src/build/tasks.ts";
 import { startWorkerServer } from "../src/build/worker-api.ts";
 import { connect } from "../src/db.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
@@ -105,6 +105,20 @@ describe("worker API", () => {
   });
 
 
+
+  test("log appends stop at the cap and the stored bytes never pass it", () => {
+    clear();
+    const e = env();
+    const id = task();
+    claim(db, e.id, 1);
+    const chunk = "x".repeat(60 * 1024);
+    let last = { truncated: false };
+    for (let i = 0; i < Math.ceil(MAX_LOG_BYTES / chunk.length) + 3; i++) last = appendLog(db, e.id, id, "t", chunk);
+    assert.equal(last.truncated, true);
+    assert.equal((db.prepare("SELECT log_bytes FROM build_tasks WHERE id = ?").get(id) as { log_bytes: number }).log_bytes, MAX_LOG_BYTES);
+    const stored = (db.prepare("SELECT SUM(LENGTH(chunk)) AS n FROM build_task_logs WHERE task_id = ?").get(id) as { n: number }).n;
+    assert.ok(stored <= MAX_LOG_BYTES + 100, `stored ${stored}`);
+  });
 
   test("hello stores capabilities; bad ones are refused", async () => {
     const e = env();

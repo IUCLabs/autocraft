@@ -21,6 +21,19 @@ let zstdOk: Promise<boolean> | undefined;
 const hasZstd = () => (zstdOk ??= new Promise<boolean>((r) => execFile("zstd", ["--version"], (err) => r(!err))));
 
 /** The signed statement: binds the snapshot bytes to the repo key, commit and main build time. */
+const BLOB_SLACK = 1024 * 1024;
+/** Passes bytes through and fails once more than `max` have gone by. */
+export function byteCap(max: number): Transform {
+  let seen = 0;
+  return new Transform({
+    transform(chunk: Buffer, _e, cb) {
+      seen += chunk.length;
+      if (seen > max) return cb(new Error("snapshot is larger than its record"));
+      cb(null, chunk);
+    },
+  });
+}
+
 export const signedText = (key: string, r: Pick<Remote, "commit" | "sha256" | "stored" | "bytes">) => Buffer.from(`autocraft-warm-v1\n${key}\n${r.commit}\n${r.sha256}\n${r.stored}\n${r.bytes}`);
 
 function validRemote(r: unknown): r is Remote {
@@ -83,7 +96,7 @@ async function download(cfg: WorkerConfig, key: string, say: Say): Promise<void>
     if (!newer(readRecord(cfg, key))) return;
     const cap = Math.min(rec.bytes, cfg.warmMaxGb * 1024 ** 3);
     if (rec.bytes > cfg.warmMaxGb * 1024 ** 3) return say("warm store: snapshot is larger than warmMaxGb, skipped");
-    mkdirSync(cfg.warmDir, { recursive: true });
+    mkdirSync(cfg.warmDir, { recursive: true, mode: 0o700 });
     // Compressed spool plus unpacked tree.
     reserved = rec.bytes + rec.size;
     if (freeDiskGb(cfg.warmDir) * 1024 ** 3 - reservedBytes < reserved + cfg.limits.minFreeDiskGb * 1024 ** 3) return say("warm store: not enough free disk, skipped");
@@ -93,9 +106,10 @@ async function download(cfg: WorkerConfig, key: string, say: Say): Promise<void>
     // Nothing is unpacked until the whole blob has matched the signed sha256.
     const hash = createHash("sha256");
     const tap = new Transform({ transform(chunk: Buffer, _e, cb) { hash.update(chunk); cb(null, chunk); } });
-    await pipeline(Readable.fromWeb(res.body as never), tap, createWriteStream(spool, { mode: 0o600 }), { signal: ac.signal });
+    // A failing cap stream destroys the body stream, which cancels the fetch.
+    await pipeline(Readable.fromWeb(res.body as never), byteCap(rec.size + BLOB_SLACK), tap, createWriteStream(spool, { mode: 0o600 }), { signal: ac.signal });
     if (hash.digest("hex") !== rec.sha256) throw new Error("sha256 mismatch");
-    mkdirSync(stage, { recursive: true });
+    mkdirSync(stage, { recursive: true, mode: 0o700 });
     const zstd = spawn("zstd", ["-dc", spool], { stdio: ["ignore", "pipe", "ignore"] });
     procs.push(zstd);
     const exit = new Promise<number | null>((r) => zstd.on("close", (code) => r(code)));

@@ -10,7 +10,7 @@ import { parseWorkerConfig } from "../src/worker/config.ts";
 import { createStore, parseStoreConfig } from "../src/worker/store.ts";
 import { generateSigningKeys } from "../src/worker/store.ts";
 import { copyWarm, storeWarm } from "../src/worker/warm.ts";
-import { downloadWarm, uploadWarm } from "../src/worker/warm-sync.ts";
+import { byteCap, downloadWarm, uploadWarm } from "../src/worker/warm-sync.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -101,4 +101,12 @@ test("a main build's target dir reaches another worker; bad keys and interrupted
   } finally {
     await new Promise((r) => store.close(r));
   }
+});
+
+test("a blob stream past its recorded size fails", async () => {
+  const { Readable } = await import("node:stream");
+  const { pipeline } = await import("node:stream/promises");
+  const sink = new (await import("node:stream")).Writable({ write(_c, _e, cb) { cb(); } });
+  await pipeline(Readable.from([Buffer.alloc(10)]), byteCap(10), sink);
+  await assert.rejects(pipeline(Readable.from([Buffer.alloc(6), Buffer.alloc(6)]), byteCap(10), new (await import("node:stream")).Writable({ write(_c, _e, cb) { cb(); } })), /larger than its record/);
 });

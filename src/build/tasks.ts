@@ -271,16 +271,19 @@ export function appendLog(db: DatabaseSync, envId: string, id: number, step: unk
   const bytes = Buffer.byteLength(chunk);
   if (bytes > MAX_CHUNK_BYTES) throw new BuildError(413, "a log chunk is at most 64 KB");
   const name = cleanLine(step, 64) ?? "";
-  if (t.log_bytes >= MAX_LOG_BYTES) return { truncated: true };
+  // The bytes are reserved first by one conditional update and its changed-row count, so concurrent appends cannot pass the cap together.
+  const claim = db.prepare("UPDATE build_tasks SET log_bytes = log_bytes + ?, heartbeat_at = ? WHERE id = ? AND log_bytes < ? RETURNING log_bytes").get(bytes, nowIso(), id, MAX_LOG_BYTES) as { log_bytes: number } | undefined;
+  if (!claim) return { truncated: true };
   let text = chunk;
   let truncated = false;
-  if (t.log_bytes + bytes > MAX_LOG_BYTES) {
-    text = `${Buffer.from(chunk).subarray(0, MAX_LOG_BYTES - t.log_bytes).toString("utf8")}\n[log truncated at 20 MB]\n`;
+  if (claim.log_bytes > MAX_LOG_BYTES) {
+    const before = claim.log_bytes - bytes;
+    text = `${Buffer.from(chunk).subarray(0, MAX_LOG_BYTES - before).toString("utf8")}\n[log truncated at 20 MB]\n`;
     truncated = true;
+    db.prepare("UPDATE build_tasks SET log_bytes = ? WHERE id = ? AND log_bytes > ?").run(MAX_LOG_BYTES, id, MAX_LOG_BYTES);
   }
   const seq = (db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM build_task_logs WHERE task_id = ?").get(id) as { n: number }).n;
   db.prepare("INSERT INTO build_task_logs (task_id, seq, step, chunk) VALUES (?, ?, ?, ?)").run(id, seq, name, text);
-  db.prepare("UPDATE build_tasks SET log_bytes = ?, heartbeat_at = ? WHERE id = ?").run(truncated ? MAX_LOG_BYTES : t.log_bytes + bytes, nowIso(), id);
   return { truncated };
 }
 
