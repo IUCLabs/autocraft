@@ -350,15 +350,20 @@ export function cancelTask(db: DatabaseSync, id: unknown, by: string): BuildTask
   const t = Number.isInteger(n) ? (db.prepare("SELECT * FROM build_tasks WHERE id = ?").get(n) as TaskRow | undefined) : undefined;
   if (!t) throw new BuildError(404, "no such task");
   const at = nowIso();
-  // One statement, so a worker claiming the task in another process cannot slip between the check and the write.
-  const r = db.prepare(`UPDATE build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?,
-      summary = CASE state WHEN 'queued' THEN 'Cancelled before it started.' ELSE 'Cancelled by an operator.' END
-    WHERE id = ? AND state IN ('queued', 'claimed', 'running') `).run(at, at, t.id);
-  if (r.changes !== 1) {
+  // The update names the state it saw, so the audit row records the state it really changed. A worker claiming the task in another
+  // process between the read and the write makes it match nothing; read again and retry.
+  let was = t.state;
+  for (let tries = 0; ; tries++) {
+    if (TERMINAL.includes(was)) throw new BuildError(409, `the task is already ${was}`);
+    const r = db.prepare(`UPDATE build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?,
+        summary = CASE state WHEN 'queued' THEN 'Cancelled before it started.' ELSE 'Cancelled by an operator.' END
+      WHERE id = ? AND state = ?`).run(at, at, t.id, was);
+    if (r.changes === 1) break;
     const now = db.prepare("SELECT state FROM build_tasks WHERE id = ?").get(t.id) as { state: TaskState } | undefined;
-    throw new BuildError(409, `the task is already ${now?.state ?? t.state}`);
+    was = now?.state ?? was;
+    if (tries >= 5) throw new BuildError(409, `the task is already ${was}`);
   }
-  audit(db, by, "task-cancel", `task:${t.id}`, { repo: t.repo, was: t.state });
+  audit(db, by, "task-cancel", `task:${t.id}`, { repo: t.repo, was });
   return getTask(db, t.id)!;
 }
 

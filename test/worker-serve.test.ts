@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { LogSink } from "../src/worker/logsink.ts";
 import { WorkerApi } from "../src/worker/client.ts";
 import { parseWorkerConfig } from "../src/worker/config.ts";
 import { serve, type ServeDeps } from "../src/worker/serve.ts";
@@ -98,4 +99,25 @@ describe("worker loop", () => {
 
 
 
+});
+
+test("a 429 on a log chunk is retried after retry-after: each chunk arrives once, in order", async () => {
+  const got: string[] = [];
+  let limited = true;
+  const fakeFetch = (async (_url: string, init: RequestInit) => {
+    const { chunk } = JSON.parse(String(init.body)) as { chunk: string };
+    if (limited) {
+      limited = false;
+      return new Response('{"error":"slow down"}', { status: 429, headers: { "retry-after": "0" } });
+    }
+    got.push(chunk);
+    return new Response("{}", { status: 200 });
+  }) as unknown as typeof fetch;
+  const api = new WorkerApi("http://coordinator.invalid", "k".repeat(20), fakeFetch);
+  const sink = new LogSink((step, chunk) => api.log(1, step, chunk).then(() => {}), 60_000);
+  await sink.write("s", "one");
+  await sink.flush();
+  await sink.write("s", "two");
+  await sink.close();
+  assert.deepEqual(got, ["one", "two"]);
 });
