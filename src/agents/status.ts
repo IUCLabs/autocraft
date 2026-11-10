@@ -13,11 +13,11 @@ export type AuthStatus = { loggedIn: boolean; method: string | null; plan: strin
 const STATUS_MS = 15_000;
 const USAGE_MS = 60_000;
 
-/** The environment of every claude child: the account's config directory, no nested-session marker, no update checks. */
-export function childEnv(configDir: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, DISABLE_AUTOUPDATER: "1", ...extra };
-  delete env.CLAUDECODE;
-  return env;
+/** The whole environment of every claude child: only what the CLI needs (search path, home, locale), the account's config directory, no nested-session marker, no update checks, and `extra`. Nothing else of the server's environment reaches it. */
+export function childEnv(configDir: string, extra: Record<string, string> = {}): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of ["PATH", "HOME", "LANG", "LC_ALL"]) { const v = process.env[k]; if (v !== undefined) env[k] = v; }
+  return { ...env, CLAUDE_CONFIG_DIR: configDir, DISABLE_AUTOUPDATER: "1", ...extra };
 }
 
 function run(args: string[], configDir: string, timeout: number, cwd?: string): Promise<string> {

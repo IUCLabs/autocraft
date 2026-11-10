@@ -162,13 +162,18 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
   if (!operatorTriesLeft(db, repo, number)) throw new Error("the fix-up tries for this PR are used up");
   if (queuedOperatorFix(db, repo, number, head)) throw new Error(`a fix-up of ${ref} is already queued`);
   const merge = step.merge === true;
+  const activeCheck = () => {
+    if (db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND state IN (${ACTIVE.map(() => "?").join(",")})`).get(repo, number, ...ACTIVE)) throw new Error(`${ref} already has a pre-approved merge in progress`);
+  };
   if (merge) {
     if (!mergeApprovalOf(db, repo)) throw new Error(`merging is not approved for ${repo}`);
-    if (db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND state IN (${ACTIVE.map(() => "?").join(",")})`).get(repo, number, ...ACTIVE)) throw new Error(`${ref} already has a pre-approved merge in progress`);
+    activeCheck();
   }
   const at = iso();
   db.exec("BEGIN IMMEDIATE");
   try {
+    // Checked again under the write lock: another writer may have started one since the first check.
+    if (merge) activeCheck();
     const fix = Number(db.prepare("INSERT INTO operator_fixups (repo, number, from_head, instructions, by, at) VALUES (?, ?, ?, ?, ?, ?)").run(repo, number, head, instructions, by, at).lastInsertRowid);
     let id: number | null = null;
     if (merge) {

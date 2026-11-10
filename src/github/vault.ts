@@ -103,6 +103,8 @@ export class Vault {
       const rows = this.#db.prepare(`SELECT id, login, token_enc, kind, aad, attempts FROM user_token_revocations ${fresh ? "WHERE attempts = 0 " : ""}ORDER BY id`)
         .all() as { id: number; login: string; token_enc: string; kind: string; aad: string | null; attempts: number }[];
       for (const r of rows) {
+        // Claim the attempt first: a concurrent sweep (another process) that read the same row changes nothing here and skips it.
+        if (this.#db.prepare("UPDATE user_token_revocations SET attempts = attempts + 1 WHERE id = ? AND attempts = ?").run(r.id, r.attempts).changes !== 1) continue;
         let done = false;
         try {
           done = await this.#revokeRow(r);
@@ -114,8 +116,6 @@ export class Vault {
         } else if (r.attempts + 1 >= MAX_REVOKE_ATTEMPTS) {
           console.error(`revocation for ${r.login}: given up after ${r.attempts + 1} failed attempts`);
           this.#db.prepare("DELETE FROM user_token_revocations WHERE id = ?").run(r.id);
-        } else {
-          this.#db.prepare("UPDATE user_token_revocations SET attempts = attempts + 1 WHERE id = ?").run(r.id);
         }
       }
       return rows.length;
