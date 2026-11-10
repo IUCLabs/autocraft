@@ -50,7 +50,7 @@ export function insertRun(db: DatabaseSync, s: RunStart): number {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
     .run(s.jobId, s.step, s.stage, s.promptId, s.promptVersion, s.provider, s.model, s.accountId, JSON.stringify(refs), s.items.length, now()).lastInsertRowid);
   const ins = db.prepare("INSERT OR IGNORE INTO agent_run_items (run_id, repo, number) VALUES (?, ?, ?)");
-  for (const r of refs) ins.run(id, r.repo, r.number);
+  for (const r of s.items) ins.run(id, r.repo, r.number);
   db.prepare("INSERT INTO agent_run_texts (run_id, prompt) VALUES (?, ?)").run(id, packText(scrub(s.prompt.slice(0, TEXT_MAX))));
   return id;
 }

@@ -32,7 +32,17 @@ export function proxiedImage(src: string): string | null {
   return `/img?${new URLSearchParams({ u: u.href })}`;
 }
 
-export const safeUrl = (url: string): string => (/^(https?:|mailto:|#|\/)/i.test(url) ? url : "");
+/** The url when it is an http(s) or mailto link, a fragment, or a path on this site; otherwise "". Protocol-relative (`//`) and `/\` forms are refused. */
+export function safeUrl(url: string): string {
+  if (/[\u0000-\u001f]/.test(url)) return "";
+  if (url.startsWith("#")) return url;
+  if (url.startsWith("/")) return url[1] === "/" || url[1] === "\\" ? "" : url;
+  try {
+    return ["https:", "http:", "mailto:"].includes(new URL(url, "https://x.invalid").protocol) && /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : "";
+  } catch {
+    return "";
+  }
+}
 
 // Minimal mdast shapes; the plugin builds only these.
 export type MdNode = {

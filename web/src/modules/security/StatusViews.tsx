@@ -19,6 +19,7 @@ import { findingPath, githubBlobUrl } from "../../lib/links";
 import { useUser } from "../../shell/UserContext";
 import { useIsPhone } from "../../shell/useMedia";
 import type { ViewProps } from "../../registry/types";
+import { safeHref } from "../../ui/safeHref";
 
 /** The fix ran out of rounds and the finding waits for a person again. */
 const gaveUp = (attempts: number, state: string) => attempts > 0 && state === "new";
@@ -93,7 +94,7 @@ export function FindingPageView({ params }: ViewProps) {
     <div className="px-4 py-3 md:px-6">
       <div className="text-xs font-semibold text-ink/55"><span className="inline-flex items-center gap-1.5"><GithubLogoIcon className="text-[14px]" /> On GitHub</span></div>
       {f.fixPr && f.fixPrUrl ? (
-        <a href={f.fixPrUrl} target="_blank" rel="noopener noreferrer" className="mt-3 block rounded-md border border-line border-l-[3px] border-l-accent px-3 py-2.5 text-sm hover:bg-ink/[0.03]">
+        <a href={safeHref(f.fixPrUrl)} target="_blank" rel="noopener noreferrer" className="mt-3 block rounded-md border border-line border-l-[3px] border-l-accent px-3 py-2.5 text-sm hover:bg-ink/[0.03]">
           <span className="code text-ink/60">#{f.fixPr}</span> Fix pull request
         </a>
       ) : (

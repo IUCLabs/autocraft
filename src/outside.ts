@@ -225,8 +225,9 @@ export function releaseAuthor(db: DatabaseSync, by: string, author: string): num
 
 export type OutsideState = OutsideLimits & { heldByLimit: number; heldBySurge: number; authors: number; tripped: { reason: string; since: string } | null };
 
-export function outsideState(db: DatabaseSync): OutsideState {
-  const c = db.prepare("SELECT SUM(reason = 'limit') AS l, SUM(reason = 'surge') AS s, COUNT(DISTINCT author) AS a FROM main.outside_holds").get() as { l: number | null; s: number | null; a: number };
+export function outsideState(db: DatabaseSync, hidden: string[] = []): OutsideState {
+  const hide = hidden.length ? ` WHERE repo NOT IN (${hidden.map(() => "?").join(",")})` : "";
+  const c = db.prepare(`SELECT SUM(reason = 'limit') AS l, SUM(reason = 'surge') AS s, COUNT(DISTINCT author) AS a FROM main.outside_holds${hide}`).get(...hidden) as { l: number | null; s: number | null; a: number };
   const t = tripRow(db, OUTSIDE_SURGE);
   return { ...outsideLimits(db), heldByLimit: c.l ?? 0, heldBySurge: c.s ?? 0, authors: c.a, tripped: t?.active ? { reason: t.reason, since: t.tripped_at } : null };
 }

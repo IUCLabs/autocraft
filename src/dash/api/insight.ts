@@ -14,13 +14,16 @@ const FLAGS = ["security", "needs decision"];
 
 // ---- classifiers -------------------------------------------------------------
 
-function runs(db: DatabaseSync): ClassifierRun[] {
+function runs(db: DatabaseSync, hidden: string[]): ClassifierRun[] {
+  const hp: Record<string, string> = {};
+  const hide = excludeHidden("x.repo", hidden, hp);
   const prob = new Map<string, boolean>();
   for (const r of db.prepare("SELECT run_id, classifier, COUNT(probs) AS p FROM classifications GROUP BY run_id, classifier").all() as
     { run_id: string; classifier: string; p: number }[]) prob.set(`${r.run_id}\0${r.classifier}`, r.p > 0);
   const pairs = db.prepare(`SELECT x.run_id AS run, x.classifier AS x, y.classifier AS y, COUNT(*) AS n, MAX(x.at) AS at
     FROM classifications x JOIN classifications y ON y.run_id = x.run_id AND y.repo = x.repo AND y.number = x.number AND y.classifier > x.classifier
-    GROUP BY x.run_id, x.classifier, y.classifier`).all() as { run: string; x: string; y: string; n: number; at: string }[];
+    ${hide ? `WHERE ${hide}` : ""}
+    GROUP BY x.run_id, x.classifier, y.classifier`).all(hp) as { run: string; x: string; y: string; n: number; at: string }[];
   const by = new Map<string, ClassifierRun>();
   for (const p of pairs) {
     let r = by.get(p.run);
@@ -49,7 +52,7 @@ function flagsOf(s: string | null): string[] {
 export async function classifiersReport(db: DatabaseSync, req: Req): Promise<ClassifierReport> {
   const hp: Record<string, string | number> = {};
   const hide = excludeHidden("x.repo", await hiddenRepos(db, req), hp);
-  const all = runs(db);
+  const all = runs(db, await hiddenRepos(db, req));
   const run = all.find((r) => r.id === req.query.get("run")) ?? all[0];
   if (!run) return { runs: [], run: "", a: "", b: "", labels: [...LABELS], items: 0, overall: agr(), byKind: { pr: agr(), issue: agr() }, byLabel: [], byRepo: [], confusion: [], bands: [], flags: [] };
   const qa = req.query.get("a"), qb = req.query.get("b");
@@ -153,7 +156,7 @@ export async function cost(db: DatabaseSync, req: Req): Promise<CostReport> {
   const bucketSize = hours > 72 ? "day" : "hour";
   const len = bucketSize === "day" ? 10 : 13;
   return {
-    runs: db.prepare(`SELECT run_id AS id, MIN(started_at) AS "from", MAX(COALESCE(ended_at, started_at)) AS "to" FROM token_usage GROUP BY run_id ORDER BY MAX(COALESCE(ended_at, started_at)) DESC`).all() as CostReport["runs"],
+    runs: db.prepare(`SELECT run_id AS id, MIN(started_at) AS "from", MAX(COALESCE(ended_at, started_at)) AS "to" FROM token_usage${hide ? ` WHERE (repo IS NULL OR ${hide})` : ""} GROUP BY run_id ORDER BY MAX(COALESCE(ended_at, started_at)) DESC`).all(p) as CostReport["runs"],
     run,
     total: { ...(total as object) } as UsageTotals,
     itemsClassified: (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT repo, number FROM classifications WHERE ${flt})`).get(p) as { n: number }).n,

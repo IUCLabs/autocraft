@@ -13,6 +13,7 @@ import { cn } from "../../ui/cn";
 import { EditForm, JevLine, PauseLevels, UsageBar } from "./controls";
 import { Block, ConfirmButton, ErrorLine, Page, TextInput, useWrite, when } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
+import { safeHref } from "../../ui/safeHref";
 
 const useList = () => useQuery<ClaudeAccount[]>("accounts-page", (a) => a.accounts.list());
 
@@ -44,7 +45,7 @@ function LoginDialog({ a, kind, onClose }: { a: ClaudeAccount; kind: "login" | "
           <Dialog.Title className="text-sm font-semibold">{token ? `Long-lived token for ${a.label}` : `Sign in ${a.label}`}</Dialog.Title>
           <div className="mt-3 space-y-3">
             {login?.url && !ended && (
-              <a href={login.url} target="_blank" rel="noreferrer noopener" className="block text-sm text-accent underline">
+              <a href={safeHref(login.url)} target="_blank" rel="noreferrer noopener" className="block text-sm text-accent underline">
                 {token ? "Open token page" : "Open sign-in page"}
               </a>
             )}

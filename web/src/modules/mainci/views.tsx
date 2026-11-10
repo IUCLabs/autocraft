@@ -11,6 +11,7 @@ import { ItemRef } from "../../ui/molecules/ItemRef";
 import { Block, ErrorLine, Page, useUrlState } from "../admin/parts";
 import { FailingChecks } from "./parts";
 import { ownerOfRepo } from "../../lib/links";
+import { safeHref } from "../../ui/safeHref";
 
 const STATES: MainCiState[] = ["red", "optional", "running", "none", "green"];
 const rank = (s: MainCiState) => STATES.indexOf(s);
@@ -18,7 +19,7 @@ const sha7 = (s: string) => s.slice(0, 7);
 const gh = (repo: string, tail: string) => `https://github.com/${ownerOfRepo(repo)}/${encodeURIComponent(repo)}/${tail}`;
 
 const Out = ({ url, label }: { url: string; label: string }) => (
-  <a href={url} target="_blank" rel="noopener noreferrer" title={label} aria-label={label} className="relative z-10 inline-flex size-5 shrink-0 items-center justify-center text-ink/55 hover:text-accent-ink">
+  <a href={safeHref(url)} target="_blank" rel="noopener noreferrer" title={label} aria-label={label} className="relative z-10 inline-flex size-5 shrink-0 items-center justify-center text-ink/55 hover:text-accent-ink">
     <ArrowSquareOutIcon className="size-4" />
   </a>
 );
