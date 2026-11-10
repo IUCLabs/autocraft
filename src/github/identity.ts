@@ -6,7 +6,6 @@
 // The instance-wide setting `github_identity` decides whether that is used at all: under `box` (the default) the box
 // account makes every write, and `as` only appears in the audit row as a record of what it would be.
 import type { DatabaseSync } from "node:sqlite";
-import { dropSessionTokens } from "../dash/server/user-tokens.ts";
 import { audit } from "../dash/audit.ts";
 import type { Grant, Guarded } from "../core/guard.ts";
 import { ownerOf } from "../owners.ts";
@@ -31,17 +30,23 @@ export function setGithubIdentity(db: DatabaseSync, by: string, value: unknown):
   if (value !== "box" && value !== "app") throw new Error("the GitHub identity must be box or app");
   const was = githubIdentity(db);
   if (was === value) return false;
+  db.exec("BEGIN IMMEDIATE");
+  try {
   if (value === "box") db.prepare("DELETE FROM main.settings WHERE key = ?").run(KEY);
   else db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(KEY, value);
   audit(db, by, "github-identity", value, { identity: value, was });
-  // Each session's own token set is revoked as well (it may differ from the login's stored one).
-  const sessions = db.prepare("DELETE FROM sessions RETURNING login, id_hash, token_enc").all() as { login: string; id_hash: string; token_enc: string | null }[];
-  for (const s of sessions) dropSessionTokens(db, s.login, s.id_hash, s.token_enc);
+  // Sessions' own tokens belong to whichever identity created them; the grant revocation below covers app sessions.
+  db.prepare("DELETE FROM sessions").run();
   // The stored user tokens belong to the mode being left: queue their revocation at GitHub (the vault's sweep).
   const stored = db.prepare("DELETE FROM user_tokens RETURNING login, token_enc").all() as { login: string; token_enc: string }[];
   const queue = db.prepare("INSERT INTO user_token_revocations (login, token_enc, queued_at, kind) VALUES (?, ?, ?, 'grant')");
   const at = new Date().toISOString();
   for (const t of stored) queue.run(t.login, t.token_enc, at);
+  db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
   return true;
 }
 
@@ -96,10 +101,10 @@ export async function trackedCoverage(db: DatabaseSync, mint?: (owner: string, r
 }
 
 let coverageMemo: { at: number; running: boolean; uncovered: string[]; unconfirmed: string[] } | null = null;
-/** What the health check shows: the last coverage reading of the tracked repos, refreshed in the background at most every 2 minutes (the minter caches installations). With `refresh` false it only returns the cached reading. */
+/** What the health check shows: the last coverage reading of the tracked repos, refreshed in the background at most every 2 minutes (the minter caches installations). With `refresh` false it still answers from the memo at once, and starts a background refresh only when the memo is missing or older than 10 minutes. */
 export function coverageSnapshot(db: DatabaseSync, refresh = true): { uncovered: string[]; unconfirmed: string[] } {
-  if (!refresh) return { uncovered: coverageMemo?.uncovered ?? [], unconfirmed: coverageMemo?.unconfirmed ?? [] };
-  if (!coverageMemo || (!coverageMemo.running && Date.now() - coverageMemo.at > 120_000)) {
+  const maxAge = refresh ? 120_000 : 600_000;  // the probe answers from the memo at once, and only starts a refresh when it is missing or old
+  if (!coverageMemo || (!coverageMemo.running && Date.now() - coverageMemo.at > maxAge)) {
     const prev = coverageMemo;
     coverageMemo = { at: Date.now(), running: true, uncovered: prev?.uncovered ?? [], unconfirmed: prev?.unconfirmed ?? [] };
     void trackedCoverage(db).then((r) => { coverageMemo = { at: Date.now(), running: false, ...r }; }, () => { coverageMemo = { at: Date.now(), running: false, uncovered: [], unconfirmed: prev?.unconfirmed ?? [] }; });
