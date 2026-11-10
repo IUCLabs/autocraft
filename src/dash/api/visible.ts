@@ -8,7 +8,7 @@ import { trackedNames } from "../../repos.ts";
 import { DEFAULT_OWNER, ownerOf } from "../../owners.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, User } from "../types.ts";
-import { securityRepo } from "../../security/rules.ts";
+import { SECURITY_PREFIX, securityRepo } from "../../security/rules.ts";
 import { canSeeInternals } from "./staff.ts";
 
 const memo = new WeakMap<Req, Promise<string[]>>();
@@ -38,17 +38,30 @@ export async function repoOwners(db: DatabaseSync, req: Req): Promise<Record<str
   return out;
 }
 
+/** Tables the dashboard lists without scoping them to tracked repos; their rows outlive untracking. */
+const UNSCOPED_REPO_TABLES = ["jobs", "build_tasks", "merges", "agent_run_items", "main_ci", "merge_batches"];
+
+/** Every repo name the database knows, tracked or not, with `(security):<repo>` pseudo repos reduced to their repo. */
+function knownRepos(db: DatabaseSync): Set<string> {
+  const sql = ["SELECT name AS repo FROM main.repos", "SELECT name AS repo FROM main.tracked_repos", ...UNSCOPED_REPO_TABLES.map((t) => `SELECT DISTINCT repo FROM main.${t} WHERE repo IS NOT NULL`)].join(" UNION ");
+  const out = new Set<string>();
+  for (const { repo } of db.prepare(sql).all() as { repo: string }[]) out.add(repo.startsWith(SECURITY_PREFIX) ? repo.slice(SECURITY_PREFIX.length) : repo);
+  return out;
+}
+
 /**
- * Tracked repos the requester may not see (empty for operators and when every repo is public). The pseudo repo of a
- * repo's security scans (`(security):<repo>`, where its jobs and agent runs are recorded) is hidden from viewers and
- * from maintainers who cannot see the repo, so every listing that leaves out hidden repos leaves the scans out too.
+ * Every known repo the requester may not see: all repos in the mirror and in the pipeline tables, tracked or not (rows
+ * of an untracked repo stay in jobs, tasks and runs, and are for operators only). Empty for operators. The pseudo repo
+ * of a repo's security scans (`(security):<repo>`, where its jobs and agent runs are recorded) is hidden from viewers
+ * and from maintainers who cannot see the repo, so every listing that leaves out hidden repos leaves the scans out too.
  */
 export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[]> {
+  if (req.user.role === "operator") return [];
   const visible = new Set(await visibleRepos(db, req));
-  const tracked = trackedNames(db);
+  const known = [...knownRepos(db)].sort();
   const staff = canSeeInternals(req);
-  const hidden = tracked.filter((r) => !visible.has(r));
-  return [...hidden, ...tracked.filter((r) => !staff || !visible.has(r)).map(securityRepo)];
+  const hidden = known.filter((r) => !visible.has(r));
+  return [...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)];
 }
 
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */
