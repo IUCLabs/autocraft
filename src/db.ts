@@ -242,6 +242,16 @@ const MIGRATION_VERSION = 16;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
+  // Repos whose work rows outlive their tracking: the list is maintained by a trigger from here on.
+  db.exec(`INSERT OR IGNORE INTO main.ever_tracked_repos (name)
+    SELECT name FROM main.tracked_repos
+    UNION SELECT DISTINCT repo FROM main.jobs WHERE repo IS NOT NULL
+    UNION SELECT DISTINCT repo FROM main.build_tasks
+    UNION SELECT DISTINCT repo FROM main.merges
+    UNION SELECT DISTINCT repo FROM main.agent_run_items
+    UNION SELECT DISTINCT repo FROM main.main_ci
+    UNION SELECT DISTINCT repo FROM main.merge_batches`);
+  db.exec("DELETE FROM main.ever_tracked_repos WHERE name LIKE '(security):%'");
   // The GitHub identity is one instance-wide setting; per-repo rows no longer mean anything.
   db.prepare("DELETE FROM main.settings WHERE key LIKE 'repo_identity:%'").run();
   // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.

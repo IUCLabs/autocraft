@@ -12,6 +12,7 @@ import { insertRun, finishRun } from "../src/agents/runs.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
 import { scopeToTracked } from "../src/repos.ts";
+import { blankIfHidden } from "../src/dash/api/visible.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
@@ -269,6 +270,7 @@ describe("repo visibility", () => {
       finishRun(db, run, { state: "done", output: `output for ${repo}` });
       return { job: Number(job.lastInsertRowid), task: Number(task.lastInsertRowid), run };
     };
+    db.prepare("INSERT OR IGNORE INTO ever_tracked_repos (name) VALUES ('gone-app')").run();
     const gone = rows("gone-app"), vault = rows("vault");
     const paths = (r: { job: number; task: number; run: number }) => [`/api/pipeline/jobs/${r.job}`, `/api/tasks/${r.task}`, `/api/agents/${r.run}`];
     const boss = await signedIn("boss");
@@ -329,6 +331,20 @@ describe("repo visibility", () => {
     assert.equal(quiet.choices, null);
     assert.equal((await maint.get<Conv>("/api/conversations/open-app/2")).turns[0]!.body, "the Opus analysis");
     db.exec("DELETE FROM main.conversation_turns; DELETE FROM main.conversations; DELETE FROM security_findings WHERE number = 901");
+  });
+
+  test("an ever-tracked repo stays hidden when only its work rows remain; hidden names match whole names in free text", async () => {
+    db.prepare("INSERT OR IGNORE INTO ever_tracked_repos (name) VALUES ('ghost-app')").run();
+    const run = insertRun(db, { jobId: null, step: "classify", stage: 1, promptId: "p", promptVersion: "1", provider: "claude", model: "m", accountId: null, items: [{ repo: "ghost-app", number: 3 }], prompt: "p" });
+    finishRun(db, run, { state: "done", output: "o" });
+    db.prepare("DELETE FROM main.repos WHERE name = 'ghost-app'").run();
+    assert.equal(await (await signedIn("boss")).status(`/api/agents/${run}`), 200);
+    assert.equal(await (await signedIn("reader")).status(`/api/agents/${run}`), 404);
+    const hidden = ["vault", "(security):vault"];
+    assert.equal(blankIfHidden("held by vault#3", hidden), "");
+    assert.equal(blankIfHidden("held by vault.", hidden), "");
+    assert.equal(blankIfHidden("held by vault-launcher#3 and my.vault", hidden), "held by vault-launcher#3 and my.vault");
+    assert.equal(blankIfHidden("(security):vault scan failed", hidden), "");
   });
 
 });
