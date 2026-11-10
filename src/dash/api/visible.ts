@@ -8,7 +8,7 @@ import { trackedNames } from "../../repos.ts";
 import { DEFAULT_OWNER, ownerOf } from "../../owners.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, User } from "../types.ts";
-import { SECURITY_PREFIX, securityRepo } from "../../security/rules.ts";
+import { securityRepo } from "../../security/rules.ts";
 import { canSeeInternals } from "./staff.ts";
 
 const memo = new WeakMap<Req, Promise<string[]>>();
@@ -38,15 +38,9 @@ export async function repoOwners(db: DatabaseSync, req: Req): Promise<Record<str
   return out;
 }
 
-/** Tables the dashboard lists without scoping them to tracked repos; their rows outlive untracking. */
-const UNSCOPED_REPO_TABLES = ["jobs", "build_tasks", "merges", "agent_run_items", "main_ci", "merge_batches"];
-
-/** Every repo name the database knows, tracked or not, with `(security):<repo>` pseudo repos reduced to their repo. */
-function knownRepos(db: DatabaseSync): Set<string> {
-  const sql = ["SELECT name AS repo FROM main.repos", "SELECT name AS repo FROM main.tracked_repos", ...UNSCOPED_REPO_TABLES.map((t) => `SELECT DISTINCT repo FROM main.${t} WHERE repo IS NOT NULL`)].join(" UNION ");
-  const out = new Set<string>();
-  for (const { repo } of db.prepare(sql).all() as { repo: string }[]) out.add(repo.startsWith(SECURITY_PREFIX) ? repo.slice(SECURITY_PREFIX.length) : repo);
-  return out;
+/** Every repo name the database knows, tracked or not: the mirror's repos and every repo that was ever tracked (its work rows stay after untracking). */
+function knownRepos(db: DatabaseSync): string[] {
+  return (db.prepare("SELECT name FROM main.repos UNION SELECT name FROM main.tracked_repos UNION SELECT name FROM main.ever_tracked_repos ORDER BY 1").all() as { name: string }[]).map((r) => r.name);
 }
 
 /**
@@ -58,7 +52,7 @@ function knownRepos(db: DatabaseSync): Set<string> {
 export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   if (req.user.role === "operator") return [];
   const visible = new Set(await visibleRepos(db, req));
-  const known = [...knownRepos(db)].sort();
+  const known = knownRepos(db);
   const staff = canSeeInternals(req);
   const hidden = known.filter((r) => !visible.has(r));
   return [...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)];
@@ -78,7 +72,20 @@ export function excludeHidden(col: string, hidden: string[], params: Record<stri
   return `${col} NOT IN (${hidden.map((h, k) => ((params[`${prefix}${k}`] = h), `:${prefix}${k}`)).join(",")})`;
 }
 
+const namePatterns = new WeakMap<string[], RegExp | null>();
+
+/** Matches a hidden repo name only as a whole name: "craft" is not found in "designcraft" or "craft-launcher". */
+function hiddenPattern(hidden: string[]): RegExp | null {
+  let re = namePatterns.get(hidden);
+  if (re === undefined) {
+    re = hidden.length ? new RegExp(`(?<![\\w.-])(?:${hidden.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![\\w-]|\\.[\\w-])`) : null;
+    namePatterns.set(hidden, re);
+  }
+  return re;
+}
+
 /** Free text from the pipeline (breaker, pause and status reasons) can quote an item of a repo the caller may not see: it is left out whole then. */
 export function blankIfHidden<T extends string | null | undefined>(text: T, hidden: string[]): T | "" {
-  return text && hidden.some((h) => text.includes(h)) ? "" : text;
+  const re = text ? hiddenPattern(hidden) : null;
+  return text && re?.test(text) ? "" : text;
 }

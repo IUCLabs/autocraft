@@ -352,6 +352,11 @@ CREATE TABLE IF NOT EXISTS tracked_repos (
   added_by TEXT,
   added_at TEXT
 );
+-- Every repo that was ever tracked: pipeline rows (jobs, tasks, runs) outlive untracking, and the dashboard hides them from non-operators by this list.
+CREATE TABLE IF NOT EXISTS ever_tracked_repos (name TEXT PRIMARY KEY) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS tracked_repos_ever AFTER INSERT ON tracked_repos BEGIN
+  INSERT OR IGNORE INTO ever_tracked_repos (name) VALUES (NEW.name);
+END;
 -- Seeded once; the flag keeps the seed from returning after an operator empties the list.
 INSERT INTO tracked_repos (name, added_by, added_at)
 SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
