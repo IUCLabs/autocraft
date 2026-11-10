@@ -2039,3 +2039,14 @@ CREATE TABLE IF NOT EXISTS nightly_bench (
   PRIMARY KEY (repo, bench, sha)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS nightly_bench_at ON nightly_bench(repo, bench, at);
+
+-- Work rows for a repo that was never tracked (security scans under `(security):<repo>`, operator build tasks) count it as known, so non-operators do not see them.
+CREATE TRIGGER IF NOT EXISTS jobs_ever AFTER INSERT ON jobs WHEN NEW.repo IS NOT NULL BEGIN
+  INSERT OR IGNORE INTO ever_tracked_repos (name) VALUES (CASE WHEN NEW.repo LIKE '(security):%' THEN substr(NEW.repo, 12) ELSE NEW.repo END);
+END;
+CREATE TRIGGER IF NOT EXISTS build_tasks_ever AFTER INSERT ON build_tasks WHEN NEW.repo IS NOT NULL BEGIN
+  INSERT OR IGNORE INTO ever_tracked_repos (name) VALUES (CASE WHEN NEW.repo LIKE '(security):%' THEN substr(NEW.repo, 12) ELSE NEW.repo END);
+END;
+CREATE TRIGGER IF NOT EXISTS agent_run_items_ever AFTER INSERT ON agent_run_items WHEN NEW.repo IS NOT NULL BEGIN
+  INSERT OR IGNORE INTO ever_tracked_repos (name) VALUES (CASE WHEN NEW.repo LIKE '(security):%' THEN substr(NEW.repo, 12) ELSE NEW.repo END);
+END;

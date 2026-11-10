@@ -251,6 +251,9 @@ function backfill(db: DatabaseSync): void {
     UNION SELECT DISTINCT repo FROM main.agent_run_items
     UNION SELECT DISTINCT repo FROM main.main_ci
     UNION SELECT DISTINCT repo FROM main.merge_batches`);
+  // Security scans record under `(security):<repo>`: the repo is the name after the prefix.
+  db.exec(`INSERT OR IGNORE INTO main.ever_tracked_repos (name)
+    SELECT substr(name, 12) FROM main.ever_tracked_repos WHERE name LIKE '(security):%' AND length(name) > 11`);
   db.exec("DELETE FROM main.ever_tracked_repos WHERE name LIKE '(security):%'");
   // The GitHub identity is one instance-wide setting; per-repo rows no longer mean anything.
   db.prepare("DELETE FROM main.settings WHERE key LIKE 'repo_identity:%'").run();

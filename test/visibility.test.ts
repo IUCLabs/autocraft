@@ -378,4 +378,10 @@ describe("repo visibility", () => {
     db.exec("DELETE FROM main.stages; DELETE FROM main.job_items; DELETE FROM main.fixups; DELETE FROM main.decisions WHERE id LIKE 'wd%'; DELETE FROM main.security_findings WHERE number = 902");
   });
 
+  test("a build task for a repo that was never tracked is hidden from viewers", async () => {
+    const task = db.prepare("INSERT INTO main.build_tasks (step, repo, number, head_sha, requires, plan, state, queued_at) VALUES ('smoke', 'ghost-repo', NULL, 'h', '{}', '[]', 'done', ?)").run(new Date().toISOString());
+    assert.equal(await (await signedIn("reader")).status(`/api/tasks/${task.lastInsertRowid}`), 404);
+    assert.equal(await (await signedIn("boss")).status(`/api/tasks/${task.lastInsertRowid}`), 200);
+  });
+
 });
