@@ -263,7 +263,7 @@ describe("a second ask on a PR we already asked", () => {
     db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 7, ?, 'rv2', ?, 'm', 'take-fix', 'nearly right', ?, 1, 'full')").run(H2, T1, JSON.stringify([{ file: "src/lib.rs", change: "rename a to c" }]));
     db.prepare("UPDATE pr_checks SET head_oid = ? WHERE repo = 'app' AND number = 7").run(H2);
     const q = w.deps.querier;
-    w.deps.querier = { ...q, query: async (s: string, v?: object) => { const r = await q.query(s, v) as { repository?: { pullRequest?: { headRefOid: string } } }; if (r.repository?.pullRequest) r.repository.pullRequest.headRefOid = H2; return r; } } as typeof q;
+    w.deps.querier = { ...q, query: async (s: string, v?: Record<string, unknown>) => { const r = await q.query(s, v as Record<string, unknown>) as { repository?: { pullRequest?: { headRefOid: string } } }; if (r.repository?.pullRequest) r.repository.pullRequest.headRefOid = H2; return r; } } as typeof q;
     const calls: string[] = [];
     const run = w.deps.exec;
     w.deps.exec = async (cmd, args, o) => { if (cmd === "gh" && args[0] !== "api") calls.push("comment"); if (cmd === "gh" && args[0] === "api" && args.includes("PATCH")) calls.push(`edit ${args.join(" ")}`); return run(cmd, args, o); };
