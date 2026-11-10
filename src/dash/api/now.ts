@@ -8,6 +8,7 @@ import { jevEnabled, jevOutage } from "../../agents/jev.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { mainCiRepos } from "../../mainci/index.ts";
 import { pipelineRepos } from "../../pilot.ts";
+import { isQuiet } from "../../security/quiet.ts";
 import { pipelineState } from "../../runner/autopilot.ts";
 import { computeChecks } from "../../health-checks.ts";
 import type { Req } from "../types.ts";
@@ -291,16 +292,19 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
   for (const d of decisions) {
     let ref: { repo: string; number: number } | null = d.repo && d.number !== null ? { repo: d.repo, number: d.number } : null;
     let repos = d.repo ? [d.repo] : [];
+    // The question of a quiet pull request's decision is model-written text about an unpublished fix.
+    let quiet = !!ref && isQuiet(db, ref.repo, ref.number);
     if (!ref) {
       try {
         const list = (JSON.parse(d.items ?? "[]") as { repo?: unknown; number?: unknown }[]).filter((i): i is { repo: string; number: number } => typeof i.repo === "string" && typeof i.number === "number");
         repos = [...repos, ...list.map((i) => i.repo)];
         ref = list[0] ?? null;
+        quiet = list.some((i) => isQuiet(db, i.repo, i.number));
       } catch { /* malformed: no item */ }
     }
     if (repos.some((r) => hide.has(r))) continue;
     out.push(base({
-      key: `decision:${d.id}`, kind: "decision", state: "done", at: d.at, repo: d.repo ?? ref?.repo ?? null, title: `Answered "${clip(d.question, 80)}": ${d.answer ?? ""}`, actor: d.answered_by || "unknown",
+      key: `decision:${d.id}`, kind: "decision", state: "done", at: d.at, repo: d.repo ?? ref?.repo ?? null, title: `Answered ${quiet && !staff ? "a question" : `"${clip(d.question, 80)}"`}: ${d.answer ?? ""}`, actor: d.answered_by || "unknown",
       item: ref && item(ref.repo, ref.number), items: ref ? [item(ref.repo, ref.number)] : [], itemCount: ref ? 1 : 0, event: d.number !== null && d.repo ? `decision:${d.id}:answered` : null, detail: `/decisions/${encodeURIComponent(d.id)}`,
     }));
   }

@@ -385,10 +385,10 @@ export function linkReviewCalls(events: Ev[]): Set<number> {
 }
 
 /** Every source runs whatever the filter, so a filtered event still gets the head its neighbours carry. */
-const VEILED_KINDS: TraceKind[] = ["model-call", "check", "review", "decision", "conversation"];
+export const VEILED_KINDS: TraceKind[] = ["model-call", "check", "review", "decision", "conversation"];
 
 /** A viewer's copy of a step, job or plan event on a quiet pull request: the kind, time and outcome state stay; free text goes. */
-function veilEvent(e: Ev): Ev {
+export function veilEvent(e: Ev): Ev {
   if (!["step", "job", "plan"].includes(e.kind)) return e;
   let summary = e.summary;
   const colon = summary.indexOf(": ");
@@ -520,9 +520,16 @@ const viewerFields = (e: Ev): Record<string, unknown> => {
 };
 
 /** A viewer's summary of an event whose wording ends in model or log text: the part before that text. */
-function plainSummary(e: Ev): string {
+export function plainSummary(e: Ev): string {
+  if (e.id.startsWith("plan:")) return e.summary.replace(/, waiting for .*$/, "");
   const colon = e.summary.indexOf(": ");
   if (colon < 0) return e.summary;
+  // The note of a stage and the outcome of a job carry review, verification and failure text; a job keeps its leading state word.
+  if (e.id.startsWith("stage:") || e.summary.startsWith("Question withdrawn")) return e.summary.slice(0, colon);
+  if (e.kind === "job") {
+    const word = /^[A-Za-z-]+/.exec(e.summary.slice(colon + 2))?.[0];
+    return word ? `${e.summary.slice(0, colon)}: ${word}` : e.summary.slice(0, colon);
+  }
   if (e.kind === "step") {
     const comma = e.summary.indexOf(", ", colon + 2);
     return comma >= 0 ? e.summary.slice(0, comma) : e.summary;

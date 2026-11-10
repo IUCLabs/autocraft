@@ -7,12 +7,13 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ActivityEvent, ActivityItem, ActivityPage, TraceKind } from "../../../web/src/api/types.ts";
 import { getDecision, reposOf } from "../../decisions.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
+import { quietFixPrs } from "../../security/quiet.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import {
   KINDS, actionEvent, activityEvent, writeActions, writeEvent, checkEvent, ciFixEvent, closedEvent, commentEvent, conflictEvent, decisionEvents, feedbackEvent, fixupEvent, hiddenSql,
   iso, jobEvent, mergeEvent, mergedEvent, openedEvent, opusEvent, patchCheckEvent, planEvent, postmergeEvent, premergeEvent, pushEvent, RUN_COLUMNS, rows, runEvent, stageEvent,
-  taskEvent, turnEvent, verifyEvent, type DecisionRow, type Ev, type ItemRow, type OpusRow,
+  taskEvent, turnEvent, verifyEvent, plainSummary, veilEvent, VEILED_KINDS, type DecisionRow, type Ev, type ItemRow, type OpusRow,
 } from "./trace.ts";
 import { canSeeInternals } from "./staff.ts";
 import { hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
@@ -241,6 +242,14 @@ export async function activity(db: DatabaseSync, req: Req): Promise<ActivityPage
   if (!cursor && q("since") === stamp) return { unchanged: true, stamp };
   const { events, next } = page(base, sources, { kinds, only, repo, limit, cursor });
   const info = itemsOf(db, events);
-  const out: ActivityEvent[] = events.map(({ detail: _d, repo: r, number: n, ...e }) => ({ ...e, item: info.get(`${r}#${n}`)! }));
+  // Viewers get no model or failure text: quiet pull requests lose the model-written kinds, every summary is cut to its plain part.
+  const quiet = base.staff ? new Set<string>() : quietFixPrs(db);
+  const shown: typeof events = base.staff ? events : events.flatMap((e) => {
+    const q = quiet.has(`${e.repo}#${e.number}`);
+    if (q && VEILED_KINDS.includes(e.kind)) return [];
+    const v = q ? veilEvent(e) : e;
+    return [{ ...v, repo: e.repo, number: e.number, summary: plainSummary(v) }];
+  });
+  const out: ActivityEvent[] = shown.map(({ detail: _d, repo: r, number: n, ...e }) => ({ ...e, item: info.get(`${r}#${n}`)! }));
   return { events: out, nextCursor: next ? `${next.at}|${next.id}` : null, stamp };
 }

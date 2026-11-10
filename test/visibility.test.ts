@@ -331,4 +331,35 @@ describe("repo visibility", () => {
     db.exec("DELETE FROM main.conversation_turns; DELETE FROM main.conversations; DELETE FROM security_findings WHERE number = 901");
   });
 
+  test("stage notes, job outcomes and the activity feed carry no reason text for viewers, on ordinary and quiet items", async () => {
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO security_scans (id, repo, state, started_by, started_at) VALUES (902, 'open-app', 'done', 'boss', ?)").run(now);
+    db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, reach, impact, fingerprint, fix_pr, created_at, updated_at)
+      VALUES ('open-app', 902, 902, 'a', 't', 'high', 0, 'landing', '[]', 'r', 'i', 'fp902', 2, ?, ?)`).run(now, now);
+    const job = db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, repo) VALUES ('classify', '{}', 'cli', ?, 'done', 'open-app')").run(now);
+    for (const n of [1, 2]) {
+      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES ('open-app', ?, 'hold', ?, 'review', 'SECRET stage note')").run(n, now);
+      db.prepare("INSERT INTO main.job_items (job_id, repo, number, outcome, at) VALUES (?, 'open-app', ?, 'failed: SECRET job reason', ?)").run(job.lastInsertRowid, n, now);
+      db.prepare("INSERT INTO main.fixups (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('open-app', ?, 'h', 'failed', 'SECRET fixup reason', '[]', 1, ?)").run(n, now);
+      db.prepare("INSERT INTO main.decisions (id, kind, repo, number, question, options, asked_at, asked_by, answer, answered_at, answer_note) VALUES (?, 'scope', 'open-app', ?, 'q', '[]', ?, 'decide', 'withdrawn', ?, 'SECRET withdrawal')").run(`wd${n}`, n, now, now);
+    }
+    for (const login of ["reader", "maint"]) {
+      const c = await signedIn(login);
+      const staff = login === "maint";
+      for (const n of [1, 2]) {
+        const stages = (await c.get<Item>(`/api/items/open-app/${n}`)).stages;
+        assert.deepEqual(stages.map((x) => x.note === "SECRET stage note"), [staff], `${login} ${n} stage note`);
+        const outcome = (await c.get<JobDetail>(`/api/pipeline/jobs/${job.lastInsertRowid}`)).items.find((i) => i.number === n)!.outcome;
+        assert.equal(outcome, staff ? "failed: SECRET job reason" : n === 2 ? null : "failed", `${login} ${n} job outcome`);
+      }
+      const feed = JSON.stringify(await c.get<unknown>("/api/activity?limit=500&kinds=github,plan,job,model-call,check,review,decision,write,step,conversation"));
+      const trace = JSON.stringify(await c.get<unknown>("/api/items/open-app/1/trace"));
+      for (const text of ["SECRET stage note", "SECRET job reason", "SECRET fixup reason", "SECRET withdrawal"]) {
+        assert.equal(feed.includes(text), staff, `${login} activity ${text}`);
+        assert.equal(trace.includes(text), staff, `${login} trace ${text}`);
+      }
+    }
+    db.exec("DELETE FROM main.stages; DELETE FROM main.job_items; DELETE FROM main.fixups; DELETE FROM main.decisions WHERE id LIKE 'wd%'; DELETE FROM main.security_findings WHERE number = 902");
+  });
+
 });

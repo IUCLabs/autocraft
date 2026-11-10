@@ -15,6 +15,7 @@ import { resumeStage, TripError } from "../../push-outcomes.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { blankIfHidden, hiddenRepos, visibleRepos } from "./visible.ts";
+import { isQuiet } from "../../security/quiet.ts";
 import { canSeeInternals } from "./staff.ts";
 import { SECURITY_STEP } from "../../security/rules.ts";
 
@@ -137,7 +138,10 @@ const jobId = (req: Req): number => {
 
 export const job = (db: DatabaseSync, req: Req) => wrap(async () => {
   const d = jobDetail(db, jobId(req), { hidden: await hiddenRepos(db, req), logs: canSeeInternals(req) });
-  return { ...d, error: forViewer(req)(d).error };
+  if (canSeeInternals(req)) return d;
+  // An item's outcome reads "failed: <reason>" or carries notes: viewers get the leading state word, and nothing for a quiet pull request.
+  const items = d.items.map((i) => ({ ...i, outcome: isQuiet(db, i.repo, i.number) ? null : /^[A-Za-z-]+/.exec(i.outcome ?? "")?.[0] ?? null }));
+  return { ...d, items, error: forViewer(req)(d).error };
 });
 
 function body(req: Req): Record<string, unknown> {
