@@ -242,7 +242,7 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   if (typeof verdict !== "string" || !(VERDICTS as readonly string[]).includes(verdict)) return null;
   if (typeof r.reason !== "string" || !r.reason.trim() || typeof r.sure !== "boolean") return null;
   const fixes = (Array.isArray(r.fixes) ? r.fixes : [])
-    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && typeof f.change === "string" && !!f.change.trim() && (keepLeaky || (!REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))))
+    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && safePath(f.file) && typeof f.change === "string" && !!f.change.trim() && (keepLeaky || (!REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))))
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
   if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];

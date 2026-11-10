@@ -32,9 +32,39 @@ function git(gitDir: string, args: string[], input?: string): Promise<Out> {
   });
 }
 
+/** Lists the tree of `sha`, killing git as soon as the listing alone shows more than `maxFiles` records or `maxBytes` of file sizes. */
+function lsTree(gitDir: string, sha: string, caps: CheckoutCaps): Promise<{ code: number; stdout: string; tooLarge: string | null }> {
+  return new Promise((resolve, reject) => {
+    const p = spawn("git", [...HARDENING, "ls-tree", "-r", "-z", "-l", "--full-tree", sha], { cwd: gitDir, env: { ...process.env, ...GIT_ENV }, stdio: ["ignore", "pipe", "ignore"], timeout: 300_000 });
+    let text = "";
+    let rest = "";
+    let files = 0;
+    let bytes = 0;
+    let tooLarge: string | null = null;
+    p.stdout.setEncoding("utf8");
+    p.stdout.on("data", (d: string) => {
+      if (tooLarge) return;
+      text += d;
+      const recs = (rest + d).split("\0");
+      rest = recs.pop() ?? "";
+      for (const r of recs) {
+        files++;
+        bytes += Number(/ +(\d+)\t/.exec(r)?.[1] ?? 0);
+      }
+      if (files > caps.maxFiles || bytes > caps.maxBytes) {
+        tooLarge = `tree too large (over ${files} files, ${bytes} bytes)`;
+        text = "";
+        p.kill("SIGKILL");
+      }
+    });
+    p.on("error", reject);
+    p.on("close", (code) => resolve({ code: code ?? 1, stdout: text, tooLarge }));
+  });
+}
+
 /** True for a path that is safe to create under the checkout root. */
 export function safePath(p: string): boolean {
-  if (!p || p.length > 500 || p.includes("\0") || p.startsWith("/")) return false;
+  if (!p || p.length > 500 || p.includes("\0") || p.includes("\\") || p.startsWith("/")) return false;
   return p.split("/").every((c) => c !== "" && c !== "." && c !== ".." && c.toLowerCase() !== ".git");
 }
 
@@ -83,9 +113,10 @@ export async function buildCheckout(gitDir: string, sha: string, dest: string, c
     touch(dest);
     return { ok: true, dir: dest, files: 0, bytes: 0 };
   }
-  const ls = await git(gitDir, ["ls-tree", "-r", "-z", "-l", "--full-tree", sha]);
+  const ls = await lsTree(gitDir, sha, caps);
+  if (ls.tooLarge) return { ok: false, reason: ls.tooLarge };
   if (ls.code !== 0) return { ok: false, reason: "could not list the commit's files" };
-  const entries = parseTree(ls.stdout.toString("utf8"), caps);
+  const entries = parseTree(ls.stdout, caps);
   const bytes = entries.reduce((a, e) => a + e.size, 0);
   if (entries.length > caps.maxFiles || bytes > caps.maxBytes) return { ok: false, reason: `tree too large (${entries.length} files, ${bytes} bytes)` };
   const cat = await git(gitDir, ["cat-file", "--batch"], entries.map((e) => `${e.oid}\n`).join(""));

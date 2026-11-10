@@ -23,7 +23,7 @@ export function cleanBody(body: string): string {
 }
 
 export function itemText(title: string | null, body: string | null): string {
-  const t = (title ?? "").trim();
+  const t = (title ?? "").trim().slice(0, 200);
   const b = cleanBody(body ?? "").slice(0, BODY_CHARS);
   return b ? `${t}\n${b}` : t;
 }

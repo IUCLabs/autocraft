@@ -23,7 +23,8 @@ function badPath(p: string): boolean {
 /** Reason the patch text must be refused, or null. */
 export function patchProblem(patch: string): string | null {
   for (const line of patch.split("\n")) {
-    if (/^(new file mode|deleted file mode|old mode|new mode|index [0-9a-f.]+\.\.[0-9a-f.]+) 120000\b/.test(line) || /^index [0-9a-f]+\.\.[0-9a-f]+ 120000$/.test(line)) return "patch touches a symlink";
+    const mode = /^(?:new file mode|deleted file mode|old mode|new mode) (\S+)\s*$/.exec(line) ?? /^index [0-9a-f.]+\.\.[0-9a-f.]+ (\S+)\s*$/.exec(line);
+    if (mode && !/^100(644|755)$/.test(mode[1]!)) return "patch touches a symlink or special file";
     if (/^(GIT binary patch|Binary files .* differ)$/.test(line)) return "patch has binary content";
     if (/^(rename|copy) (from|to) /.test(line) || /^(---|\+\+\+) /.test(line) || /^diff --git /.test(line)) {
       const rest = line.replace(/^(diff --git|---|\+\+\+|(rename|copy) (from|to)) /, "");

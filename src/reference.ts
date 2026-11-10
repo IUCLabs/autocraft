@@ -10,6 +10,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
 import { connect, dbPath } from "./db.ts";
 import { isTracked } from "./repos.ts";
+import { isInstructionPath } from "./sandbox/instruction-paths.ts";
 
 export class ReferenceError extends Error {}
 
@@ -50,6 +51,7 @@ function checkArchive(tarFile: string): { files: number; bytes: number } {
     if (type !== "-" && type !== "d") throw new ReferenceError("the archive may hold only plain files and directories");
     const name = rawName.replace(/^\.\//, "").replace(/\/$/, "");
     if (name === "" || name === ".") continue;
+    if (isInstructionPath(name)) throw new ReferenceError("a name in the archive is not allowed");
     const parts = name.split("/");
     if (parts.length > (type === "d" ? 1 : 2) || !parts.every((p) => SEGMENT.test(p))) throw new ReferenceError("a name in the archive is not allowed");
     if (type === "-") {

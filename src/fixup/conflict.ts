@@ -216,7 +216,9 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (merge.clean || [...merge.conflicted].sort().join("\n") !== [...files].sort().join("\n")) { fail("failed", "the merge no longer conflicts in the files that were resolved"); return; }
       const scratch = mkdtempSync(join(x.d.root, ".index-"));
       try {
-        tree = await git.withFiles(merge.tree, JSON.parse(c.lint.resolved) as { path: string; mode: string; content: string }[], join(scratch, "index"));
+        const stored = JSON.parse(c.lint.resolved) as { path: string; mode: string; content: string }[];
+        if (stored.some((f) => !resolvablePath(f.path) || (f.mode !== "100644" && f.mode !== "100755"))) { fail("refused", "the stored resolution touches a path or mode a resolution may not"); return; }
+        tree = await git.withFiles(merge.tree, stored, join(scratch, "index"));
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
@@ -258,7 +260,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       for (const path of files) {
         if (!resolvablePath(path)) { refuse(`${path} is not a file a conflict resolution may touch`); return; }
         const f = await git.file(merge.tree, path);
-        if (!f.ok) { fail("refused", f.reason); return; }
+        if (!f.ok) { if (f.tooLarge) refuse(f.reason); else fail("refused", f.reason); return; }
         if (!hasMarkers(f.content)) { refuse(`${path} conflicts without content markers`); return; }
         if (f.content.includes("\uFFFD")) { refuse(`${path} is not UTF-8`); return; }
         const crlf = f.content.includes("\r\n");
