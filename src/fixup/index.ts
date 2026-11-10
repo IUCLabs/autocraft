@@ -323,7 +323,11 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const body = c.carry ? c.carry.suggestion! : askText(c.fixes);
       const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "ask", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY);
       if ("refused" in g) { log(`  ${ref}: not asked: ${g.refused}`); return; }
-      const cm = await ghAskComment(gw, d.exec, "fixup-comment", g, c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model }, body, { run: runId, head: c.head });
+      const note: Note = c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model };
+      const earlier = earlierAsk(db, repo, c.number, c.head);
+      const cm = earlier
+        ? (withNote(note, body) === earlier.text ? { code: 0, stdout: "", stderr: "" } : await ghEditComment(gw, g, d.exec, "fixup-comment-edit", { repo, number: c.number, commentId: earlier.id }, note, body, { run: runId, head: c.head }))
+        : await ghAskComment(gw, d.exec, "fixup-comment", g, note, body, { run: runId, head: c.head });
       if (cm.code !== 0) { const why = scrubReason(oneLine(cm.stderr), d.root); rec.fixup(c, "comment-failed", why, []); log(`  ${ref}: comment failed: ${why}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       if (count) params.onHandled?.(++handled.n);
@@ -623,6 +627,36 @@ async function carryWork(c: FixCandidate, fetchDiff: DiffFetcher): Promise<{ ok:
 
 function oneTitle(db: DatabaseSync, c: FixCandidate): string {
   return ((db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300);
+}
+
+const OWN_PUSHES = "'fixup-push', 'cifix-push', 'conflict-push', 'fixissue-push', 'batch-push'";
+
+/**
+ * Our last ask comment on the PR when every commit since the head it was made at is an AutoCraft push (the recorded
+ * pushes chain from the ask's head to `head`): a new ask then edits it instead of notifying the contributor again.
+ * `text` is the text as last posted or edited.
+ */
+export function earlierAsk(db: DatabaseSync, repo: string, number: number, head: string): { id: string; text: string } | null {
+  const target = `${repo}#${number}`;
+  type Row = { action: string; details: string };
+  const done = (sql: string): { action: string; d: { state?: string; url?: string; text?: string; comment?: string; head?: string; from?: string; to?: string } }[] =>
+    (db.prepare(sql).all(target) as Row[]).map((r) => ({ action: r.action, d: JSON.parse(r.details) })).filter((r) => r.d.state === "done");
+  const asked = new Set((db.prepare("SELECT from_head FROM fixups WHERE repo = ? AND number = ? AND state = 'asked'").all(repo, number) as { from_head: string }[]).map((r) => r.from_head));
+  if (!asked.size) return null;
+  const comments = done("SELECT action, details FROM audit WHERE target = ? AND action IN ('fixup-comment', 'fixup-comment-edit') ORDER BY rowid DESC");
+  const post = comments.find((r) => r.action === "fixup-comment" && r.d.head && asked.has(r.d.head) && /#issuecomment-\d+$/.test(r.d.url ?? ""));
+  if (!post) return null;
+  const id = /#issuecomment-(\d+)$/.exec(post.d.url!)![1]!;
+  const edit = comments.find((r) => r.action === "fixup-comment-edit" && r.d.comment === id);
+  const pushes = done(`SELECT action, details FROM audit WHERE target = ? AND action IN (${OWN_PUSHES}) ORDER BY rowid DESC`);
+  let cur = head;
+  for (let i = 0; cur !== post.d.head && i <= pushes.length; i++) {
+    const p = pushes.find((r) => r.d.to === cur && r.d.from);
+    if (!p) return null;
+    cur = p.d.from!;
+  }
+  if (cur !== post.d.head) return null;
+  return { id, text: (edit ?? post).d.text ?? "" };
 }
 
 export type RepostResult = { status: "unchanged" | "dry-run" | "edited" | "failed"; old: string; text: string };

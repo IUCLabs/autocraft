@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
+import { setCommentApproval } from "../src/act/approval.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import { viewFile } from "../src/fixup/excerpt.ts";
@@ -243,4 +244,42 @@ describe("review of a moved head", () => {
 
 describe("fixup repost", () => {
 
+});
+
+describe("a second ask on a PR we already asked", () => {
+  const H2 = "b".repeat(40);
+  /** Asks at the world's head, then moves the PR to H2 with a review there and asks again. */
+  async function twice(push: "none" | "ours") {
+    const w = world({ canModify: false });
+    const db = fresh(w.head, { canModify: false });
+    setCommentApproval(db, "op", "app", true);
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.equal(rows(db, "SELECT state FROM fixups")[0]!.state, "asked");
+    db.prepare("UPDATE audit SET details = json_set(details, '$.url', 'https://github.com/o/app/pull/7#issuecomment-55') WHERE action = 'fixup-comment'").run();
+    if (push === "ours") {
+      db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'cifix', 'cifix-push', 'app#7', ?)").run(T1, JSON.stringify({ state: "done", from: w.head, to: H2 }));
+    }
+    db.prepare("UPDATE items SET head_oid = ? WHERE repo = 'app'").run(H2);
+    db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 7, ?, 'rv2', ?, 'm', 'take-fix', 'nearly right', ?, 1, 'full')").run(H2, T1, JSON.stringify([{ file: "src/lib.rs", change: "rename a to c" }]));
+    db.prepare("UPDATE pr_checks SET head_oid = ? WHERE repo = 'app' AND number = 7").run(H2);
+    const q = w.deps.querier;
+    w.deps.querier = { ...q, query: async (s: string, v?: Record<string, unknown>) => { const r = await q.query(s, v as Record<string, unknown>) as { repository?: { pullRequest?: { headRefOid: string } } }; if (r.repository?.pullRequest) r.repository.pullRequest.headRefOid = H2; return r; } } as typeof q;
+    const calls: string[] = [];
+    const run = w.deps.exec;
+    w.deps.exec = async (cmd, args, o) => { if (cmd === "gh" && args[0] !== "api") calls.push("comment"); if (cmd === "gh" && args[0] === "api" && args.includes("PATCH")) calls.push(`edit ${args.join(" ")}`); return run(cmd, args, o); };
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    return { calls, db };
+  }
+
+  test("our own push in between: the earlier ask comment is edited", async () => {
+    const { calls, db } = await twice("ours");
+    assert.equal(calls.length, 1);
+    assert.match(calls[0]!, /^edit .*issues\/comments\/55/);
+    assert.equal(rows(db, "SELECT state FROM fixups WHERE from_head = '" + H2 + "'")[0]!.state, "asked");
+  });
+
+  test("no push of ours in between: a new comment", async () => {
+    const { calls } = await twice("none");
+    assert.deepEqual(calls, ["comment"]);
+  });
 });
