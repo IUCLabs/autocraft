@@ -252,4 +252,48 @@ describe("repo visibility", () => {
     assert.equal(viewer.needs.total, maint.needs.total);
   });
 
+  test("viewers read only the item page's fields of a trace event and no reasons in its list; staff read all", async () => {
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, claims)
+      VALUES ('open-app', 1, 'h-open-app', ?, 'opus', 'full', 'take-fix', 1, 'secret reason', '["secret risk"]', '["secret fix"]', '[{"claim":"secret claim","evidence":"a.ts:1"}]')`).run(now);
+    db.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('open-app', 1, 'h-open-app', 'failed', 'secret fixup reason', '[\"a.ts\"]', 1, ?)").run(now);
+    type Trace = { events: { id: string; kind: string; summary: string }[] };
+    type Detail = { fields: Record<string, unknown> };
+    for (const login of ["reader", "maint"]) {
+      const c = await signedIn(login);
+      const staff = login === "maint";
+      const events = (await c.get<Trace>("/api/items/open-app/1/trace")).events;
+      const review = events.find((e) => e.id.startsWith("review:opus") && e.summary.includes("take-fix"))!;
+      const fields = (await c.get<Detail>(`/api/items/open-app/1/trace/event?id=${encodeURIComponent(review.id)}`)).fields;
+      assert.equal(fields.verdict, "take-fix", login);
+      for (const k of ["reason", "fixes", "risks", "claims"]) assert.equal(k in fields, staff, `${login} ${k}`);
+      const fix = events.find((e) => e.id.startsWith("fixup:"))!;
+      assert.equal(fix.summary.includes("secret fixup reason"), staff, login);
+      assert.equal("reason" in (await c.get<Detail>(`/api/items/open-app/1/trace/event?id=${encodeURIComponent(fix.id)}`)).fields, staff, login);
+    }
+    db.prepare("DELETE FROM opus_review_history WHERE repo = 'open-app'").run();
+    db.prepare("DELETE FROM fixups WHERE repo = 'open-app'").run();
+  });
+
+  test("a quiet pull request's conversation has no model text for viewers; an ordinary item's is unchanged", async () => {
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO main.items (repo, number, kind, state, title, body, head_oid, author, created_at, updated_at) VALUES ('open-app', 2, 'pr', 'OPEN', 'Fix', 'b', 'h2', 'autocraft', ?, ?)").run(now, now);
+    db.prepare("INSERT INTO security_scans (id, repo, state, started_by, started_at) VALUES (901, 'open-app', 'done', 'boss', ?)").run(now);
+    db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, reach, impact, fingerprint, fix_pr, created_at, updated_at)
+      VALUES ('open-app', 901, 901, 'a', 't', 'high', 0, 'landing', '[]', 'r', 'i', 'fp901', 2, ?, ?)`).run(now, now);
+    for (const n of [1, 2]) {
+      db.prepare("INSERT INTO main.conversations (repo, number, item_block, item_sig, created_at, created_by) VALUES ('open-app', ?, 'b', 's', ?, 'boss')").run(n, now);
+      db.prepare("INSERT INTO main.conversation_turns (repo, number, kind, login, at, body, block, status, seq) VALUES ('open-app', ?, 'opus', 'opus', ?, 'the Opus analysis', 'blk', NULL, 1)").run(n, now);
+    }
+    type Conv = { turns: { body: string }[]; choices: unknown };
+    const reader = await signedIn("reader"), maint = await signedIn("maint");
+    assert.equal((await reader.get<Conv>("/api/conversations/open-app/1")).turns[0]!.body, "the Opus analysis");
+    const quiet = await reader.get<Conv>("/api/conversations/open-app/2");
+    assert.equal(quiet.turns.length, 1);
+    assert.equal(quiet.turns[0]!.body, "");
+    assert.equal(quiet.choices, null);
+    assert.equal((await maint.get<Conv>("/api/conversations/open-app/2")).turns[0]!.body, "the Opus analysis");
+    db.exec("DELETE FROM main.conversation_turns; DELETE FROM main.conversations; DELETE FROM security_findings WHERE number = 901");
+  });
+
 });

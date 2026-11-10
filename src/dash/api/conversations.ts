@@ -12,6 +12,8 @@ import { cardOf, cardRepos, dismissCard, doCard, editCard, sweepRunningCards, ty
 import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, staleOf, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { isQuiet } from "../../security/quiet.ts";
+import { canSeeInternals } from "./staff.ts";
 import { needVisible } from "./visible.ts";
 import { slugOf } from "../../owners.ts";
 import { canSettle, canSettleCached } from "../../settlers.ts";
@@ -175,7 +177,14 @@ function needOperator(req: Req): void {
 export async function getConversation(db: DatabaseSync, req: Req): Promise<ConversationView> {
   const { repo, n } = itemOf(req);
   await needVisible(db, req, repo);
-  return conversationView(db, repo, n, req.user);
+  const view = conversationView(db, repo, n, req.user);
+  return !canSeeInternals(req) && isQuiet(db, repo, n) ? veilConversation(view) : view;
+}
+
+/** A viewer's copy of a quiet pull request's conversation: who spoke and when stays; the text, cards, choices and their reasons go. */
+function veilConversation(v: ConversationView): ConversationView {
+  const { progress: _p, ...rest } = v;
+  return { ...rest, turns: v.turns.map((t) => ({ id: t.id, kind: t.kind, login: t.login, at: t.at, body: "", actions: [], notes: [], ...(t.status && { status: t.status }) })), includes: [], choices: null };
 }
 
 export async function postMessage(db: DatabaseSync, req: Req, deps?: StoreDeps): Promise<ConversationView> {
