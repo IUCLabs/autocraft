@@ -62,9 +62,10 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
       // A fix-up's job repeats its step line; its model calls move to that line.
       if (fixSteps.some((f) => near(f.at, e.at, 180_000)) && /fix|conflict/i.test(e.actor.name)) continue;
       // The review and verification lines say what these jobs did.
-      if (/^(Opus review:|verify-)/.test(after)) continue;
-      const calls = callsOf(e.ref.jobId);
       const stepId = typeof e.ref.jobId === "number" ? stepOfJob.get(e.ref.jobId) : undefined;
+      // By step as well as by text: a viewer's summary keeps only the outcome's first word.
+      if (/^(Opus review:|verify-)/.test(after) || (stepId !== undefined && /^(opus-review|verify(-collect)?)$/.test(stepId))) continue;
+      const calls = callsOf(e.ref.jobId);
       if (stepId === "premerge" || stepId === "postmerge") continue;
       const plain = stepId ? PLAIN[stepId] : undefined;
       const failed = /^(failed|refused|error)/i.test(after);

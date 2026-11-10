@@ -50,7 +50,8 @@ export class WorkerApi {
     const text = await res.text();
     if (!res.ok) {
       const err = new ApiError(res.status, path, text.slice(0, 200).replaceAll(this.#key, "***"));
-      const secs = Number(res.headers.get("retry-after"));
+      const header = res.headers.get("retry-after");
+      const secs = header === null || header.trim() === "" ? 1 : Number(header);
       if (Number.isFinite(secs) && secs >= 0) err.retryAfterMs = Math.min(secs, 5) * 1000;
       throw err;
     }
