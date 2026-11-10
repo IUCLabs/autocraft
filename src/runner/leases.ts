@@ -17,16 +17,12 @@ export function skipItem(key: string, log: (line: string) => void, why: string):
   log(`  ${key}: skipped: ${why}`);
 }
 
-/** Takes the lease for the job. False when another running job holds it; throws when this job already holds it. */
+/** Takes the lease for the job. False when another running job holds it. */
 export function take(db: DatabaseSync, key: string, jobId: number, step: string): boolean {
   db.exec("BEGIN IMMEDIATE");
   try {
     const held = db.prepare("SELECT l.job_id AS job, j.state AS state FROM work_leases l LEFT JOIN jobs j ON j.id = l.job_id WHERE l.key = ?").get(key) as { job: number; state: string | null } | undefined;
-    if (held && held.job === jobId) {
-      db.exec("ROLLBACK");
-      throw new Error(`lease ${key} is already held by this job: leases do not nest`);
-    }
-    if (held && held.state === "running") {
+    if (held && held.job !== jobId && held.state === "running") {
       db.exec("ROLLBACK");
       return false;
     }
@@ -50,7 +46,7 @@ export function releaseJob(db: DatabaseSync, jobId: number): void {
 /**
  * Leases the item for the job this process runs and returns what ends the lease, or null (one line logged) when
  * another running job holds it: the caller skips the item without counting it. Outside a job (command line) there is
- * no holder to record, so the item is free. Call it once per item at the outermost site. Takes of one key do not nest: a job taking a key it already holds throws.
+ * no holder to record, so the item is free. Call it once per item at the outermost site. Takes of one key do not nest: the same job may take a key it holds, but the inner release frees the outer lease too.
  */
 export function leaseItem(db: DatabaseSync, key: string, log: (line: string) => void): (() => void) | null {
   const job = currentJob();

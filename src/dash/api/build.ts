@@ -162,7 +162,7 @@ export async function artifact(db: DatabaseSync, req: Req): Promise<Res> {
       body: data,
       headers: {
         "content-type": a.contentType === "image/png" ? "image/png" : `${a.contentType}; charset=utf-8`,
-        "content-disposition": `${a.contentType === "image/png" ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(a.name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`,
+        "content-disposition": `${a.contentType === "image/png" ? "inline" : "attachment"}; filename="${a.name.replace(/[^A-Za-z0-9._-]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(a.name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`,
         "content-security-policy": "sandbox",
         "cache-control": "private, max-age=300",
       },

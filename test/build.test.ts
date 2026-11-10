@@ -253,7 +253,7 @@ describe("dashboard API", () => {
     const v = await signedIn("maint1");
     const html = await v.send(`/api/tasks/${id}/artifacts/page.html`);
     assert.equal(html.status, 200);
-    assert.match(html.headers.get("content-disposition") ?? "", /^attachment; filename="page.html"$/);
+    assert.match(html.headers.get("content-disposition") ?? "", /^attachment; filename="page.html"; filename\*=UTF-8''page\.html$/);
     assert.match(html.headers.get("content-type") ?? "", /^text\/plain/);
     assert.equal(html.headers.get("x-content-type-options"), "nosniff");
     assert.equal(html.headers.get("content-security-policy"), "sandbox");

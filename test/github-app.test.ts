@@ -241,19 +241,19 @@ describe("github app registration", () => {
 
   test("the app's keys are read again when the keys file changes, with no restart", () => {
     const file = join(dir, "follow-keys.json");
-    writeFileSync(file, "{}");
+    writeFileSync(file, "{}", { mode: 0o600 });
     const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file });
     const keys = () => (config as unknown as Record<string, { app: { slug: string } | null }>)["sec" + "rets"]!.app;
     assert.equal(keys(), null);
-    writeFileSync(file, JSON.stringify({ github_app_id: "9", github_app_slug: "late-app", github_app_private_key: PEM, github_app_client_id: "Iv1.late", github_app_client_secret: CLIENT_SECRET }));
+    writeFileSync(file, JSON.stringify({ github_app_id: "9", github_app_slug: "late-app", github_app_private_key: PEM, github_app_client_id: "Iv1.late", github_app_client_secret: CLIENT_SECRET }), { mode: 0o600 });
     assert.equal(keys()?.slug, "late-app");
-    writeFileSync(file, "{}");
+    writeFileSync(file, "{}", { mode: 0o600 });
     assert.equal(keys(), null);
   });
 
   test("the identity route refuses with the uncovered repos listed, and a switch ends every session", async () => {
     const file = join(dir, "identity-secrets.json");
-    writeFileSync(file, JSON.stringify({ github_app_id: "4242", github_app_slug: "autocraft-test", github_app_private_key: PEM, github_app_client_id: "Iv1.test", github_app_client_secret: CLIENT_SECRET }));
+    writeFileSync(file, JSON.stringify({ github_app_id: "4242", github_app_slug: "autocraft-test", github_app_private_key: PEM, github_app_client_id: "Iv1.test", github_app_client_secret: CLIENT_SECRET }), { mode: 0o600 });
     const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
     const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [] });
     closers.push(s.close);
@@ -294,7 +294,7 @@ describe("github app registration", () => {
 
   test("org setup link: owners only, single use, the owner's token is kept nowhere, the role list 404 falls back to the settings link", async () => {
     const file = join(dir, "setup-secrets.json");
-    writeFileSync(file, "{}");
+    writeFileSync(file, "{}", { mode: 0o600 });
     const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
     const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [], githubApi: `http://127.0.0.1:${(github.address() as AddressInfo).port}` });
     closers.push(s.close);
@@ -384,7 +384,7 @@ describe("github app registration", () => {
 
   test("org setup link: unticked manager keeps no token, flows are bound to their cookie and link, a 403 on roles falls back, a foreign installation is refused", async () => {
     const file = join(dir, "setup2-secrets.json");
-    writeFileSync(file, "{}");
+    writeFileSync(file, "{}", { mode: 0o600 });
     const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
     const provider = new FakeProvider(permsFile);
     const s = await startServer({ config: loadConfig(env), db, provider, routes: [], githubApi: `http://127.0.0.1:${(github.address() as AddressInfo).port}` });

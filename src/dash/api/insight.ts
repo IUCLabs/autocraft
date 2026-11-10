@@ -156,7 +156,7 @@ export async function cost(db: DatabaseSync, req: Req): Promise<CostReport> {
   const bucketSize = hours > 72 ? "day" : "hour";
   const len = bucketSize === "day" ? 10 : 13;
   return {
-    runs: db.prepare(`SELECT run_id AS id, MIN(started_at) AS "from", MAX(COALESCE(ended_at, started_at)) AS "to" FROM token_usage${hide ? ` WHERE (repo IS NULL OR ${hide})` : ""} GROUP BY run_id ORDER BY MAX(COALESCE(ended_at, started_at)) DESC`).all(p) as CostReport["runs"],
+    runs: db.prepare(`SELECT run_id AS id, MIN(started_at) AS "from", MAX(COALESCE(ended_at, started_at)) AS "to" FROM token_usage${hide ? ` WHERE (repo IS NULL OR ${hide})` : ""} GROUP BY run_id ORDER BY MAX(COALESCE(ended_at, started_at)) DESC`).all(Object.fromEntries(Object.entries(p).filter(([k]) => k !== "run"))) as CostReport["runs"],
     run,
     total: { ...(total as object) } as UsageTotals,
     itemsClassified: (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT repo, number FROM classifications WHERE ${flt})`).get(p) as { n: number }).n,
