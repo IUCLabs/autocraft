@@ -191,7 +191,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The Inbox MCP server (POST /mcp): calls per login and failed authentications per client address, and feedback posts per login as on the dashboard.
   const mcpLimitToken = new RateLimiter(120, 60_000);
   const mcpLimitIp = new RateLimiter(300, 60_000);
-  const webhookLimitIp = new RateLimiter(600, 60_000);  // before the body is read or the signature checked
+  const webhookLimitIp = new RateLimiter(5000, 60_000);  // flood guard only; the periodic sync still runs. Before the body is read or the signature checked
   // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
   const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
   // list_repos and list_fixups aggregate the mirror like the dashboard's expensive GETs: a burst, then 30 a minute, per login.

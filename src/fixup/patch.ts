@@ -400,10 +400,11 @@ function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, 
 
 const LOCKFILE = /(^|\/)(Cargo\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
 
-/** True when a lockfile section's resolved text is, line for line, one side of the conflict (generated files take no hand-written lines). */
+/** True when a lockfile section's resolved text is, line for line and in order, exactly one side of the conflict (generated files take no hand-written lines). */
 function oneSide(section: { ours: string[]; theirs: string[] }, text: string): boolean {
   const lines = text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "");
-  return [section.ours, section.theirs].some((side) => lines.every((l) => side.includes(l)));
+  const same = (side: string[]) => side.length === lines.length && side.every((l, k) => l === lines[k]);
+  return same(section.ours) || same(section.theirs);
 }
 
 /** A resolution's text ends with a newline when the conflicted file's does. */

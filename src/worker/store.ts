@@ -133,7 +133,7 @@ export function createStore(cfg: StoreConfig): Server {
     send(res, 200, rec);
   }
 
-  // Failed authentications per remote address: past the limit inside the window, the address is refused.
+  // Failed authentications per remote address: past the limit inside the window, the address is refused (a request with a valid key is never blocked).
   const fails = new Map<string, { start: number; n: number }>();
   const FAIL_LIMIT = 20;
   const FAIL_WINDOW_MS = 60_000;
@@ -162,8 +162,8 @@ export function createStore(cfg: StoreConfig): Server {
     const auth = /^Bearer (.+)$/.exec(String(req.headers.authorization ?? ""))?.[1] ?? "";
     const write = req.method === "PUT";
     const addr = req.socket.remoteAddress ?? "?";
-    if (authBlocked(addr)) return send(res, 429, { error: "too many failed attempts" });
     if (!auth || !(sameKey(auth, cfg.writeKey) || (!write && sameKey(auth, cfg.readKey)))) {
+      if (authBlocked(addr)) return send(res, 429, { error: "too many failed attempts" });
       authFailed(addr);
       return send(res, 401, { error: "unauthorized" });
     }

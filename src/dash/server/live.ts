@@ -33,7 +33,7 @@ export class LiveHub {
     this.pollMs = o.pollMs ?? 500;
     this.heartbeatMs = o.heartbeatMs ?? 25_000;
     this.maxClients = o.maxClients ?? 200;
-    this.maxPerSession = o.maxPerSession ?? 8;
+    this.maxPerSession = o.maxPerSession ?? 32;
     this.stallMs = o.stallMs ?? 5000;
   }
 

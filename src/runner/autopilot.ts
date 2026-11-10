@@ -55,7 +55,7 @@ import { STEP_STAGE } from "../core/push-outcome.ts";
 import { jobBlock, stepParallel, type Active } from "./concurrency.ts";
 import { knownStep, loadSteps, STEPS, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
-import { holdMap, refreshOutsideHolds } from "../outside.ts";
+import { refreshOutsideHolds } from "../outside.ts";
 import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
 import { FAST_FLOOR, fastFirst, fastScoreOf } from "../fasttrack.ts";
 
@@ -1001,12 +1001,7 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
   if (opts.wakeAt) setSetting(db, KEY_WAKE_AT, new Date(opts.wakeAt).toISOString());
   else db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_WAKE_AT);
   if (opts.status) setSetting(db, KEY_STATUS, JSON.stringify(opts.status));
-  // Re-read now: a hold may have been set since the detection pass.
-  let held: ReturnType<typeof holdMap> = new Map();
-  try { held = holdMap(db); } catch (e) { log(`autopilot: outside-author holds: ${(e as Error).message}`); }
-  const heldItem = (repo: unknown, number: unknown) => typeof repo === "string" && typeof number === "number" && held.has(`${repo}#${number}`);
   for (const p of proposals) {
-    if (heldItem(p.params.repo, p.params.number) || (p.gate && heldItem(p.gate.params.repo, p.gate.params.number))) continue;
     const slot = `${p.lane}\0${typeof p.params.repo === "string" ? p.params.repo : ""}`;
     if (done.has(slot)) continue;
     try {
