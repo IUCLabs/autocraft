@@ -149,7 +149,8 @@ export async function itemCore(db: DatabaseSync, req: Req): Promise<Item> {
     closedAt: it.closed_at, mergedAt: it.merged_at, mergedBy: it.merged_by,
     pipelineOn: (db.prepare("SELECT pipeline FROM tracked_repos WHERE name = ?").get(repo) as { pipeline: number } | undefined)?.pipeline === 1,
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n), area: areaNameOf(db, repo, n),
-    stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
+    // Stage notes quote review reasons, verification summaries and fix-up reasons: staff only.
+    stages: stages.map((s) => ({ ...s, by: s.by ?? "", note: canSeeInternals(req) ? s.note : null })),
     discord: discord.discordOf(db, repo, n),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: unflagged(settledOf(db, repo, n), isQuiet(db, repo, n), !veil) as Item["settled"], priority: priorityOf(db, repo, n),
