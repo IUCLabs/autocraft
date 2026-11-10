@@ -408,7 +408,7 @@ export function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   for (const e of SOURCES.flatMap((s) => s.run(c))) {
     if (c.veiled && VEILED_KINDS.includes(e.kind)) continue;
     const at = iso(e.at);
-    if (at) all.push({ ...(c.veiled ? veilEvent(e) : e), at });
+    if (at) all.push({ ...(c.veiled ? veilEvent(e) : e), at, ...(c.staff ? {} : { summary: plainSummary(c.veiled ? veilEvent(e) : e) }) });
   }
   carryHeads(all);
   const taken = !kinds || kinds.has("review") ? linkReviewCalls(all) : new Set<number>();
@@ -500,11 +500,37 @@ export async function context(db: DatabaseSync, req: Req): Promise<Ctx> {
   return { db, repo, n, ref: `${repo}#${n}`, own: ownLogins(db, repo), box, staff: canSeeInternals(req), veiled: !canSeeInternals(req) && isQuiet(db, repo, n), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req) };
 }
 
-/** Job errors and patch-check reasons carry log and patch text: viewers get the other fields. */
+/**
+ * What a viewer reads of an event's detail: the fields the item page and timeline give them. Anything not listed (model reasons, fixes,
+ * risks, claims, verification and fix-up text, job errors) is staff only, and so is every kind this table does not know.
+ */
+const VIEWER_FIELDS: [match: (e: Ev) => boolean, fields: string[]][] = [
+  [(e) => e.id.startsWith("plan:"), ["from", "to"]],
+  [(e) => e.kind === "job", ["step", "state"]],
+  [(e) => e.id.startsWith("patchcheck:"), ["subject"]],
+  [(e) => e.id.startsWith("review:opus") || e.id.startsWith("review:opus-latest:"), ["mode", "verdict", "sure"]],
+  [(e) => e.id.startsWith("review:premerge:"), ["findings", "searched", "error"]],
+  [(e) => e.id.startsWith("review:postmerge:"), ["findings", "error"]],
+  [(e) => e.kind === "step", ["to"]],
+  [(e) => e.kind === "write", ["action", "detail"]],
+];
 const viewerFields = (e: Ev): Record<string, unknown> => {
-  const drop = e.id.startsWith("patchcheck:") ? "reasons" : e.kind === "job" ? "error" : "";
-  return Object.fromEntries(Object.entries(e.detail ?? {}).filter(([k]) => k !== drop));
+  const allowed = VIEWER_FIELDS.find(([match]) => match(e))?.[1] ?? [];
+  return Object.fromEntries(Object.entries(e.detail ?? {}).filter(([k]) => allowed.includes(k)));
 };
+
+/** A viewer's summary of an event whose wording ends in model or log text: the part before that text. */
+function plainSummary(e: Ev): string {
+  const colon = e.summary.indexOf(": ");
+  if (colon < 0) return e.summary;
+  if (e.kind === "step") {
+    const comma = e.summary.indexOf(", ", colon + 2);
+    return comma >= 0 ? e.summary.slice(0, comma) : e.summary;
+  }
+  if (e.kind === "model-call") return `${e.summary.slice(0, colon)}: ${e.call?.state === "running" ? "running" : e.call?.state === "failed" ? "failed" : "done"}`;
+  if (e.id.startsWith("task:") || e.id.startsWith("review:premerge:") || e.id.startsWith("review:postmerge:")) return e.summary.slice(0, colon);
+  return e.summary;
+}
 
 const strip = ({ detail: _d, ...e }: Ev): TraceEvent => e;
 
