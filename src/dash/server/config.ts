@@ -217,6 +217,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const secretsFile = envVar("SECRETS_FILE", env) ?? null;
   // A dev server reads the app's keys from a secrets file when one is given, so registration can be tried locally.
   if (devAuth && secretsFile) {
+    let loose = false;
+    try { loose = (statSync(secretsFile).mode & 0o077) !== 0; } catch { /* no file yet */ }
+    if (loose) throw new ConfigError("secrets file is readable or writable by group or others; chmod 600 it");
     try {
       secrets.app = appSecretsOf(JSON.parse(readFileSync(secretsFile, "utf8")) as Record<string, unknown>);
     } catch { /* no file yet: registration creates it */ }

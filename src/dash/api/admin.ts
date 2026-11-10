@@ -24,9 +24,10 @@ import { listAll, RepoError, type RepoRow, trackRepoChecked, untrackRepo } from 
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
 import { dropSessionTokens } from "../server/user-tokens.ts";
+import { sessionEndsAt } from "../server/sessions.ts";
 import { endTokens, listAllTokens, revokeAnyToken } from "../mcp/tokens.ts";
 import { HttpError } from "../server/util.ts";
-import type { Req } from "../types.ts";
+import type { Req, Role } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pipelineState } from "../../runner/autopilot.ts";
 import { PilotError, setPilot } from "../../pilot.ts";
@@ -436,9 +437,12 @@ export async function track(db: DatabaseSync, req: Req, on: boolean): Promise<Tr
 
 export function accessOverview(db: DatabaseSync, req: Req): AccessOverview {
   requireOperator(req, "manage access");
-  const sessions = db.prepare(`SELECT rowid AS id, login, csrf, created_at, last_seen, expires_at, user_agent FROM sessions
-    WHERE expires_at > ? ORDER BY last_seen DESC`).all(new Date().toISOString()) as
-    { id: number; login: string; csrf: string; created_at: string; last_seen: string; expires_at: string; user_agent: string | null }[];
+  const nowMs = Date.now();
+  const sessions = (db.prepare(`SELECT s.rowid AS id, s.login, s.csrf, s.created_at, s.last_seen, s.expires_at, s.user_agent, a.role
+    FROM sessions s JOIN access a ON a.login = s.login
+    WHERE s.expires_at > ? ORDER BY s.last_seen DESC`).all(new Date(nowMs).toISOString()) as
+    { id: number; login: string; csrf: string; created_at: string; last_seen: string; expires_at: string; user_agent: string | null; role: Role }[])
+    .filter((s) => nowMs < sessionEndsAt(s.created_at, s.role));
   const perLogin = new Map<string, number>();
   for (const s of sessions) perLogin.set(s.login.toLowerCase(), (perLogin.get(s.login.toLowerCase()) ?? 0) + 1);
   return {

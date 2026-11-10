@@ -69,6 +69,7 @@ export async function stopFixItem(db: DatabaseSync, req: Req): Promise<{ ok: tru
   if (!it || it.kind !== "issue" || it.state !== "OPEN") throw new HttpError(409, `${repo}#${n} is not an open issue`);
   const a = stoppedFix(db, repo, n);
   if (!a) throw new HttpError(409, `${repo}#${n} has no skipped or failed fix attempt`);
+  if (!(await req.user.canWrite(repo).catch(() => false))) throw new HttpError(403, `no write access to ${repo.split("/").pop()}`);
   const id = `${repo}#${n}:scope:fix-stopped`;
   if (getDecision(db, id)?.answer) throw new HttpError(409, `${repo}#${n} was already decided this way`);
   ask(db, [{

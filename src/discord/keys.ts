@@ -31,7 +31,7 @@ export class DiscordKeys {
   open(sealed: string, aad: string): MessageRef | null {
     try {
       const buf = Buffer.from(sealed, "base64url");
-      const d = createDecipheriv("aes-256-gcm", this.#enc, buf.subarray(0, 12));
+      const d = createDecipheriv("aes-256-gcm", this.#enc, buf.subarray(0, 12), { authTagLength: 16 });
       d.setAAD(Buffer.from(aad));
       d.setAuthTag(buf.subarray(12, 28));
       const v = JSON.parse(Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString("utf8")) as MessageRef;

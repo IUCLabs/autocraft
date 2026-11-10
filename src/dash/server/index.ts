@@ -362,10 +362,12 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       const state = url.searchParams.get("state") ?? "";
       const code = url.searchParams.get("code") ?? "";
-      const row = db.prepare("DELETE FROM oauth_states WHERE state = ? RETURNING verifier, return_to, identity, created_at").get(state) as
+      const row = db.prepare("SELECT verifier, return_to, identity, created_at FROM oauth_states WHERE state = ?").get(state) as
         { verifier: string; return_to: string | null; identity: string | null; created_at: string } | undefined;
       const cookieState = cookies.get(STATE_COOKIE) ?? "";
-      if (!row || !code || !safeEqual(cookieState, state) || Date.now() - Date.parse(row.created_at) > 600_000) {
+      const stateOk = !!row && safeEqual(cookieState, state);
+      if (stateOk) db.prepare("DELETE FROM oauth_states WHERE state = ?").run(state);
+      if (!row || !code || !stateOk || Date.now() - Date.parse(row.created_at) > 600_000) {
         return { r: errorPage(nonce, 400, "Sign-in expired", "Start again from the sign-in link."), cookies: clear };
       }
       const plainSignIn = !row.return_to?.startsWith("setup:") && !row.return_to?.startsWith(AUTHORIZE_PREFIX);
@@ -423,6 +425,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       };
     }
     if (req.method === "POST" && path === "/auth/github-app/start") {
+      if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
       if (!sameOrigin(req)) return { r: errorPage(nonce, 403, "Refused", "This form was sent from another site.") };
       const form = await readBody(req);
       const s = loadSession(db, cookies.get(SESSION_COOKIE));
@@ -431,6 +434,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       return { r: startRegistration(db, config, req, form, nonce, s) };
     }
     if (req.method === "GET" && path === "/auth/github-app/callback") {
+      if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
       const s = loadSession(db, cookies.get(SESSION_COOKIE));
       if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: "/admin/github-app" })}` } };
       return { r: await finishRegistration(db, config, appDeps, url, nonce, s) };
