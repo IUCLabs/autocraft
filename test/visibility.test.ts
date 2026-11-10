@@ -77,7 +77,15 @@ after(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-async function signedIn(login: string) {
+// One session per login: the sign-in rate limit counts every sign-in in this file.
+const sessions = new Map<string, ReturnType<typeof signIn>>();
+const signedIn = (login: string): ReturnType<typeof signIn> => {
+  let s = sessions.get(login);
+  if (!s) sessions.set(login, (s = signIn(login)));
+  return s;
+};
+
+async function signIn(login: string) {
   const jar = new Map<string, string>();
   const send = async (path: string) => {
     const r = await fetch(new URL(path, base), { headers: { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json" }, redirect: "manual" });
