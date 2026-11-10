@@ -275,8 +275,8 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
     repo, number: n.number, kind, state: n.state, title: n.title, body: n.body, url: n.url,
     author: login(n.author), author_type: n.author?.__typename ?? null, author_association: n.authorAssociation,
     created_at: n.createdAt, updated_at: n.updatedAt, closed_at: n.closedAt,
-    labels: JSON.stringify((n.labels?.nodes ?? []).map((x: Node) => x?.name)),
-    assignees: JSON.stringify((n.assignees?.nodes ?? []).map((x: Node) => x?.login)),
+    labels: JSON.stringify((n.labels?.nodes ?? []).filter(Boolean).map((x: Node) => x.name)),
+    assignees: JSON.stringify((n.assignees?.nodes ?? []).filter(Boolean).map((x: Node) => x.login)),
     comments_count: n.commentCount?.totalCount ?? 0, reactions_count: n.reactionCount?.totalCount ?? null, detail_level: detail,
   });
   if (kind === "issue") {
@@ -288,7 +288,7 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
     additions: n.additions, deletions: n.deletions, changed_files: n.changedFiles,
     head_ref: n.headRefName, head_oid: n.headRefOid, head_repo: n.headRepository?.nameWithOwner ?? null,
     base_ref: n.baseRefName,
-    closing_issues: JSON.stringify((n.closingIssuesReferences?.nodes ?? []).map((x: Node) => x?.number)),
+    closing_issues: JSON.stringify((n.closingIssuesReferences?.nodes ?? []).filter(Boolean).map((x: Node) => x.number)),
   });
   if (detail === "full") {
     Object.assign(r, {
