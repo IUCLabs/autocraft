@@ -398,6 +398,14 @@ function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, 
   return true;
 }
 
+const LOCKFILE = /(^|\/)(Cargo\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
+
+/** True when a lockfile section's resolved text is, line for line, one side of the conflict (generated files take no hand-written lines). */
+function oneSide(section: { ours: string[]; theirs: string[] }, text: string): boolean {
+  const lines = text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "");
+  return [section.ours, section.theirs].some((side) => lines.every((l) => side.includes(l)));
+}
+
 /** A resolution's text ends with a newline when the conflicted file's does. */
 export function endNewline(conflicted: string, resolved: string): string {
   return resolved !== "" && conflicted.endsWith("\n") && !resolved.endsWith("\n") ? `${resolved}\n` : resolved;
@@ -453,10 +461,11 @@ export function spliceSections(text: string, answers: string[], path = ""): stri
   const parsed = parseSections(text);
   if (!parsed || parsed.sections.length !== answers.length) return null;
   const dep = /(^|\/)(Cargo\.toml|package\.json)$/.test(path);
+  const lock = LOCKFILE.test(path);
   let out = parsed.pieces[0]!;
   for (let i = 0; i < answers.length; i++) {
     const resolved = answerText(answers[i]!);
-    if (!sectionOk(parsed.sections[i]!, resolved, dep)) return null;
+    if (lock ? !oneSide(parsed.sections[i]!, resolved) : !sectionOk(parsed.sections[i]!, resolved, dep)) return null;
     out += resolved + parsed.pieces[i + 1]!;
   }
   return out;

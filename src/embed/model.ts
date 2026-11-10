@@ -17,6 +17,8 @@ export interface Embedder {
 
 type ModelSpec = {
   repo: string;
+  // Commit of the model repo; the loader fetches and caches exactly this revision.
+  revision: string;
   dim: number;
   pooling: "cls" | "mean";
   prefix: Record<Role, string>;
@@ -26,15 +28,15 @@ type ModelSpec = {
 // where a model has one only for short searches (bge) or for both (e5).
 export const MODELS: Record<string, ModelSpec> = {
   "bge-small-en-v1.5": {
-    repo: "Xenova/bge-small-en-v1.5", dim: 384, pooling: "cls",
+    repo: "Xenova/bge-small-en-v1.5", revision: "ea104dacec62c0de699686887e3f920caeb4f3e3", dim: 384, pooling: "cls",
     prefix: { item: "", query: "Represent this sentence for searching relevant passages: " },
   },
   "multilingual-e5-small": {
-    repo: "Xenova/multilingual-e5-small", dim: 384, pooling: "mean",
+    repo: "Xenova/multilingual-e5-small", revision: "761b726dd34fb83930e26aab4e9ac3899aa1fa78", dim: 384, pooling: "mean",
     prefix: { item: "query: ", query: "query: " },
   },
   "all-MiniLM-L6-v2": {
-    repo: "Xenova/all-MiniLM-L6-v2", dim: 384, pooling: "mean",
+    repo: "Xenova/all-MiniLM-L6-v2", revision: "751bff37182d3f1213fa05d7196b954e230abad9", dim: 384, pooling: "mean",
     prefix: { item: "", query: "" },
   },
 };
@@ -65,8 +67,8 @@ async function loadRunner(spec: ModelSpec, threads: number, cacheDir: string): P
   const tf = await import("@huggingface/transformers");
   tf.env.cacheDir = cacheDir;
   const session_options = { intraOpNumThreads: threads, interOpNumThreads: 1 };
-  const tokenizer = await tf.AutoTokenizer.from_pretrained(spec.repo);
-  const model = await tf.AutoModel.from_pretrained(spec.repo, { dtype: "q8", device: "cpu", session_options });
+  const tokenizer = await tf.AutoTokenizer.from_pretrained(spec.repo, { revision: spec.revision });
+  const model = await tf.AutoModel.from_pretrained(spec.repo, { revision: spec.revision, dtype: "q8", device: "cpu", session_options });
   return async (texts) => {
     const enc = tokenizer(texts, { padding: true, truncation: true, max_length: MAX_TOKENS }) as unknown as Tokenized;
     const h = ((await model(enc)) as { last_hidden_state: Tensor }).last_hidden_state;
