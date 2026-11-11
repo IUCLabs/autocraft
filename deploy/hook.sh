@@ -119,7 +119,7 @@ fi
 
 if [ "${live:-0}" != 1 ]; then
 	echo "-> Installing dependencies..."
-	pnpm install --frozen-lockfile --prod
+	pnpm install --frozen-lockfile --prod --ignore-scripts
 
 	echo "-> Building the web app..."
 	pnpm -C web install --frozen-lockfile

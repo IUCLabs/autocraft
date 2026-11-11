@@ -3,6 +3,7 @@
 // local-sandbox environments have no claimed or running tasks. While one waits,
 // `claim` hands those environments nothing, so they drain.
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 
 export const PENDING_KEY = "worker_update_pending";
@@ -36,9 +37,12 @@ export function validSpec(s: UpdateSpec): boolean {
   );
 }
 
+/** When `<keyFile>.known_hosts` exists, only the host keys in it are accepted; otherwise a first-seen key is trusted once. */
 const sshArgs = (s: UpdateSpec): string[] => {
   if (!validSpec(s)) throw new Error("invalid worker update spec");
-  return ["-i", s.keyFile, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", s.ssh];
+  const pinned = `${s.keyFile}.known_hosts`;
+  const hostKeys = existsSync(pinned) ? ["-o", `UserKnownHostsFile=${pinned}`, "-o", "StrictHostKeyChecking=yes"] : ["-o", "StrictHostKeyChecking=accept-new"];
+  return ["-i", s.keyFile, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", ...hostKeys, s.ssh];
 };
 
 function collect(cmd: string, args: string[], input?: NodeJS.ReadableStream): Promise<{ code: number | null; out: string; err: string }> {
