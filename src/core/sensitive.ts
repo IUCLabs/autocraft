@@ -13,7 +13,25 @@ const OWN_HOSTS = ["github.com", "www.github.com", "raw.githubusercontent.com"];
 
 const DOC_FILE = /\.(md|markdown|mdx|html?|rst|adoc|txt)$|(^|\/)docs?\//i;
 const README_FILE = /(^|\/)readme[^/]*$/i;
-const CI_FILE = /(^|\/)(\.github\/workflows\/|\.cargo\/|build\.rs$|Cargo\.toml$)/;
+const CI_FILE = /(^|\/)(\.github\/workflows\/|\.cargo\/|build\.rs$)/;
+const CARGO_FILE = /(^|\/)Cargo\.toml$/;
+const CARGO_RISK = /^\s*(build\s*=|links\s*=|proc-macro\b|\[(target\.[^\]]*\.)?build-dependencies|\[patch|\[replace|(git|registry|registry-index)\s*=|.*[{,]\s*(git|registry|registry-index)\s*=)/;
+const PATH_KEY = /\bpath\s*=\s*"([^"]*)"/g;
+
+/** A changed Cargo.toml line that adds a build script, a patched or non-registry source, or a path leaving the repo. */
+function cargoRisk(f: { path: string; text: string }): boolean {
+  const depth = f.path.split("/").length - 1;
+  for (const line of f.text.split("\n")) {
+    if (!/^[+-]/.test(line) || line.startsWith("+++") || line.startsWith("---")) continue;
+    const body = line.slice(1);
+    if (CARGO_RISK.test(body)) return true;
+    for (const m of body.matchAll(PATH_KEY)) {
+      const p = m[1]!;
+      if (p.startsWith("/") || p.split("/").filter((x) => x === "..").length > depth) return true;
+    }
+  }
+  return false;
+}
 const BRAND_FILE = /brand|logo/i;
 const URL_RE = /https?:\/\/([^\s/?#)"'<>\]]+)/gi;
 
@@ -24,7 +42,7 @@ export function sensitiveReasons(diff: string, org: string): string[] {
   for (const f of splitDiff(diff)) {
     if (README_FILE.test(f.path)) readme = true;
     if (BRAND_FILE.test(f.path)) brand = true;
-    if (CI_FILE.test(f.path)) ci = true;
+    if (CI_FILE.test(f.path) || (CARGO_FILE.test(f.path) && cargoRisk(f))) ci = true;
     if (external || !DOC_FILE.test(f.path)) continue;
     for (const line of f.text.split("\n")) {
       if (!line.startsWith("+") || line.startsWith("+++")) continue;
