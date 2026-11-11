@@ -13,13 +13,15 @@ import { ownLogins } from "../github/identity.ts";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
 import { conflictBucket } from "../fixup/conflict-state.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
-import { authorWrites, longLivedOf, pushable, sameRepo, type LongLived } from "../fixup/pushable.ts";
+import { authorWrites } from "../fixup/author-permission.ts";
+import { longLivedOf, pushable, sameRepo, type LongLived } from "../fixup/pushable.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
 import { latestRun, refereeClosed, settledLookup } from "../classify/settled.ts";
 import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import { batchStates, membersOf } from "../merge/batch-store.ts";
 import { changesRequestedWhy, gatesOf, GATE_FAILURES, failureNote, type ReviewFact } from "../merge/changes-requested.ts";
 import { ciApprovalOf } from "../merge/ci-approval.ts";
+import { defaultBranchOf } from "../merge/base.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { mergeHolds } from "../merge/holds.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
@@ -178,7 +180,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
   const tiers = tiersOf(db, queued.map((r) => ({ login: r.author!, id: r.author_id })));
 
-  const repoMemo = new Map<string, { f: PrFacts["repoFacts"]; pub: boolean; longLived: LongLived }>();
+  const repoMemo = new Map<string, { f: PrFacts["repoFacts"]; pub: boolean; longLived: LongLived; defaultBranch: string | null }>();
   const repoOf = (repo: string) => {
     let m = repoMemo.get(repo);
     if (!m) {
@@ -187,6 +189,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
           noCi: repoHasNoCi(db, repo), mainRed: mainRed.has(repo) },
         pub: !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo),
         longLived: longLivedOf(db, repo),
+        defaultBranch: defaultBranchOf(db, repo),
       };
       repoMemo.set(repo, m);
     }
@@ -259,7 +262,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", unknown: null, runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verifyOverride: false, verification: null, verifyUnavailable: null,
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: !!otherOpen.get(r.repo, r.number) } },
-      premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
+      premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, baseOffDefault: false, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
     if (integration) {
@@ -286,7 +289,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     // Checks describe the PR when they were fetched for the reviewed head (or, without a review, the current one).
     const checksAtHead = r.c_head === (r.r_head ?? head);
     base.mergeable = (checksAtHead ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
-    base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived, false, sameRepo(r.head_repo, r.repo) && authorWrites(db, r.repo, r.number));
+    // An author whose permission has not been read yet counts as able to write: the job that pushes reads it first.
+    base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived, false, sameRepo(r.head_repo, r.repo) && authorWrites(db, r.repo, r.number) !== "no");
     const ow = operator.get(ref);
     if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold, premerge: !!head && ow.premergeHeads.has(head) };
     // A fix-up request holds the PR's merge only while the planner can work it: same head, pushable, approved, not conflicting, not a draft, tries left.
@@ -425,6 +429,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       base.cifix = cifixAt(cfHead ?? r.r_head!);
     }
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
+    base.baseOffDefault = !!r.base_ref && !!rf.defaultBranch && r.base_ref !== rf.defaultBranch;
     base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
     const gate = gates.get(ref);
     const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);

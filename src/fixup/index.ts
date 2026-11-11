@@ -41,7 +41,8 @@ import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
 import { selectFixups } from "./select.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
-import { authorWrites, longLivedOf, pushable } from "./pushable.ts";
+import { ensureAuthorWrites } from "./author-permission.ts";
+import { longLivedOf, pushable } from "./pushable.ts";
 import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, newestOwnComment, type ConflictRun } from "./conflict.ts";
 import { referenceDir } from "../reference.ts";
@@ -408,7 +409,9 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       if (pr.mergeable === "CONFLICTING" || (pr.mergeable !== "MERGEABLE" && storedMergeable(db, repo, c.number, c.head) === "CONFLICTING")) { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); return; }
       counted = true;
       params.onHandled?.(++handled.n);
-      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule, authorWrites(db, repo, c.number))) {
+      const writes = pr.headRepository ? await ensureAuthorWrites(db, repo, c.number, pr.headRepository.nameWithOwner) : "no";
+      if (writes === "unknown") { log(`  ${ref}: skipped: the author's permission could not be read yet`); return; }
+      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule, writes === "yes")) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
         if (c.carry && commentApprovalOf(db, repo)) await askOne(c, false);
         else hold("cannot-push", HOLD_CANNOT_PUSH);

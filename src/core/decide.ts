@@ -468,7 +468,7 @@ export function decidePr(f: PrFacts): Plan {
     if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && premergeRetryDue(f)) actions.push(act("premerge", r!.head));
     if (e.state === "needs-decision" && !f.decision.asked && !f.decision.inOpenGroup) actions.push(act("ask-merge", r!.head));
     if (eligible(f, e) && !refusedAsBefore(f, e)) {
-      const singleOnly = f.verification?.state === VERIFY_UNAVAILABLE || f.verifyOverride || e.noCi || f.mainFix;
+      const singleOnly = f.verification?.state === VERIFY_UNAVAILABLE || f.verifyOverride || e.noCi || f.mainFix || f.baseOffDefault;
       actions.push(act("merge", r!.head, { singleOnly, batchable: !singleOnly }));
     }
   }

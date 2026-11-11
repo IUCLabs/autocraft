@@ -408,11 +408,17 @@ function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, 
 const LOCKFILE = /(^|\/)(Cargo\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
 const MANIFEST = /(^|\/)(Cargo\.toml|package\.json)$/;
 
-/** True when a lockfile or manifest section's resolved text is, line for line and in order, exactly one side of the conflict. */
+/** True when a lockfile section's resolved text is, line for line and in order, exactly one side of the conflict. */
 function oneSide(section: { ours: string[]; theirs: string[] }, text: string): boolean {
   const lines = text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "");
   const same = (side: string[]) => side.length === lines.length && side.every((l, k) => l === lines[k]);
   return same(section.ours) || same(section.theirs);
+}
+
+/** True when every line of a manifest section's resolved text is, verbatim, a line of one of its two sides (any order, no new lines), so both sides' additions can stay. */
+function fromSides(section: { ours: string[]; theirs: string[] }, text: string): boolean {
+  const sides = new Set([...section.ours, ...section.theirs]);
+  return text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "").every((l) => sides.has(l));
 }
 
 /** A resolution's text ends with a newline when the conflicted file's does. */
@@ -469,13 +475,14 @@ export const answerText = (a: string): string => (a === "" || a.endsWith("\n") ?
 export function spliceSections(text: string, answers: string[], path = ""): string | null {
   const parsed = parseSections(text);
   if (!parsed || parsed.sections.length !== answers.length) return null;
-  // Lockfiles and manifests (dependencies, build configuration) take exactly one side.
-  const lock = LOCKFILE.test(path) || MANIFEST.test(path);
+  // Lockfiles take exactly one side; manifests (dependencies, build configuration) take only lines of the two sides.
+  const lock = LOCKFILE.test(path);
+  const manifest = MANIFEST.test(path);
   const rust = path.endsWith(".rs");
   let out = parsed.pieces[0]!;
   for (let i = 0; i < answers.length; i++) {
     const resolved = answerText(answers[i]!);
-    if (lock ? !oneSide(parsed.sections[i]!, resolved) : !sectionOk(parsed.sections[i]!, resolved, rust)) return null;
+    if (lock ? !oneSide(parsed.sections[i]!, resolved) : manifest ? !fromSides(parsed.sections[i]!, resolved) : !sectionOk(parsed.sections[i]!, resolved, rust)) return null;
     out += resolved + parsed.pieces[i + 1]!;
   }
   return out;

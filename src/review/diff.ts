@@ -24,14 +24,18 @@ export type DiffFetcher = (repo: string, number: number, head?: string) => Promi
 /** The diff of a PR at one commit: GitHub's comparison of the PR's base commit with that commit, so a push after the read cannot change it. */
 export const ghDiff: DiffFetcher = async (repo, number, head) => {
   const slug = slugOf(repo);
-  const view = await gh(["api", `repos/${slug}/pulls/${number}`, "--jq", '[.head.sha, .base.sha, .base.ref] | join(" ")']);
+  const view = await gh(["api", `repos/${slug}/pulls/${number}`, "--jq", '[.head.sha, .base.sha, .base.ref, .changed_files, .additions, .deletions] | join(" ")']);
   if (view.code !== 0) return { ok: false, tooLarge: false, error: view.err.trim().slice(0, 300) };
-  const [liveHead, baseSha, baseRef] = view.out.trim().split(" ");
+  const [liveHead, baseSha, baseRef, changedFiles, additions, deletions] = view.out.trim().split(" ");
   if (!liveHead || !baseSha || !baseRef) return { ok: false, tooLarge: false, error: "the pull request could not be read" };
   if (head && liveHead !== head) return { ok: false, tooLarge: false, error: `head moved to ${liveHead.slice(0, 7)} since ${head.slice(0, 7)}` };
+  // `gh pr diff` failed over 300 files or 20,000 lines; the compare endpoint may cut the diff short instead, so the size is judged from the pull request.
+  const files = Number(changedFiles), lines = Number(additions) + Number(deletions);
+  if (files > 300 || lines > 20000) return { ok: false, tooLarge: true, error: "the diff is over GitHub's size limit" };
   const r = await gh(["api", "-H", "Accept: application/vnd.github.diff", `repos/${slug}/compare/${baseSha}...${liveHead}`]);
   // GitHub refuses diffs over 20,000 lines or 300 files with HTTP 406.
   if (r.code !== 0) return { ok: false, tooLarge: /too_large|too large|406|maximum number of (lines|files)/i.test(r.err), error: r.err.trim().slice(0, 300) };
+  if (Number.isFinite(files) && (r.out.match(/^diff --git /gm) ?? []).length < files) return { ok: false, tooLarge: true, error: "the compared diff has fewer files than the pull request" };
   return { ok: true, text: r.out, base: baseRef };
 };
 
@@ -119,7 +123,7 @@ export function codeDiff(text: string, keepTests = false): CodeDiff {
 /** The diff between two heads of one PR, or a failure. Not cached: it is read once per new head. */
 export type DeltaFetcher = (repo: string, base: string, head: string) => Promise<DiffResult>;
 
-async function gh(args: string[]): Promise<{ code: number | null; out: string; err: string }> {
+export async function gh(args: string[]): Promise<{ code: number | null; out: string; err: string }> {
   let env: Awaited<ReturnType<typeof readEnvFor>>;
   try { env = await readEnvFor("gh", args); } catch (e) { return { code: -1, out: "", err: String((e as Error).message ?? e) }; }
   return new Promise((resolve) => {

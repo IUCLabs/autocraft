@@ -361,6 +361,12 @@ export function markReviewsStale(db: DatabaseSync, by: string, repo: string, num
   audit(db, by, "review-again", `${repo}#${number}`, { stale: true });
 }
 
+/** The PR's base branch changed after its review: the review counts as older than now, so the PR is reviewed again at the same head. */
+export function markStaleForBase(db: DatabaseSync, repo: string, number: number, base: string): void {
+  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), new Date().toISOString());
+  audit(db, "merge", "review-again", `${repo}#${number}`, { stale: true, base });
+}
+
 /** liveGate with retries; null when the read still fails, so the caller skips the PR this run instead of merging blind. */
 export async function liveGateChecked(db: DatabaseSync, q: Querier, repo: string, number: number, head: string, log: (line: string) => void): Promise<{ moved: boolean; blocked: string | null } | null> {
   try {

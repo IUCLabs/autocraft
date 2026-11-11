@@ -253,6 +253,8 @@ export type PrFacts = {
   batch: "batch-checking" | "in-batch" | "batch-failed" | null;
   /** The PR is one AutoCraft opened to fix main CI. */
   mainFix: boolean;
+  /** The PR's base is not its repository's default branch: it merges singly (into the base its review read), never in an integration batch. */
+  baseOffDefault: boolean;
   /** A maintainer's formal block: why, and whether from a live read. */
   changesRequested: { why: string; live: boolean } | null;
   /** The note when live review reads failed several times in a row. */

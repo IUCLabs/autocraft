@@ -43,7 +43,7 @@ function randomPr(x: Rnd): PrFacts {
     repoFacts: { mergeApproved: x.bool(0.9), pushApproved: x.bool(0.8), commentApproved: x.bool(0.8), ciApproved: x.bool(0.8), noCi: x.bool(0.15), mainRed: x.bool(0.1) },
     ci: x.pick(["success", "success", "success", "failure", "pending", "none", "unknown"]),
     mergeable: x.pick(["MERGEABLE", "MERGEABLE", "MERGEABLE", "CONFLICTING", "UNKNOWN"]),
-    checksHere: x.bool(0.9), checksOpen: x.bool(0.9), pushable: x.bool(0.7), inActiveBatch: x.bool(0.1), mainFix: x.bool(0.05),
+    checksHere: x.bool(0.9), checksOpen: x.bool(0.9), pushable: x.bool(0.7), inActiveBatch: x.bool(0.1), mainFix: x.bool(0.05), baseOffDefault: x.bool(0.05),
     premergeFixUsed: x.bool(0.2), runsApprovedAfterMerge: x.bool(0.2),
     batch: x.pick([null, null, null, null, "batch-checking", "in-batch", "batch-failed"] as const),
     changesRequested: x.bool(0.08) ? { why: "ana asked for changes", live: x.bool() } : null,

@@ -29,7 +29,8 @@ import { buildScriptsAt, editable, validatePatch } from "../fixup/patch.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { patchGiveaway, QUIET_PATCH_REFUSAL } from "../security/rules.ts";
 import { readGate } from "../merge/changes-requested.ts";
-import { authorWrites, longLivedOf, pushable } from "../fixup/pushable.ts";
+import { ensureAuthorWrites } from "../fixup/author-permission.ts";
+import { longLivedOf, pushable } from "../fixup/pushable.ts";
 import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
@@ -408,7 +409,9 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       summary.failed.push({ ref, reason });
       log(`  ${ref}: ${state}: ${reason}`);
     };
-    const canPush = !!pr.headRepository && pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule, authorWrites(db, repo, c.number));
+    const writes = pr.headRepository ? await ensureAuthorWrites(db, repo, c.number, pr.headRepository.nameWithOwner) : "no";
+    if (writes === "unknown") { log(`  ${ref}: skipped: the author's permission could not be read yet`); return; }
+    const canPush = !!pr.headRepository && pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule, writes === "yes");
     if (canPush ? !approved : !commenting) {
       const reason = canPush ? "pushing is not approved for this repo" : HOLD_CANNOT_PUSH;
       rec.set(c, kind, "cannot-push", reason, { files: v.files });
