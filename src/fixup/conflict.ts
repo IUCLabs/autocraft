@@ -190,6 +190,8 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
   };
   try {
     if (!BASE_NAME.test(c.base)) { skip("unusable base branch name"); return; }
+    const def = (db.prepare("SELECT default_branch FROM repos WHERE name = ?").get(x.repo) as { default_branch: string | null } | undefined)?.default_branch;
+    if (def && def !== c.base) { skip(`the PR's base ${c.base} is not the default branch ${def}`); return; }
     const pr = await live(db, x, c);
     if (!pr) return;
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }

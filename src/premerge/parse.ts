@@ -1,5 +1,6 @@
 // Pre-merge review reply validation. No I/O and no Node imports: the prompt registry (also loaded by the web mockup)
 // imports this file.
+import { wholeReplyJson } from "../core/reply-json.ts";
 import { safePath } from "../fixup/patch.ts";
 import type { LintProblem } from "../replylint.ts";
 import { evidenceAt, OPUS_MAX_FIXES, REFERENCE_LEAK, parseClaims, type Claim, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
@@ -17,12 +18,8 @@ export type PremergeReview = { findings: PremergeFinding[]; searched: string | n
 const clean = (s: string) => s.replace(/\s+/g, " ").trim();
 
 function replyObject(text: string): Record<string, unknown> | null {
-  const c = text.indexOf("{"), d = text.lastIndexOf("}");
-  if (c < 0 || d <= c) return null;
-  try {
-    const v = JSON.parse(text.slice(c, d + 1)) as unknown;
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-  } catch { return null; }
+  const v = wholeReplyJson(text);
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
 type Entry = { index: number; severity: "defect" | "minor"; file: string; line: number; title: string; scenario: string; fix?: { file: string; change: string } };

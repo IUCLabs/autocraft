@@ -13,7 +13,18 @@ const OWN_HOSTS = ["github.com", "www.github.com", "raw.githubusercontent.com"];
 const DOC_FILE = /\.(md|markdown|mdx|html?|rst|adoc|txt)$|(^|\/)docs?\//i;
 const README_FILE = /(^|\/)readme[^/]*$/i;
 const BRAND_FILE = /brand|logo/i;
-const URL_RE = /https?:\/\/([^\s/?#)"'<>\]]+)/gi;
+// A link target as a reader's browser or the Markdown renderer sees it: any scheme or none ("//host"), or a "www." host.
+const URL_RE = /(?:[a-z][a-z0-9+.-]*:)?\/\/([^\s/?#)"'<>\]]+)([^\s)"'<>\]]*)|\bwww\.([^\s/?#)"'<>\]]+)([^\s)"'<>\]]*)/gi;
+const NAMED_ENTITIES: Record<string, string> = { colon: ":", sol: "/", bsol: "\\", period: ".", commat: "@", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+/** The line with HTML character references decoded and backslashes read as slashes, as browsers treat them in a URL. */
+function readable(line: string): string {
+  const dec = (s: string) => s
+    .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)))
+    .replace(/&#(\d+);?/g, (_, d: string) => String.fromCodePoint(Math.min(Number(d), 0x10ffff)))
+    .replace(/&([a-z]+);/gi, (m, n: string) => NAMED_ENTITIES[n.toLowerCase()] ?? m);
+  return dec(dec(line)).replace(/\\/g, "/");
+}
 
 /** The reasons (in a fixed order) this diff keeps a PR outside the merge rule. `org` is the GitHub org of the repo. */
 export function sensitiveReasons(diff: string, org: string): string[] {
@@ -25,9 +36,14 @@ export function sensitiveReasons(diff: string, org: string): string[] {
     if (external || !DOC_FILE.test(f.path)) continue;
     for (const line of f.text.split("\n")) {
       if (!line.startsWith("+") || line.startsWith("+++")) continue;
-      for (const m of line.matchAll(URL_RE)) {
-        const host = m[1]!.replace(/^[^@]*@/, "").replace(/:\d+$/, "").toLowerCase();
-        if (!own.has(host)) external = true;
+      for (const m of readable(line).matchAll(URL_RE)) {
+        const host = (m[1] ?? `www.${m[3]}`).replace(/^[^@]*@/, "").replace(/:\d+$/, "").toLowerCase();
+        if (!own.has(host)) { external = true; continue; }
+        // On GitHub itself only the repo's own org counts: any other owner's page is a third party.
+        if (host.endsWith("github.com") || host === "raw.githubusercontent.com") {
+          const owner = ((m[2] ?? m[4] ?? "").split("/")[1] ?? "").toLowerCase();
+          if (owner !== org.toLowerCase()) external = true;
+        }
       }
     }
   }

@@ -1,5 +1,6 @@
 // Opus review prompt input and reply validation. No I/O and no Node imports: the
 // prompt registry (also loaded by the web mockup) imports this file.
+import { wholeReplyJson } from "../core/reply-json.ts";
 import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
 import { firstSentence, oneSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
 import type { PostmergeReviewRow, RelatedItem } from "../postmerge/parse.ts";
@@ -214,19 +215,15 @@ export const OPUS_REASON_WORDS = 60;
 export const OPUS_MAX_FIXES = 20;
 const words = (s: string, n: number) => s.trim().split(/\s+/).slice(0, n).join(" ");
 
-/** The reply's JSON object (a one-element array is read too), or null. */
+/** The reply's one JSON object (a one-element array is read too), or null. */
 function replyObject(text: string): unknown {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  const c = text.indexOf("{"), d = text.lastIndexOf("}");
-  try {
-    if (a >= 0 && b > a && (c < 0 || a < c)) return (JSON.parse(text.slice(a, b + 1)) as unknown[])[0];
-    return c >= 0 && d > c ? JSON.parse(text.slice(c, d + 1)) : null;
-  } catch { return null; }
+  const v = wholeReplyJson(text);
+  return Array.isArray(v) ? v[0] : v;
 }
 
 /**
- * The one review for `ref` in a reply, or null. The text from the first "{" to the
- * last "}" is parsed (a one-element array is read too); take-fix needs at least one fix.
+ * The one review for `ref` in a reply, or null. The reply must be one JSON value
+ * (a one-element array is read too); take-fix needs at least one fix.
  * A summary or why over its word cap fails the reply unless `last`, which keeps its first sentence.
  * Claims rule: the code is what merges, not the description. A claim with impact "code-wrong" means the PR is not a take:
  * take-fix when every such claim names a fix, hold otherwise. "description-only" changes nothing. An "unknown" impact, or no

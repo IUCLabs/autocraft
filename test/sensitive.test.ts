@@ -10,6 +10,9 @@ test("sensitive content", () => {
   assert.deepEqual(sensitiveReasons(diff("docs/brand/mark.svg", "<svg/>"), "storytold"), ["changes brand files"]);
   assert.deepEqual(sensitiveReasons(diff("docs/guide.md", "![badge](https://img.shields.io/x.svg)"), "storytold"), ["adds a third-party image or link"]);
   assert.deepEqual(sensitiveReasons(diff("docs/guide.md", "see https://github.com/storytold/app and https://storytold.github.io/x"), "storytold"), []);
+  for (const l of ["see //evil.example/x", "see www.evil.example", "see &#x68;ttps&colon;&sol;&sol;evil.example", "see https:\\\\evil.example", "see https://github.com/other/repo"]) {
+    assert.deepEqual(sensitiveReasons(diff("docs/guide.md", l), "storytold"), ["adds a third-party image or link"], l);
+  }
   // Code, even with a URL in it, and removed lines do not count.
   assert.deepEqual(sensitiveReasons(diff("src/a.ts", "fetch('https://example.com')"), "storytold"), []);
   assert.deepEqual(sensitiveReasons("diff --git a/a.md b/a.md\n--- a/a.md\n+++ b/a.md\n@@ -1 +0,0 @@\n-https://example.com\n", "storytold"), []);

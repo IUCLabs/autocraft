@@ -11,11 +11,14 @@ export const REASON_MAX = 200;
 /** One plain line: no mentions, no URLs or Markdown links, cut to `max` (REASON_MAX by default). */
 export function cleanReason(s: string | null | undefined, max = REASON_MAX): string | null {
   const t = (s ?? "")
+    .replace(/(^|\n)[ \t]*\[[^\]]*\]:[^\n]*/g, "$1")
+    .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/<\/?[a-z!][^>]*>/gi, "")
-    .replace(/<?\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
+    .replace(/<?(?<![A-Za-z0-9])(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
     .replace(/(^|\s)\/\/[^\s]*/g, "$1")
-    .replace(/\b[\w.-]+\/[\w.-]+#\d+/g, "")
+    .replace(/(?<![A-Za-z0-9])GH-(\d+)(?![A-Za-z0-9])/gi, "issue $1")
+    .replace(/(?<![A-Za-z0-9/&])(?:[\w.-]+\/[\w.-]+)?#(\d+)(?![A-Za-z0-9])/g, "issue $1")
     .replace(/@/g, "")
     .replace(/\s+/g, " ").trim();
   if (!t) return null;

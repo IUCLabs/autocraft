@@ -181,12 +181,17 @@ export function readLint(db: DatabaseSync, taskId: number, o: { /** A diff whose
 export type Fold = { ok: true; patch: string } | { ok: false; reason: string };
 
 /** The two sides of a file's diff, hunk bodies only, joined: enough to compare their token streams. */
-function sides(diff: string): Map<string, { before: string[]; after: string[] }> {
+function sides(diff: string): Map<string, { before: string[]; after: string[] }> | string {
   const out = new Map<string, { before: string[]; after: string[] }>();
   let cur: { before: string[]; after: string[] } | null = null, inHunk = false;
   for (const l of diff.split("\n")) {
-    const f = /^diff --git a\/(\S+) b\/\S+$/.exec(l);
-    if (f) { cur = { before: [], after: [] }; out.set(f[1]!, cur); inHunk = false; continue; }
+    if (l.startsWith("diff --git ") && !/^diff --git a\/(\S+) b\/\1$/.test(l)) return `the formatter diff has a section header that is not one file: ${l.slice(0, 80)}`;
+    const f = /^diff --git a\/(\S+) b\/\1$/.exec(l);
+    if (f) {
+      // Every section is checked: a second section for a file would be applied unseen.
+      if (out.has(f[1]!)) return `the formatter diff has two sections for ${f[1]}`;
+      cur = { before: [], after: [] }; out.set(f[1]!, cur); inHunk = false; continue;
+    }
     if (l.startsWith("@@")) { inHunk = true; cur?.before.push(""); cur?.after.push(""); continue; }
     if (!cur || !inHunk || l.startsWith("\\")) continue;
     if (l.startsWith("-")) cur.before.push(l.slice(1));
@@ -203,7 +208,9 @@ function sides(diff: string): Map<string, { before: string[]; after: string[] }>
 export function checkFormat(patch: string, formatDiff: string): Fold {
   if (!formatDiff.trim()) return { ok: true, patch };
   const allowed = new Set(changedRsFiles(patch));
-  for (const [path, s] of sides(formatDiff)) {
+  const secs = sides(formatDiff);
+  if (typeof secs === "string") return { ok: false, reason: secs };
+  for (const [path, s] of secs) {
     if (!allowed.has(path)) return { ok: false, reason: `the formatter changed ${path}, which the patch does not change` };
     const why = formattingOnly(path, s.before.join("\n"), s.after.join("\n"));
     if (why) return { ok: false, reason: why };
