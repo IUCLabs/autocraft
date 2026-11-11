@@ -86,7 +86,7 @@ export function world() {
         const done = l.ci !== "pending";
         return [`pr${x}`, {
           number: x, state: l.state, isDraft: false, headRefOid: l.head, mergeable: l.mergeable, maintainerCanModify: true,
-          commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: CHECK, status: done ? "COMPLETED" : "IN_PROGRESS", conclusion: done ? l.ci.toUpperCase() : null }] } } } }] },
+          commits: { nodes: [{ commit: { oid: l.head, statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: CHECK, status: done ? "COMPLETED" : "IN_PROGRESS", conclusion: done ? l.ci.toUpperCase() : null }] } } } }] },
         }];
       })) };
     },
