@@ -1,7 +1,7 @@
 // PR diffs: fetched with `gh pr diff`, cached by head commit, and cut down to
 // the code a reviewer reads (tests and lockfiles are listed, not shown).
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -35,7 +35,7 @@ export const ghDiff: DiffFetcher = async (repo, number, head) => {
   const r = await gh(["api", "-H", "Accept: application/vnd.github.diff", `repos/${slug}/compare/${baseSha}...${liveHead}`]);
   // GitHub refuses diffs over 20,000 lines or 300 files with HTTP 406.
   if (r.code !== 0) return { ok: false, tooLarge: /too_large|too large|406|maximum number of (lines|files)/i.test(r.err), error: r.err.trim().slice(0, 300) };
-  if (Number.isFinite(files) && (r.out.match(/^diff --git /gm) ?? []).length < files) return { ok: false, tooLarge: true, error: "the compared diff has fewer files than the pull request" };
+  if (Number.isFinite(files) && (r.out.match(/^diff --git /gm) ?? []).length < files) return { ok: false, tooLarge: true, error: `the compared diff has ${(r.out.match(/^diff --git /gm) ?? []).length} files, the pull request ${files}` };
   return { ok: true, text: r.out, base: baseRef };
 };
 
@@ -49,7 +49,8 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
   const file = join(dir, `${number}-${head}.diff`);
   if (existsSync(file)) {
     const stored = existsSync(`${file}.base`) ? readFileSync(`${file}.base`, "utf8") : undefined;
-    if (!base || stored === undefined || stored === base) return { ok: true, text: readFileSync(file, "utf8"), ...(stored !== undefined ? { base: stored } : {}) };
+    // An entry stored before bases were recorded does not say which base it read: with a base given it is read again.
+    if (!base || stored === base) return { ok: true, text: readFileSync(file, "utf8"), ...(stored !== undefined ? { base: stored } : {}) };
   }
   const r = await fetch(repo, number, head);
   if (r.ok) {
@@ -63,6 +64,13 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
     put(file, r.text);
   }
   return r;
+}
+
+/** Forgets the cached diff of a head, so the next read fetches it (and the PR's current base) again. */
+export function dropCachedDiff(repo: string, number: number, head: string): void {
+  const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
+  rmSync(file, { force: true });
+  rmSync(`${file}.base`, { force: true });
 }
 
 /** The base branch a cached diff was computed against; null when unknown. */

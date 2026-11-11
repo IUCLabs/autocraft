@@ -255,6 +255,8 @@ export type PrFacts = {
   mainFix: boolean;
   /** The PR's base is not its repository's default branch: it merges singly (into the base its review read), never in an integration batch. */
   baseOffDefault: boolean;
+  /** The open PR of this repository whose head branch is this PR's base (a stacked PR); null when none. */
+  stackedOn: number | null;
   /** A maintainer's formal block: why, and whether from a live read. */
   changesRequested: { why: string; live: boolean } | null;
   /** The note when live review reads failed several times in a row. */

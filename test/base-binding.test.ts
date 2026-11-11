@@ -51,9 +51,12 @@ test("a private-org member's PR is pushable once the author's permission is read
   assert.equal(await ensureAuthorWrites(db, "app", 9, "storytold/app", read), "yes");
   assert.equal(reads, 1);
   // An entry over a day old is read again.
-  db.prepare("UPDATE repo_permissions SET checked_at = '2020-01-01T00:00:00.000Z'").run();
+  db.prepare("UPDATE author_permissions SET checked_at = '2020-01-01T00:00:00.000Z'").run();
   await ensureAuthorWrites(db, "app", 9, "storytold/app", async () => "read");
   assert.equal(authorWrites(db, "app", 9), "no");
+  // An author whose permission cannot be read waits, then counts as unable to write after three failed reads.
+  db.prepare("INSERT INTO items (repo, number, kind, state, author, head_repo, head_ref) VALUES ('app', 10, 'pr', 'OPEN', 'bo', 'storytold/app', 'bo/x')").run();
+  for (const want of ["unknown", "unknown", "no"]) assert.equal(await ensureAuthorWrites(db, "app", 10, "storytold/app", async () => null), want);
 });
 
 test("a PR aimed at a non-default branch is planned as a single merge only", () => {
@@ -62,4 +65,10 @@ test("a PR aimed at a non-default branch is planned as a single merge only", () 
   assert.ok(merge);
   assert.equal(merge.params?.singleOnly, true);
   assert.equal(merge.params?.batchable, false);
+});
+
+test("a PR stacked on another open PR's branch needs a decision", () => {
+  const plan = decidePr(prFacts({ stackedOn: 4, baseOffDefault: true }));
+  assert.equal(plan.state, "needs-decision");
+  assert.ok(plan.reasons.some((r) => /targets the branch of open #4/.test(r)));
 });

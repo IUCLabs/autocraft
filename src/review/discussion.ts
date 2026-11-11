@@ -14,6 +14,7 @@ import { ownerOf } from "../owners.ts";
 import type { Exec } from "../fixup/git.ts";
 import { pipelineMe, setPipelineLogin } from "../github/pipeline-account.ts";
 import { allOwnLogins, ownLogins } from "../github/identity.ts";
+import { dropCachedDiff } from "./diff.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
 const LOGIN_KEY = "pipeline_login";
@@ -362,7 +363,11 @@ export function markReviewsStale(db: DatabaseSync, by: string, repo: string, num
 }
 
 /** The PR's base branch changed after its review: the review counts as older than now, so the PR is reviewed again at the same head. */
-export function markStaleForBase(db: DatabaseSync, repo: string, number: number, base: string): void {
+export function markStaleForBase(db: DatabaseSync, repo: string, number: number, head: string, base: string): void {
+  // The re-review must read the current base, not a cached diff of the old one.
+  dropCachedDiff(repo, number, head);
+  const at = (db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as { at: string } | undefined)?.at ?? "";
+  if (markedStaleSince(db, repo, number, at)) return;
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), new Date().toISOString());
   audit(db, "merge", "review-again", `${repo}#${number}`, { stale: true, base });
 }
