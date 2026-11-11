@@ -15,6 +15,7 @@ import { resumeStage, TripError } from "../../push-outcomes.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { blankIfHidden, hiddenRepos, visibleRepos } from "./visible.ts";
+import { filtered, hiddenTest, type HiddenRepos } from "../../hidden-sql.ts";
 import { isQuiet } from "../../security/quiet.ts";
 import { canSeeInternals } from "./staff.ts";
 import { SECURITY_STEP } from "../../security/rules.ts";
@@ -67,8 +68,9 @@ function wireParams(s: StepDef, repos: string[]): StepParam[] {
   });
 }
 
-const lastJob = (db: DatabaseSync, step: string, view: (j: Job) => Job, hidden: string[]): Job | null => {
-  const r = db.prepare(`SELECT * FROM jobs WHERE step = ?${hidden.length ? ` AND (repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))` : ""} ORDER BY id DESC LIMIT 1`).get(step, ...hidden);
+const lastJob = (db: DatabaseSync, step: string, view: (j: Job) => Job, hidden: HiddenRepos): Job | null => {
+  const h = hiddenTest("repo", hidden);
+  const r = db.prepare(`SELECT * FROM jobs WHERE step = ?${filtered(hidden) ? ` AND (repo IS NULL OR NOT (${h.sql}))` : ""} ORDER BY id DESC LIMIT 1`).get(step, ...(filtered(hidden) ? h.args : []));
   return r ? view(toJobs(db, [r as Parameters<typeof toJob>[0]])[0]!) : null;
 };
 
@@ -106,7 +108,8 @@ export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOver
     };
   });
   const beat = (db.prepare("SELECT value FROM settings WHERE key = ?").get(HEARTBEAT_KEY) as { value: string } | undefined)?.value ?? null;
-  const count = (state: string) => (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state = ?${hidden.length ? ` AND (repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))` : ""}`).get(state, ...hidden) as { n: number }).n;
+  const hj = hiddenTest("repo", hidden);
+  const count = (state: string) => (db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE state = ?${filtered(hidden) ? ` AND (repo IS NULL OR NOT (${hj.sql}))` : ""}`).get(state, ...(filtered(hidden) ? hj.args : [])) as { n: number }).n;
   return {
     stages, steps,
     runner: { lastSeen: beat, alive: beat !== null && Date.now() - Date.parse(beat) < RUNNER_ALIVE_MS },

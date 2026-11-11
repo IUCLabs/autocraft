@@ -269,8 +269,19 @@ const feedbackDay = new RateLimiter(50, 24 * 3600_000);
 async function sendFeedback(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { id: "id", option: "option", text: "text" }, ["id"]);
   const user = env.user(true);
-  if (!feedbackHour.allow(user.login.toLowerCase()) || !feedbackDay.allow(user.login.toLowerCase())) throw new HttpError(429, "too much feedback from agents: at most 10 an hour and 50 a day per user; leave it on the dashboard instead");
-  const d = await dec.feedback(env.db, reqOf(user, { method: "POST", params: { id: a.id as string }, json: { option: a.option ?? null, text: a.text ?? null } }), env.limiter, "mcp");
+  const key = user.login.toLowerCase();
+  const tooMuch = new HttpError(429, "too much feedback from agents: at most 10 an hour and 50 a day per user; leave it on the dashboard instead");
+  if (!feedbackHour.allow(key)) throw tooMuch;
+  if (!feedbackDay.allow(key)) { feedbackHour.refund(key); throw tooMuch; }
+  // Only feedback the decision accepts counts toward the limit.
+  let d: Awaited<ReturnType<typeof dec.feedback>>;
+  try {
+    d = await dec.feedback(env.db, reqOf(user, { method: "POST", params: { id: a.id as string }, json: { option: a.option ?? null, text: a.text ?? null } }), env.limiter, "mcp");
+  } catch (e) {
+    feedbackHour.refund(key);
+    feedbackDay.refund(key);
+    throw e;
+  }
   const picked = a.option !== undefined ? d.options.find((o) => o.key === a.option)?.label ?? String(a.option) : null;
   const tally = new Map<string, number>();
   for (const o of d.opinions) if (o.option) tally.set(o.option, (tally.get(o.option) ?? 0) + 1);

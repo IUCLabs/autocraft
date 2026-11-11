@@ -69,6 +69,11 @@ export class RateLimiter {
     }
     return ++h.n <= this.#limit;
   }
+  /** Gives back one hit that `allow` counted, for a call that turned out not to count. */
+  refund(key: string): void {
+    const h = this.#hits.get(key);
+    if (h && h.n > 0 && Date.now() - h.start < this.#window) h.n--;
+  }
 }
 
 export function parseCookies(header: string | undefined): Map<string, string> {

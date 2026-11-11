@@ -5,6 +5,7 @@ import { cleanReason } from "../act/templates.ts";
 import { isInstructionPath } from "../sandbox/instruction-paths.ts";
 import { QUOTE_WORDS } from "../replylint.ts";
 import type { ShownFile } from "./excerpt.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 export const MAX_CHANGED_LINES = 300;
 
@@ -329,13 +330,12 @@ export const CONTEXT_LINES = 30;
 export type Resolution = { ok: true; sections: Map<number, string> } | { ok: false; reason: string };
 
 /**
- * The resolver's reply: a JSON object {"sections": [{"id", "content"}]} that answers each shown section id exactly once
+ * The resolver's reply (exactly one JSON value, see wholeReplyJson): a JSON object {"sections": [{"id", "content"}]} that answers each shown section id exactly once
  * with the resolved lines for it, free of conflict markers and within the size caps.
  */
 export function parseResolution(text: string, ids: number[]): Resolution {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  let v: unknown;
-  try { v = JSON.parse(text.slice(a, b + 1)); } catch { return { ok: false, reason: "the resolution is not valid JSON" }; }
+  const v = wholeReplyJson(text);
+  if (v === null) return { ok: false, reason: "the resolution is not exactly one JSON value" };
   const list = (v as { sections?: unknown } | null)?.sections;
   if (!Array.isArray(list)) return { ok: false, reason: "the resolution has no sections list" };
   const out = new Map<number, string>();

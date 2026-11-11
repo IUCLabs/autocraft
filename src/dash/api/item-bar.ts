@@ -4,7 +4,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemBar, ItemBarStep, ItemKind, ItemState, ItemStatus } from "../../../web/src/api/types.ts";
 import { stagesInOrder, stageOfStep, type StageId } from "../../stages/registry.ts";
-import { clip, hiddenSql, stepTitle, type Ctx } from "./trace.ts";
+import { clip, hiddenSql, hiddenArgs, stepTitle, type Ctx } from "./trace.ts";
 
 /** A step as people read it: its stage's short name ("Fix-up"), else its title. */
 const nameOf = (step: string): string => stageOfStep(step)?.title ?? stepTitle(step);
@@ -136,7 +136,7 @@ export function barOf(c: Ctx, it: { kind: ItemKind; state: ItemState; mergedAt: 
   const mergedByUs = it.state === "merged" && db.prepare("SELECT 1 FROM merges WHERE repo = ? AND number = ? AND outcome = 'merged'").get(repo, n) !== undefined;
   const evidence = evidenceOf(c, q, it.mergedAt, mergedByUs);
   const costs = new Map<StageId, number>();
-  for (const r of q<{ step: string; cost: number | null }>(`SELECT r.step, r.cost_usd AS cost FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ? AND r.cost_usd IS NOT NULL${hiddenSql(c.hidden)}`, repo, n, ...c.hidden)) {
+  for (const r of q<{ step: string; cost: number | null }>(`SELECT r.step, r.cost_usd AS cost FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ? AND r.cost_usd IS NOT NULL${hiddenSql(c.hidden)}`, repo, n, ...hiddenArgs(c.hidden))) {
     const id = stageOfStep(r.step)?.id;
     if (id) costs.set(id, (costs.get(id) ?? 0) + r.cost!);
   }

@@ -1,5 +1,6 @@
 // Home: what needs a person, what is wrong, where items are, and what just got done, in one read.
 // Viewers get counts and short texts; the lists of needs name items only for staff.
+import { isHiddenRepo } from "../../hidden-sql.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { Progress } from "../../../web/src/api/types.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
@@ -95,7 +96,7 @@ function done(db: DatabaseSync, hidden: string[]): HomeDone[] {
   // Newest first by time, so the scan stops at the tenth row that belongs to a visible item.
   for (const a of db.prepare(`SELECT at, action, target FROM audit WHERE action IN ('merge', 'act-close', 'review-post') AND json_extract(details, '$.state') = 'done' ORDER BY at DESC`).iterate() as Iterable<{ at: string; action: keyof typeof what; target: string | null }>) {
     const m = /^(.+)#(\d+)$/.exec(a.target ?? "");
-    if (!m || hidden.includes(m[1]!)) continue;
+    if (!m || isHiddenRepo(hidden, m[1]!)) continue;
     const it = item.get(m[1]!, Number(m[2])) as { title: string | null; kind: string } | undefined;
     if (!it) continue;
     out.push({ at: a.at, what: what[a.action], repo: m[1]!, number: Number(m[2]), title: it.title ?? "", kind: it.kind === "pr" ? "pr" : "issue" });

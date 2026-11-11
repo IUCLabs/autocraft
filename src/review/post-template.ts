@@ -3,6 +3,17 @@
 // (cleaned: it is untrusted model output) and the short head commit. No Node imports:
 // the Prompts page lists the template through src/act/templates.ts.
 
+/**
+ * Closed fenced blocks (fences at the start of a line) and inline code spans; the capturing group makes split() keep them at
+ * odd indices. A fence that never closes is not code: its text is cleaned like any other.
+ */
+const CODE = /(^ {0,3}```[^\n]*\n[\s\S]*?\n {0,3}```[ \t]*$|`[^`\n]*`)/m;
+
+/** `fix` runs on the text outside code only: code keeps its URLs and references. */
+export function outsideCode(s: string, fix: (t: string) => string): string {
+  return s.split(CODE).map((part, i) => (i % 2 ? part : fix(part))).join("");
+}
+
 export const REVIEW_BODY_MAX = 6000;
 const ITEM_MAX = 600;
 const MAX_POINTS = 8;
@@ -64,14 +75,16 @@ export function stripLinks(s: string, owner?: string): string {
     .replace(/(^|\n)[ \t]*\[[^\]]*\]:[^\n]*/g, "$1")
     .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
     .replace(/\[([^\]]*)\]\(\s*<?([^\s)>]*)>?[^)]*\)/g, (all, text: string, url: string) => (keptLink(url, owner) ? all : text));
-  return md.replace(/(?<![A-Za-z0-9])(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (url) => {
+  const out = md.replace(/(?<![A-Za-z0-9])(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (url) => {
     const tail = /[.,;:!?]+$/.exec(url)?.[0] ?? "";
     const bare = tail ? url.slice(0, -tail.length) : url;
     return keptLink(bare, owner) ? url : `(link removed)${tail}`;
-  })
-    // Issue and PR references would link or notify other threads: "#12", "GH-12" and "owner/repo#12" read as plain numbers.
-    .replace(/(?<![A-Za-z0-9])GH-(\d+)(?![A-Za-z0-9])/gi, "issue $1")
-    .replace(/(?<![A-Za-z0-9/&])(?:[\w.-]+\/[\w.-]+)?#(\d+)(?![A-Za-z0-9])/g, "issue $1");
+  });
+  // Issue and PR references would link or notify other threads: "#12", "GH-12" and "owner/repo#12" read as plain numbers.
+  // Code keeps its text (colours, anchors); a reference is 1-7 digits ending at a word boundary.
+  return outsideCode(out, (t) => t
+    .replace(/(?<![A-Za-z0-9])GH-(\d{1,7})(?![A-Za-z0-9_])/gi, "issue $1")
+    .replace(/(?<![A-Za-z0-9/&])(?:[\w.-]+\/[\w.-]+)?#(\d{1,7})(?![A-Za-z0-9_])/g, "issue $1"));
 }
 
 /** What the pipeline will do next with the PR, as far as the posting moment shows. */

@@ -910,6 +910,17 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
     if (client.remaining !== null) setSetting(db, "sync_rate_remaining", String(client.remaining));
     if (client.resetAt) setSetting(db, "sync_rate_reset_at", client.resetAt.toISOString());
   }
+  // History written before ids were bound: one batched pass, nothing when every login is bound.
+  if (opts.full || (!opts.only.length && getSetting(db, "author_ids_backfilled") === null)) {
+    try {
+      const { backfillAuthorIds } = await import("./author-ids.ts");
+      const bound = await backfillAuthorIds(db, client);
+      if (bound) console.log(`bound ${bound} author account id${bound === 1 ? "" : "s"}`);
+      setSetting(db, "author_ids_backfilled", iso(new Date()));
+    } catch (e) {
+      console.log(`author ids: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+    }
+  }
   // Questions about items this sync found closed or merged no longer apply. Writes decisions only.
   const { withdrawClosedQuestions, setAsideSupersededQuestions } = await import("./merge/withdraw.ts");
   const withdrawn = withdrawClosedQuestions(db, iso(new Date()));

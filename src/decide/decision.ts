@@ -1,7 +1,7 @@
 // The scope decision for one candidate: question, options, recommendation and
 // facts. The summary is added by the caller.
 import type { DatabaseSync } from "node:sqlite";
-import { getRule, STATS_SQL, TIER_LABEL, tierOf } from "../whitelist.ts";
+import { STATS_SQL, TIER_LABEL, tierKey, tiersOf } from "../whitelist.ts";
 import type { Candidate } from "./select.ts";
 
 /**
@@ -59,31 +59,30 @@ export const decisionId = (c: { repo: string; number: number }): string => `${c.
 type ItemRow = {
   kind: "pr" | "issue"; author: string | null; created_at: string | null; labels: string | null;
   additions: number | null; deletions: number | null; changed_files: number | null; comments_count: number | null;
-  closing_issues: string | null;
+  closing_issues: string | null; author_id: number | null;
 };
 
 const list = (s: string | null): unknown[] => {
   try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? v : []; } catch { return []; }
 };
 
-function authorFact(db: DatabaseSync, login: string | null): string {
+function authorFact(db: DatabaseSync, login: string | null, id: number | null): string {
   if (!login) return "author: unknown (deleted account)";
-  const o = db.prepare("SELECT status FROM whitelist_overrides WHERE login = ?").get(login) as { status: string } | undefined;
   const s = db.prepare(`${STATS_SQL} AND author = ?`).get(login) as { merged: number | null; closed: number | null };
   const merged = s.merged ?? 0, closed = s.closed ?? 0;
-  const tier = tierOf(merged, closed, o?.status ?? null, getRule(db));
+  const tier = tiersOf(db, [{ login, id }]).get(tierKey({ login, id })) ?? "not";
   return `author: ${login}, ${TIER_LABEL[tier]} (${merged} merged PR${merged === 1 ? "" : "s"}, ${closed} closed unmerged)`;
 }
 
 /** Up to five facts: what and how big, author and tier, classifiers, GitHub labels, linked items. */
 export function factsOf(db: DatabaseSync, c: Candidate, now = Date.now()): string[] {
-  const i = db.prepare(`SELECT kind, author, created_at, labels, additions, deletions, changed_files, comments_count, closing_issues
+  const i = db.prepare(`SELECT kind, author, created_at, labels, additions, deletions, changed_files, comments_count, closing_issues, author_id
     FROM items WHERE repo = ? AND number = ?`).get(c.repo, c.number) as ItemRow;
   const days = i.created_at ? Math.max(0, Math.floor((now - Date.parse(i.created_at)) / 86_400_000)) : null;
   const age = days === null ? "" : days === 0 ? ", opened today" : `, opened ${days} day${days === 1 ? "" : "s"} ago`;
   const comments = i.comments_count ?? 0;
   const size = i.kind === "pr" ? `, +${i.additions ?? 0} −${i.deletions ?? 0} in ${i.changed_files ?? 0} file${i.changed_files === 1 ? "" : "s"}` : "";
-  const facts = [`${c.repo} ${i.kind === "pr" ? "PR" : "issue"}${size}${age}, ${comments} comment${comments === 1 ? "" : "s"}`, authorFact(db, i.author)];
+  const facts = [`${c.repo} ${i.kind === "pr" ? "PR" : "issue"}${size}${age}, ${comments} comment${comments === 1 ? "" : "s"}`, authorFact(db, i.author, i.author_id)];
   const s = c.settled;
   const conf = s.confidence === null ? "" : ` (${s.confidence.toFixed(2)})`;
   facts.push(`Jev: ${s.jevLabel ?? "none"}${conf}; Haiku: ${s.haikuLabel ?? "not asked"}${s.status === "settled" ? `; settled: ${s.label}` : ""}`);

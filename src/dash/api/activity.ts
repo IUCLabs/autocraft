@@ -11,12 +11,13 @@ import { quietFixPrs } from "../../security/quiet.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import {
-  KINDS, actionEvent, activityEvent, writeActions, writeEvent, checkEvent, ciFixEvent, closedEvent, commentEvent, conflictEvent, decisionEvents, feedbackEvent, fixupEvent, hiddenSql,
+  KINDS, actionEvent, activityEvent, writeActions, writeEvent, checkEvent, ciFixEvent, closedEvent, commentEvent, conflictEvent, decisionEvents, feedbackEvent, fixupEvent, hiddenSql, hiddenArgs,
   iso, jobEvent, mergeEvent, mergedEvent, openedEvent, opusEvent, patchCheckEvent, planEvent, postmergeEvent, premergeEvent, pushEvent, RUN_COLUMNS, rows, runEvent, stageEvent,
   taskEvent, turnEvent, verifyEvent, plainSummary, veilEvent, VEILED_KINDS, type DecisionRow, type Ev, type ItemRow, type OpusRow,
 } from "./trace.ts";
 import { canSeeInternals } from "./staff.ts";
 import { hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import { allOwnLogins } from "../../github/identity.ts";
 
 export const ACTIVITY_PAGE_DEFAULT = 50, ACTIVITY_PAGE_MAX = 200;
@@ -25,7 +26,7 @@ export const ACTIVITY_DEFAULT_KINDS: TraceKind[] = KINDS.filter((k) => k !== "pl
 /** Sorts after every event id of the same time. */
 const LAST = "~";
 
-export type Ctx = { db: DatabaseSync; own: Set<string>; staff: boolean; operator: boolean; hidden: string[]; visible: string[]; only: boolean; repo: string | null; limit: number; before: { at: string; id: string } | null };
+export type Ctx = { db: DatabaseSync; own: Set<string>; staff: boolean; operator: boolean; hidden: HiddenRepos; visible: string[]; only: boolean; repo: string | null; limit: number; before: { at: string; id: string } | null };
 type At = { repo: string; number: number };
 type Pulled = { events: (Ev & At)[]; /** Oldest time read when the source had more rows than it returned; null when it returned everything. */ floor: string | null };
 export type Source = { kinds: TraceKind[]; table: string; time: string; pull: (c: Ctx) => Pulled };
@@ -67,7 +68,7 @@ const plain = <R extends At>(kind: TraceKind, table: string, time: string, cols:
 /** Decisions that name an item and do not touch a repo hidden from the viewer. */
 const decisionVisible = (c: Ctx, id: string): boolean => {
   const d = getDecision(c.db, id);
-  return !d || !reposOf(d).some((r) => c.hidden.includes(r));
+  return !d || !reposOf(d).some((r) => isHiddenRepo(c.hidden, r));
 };
 const DECISION_COLS = "d.id, d.repo, d.number, d.kind, d.question, d.asked_at, d.asked_by, d.answer, d.answered_at, d.answered_by, d.answer_note";
 type Dec = DecisionRow & At;
@@ -88,7 +89,7 @@ export const SOURCES: Source[] = [
     pull: (c) => newest<Parameters<typeof runEvent>[0] & At>(c, {
       cols: `${RUN_COLUMNS}, i.repo AS repo, i.number AS number, r.started_at AS ${T}`,
       from: "agent_runs r JOIN agent_run_items i ON i.run_id = r.id AND (i.repo, i.number) = (SELECT x.repo, x.number FROM agent_run_items x WHERE x.run_id = r.id ORDER BY x.repo, x.number LIMIT 1) LEFT JOIN claude_accounts a ON a.id = r.account_id",
-      time: "r.started_at", repoCol: "i.repo", where: hiddenSql(c.hidden).replace(/^ AND /, "") || undefined, args: c.hidden, map: (r) => [runEvent(r)],
+      time: "r.started_at", repoCol: "i.repo", where: hiddenSql(c.hidden).replace(/^ AND /, "") || undefined, args: hiddenArgs(c.hidden), map: (r) => [runEvent(r)],
     }),
   },
   plain<Parameters<typeof checkEvent>[0] & At>("check", "model_checks", "started_at", "repo, number, id, run_id, step, head, command, crate, test_name, task_id, outcome, started_at", checkEvent),
