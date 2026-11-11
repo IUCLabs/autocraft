@@ -1,5 +1,5 @@
 // Validation of what the models return for the Fix stage. Pure text checks.
-import { MAX_CHANGED_LINES, editable, extractDiff, safePath, validatePatch } from "../fixup/patch.ts";
+import { MAX_CHANGED_LINES, editable, extractDiff, safePath, validatePatch, type BuildScripts } from "../fixup/patch.ts";
 
 export { editable };
 import { patchFor, patchProblem } from "../verify/plan.ts";
@@ -53,7 +53,7 @@ export type FixPatchCheck = ({ ok: true } & FixPatch) | { ok: false; reason: str
  * Splits the reply into edits of the `allowed` files and one new `testPath`. The test file is rebuilt from
  * its added lines so the stored patch has the canonical header; everything else goes through validatePatch.
  */
-export function validateFixPatch(text: string, allowed: string[], testPath: string, crateDir: string, test: string): FixPatchCheck {
+export function validateFixPatch(text: string, allowed: string[], testPath: string, crateDir: string, test: string, scripts: BuildScripts = null): FixPatchCheck {
   const diff = extractDiff(text);
   if (!diff.startsWith("diff --git ")) return { ok: false, reason: "the reply is not a unified diff" };
   const chunks = diff.split(/^(?=diff --git )/m).filter((c) => c.trim());
@@ -68,7 +68,7 @@ export function validateFixPatch(text: string, allowed: string[], testPath: stri
   }
   if (testChunk === null) return { ok: false, reason: `the diff does not add ${testPath}` };
   if (!edits.length) return { ok: false, reason: "the diff changes no source file" };
-  const fix = validatePatch(edits.join(""), allowed);
+  const fix = validatePatch(edits.join(""), allowed, (p) => editable(p, scripts));
   if (!fix.ok) return fix;
   const lines = testChunk.replace(/\n$/, "").split("\n").filter((l) => !/^index [0-9a-f]+\.\.[0-9a-f]+$/.test(l));
   const canon = lines.join("\n") + "\n";

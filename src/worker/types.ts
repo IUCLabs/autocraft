@@ -8,6 +8,8 @@ export type Capabilities = {
   display: boolean;
   gpu: boolean;
   toolchains: string[];
+  /** The worker holds the warm-snapshot signing key, so it takes no task that runs PR code. */
+  warmSigner?: boolean;
 };
 
 export type Requires = Partial<Pick<Capabilities, "os" | "arch" | "display" | "gpu">> & {

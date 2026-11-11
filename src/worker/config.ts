@@ -182,5 +182,6 @@ export function detectCapabilities(cfg: WorkerConfig): Capabilities {
     display: cfg.display,
     gpu: cfg.gpu,
     toolchains: Object.keys(cfg.images).sort(),
+    ...(cfg.warmStore?.signKey ? { warmSigner: true } : {}),
   };
 }

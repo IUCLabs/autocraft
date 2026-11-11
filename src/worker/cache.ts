@@ -18,9 +18,11 @@ const INDEX_DIR = /^[A-Za-z0-9._-]+$/;
 const CRATE_FILE = /^[A-Za-z0-9._+-]+\.crate$/;
 const MAX_CRATE_BYTES = 100 * 1024 * 1024;
 
-function crateFiles(root: string): { index: string; file: string; path: string }[] {
+export function crateFilesOf(root: string): { index: string; file: string; path: string }[] {
   const base = join(root, "registry", "cache");
-  if (!existsSync(base)) return [];
+  // A container can plant symlinks for any component: each one must be a real directory.
+  const isDir = (p: string): boolean => { try { return lstatSync(p).isDirectory(); } catch { return false; } };
+  if (!isDir(join(root, "registry")) || !isDir(base)) return [];
   const out: { index: string; file: string; path: string }[] = [];
   for (const index of readdirSync(base)) {
     const dir = join(base, index);
@@ -47,7 +49,7 @@ function copyInto(from: { index: string; file: string; path: string }, toRoot: s
 /** Copies cached crates into a task's CARGO_HOME (`sharedDir` and `taskCargoHome` are host paths). */
 export function seedCargoHome(sharedDir: string, taskCargoHome: string): void {
   mkdirSync(taskCargoHome, { recursive: true });
-  for (const f of crateFiles(sharedDir)) copyInto(f, taskCargoHome);
+  for (const f of crateFilesOf(sharedDir)) copyInto(f, taskCargoHome);
 }
 
 const CRATES_IO_DIR = /^index\.crates\.io-[0-9a-f]+$/;
@@ -108,7 +110,7 @@ export class CrateVerifier {
  */
 export async function admitCrates(taskCargoHome: string, sharedDir: string, v: CrateVerifier, note: (s: string) => void): Promise<number> {
   let n = 0;
-  for (const f of crateFiles(taskCargoHome)) {
+  for (const f of crateFilesOf(taskCargoHome)) {
     if (!CRATES_IO_DIR.test(f.index)) continue;
     if (existsSync(join(sharedDir, "registry", "cache", f.index, f.file))) continue;
     try {

@@ -2,8 +2,8 @@
 // its destination. Own parser instead of `tar`: the rules (no absolute paths,
 // no `..`, links only inside the tree, no devices, no special mode bits) are
 // then the same on every host and testable without a tar binary.
-import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, symlinkSync, writeSync } from "node:fs";
-import { dirname, join, posix, sep } from "node:path";
+import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, symlinkSync, unlinkSync, writeSync } from "node:fs";
+import { dirname, join, posix, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
@@ -135,6 +135,7 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
     if (longName) name = longName;
     if (pax.linkpath) linkname = pax.linkpath;
     if (longLink) linkname = longLink;
+    if (pax.size !== undefined && !/^[0-9]{1,15}$/.test(pax.size)) throw new TarError("pax size is not a number");
     const psize = pax.size ? Number(pax.size) : size;
     pax = {};
     longName = longLink = null;
@@ -144,7 +145,10 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
     if (type === "5") {
       if (rel) ensureDir(dest, rel);
     } else if (type === "0" || type === "7") {
-      if (psize !== size) total += psize - size;
+      if (psize !== size) {
+        total += psize - size;
+        if (total > limits.maxBytes) throw new TarError("archive too large when unpacked");
+      }
       if (!rel) throw new TarError(`file without a path below the root: ${name}`);
       const full = join(ensureDir(dest, rel.slice(0, -1)), rel[rel.length - 1]!);
       const fd = openSync(full, "w", (mode | 0o600) & 0o777);
@@ -207,6 +211,12 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
     try {
       real = realpathSync.native(join(dest, l.path)); // native: the JS version resolves ".." lexically
     } catch {
+      // Dangling: keep it only when its target, resolved from the real directory of the link, stays inside the tree.
+      try {
+        const at = realpathSync.native(dirname(join(dest, l.path)));
+        const t = resolve(at, l.target);
+        if (t !== root && !t.startsWith(root + sep)) unlinkSync(join(dest, l.path));
+      } catch { /* the link's directory is gone too: nothing to keep */ }
       continue;
     }
     if (real !== root && !real.startsWith(root + sep)) throw new TarError(`symlink resolves outside the tree: ${l.path}`);

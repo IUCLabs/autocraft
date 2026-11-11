@@ -173,6 +173,7 @@ export function parseCapabilities(v: unknown): Capabilities {
   return {
     os: o.os as Capabilities["os"], arch: o.arch as Capabilities["arch"], cpus: int("cpus", 4096), memGb: int("memGb", 65536), diskGb: int("diskGb", 10_000_000),
     display: o.display, gpu: o.gpu, toolchains: [...new Set(tc as string[])].sort(),
+    ...(o.warmSigner === true ? { warmSigner: true } : {}),
   };
 }
 
