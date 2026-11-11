@@ -355,7 +355,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (info.head !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(info.head)} since the review`); continue; }
     const baseWhy = baseRefusal(db, repo, e.head, e.number, info.baseRef);
     // A retargeted PR is not a refusal either: its review is marked stale, so it is reviewed again against the new base.
-    if (baseWhy) { markStaleForBase(db, repo, e.number, info.baseRef); log(`  ${refOf(e)}: ${baseWhy}; reviewed again first`); continue; }
+    if (baseWhy) { markStaleForBase(db, repo, e.number, e.head, info.baseRef); log(`  ${refOf(e)}: ${baseWhy}; reviewed again first`); continue; }
     // Not a refusal: no merges row, so the queue keeps the PR and takes it up again once it is reviewed again.
     // The same read checks for a maintainer's changes-requested review, whatever merge command runs next.
     const gate = await liveGateChecked(db, d.querier, repo, e.number, e.head, log);

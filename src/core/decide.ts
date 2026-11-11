@@ -28,6 +28,8 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
   const reasons: string[] = [];
   if (r.verdict !== "take") reasons.push("review asks for fixes");
   if (r.unsure) reasons.push(UNSURE_REASON);
+  // Merging a stacked PR lands it in the other PR's branch, not in the default branch: a person decides.
+  if (open && f.stackedOn !== null) reasons.push(`targets the branch of open #${f.stackedOn}`);
   if (f.ghState === "OPEN" && f.decision.openQuestion) reasons.push("a Merge? question is still open");
   if (r.mode === "skipped") reasons.push("the review was skipped");
   if (!RULE_SIZES.includes(f.size)) reasons.push(`size ${f.size}`);

@@ -40,7 +40,7 @@ import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
 import { diffCacheDir } from "../review/diff.ts";
-import { ownerOf } from "../owners.ts";
+import { ownerOf, slugOf } from "../owners.ts";
 import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
 import { postSource } from "../review/post-source.ts";
@@ -196,6 +196,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     return m;
   };
 
+  const stackedOnQ = db.prepare("SELECT number FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND head_ref = ? AND lower(head_repo) = ? AND number != ? ORDER BY number LIMIT 1");
   const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at, (SELECT COUNT(*) FROM merges m2 WHERE m2.repo = merges.repo AND m2.number = merges.number AND m2.head_oid = merges.head_oid AND m2.outcome = 'refused') AS refusals FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
   const retriedAfter = db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'retry' AND at > ? LIMIT 1");
   const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
@@ -262,7 +263,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", unknown: null, runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verifyOverride: false, verification: null, verifyUnavailable: null,
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: !!otherOpen.get(r.repo, r.number) } },
-      premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, baseOffDefault: false, changesRequested: null, gateFailureNote: null,
+      premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, baseOffDefault: false, stackedOn: null, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
     if (integration) {
@@ -429,6 +430,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       base.cifix = cifixAt(cfHead ?? r.r_head!);
     }
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
+    if (r.base_ref && r.state === "OPEN") base.stackedOn = (stackedOnQ.get(r.repo, r.base_ref, `${slugOf(r.repo)}`.toLowerCase(), r.number) as { number: number } | undefined)?.number ?? null;
     base.baseOffDefault = !!r.base_ref && !!rf.defaultBranch && r.base_ref !== rf.defaultBranch;
     base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
     const gate = gates.get(ref);

@@ -320,6 +320,17 @@ CREATE TABLE IF NOT EXISTS repo_permissions (
   PRIMARY KEY (login, repo)
 );
 
+-- The pipeline's own cache of PR authors' permissions (src/fixup/author-permission.ts); separate from repo_permissions, which settles dashboard users.
+CREATE TABLE IF NOT EXISTS author_permissions (
+  login TEXT NOT NULL COLLATE NOCASE,
+  repo TEXT NOT NULL,
+  permission TEXT,                    -- admin | write | read | none; NULL until a read succeeds
+  checked_at TEXT,
+  failures INTEGER NOT NULL DEFAULT 0, -- failed reads since the last success
+  first_failure_at TEXT,
+  PRIMARY KEY (login, repo)
+);
+
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
   verifier TEXT NOT NULL,             -- PKCE code verifier

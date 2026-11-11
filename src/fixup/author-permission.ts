@@ -1,4 +1,4 @@
-// The write permission of a same-repo PR's author, from GitHub, cached per (repo, login) in repo_permissions.
+// The write permission of a same-repo PR's author, from GitHub, cached per (repo, login) in author_permissions.
 // Planning reads only the cache; the jobs that push refresh a missing or old entry first.
 import type { DatabaseSync } from "node:sqlite";
 import { PIPELINE_LOGIN_KEY } from "../core/rules.ts";
@@ -24,8 +24,12 @@ function writesByRole(db: DatabaseSync, r: Row): boolean {
   return !!me && !!r.author && me.toLowerCase() === r.author.toLowerCase();
 }
 
-const cached = (db: DatabaseSync, repo: string, login: string): { permission: string; checked_at: string } | undefined =>
-  db.prepare("SELECT permission, checked_at FROM main.repo_permissions WHERE login = ? AND repo = ?").get(login, repo) as { permission: string; checked_at: string } | undefined;
+type Cached = { permission: string | null; checked_at: string | null; failures: number; first_failure_at: string | null };
+const cached = (db: DatabaseSync, repo: string, login: string): Cached | undefined =>
+  db.prepare("SELECT permission, checked_at, failures, first_failure_at FROM main.author_permissions WHERE login = ? AND repo = ?").get(login, repo) as Cached | undefined;
+
+/** After this many failed reads, or this long since the first, an author never read counts as unable to write. */
+export const AUTHOR_READ_FAILURES = 3;
 
 /** Database only: whether the PR's author can write to the repository, as last read (a stale entry still counts until it is refreshed). */
 export function authorWrites(db: DatabaseSync, repo: string, number: number): AuthorWrite {
@@ -33,22 +37,27 @@ export function authorWrites(db: DatabaseSync, repo: string, number: number): Au
   if (!r?.author) return "no";
   if (writesByRole(db, r)) return "yes";
   const c = cached(db, repo, r.author);
-  return !c ? "unknown" : WRITE.has(c.permission) ? "yes" : "no";
+  if (c?.permission) return WRITE.has(c.permission) ? "yes" : "no";
+  // Never read: waiting, until the reads have failed too often or for too long; then the PR gets the normal cannot-push hold.
+  const gaveUp = !!c && (c.failures >= AUTHOR_READ_FAILURES || (!!c.first_failure_at && Date.now() - Date.parse(c.first_failure_at) > AUTHOR_PERMISSION_TTL_MS));
+  return gaveUp ? "no" : "unknown";
 }
 
 export type PermissionReader = (repo: string, login: string) => Promise<string | null>;
 
-/** The login's permission on the repository from GitHub; null when it cannot be told. */
+/** The login's permission on the repository from GitHub (a 404 is `none`); null when it cannot be told. */
 export const ghPermission: PermissionReader = async (repo, login) => {
-  const r = await gh(["api", `repos/${slugOf(repo)}/collaborators/${encodeURIComponent(login)}/permission`, "--jq", '.role_name // .permission']);
+  const r = await gh(["api", `repos/${slugOf(repo)}/collaborators/${encodeURIComponent(login)}/permission`, "--jq", ".permission"]);
+  if (r.code !== 0) return /HTTP 404|Not Found/i.test(r.err) ? "none" : null;
   const p = r.out.trim().toLowerCase();
-  return r.code === 0 && KNOWN.has(p) ? p : null;
+  return KNOWN.has(p) ? p : null;
 };
 
 /**
  * For a job about to push: reads the author's permission from GitHub when it is missing or over a day old, stores it, and
  * answers like `authorWrites`. A PR whose head is in another repository needs no author permission. A failed read keeps an old
- * entry, and without one the answer is "unknown": the caller leaves the PR for a later run.
+ * entry and is counted; without an entry the answer is "unknown" (the caller leaves the PR for a later run) until the reads
+ * have failed three times or for a day.
  */
 export async function ensureAuthorWrites(db: DatabaseSync, repo: string, number: number, headRepo: string | null | undefined, read: PermissionReader = ghPermission): Promise<AuthorWrite> {
   if (!sameRepo(headRepo, repo)) return "yes";
@@ -56,10 +65,13 @@ export async function ensureAuthorWrites(db: DatabaseSync, repo: string, number:
   if (!r?.author) return "no";
   if (!writesByRole(db, r)) {
     const c = cached(db, repo, r.author);
-    if (!c || Date.now() - Date.parse(c.checked_at) > AUTHOR_PERMISSION_TTL_MS) {
+    if (!c?.permission || !c.checked_at || Date.now() - Date.parse(c.checked_at) > AUTHOR_PERMISSION_TTL_MS) {
+      const now = new Date().toISOString();
       const p = await read(repo, r.author).catch(() => null);
-      if (p) db.prepare(`INSERT INTO main.repo_permissions (login, repo, permission, checked_at) VALUES (?, ?, ?, ?)
-        ON CONFLICT (login, repo) DO UPDATE SET permission = excluded.permission, checked_at = excluded.checked_at`).run(r.author, repo, p, new Date().toISOString());
+      if (p) db.prepare(`INSERT INTO main.author_permissions (login, repo, permission, checked_at, failures, first_failure_at) VALUES (?, ?, ?, ?, 0, NULL)
+        ON CONFLICT (login, repo) DO UPDATE SET permission = excluded.permission, checked_at = excluded.checked_at, failures = 0, first_failure_at = NULL`).run(r.author, repo, p, now);
+      else db.prepare(`INSERT INTO main.author_permissions (login, repo, failures, first_failure_at) VALUES (?, ?, 1, ?)
+        ON CONFLICT (login, repo) DO UPDATE SET failures = failures + 1, first_failure_at = COALESCE(first_failure_at, excluded.first_failure_at)`).run(r.author, repo, now);
     }
   }
   return authorWrites(db, repo, number);
