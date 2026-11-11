@@ -13,12 +13,12 @@ function carriesOf(db: DatabaseSync, f: PrFacts, head: string): FixCandidate[] {
   const rows = db.prepare("SELECT decision_id, attempts FROM dupe_carries WHERE repo = ? AND number = ? AND state = 'queued' ORDER BY number").all(f.repo, f.number) as { decision_id: string; attempts: number }[];
   const out: FixCandidate[] = [];
   for (const r of rows) {
-    const sources = (db.prepare("SELECT number, detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number").all(r.decision_id) as { number: number; detail: string | null }[])
+    const sources = (db.prepare("SELECT number, detail, head FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number").all(r.decision_id) as { number: number; detail: string | null; head: string | null }[])
       .map((x) => {
         let pts: unknown = [];
         try { pts = (JSON.parse(x.detail ?? "null") as { carry?: unknown } | null)?.carry ?? []; } catch { /* no points */ }
-        const sh = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(f.repo, x.number) as { head_oid: string | null } | undefined)?.head_oid ?? null;
-        return { number: x.number, head: sh, points: Array.isArray(pts) ? pts.filter((p): p is string => typeof p === "string") : [] };
+        // The head that was compared and closed, not the one the PR has now.
+        return { number: x.number, head: x.head, points: Array.isArray(pts) ? pts.filter((p): p is string => typeof p === "string") : [] };
       }).filter((x) => x.points.length);
     if (!sources.length) continue;
     const suggestion = (db.prepare("SELECT t.text FROM dupe_group_texts t JOIN dupe_groups g ON g.decision_id = t.decision_id AND g.applied_answer = t.option WHERE t.decision_id = ? AND t.number = ? AND t.step = 'suggestion'").get(r.decision_id, f.number) as { text: string } | undefined)?.text ?? null;

@@ -5,6 +5,7 @@ import { splitDiff } from "../review/diff.ts";
 export const README_REASON = "changes the README";
 export const UNCHECKED_REASON = "diff not checked for README or third-party links";
 export const BRAND_REASON = "changes brand files";
+export const CI_FILES_REASON = "changes CI or build configuration";
 export const EXTERNAL_LINK_REASON = "adds a third-party image or link";
 
 /** Hosts that do not count as third-party, besides the repo's own org pages on GitHub. */
@@ -12,16 +13,18 @@ const OWN_HOSTS = ["github.com", "www.github.com", "raw.githubusercontent.com"];
 
 const DOC_FILE = /\.(md|markdown|mdx|html?|rst|adoc|txt)$|(^|\/)docs?\//i;
 const README_FILE = /(^|\/)readme[^/]*$/i;
+const CI_FILE = /(^|\/)(\.github\/workflows\/|\.cargo\/|build\.rs$|Cargo\.toml$)/;
 const BRAND_FILE = /brand|logo/i;
 const URL_RE = /https?:\/\/([^\s/?#)"'<>\]]+)/gi;
 
 /** The reasons (in a fixed order) this diff keeps a PR outside the merge rule. `org` is the GitHub org of the repo. */
 export function sensitiveReasons(diff: string, org: string): string[] {
   const own = new Set([...OWN_HOSTS, `${org}.github.io`].map((h) => h.toLowerCase()));
-  let readme = false, brand = false, external = false;
+  let readme = false, brand = false, ci = false, external = false;
   for (const f of splitDiff(diff)) {
     if (README_FILE.test(f.path)) readme = true;
     if (BRAND_FILE.test(f.path)) brand = true;
+    if (CI_FILE.test(f.path)) ci = true;
     if (external || !DOC_FILE.test(f.path)) continue;
     for (const line of f.text.split("\n")) {
       if (!line.startsWith("+") || line.startsWith("+++")) continue;
@@ -31,5 +34,5 @@ export function sensitiveReasons(diff: string, org: string): string[] {
       }
     }
   }
-  return [...(readme ? [README_REASON] : []), ...(brand ? [BRAND_REASON] : []), ...(external ? [EXTERNAL_LINK_REASON] : [])];
+  return [...(readme ? [README_REASON] : []), ...(brand ? [BRAND_REASON] : []), ...(ci ? [CI_FILES_REASON] : []), ...(external ? [EXTERNAL_LINK_REASON] : [])];
 }

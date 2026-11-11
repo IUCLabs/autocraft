@@ -553,17 +553,34 @@ export function ghApproveRun(w: Writer, exec: Exec, g: Guarded<"approve-ci">, ru
     ["api", "-X", "POST", `repos/${slugOf(g.repo)}/actions/runs/${runId}/approve`]);
 }
 
+/** Refuses (as a failed result) a rerun of a run that does not belong to the commit: the run id comes from a check's link, which the PR's own CI can set. */
+async function runOutsideHead(identity: string, exec: Exec, repo: string, runId: number, head: string): Promise<ExecResult | null> {
+  const fail = (why: string): ExecResult => ({ code: 1, stdout: "", stderr: `run ${runId} not rerun: ${why}` });
+  try {
+    const r = await exec("gh", ["api", `repos/${slugOf(repo)}/actions/runs/${runId}`], identity === "legacy" ? { inherit: true } : undefined);
+    if (r.code !== 0) return fail("the run could not be read");
+    const run = JSON.parse(r.stdout) as { head_sha?: string };
+    return run.head_sha === head ? null : fail("it belongs to another commit");
+  } catch {
+    return fail("the run could not be read");
+  }
+}
+
 /** Reruns the failed jobs of one Actions run of a PR's head commit. */
-export function ghRerunFailed(w: Writer, exec: Exec, g: Guarded<"cifix">, runId: number, details: Details = {}): Promise<ExecResult> {
+export async function ghRerunFailed(w: Writer, exec: Exec, g: Guarded<"cifix">, runId: number, details: Details = {}): Promise<ExecResult> {
   exec = laneExec(w, g, exec);
+  const off = await runOutsideHead(idOf(w, g), exec, g.repo, runId, g.head);
+  if (off) return off;
   return viaGh(w, idOf(w, g), exec, "ci-rerun", refOf(g.repo, g.number), { ...details, run: runId },
     ["run", "rerun", String(runId), "--failed", "--repo", `${slugOf(g.repo)}`]);
 }
 
 /** Reruns the failed jobs of one Actions run on a default-branch head. It belongs to no item: the audit target names the repo and the commit. */
-export function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { repo: string; head: string; runId: number }, details: Details = {}): Promise<ExecResult> {
+export async function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { repo: string; head: string; runId: number }, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo);
   exec = laneExec(w, g, exec);
+  const off = await runOutsideHead(idOf(w, g), exec, o.repo, o.runId, o.head);
+  if (off) return off;
   return viaGh(w, idOf(w, g), exec, "ci-rerun", `${o.repo}:${o.head.slice(0, 8)}`, { ...details, run: o.runId },
     ["run", "rerun", String(o.runId), "--failed", "--repo", `${slugOf(o.repo)}`]);
 }

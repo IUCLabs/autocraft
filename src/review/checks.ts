@@ -25,7 +25,7 @@ export function checksQuery(numbers: number[]): string {
   const prs = numbers.map((n) => `
     pr${n}: pullRequest(number: ${n}) {
       number state isDraft headRefOid mergeable maintainerCanModify isCrossRepository
-      commits(last: 1) { nodes { commit {
+      commits(last: 1) { nodes { commit { oid
         checkSuites(last: 20, filterBy: { appId: 15368 }) { nodes { status conclusion workflowRun { databaseId event workflow { name } } } }
         statusCheckRollup { contexts(first: 100) { nodes {
         __typename
@@ -64,12 +64,18 @@ export function overallOf(states: CheckState[]): Overall {
 
 type PrNode = {
   number: number; state: string; isDraft: boolean; headRefOid: string; mergeable: string | null; maintainerCanModify: boolean; isCrossRepository?: boolean;
-  commits?: { nodes?: { commit?: { checkSuites?: { nodes?: ({ status?: string; conclusion?: string | null; workflowRun?: { databaseId?: number | null; event?: string; workflow?: { name?: string } | null } | null } | null)[] }; statusCheckRollup?: { contexts?: { nodes?: Ctx[] } } | null } }[] };
+  commits?: { nodes?: { commit?: { oid?: string; checkSuites?: { nodes?: ({ status?: string; conclusion?: string | null; workflowRun?: { databaseId?: number | null; event?: string; workflow?: { name?: string } | null } | null } | null)[] }; statusCheckRollup?: { contexts?: { nodes?: Ctx[] } } | null } }[] };
 };
+
+/** The commit the checks belong to, only when it is the PR's head: CI state and approvable runs never come from another commit. */
+function headCommit(node: PrNode): NonNullable<NonNullable<PrNode["commits"]>["nodes"]>[number]["commit"] {
+  const c = node.commits?.nodes?.[0]?.commit;
+  return c && c.oid === node.headRefOid ? c : undefined;
+}
 
 function suitesOf(node: PrNode): Suite[] {
   const out: Suite[] = [];
-  for (const s of node.commits?.nodes?.[0]?.commit?.checkSuites?.nodes ?? []) {
+  for (const s of headCommit(node)?.checkSuites?.nodes ?? []) {
     const id = s?.workflowRun?.databaseId;
     if (s && typeof id === "number") out.push({ id, name: s.workflowRun?.workflow?.name ?? "", event: (s.workflowRun?.event ?? "").toLowerCase(), status: s.status ?? "", conclusion: s.conclusion ?? null });
   }
@@ -81,7 +87,7 @@ export function parseChecks(repo: string, repository: Record<string, PrNode | nu
   const out: PrChecks[] = [];
   for (const node of Object.values(repository ?? {})) {
     if (!node || typeof node.number !== "number") continue;
-    const ctx = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+    const ctx = headCommit(node)?.statusCheckRollup?.contexts?.nodes ?? [];
     const checks = ctx.filter(Boolean).map((c) => ({ name: c.name ?? c.context ?? "?", state: contextState(c) }));
     out.push({
       repo, number: node.number, head_oid: node.headRefOid, state: node.state, is_draft: !!node.isDraft,
