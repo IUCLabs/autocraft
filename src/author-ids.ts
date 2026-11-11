@@ -72,7 +72,17 @@ export async function backfillAuthorIds(db: DatabaseSync, client: Querier | null
   const byOwner = new Map<string, Pr[]>();
   for (const p of oldest) (byOwner.get(ownerOf(p.repo)) ?? byOwner.set(ownerOf(p.repo), []).get(ownerOf(p.repo))!).push(p);
   const found = new Map<string, number>();
-  for (const [owner, prs] of byOwner) for (let i = 0; i < prs.length; i += BATCH) await lookup(client, owner, prs.slice(i, i + BATCH), found);
+  const skipped: string[] = [];
+  for (const [owner, prs] of byOwner) {
+    try {
+      for (let i = 0; i < prs.length; i += BATCH) await lookup(client, owner, prs.slice(i, i + BATCH), found);
+    } catch (e) {
+      // An owner no token can read (e.g. the app is not installed there) leaves its logins unbound; the other owners go on.
+      if (!/not installed|FORBIDDEN|Resource not accessible/i.test(String((e as Error)?.message))) throw e;
+      skipped.push(owner);
+    }
+  }
+  if (skipped.length) console.log(`author ids: skipped ${skipped.join(", ")} (no readable token)`);
   for (const [login, id] of found) n += Number(bind.run(login, id).changes);
   return n;
 }
