@@ -34,6 +34,8 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
   if (!f.label || !RULE_LABELS.includes(f.label)) reasons.push(f.label ? `label ${f.label}` : "no settled label");
   else if (f.labelUnsure) reasons.push("label settled by an unsure referee");
   if (!RULE_TIERS.includes(f.tier)) reasons.push(f.author ? "author not on the whitelist" : "author unknown");
+  // Carried code is judged by whose code it is, not by the kept PR's author.
+  for (const c of f.carriedFrom ?? []) if (!RULE_TIERS.includes(c.tier)) reasons.push(`carries code from #${c.number}${c.author ? ` by ${c.author}` : ""} (not whitelisted)`);
   reasons.push(...(f.sensitive ?? []));
   for (const c of f.statementConflicts) reasons.push(`conflicts with ${c.where}: "${excerpt(c.text)}" (${c.reason})`);
   if (f.verification?.state === VERIFY_UNAVAILABLE) reasons.push(`not verified: ${f.verification.summary ?? "Verify cannot build this repo"}`);
@@ -248,7 +250,8 @@ function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "ask" | 
   // A fix given up or capped at this head: the contributor is asked once.
   // Not for our own breakage, and not when the fix-up already asked at this head: one comment per head.
   if ((b === "failed" || b === "capped") && f.repoFacts.commentApproved && !f.brokeByUs && fixupOf(f)?.bucket !== "asked") return "ask";
-  if (b === "rerun") return f.repoFacts.ciApproved ? "rerun" : "other";
+  // No rerun at a head the contributor pushed that no review has read.
+  if (b === "rerun") return f.repoFacts.ciApproved && !f.gateRed ? "rerun" : "other";
   return b === "work" || b === "collect" || b === "capped" ? b : "other";
 }
 

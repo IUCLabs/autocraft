@@ -197,7 +197,7 @@ describe("pre-approved merge", () => {
 
   test("a Merge answer at H carries across the pipeline's own conflict merge to H2 as a row in review, once", () => {
     const w = fresh().pr(30).review(30, { verdict: "take" }).answer(30, "merge");
-    w.db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('app', 30, 'sha30', 'sha30m', 'merged', 1, ?)").run(T0);
+    w.db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, state, attempt, created_at, own_diff) VALUES ('app', 30, 'sha30', 'sha30m', 'merged', 1, ?, 'same')").run(T0);
     w.synced(30, "sha30m");
     advancePreapprovals(w.db);
     const p = preapprovalOf(w.db, "app", 30)!;
@@ -208,14 +208,13 @@ describe("pre-approved merge", () => {
     assert.ok(!kindsOf(w, 30).some((k) => k.startsWith("ask-merge") || k.startsWith("merge")), kindsOf(w, 30).join());
   });
 
-  test("the pipeline's own CI fix push continues the pre-approval at the new head; a foreign push cancels it", async () => {
+  test("the pipeline's own CI fix push ends the pre-approval like a foreign push", async () => {
     const w = fresh().pr(16).review(16, { verdict: "take-fix" }).pr(17).review(17, { verdict: "take-fix" });
     await inCi(w, 16);
     w.db.prepare("INSERT INTO ci_fixes (repo, number, head, to_head, kind, state, attempt, created_at) VALUES ('app', 16, 'sha16b', 'sha16c', 'format', 'pushed', 1, ?)").run(T0);
     w.synced(16, "sha16c");
     settle(w);
-    const p = preapprovalOf(w.db, "app", 16)!;
-    assert.deepEqual([p.state, p.head], ["review", "sha16c"]);
+    assert.equal(preapprovalOf(w.db, "app", 16)?.state, "cancelled");
 
     await inCi(w, 17);
     w.synced(17, "foreign17");
