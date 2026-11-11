@@ -60,6 +60,32 @@ export const STATS_SQL = `
          MAX(merged_at) AS last_merge
   FROM items WHERE kind = 'pr' AND author IS NOT NULL`;
 
+export type AuthorRef = { login: string; id: number | null };
+export const tierKey = (a: AuthorRef): string => `${a.login}\0${a.id ?? ""}`;
+
+/**
+ * Tiers of the given authors, from one stats query. A login string can pass to another GitHub account: when the account id differs
+ * from the one first seen under the login, the history and an allow override are not this account's, so the tier is "not" (a deny still holds).
+ */
+export function tiersOf(db: DatabaseSync, authors: AuthorRef[]): Map<string, Tier> {
+  const out = new Map<string, Tier>();
+  if (!authors.length) return out;
+  const logins = [...new Set(authors.map((a) => a.login))];
+  const rule = getRule(db);
+  const marks = logins.map(() => "?").join(",");
+  const stats = new Map((db.prepare(`${STATS_SQL} AND author IN (${marks}) GROUP BY author`).all(...logins) as { login: string; merged: number; closed: number }[]).map((r) => [r.login, r]));
+  const over = new Map((db.prepare(`SELECT login, status FROM whitelist_overrides WHERE login IN (${marks})`).all(...logins) as { login: string; status: string }[]).map((r) => [r.login, r.status]));
+  const bound = new Map((db.prepare(`SELECT login, id FROM author_ids WHERE login IN (${marks})`).all(...logins) as { login: string; id: number }[]).map((r) => [r.login, r.id]));
+  for (const a of authors) {
+    const owner = bound.get(a.login);
+    const other = a.id !== null && owner !== undefined && owner !== a.id;
+    const s = other ? undefined : stats.get(a.login);
+    const o = over.get(a.login) ?? null;
+    out.set(tierKey(a), tierOf(s?.merged ?? 0, s?.closed ?? 0, other && o === "allow" ? null : o, rule));
+  }
+  return out;
+}
+
 // SQL expression for the tier, given columns merged, closed, override and
 // bound parameters :min_merged, :min_rate.
 export const TIER_SQL = `CASE

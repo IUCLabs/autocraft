@@ -1,6 +1,7 @@
 // The item page: one GET with everything the two-sided page draws (status, header, Opus reviews, result cards, AutoCraft's history and
 // the GitHub side). Built from the item API (`itemCore`), the item trace and the write records. Redaction follows the helpers it reuses:
 // viewers get no review text, card details or job errors; a quiet pull request is veiled by the trace context; costs stay visible.
+import { isHiddenRepo } from "../../hidden-sql.ts";
 import { prBuildView } from "../../prbuild/view.ts";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -8,7 +9,7 @@ import type { CiState, TimelineEntry, DiscordInfo, ItemBar, ItemKind, ItemPrBuil
 import { statusFromItem, type ItemStatus } from "../../core/item-status.ts";
 import { triggerWhy } from "../../review/trigger.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
-import { fingerprint, context, gather, obj, arr, type Ctx, type Ev, hiddenSql } from "./trace.ts";
+import { fingerprint, context, gather, obj, arr, type Ctx, type Ev, hiddenSql, hiddenArgs } from "./trace.ts";
 import { timelineOf } from "./item-timeline.ts";
 import { barOf } from "./item-bar.ts";
 import { discordOf } from "./discord.ts";
@@ -161,7 +162,7 @@ function reviewsOf(c: Ctx, headNow: string | null, events: Ev[]): ReviewHistory 
       // Stored as "repo#n" strings.
       blockedBy: arr<unknown>(r.blocked_by).flatMap((b): ItemRef[] => {
         const m = typeof b === "string" ? /^([\w.-]+)#(\d+)$/.exec(b) : null;
-        return m && !c.hidden.includes(m[1]!) ? [{ repo: m[1]!, number: Number(m[2]) }] : [];
+        return m && !isHiddenRepo(c.hidden, m[1]!) ? [{ repo: m[1]!, number: Number(m[2]) }] : [];
       }),
       costUsd: costs.get(`review:${r.key}`) ?? 0,
     };
@@ -257,7 +258,7 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
   const ev = gather(c, null);
   const row = db.prepare("SELECT url, head_oid, (SELECT synced_at FROM item_reads r WHERE r.repo = items.repo AND r.number = items.number) AS synced_at FROM items WHERE repo = ? AND number = ?").get(c.repo, c.n) as { url: string | null; head_oid: string | null; synced_at: string | null };
   const cost = (db.prepare(`SELECT COALESCE(SUM(r.cost_usd), 0) AS cost FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ?${hiddenSql(c.hidden)}`)
-    .get(c.repo, c.n, ...c.hidden) as { cost: number }).cost;
+    .get(c.repo, c.n, ...hiddenArgs(c.hidden)) as { cost: number }).cost;
   const status = statusOf(c, it);
   return {
     repo: c.repo, number: c.n, kind: it.kind, state: it.state, title: it.title, author: it.author, stamp,

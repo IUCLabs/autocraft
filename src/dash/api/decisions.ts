@@ -28,6 +28,7 @@ import type { Req } from "../types.ts";
 import { areaNameOf } from "../../areas/store.ts";
 import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
+import { filtered, hiddenTest, type HiddenRepos } from "../../hidden-sql.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
 import { canSettle, canSettleCached, canSettleSql, settledBy, settleMemo, type SettleMemo } from "../../settlers.ts";
@@ -359,8 +360,14 @@ export function inRepos(prefix: string, repos: string[], params: Record<string, 
 }
 
 /** SQL that leaves out decisions touching a hidden repo (the decision's own, or an item of a batch); null when nothing is hidden. */
-export function withoutHidden(hidden: string[], params: Record<string, string>): string | null {
-  return hidden.length ? `NOT ${inRepos("hd", hidden, params)}` : null;
+export function withoutHidden(hidden: HiddenRepos, params: Record<string, string>): string | null {
+  if (!filtered(hidden)) return null;
+  const bind = (h: { sql: string; args: string[] }): string => { let k = 0; return h.sql.replace(/\?/g, () => { params[`hd${k}`] = h.args[k]!; return `:hd${k++}`; }); };
+  if (!hidden.visible) return `NOT ${inRepos("hd", hidden, params)}`;
+  // Allow-list: a decision is shown only when every repo it names (its own, and each item of a batch) is one the viewer may see.
+  const own = bind(hiddenTest("repo", hidden));
+  const member = bind(hiddenTest("json_extract(j.value, '$.repo')", hidden));
+  return `NOT ((repo IS NOT NULL AND ${own}) OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j WHERE json_extract(j.value, '$.repo') IS NOT NULL AND ${member}))`;
 }
 
 /**

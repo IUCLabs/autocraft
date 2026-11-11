@@ -122,7 +122,9 @@ if [ "${live:-0}" != 1 ]; then
 	pnpm install --frozen-lockfile --prod --ignore-scripts
 
 	echo "-> Building the web app..."
-	pnpm -C web install --frozen-lockfile
+	# Install scripts stay off; only esbuild needs its own to place its binary.
+	pnpm -C web install --frozen-lockfile --ignore-scripts
+	pnpm -C web rebuild esbuild
 	pnpm -C web exec tsc --noEmit
 	pnpm -C web exec vite build --outDir dist --emptyOutDir
 fi

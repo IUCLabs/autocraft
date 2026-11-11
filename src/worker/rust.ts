@@ -21,9 +21,10 @@ export type RustPlanOptions = {
 export const FETCH_SCRIPT = [
   "cd /tmp",
   "tc=$(/usr/local/cargo/bin/rustup show active-toolchain 2>/dev/null | cut -d' ' -f1)",
+  'if [ -z "$tc" ]; then echo "no active rust toolchain in the image; refusing to run cargo with a toolchain chosen by the repository" >&2; exit 1; fi',
   "cd /src",
   "rm -f .cargo/config .cargo/config.toml",
-  'if [ -n "$tc" ]; then export RUSTUP_TOOLCHAIN="$tc"; fi',
+  'export RUSTUP_TOOLCHAIN="$tc"',
   "export RUSTC=/usr/local/cargo/bin/rustc RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS=cargo:token",
   "exec /usr/local/cargo/bin/cargo fetch --locked",
 ].join("\n");

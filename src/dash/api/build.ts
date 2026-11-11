@@ -19,6 +19,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req, Res } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { canSeeInternals } from "./staff.ts";
+import { isHiddenRepo } from "../../hidden-sql.ts";
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
   try {
@@ -47,7 +48,7 @@ export const tasks = (db: DatabaseSync, req: Req): Promise<TaskPage> => wrap(asy
   const q = (k: string) => req.query.get(k) || undefined;
   const repo = q("repo");
   const hidden = await hiddenRepos(db, req);
-  if (repo && hidden.includes(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
+  if (repo && isHiddenRepo(hidden, repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
   const f: TaskFilter = { state: q("state") as TaskState | "active" | undefined, env: q("env"), repo, cursor: q("cursor"), limit: intParam(req, "limit") };
   return listTasks(db, f, hidden, canSeeInternals(req));
 });
@@ -56,7 +57,7 @@ async function visibleTask(db: DatabaseSync, req: Req): Promise<BuildTaskDetail>
   if (!/^\d{1,15}$/.test(req.params.id ?? "")) throw new HttpError(400, "not a task id");
   const t = getTaskDetail(db, Number(req.params.id));
   // The same answer for a task that does not exist and one of a repo the viewer cannot see.
-  if (!t || (await hiddenRepos(db, req)).includes(t.repo) || (PRIVATE_STEPS.includes(t.step) && !canSeeInternals(req))) throw new HttpError(404, "no such task");
+  if (!t || isHiddenRepo(await hiddenRepos(db, req), t.repo) || (PRIVATE_STEPS.includes(t.step) && !canSeeInternals(req))) throw new HttpError(404, "no such task");
   return t;
 }
 

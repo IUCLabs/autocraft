@@ -11,6 +11,7 @@ import { mainRedAfterMerge } from "../push-outcomes.ts";
 import { autocraftText } from "../mainfix/status.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
 import { ownerOf } from "../owners.ts";
+import { isHiddenRepo, type HiddenRepos } from "../hidden-sql.ts";
 
 /** Branch prefix of the PRs AutoCraft opens to fix a red main; the merge queue does not hold them while main is red. */
 export const MAIN_FIX_BRANCH_PREFIX = "autocraft/main-ci-";
@@ -125,10 +126,10 @@ export type MainCiRepoRow = {
 type Stored = { repo: string; head_sha: string; branch: string; state: MainCiState; failing: string; committed_at: string | null; headline: string | null; first_seen_at: string; state_changed_at: string; updated_at: string };
 
 /** One entry per repo with stored heads, red first, then by name. `hidden` repos are left out. */
-export function mainCiRepos(db: DatabaseSync, hidden: string[] = []): MainCiRepoRow[] {
+export function mainCiRepos(db: DatabaseSync, hidden: HiddenRepos = []): MainCiRepoRow[] {
   const by = new Map<string, Stored[]>();
   for (const r of db.prepare("SELECT * FROM main_ci").all() as Stored[]) {
-    if (hidden.includes(r.repo)) continue;
+    if (isHiddenRepo(hidden, r.repo)) continue;
     (by.get(r.repo) ?? by.set(r.repo, []).get(r.repo)!).push(r);
   }
   const tracked = new Set(trackedNames(db));

@@ -14,11 +14,12 @@ import { AUDIT_ACTIONS, operatorOnly } from "./admin.ts";
 import { detailOf } from "./github-detail.ts";
 import { canSeeInternals } from "./staff.ts";
 import { hiddenRepos, needVisible } from "./visible.ts";
+import { filtered, hiddenTest, isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import { ownLogins } from "../../github/identity.ts";
 
 export type Ev = TraceEvent & { detail?: Record<string, unknown> };
 /** `staff`: operators and maintainers; `hidden`: repos the viewer may not see, whose runs are left out like getRun does. */
-export type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: Set<string>; box: string; staff: boolean; /** A quiet pull request seen by a viewer: model output stays out of the trace. */ veiled: boolean; operator: boolean; hidden: string[] };
+export type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: Set<string>; box: string; staff: boolean; /** A quiet pull request seen by a viewer: model output stays out of the trace. */ veiled: boolean; operator: boolean; hidden: HiddenRepos };
 type Source = { kinds: TraceKind[]; run: (c: Ctx) => Ev[] };
 
 export const TRACE_PAGE_DEFAULT = 100, TRACE_PAGE_MAX = 500;
@@ -123,7 +124,9 @@ const jobs: Source = {
 };
 
 /** SQL that leaves out runs that also touched a hidden repo (one `?` per name). */
-export const hiddenSql = (hidden: string[]): string => (hidden.length ? ` AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${hidden.map(() => "?").join(",")}))` : "");
+export const hiddenSql = (hidden: HiddenRepos): string => (filtered(hidden) ? ` AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND ${hiddenTest("x.repo", hidden).sql})` : "");
+/** The `?` arguments of `hiddenSql`. */
+export const hiddenArgs = (hidden: HiddenRepos): string[] => (filtered(hidden) ? hiddenTest("x.repo", hidden).args : []);
 
 /** Prompts whose calls are named by what they do, not by the step that makes them. */
 const PROMPT_TITLES: Record<string, string> = { "lint.reference.jev": "Reference lint", "lint.reference.haiku": "Reference lint" };
@@ -142,7 +145,7 @@ const modelCalls: Source = {
   kinds: ["model-call"],
   run: ({ db, repo, n, hidden }) => rows<Parameters<typeof runEvent>[0]>(db,
     `SELECT ${RUN_COLUMNS}
-     FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE i.repo = ? AND i.number = ?${hiddenSql(hidden)}`, repo, n, ...hidden).map(runEvent),
+     FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE i.repo = ? AND i.number = ?${hiddenSql(hidden)}`, repo, n, ...hiddenArgs(hidden)).map(runEvent),
 };
 
 const CHECK_NAMES: Record<string, string> = { fmt: "Format check", clippy: "Clippy", check: "Build check", test: "Tests" };
@@ -237,7 +240,7 @@ function decisionIds({ db, repo, n, hidden }: Ctx): string[] {
   // A decision that touches a repo hidden from the viewer does not exist for them (the decisions API answers 404).
   return [...ids].filter((id) => {
     const d = getDecision(db, id);
-    return !d || !reposOf(d).some((r) => hidden.includes(r));
+    return !d || !reposOf(d).some((r) => isHiddenRepo(hidden, r));
   }).sort();
 }
 

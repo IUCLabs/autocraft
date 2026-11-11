@@ -37,13 +37,20 @@ const BRAND_FILE = /brand|logo/i;
 const URL_RE = /(?:[a-z][a-z0-9+.-]*:)?\/\/([^\s/?#)"'<>\]]+)([^\s)"'<>\]]*)|\bwww\.([^\s/?#)"'<>\]]+)([^\s)"'<>\]]*)/gi;
 const NAMED_ENTITIES: Record<string, string> = { colon: ":", sol: "/", bsol: "\\", period: ".", commat: "@", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
 
-/** The line with HTML character references decoded and backslashes read as slashes, as browsers treat them in a URL. */
+// Backslashes a browser reads as slashes in a URL: after http(s): (also mixed with slashes), or in a scheme-relative "\\host.tld" that
+// starts at a word boundary and names a dotted host. A path such as C:\\Users\\me is none of these.
+const SCHEME_BSLASH = /\b(https?:)[\\/]+([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s"'<>)]*)/gi;
+const RELATIVE_BSLASH = /(?<![^\s(<"'=])[\\/]{2,}([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s"'<>)]*)/g;
+
+/** The line with HTML character references decoded and URL backslashes read as slashes, as browsers treat them. */
 function readable(line: string): string {
   const dec = (s: string) => s
     .replace(/&#x([0-9a-f]+);?/gi, (_, h: string) => String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)))
     .replace(/&#(\d+);?/g, (_, d: string) => String.fromCodePoint(Math.min(Number(d), 0x10ffff)))
     .replace(/&([a-z]+);/gi, (m, n: string) => NAMED_ENTITIES[n.toLowerCase()] ?? m);
-  return dec(dec(line)).replace(/\\/g, "/");
+  return dec(dec(line))
+    .replace(SCHEME_BSLASH, (_m, scheme: string, rest: string) => `${scheme}//${rest.replace(/\\/g, "/")}`)
+    .replace(RELATIVE_BSLASH, (m, rest: string) => (m.includes("\\") ? `//${rest.replace(/\\/g, "/")}` : m));
 }
 
 /** The reasons (in a fixed order) this diff keeps a PR outside the merge rule. `org` is the GitHub org of the repo. */

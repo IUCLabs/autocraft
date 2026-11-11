@@ -1,22 +1,11 @@
 // The issue the postmerge-file step opens for a defect. Fixed layout; the variable parts are the PR number, the finding's
 // own text (untrusted model output, cleaned) and the model name (shown in the note line). No Node imports: the Prompts page lists the template.
-import { cleanLine } from "../review/post-template.ts";
+import { cleanLine, outsideCode } from "../review/post-template.ts";
 
 export const ISSUE_TITLE_MAX = 120;
 export const ISSUE_BODY_MAX = 6000;
 
 export const ISSUE_TEMPLATE = "_AI-generated issue ({model}). Not a maintainer decision._\n\nFollow-up to #{number}.\n\n{body}\n\nLocation: `{file}:{line}` (only when the finding names a file)";
-
-/**
- * Closed fenced blocks (fences at the start of a line) and inline code spans; the capturing group makes split() keep them at
- * odd indices. A fence that never closes is not code: its text is cleaned like any other.
- */
-const CODE = /(^ {0,3}```[^\n]*\n[\s\S]*?\n {0,3}```[ \t]*$|`[^`\n]*`)/m;
-
-/** `fix` runs on the text outside code only: code keeps its URLs and references. */
-function outsideCode(s: string, fix: (t: string) => string): string {
-  return s.split(CODE).map((part, i) => (i % 2 ? part : fix(part))).join("");
-}
 
 /**
  * Public text outside code: no raw HTML, no URLs, Markdown links reduced to their text, and no issue

@@ -13,6 +13,7 @@ import type { Req } from "../types.ts";
 import { itemState } from "./shown.ts";
 import { fixStoppedWait } from "../../core/decide-item.ts";
 import { blankIfHidden, hiddenRepos } from "./visible.ts";
+import { filtered, hiddenTest, isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import { allOwnLogins } from "../../github/identity.ts";
 
 export const NEEDS_PAGE = 30;
@@ -55,12 +56,14 @@ const SOURCES: string[] = [
 
 const ownLogin = (db: DatabaseSync): string => (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
 
-function hiddenSql(hidden: string[], params: Record<string, SQLInputValue>): string {
-  if (!hidden.length) return "1";
-  return `(repo IS NULL OR repo NOT IN (${hidden.map((h, k) => ((params[`h${k}`] = h), `:h${k}`)).join(",")}))`;
+function hiddenSql(hidden: HiddenRepos, params: Record<string, SQLInputValue>): string {
+  if (!filtered(hidden)) return "1";
+  const h = hiddenTest("repo", hidden);
+  let k = 0;
+  return `(repo IS NULL OR NOT (${h.sql.replace(/\?/g, () => { params[`h${k}`] = h.args[k]!; return `:h${k++}`; })}))`;
 }
 
-function feedback(db: DatabaseSync, hidden: string[], cursor: { at: string; id: string } | null, limit: number): { rows: Raw[]; more: boolean; unhandled: number } {
+function feedback(db: DatabaseSync, hidden: HiddenRepos, cursor: { at: string; id: string } | null, limit: number): { rows: Raw[]; more: boolean; unhandled: number } {
   const params: Record<string, SQLInputValue> = { since: new Date(Date.now() - WINDOW_MS).toISOString(), own: ownLogin(db), owns: JSON.stringify([...allOwnLogins(db)]), bots: JSON.stringify(reviewBots()) };
   const union = SOURCES.map((s) => `SELECT * FROM (${s})`).join(" UNION ALL ");
   const where = hiddenSql(hidden, params);
@@ -72,7 +75,7 @@ function feedback(db: DatabaseSync, hidden: string[], cursor: { at: string; id: 
     let ok = batches.get(r.decision);
     if (ok === undefined) {
       const d = getDecision(db, r.decision);
-      ok = !d || !reposOf(d).some((x) => hidden.includes(x));
+      ok = !d || !reposOf(d).some((x) => isHiddenRepo(hidden, x));
       batches.set(r.decision, ok);
     }
     return ok;
@@ -105,7 +108,7 @@ function view(db: DatabaseSync, r: Raw): NeedsFeedbackRow {
 
 const humanize = (id: string): string => { const t = id.replace(/[-_]+/g, " ").trim(); return t.charAt(0).toUpperCase() + t.slice(1); };
 
-export async function stopped(db: DatabaseSync, hidden: string[]): Promise<NeedsStoppedRow[]> {
+export async function stopped(db: DatabaseSync, hidden: HiddenRepos): Promise<NeedsStoppedRow[]> {
   const out: NeedsStoppedRow[] = [];
   for (const t of db.prepare("SELECT stage, reason, tripped_at FROM stage_trips WHERE active = 1 ORDER BY tripped_at").all() as { stage: string; reason: string; tripped_at: string }[])
     out.push({ id: `breaker:${t.stage}`, kind: "breaker", title: humanize(t.stage), reason: blankIfHidden(t.reason, hidden), since: t.tripped_at, resume: { type: "trip", stage: t.stage } });
@@ -117,12 +120,12 @@ export async function stopped(db: DatabaseSync, hidden: string[]): Promise<Needs
   // Targets Act stopped after repeated failures, while the answer still stands: an operator retries them from here.
   for (const a of db.prepare(`SELECT a.decision_id, a.repo, a.number, a.reason, a.created_at FROM main.actions a JOIN main.decisions d ON d.id = a.decision_id JOIN main.items i ON i.repo = a.repo AND i.number = a.number
     WHERE a.state = 'stopped' AND d.answer IS NOT NULL AND d.applied_at IS NULL AND d.exec_state IS NOT 'disputed' AND d.id NOT LIKE '%~replaced-%' AND i.state = 'OPEN' ORDER BY a.created_at`).all() as { decision_id: string; repo: string; number: number; reason: string | null; created_at: string }[]) {
-    if (hidden.includes(a.repo)) continue;
+    if (isHiddenRepo(hidden, a.repo)) continue;
     out.push({ id: `act:${a.decision_id}:${a.number}`, kind: "act", title: `${a.repo}#${a.number}`, reason: blankIfHidden(a.reason ?? "Act stopped after repeated failures", hidden), since: a.created_at, resume: { type: "retry", decision: a.decision_id } });
   }
   // Items held for an outside author's daily limit or a surge: one group row per author, listed by `/api/needs/outside/:author`.
   for (const g of db.prepare(`SELECT h.author, COUNT(*) AS n, SUM(h.kind = 'pr') AS prs, MIN(i.created_at) AS since, MAX(h.reason = 'surge') AS surge FROM main.outside_holds h
-    LEFT JOIN items i ON i.repo = h.repo AND i.number = h.number ${hidden.length ? `WHERE h.repo NOT IN (${hidden.map(() => "?").join(",")})` : ""} GROUP BY h.author COLLATE NOCASE ORDER BY n DESC, h.author`).all(...hidden) as { author: string; n: number; prs: number; since: string | null; surge: number }[]) {
+    LEFT JOIN items i ON i.repo = h.repo AND i.number = h.number ${filtered(hidden) ? `WHERE NOT (${hiddenTest("h.repo", hidden).sql})` : ""} GROUP BY h.author COLLATE NOCASE ORDER BY n DESC, h.author`).all(...(filtered(hidden) ? hiddenTest("h.repo", hidden).args : [])) as { author: string; n: number; prs: number; since: string | null; surge: number }[]) {
     const parts = [g.prs && `${g.prs} PR${g.prs === 1 ? "" : "s"}`, g.n - g.prs && `${g.n - g.prs} issue${g.n - g.prs === 1 ? "" : "s"}`].filter(Boolean).join(", ");
     out.push({ id: `outside:${g.author}`, kind: "outside-group", title: g.author, reason: `${parts} waiting for ${g.surge ? "the outside-surge breaker or " : ""}the author's daily limit`, since: g.since, count: g.n, resume: { type: "outside", author: g.author } });
   }
@@ -131,7 +134,7 @@ export async function stopped(db: DatabaseSync, hidden: string[]): Promise<Needs
     FROM main.item_plans p LEFT JOIN fix_attempts a ON a.repo = p.repo AND a.number = p.number
     WHERE p.kind = 'issue' AND p.wait IN (?, ?) GROUP BY p.repo ORDER BY n DESC, p.repo`).all(fixStoppedWait("skipped"), fixStoppedWait("failed")) as { repo: string; n: number; since: string | null }[];
   for (const g of groups) {
-    if (hidden.includes(g.repo)) continue;
+    if (isHiddenRepo(hidden, g.repo)) continue;
     out.push({ id: `fixes:${g.repo}`, kind: "fix-group", title: g.repo, reason: `${g.n} issue${g.n === 1 ? "" : "s"} with a stopped fix`, since: g.since, count: g.n, resume: { type: "fixes", repo: g.repo } });
   }
   return out;
@@ -144,7 +147,7 @@ const STOP_WORDS: Record<string, string> = { skipped: "was skipped", failed: "fa
 /** One page of a repo's issues with a stopped fix: higher priority first (unprioritized last), then the newest stop, then the number. The cursor is the last row's `score|since|number`. */
 export async function fixes(db: DatabaseSync, req: Req): Promise<NeedsFixPage> {
   const repo = req.params.repo ?? req.query.get("repo") ?? "";
-  if ((await hiddenRepos(db, req)).includes(repo)) return { rows: [], nextCursor: null };
+  if (isHiddenRepo(await hiddenRepos(db, req), repo)) return { rows: [], nextCursor: null };
   const c = req.query.get("cursor");
   const m = c === null ? null : /^(-?\d{1,9})\|([^|]{1,40})\|(\d{1,9})$/.exec(c);
   if (c !== null && !m) throw new HttpError(400, "bad cursor");
