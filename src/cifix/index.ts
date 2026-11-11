@@ -682,7 +682,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
         await claim(c);
         const id = createTask(db, {
           step: "cifix", repo, number: c.number, headSha: c.head, baseSha: base, requires: { os: "linux", toolchains: ["rust-stable"] }, warm: { key: warmKeyOf(repo), role: "use" },
-          plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...names], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] }],
+          plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...names], network: "none", timeoutSec: 600, bare: true, artifacts: [FORMAT_ARTIFACT] }],
         });
         rec.set(c, "format", "formatting", null, { task: id, files: names });
         summary.queued.push(ref);

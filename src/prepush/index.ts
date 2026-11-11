@@ -40,7 +40,7 @@ export function lintPlan(changedRs: string[], crates?: string[]): TaskStep[] | n
 export function lintSteps(files: string[]): TaskStep[] {
   const named = [...new Set(files.filter((f) => f.endsWith(".rs")))].slice(0, LINT_FILES_MAX);
   return [
-    { name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...named], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT, FORMAT_ERR_ARTIFACT] },
+    { name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...named], network: "none", timeoutSec: 600, bare: true, artifacts: [FORMAT_ARTIFACT, FORMAT_ERR_ARTIFACT] },
     { name: "clippy", cmd: ["sh", "-c", CLIPPY_SCRIPT], network: "none", timeoutSec: 3600, artifacts: [CLIPPY_ARTIFACT, CLIPPY_ERR_ARTIFACT] },
   ];
 }

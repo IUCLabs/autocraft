@@ -115,6 +115,10 @@ export function parsePlan(v: unknown): TaskStep[] {
       if (!Array.isArray(o.artifacts) || o.artifacts.length > 20 || o.artifacts.some((g) => typeof g !== "string" || !GLOB_RE.test(g) || g.startsWith("/") || g.split("/").includes(".."))) throw new BuildError(400, `${where}.artifacts must be up to 20 relative globs`);
       step.artifacts = o.artifacts as string[];
     }
+    if (o.bare !== undefined) {
+      if (typeof o.bare !== "boolean") throw new BuildError(400, `${where}.bare must be a boolean`);
+      if (o.bare) step.bare = true;
+    }
     return step;
   });
 }

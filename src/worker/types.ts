@@ -22,6 +22,8 @@ export type TaskStep = {
   network: "fetch" | "none";
   timeoutSec: number;
   artifacts?: string[];
+  /** Run without the /target and /cache mounts (steps that read neither build output nor the crate cache). */
+  bare?: boolean;
 };
 
 export type StepResult = { step: string; exitCode: number | null; durationMs: number; timedOut: boolean; peakMemBytes?: number; oomKilled?: boolean };

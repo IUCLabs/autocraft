@@ -19,6 +19,8 @@ export type RunSpec = {
   network: "fetch" | "none";
   mounts: StepMounts;
   cmd: string[];
+  /** Leave out the /target and /cache mounts. */
+  bare?: boolean;
   /** Extra env vars from the repo's CI gate (environment.ts); the worker's own vars win. */
   env?: Record<string, string>;
   /** Read-only bind mounts: craft-fonts and craft-i18n checkouts. */
@@ -59,8 +61,7 @@ export function runArgs(cfg: WorkerConfig, s: RunSpec): string[] {
     "--workdir", "/src",
     // Tests may write next to their sources (CI checkouts are writable); the overlay drops those writes when the step ends.
     "--volume", overlay(s.mounts.src, "/src"),
-    "--mount", bind(s.mounts.target, "/target"),
-    "--mount", bind(s.mounts.cache, "/cache"),
+    ...(s.bare ? [] : ["--mount", bind(s.mounts.target, "/target"), "--mount", bind(s.mounts.cache, "/cache")]),
     "--mount", bind(s.mounts.out, "/out"),
     ...extraMounts(s),
     ...Object.entries(s.env ?? {}).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
