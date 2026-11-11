@@ -390,23 +390,25 @@ function parseSections(text: string): Sections | null {
 
 /** Lines a resolution may not introduce unless a side of the conflict already has them. */
 const RISKY_LINE = /^\s*(pub\s+)?(use|extern|mod|fn|impl|macro_rules!|import)\b|\bunsafe\b|include(_str|_bytes)?!|build\.rs|\brequire\(/;
-const DEPENDENCY_LINE = /^\s*"?[\w@/.-]+"?\s*(=\s*("|\{)|:\s*("|\{))/;
+/** A Rust attribute, or a line that starts an item (after visibility, async, const, unsafe, default or extern "ABI"). */
+const RUST_ITEM_LINE = /^\s*(#!?\[|(pub(\s*\([^)]*\))?\s+)?((async|const|unsafe|default|extern(\s+"[^"]*")?)\s+)*(use|mod|fn|struct|enum|trait|impl|type|const|static|union|macro_rules!|macro|extern)\b)/;
 const MAX_OTHER_LINES = 3;
 
-/** True when a section's resolved text is made of lines from its two sides plus at most three others, none risky. */
-function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, dep: boolean): boolean {
+/** True when a section's resolved text is made of lines from its two sides plus at most three others, none risky (for Rust, none that adds an item or an attribute). */
+function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, rust: boolean): boolean {
   const sides = new Set([...section.ours, ...section.theirs]);
   let other = 0;
   for (const line of text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "")) {
     if (sides.has(line)) continue;
-    if (++other > MAX_OTHER_LINES || RISKY_LINE.test(line) || (dep && DEPENDENCY_LINE.test(line))) return false;
+    if (++other > MAX_OTHER_LINES || RISKY_LINE.test(line) || (rust && RUST_ITEM_LINE.test(line))) return false;
   }
   return true;
 }
 
 const LOCKFILE = /(^|\/)(Cargo\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/;
+const MANIFEST = /(^|\/)(Cargo\.toml|package\.json)$/;
 
-/** True when a lockfile section's resolved text is, line for line and in order, exactly one side of the conflict (generated files take no hand-written lines). */
+/** True when a lockfile or manifest section's resolved text is, line for line and in order, exactly one side of the conflict. */
 function oneSide(section: { ours: string[]; theirs: string[] }, text: string): boolean {
   const lines = text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "");
   const same = (side: string[]) => side.length === lines.length && side.every((l, k) => l === lines[k]);
@@ -467,12 +469,13 @@ export const answerText = (a: string): string => (a === "" || a.endsWith("\n") ?
 export function spliceSections(text: string, answers: string[], path = ""): string | null {
   const parsed = parseSections(text);
   if (!parsed || parsed.sections.length !== answers.length) return null;
-  const dep = /(^|\/)(Cargo\.toml|package\.json)$/.test(path);
-  const lock = LOCKFILE.test(path);
+  // Lockfiles and manifests (dependencies, build configuration) take exactly one side.
+  const lock = LOCKFILE.test(path) || MANIFEST.test(path);
+  const rust = path.endsWith(".rs");
   let out = parsed.pieces[0]!;
   for (let i = 0; i < answers.length; i++) {
     const resolved = answerText(answers[i]!);
-    if (lock ? !oneSide(parsed.sections[i]!, resolved) : !sectionOk(parsed.sections[i]!, resolved, dep)) return null;
+    if (lock ? !oneSide(parsed.sections[i]!, resolved) : !sectionOk(parsed.sections[i]!, resolved, rust)) return null;
     out += resolved + parsed.pieces[i + 1]!;
   }
   return out;

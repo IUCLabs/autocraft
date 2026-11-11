@@ -1,4 +1,5 @@
 // The planner's reply, validated hard: anything that does not check out is an error and creates no task.
+import { wholeReplyJson } from "../core/reply-json.ts";
 import { paramValueError, type ScreenshotConfigBody } from "./screenshot-config.ts";
 import { COMPARE_VERDICTS, KINDS, MAX_COMPARE_WORDS, MAX_CRATES, MAX_FILTERS, MAX_SHOT_REASON_WORDS, MAX_SHOT_STEPS, MAX_SHOTS, MAX_TEST_LINES, regressionName, type CompareVerdict, type Crate, type Kind, type ShotStep } from "./types.ts";
 
@@ -50,10 +51,8 @@ const clip = (s: string): string => s.trim().split(/\s+/).slice(0, MAX_REASON_WO
  * Parses and validates the reply for the PR `ref`. `crates` is the workspace's list; `label` the settled type label.
  */
 export function parsePlanReply(text: string, ref: string, crates: Crate[], label: string | null, ci = false): Parsed {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  if (a < 0 || b < a) return fail("no JSON list in the reply");
-  let arr: unknown;
-  try { arr = JSON.parse(text.slice(a, b + 1)); } catch { return fail("reply is not valid JSON"); }
+  const arr = wholeReplyJson(text);
+  if (arr === null) return fail("reply is not exactly one JSON list");
   if (!Array.isArray(arr) || arr.length !== 1 || !isObj(arr[0])) return fail("reply must be a list of one object");
   const o = arr[0];
   if (o.ref !== ref) return fail("reply is for another PR");

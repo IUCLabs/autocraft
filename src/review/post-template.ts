@@ -35,7 +35,7 @@ function verdictLine(verdict: string, sure: boolean, override?: string): string 
 /** One line of plain text: no mentions (nobody gets pinged), no raw HTML tags, cut to `max` characters. */
 export function cleanLine(s: string | null | undefined, max = ITEM_MAX): string {
   const t = (s ?? "")
-    .replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9_])/g, "$1")
+    .replace(/(^|[^A-Za-z0-9])@(?=[A-Za-z0-9_])/g, "$1")
     .replace(/<\/?[A-Za-z][^>]*>/g, "")
     .replace(/\s+/g, " ").trim();
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
@@ -59,12 +59,19 @@ function keptLink(url: string, owner: string | undefined): boolean {
  * URL elsewhere becomes "(link removed)".
  */
 export function stripLinks(s: string, owner?: string): string {
-  const md = s.replace(/\[([^\]]*)\]\(\s*<?([^\s)>]*)>?[^)]*\)/g, (all, text: string, url: string) => (keptLink(url, owner) ? all : text));
-  return md.replace(/\b(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (url) => {
+  const md = s
+    // Reference-style links: the definition line is dropped (its target is never checked) and a use reads as its text.
+    .replace(/(^|\n)[ \t]*\[[^\]]*\]:[^\n]*/g, "$1")
+    .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
+    .replace(/\[([^\]]*)\]\(\s*<?([^\s)>]*)>?[^)]*\)/g, (all, text: string, url: string) => (keptLink(url, owner) ? all : text));
+  return md.replace(/(?<![A-Za-z0-9])(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (url) => {
     const tail = /[.,;:!?]+$/.exec(url)?.[0] ?? "";
     const bare = tail ? url.slice(0, -tail.length) : url;
     return keptLink(bare, owner) ? url : `(link removed)${tail}`;
-  });
+  })
+    // Issue and PR references would link or notify other threads: "#12", "GH-12" and "owner/repo#12" read as plain numbers.
+    .replace(/(?<![A-Za-z0-9])GH-(\d+)(?![A-Za-z0-9])/gi, "issue $1")
+    .replace(/(?<![A-Za-z0-9/&])(?:[\w.-]+\/[\w.-]+)?#(\d+)(?![A-Za-z0-9])/g, "issue $1");
 }
 
 /** What the pipeline will do next with the PR, as far as the posting moment shows. */

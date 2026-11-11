@@ -24,15 +24,17 @@ function outsideCode(s: string, fix: (t: string) => string): string {
  */
 function cleanOutsideCode(t: string): string {
   return t
+    .replace(/(^|\n)[ \t]*\[[^\]]*\]:[^\n]*/g, "$1")
+    .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/<\/?[A-Za-z][^>]*>/g, "")
-    .replace(/<?\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
-    .replace(/\bGH-(\d+)\b/gi, "issue $1")
-    .replace(/(\b(?:issues?|pull requests?|PRs?)\s+)?(?<![\w/])(?:[\w.-]+\/[\w.-]+)?#(\d+)\b/gi, (_m, pre: string | undefined, n: string) => (pre ? `${pre}${n}` : `issue ${n}`));
+    .replace(/<?(?<![A-Za-z0-9])(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
+    .replace(/(?<![A-Za-z0-9])GH-(\d+)(?![A-Za-z0-9])/gi, "issue $1")
+    .replace(/(\b(?:issues?|pull requests?|PRs?)\s+)?(?<![A-Za-z0-9/])(?:[\w.-]+\/[\w.-]+)?#(\d+)(?![A-Za-z0-9])/gi, (_m, pre: string | undefined, n: string) => (pre ? `${pre}${n}` : `issue ${n}`));
 }
 
 // A mention pings even when it sits in code once the text is edited or quoted, so `@` goes everywhere.
-const stripAt = (s: string): string => s.replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9_])/g, "$1");
+const stripAt = (s: string): string => s.replace(/(^|[^A-Za-z0-9])@(?=[A-Za-z0-9_])/g, "$1");
 const cleanBody = (s: string): string => stripAt(outsideCode(s, cleanOutsideCode)).trim();
 
 export function issueTitle(title: string): string {

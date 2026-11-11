@@ -2,18 +2,18 @@
 // text our code validates; every check is recorded in patch_checks for the Item page.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { wholeReplyJson } from "../core/reply-json.ts";
 import { CHECK_MAX_PROBLEMS, CHECK_PROBLEM_CHARS, CHECK_REASON_WORDS, type CheckKind, type PatchCheck } from "./types.ts";
 
 export const patchHash = (patch: string): string => createHash("sha256").update(patch).digest("hex").slice(0, 16);
 
 const words = (s: string, n: number): string => s.replace(/\s+/g, " ").trim().split(" ").slice(0, n).join(" ");
 
-/** The reply's JSON object (from the first "{" to the last "}"), or why it is not one. */
+/** The reply's one JSON object (see wholeReplyJson), or why it is not one. */
 export function parseCheck(reply: string): { ok: true; check: PatchCheck } | { ok: false; error: string } {
-  const a = reply.indexOf("{"), b = reply.lastIndexOf("}");
-  if (a < 0 || b < a) return { ok: false, error: "no JSON object in the reply" };
-  let v: { verdict?: unknown; reasons?: unknown; problems?: unknown };
-  try { v = JSON.parse(reply.slice(a, b + 1)); } catch { return { ok: false, error: "the reply is not valid JSON" }; }
+  const o = wholeReplyJson(reply);
+  if (!o || typeof o !== "object" || Array.isArray(o)) return { ok: false, error: "the reply is not exactly one JSON object" };
+  const v = o as { verdict?: unknown; reasons?: unknown; problems?: unknown };
   if (v.verdict !== "approve" && v.verdict !== "reject") return { ok: false, error: "verdict is not approve or reject" };
   if (typeof v.reasons !== "string") return { ok: false, error: "reasons is not text" };
   const reasons = words(v.reasons, CHECK_REASON_WORDS);
