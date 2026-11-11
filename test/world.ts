@@ -19,7 +19,7 @@ const base = (): PrFacts => ({
   verification: { state: "passed", kind: "build", summary: null, note: null }, verifyUnavailable: null,
   decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: false, hold: { asked: false, open: false, answer: null, otherOpen: false } },
   premerge: { at: "2026-11-04T10:30:00.000Z", tries: 0, hasFindings: true, unsure: false, defects: 0, defectsAllFixable: true, fixesSafe: true, minor: 0, error: null },
-  premergeFixUsed: false, sensitive: [], statementConflicts: [], pushable: true, pushChain: [HEAD], conflict: null, inActiveBatch: false, fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
+  premergeFixUsed: false, sensitive: [], statementConflicts: [], pushable: true, pushChain: [HEAD], conflict: null, inActiveBatch: false, fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, baseOffDefault: false, changesRequested: null, gateFailureNote: null,
 });
 
 /** The default facts with the given fields replaced. Object fields (review, repoFacts, decision, ...) are merged one level deep; null replaces the whole object. */

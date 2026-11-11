@@ -29,7 +29,8 @@ import type { Git } from "./git.ts";
 import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger } from "../prepush/resume.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
 import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
-import { authorWrites, longLivedOf, pushable } from "./pushable.ts";
+import { ensureAuthorWrites } from "./author-permission.ts";
+import { longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentCount, conflictCommentText, mergeMessage } from "./template.ts";
 import { ownerOf } from "../owners.ts";
 
@@ -199,7 +200,9 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if (pr.baseRefName && pr.baseRefName !== c.base) { skip(`the base branch is now ${pr.baseRefName}`); return; }
     if (!mergeInAllowed(db, x.repo, c.number, c.head, c.base)) { skip(`${c.base} is neither the default branch nor the base the review read`); return; }
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }
-    if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, x.repo), !!pr.headRef?.branchProtectionRule, authorWrites(db, x.repo, c.number))) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
+    const writes = pr.headRepository ? await ensureAuthorWrites(db, x.repo, c.number, pr.headRepository.nameWithOwner) : "no";
+    if (writes === "unknown") { x.log(`  ${ref}: skipped: the author's permission could not be read yet`); return; }
+    if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, x.repo), !!pr.headRef?.branchProtectionRule, writes === "yes")) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
     x.onHandled?.(++x.handled.n);
     const git = x.git();
     const head = await git.fetchPr(ownerOf(x.repo), x.repo, c.number);

@@ -5,6 +5,9 @@ import { test } from "node:test";
 import { connect } from "../src/db.ts";
 import { baseRefusal } from "../src/merge/base.ts";
 import { cachedDiff, diffCacheDir, type DiffFetcher } from "../src/review/diff.ts";
+import { decidePr } from "../src/core/decide.ts";
+import { authorWrites, ensureAuthorWrites } from "../src/fixup/author-permission.ts";
+import { prFacts } from "./world.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -35,4 +38,28 @@ test("a diff is stored only for the head it was fetched at, and read again for a
   assert.equal(calls, 2);
   assert.equal((await cachedDiff("app", 7, HEAD, at("release"), "release") as { text: string }).text, "diff against release");
   assert.equal(calls, 3);
+});
+
+test("a private-org member's PR is pushable once the author's permission is read, and is waiting before", async () => {
+  const db = connect(join(dir, "perm.db"));
+  db.prepare("INSERT INTO repos (name, default_branch) VALUES ('app', 'main')").run();
+  db.prepare("INSERT INTO items (repo, number, kind, state, author, author_association, head_repo, head_ref) VALUES ('app', 9, 'pr', 'OPEN', 'ana', 'CONTRIBUTOR', 'storytold/app', 'ana/fix')").run();
+  assert.equal(authorWrites(db, "app", 9), "unknown");
+  let reads = 0;
+  const read = async (_repo: string, login: string) => { reads++; return login === "ana" ? "write" : "read"; };
+  assert.equal(await ensureAuthorWrites(db, "app", 9, "storytold/app", read), "yes");
+  assert.equal(await ensureAuthorWrites(db, "app", 9, "storytold/app", read), "yes");
+  assert.equal(reads, 1);
+  // An entry over a day old is read again.
+  db.prepare("UPDATE repo_permissions SET checked_at = '2020-01-01T00:00:00.000Z'").run();
+  await ensureAuthorWrites(db, "app", 9, "storytold/app", async () => "read");
+  assert.equal(authorWrites(db, "app", 9), "no");
+});
+
+test("a PR aimed at a non-default branch is planned as a single merge only", () => {
+  const plan = decidePr(prFacts({ baseOffDefault: true }));
+  const merge = plan.actions.find((a) => a.kind === "merge");
+  assert.ok(merge);
+  assert.equal(merge.params?.singleOnly, true);
+  assert.equal(merge.params?.batchable, false);
 });
