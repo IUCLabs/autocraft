@@ -41,8 +41,10 @@ async function lookup(client: Querier, owner: string, prs: Pr[], out: Map<string
       else if (pr.author === null) out.set(p.login, DELETED_ACCOUNT_ID);
     });
   } catch (e) {
-    // A repository or pull request GitHub cannot find fails the whole query: split until the missing ones stand alone, and leave those unbound.
-    if ((e as { type?: string })?.type !== "NOT_FOUND") throw e;
+    // A repository or pull request GitHub cannot find, or one the token may not read, fails the whole query: split until those
+    // stand alone, and leave them unbound.
+    const type = (e as { type?: string })?.type;
+    if (type !== "NOT_FOUND" && type !== "FORBIDDEN") throw e;
     if (prs.length === 1) return;
     const mid = prs.length >> 1;
     await lookup(client, owner, prs.slice(0, mid), out);

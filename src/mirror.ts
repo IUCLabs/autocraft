@@ -918,7 +918,9 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       if (bound) console.log(`bound ${bound} author account id${bound === 1 ? "" : "s"}`);
       setSetting(db, "author_ids_backfilled", iso(new Date()));
     } catch (e) {
-      console.log(`author ids: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+      const msg = String((e as Error)?.message ?? e).slice(0, 200);
+      console.log(`author ids: ${msg}`);
+      setSetting(db, "author_ids_error", `${iso(new Date())} ${(e as { type?: string })?.type ?? ""} ${msg}`);
     }
   }
   // Questions about items this sync found closed or merged no longer apply. Writes decisions only.
