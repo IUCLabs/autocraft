@@ -66,15 +66,35 @@ function parseValue(s: string, i: number, depth: number): [unknown, number] {
   return [JSON.parse(m[0]), i + m[0].length];
 }
 
+/** The text between line-anchored ``` fences, one entry per block; null when a fence is left open. */
+function fencedBlocks(text: string): string[] | null {
+  const blocks: string[] = [];
+  let cur: string[] | null = null;
+  for (const l of text.split("\n")) {
+    if (/^\s*```/.test(l)) {
+      if (cur) { blocks.push(cur.join("\n")); cur = null; } else cur = [];
+    } else cur?.push(l);
+  }
+  return cur ? null : blocks;
+}
+
 /**
- * The one JSON value of a reply, or null. Text before and after it may not contain "{" or "[" (a fence line or a
- * sentence is fine; a quoted object is not), and no object may repeat a key.
+ * The one JSON value of a reply, or null. With a fenced code block, the reply must hold exactly one, its whole content
+ * must be one JSON value, and the prose outside it is ignored. Without a fence, text before and after the value may not
+ * contain "{" or "[" (a sentence is fine; a quoted object is not). No object may repeat a key.
  */
 export function wholeReplyJson(text: string): unknown {
-  const a = text.search(/[{[]/);
-  if (a < 0) return null;
+  const blocks = fencedBlocks(text);
+  if (blocks === null) return null;
+  if (blocks.length > 1) return null;
   try {
+    if (blocks.length === 1) {
+      const [v, end] = parseValue(blocks[0]!, 0, 0);
+      return skipWs(blocks[0]!, end) === blocks[0]!.length ? v : null;
+    }
+    const a = text.search(/[{[]/);
+    if (a < 0) return null;
     const [v, end] = parseValue(text, a, 0);
-    return /[{[]/.test(text.slice(end)) ? null : v;
+    return /[{[]/.test(text.slice(end)) || /[{[]/.test(text.slice(0, a)) ? null : v;
   } catch { return null; }
 }
