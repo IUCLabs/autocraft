@@ -13,11 +13,19 @@ export function unboundLogins(db: DatabaseSync): string[] {
     AND NOT EXISTS (SELECT 1 FROM author_ids a WHERE a.login = items.author) ORDER BY author`).all() as { author: string }[]).map((r) => r.author);
 }
 
+/** Account ids of `n` logins passed as $l0..$l{n-1}; $owner picks the token and is read so it counts as used. */
+export function authorIdsQuery(n: number): string {
+  const decl = Array.from({ length: n }, (_, i) => `, $l${i}: String!`).join("");
+  const body = Array.from({ length: n }, (_, i) => `u${i}: user(login: $l${i}) { databaseId }`).join(" ");
+  return `query($owner: String!${decl}) { rateLimit { cost remaining resetAt } repositoryOwner(login: $owner) { id } ${body} }`;
+}
+
 async function lookup(client: Querier, logins: string[], out: Map<string, number>): Promise<void> {
   if (!logins.length) return;
-  const body = logins.map((l, i) => `u${i}: user(login: ${JSON.stringify(l)}) { databaseId }`).join(" ");
+  const vars: Record<string, string> = { owner: DEFAULT_OWNER };
+  logins.forEach((l, i) => { vars[`l${i}`] = l; });
   try {
-    const data = await client.query(`query($owner: String!) { rateLimit { cost remaining resetAt } ${body} }`, { owner: DEFAULT_OWNER });
+    const data = await client.query(authorIdsQuery(logins.length), vars);
     logins.forEach((l, i) => { const id = data?.[`u${i}`]?.databaseId; if (typeof id === "number") out.set(l, id); });
   } catch (e) {
     // GitHub answers NOT_FOUND for a deleted account and fails the whole query: split until the missing ones stand alone.

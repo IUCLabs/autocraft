@@ -14,6 +14,7 @@ import { addLabelsMutation } from "../src/github/write.ts";
 import { liveQuery } from "../src/dupes/compare.ts";
 import { FORMAL_REVIEWS } from "../src/merge/changes-requested.ts";
 import { DISCUSSION_QUERY } from "../src/review/discussion.ts";
+import { authorIdsQuery } from "../src/author-ids.ts";
 
 const SRC = new URL("../src", import.meta.url).pathname;
 
@@ -91,6 +92,7 @@ const BUILT: Record<string, string[]> = {
   "github/write.ts": [addLabelsMutation(3)],
   "dupes/compare.ts": [liveQuery([1, 2])],
   "review/discussion.ts": [DISCUSSION_QUERY],
+  "author-ids.ts": [authorIdsQuery(1), authorIdsQuery(3)],
 };
 
 // Documents the scan finds but cannot reconstruct and no builder covers.
