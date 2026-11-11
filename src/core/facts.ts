@@ -13,7 +13,7 @@ import { ownLogins } from "../github/identity.ts";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
 import { conflictBucket } from "../fixup/conflict-state.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
-import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
+import { authorWrites, longLivedOf, pushable, sameRepo, type LongLived } from "../fixup/pushable.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
 import { latestRun, refereeClosed, settledLookup } from "../classify/settled.ts";
 import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
@@ -286,7 +286,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     // Checks describe the PR when they were fetched for the reviewed head (or, without a review, the current one).
     const checksAtHead = r.c_head === (r.r_head ?? head);
     base.mergeable = (checksAtHead ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
-    base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived);
+    base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived, false, sameRepo(r.head_repo, r.repo) && authorWrites(db, r.repo, r.number));
     const ow = operator.get(ref);
     if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold, premerge: !!head && ow.premergeHeads.has(head) };
     // A fix-up request holds the PR's merge only while the planner can work it: same head, pushable, approved, not conflicting, not a draft, tries left.

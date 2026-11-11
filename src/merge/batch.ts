@@ -8,6 +8,7 @@
 // One run advances every batch of the repo in flight, then starts the next batch when none is left. A failed
 // batch is split in half and each half retried; a single PR that fails goes on hold. When the default branch
 // moves, the batch is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
+import { ownPrSelect } from "../github/adopt.ts";
 import { baseScopeRepos, scopeRepos } from "../pilot.ts";
 import { isFastTracked, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
@@ -145,6 +146,9 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (chain.length && !admits(chain.map((x) => x.cand), c, max)) continue;
       const sha = await git.fetchPr(ownerOf(repo), repo, c.number);
       if (sha !== c.head) { log(`  ${refOf(c.number)}: head moved to ${short(sha)}; left out`); continue; }
+      // A batch is built on the default branch: a PR aimed at another base would bring that base's commits along.
+      const info = await prInfo(d.querier, repo, c.number);
+      if (!info || info.baseRef !== branch) { log(`  ${refOf(c.number)}: left out: its base branch is ${info?.baseRef ?? "unknown"}, not ${branch}`); continue; }
       const g = await guard(db, { repo, number: c.number }, { kind: "merge", head: c.head, batch: true }, by, liveRead);
       if ("refused" in g) { log(`  ${refOf(c.number)}: left out: ${g.refused}`); continue; }
       const tree = await git.mergeTree(cur, sha);
@@ -276,7 +280,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const body = `Lands ${members.length} reviewed and verified pull request${members.length === 1 ? "" : "s"} together. Each one is merged with its own commits.\n\n${links}\n`;
     // A crash after `gh pr create` leaves a PR for this branch: adopt it instead of failing on "already exists".
     const owner = fork.split("/")[0]!;
-    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(repo)}`, "--state", "open", "--head", b.branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
+    const sel = ownPrSelect(db, repo, [owner], branch);
+    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(repo)}`, "--state", "open", "--head", b.branch, "--json", sel.json, "--jq", sel.jq]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     const pr = PR_URL.test(existing) ? { code: 0, stdout: existing, stderr: "" }
       : await ghOpenPr(w, g, d.exec, "batch-pr", { repo, target: `${repo}:${b.branch}`, base: branch, head: `${owner}:${b.branch}`, title: `Integration batch ${b.branch}`, body }, { by: "fixed" }, { run: runId });
@@ -368,6 +373,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const info = await prInfo(d.querier, repo, b.pr_number!);
     if (!info) { s.waiting.push(b.branch); return; }
     if (info.head !== b.commit_sha) { log(`  ${b.branch}: the batch branch moved from ${short(b.commit_sha)} to ${short(info.head)}; not merged`); s.waiting.push(b.branch); return; }
+    if (info.baseRef !== branch) { log(`  ${b.branch}: the batch PR's base is ${info.baseRef}, not ${branch}; not merged`); s.waiting.push(b.branch); return; }
     // The batch PR is ours but a maintainer may review it too.
     const own = await liveGateChecked(db, d.querier, repo, b.pr_number!, "", log);
     if (own === null) { s.waiting.push(b.branch); return; }

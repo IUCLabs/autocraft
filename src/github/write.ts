@@ -582,6 +582,7 @@ export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: 
 /** Pushes `sha` to `branch` of the pipeline's own fork, replacing the branch. */
 export function pushOwnBranch(w: Writer, g: Grant, git: Pick<Git, "git">, action: string, o: { repo: string; number?: number; remote: string; branch: string; sha: string }, details: Details = {}, /** The push needs the box account whatever the repo's identity (an advisory's private fork, which the app cannot reach). */ asBox = false): Promise<ExecResult> {
   covers(g, o.repo);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+$/.test(o.remote) || o.branch.startsWith("-") || !/^[0-9a-f]{40,64}$/.test(o.sha)) throw new Error("the push target is not a repository and branch");
   // A new branch has no PR yet: its outcome is matched to the PR by commit once the PR's checks arrive.
   return pushed(w, g, git, action, o.number === undefined ? `${o.repo}:${o.branch}` : refOf(o.repo, o.number), o, "--force", details, { repo: o.repo, number: null }, asBox);
 }

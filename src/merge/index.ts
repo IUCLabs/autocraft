@@ -10,6 +10,7 @@ import { scopeRepos } from "../pilot.ts";
 import { FAST_FLOOR, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
 import { backlogHeld, duplicateHeld } from "../dupes/held.ts";
+import { baseRefusal } from "./base.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { markReread } from "./ci-approval.ts";
 import { spawn } from "node:child_process";
@@ -123,13 +124,13 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 300);
 
 // ---- GitHub reads ----
 
-export type PrInfo = { id: string; head: string; state: string; assignees: string[]; authors: number; commits: number };
+export type PrInfo = { id: string; head: string; state: string; assignees: string[]; authors: number; commits: number; baseRef: string };
 
 export const PR_INFO_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   rateLimit { cost remaining resetAt }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
-      id headRefOid state
+      id headRefOid baseRefName state
       assignees(first: 10) { nodes { login } }
       commits(first: 100) { totalCount nodes { commit { authors(first: 10) { nodes { email name user { login } } } } } }
     }
@@ -137,7 +138,7 @@ export const PR_INFO_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
 }`;
 
 type InfoNode = {
-  id: string; headRefOid: string; state: string; assignees?: { nodes?: { login: string }[] };
+  id: string; headRefOid: string; baseRefName: string; state: string; assignees?: { nodes?: { login: string }[] };
   commits?: { totalCount: number; nodes?: { commit?: { authors?: { nodes?: { email?: string | null; name?: string | null; user?: { login: string } | null }[] } } }[] };
 };
 
@@ -150,7 +151,7 @@ export async function prInfo(q: Querier, repo: string, n: number): Promise<PrInf
     for (const a of c.commit?.authors?.nodes ?? []) who.add(a.user?.login ? `@${a.user.login}` : (a.email || a.name || "?").toLowerCase());
   return {
     id: p.id, head: p.headRefOid, state: p.state, assignees: (p.assignees?.nodes ?? []).map((a) => a.login),
-    authors: who.size, commits: p.commits?.totalCount ?? 0,
+    authors: who.size, commits: p.commits?.totalCount ?? 0, baseRef: p.baseRefName,
   };
 }
 
@@ -352,6 +353,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     const info = await prInfo(d.querier, repo, e.number);
     if (!info) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (info.head !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(info.head)} since the review`); continue; }
+    const baseWhy = baseRefusal(db, repo, e.head, e.number, info.baseRef);
+    if (baseWhy) { refuse(e, null, baseWhy); continue; }
     // Not a refusal: no merges row, so the queue keeps the PR and takes it up again once it is reviewed again.
     // The same read checks for a maintainer's changes-requested review, whatever merge command runs next.
     const gate = await liveGateChecked(db, d.querier, repo, e.number, e.head, log);

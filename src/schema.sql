@@ -506,6 +506,7 @@ CREATE TABLE IF NOT EXISTS opus_reviews (
   fixes TEXT,                         -- JSON [{file, change}], the complete list for take-fix
   risks TEXT,                         -- JSON [string]
   -- public_review (added column): JSON {summary, points}, the text posted on the PR; NULL when the reply had none
+  -- base_ref (added column): the base branch the reviewed diff was computed against; NULL for reviews stored before it was recorded
   PRIMARY KEY (repo, number, head_oid)
 );
 

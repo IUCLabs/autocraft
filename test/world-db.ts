@@ -76,7 +76,7 @@ export function world() {
       if (v.n !== undefined) {
         const l = live.get(v.n)!;
         return { repository: { pullRequest: {
-          id: `P${v.n}`, headRefOid: l.head, state: l.state, assignees: { nodes: l.assignees.map((login) => ({ login })) },
+          id: `P${v.n}`, headRefOid: l.head, baseRefName: "main", state: l.state, assignees: { nodes: l.assignees.map((login) => ({ login })) },
           commits: { totalCount: l.authors.length, nodes: l.authors.map((login) => ({ commit: { authors: { nodes: [{ email: `${login}@x`, name: login, user: { login } }] } } })) },
         } } };
       }
@@ -128,7 +128,7 @@ export function world() {
               if (a[0] === "fetch") return ok();
               if (a[0] === "rev-parse") return ok((a[1] === "refs/batch/main" ? MAIN : headOf(Number(a[1]!.split("pr-")[1]))) + "\n");
               if (a[0] === "merge-tree") return ok(`tree-${a.at(-1)}\n`);
-              if (a[0] === "commit-tree") { tip = `batchtip${++commits}`; live.get(900)!.head = tip; return ok(`${tip}\n`); }
+              if (a[0] === "commit-tree") { tip = `${"b".repeat(39)}${++commits}`; live.get(900)!.head = tip; return ok(`${tip}\n`); }
               if (a[0] === "diff") return ok("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
               if (a[0] === "push") { writes.push({ kind: "push", number: 900, head: tip }); return ok(); }
             }
