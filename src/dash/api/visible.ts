@@ -49,13 +49,15 @@ function knownRepos(db: DatabaseSync): string[] {
  * of a repo's security scans (`(security):<repo>`, where its jobs and agent runs are recorded) is hidden from viewers
  * and from maintainers who cannot see the repo, so every listing that leaves out hidden repos leaves the scans out too.
  */
-export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[]> {
+export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[] & { visible?: string[] }> {
   if (req.user.role === "operator") return [];
-  const visible = new Set(await visibleRepos(db, req));
+  const visibleList = await visibleRepos(db, req);
+  const visible = new Set(visibleList);
   const known = knownRepos(db);
   const staff = canSeeInternals(req);
   const hidden = known.filter((r) => !visible.has(r));
-  return [...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)];
+  // The list stays the denylist for text matching; SQL filters use the allow-list attached to it (see excludeHidden).
+  return Object.assign([...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)], { visible: visibleList });
 }
 
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */
@@ -67,7 +69,9 @@ export async function needVisible(db: DatabaseSync, req: Req, repo: string): Pro
  * SQL that leaves out the hidden repos: `<col> NOT IN (...)`, binding the names
  * into `params` under `<prefix>0`, `<prefix>1`, ... Null when nothing is hidden.
  */
-export function excludeHidden(col: string, hidden: string[], params: Record<string, SQLInputValue>, prefix = "hid"): string | null {
+export function excludeHidden(col: string, hidden: string[] & { visible?: string[] }, params: Record<string, SQLInputValue>, prefix = "hid"): string | null {
+  // A list from hiddenRepos carries the repos the requester may see: rows of any other repo, known or not, are left out.
+  if (hidden.visible) return hidden.visible.length ? `${col} IN (${hidden.visible.map((h, k) => ((params[`${prefix}${k}`] = h), `:${prefix}${k}`)).join(",")})` : "0";
   if (!hidden.length) return null;
   return `${col} NOT IN (${hidden.map((h, k) => ((params[`${prefix}${k}`] = h), `:${prefix}${k}`)).join(",")})`;
 }

@@ -12,7 +12,7 @@ import { KINDS } from "../../decisions.ts";
 import { frame } from "../../itemtools/server/tools.ts";
 import * as dec from "../api/decisions.ts";
 import { visibleTo } from "../api/visible.ts";
-import { HttpError, type RateLimiter } from "../server/util.ts";
+import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, User } from "../types.ts";
 
 export const MCP_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -262,9 +262,14 @@ async function getItem(env: McpEnv, raw: unknown): Promise<ToolResult> {
   return show(`Decision ${d.id} about ${ref(d)}. ${how}`, `decision ${d.id}`, data);
 }
 
+// What an agent can leave behind is bounded per login: the text is capped by the feedback endpoint (4000 characters), the count here.
+const feedbackHour = new RateLimiter(10, 3600_000);
+const feedbackDay = new RateLimiter(50, 24 * 3600_000);
+
 async function sendFeedback(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { id: "id", option: "option", text: "text" }, ["id"]);
   const user = env.user(true);
+  if (!feedbackHour.allow(user.login.toLowerCase()) || !feedbackDay.allow(user.login.toLowerCase())) throw new HttpError(429, "too much feedback from agents: at most 10 an hour and 50 a day per user; leave it on the dashboard instead");
   const d = await dec.feedback(env.db, reqOf(user, { method: "POST", params: { id: a.id as string }, json: { option: a.option ?? null, text: a.text ?? null } }), env.limiter, "mcp");
   const picked = a.option !== undefined ? d.options.find((o) => o.key === a.option)?.label ?? String(a.option) : null;
   const tally = new Map<string, number>();
