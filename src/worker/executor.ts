@@ -157,7 +157,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
       const started = Date.now();
       let outcome: RunOutcome;
       try {
-        outcome = await runContainer(cfg, { name, image: prepared.image, env: prepared.env, extraMounts: prepared.mounts, network: step.network, mounts: { ...paths, out }, cmd: step.cmd }, {
+        outcome = await runContainer(cfg, { name, image: prepared.image, env: prepared.env, extraMounts: prepared.mounts, network: step.network, bare: step.bare, mounts: { ...paths, out }, cmd: step.cmd }, {
           timeoutMs: Math.min(step.timeoutSec, cfg.maxStepSec) * 1000,
           signal,
           onOutput: (b) => void sink.log(step.name, b.toString("utf8")).catch(() => {}),

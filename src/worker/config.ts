@@ -64,7 +64,7 @@ function loadKey(file: string, make: (pem: Buffer) => KeyObject): KeyObject {
   }
 }
 
-/** Hosts that plain http may reach: loopback, private ranges, and cluster-internal names. Anything else needs https. */
+/** Hosts that plain http may reach: loopback, private ranges, and cluster-internal names (never a single-label name: a DNS search domain can resolve it to a public host). Anything else needs https. */
 export function plainHttpHostAllowed(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h === "::1") return true;
@@ -74,7 +74,7 @@ export function plainHttpHostAllowed(hostname: string): boolean {
     return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
   }
   if (h.includes(":")) return /^f[cd][0-9a-f]{2}:/.test(h);
-  return !h.includes(".") || /\.(svc|cluster\.local|internal)$/.test(h);
+  return /\.(svc|cluster\.local|internal)$/.test(h);
 }
 
 /** Throws unless `url` is https, or http to a host plainHttpHostAllowed accepts. */
@@ -86,7 +86,7 @@ export function checkCoordinatorUrl(url: string): void {
     throw new Error("config: coordinatorUrl must be an http(s) URL");
   }
   if (u.protocol === "http:" && !plainHttpHostAllowed(u.hostname)) {
-    throw new Error("config: coordinatorUrl uses plain http, which is accepted only for loopback, private-network and cluster-internal hosts (single-label names, .svc, .cluster.local, .internal); use https");
+    throw new Error("config: coordinatorUrl uses plain http, which is accepted only for loopback, private-network and cluster-internal hosts (.svc, .cluster.local, .internal); use https");
   }
 }
 

@@ -56,10 +56,10 @@ test("an access entry added with a GitHub id rejects another id at sign-in", () 
 
 test("coordinatorUrl: plain http only for loopback, private and cluster-internal hosts", () => {
   const cfg = (coordinatorUrl: string) => parseWorkerConfig({ coordinatorUrl, keyFile: "/k", workDir: "/w" });
-  for (const u of ["http://127.0.0.1:8981", "http://localhost:1", "http://[::1]:1", "http://10.1.2.3", "http://172.20.0.1", "http://192.168.1.5", "http://100.64.0.9", "http://runner.svc", "http://coord", "http://a.b.cluster.local", "http://x.internal", "https://example.com"]) {
+  for (const u of ["http://127.0.0.1:8981", "http://localhost:1", "http://[::1]:1", "http://10.1.2.3", "http://172.20.0.1", "http://192.168.1.5", "http://100.64.0.9", "http://runner.svc", "http://a.b.cluster.local", "http://x.internal", "https://example.com"]) {
     assert.doesNotThrow(() => cfg(u), u);
   }
-  for (const u of ["http://example.com", "http://8.8.8.8", "http://172.32.0.1", "http://100.128.0.1", "http://coordinator.invalid"]) {
+  for (const u of ["http://example.com", "http://8.8.8.8", "http://172.32.0.1", "http://100.128.0.1", "http://coordinator.invalid", "http://coord"]) {
     assert.throws(() => cfg(u), /plain http/, u);
   }
 });

@@ -91,9 +91,10 @@ export const FORMAT_SCRIPT = [
   'files="$*"',
   `ed() { sed -n 's/^[[:space:]]*edition[[:space:]]*=[[:space:]]*"\\([0-9]*\\)".*/\\1/p' "$1" | head -n 1; }`,
   'edition_of() { d=$(dirname "b/$1"); while :; do if [ -f "$d/Cargo.toml" ]; then e=$(ed "$d/Cargo.toml"); if [ -n "$e" ]; then echo "$e"; return; fi; if grep -q "^[[:space:]]*edition[.[:space:]]*\\(workspace\\|=[[:space:]]*{\\)" "$d/Cargo.toml"; then e=$(ed b/Cargo.toml); echo "${e:-2015}"; return; fi; if grep -q "^[[:space:]]*\\[package\\]" "$d/Cargo.toml"; then echo 2015; return; fi; fi; [ "$d" = b ] && break; d=$(dirname "$d"); done; echo 2015; }',
+  // A named path that is a symlink or resolves outside the checkout is refused, so rustfmt never writes through a link.
   // A file rustfmt cannot parse is listed in fmt-err.txt (an `@@ path` line, then rustfmt's output) and the run goes on.
   ": > /tmp/w/fmt-err.txt",
-  `for f in $files; do if ! o=$(env -i PATH=${IMAGE_CARGO}/bin:/usr/bin:/bin HOME=/tmp RUSTUP_HOME=${IMAGE_RUSTUP} CARGO_HOME=${IMAGE_CARGO} ${IMAGE_CARGO}/bin/rustfmt --edition "$(edition_of "$f")" "b/$f" 2>&1); then printf '%s\\n' "@@ $f" "$o" >> /tmp/w/fmt-err.txt; fi; done`,
+  `for f in $files; do r=$(realpath -- "b/$f" 2>/dev/null || true); case "$r" in /tmp/w/b/*) ;; *) printf '%s\\n' "@@ $f" "refused: the path is a symlink or leaves the checkout" >> /tmp/w/fmt-err.txt; continue;; esac; if ! o=$(env -i PATH=${IMAGE_CARGO}/bin:/usr/bin:/bin HOME=/tmp RUSTUP_HOME=${IMAGE_RUSTUP} CARGO_HOME=${IMAGE_CARGO} ${IMAGE_CARGO}/bin/rustfmt --edition "$(edition_of "$f")" "b/$f" 2>&1); then printf '%s\\n' "@@ $f" "$o" >> /tmp/w/fmt-err.txt; fi; done`,
   "if [ -s /tmp/w/fmt-err.txt ]; then cp /tmp/w/fmt-err.txt /out/fmt-err.txt; fi",
   ": > /tmp/w/format.txt",
   'for f in $files; do if ! cmp -s "a/$f" "b/$f"; then echo "diff -uN a/$f b/$f" >> /tmp/w/format.txt; diff -uN "a/$f" "b/$f" >> /tmp/w/format.txt || true; fi; done',
@@ -681,7 +682,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
         await claim(c);
         const id = createTask(db, {
           step: "cifix", repo, number: c.number, headSha: c.head, baseSha: base, requires: { os: "linux", toolchains: ["rust-stable"] }, warm: { key: warmKeyOf(repo), role: "use" },
-          plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...names], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] }],
+          plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...names], network: "none", timeoutSec: 600, bare: true, artifacts: [FORMAT_ARTIFACT] }],
         });
         rec.set(c, "format", "formatting", null, { task: id, files: names });
         summary.queued.push(ref);

@@ -1,6 +1,7 @@
 // Build tasks: created by pipeline steps, claimed by workers that pull, run
 // on the worker, and reported back. Everything a worker sends is stored as
 // data; nothing here executes it, renders it or puts it in a prompt.
+import { createHash } from "node:crypto";
 import { currentJobId } from "../agents/call.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { ItemShown, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, SandboxEnv, TaskArtifact, TaskBatch, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
@@ -61,10 +62,10 @@ export type NewTask = {
 
 export type Warm = { key: string; role: "use" | "build" };
 export const MAX_PATCH_BYTES = 1024 * 1024;
-/** A warm-cache key for a repo name: lowercase, other characters become '-', trimmed, at most 64 characters; always valid. */
+/** A warm-cache key for a repo name: a readable slug (at most 49 characters) and a hash of the lowercased name, so distinct names never share a key; always valid. */
 export function warmKeyOf(name: string): string {
-  const k = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 64).replace(/-+$/, "");
-  return k || "repo";
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 49).replace(/-+$/, "") || "repo";
+  return `${slug}-${createHash("sha256").update(name.toLowerCase()).digest("hex").slice(0, 14)}`;
 }
 const WARM_KEY_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -113,6 +114,10 @@ export function parsePlan(v: unknown): TaskStep[] {
     if (o.artifacts !== undefined) {
       if (!Array.isArray(o.artifacts) || o.artifacts.length > 20 || o.artifacts.some((g) => typeof g !== "string" || !GLOB_RE.test(g) || g.startsWith("/") || g.split("/").includes(".."))) throw new BuildError(400, `${where}.artifacts must be up to 20 relative globs`);
       step.artifacts = o.artifacts as string[];
+    }
+    if (o.bare !== undefined) {
+      if (typeof o.bare !== "boolean") throw new BuildError(400, `${where}.bare must be a boolean`);
+      if (o.bare) step.bare = true;
     }
     return step;
   });

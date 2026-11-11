@@ -1743,6 +1743,7 @@ export type TaskStep = {
   network: "fetch" | "none";            // "fetch": registry/GitHub egress allowed; "none": no network
   timeoutSec: number;
   artifacts?: string[];                 // globs under /out to return
+  bare?: boolean;                       // run without the /target and /cache mounts
 };
 export type TaskState = "queued" | "claimed" | "running" | "done" | "failed" | "cancelled" | "lost";
 export type TaskResult = { step: string; exitCode: number | null; durationMs: number; timedOut: boolean; peakMemBytes?: number; oomKilled?: boolean };

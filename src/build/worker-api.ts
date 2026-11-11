@@ -145,6 +145,12 @@ export function handler(o: WorkerServerOptions) {
         }
         if (!NAME_RE.test(name)) throw new Refusal(400, "artifact names are 1 to 100 letters, digits, dots, underscores or hyphens");
         const tmp = await receive(req, id, MAX_ARTIFACT_BYTES);
+        try {
+          ownedTask(db, env.id, id);
+        } catch (e) {
+          unlinkSync(tmp);
+          throw e;
+        }
         return reply(res, 200, storeArtifact(db, id, name, tmp));
       }
       if (method !== "POST") throw new Refusal(405, "use POST");
