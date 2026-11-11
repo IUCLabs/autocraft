@@ -1,14 +1,21 @@
 // The commits our pipeline pushed to a PR between two heads, for the review prompt and for carrying a verdict over our own fix-up.
 import type { DatabaseSync } from "node:sqlite";
 
-export type OurCommit = { kind: "fix-up" | "CI fix" | "base merge" | "carry"; sha: string; note: string; fixes_meant: string[]; from: string };
+export type OurCommit = { kind: "fix-up" | "pre-merge fix" | "operator fix-up" | "CI fix" | "base merge" | "carry"; sha: string; note: string; fixes_meant: string[]; from: string };
 
 type Row = { from: string; kind: OurCommit["kind"]; note: string | null; source?: string | null };
 
+/** What a carry commit holds: parts of the closed duplicates, named with their authors. */
+function carriedNote(db: DatabaseSync, repo: string, decision: string | null): string {
+  const rows = decision ? db.prepare("SELECT g.number, i.author FROM dupe_group_items g LEFT JOIN items i ON i.repo = ? AND i.number = g.number WHERE g.decision_id = ? AND g.kind = 'pr' AND g.role = 'close' ORDER BY g.number").all(repo, decision) as { number: number; author: string | null }[] : [];
+  return rows.length ? `parts carried from the closed duplicate PRs ${rows.map((x) => `#${x.number}${x.author ? ` by ${x.author}` : ""}`).join(", ")}: code written by those authors, not by the pipeline` : "parts carried from closed duplicate PRs: code written by their authors, not by the pipeline";
+}
+
 /** The commit of ours that made `head`, or null when no push of ours ended there (a contributor's commit). */
 function madeBy(db: DatabaseSync, repo: string, number: number, head: string): Row | null {
-  const a = db.prepare("SELECT from_head AS f, reason, source FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' ORDER BY rowid DESC").get(repo, number, head) as { f: string; reason: string | null; source: string | null } | undefined;
-  if (a) return { from: a.f, kind: "fix-up", note: a.reason, source: a.source };
+  const a = db.prepare("SELECT from_head AS f, reason, source, carry_decision FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' ORDER BY rowid DESC").get(repo, number, head) as { f: string; reason: string | null; source: string | null; carry_decision: string | null } | undefined;
+  if (a?.source === "carry") return { from: a.f, kind: "carry", note: carriedNote(db, repo, a.carry_decision), source: a.source };
+  if (a) return { from: a.f, kind: a.source === "premerge" ? "pre-merge fix" : a.source === "operator" ? "operator fix-up" : "fix-up", note: a.reason, source: a.source };
   const b = db.prepare("SELECT head AS f, reason, kind FROM ci_fixes WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' ORDER BY rowid DESC").get(repo, number, head) as { f: string; reason: string | null; kind: string } | undefined;
   if (b) return { from: b.f, kind: "CI fix", note: b.reason ?? `fix for the failing ${b.kind} check` };
   const c = db.prepare("SELECT from_head AS f, reason FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' ORDER BY rowid DESC").get(repo, number, head) as { f: string; reason: string | null } | undefined;

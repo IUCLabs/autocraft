@@ -283,11 +283,11 @@ function reviewAt(db: DatabaseSync, p: Row, head: string): ReviewRead {
   return { kind: "bad", why: `the review says ${r.verdict}${r.sure === 1 ? "" : " (unsure)"}${r.reason ? `: ${oneLine(r.reason, 160)}` : ""}` };
 }
 
-/** "CI fix" or "conflict merge" when the pipeline itself pushed `cur` on top of the row's head, else null. */
+/** "base merge" or "fix-up for the review's fixes" when the pipeline itself pushed `cur` on top of the row's head without adding code a person did not see, else null. */
 function ownPush(db: DatabaseSync, p: Row, cur: string): string | null {
   if (db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND COALESCE(source, 'review') = 'review' AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "fix-up for the review's fixes";
-  if (db.prepare("SELECT 1 FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND to_head = ? AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "CI fix";
-  if (db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND state IN ('pushing', 'merged')").get(p.repo, p.number, p.head, cur)) return "conflict merge";
+  // Only a base merge that left the PR's own diff unchanged continues an answer; a CI fix or a resolved conflict is model-written code nobody saw.
+  if (db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND state = 'merged' AND own_diff = 'same'").get(p.repo, p.number, p.head, cur)) return "base merge";
   return null;
 }
 
@@ -400,7 +400,7 @@ function advance(db: DatabaseSync, p: Row): void {
     const c = db.prepare("SELECT overall, mergeable FROM pr_checks WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head) as { overall: string; mergeable: string | null } | undefined;
     if (!c || c.overall === "pending") return;
     if (c.overall === "failure") {
-      // The CI fix step works the red head as it would for any PR; its push is a new head that continues this pre-approval (see ownPush). The operator decides when the step has given up.
+      // The CI fix step works the red head as it would for any PR; its push is a head the operator did not see, so the row ends and the Merge? question is asked there. The operator decides when the step has given up.
       const f = loadPrFact(db, p.repo, p.number);
       const bucket = f ? cifixBucket(f) : null;
       if (bucket !== null && ["work", "formatting", "linting", "collect", "rerun", "rerun-wait"].includes(bucket) && stepRuns(f!, "cifix")) return;
@@ -463,13 +463,12 @@ function settleCancelled(db: DatabaseSync): void {
 }
 
 /**
- * An operator's Merge answer at head H carries across the pipeline's own push to H2 (a conflict merge or a CI fix): when the answer
+ * An operator's Merge answer at head H carries across the pipeline's own base merge to H2 that left the PR's diff unchanged: when the answer
  * still stands and the PR has no pre-approved merge, a row starts in `review` at H2 with no fix-up, and the chain of review, pre-merge
  * review and CI runs again before the hand-over answers the Merge? question at H2. One row per (PR, H2); the row's existence is the memory.
  */
 function carryAnswers(db: DatabaseSync): void {
-  const pushes = db.prepare(`SELECT c.repo, c.number, c.head AS from_head, c.to_head, 'CI fix' AS what FROM ci_fixes c WHERE c.state IN ('pushing', 'pushed') AND c.to_head IS NOT NULL AND c.repo IN (SELECT name FROM main.tracked_repos)
-    UNION SELECT m.repo, m.number, m.from_head, m.to_head, 'conflict merge' FROM conflict_merges m WHERE m.state IN ('pushing', 'merged') AND m.to_head IS NOT NULL AND m.repo IN (SELECT name FROM main.tracked_repos)`).all() as { repo: string; number: number; from_head: string; to_head: string; what: string }[];
+  const pushes = db.prepare(`SELECT m.repo, m.number, m.from_head, m.to_head, 'base merge' AS what FROM conflict_merges m WHERE m.state = 'merged' AND m.own_diff = 'same' AND m.to_head IS NOT NULL AND m.repo IN (SELECT name FROM main.tracked_repos)`).all() as { repo: string; number: number; from_head: string; to_head: string; what: string }[];
   for (const x of pushes) {
     const it = prRow(db, x.repo, x.number);
     if (!it || it.kind !== "pr" || it.state !== "OPEN" || it.head_oid !== x.to_head) continue;

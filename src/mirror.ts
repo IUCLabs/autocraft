@@ -25,7 +25,7 @@ const LIGHT_PAGE = 100;
 const MIN_PAGE = 10;
 
 const COLUMNS = [
-  "repo", "number", "kind", "state", "title", "body", "url", "author", "author_type", "author_association",
+  "repo", "number", "kind", "state", "title", "body", "url", "author", "author_type", "author_id", "author_association",
   "created_at", "updated_at", "closed_at", "merged_at", "merged_by", "state_reason", "is_draft",
   "labels", "assignees", "comments_count", "reactions_count", "additions", "deletions", "changed_files",
   "head_ref", "head_oid", "head_repo", "base_ref", "maintainer_can_modify", "mergeable",
@@ -53,7 +53,7 @@ query($login: String!, $after: String) {
   }
 }`;
 
-export const COMMON = `number title body url author { login __typename } authorAssociation createdAt updatedAt closedAt state
+export const COMMON = `number title body url author { login __typename ... on User { databaseId } ... on Bot { databaseId } } authorAssociation createdAt updatedAt closedAt state
   labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } }
   commentCount: comments { totalCount } reactionCount: reactions { totalCount }`;
 export const COMMENTS = "comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body url } }";
@@ -273,7 +273,7 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
   const r: Record<string, SQLInputValue> = Object.fromEntries(COLUMNS.map((c) => [c, null]));
   Object.assign(r, {
     repo, number: n.number, kind, state: n.state, title: n.title, body: n.body, url: n.url,
-    author: login(n.author), author_type: n.author?.__typename ?? null, author_association: n.authorAssociation,
+    author: login(n.author), author_type: n.author?.__typename ?? null, author_id: typeof n.author?.databaseId === "number" ? n.author.databaseId : null, author_association: n.authorAssociation,
     created_at: n.createdAt, updated_at: n.updatedAt, closed_at: n.closedAt,
     labels: JSON.stringify((n.labels?.nodes ?? []).filter(Boolean).map((x: Node) => x.name)),
     assignees: JSON.stringify((n.assignees?.nodes ?? []).filter(Boolean).map((x: Node) => x.login)),
@@ -330,6 +330,8 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const insert = db.prepare(`INSERT INTO main.items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => c === "mergeable" ? `mergeable=${KEEP_KNOWN_MERGEABLE("items")}` : `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
+  // The first account seen under a login string owns it for the whitelist; a later account with the same login does not inherit its history.
+  const bindId = db.prepare("INSERT OR IGNORE INTO main.author_ids (login, id) VALUES (?, ?)");
   const del = db.prepare("DELETE FROM main.comments WHERE repo=? AND number=?");
   const insComment = db.prepare(`INSERT INTO main.comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
@@ -346,6 +348,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
       const old = stored.get(repo, n.number) as Record<string, SQLInputValue> | undefined;
       if (!force && old && COLUMNS.every((c) => old[c] === row[c])) continue;
       insert.run(row);
+      if (typeof row.author === "string" && typeof row.author_id === "number") bindId.run(row.author, row.author_id);
       if (detail === "full") {
         const rows = commentRows(repo, kind, n, own);
         // A forced re-read of an unchanged item upserts in place: an identical comment bumps no topic. Comments past the newest 20 go.

@@ -66,7 +66,7 @@ export type LoadOptions = {
 };
 
 type Row = {
-  repo: string; number: number; author: string | null; state: "OPEN" | "MERGED" | "CLOSED"; review_decision: string | null; head_oid: string | null; updated_at: string | null; is_draft: number | null;
+  repo: string; number: number; author: string | null; author_id: number | null; state: "OPEN" | "MERGED" | "CLOSED"; review_decision: string | null; head_oid: string | null; updated_at: string | null; is_draft: number | null;
   additions: number | null; deletions: number | null; i_mergeable: string | null; head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null;
   c_head: string | null; c_at: string | null; c_state: string | null; c_draft: number | null; overall: string | null; c_checks: string | null; c_mergeable: string | null; c_can: number | null;
   r_head: string | null; r_at: string | null; r_verdict: string | null; r_sure: number | null; r_mode: string | null; r_reason: string | null; r_fixes: string | null; r_public: string | null; r_conflicts: string | null;
@@ -76,7 +76,7 @@ type Row = {
 const parseList = (s: string | null): unknown[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? v : []; } catch { return []; } };
 const safeJson = (s: string | null): unknown => { try { return JSON.parse(s!); } catch { return null; } };
 
-const SELECT = `SELECT i.repo, i.number, i.author, i.assignees, i.state, i.review_decision, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions, i.mergeable AS i_mergeable,
+const SELECT = `SELECT i.repo, i.number, i.author, i.author_id, i.assignees, i.state, i.review_decision, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions, i.mergeable AS i_mergeable,
     i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can,
     c.head_oid AS c_head, c.fetched_at AS c_at, c.state AS c_state, c.is_draft AS c_draft, c.overall, c.checks AS c_checks, c.mergeable AS c_mergeable, c.maintainer_can_modify AS c_can,
     l.head_oid AS r_head, l.at AS r_at, l.verdict AS r_verdict, l.sure AS r_sure, l.mode AS r_mode, l.reason AS r_reason, l.fixes AS r_fixes, l.public_review AS r_public, l.conflicts AS r_conflicts,
@@ -176,7 +176,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const cifixRows = db.prepare("SELECT state, created_at, task_id, runs, reason FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? ORDER BY created_at, rowid");
   const cifixTotals = db.prepare(`SELECT COALESCE(SUM(state IN (${CIFIX_PUSH_STATES.map(() => "?").join(",")})), 0) AS pushes, COALESCE(SUM(state IN (${CIFIX_TRY_STATES.map(() => "?").join(",")})), 0) AS tries FROM ci_fixes WHERE repo = ? AND number = ?`);
   const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
-  const tiers = tiersOf(db, [...new Set(queued.map((r) => r.author!))]);
+  const tiers = tiersOf(db, queued.map((r) => ({ login: r.author!, id: r.author_id })));
 
   const repoMemo = new Map<string, { f: PrFacts["repoFacts"]; pub: boolean; longLived: LongLived }>();
   const repoOf = (repo: string) => {
@@ -364,7 +364,14 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const redNow = r.c_head === head && effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks) === "failure";
     base.brokeByUs = brokeAt.get(ref) === head && redNow;
     base.gateRed = !base.brokeByUs && !!base.reviewHold?.red && !!head && head !== r.r_head && redNow;
-    base.tier = (r.author ? tiers.get(r.author) : undefined) ?? "not";
+    if (r.state === "OPEN") {
+      const from = carriedSources(db, r.repo, r.number);
+      if (from.length) {
+        const t = tiersOf(db, from.filter((x) => x.author).map((x) => ({ login: x.author!, id: x.id })));
+        base.carriedFrom = from.map((x) => ({ number: x.number, author: x.author, tier: (x.author ? t.get(tierKey({ login: x.author, id: x.id })) : undefined) ?? "not" }));
+      }
+    }
+    base.tier = (r.author ? tiers.get(tierKey({ login: r.author, id: r.author_id })) : undefined) ?? "not";
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
     if (base.tier === "not" && r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref)) base.tier = "whitelisted";
 
@@ -454,17 +461,38 @@ export function headWasUnsure(db: DatabaseSync, repo: string, number: number, he
   return !!db.prepare(UNSURE_AT_SQL).get(repo, number, head);
 }
 
-/** Tiers of the given logins, from one stats query. */
-export function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
+/** The closed PRs whose parts a pushed carry-over put on this PR, with their authors. */
+function carriedSources(db: DatabaseSync, repo: string, number: number): { number: number; author: string | null; id: number | null }[] {
+  const rows = db.prepare(`SELECT DISTINCT g.number, g.detail, i.author, i.author_id AS id FROM dupe_carries c
+    JOIN dupe_group_items g ON g.decision_id = c.decision_id AND g.kind = 'pr' AND g.role = 'close'
+    LEFT JOIN items i ON i.repo = c.repo AND i.number = g.number
+    WHERE c.repo = ? AND c.number = ? AND c.outcome LIKE 'pushed%'`).all(repo, number) as { number: number; detail: string | null; author: string | null; id: number | null }[];
+  return rows.filter((x) => { try { const p = (JSON.parse(x.detail ?? "null") as { carry?: unknown } | null)?.carry; return Array.isArray(p) && p.length > 0; } catch { return false; } })
+    .map((x) => ({ number: x.number, author: x.author, id: x.id }));
+}
+
+export type AuthorRef = { login: string; id: number | null };
+export const tierKey = (a: AuthorRef): string => `${a.login}\0${a.id ?? ""}`;
+
+/**
+ * Tiers of the given authors, from one stats query. A login string can pass to another GitHub account: when the account id differs
+ * from the one first seen under the login, the history and an allow override are not this account's, so the tier is "not" (a deny still holds).
+ */
+export function tiersOf(db: DatabaseSync, authors: AuthorRef[]): Map<string, Tier> {
   const out = new Map<string, Tier>();
-  if (!logins.length) return out;
+  if (!authors.length) return out;
+  const logins = [...new Set(authors.map((a) => a.login))];
   const rule = getRule(db);
   const marks = logins.map(() => "?").join(",");
   const stats = new Map((db.prepare(`${STATS_SQL} AND author IN (${marks}) GROUP BY author`).all(...logins) as { login: string; merged: number; closed: number }[]).map((r) => [r.login, r]));
   const over = new Map((db.prepare(`SELECT login, status FROM whitelist_overrides WHERE login IN (${marks})`).all(...logins) as { login: string; status: string }[]).map((r) => [r.login, r.status]));
-  for (const l of logins) {
-    const s = stats.get(l);
-    out.set(l, tierOf(s?.merged ?? 0, s?.closed ?? 0, over.get(l) ?? null, rule));
+  const bound = new Map((db.prepare(`SELECT login, id FROM author_ids WHERE login IN (${marks})`).all(...logins) as { login: string; id: number }[]).map((r) => [r.login, r.id]));
+  for (const a of authors) {
+    const owner = bound.get(a.login);
+    const other = a.id !== null && owner !== undefined && owner !== a.id;
+    const s = other ? undefined : stats.get(a.login);
+    const o = over.get(a.login) ?? null;
+    out.set(tierKey(a), tierOf(s?.merged ?? 0, s?.closed ?? 0, other && o === "allow" ? null : o, rule));
   }
   return out;
 }

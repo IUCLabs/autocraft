@@ -103,6 +103,11 @@ END;
 
 -- Contributor whitelist: the automatic tier comes from merge history;
 -- an override from the owner always wins.
+-- The GitHub account id first seen for each author login (written by the sync). The whitelist's history and allow overrides belong to that account only.
+CREATE TABLE IF NOT EXISTS author_ids (
+  login TEXT PRIMARY KEY,
+  id INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS whitelist_overrides (
   login TEXT PRIMARY KEY,
   status TEXT NOT NULL,               -- 'allow' | 'deny'

@@ -124,6 +124,8 @@ export type PrFacts = {
   author: string | null;
   authorIsPipeline: boolean;
   tier: PrTier;
+  /** Closed PRs whose parts the pipeline carried onto this PR, with their authors' tiers. Carried code is held to its source authors' tiers, not the PR author's. */
+  carriedFrom?: { number: number; author: string | null; tier: PrTier }[];
   lines: number;
   size: "S" | "M" | "L";
   /** Settled label of the current classification run. */
