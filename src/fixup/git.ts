@@ -49,6 +49,7 @@ export const HARDENING = [
   "-c", "protocol.file.allow=never",
   "-c", "protocol.ext.allow=never",
   "-c", "core.fsmonitor=false",
+  "-c", "core.attributesFile=/dev/null",
   "-c", "core.symlinks=false",
   "-c", "submodule.recurse=false",
   "-c", "fetch.recurseSubmodules=false",

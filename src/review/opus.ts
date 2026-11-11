@@ -19,7 +19,7 @@ import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { reviewAfterBaseMerge } from "./own-diff.ts";
-import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
+import { cachedDiff, cachedDiffBase, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { carriedOutcome, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
 import { ourCommitsSince } from "./ours.ts";
@@ -104,9 +104,9 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, trigger, job_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims, blockedBy,
     again ? (markedStaleSince(db, c.repo, c.number, again.at) ? "operator" : "discussion") : "new-head", currentJobId());
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims, blocked_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
-    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims, blockedBy);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims, blocked_by, base_ref)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
+    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims, blockedBy, reviewedBase(db, c));
   db.prepare("DELETE FROM main.settings WHERE key = ?").run(`review_fail:${c.repo}#${c.number}@${c.head_oid}`);
   db.prepare("DELETE FROM opus_carried_fixes WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
   for (const u of s.unapplied ?? []) {
@@ -142,6 +142,12 @@ export function unappliedFixes(db: DatabaseSync, c: { repo: string; number: numb
   return e.fixes.filter((f) => typeof f?.file === "string" && !!f.file.trim() && typeof f.change === "string").map((f) => ({ head: e.head, file: f.file, change: f.change }));
 }
 
+/** The base branch the review's diff was computed against; the mirrored base when the cached diff does not say. */
+function reviewedBase(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }): string | null {
+  return cachedDiffBase(c.repo, c.number, c.head_oid)
+    ?? (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { base_ref: string | null } | undefined)?.base_ref ?? null;
+}
+
 export type PreparedOpus =
   | { kind: "no-diff"; error: string }
   | { kind: "large"; mode: "full" | "delta"; base: string | null }
@@ -154,7 +160,8 @@ export type PreparedOpus =
  * review that must not be anchored on the first one (the pre-merge review); the snapshot then marks the time of the read.
  */
 export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCandidate, deps: OpusDeps, log: (line: string) => void, opts: { independent?: boolean } = {}): Promise<PreparedOpus> {
-  const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
+  const liveBase = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, c.number) as { base_ref: string | null } | undefined)?.base_ref;
+  const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff, liveBase);
   if (!d.ok) return d.tooLarge ? { kind: "large", mode: "full", base: null } : { kind: "no-diff", error: d.error };
   const ch = checksOf(db, repo, c.number);
   let cd = codeDiff(d.text);

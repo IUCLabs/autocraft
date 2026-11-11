@@ -5,6 +5,7 @@
 // folded in, findings go back to the model (at most LINT_MAX_ROUNDS lint rounds). The clean commit is pushed to the
 // pipeline account's fork on `autocraft/main-ci-<check>-<sha7>` and a PR is opened against the default branch.
 // The log, the files and other PRs are untrusted data; nothing from them is run here.
+import { ownPrSelect } from "../github/adopt.ts";
 import { leaseItem } from "../runner/leases.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardRepo } from "../core/guard.ts";
@@ -269,7 +270,8 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
     if ("refused" in g) return set(live, "fix-failed", g.refused);
     const fork = await forkOf({ db: c.db, login: PR_ACTOR }, g, c.exec, who.login, c.repo);
     const owner = fork.split("/")[0]!;
-    const found = await c.exec("gh", ["pr", "list", "--repo", `${slugOf(c.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
+    const sel = ownPrSelect(c.db, c.repo, [owner], now.branch);
+    const found = await c.exec("gh", ["pr", "list", "--repo", `${slugOf(c.repo)}`, "--state", "open", "--head", branch, "--json", sel.json, "--jq", sel.jq]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (!(url && urlOk(url, c.repo))) {
       const push = await pushOwnBranch({ db: c.db, login: PR_ACTOR }, g, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });

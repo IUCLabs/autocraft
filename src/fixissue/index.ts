@@ -10,6 +10,7 @@
 //
 // Without --apply it is a dry run: local tables only. No model is a tool user: replies are text our code
 // validates, and nothing from an issue or a patch runs on this user (the build tasks run in the sandbox).
+import { ownPrSelect } from "../github/adopt.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import type { GuardedRepo } from "../core/guard.ts";
@@ -711,7 +712,8 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
     // On an app repo the branch lives in the base repository, so its head owner is the org.
     const headOwners = [who.login, ...(githubIdentity(db) === "app" ? [ownerOf(r.repo)] : [])];
-    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(r.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login as $o | ${JSON.stringify(headOwners)} | index($o)) | .url`]);
+    const sel = ownPrSelect(db, r.repo, headOwners, branchOf(db, r.repo));
+    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(r.repo)}`, "--state", "open", "--head", branch, "--json", sel.json, "--jq", sel.jq]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (existing && urlOk(existing, r.repo)) {
       const ag = await guardItem(db, { repo: r.repo, number: r.number }, { kind: "fixissue-collect" }, x.by ?? CLI_BY);

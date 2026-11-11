@@ -41,7 +41,7 @@ import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
 import { selectFixups } from "./select.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
-import { longLivedOf, pushable } from "./pushable.ts";
+import { authorWrites, longLivedOf, pushable } from "./pushable.ts";
 import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, newestOwnComment, type ConflictRun } from "./conflict.ts";
 import { referenceDir } from "../reference.ts";
@@ -126,7 +126,7 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 export const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
-      id state isDraft headRefOid baseRefOid headRefName maintainerCanModify mergeable
+      id state isDraft headRefOid baseRefOid baseRefName headRefName maintainerCanModify mergeable
       headRepository { nameWithOwner }
       headRef { branchProtectionRule { id } }
       assignees(first: 10) { nodes { login } }
@@ -135,7 +135,7 @@ export const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
 }`;
 
 export type PrNode = {
-  id: string; state: string; isDraft: boolean; headRefOid: string; baseRefOid?: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null;
+  id: string; state: string; isDraft: boolean; headRefOid: string; baseRefOid?: string; baseRefName?: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null;
   headRepository: { nameWithOwner: string } | null; headRef?: { branchProtectionRule?: { id: string } | null } | null; assignees?: { nodes?: { login: string }[] };
 };
 
@@ -408,7 +408,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       if (pr.mergeable === "CONFLICTING" || (pr.mergeable !== "MERGEABLE" && storedMergeable(db, repo, c.number, c.head) === "CONFLICTING")) { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); return; }
       counted = true;
       params.onHandled?.(++handled.n);
-      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule)) {
+      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule, authorWrites(db, repo, c.number))) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
         if (c.carry && commentApprovalOf(db, repo)) await askOne(c, false);
         else hold("cannot-push", HOLD_CANNOT_PUSH);

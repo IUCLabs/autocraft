@@ -16,43 +16,55 @@ export function diffCacheDir(): string {
   return envVar("DIFF_CACHE") ?? join(homedir(), ".cache/autocraft/diffs");
 }
 
-export type DiffResult = { ok: true; text: string } | { ok: false; tooLarge: boolean; error: string };
-export type DiffFetcher = (repo: string, number: number) => Promise<DiffResult>;
+/** `base`: the base branch the diff was computed against (the PR's base at the time of the read). */
+export type DiffResult = { ok: true; text: string; base?: string } | { ok: false; tooLarge: boolean; error: string };
+/** `head`: the commit the diff must be of; the fetch fails when the PR is no longer at it. */
+export type DiffFetcher = (repo: string, number: number, head?: string) => Promise<DiffResult>;
 
-export const ghDiff: DiffFetcher = async (repo, number) => {
-  const args = ["pr", "diff", String(number), "--repo", `${slugOf(repo)}`];
-  let env: Awaited<ReturnType<typeof readEnvFor>>;
-  try { env = await readEnvFor("gh", args); } catch (e) { return { ok: false, tooLarge: false, error: String((e as Error).message ?? e) }; }
-  return runDiff(args, env);
+/** The diff of a PR at one commit: GitHub's comparison of the PR's base commit with that commit, so a push after the read cannot change it. */
+export const ghDiff: DiffFetcher = async (repo, number, head) => {
+  const slug = slugOf(repo);
+  const view = await gh(["api", `repos/${slug}/pulls/${number}`, "--jq", '[.head.sha, .base.sha, .base.ref] | join(" ")']);
+  if (view.code !== 0) return { ok: false, tooLarge: false, error: view.err.trim().slice(0, 300) };
+  const [liveHead, baseSha, baseRef] = view.out.trim().split(" ");
+  if (!liveHead || !baseSha || !baseRef) return { ok: false, tooLarge: false, error: "the pull request could not be read" };
+  if (head && liveHead !== head) return { ok: false, tooLarge: false, error: `head moved to ${liveHead.slice(0, 7)} since ${head.slice(0, 7)}` };
+  const r = await gh(["api", "-H", "Accept: application/vnd.github.diff", `repos/${slug}/compare/${baseSha}...${liveHead}`]);
+  // GitHub refuses diffs over 20,000 lines or 300 files with HTTP 406.
+  if (r.code !== 0) return { ok: false, tooLarge: /too_large|too large|406|maximum number of (lines|files)/i.test(r.err), error: r.err.trim().slice(0, 300) };
+  return { ok: true, text: r.out, base: baseRef };
 };
 
-const runDiff = (args: string[], env: Awaited<ReturnType<typeof readEnvFor>>): Promise<DiffResult> => new Promise((resolve) => {
-  const p = spawn("gh", args, { cwd: REPO_DIR, timeout: 120_000, ...(env ? { env } : {}) });
-  const out: Buffer[] = [];
-  let err = "";
-  p.stdout.on("data", (d: Buffer) => out.push(d));
-  p.stderr.on("data", (d) => (err += d));
-  p.on("error", (e) => resolve({ ok: false, tooLarge: false, error: String(e) }));
-  p.on("close", (code) => {
-    if (code === 0) resolve({ ok: true, text: Buffer.concat(out).toString("utf8") });
-    // GitHub refuses diffs over 20,000 lines or 300 files with HTTP 406.
-    else resolve({ ok: false, tooLarge: /too_large|too large|406|maximum number of (lines|files)/i.test(err), error: err.trim().slice(0, 300) });
-  });
-});
-
-/** The diff of `repo#number` at `head`, from the cache when present. */
-export async function cachedDiff(repo: string, number: number, head: string, fetch: DiffFetcher): Promise<DiffResult> {
+/**
+ * The diff of `repo#number` at `head`, from the cache when present. The fetch is of that commit, and a diff is stored only under
+ * the commit it was read at. A stored entry records the base branch it was computed against; with `base` given, an entry for
+ * another base is read again.
+ */
+export async function cachedDiff(repo: string, number: number, head: string, fetch: DiffFetcher, base?: string | null): Promise<DiffResult> {
   const dir = join(diffCacheDir(), repo);
   const file = join(dir, `${number}-${head}.diff`);
-  if (existsSync(file)) return { ok: true, text: readFileSync(file, "utf8") };
-  const r = await fetch(repo, number);
+  if (existsSync(file)) {
+    const stored = existsSync(`${file}.base`) ? readFileSync(`${file}.base`, "utf8") : undefined;
+    if (!base || stored === undefined || stored === base) return { ok: true, text: readFileSync(file, "utf8"), ...(stored !== undefined ? { base: stored } : {}) };
+  }
+  const r = await fetch(repo, number, head);
   if (r.ok) {
     mkdirSync(dir, { recursive: true });
-    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-    writeFileSync(tmp, r.text);
-    renameSync(tmp, file);
+    const put = (path: string, text: string) => {
+      const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+      writeFileSync(tmp, text);
+      renameSync(tmp, path);
+    };
+    if (r.base) put(`${file}.base`, r.base);
+    put(file, r.text);
   }
   return r;
+}
+
+/** The base branch a cached diff was computed against; null when unknown. */
+export function cachedDiffBase(repo: string, number: number, head: string): string | null {
+  const f = join(diffCacheDir(), repo, `${number}-${head}.diff.base`);
+  try { return existsSync(f) ? readFileSync(f, "utf8") : null; } catch { return null; }
 }
 
 export type FileDiff = { path: string; text: string; lines: number };

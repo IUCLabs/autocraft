@@ -20,7 +20,7 @@ import { loadPrFact } from "../core/facts.ts";
 import { HEAD_FACT, MERGE_OPTIONS, PREMERGE_MAX_TRIES, mergeDecisionId } from "../core/rules.ts";
 import { audit } from "../dash/audit.ts";
 import { ask, getDecision, replaceProposedCards } from "../decisions.ts";
-import { longLivedOf, pushable } from "../fixup/pushable.ts";
+import { authorWrites, longLivedOf, pushable } from "../fixup/pushable.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
@@ -158,7 +158,7 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
   const checks = db.prepare("SELECT head_oid, mergeable, maintainer_can_modify FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as { head_oid: string; mergeable: string | null; maintainer_can_modify: number | null } | undefined;
   if (checks?.mergeable === "CONFLICTING") throw new Error(`${ref} conflicts with its base branch: the conflict merge comes first`);
   if (!pushApprovalOf(db, repo)) throw new Error(`pushing is not approved for ${repo}`);
-  if (!pushable(it.head_repo, repo, checks?.head_oid === head ? checks.maintainer_can_modify : null, it.head_ref, longLivedOf(db, repo))) throw new Error("can't push to the contributor's branch");
+  if (!pushable(it.head_repo, repo, checks?.head_oid === head ? checks.maintainer_can_modify : null, it.head_ref, longLivedOf(db, repo), false, authorWrites(db, repo, number))) throw new Error("can't push to the contributor's branch");
   if (!operatorTriesLeft(db, repo, number)) throw new Error("the fix-up tries for this PR are used up");
   if (queuedOperatorFix(db, repo, number, head)) throw new Error(`a fix-up of ${ref} is already queued`);
   const merge = step.merge === true;

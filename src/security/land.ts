@@ -1,6 +1,7 @@
 // Landing a finding's private fix: the quiet pull request (default), the advisory route with a private fork, publishing,
 // and detecting the merge. Every GitHub write goes through src/github/write.ts. Nothing about a finding reaches GitHub
 // before an operator presses Land or Advisory.
+import { ownPrSelect } from "../github/adopt.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { guardRepo } from "../core/guard.ts";
 import type { By } from "../core/gates.ts";
@@ -78,7 +79,8 @@ export async function runLand(db: DatabaseSync, repo: string, n: number, by: By,
     if (worded) return back(db, repo, n, `the text for GitHub says "${worded}"; write the fix again`, d.log);
     // On an app repo the branch lives in the base repository, so its head owner is the org.
     const headOwners = [who.login, ...(githubIdentity(db) === "app" ? [ownerOf(repo)] : [])];
-    const found = await d.exec("gh", ["pr", "list", "--repo", slugOf(repo), "--state", "open", "--head", row.fix_branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login as $o | ${JSON.stringify(headOwners)} | index($o)) | .url`]);
+    const sel = ownPrSelect(db, repo, headOwners, base);
+    const found = await d.exec("gh", ["pr", "list", "--repo", slugOf(repo), "--state", "open", "--head", row.fix_branch, "--json", sel.json, "--jq", sel.jq]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     let number = prNumber(url, slugOf(repo));
     if (number === null) {

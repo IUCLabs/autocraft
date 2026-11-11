@@ -16,6 +16,7 @@ import { ghAskComment, ghComment, ghEditComment, pushBranch, type Writer } from 
 import { foldFormat, queueLintFor, readLint } from "../prepush/index.ts";
 import { findingsWord, lintVerdict, testsNoteOf } from "../prepush/tests.ts";
 import { cachedDiff } from "../review/diff.ts";
+import { mergeInAllowed } from "../merge/base.ts";
 import { MAX_DIFF_CHARS } from "../review/opus.ts";
 import { changedHunks, hasBinary, ownDiffKey } from "../review/own-diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
@@ -28,7 +29,7 @@ import type { Git } from "./git.ts";
 import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger } from "../prepush/resume.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
 import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
-import { longLivedOf, pushable } from "./pushable.ts";
+import { authorWrites, longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentCount, conflictCommentText, mergeMessage } from "./template.ts";
 import { ownerOf } from "../owners.ts";
 
@@ -155,6 +156,7 @@ export async function askConflict(db: DatabaseSync, x: ConflictRun, c: ConflictC
   try {
     const pr = await live(db, x, c);
     if (!pr) return;
+    if (pr.baseRefName && pr.baseRefName !== c.base) { x.log(`  ${ref}: skipped: the base branch is now ${pr.baseRefName}`); return; }
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }
     if (!BASE_NAME.test(c.base)) { x.log(`  ${ref}: skipped: unusable base branch name`); return; }
     const g = await guard(db, { repo: x.repo, number: c.number }, { kind: "conflict", bucket: "ask", head: c.head }, x.by);
@@ -194,8 +196,10 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if (def && def !== c.base) { skip(`the PR's base ${c.base} is not the default branch ${def}`); return; }
     const pr = await live(db, x, c);
     if (!pr) return;
+    if (pr.baseRefName && pr.baseRefName !== c.base) { skip(`the base branch is now ${pr.baseRefName}`); return; }
+    if (!mergeInAllowed(db, x.repo, c.number, c.head, c.base)) { skip(`${c.base} is neither the default branch nor the base the review read`); return; }
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }
-    if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, x.repo), !!pr.headRef?.branchProtectionRule)) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
+    if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, x.repo), !!pr.headRef?.branchProtectionRule, authorWrites(db, x.repo, c.number))) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
     x.onHandled?.(++x.handled.n);
     const git = x.git();
     const head = await git.fetchPr(ownerOf(x.repo), x.repo, c.number);
