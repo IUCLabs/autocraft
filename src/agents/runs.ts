@@ -1,5 +1,6 @@
 // Agent runs: one row per model call made through the prompt registry. Written
 // by the callers in src/classify/run.ts, read by the API.
+import { filtered, hiddenTest, type HiddenRepos } from "../hidden-sql.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { DatabaseSync } from "node:sqlite";
 import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState, AgentRunTool, ItemRef, ItemShown, RateBucket, Rates } from "../../web/src/api/types.ts";
@@ -121,7 +122,7 @@ const CURSOR_RE = /^[1-9][0-9]{0,15}$/;
 export const AGENT_PAGE_DEFAULT = 50, AGENT_PAGE_MAX = 200;
 
 /** Newest first, keyset on id: a page costs index reads proportional to its size, however many runs exist. */
-export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: string[] = []): AgentRunPage {
+export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: HiddenRepos = []): AgentRunPage {
   if (f.state !== undefined && !["running", "done", "failed", "recent"].includes(f.state)) throw new RunQueryError(400, "unknown state");
   if (f.step !== undefined && !STEP_RE.test(f.step)) throw new RunQueryError(400, "bad step");
   if (f.account !== undefined && !ACCOUNT_RE.test(f.account)) throw new RunQueryError(400, "bad account");
@@ -135,7 +136,7 @@ export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: string[] =
   if (f.state && f.state !== "recent") where.push(`r.state = '${f.state}'`);   // validated above; a literal lets the planner use the state index
   if (f.step) { where.push("r.step = ?"); args.push(f.step); }
   if (f.account) { where.push("r.account_id = ?"); args.push(f.account); }
-  if (hidden.length) { where.push(touchesHidden(hidden)); args.push(...hidden); }
+  if (filtered(hidden)) { const t = touchesHidden(hidden); where.push(t.sql); args.push(...t.args); }
   let sql: string;
   if (f.repo) {
     // Driven by the (repo, run_id, number) index, newest run first, one row per run (the run's lowest number in the repo): no sort, stops at the limit.
@@ -152,16 +153,18 @@ export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: string[] =
   return { runs: page.map((x) => toRun(x, shown)), nextCursor: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
-/** SQL (with one `?` per name) true when a run has an item in a hidden repo. */
-const touchesHidden = (hidden: string[]): string =>
-  `NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${hidden.map(() => "?").join(",")}))`;
+/** SQL (with its `?` arguments) true when a run has no item in a hidden repo. */
+const touchesHidden = (hidden: HiddenRepos): { sql: string; args: string[] } => {
+  const h = hiddenTest("x.repo", hidden);
+  return { sql: `NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND ${h.sql})`, args: h.args };
+};
 
 /** A run that touches a hidden repo is not found; prompt and output text go only to `texts` viewers (operators). */
-export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: string[]; texts?: boolean } = { texts: true }): AgentRunDetail {
+export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: HiddenRepos; texts?: boolean } = { texts: true }): AgentRunDetail {
   if (typeof id !== "number" || !Number.isInteger(id) || id < 1) throw new RunQueryError(400, "not a run id");
   const r = db.prepare(`${SELECT} WHERE r.id = ?`).get(id) as RunRow | undefined;
   if (!r) throw new RunQueryError(404, `no agent run ${id}`);
-  if (view.hidden?.length && !db.prepare(`SELECT 1 FROM agent_runs r WHERE r.id = ? AND ${touchesHidden(view.hidden)}`).get(id, ...view.hidden)) {
+  if (view.hidden && filtered(view.hidden) && !db.prepare(`SELECT 1 FROM agent_runs r WHERE r.id = ? AND ${touchesHidden(view.hidden).sql}`).get(id, ...touchesHidden(view.hidden).args)) {
     throw new RunQueryError(404, `no agent run ${id}`);
   }
   const tools = runTools(db, id);
@@ -196,7 +199,7 @@ export function accountLabelsByJob(db: DatabaseSync, jobIds: number[]): Map<numb
 // ---- rates ---------------------------------------------------------------------
 
 /** Items moved per stage, and usage of the enabled accounts, in hourly (24h) or daily (7d) buckets ending now (UTC). */
-export async function rates(db: DatabaseSync, window: unknown, nowMs: number = Date.now(), hidden: string[] = []): Promise<Rates> {
+export async function rates(db: DatabaseSync, window: unknown, nowMs: number = Date.now(), hidden: HiddenRepos = []): Promise<Rates> {
   if (window !== "24h" && window !== "7d") throw new RunQueryError(400, "window must be 24h or 7d");
   const hourly = window === "24h", step = hourly ? 3600_000 : 86_400_000, n = hourly ? 24 : 7;
   const end = Math.floor(nowMs / step) * step + step;
@@ -205,19 +208,20 @@ export async function rates(db: DatabaseSync, window: unknown, nowMs: number = D
   const fmt = hourly ? "%Y-%m-%dT%H:00:00.000Z" : "%Y-%m-%dT00:00:00.000Z";
   const keys = Array.from({ length: n }, (_, i) => new Date(start + i * step).toISOString());
 
+  const jobHide = hiddenTest("repo", hidden), runHide = touchesHidden(hidden);
   const empty = () => new Map<string, RateBucket>(keys.map((t) => [t, { t, items: 0, runs: 0, failed: 0 }]));
   const byStep = new Map<string, Map<string, RateBucket>>();
   const bucketsOf = (s: string) => byStep.get(s) ?? (byStep.set(s, empty()), byStep.get(s)!);
 
   for (const r of db.prepare(`SELECT step, strftime('${fmt}', started_at) AS t, COALESCE(SUM(items), 0) AS items FROM jobs
-    WHERE started_at >= ? AND started_at < ?${hidden.length ? ` AND (repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))` : ""} GROUP BY step, t`)
-    .all(from, new Date(end).toISOString(), ...hidden) as { step: string; t: string; items: number }[]) {
+    WHERE started_at >= ? AND started_at < ?${filtered(hidden) ? ` AND (repo IS NULL OR NOT (${jobHide.sql}))` : ""} GROUP BY step, t`)
+    .all(from, new Date(end).toISOString(), ...(filtered(hidden) ? jobHide.args : [])) as { step: string; t: string; items: number }[]) {
     const b = bucketsOf(r.step).get(r.t);
     if (b) b.items = r.items;
   }
   for (const r of db.prepare(`SELECT step, strftime('${fmt}', started_at) AS t, COUNT(*) AS runs, COALESCE(SUM(state = 'failed'), 0) AS failed FROM agent_runs r
-    WHERE started_at >= ? AND started_at < ?${hidden.length ? ` AND ${touchesHidden(hidden)}` : ""} GROUP BY step, t`)
-    .all(from, new Date(end).toISOString(), ...hidden) as { step: string; t: string; runs: number; failed: number }[]) {
+    WHERE started_at >= ? AND started_at < ?${filtered(hidden) ? ` AND ${runHide.sql}` : ""} GROUP BY step, t`)
+    .all(from, new Date(end).toISOString(), ...(filtered(hidden) ? runHide.args : [])) as { step: string; t: string; runs: number; failed: number }[]) {
     const b = bucketsOf(r.step).get(r.t);
     if (b) { b.runs = r.runs; b.failed = r.failed; }
   }

@@ -12,7 +12,7 @@ import { LABELS, LABEL_MEANING, RULES, UNTRUSTED_NOTE } from "../classify/rules.
 import { CHECK_MAX_CALLS, CHECK_MAX_WALL_MS, CHECK_OUTPUT_LINES } from "../core/rules.ts";
 import { ENTRY_LIMIT, REVIEW_BODY_LIMIT, TOTAL_LIMIT, VERDICTS } from "../review/parse.ts";
 import { AGENT_TOOL, EXPLORER, EXPLORER_MODEL, EXPLORER_TOOLS, MCP_PATH, mcpTools } from "../sandbox/agents.ts";
-import { AGENTS_PATH, REFERENCE_PATH, REPO_DOCS_PATH, REPOS_ROOT, REPO_PATH, WORK_PATH, sandboxCommand } from "../sandbox/command.ts";
+import { AGENTS_PATH, DENIED_READS, REFERENCE_PATH, REPO_DOCS_PATH, REPOS_ROOT, REPO_PATH, WORK_PATH, sandboxCommand } from "../sandbox/command.ts";
 import { CLAIM_CHARS, CLAIM_EVIDENCE_CHARS, MAX_CLAIMS, OPUS_MAX_FIXES, OPUS_REASON_WORDS, STATEMENT_PROMPT_CHARS, statementsList, type OpusPr } from "../review/opus-parse.ts";
 import { BODY_CHARS, MAX_FINDINGS, MAX_MERGED_DIFF_CHARS, SAMPLE_POSTMERGE_PRS, TITLE_CHARS, type PostmergePr } from "../postmerge/parse.ts";
 import { PREMERGE_MAX_FINDINGS, PREMERGE_SCENARIO_CHARS, PREMERGE_TITLE_CHARS } from "../premerge/parse.ts";
@@ -1881,7 +1881,7 @@ export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false,
     const dirs = [...(ws ? [REPO_PATH, REPOS_ROOT] : [REPO_PATH]), ...(reference && p.sandbox.reference ? [REFERENCE_PATH] : []), ...(docs && p.sandbox.docs ? [REPO_DOCS_PATH] : [])];
     const tools = [...p.sandbox.tools, ...(ws ? [AGENT_TOOL] : [])];
     const allowed = [...dirs.map((d) => `Read(/${d}/**)`), ...(ws ? [AGENT_TOOL] : []), ...(mcp ? mcpTools(mcp.servers) : [])];
-    return ["-p", "--model", model, "--effort", p.effort, "--output-format", "stream-json", "--verbose", "--tools", tools.join(","), "--allowedTools", allowed.join(","),
+    return ["-p", "--model", model, "--effort", p.effort, "--output-format", "stream-json", "--verbose", "--tools", tools.join(","), "--allowedTools", allowed.join(","), "--disallowedTools", DENIED_READS.join(","),
       "--permission-mode", "dontAsk", "--permission-prompts", "none", "--restricted", ...dirs.flatMap((d) => ["--add-dir", d]),
       ...(ws ? ["--agents", AGENTS_PATH] : []), ...(mcp ? ["--mcp-config", mcp.config] : []), "--strict-mcp-config", "--disable-slash-commands",
       // `persist`: the session is kept in the call's own session store so one follow-up message can resume it (src/classify/run.ts).
