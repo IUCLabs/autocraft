@@ -11,7 +11,7 @@ const PACKAGE = /^[a-z0-9][a-z0-9+.-]{0,99}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
 /** Names a gate cannot set: the step container's own, and the ones this worker sets for craft-fonts and craft-i18n. */
-const RESERVED_ENV = /^(HOME|PATH|CI|CARGO_HOME|CARGO_TARGET_DIR|LD_.*|CRAFT_FONTS_.*|CRAFT_I18N_.*)$/;
+const RESERVED_ENV = /^(HOME|PATH|CI|CARGO_HOME|CARGO_TARGET_DIR|LD_.*|RUSTUP_.*|RUSTC.*|RUSTDOC.*|CARGO_BUILD_RUSTC.*|CRAFT_FONTS_.*|CRAFT_I18N_.*)$/;
 export const MAX_PACKAGES = 100;
 const MAX_YAML_BYTES = 256 * 1024;
 
@@ -168,6 +168,14 @@ export async function resolveGate(repo: string, sha: string, fetchImpl: typeof f
   const gate = await getText(`${RAW}/${DEFAULT_OWNER}/craft-common-actions/${call.ref}/.github/workflows/gate.yml`, fetchImpl);
   if (gate === null) throw new Error(`craft-common-actions gate.yml not found at ${call.ref}`);
   return gateEnv(call, parseGateDefaults(gate));
+}
+
+/** craft-i18n.rev at `sha` (the task's base commit): the commit of craft-i18n the task gets, or null when the repo has no such file or it is not one commit id. */
+export async function resolveI18nRev(repo: string, sha: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(repo) || !SHA.test(sha)) return null;
+  const text = await getText(`${RAW}/${slugOf(repo)}/${sha}/craft-i18n.rev`, fetchImpl);
+  const rev = text === null ? "" : text.replace(/\s+/g, "");
+  return SHA.test(rev) ? rev : null;
 }
 
 export const isCommitId = (s: string): boolean => SHA.test(s);

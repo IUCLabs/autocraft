@@ -52,6 +52,7 @@ import { fixIssueApprovalOf } from "./approval.ts";
 import { hasOpenPr, notRustKey, textHash, type IssueCandidate } from "./candidates.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
+import { buildScriptsAt, editable } from "../fixup/patch.ts";
 import { branchName, claimCommentText, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { changedRsFiles, foldFormat, lintSteps, readLint } from "../prepush/index.ts";
 import { ghComment, ghDeleteComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
@@ -391,6 +392,9 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     log(`  ${ref}: fetch failed: ${oneLine(String((e as Error).message ?? e))}`);
     return false;
   }
+  // Build scripts are the ones the crates' manifests name, not only files called build.rs; unreadable manifests leave the build.rs-only rule.
+  const scripts = await buildScriptsAt(git, r.main_sha);
+  if (files.some((f) => !editable(f, scripts))) { fail(db, d, row, "a file to edit is a build script"); return false; }
   // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
   const checkout = await checkoutOf(x, { repo: r.repo, sha: r.main_sha });
   const shown: PatchInput["files"] = [];
@@ -409,9 +413,9 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     crate: { name: r.crate!, dir: r.crate_dir! }, test_path: testPath, files: shown,
     ...(round > 1 && r.patch ? { previous: { patch: r.patch.slice(0, 60_000), failure: r.summary ?? "it did not pass" } } : {}),
   };
-  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number, checkout, (p) => refusal(validateFixPatch(p, files, testPath, r.crate_dir!, regressionName(r.number))));
+  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number, checkout, (p) => refusal(validateFixPatch(p, files, testPath, r.crate_dir!, regressionName(r.number), scripts)));
   if (reply === null) { roundFailed(db, d, row, round, "the model gave no answer", r.patch, log); return false; }
-  const v = validateFixPatch(reply, files, testPath, r.crate_dir!, regressionName(r.number));
+  const v = validateFixPatch(reply, files, testPath, r.crate_dir!, regressionName(r.number), scripts);
   if (!v.ok) { roundFailed(db, d, row, round, v.reason, reply.slice(0, 60_000), log); return false; }
   const scratch = mkdtempSync(join(d.root, ".index-"));
   let applied;

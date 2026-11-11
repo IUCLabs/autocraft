@@ -10,6 +10,7 @@ import { leaseItem } from "../runner/leases.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { outcomeOf, CURRENT_HEAD_SQL } from "../verify/results.ts";
 import { cloneTask } from "../verify/tasks.ts";
+import { defaultDeps } from "../verify/index.ts";
 import { cachedCrates, ghCrates, type CratesFetcher } from "../verify/crates.ts";
 import { planFor } from "./plans.ts";
 import { inBuildScope, scopeOf, selectPrBuilds } from "./select.ts";
@@ -23,10 +24,10 @@ const SUMMARY_LIMIT = 200;
 
 const now = (): string => new Date().toISOString();
 
-export type PrBuildDeps = { fetchCrates: CratesFetcher };
+export type PrBuildDeps = { fetchCrates: CratesFetcher; /** The PR's base commit, or null when GitHub did not answer. Default: GitHub. */ baseOf?: (repo: string, number: number) => Promise<string | null> };
 
 /** Queues the build task of one PR head and records it. Returns the task id. */
-export function queuePrBuild(db: DatabaseSync, c: { repo: string; number: number; head: string }): number | null {
+export function queuePrBuild(db: DatabaseSync, c: { repo: string; number: number; head: string; base: string }): number | null {
   const plan = planFor("rust", c.repo, c.head);
   if (!plan) return null;
   // The row and the task are written together, and an existing row for the head means the build was already queued.
@@ -34,7 +35,7 @@ export function queuePrBuild(db: DatabaseSync, c: { repo: string; number: number
   try {
     if (db.prepare("SELECT 1 FROM main.pr_builds WHERE repo = ? AND number = ? AND head_sha = ?").get(c.repo, c.number, c.head)) { db.exec("ROLLBACK"); return null; }
     const id = createTask(db, {
-      step: STEP, repo: c.repo, number: c.number, headSha: c.head, priority: PR_BUILD_PRIORITY, plan,
+      step: STEP, repo: c.repo, number: c.number, headSha: c.head, baseSha: c.base, priority: PR_BUILD_PRIORITY, plan,
       requires: { os: "linux", toolchains: ["rust-stable"] }, warm: { key: warmKeyOf(c.repo), role: "use" },
     });
     db.prepare("INSERT INTO main.pr_builds (repo, number, head_sha, scope, task_id, state, created_at) VALUES (?, ?, ?, ?, ?, 'queued', ?)")
@@ -158,11 +159,14 @@ export async function runPrBuilds(db: DatabaseSync, repo: string, log: (line: st
       }
       if (!r.rust) continue;
     }
+    // The worker takes its CI gate from the base commit, so a build is never queued without one.
+    const base = await (deps.baseOf ?? defaultDeps().baseOf)(repo, c.number);
+    if (!base) { log(`  ${repo}#${c.number}: no base commit; not queued`); continue; }
     const release = leaseItem(db, `pr:${repo}#${c.number}`, log);
     if (!release) continue;
     try {
       if (!featureOn(db, "pr-builds", repo)) break;
-      if (queuePrBuild(db, c) !== null) { out.queued++; jobItem(db, repo, c.number, `pr-build queued at ${c.head.slice(0, 7)}`, log); }
+      if (queuePrBuild(db, { ...c, base }) !== null) { out.queued++; jobItem(db, repo, c.number, `pr-build queued at ${c.head.slice(0, 7)}`, log); }
     } catch (e) {
       if (!(e instanceof BuildError)) throw e;
       log(`  ${repo}#${c.number}: not queued: ${e.message}`);

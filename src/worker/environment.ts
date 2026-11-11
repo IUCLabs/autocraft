@@ -4,10 +4,10 @@
 // the image build runs apt only, with a package list taken from the base commit's CI file.
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkerConfig } from "./config.ts";
-import { isCommitId, resolveGate } from "./gate.ts";
+import { isCommitId, resolveGate, resolveI18nRev } from "./gate.ts";
 import { downloadAndExtract } from "./tarball.ts";
 import { slugOf } from "../owners.ts";
 
@@ -106,21 +106,6 @@ export async function ensureCheckout(cfg: WorkerConfig, repo: "craft-fonts" | "c
   return dir;
 }
 
-/** craft-i18n.rev of the checkout: the gate's switch for craft-i18n. Only a bare commit id is accepted. */
-export function readI18nRev(srcDir: string): string | null {
-  const f = join(srcDir, "craft-i18n.rev");
-  let st;
-  try {
-    st = lstatSync(f);
-  } catch {
-    return null;
-  }
-  if (!st.isFile()) throw new Error("craft-i18n.rev must be a regular file");
-  const rev = readFileSync(f, "utf8").replace(/\s+/g, "");
-  if (!isCommitId(rev)) throw new Error("craft-i18n.rev is not one 40-character commit id");
-  return rev;
-}
-
 /** Software Vulkan/GL drivers for tasks that render a UI (requires.display): the derived image adds them, other images keep their tags. */
 export const DISPLAY_PACKAGES = ["mesa-vulkan-drivers", "libvulkan1", "libgl1-mesa-dri", "libegl1"];
 
@@ -157,7 +142,8 @@ export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string
     env.CRAFT_FONTS_DIR = "/craft-fonts";
     if (gate.requireFonts) env.CRAFT_FONTS_REQUIRED = "1";
   }
-  const rev = readI18nRev(srcDir);
+  // The commit comes from the base commit, so a PR cannot make the host download a commit of its choosing.
+  const rev = await resolveI18nRev(task.repo, task.baseSha ?? task.headSha, o.fetchImpl);
   if (rev) {
     mounts.push({ source: await ensureCheckout(cfg, "craft-i18n", rev, o.fetchImpl), target: "/craft-i18n" });
     env.CRAFT_I18N_DIR = "/craft-i18n";

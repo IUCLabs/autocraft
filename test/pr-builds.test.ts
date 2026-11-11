@@ -9,7 +9,7 @@ import { selectPrBuilds, setPerDay, setScope } from "../src/prbuild/select.ts";
 import { prBuildView } from "../src/prbuild/view.ts";
 
 const sha = (c: string) => c.repeat(40);
-const noFetch = { fetchCrates: async () => ({ ok: true as const, rust: true, crates: [] }) };
+const noFetch = { baseOf: async () => "b".repeat(40), fetchCrates: async () => ({ ok: true as const, rust: true, crates: [] }) };
 
 function setup() {
   const db = connect(":memory:");
@@ -45,7 +45,7 @@ test("nothing is queued while the switch is off; on, only the outside PR of a pu
   const [t, ...rest] = tasks();
   assert.equal(rest.length, 0);
   assert.deepEqual([t!.number, t!.step, t!.priority, t!.warm_role], [1, "pr-build", -5, "use"]);
-  assert.ok((JSON.parse(t!.plan) as { cmd: string[] }[]).every((s) => s.cmd.includes("--workspace") || s.cmd[1] === "fetch"));
+  assert.ok((JSON.parse(t!.plan) as { cmd: string[] }[]).every((s) => s.cmd.includes("--workspace") || s.cmd[0] === "sh"));
   assert.equal((await runPrBuilds(db, "app", () => {}, noFetch)).queued, 0, "one build per head");
 
   setScope(db, "app", "all");

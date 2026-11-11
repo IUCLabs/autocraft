@@ -1722,6 +1722,7 @@ export type Capabilities = {
   display: boolean;          // can render UI (Xvfb or real) for screenshots
   gpu: boolean;
   toolchains: string[];      // e.g. ["rust-stable", "node-24"]
+  warmSigner?: boolean;      // holds the warm-snapshot signing key; takes no PR-code tasks
 };
 export type Requires = Partial<Pick<Capabilities, "os" | "arch" | "display" | "gpu">> & {
   toolchains?: string[]; minMemGb?: number; minDiskGb?: number;
