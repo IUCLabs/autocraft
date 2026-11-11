@@ -87,13 +87,18 @@ export function parseChecks(repo: string, repository: Record<string, PrNode | nu
   const out: PrChecks[] = [];
   for (const node of Object.values(repository ?? {})) {
     if (!node || typeof node.number !== "number") continue;
-    const ctx = headCommit(node)?.statusCheckRollup?.contexts?.nodes ?? [];
+    const head = headCommit(node);
+    const ctx = head?.statusCheckRollup?.contexts?.nodes ?? [];
     const checks = ctx.filter(Boolean).map((c) => ({ name: c.name ?? c.context ?? "?", state: contextState(c) }));
+    const suites = suitesOf(node);
+    // Checks read for another commit, or workflow runs not yet finished at the head, are not "no CI": wait for them.
+    const unsettled = !head || suites.some((x) => x.status !== "" && x.status !== "COMPLETED");
+    const overall = overallOf(checks.map((c) => c.state));
     out.push({
       repo, number: node.number, head_oid: node.headRefOid, state: node.state, is_draft: !!node.isDraft,
-      overall: overallOf(checks.map((c) => c.state)), checks,
+      overall: unsettled && overall !== "failure" ? "pending" : overall, checks,
       mergeable: node.mergeable ?? null, maintainer_can_modify: !!node.maintainerCanModify,
-      cross_repo: !!node.isCrossRepository, suites: suitesOf(node),
+      cross_repo: !!node.isCrossRepository, suites,
     });
   }
   return out;
