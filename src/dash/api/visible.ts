@@ -58,7 +58,8 @@ export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<HiddenRep
   const staff = canSeeInternals(req);
   const hidden = known.filter((r) => !visible.has(r));
   // The list stays the denylist for text matching; SQL filters use the allow-list attached to it (see excludeHidden).
-  return Object.assign([...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)], { visible: visibleList });
+  // Staff who can see a repo also see its security pseudo repo, so it belongs in the allow-list.
+  return Object.assign([...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)], { visible: staff ? [...visibleList, ...visibleList.map(securityRepo)] : visibleList });
 }
 
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */
