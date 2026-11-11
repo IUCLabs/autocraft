@@ -1,5 +1,6 @@
 // The jobs table: requests from the dashboard, the CLI and the autopilot,
 // state written by the runner. Shared by the API, the runner and the CLI.
+import { filtered, hiddenTest, isHiddenRepo, type HiddenRepos } from "../hidden-sql.ts";
 import { closeSync, fstatSync, openSync, readSync, unlinkSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobDetail,  JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
@@ -66,7 +67,7 @@ export function getJob(db: DatabaseSync, id: number): Job {
   return toJobs(db, [r])[0]!;
 }
 
-export function listJobs(db: DatabaseSync, f: JobFilter = {}, hidden: string[] = []): JobList {
+export function listJobs(db: DatabaseSync, f: JobFilter = {}, hidden: HiddenRepos = []): JobList {
   const where: string[] = [];
   const args: (string | number)[] = [];
   if (f.step) {
@@ -77,9 +78,10 @@ export function listJobs(db: DatabaseSync, f: JobFilter = {}, hidden: string[] =
     where.push("state = ?");
     args.push(f.state);
   }
-  if (hidden.length) {
-    where.push(`(repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))`);
-    args.push(...hidden);
+  if (filtered(hidden)) {
+    const h = hiddenTest("repo", hidden);
+    where.push(`(repo IS NULL OR NOT (${h.sql}))`);
+    args.push(...h.args);
   }
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const total = (db.prepare(`SELECT COUNT(*) AS n FROM jobs ${w}`).get(...args) as { n: number }).n;
@@ -204,13 +206,13 @@ export function logTail(path: string | null, bytes = LOG_TAIL_BYTES): { log: str
  * `hidden`: the repos the viewer may not see. A job of such a repo is not found.
  * `logs` false (viewers) leaves the log out: its lines can name hidden items and carry command output.
  */
-export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: string[]; logs?: boolean } = {}): JobDetail {
+export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: HiddenRepos; logs?: boolean } = {}): JobDetail {
   const r = jobRow(db, id);
   const hidden = view.hidden ?? [];
-  if (!r || (r.repo && hidden.includes(r.repo))) throw new JobError(404, `no job ${id}`);
+  if (!r || (r.repo && isHiddenRepo(hidden, r.repo))) throw new JobError(404, `no job ${id}`);
   const shown = shownLookup(db);
   const items = (db.prepare("SELECT repo, number, outcome, ref FROM job_items WHERE job_id = ? ORDER BY id").all(id) as { repo: string; number: number; outcome: string | null; ref: string | null }[])
-    .filter((i) => !hidden.includes(i.repo)).map((i) => ({ repo: i.repo, number: i.number, ...shown(i.repo, i.number), outcome: i.outcome, decision: i.ref }));
+    .filter((i) => !isHiddenRepo(hidden, i.repo)).map((i) => ({ repo: i.repo, number: i.number, ...shown(i.repo, i.number), outcome: i.outcome, decision: i.ref }));
   return { ...toJobs(db, [r])[0]!, items, ...(view.logs === false ? { log: null, logTruncated: false } : logTail(r.log_path)) };
 }
 

@@ -3,6 +3,7 @@
 // visible to operators and to users whose own GitHub token has some
 // permission on it (stored in repo_permissions, refreshed by the server).
 // Every query that spans repos must go through this.
+import type { HiddenRepos } from "../../hidden-sql.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { trackedNames } from "../../repos.ts";
 import { DEFAULT_OWNER, ownerOf } from "../../owners.ts";
@@ -49,7 +50,7 @@ function knownRepos(db: DatabaseSync): string[] {
  * of a repo's security scans (`(security):<repo>`, where its jobs and agent runs are recorded) is hidden from viewers
  * and from maintainers who cannot see the repo, so every listing that leaves out hidden repos leaves the scans out too.
  */
-export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[] & { visible?: string[] }> {
+export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<HiddenRepos> {
   if (req.user.role === "operator") return [];
   const visibleList = await visibleRepos(db, req);
   const visible = new Set(visibleList);
