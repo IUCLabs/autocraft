@@ -22,6 +22,8 @@ export const SHARED_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export const WORK_PATH = "/work";
 const HOME = "/home/sandbox";
 const CONFIG = `${HOME}/.claude`;
+/** Reads the model is refused outright: the process environments (the long-lived token is in the CLI's) and the CLI's credential directory. */
+export const DENIED_READS = ["Read(/proc/**)", `Read(${CONFIG}/**)`];
 const CLAUDE_PATH = "/opt/claude/claude";
 
 export type SandboxSpec = {

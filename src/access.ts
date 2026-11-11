@@ -88,7 +88,10 @@ export function removeLogin(db: DatabaseSync, by: string, login: string, opts: A
     const mcpTokens = endTokens(db, login);
     // The GitHub App user token goes with the login; its grant is revoked at GitHub later (the vault's sweep).
     const userTokens = dropUserTokens(db, row.login);
-    audit(db, by, "access-remove", row.login, { role: row.role, sessions, ...(mcpTokens ? { mcpTokens } : {}), ...(userTokens ? { userTokens } : {}) });
+    // A linked Discord account acts as the login (presses, alerts); the delete trigger takes the alert opt-ins with the links.
+    const discordLinks = Number(db.prepare("DELETE FROM discord_links WHERE login = ?").run(login).changes);
+    db.prepare("DELETE FROM discord_link_codes WHERE login = ?").run(login);
+    audit(db, by, "access-remove", row.login, { role: row.role, sessions, ...(mcpTokens ? { mcpTokens } : {}), ...(userTokens ? { userTokens } : {}), ...(discordLinks ? { discordLinks } : {}) });
   });
 }
 

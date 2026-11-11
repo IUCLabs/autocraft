@@ -1,8 +1,8 @@
 // Deterministic limits on what a CI fix may change, applied before the Opus check: a patch that makes a failing check
 // pass by changing the check (tests, lints, CI config) is never pushed.
 export const TEST_PATH = /(^|\/)(tests?|benches)\/|(^|\/)tests?\.rs$|_tests?\.rs$|(^|\/)test_[^/]*\.rs$/;
-const DISABLES = /^\+.*#!?\[\s*(?:(?:allow|ignore|warn|expect|cfg_attr|should_panic)\b|cfg\s*\()/;
-const DROPS_CHECK = /^-.*(#\[\s*test\b|\bassert(_eq|_ne)?!|\bdebug_assert)/;
+const DISABLES = /^\+.*#\s*!?\s*\[\s*(?:(?:allow|ignore|warn|expect|cfg_attr|should_panic)\b|cfg\s*\()/;
+const DROPS_CHECK = /^-.*(#\s*\[\s*test\b|\bassert(_eq|_ne)?\s*!|\bdebug_assert)/;
 const EARLY_RETURN = /^\+\s*return\s*;/;
 const HUNK = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/;
 
@@ -100,7 +100,8 @@ export function guardPatch(patch: string, files: string[], heads?: Map<string, s
 }
 
 /** Pairs of punctuation characters that form one operator; written apart (`- >`) they are other tokens. Other neighbours (`=&`, `{ }`) may be respaced freely. */
-const COMPOUND = new Set(["->", "=>", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "..", "::"]);
+const COMPOUND = new Set(["->", "=>", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "..", "::", "..=", "...", "<<=", ">>="]);
+const RUST_SPACE = /[ \t\n\r\v\f\u0085\u200e\u200f\u2028\u2029]/;
 const IDENT = /[\p{L}\p{N}_]/u;
 const CHAR_LIT = /^'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[^\n])|[^\\'\n])'/;
 const trimLines = (t: string) => t.split("\n").map((l) => l.trimEnd()).join("\n");
@@ -111,7 +112,7 @@ const trimLines = (t: string) => t.split("\n").map((l) => l.trimEnd()).join("\n"
  */
 export function rustTokens(src: string): string[] | null {
   const out: string[] = [];
-  let i = 0, lastPunctEnd = -1, prev = "";
+  let i = 0, lastPunctEnd = -1, run = "";
   const n = src.length;
   // Rust ignores a first-line shebang (`#!` not followed by `[`); it is one comment token here.
   if (src.startsWith("#!") && !/^#!\s*\[/.test(src)) {
@@ -122,7 +123,8 @@ export function rustTokens(src: string): string[] | null {
   }
   while (i < n) {
     const ch = src[i]!;
-    if (/\s/.test(ch)) { i++; continue; }
+    // Rust's whitespace is the Pattern_White_Space set; other spaces (NBSP) are not whitespace to rustc and stay as tokens.
+    if (RUST_SPACE.test(ch)) { i++; continue; }
     if (src.startsWith("//", i)) {
       let e = src.indexOf("\n", i);
       if (e < 0) e = n;
@@ -169,6 +171,11 @@ export function rustTokens(src: string): string[] | null {
         if (j > i + 1) { out.push(`l:${src.slice(i + 1, j)}`); i = j; continue; }
       }
     }
+    // A raw identifier is one token; `r #x` is not it. A number with a fraction is one token; `1. 0` is not.
+    const rawId = /^r#[\p{L}_][\p{L}\p{N}_]*/u.exec(src.slice(i, i + 80));
+    if (rawId && !/[\p{L}\p{N}_]/u.test(src[i - 1] ?? " ")) { out.push(`i:${rawId[0]}`); i += rawId[0].length; continue; }
+    const num = /^\d[\d_]*\.\d[\w]*/.exec(src.slice(i, i + 80));
+    if (num && !/[\p{L}\p{N}_]/u.test(src[i - 1] ?? " ")) { out.push(`i:${num[0]}`); i += num[0].length; continue; }
     if (IDENT.test(ch)) {
       let j = i;
       while (j < n && IDENT.test(src[j]!)) j++;
@@ -176,9 +183,10 @@ export function rustTokens(src: string): string[] | null {
       i = j;
       continue;
     }
-    out.push(`${lastPunctEnd === i && COMPOUND.has(prev + ch) ? "~" : "p:"}${ch}`);
+    const glued = lastPunctEnd === i && (COMPOUND.has(run.slice(-1) + ch) || COMPOUND.has(run.slice(-2) + ch));
+    out.push(`${glued ? "~" : "p:"}${ch}`);
+    run = lastPunctEnd === i ? run + ch : ch;
     lastPunctEnd = i + 1;
-    prev = ch;
     i++;
   }
   return out;

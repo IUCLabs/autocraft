@@ -30,7 +30,8 @@ export function fixupEditable(path: string, scripts: BuildScripts = null): boole
 export function operatorEditable(path: string, scripts: BuildScripts = null): boolean {
   const parts = path.split("/");
   const name = parts[parts.length - 1]!.toLowerCase();
-  return safePath(path) && !isBuildScript(path, scripts) && !parts.some((s) => s === ".cargo" || s === ".github")
+  return safePath(path) && !isBuildScript(path, scripts) && !parts.some((s) => TRUST_DIRS.has(s.toLowerCase()))
+    && !TRUST_FILES.has(name)
     && !AGENT_DOCS.test(parts[parts.length - 1]!) && !isInstructionPath(path)
     && name !== "cargo.toml" && name !== "cargo.lock" && !name.startsWith("rust-toolchain")
     && name !== ".gitmodules" && name !== ".gitattributes" && name !== "codeowners";
@@ -64,7 +65,7 @@ export function splitChanges(text: string, instructions = ""): { diff: string; c
 export type BuildScripts = ReadonlySet<string> | null;
 
 export function isBuildScript(path: string, scripts: BuildScripts): boolean {
-  if (scripts === null) return path === "build.rs" || path.endsWith("/build.rs");
+  if (scripts === null) return path.toLowerCase() === "build.rs" || path.toLowerCase().endsWith("/build.rs");
   return scripts.has(path);
 }
 
@@ -138,11 +139,14 @@ export async function buildScriptsAt(git: TreeReader, sha: string): Promise<Buil
 }
 
 /** Markdown files that instruct coding agents; a fix-up never edits them. */
-const AGENT_DOCS = /^(claude(\.local)?|agents|gemini|copilot-instructions)\.md$/i;
+const AGENT_DOCS = /^(claude(\.local)?|agents|gemini|copilot-instructions|roadmap)\.md$/i;
+/** Directories and files whose content runs or configures tools on a contributor's or CI machine; no fix-up edits them (lowercase). */
+const TRUST_DIRS = new Set([".cargo", ".github", ".vscode", ".devcontainer", ".config", ".husky"]);
+const TRUST_FILES = new Set([".envrc", "makefile", "gnumakefile", "justfile", ".pre-commit-config.yaml", "rustfmt.toml", ".rustfmt.toml", "clippy.toml", ".clippy.toml", "deny.toml"]);
 
 /** Source files an automated fix (a CI fix or an issue fix) may edit: Rust files other than build scripts, nothing under .cargo or .github. */
 export function editable(path: string, scripts: BuildScripts = null): boolean {
-  return safePath(path) && path.endsWith(".rs") && !isBuildScript(path, scripts) && !path.split("/").some((s) => s === ".cargo" || s === ".github");
+  return safePath(path) && path.endsWith(".rs") && !isBuildScript(path, scripts) && !path.split("/").some((s) => TRUST_DIRS.has(s.toLowerCase()));
 }
 
 /** The diff text without a surrounding Markdown fence or leading prose lines. */
@@ -224,8 +228,10 @@ export function validatePatch(text: string, allowed: string[] | null, canEdit: (
     }
     if (cur === null) return { ok: false, reason: "text before the first file header" };
     if (REJECT_HEADER.test(l)) return { ok: false, reason: `${l.split(" ").slice(0, 2).join(" ")} is not allowed (${cur})` };
-    const idx = l.match(/^index [0-9a-f]+\.\.[0-9a-f]+ (\d+)$/);
-    if (idx && idx[1] !== "100644" && idx[1] !== "100755") return { ok: false, reason: `${cur} has mode ${idx[1]}` };
+    if (/^index\b/.test(l)) {
+      const idx = l.match(/^index [0-9a-f]+\.\.[0-9a-f]+(?: (100644|100755))?$/);
+      if (!idx) return { ok: false, reason: `${cur} has an index line that is not a plain file mode` };
+    }
     if (l.startsWith("--- ")) {
       if (l !== `--- a/${cur}`) return { ok: false, reason: `unexpected old file line for ${cur}` };
       sawOld = true;
