@@ -1,4 +1,5 @@
 // The outside-author protections over JSON (src/outside.ts): the three numbers, and the operator's releases.
+import { filtered, hiddenTest } from "../../hidden-sql.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { NeedsOutsideList } from "../../../web/src/api/types.ts";
 import { OutsideError, releaseAuthor, releaseOutside, setOutsideLimits } from "../../outside.ts";
@@ -48,6 +49,6 @@ export function releaseAll(db: DatabaseSync, req: Req) {
 export async function held(db: DatabaseSync, req: Req): Promise<NeedsOutsideList> {
   const hidden = await hiddenRepos(db, req);
   const rows = db.prepare(`SELECT h.repo, h.number, h.kind, h.reason, i.title, i.created_at FROM main.outside_holds h LEFT JOIN items i ON i.repo = h.repo AND i.number = h.number
-    WHERE h.author = ? COLLATE NOCASE${hidden.length ? ` AND h.repo NOT IN (${hidden.map(() => "?").join(",")})` : ""} ORDER BY i.created_at, h.number LIMIT 200`).all(req.params.author!, ...hidden) as { repo: string; number: number; kind: "pr" | "issue"; reason: "limit" | "surge"; title: string | null; created_at: string | null }[];
+    WHERE h.author = ? COLLATE NOCASE${filtered(hidden) ? ` AND NOT (${hiddenTest("h.repo", hidden).sql})` : ""} ORDER BY i.created_at, h.number LIMIT 200`).all(req.params.author!, ...(filtered(hidden) ? hiddenTest("h.repo", hidden).args : [])) as { repo: string; number: number; kind: "pr" | "issue"; reason: "limit" | "surge"; title: string | null; created_at: string | null }[];
   return { rows: rows.map((r) => ({ id: `outside:${r.repo}#${r.number}`, repo: r.repo, number: r.number, title: r.title ?? "", kind: r.kind, reason: r.reason, createdAt: r.created_at })) };
 }
