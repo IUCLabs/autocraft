@@ -2,6 +2,7 @@
 // server has already checked the session, and on POSTs the Origin, the CSRF
 // header and the per-session limits; these handlers check roles and GitHub
 // permissions themselves. Item and comment text is returned as data only.
+import { isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import { prBuildView } from "../../prbuild/view.ts";
 import { checksOf } from "../../patchcheck/index.ts";
 import { priorityOf } from "../../priority/read.ts";
@@ -307,24 +308,23 @@ const PROGRESS_MAX_AGE = 60_000;
 // The item-based part of Progress: scans most of the mirror, so it is kept until
 // the mirror, the stages or the tracked repos change, or for a minute at most
 // (classifier verdicts and the hourly counts show within that minute).
-function progressItems(db: DatabaseSync, hidden: string[]): Heavy {
+function progressItems(db: DatabaseSync, hidden: HiddenRepos): Heavy {
   const sig = db.prepare(`SELECT (SELECT MAX(synced_at) FROM main.repos) AS synced,
       (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.stages) AS st,
       (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get() as Record<string, string | null>;
   const key = JSON.stringify(sig);
   const cache = progressCache.get(db) ?? progressCache.set(db, new Map()).get(db)!;
-  const slot = JSON.stringify(hidden);
+  const slot = JSON.stringify([hidden, hidden.visible ?? null]);
   const hit = cache.get(slot);
   if (hit && hit.key === key && Date.now() - hit.at < PROGRESS_MAX_AGE) return hit.value;
-  const hide = new Set(hidden);
   const hp: Record<string, SQLInputValue> = { since: "" };
   const hideSql = excludeHidden("i.repo", hidden, hp);
 
   const start = trackingStart(db);
   const now = Date.now();
-  const funnels = new Map(funnelByRepo(db).filter((r) => !hide.has(r.repo)).map((r) => [r.repo, r]));
-  const done = new Map(doneByRepo(db, start).filter((r) => !hide.has(r.repo)).map((r) => [r.repo, r]));
+  const funnels = new Map(funnelByRepo(db).filter((r) => !isHiddenRepo(hidden, r.repo)).map((r) => [r.repo, r]));
+  const done = new Map(doneByRepo(db, start).filter((r) => !isHiddenRepo(hidden, r.repo)).map((r) => [r.repo, r]));
   const perHour = new Array<number>(24).fill(0);
   const perHourPipeline = new Array<number>(24).fill(0);
   const since = now - 24 * 3600_000;
@@ -337,7 +337,7 @@ function progressItems(db: DatabaseSync, hidden: string[]): Heavy {
       if (r.ours) perHourPipeline[h]!++;
     }
   }
-  const names = [...new Set([...trackedNames(db), ...funnels.keys(), ...done.keys()])].filter((n) => !hide.has(n)).sort();
+  const names = [...new Set([...trackedNames(db), ...funnels.keys(), ...done.keys()])].filter((n) => !isHiddenRepo(hidden, n)).sort();
   const { series } = trend(db, start, new Map(names.map((n) => [n, funnels.get(n)?.open ?? 0])));
   const repos: RepoProgress[] = names.map((repo) => ({
     repo, funnel: toFunnel(funnels.get(repo)), done: toDone(done.get(repo)),
@@ -354,7 +354,7 @@ function progressItems(db: DatabaseSync, hidden: string[]): Heavy {
   return value;
 }
 
-function progress(db: DatabaseSync, hidden: string[]): Progress {
+function progress(db: DatabaseSync, hidden: HiddenRepos): Progress {
   const heavy = progressItems(db, hidden);
   const dp: Record<string, string> = {};
   const hideDec = withoutHidden(hidden, dp);

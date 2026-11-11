@@ -1,11 +1,10 @@
 // Binds each author login with PR history to the GitHub account id it belongs to, so a login that later passes to another account
 // does not inherit the history (tiersOf reads author_ids). The sync binds ids as it writes rows; this step covers history written earlier.
 import type { DatabaseSync } from "node:sqlite";
-import { DEFAULT_OWNER } from "./owners.ts";
+import { ownerOf } from "./owners.ts";
 import type { Querier } from "./mirror.ts";
 
 const BATCH = 40;
-const LOGIN = /^[A-Za-z0-9-]{1,39}$/;
 
 /** Logins whose merged or closed PRs count toward a tier and that have no bound account id. */
 export function unboundLogins(db: DatabaseSync): string[] {
@@ -13,43 +12,65 @@ export function unboundLogins(db: DatabaseSync): string[] {
     AND NOT EXISTS (SELECT 1 FROM author_ids a WHERE a.login = items.author) ORDER BY author`).all() as { author: string }[]).map((r) => r.author);
 }
 
-/** Account ids of `n` logins passed as $l0..$l{n-1}; $owner picks the token and is read so it counts as used. */
+/**
+ * The author account of `n` pull requests of one owner (`$owner`), passed as $r{i} (repository name) and $k{i} (number).
+ * A deleted account reads as a null author.
+ */
 export function authorIdsQuery(n: number): string {
-  const decl = Array.from({ length: n }, (_, i) => `, $l${i}: String!`).join("");
-  const body = Array.from({ length: n }, (_, i) => `u${i}: user(login: $l${i}) { databaseId }`).join(" ");
-  return `query($owner: String!${decl}) { rateLimit { cost remaining resetAt } repositoryOwner(login: $owner) { id } ${body} }`;
+  const decl = Array.from({ length: n }, (_, i) => `, $r${i}: String!, $k${i}: Int!`).join("");
+  const body = Array.from({ length: n }, (_, i) => `p${i}: repository(owner: $owner, name: $r${i}) { pullRequest(number: $k${i}) { author { __typename ... on User { databaseId } ... on Bot { databaseId } } } }`).join(" ");
+  return `query($owner: String!${decl}) { rateLimit { cost remaining resetAt } ${body} }`;
 }
 
-async function lookup(client: Querier, logins: string[], out: Map<string, number>): Promise<void> {
-  if (!logins.length) return;
-  const vars: Record<string, string> = { owner: DEFAULT_OWNER };
-  logins.forEach((l, i) => { vars[`l${i}`] = l; });
+/** Bound for an account GitHub no longer has: no later holder of the login is the same person. */
+export const DELETED_ACCOUNT_ID = -1;
+
+type Pr = { login: string; repo: string; number: number };
+
+async function lookup(client: Querier, owner: string, prs: Pr[], out: Map<string, number>): Promise<void> {
+  if (!prs.length) return;
+  const vars: Record<string, string | number> = { owner };
+  prs.forEach((p, i) => { vars[`r${i}`] = p.repo; vars[`k${i}`] = p.number; });
   try {
-    const data = await client.query(authorIdsQuery(logins.length), vars);
-    logins.forEach((l, i) => { const id = data?.[`u${i}`]?.databaseId; if (typeof id === "number") out.set(l, id); });
+    const data = await client.query(authorIdsQuery(prs.length), vars);
+    prs.forEach((p, i) => {
+      const pr = data?.[`p${i}`]?.pullRequest;
+      if (!pr) return;
+      const id = pr.author?.databaseId;
+      if (typeof id === "number") out.set(p.login, id);
+      else if (pr.author === null) out.set(p.login, DELETED_ACCOUNT_ID);
+    });
   } catch (e) {
-    // GitHub answers NOT_FOUND for a deleted account and fails the whole query: split until the missing ones stand alone.
-    if ((e as { type?: string })?.type !== "NOT_FOUND" || logins.length === 1) { if (logins.length === 1 && (e as { type?: string })?.type === "NOT_FOUND") return; throw e; }
-    const mid = logins.length >> 1;
-    await lookup(client, logins.slice(0, mid), out);
-    await lookup(client, logins.slice(mid), out);
+    // A repository or pull request GitHub cannot find fails the whole query: split until the missing ones stand alone, and leave those unbound.
+    if ((e as { type?: string })?.type !== "NOT_FOUND") throw e;
+    if (prs.length === 1) return;
+    const mid = prs.length >> 1;
+    await lookup(client, owner, prs.slice(0, mid), out);
+    await lookup(client, owner, prs.slice(mid), out);
   }
 }
 
 /**
- * First binds ids already stored on item rows (no GitHub call), then asks GitHub once, in batches, for the logins still unbound.
- * Does nothing when every login is bound. Returns how many logins it bound.
+ * Binds the logins that have merged or closed PRs and no account id. A login can have passed to another account, so the id comes
+ * from the login's own oldest merged or closed PR (what GitHub reports as its author), never from the login's current holder.
+ * Ids stored on item rows are used only when every row of the login has one. One batched pass per owner; nothing when all are bound.
  */
 export async function backfillAuthorIds(db: DatabaseSync, client: Querier | null): Promise<number> {
   const bind = db.prepare("INSERT OR IGNORE INTO main.author_ids (login, id) VALUES (?, ?)");
   let n = 0;
-  const known = db.prepare(`SELECT author, author_id FROM items WHERE author IS NOT NULL AND author_id IS NOT NULL
-    AND NOT EXISTS (SELECT 1 FROM author_ids a WHERE a.login = items.author) GROUP BY author ORDER BY MIN(created_at)`).all() as { author: string; author_id: number }[];
+  const known = db.prepare(`SELECT author, author_id FROM items i WHERE author IS NOT NULL AND author_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM author_ids a WHERE a.login = i.author)
+    AND NOT EXISTS (SELECT 1 FROM items j WHERE j.author = i.author AND j.author_id IS NULL)
+    GROUP BY author ORDER BY MIN(created_at)`).all() as { author: string; author_id: number }[];
   for (const r of known) n += Number(bind.run(r.author, r.author_id).changes);
-  const missing = unboundLogins(db).filter((l) => LOGIN.test(l));
-  if (!client || !missing.length) return n;
+  const missing = new Set(unboundLogins(db));
+  if (!client || !missing.size) return n;
+  const oldest = (db.prepare(`SELECT author AS login, repo, number, MIN(created_at) AS first FROM items WHERE kind = 'pr' AND author IS NOT NULL AND state IN ('MERGED','CLOSED')
+    GROUP BY author ORDER BY author`).all() as Pr[]).filter((p) => missing.has(p.login));
+  const byOwner = new Map<string, Pr[]>();
+  for (const p of oldest) (byOwner.get(ownerOf(p.repo)) ?? byOwner.set(ownerOf(p.repo), []).get(ownerOf(p.repo))!).push(p);
   const found = new Map<string, number>();
-  for (let i = 0; i < missing.length; i += BATCH) await lookup(client, missing.slice(i, i + BATCH), found);
+  for (const [owner, prs] of byOwner) for (let i = 0; i < prs.length; i += BATCH) await lookup(client, owner, prs.slice(i, i + BATCH), found);
   for (const [login, id] of found) n += Number(bind.run(login, id).changes);
   return n;
 }

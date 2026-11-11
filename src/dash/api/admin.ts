@@ -3,6 +3,7 @@
 // maintainers also see override notes. The access list and every write here
 // are for operators. The server has already checked the Origin, the CSRF
 // header and the body size on POSTs.
+import { filtered, isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
   AccessOverview, AuditEntry, AuditPage, Contributor, ContributorList, ContributorSort, RulePreview, RepoApproval, RepoLabels, Tier, TrackedRepo, WhitelistRule,
@@ -149,13 +150,12 @@ function cachedContributors(db: DatabaseSync, repo: string | undefined): Row[] {
 
 // Rows of repos the viewer may not see are cut after the cache: the repo list of each
 // contributor loses them, and a contributor seen only there is left out.
-function withoutHidden(rows: Row[], hidden: string[]): Row[] {
-  if (!hidden.length) return rows;
-  const hide = new Set(hidden);
+function withoutHidden(rows: Row[], hidden: HiddenRepos): Row[] {
+  if (!filtered(hidden)) return rows;
   const out: Row[] = [];
   for (const r of rows) {
     const repos = (r.repos ?? "").split(",").filter(Boolean);
-    const kept = repos.filter((x) => !hide.has(x));
+    const kept = repos.filter((x) => !isHiddenRepo(hidden, x));
     if (repos.length && !kept.length) continue;
     out.push({ ...r, repos: kept.join(",") });
   }
@@ -177,7 +177,7 @@ export async function listContributors(db: DatabaseSync, req: Req): Promise<Cont
 
   const rule = getRule(db);
   const hidden = await hiddenRepos(db, req);
-  let rows = hidden.includes(repo ?? "") ? [] : withoutHidden(cachedContributors(db, repo), hidden);
+  let rows = (repo !== undefined && isHiddenRepo(hidden, repo)) ? [] : withoutHidden(cachedContributors(db, repo), hidden);
   if (needle) rows = rows.filter((c) => c.login.toLowerCase().includes(needle));
   const byTier = Object.fromEntries(TIERS.map((t) => [t, 0])) as Record<Tier, number>;
   for (const c of rows) byTier[TIER[c.tier]]++;
