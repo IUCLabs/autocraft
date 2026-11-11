@@ -129,7 +129,7 @@ describe("GitHub payloads", () => {
   const run = (name: string, conclusion: string | null, status = "COMPLETED") => ({ __typename: "CheckRun", name, status, conclusion });
   const node = (number: number, contexts: object[], extra: object = {}): never => ({
     number, state: "OPEN", isDraft: false, headRefOid: `sha${number}`, mergeable: "MERGEABLE", maintainerCanModify: true, isCrossRepository: false,
-    commits: { nodes: [{ commit: { checkSuites: { nodes: [] }, statusCheckRollup: { contexts: { nodes: contexts } } } }] }, ...extra,
+    commits: { nodes: [{ commit: { oid: `sha${number}`, checkSuites: { nodes: [] }, statusCheckRollup: { contexts: { nodes: contexts } } } }] }, ...extra,
   }) as never;
 
   test("checks query result: states roll up, null PRs are skipped, a PR without a rollup has no checks", () => {
@@ -138,7 +138,7 @@ describe("GitHub payloads", () => {
       pr2: node(2, [run("gate / test", "FAILURE")]),
       pr3: node(3, [run("gate / test", null, "IN_PROGRESS")]),
       pr4: null,
-      pr5: node(5, [], { commits: { nodes: [{ commit: {} }] } }),
+      pr5: node(5, [], { commits: { nodes: [{ commit: { oid: "sha5" } }] } }),
     });
     assert.deepEqual(rows.map((r) => [r.number, r.overall]), [[1, "success"], [2, "failure"], [3, "pending"], [5, "none"]]);
     assert.deepEqual(rows[0]!.checks.map((c) => [c.name, c.state]), [["gate / test", "success"], ["lint", "skipped"], ["ci/legacy", "success"]]);
@@ -148,7 +148,7 @@ describe("GitHub payloads", () => {
 
   test("a fork PR's workflow run suites are read with their run ids", () => {
     const suite = { status: "COMPLETED", conclusion: "ACTION_REQUIRED", workflowRun: { databaseId: 77, event: "PULL_REQUEST", workflow: { name: "CI" } } };
-    const fork = node(1, [], { isCrossRepository: true, commits: { nodes: [{ commit: { checkSuites: { nodes: [suite] } } }] } });
+    const fork = node(1, [], { isCrossRepository: true, commits: { nodes: [{ commit: { oid: "sha1", checkSuites: { nodes: [suite] } } }] } });
     const [row] = parseChecks("app", { pr1: fork });
     assert.equal(row!.cross_repo, true);
     assert.deepEqual(row!.suites?.map((s) => [s.id, s.event, s.conclusion]), [[77, "pull_request", "ACTION_REQUIRED"]]);

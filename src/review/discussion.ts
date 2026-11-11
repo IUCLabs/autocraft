@@ -123,10 +123,10 @@ export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number:
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       author { login } reviewDecision
-      comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body } }
-      reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state comments { totalCount } } }
+      comments(last: 100) { nodes { id author { login __typename } authorAssociation createdAt body } }
+      reviews(last: 100) { nodes { id author { login __typename } authorAssociation createdAt body state comments { totalCount } } }
       formal: ${FORMAL_REVIEWS}
-      reviewThreads(last: 50) { nodes { isResolved isOutdated path line originalLine
+      reviewThreads(last: 100) { nodes { isResolved isOutdated path line originalLine
         head: comments(first: 1) { nodes { id author { login __typename } authorAssociation createdAt body } }
         tail: comments(last: 3) { nodes { id author { login } body } } } }
     }
