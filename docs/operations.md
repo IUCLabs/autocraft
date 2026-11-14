@@ -356,7 +356,7 @@ Build workers need synchronized clocks (NTP): `stored` is compared across machin
 
 The shared crate cache (`<workDir>/crate-cache`) is never mounted into a container. Each task gets its own `CARGO_HOME`, seeded by copying `.crate` files from the shared cache and deleted with the task. Cargo does not re-verify files already in its cache, so nothing a task wrote is trusted. Right after each `fetch` step, before any build script or test has run, the worker process on the host admits a file to the shared cache only if it is a regular `.crate` in the official crates.io registry directory (`index.crates.io-*`) and its sha256 equals the checksum in the crates.io sparse index (fetched over HTTPS, looked up once per crate name). Other registries, git sources, anything written by offline steps and anything the index lookup cannot confirm are never admitted. Build output (`/target`) is shared only through the warm target dirs below.
 
-`rustPlan()` (`src/worker/rust.ts`) returns the Rust steps: `fetch deps` (`cargo fetch --locked`, network, with the image's toolchain, no repository cargo config and an empty environment apart from the toolchain paths), then `build` and `test` with `--offline --locked`. The source is read-only, so `Cargo.lock` must be committed.
+`rustPlan()` (`src/worker/rust.ts`) returns the Rust steps: `fetch deps` (`cargo fetch --locked`, network, with the image's toolchain, no repository cargo config and an empty environment apart from the toolchain paths), then `build` and `test` with `--offline --locked`. The source is read-only, so `Cargo.lock` must be committed. The nightly checks' networked steps (`cargo fetch`, `cargo audit fetch`) run the same way (`fetchScript()`), with the toolchain the image makes active.
 
 ### Remote hosts
 

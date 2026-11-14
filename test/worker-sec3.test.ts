@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
+import { NIGHTLY_CHECKS } from "../src/nightly/checks.ts";
+import { extractTar } from "../src/worker/tarball.ts";
+import { makeTarGz } from "./tar-util.ts";
 import { parseWorkerConfig } from "../src/worker/config.ts";
 import { runArgs } from "../src/worker/container.ts";
 import { prepareEnvironment } from "../src/worker/environment.ts";
@@ -10,7 +14,7 @@ import { gateEnv } from "../src/worker/gate.ts";
 import { FETCH_SCRIPT } from "../src/worker/rust.ts";
 import { SCRATCH } from "./scratch.ts";
 
-test("a directory a step made unreadable is removed at worker start and never stops the start", () => {
+test("a directory a step made unreadable is removed at worker start, and an archive keeps a dangling link only when no link is on its path", async () => {
   mkdirSync(SCRATCH, { recursive: true });
   const workDir = mkdtempSync(join(SCRATCH, "work-"));
   mkdirSync(join(workDir, "task-1", "target", "x", "y"), { recursive: true });
@@ -20,6 +24,17 @@ test("a directory a step made unreadable is removed at worker start and never st
   const cfg = parseWorkerConfig({ coordinatorUrl: "https://c.example", keyFile: "/k", workDir, warmDir: join(workDir, "warm") });
   assert.equal(removeStaleWorkDirs(cfg), 2);
   assert.deepEqual(readdirSync(workDir), ["crate-cache"]);
+
+  const dest = mkdtempSync(join(SCRATCH, "tar-"));
+  const tar = gunzipSync(makeTarGz([
+    { name: "r/src/" },
+    { name: "r/gen.rs", type: "2", linkname: "target/out/gen.rs" },
+    { name: "r/a", type: "2", linkname: "src" },
+    { name: "r/b", type: "2", linkname: "a/x/../../c" },
+  ]));
+  await extractTar((async function* () { yield tar; })(), dest);
+  const has = (p: string) => { try { lstatSync(join(dest, p)); return true; } catch { return false; } };
+  assert.deepEqual([has("gen.rs"), has("a"), has("b")], [true, true, false]);
 });
 
 test("the networked step gets no gate env, the gate keeps only allowed names, and a task without a base commit reads no CI file", async () => {
@@ -38,6 +53,11 @@ test("the networked step gets no gate env, the gate keeps only allowed names, an
   assert.ok(!fetchArgs.includes("PDFCRAFT") && !fetchArgs.includes("/craft-fonts"));
   assert.ok(buildArgs.includes("PDFCRAFT_ORACLES_REQUIRED=1") && buildArgs.includes("/craft-fonts"));
   assert.match(FETCH_SCRIPT, /exec env -i .*CARGO_NET_GIT_FETCH_WITH_CLI=false .*cargo fetch --locked/);
+  for (const c of NIGHTLY_CHECKS) {
+    for (const s of c.steps({ crates: ["app"], targets: ["t"] }) ?? []) {
+      if (s.network === "fetch") assert.match(s.cmd.join(" "), /rm -f \.cargo\/config[\s\S]*exec env -i /, `${c.id}: ${s.name}`);
+    }
+  }
 
   const urls: string[] = [];
   const fake = (async (u: string) => { urls.push(String(u)); return new Response("", { status: 404 }); }) as unknown as typeof fetch;
