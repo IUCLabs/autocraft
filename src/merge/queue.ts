@@ -85,7 +85,8 @@ function entryOf(db: DatabaseSync, f: PrFacts, plan: ReturnType<typeof decidePr>
     const row = premergeAt(db, f.repo, f.number, r.head);
     const all = findingsOf(row);
     const defects = all.filter((d) => d.severity === "defect");
-    premerge = { state: x.premerge, defects, unknownClaims: claimsOf(row).filter((c) => c.impact === "unknown"), minor: all.length - defects.length, error: row?.error ?? null };
+    // A clean review whose diff is read again for the rule shows as clean.
+    premerge = { state: x.premerge === "diff" ? "clean" : x.premerge, defects, unknownClaims: claimsOf(row).filter((c) => c.impact === "unknown"), minor: all.length - defects.length, error: row?.error ?? null };
   }
   return {
     repo: f.repo, number: f.number, title, author: f.author, tier: f.tier, head: r.head, size: f.size, label: f.label,

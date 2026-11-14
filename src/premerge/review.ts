@@ -15,6 +15,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { defaultOpusDeps, prepareOpusInput, type OpusDeps } from "../review/opus.ts";
+import { cachedDiff } from "../review/diff.ts";
 import { opusCandidateOf, type OpusCandidate } from "../review/opus-candidates.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
@@ -86,6 +87,14 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
       savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, error, final });
       s.failed.push(ref);
     };
+    // A clean review whose cached diff waits for what the merge rule reads beside it: the diff is read again, no model call.
+    if (e.facts.premerge?.hasFindings) {
+      const base = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, e.number) as { base_ref: string | null } | undefined)?.base_ref;
+      const d = await cachedDiff(repo, e.number, head, deps.fetchDiff, base);
+      jobItem(db, repo, e.number, d.ok ? "diff read again for the merge rule" : `diff not read again: ${d.error}`, log);
+      params.onHandled?.(++handled);
+      return;
+    }
     const p = await prepareOpusInput(db, repo, candidateOf(db, e), opusDeps, log, { independent: true });
     if (p.kind === "no-diff") fail(`retry: no diff: ${p.error}`);
     else if (p.kind === "large") fail("too large to review automatically", true);

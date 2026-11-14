@@ -37,8 +37,8 @@ const SOURCE_KEYS = ["git", "branch", "tag", "rev", "registry", "registry-index"
 
 /**
  * The settings of a parsed manifest that change what runs at build time or where dependency code comes from: the build
- * script, `links`, proc-macro, build dependencies, `[patch]` and `[replace]`, git and registry sources, and paths that
- * leave the repository. `dir` is the manifest's directory in the repository. Sorted, so two manifests compare as lists.
+ * script, `links`, proc-macro, which crates the build dependencies are, `[patch]` and `[replace]`, git and registry
+ * sources, and paths that leave the repository. `dir` is the manifest's directory in the repository. Sorted, so two manifests compare as lists.
  */
 export function riskySettings(data: TomlTable, dir: string): string[] {
   const out: string[] = [];
@@ -54,11 +54,13 @@ export function riskySettings(data: TomlTable, dir: string): string[] {
   if (isTable(data["target"])) for (const [t, v] of Object.entries(data["target"])) if (isTable(v)) for (const d of DEP_TABLES) depTables.push([`target.${t}.${d}`, v[d]]);
   for (const [where, deps] of depTables) {
     if (deps === undefined) continue;
-    if (BUILD_DEP_TABLES.has(where.split(".").pop()!)) { add(where, deps); continue; }
     if (!isTable(deps)) { add(where, deps); continue; }
+    // Build dependencies run at build time: which crates they are counts, a registry version bump of one does not.
+    const build = BUILD_DEP_TABLES.has(where.split(".").pop()!);
+    if (build) add(`${where}.names`, Object.keys(deps).sort());
     for (const [name, spec] of Object.entries(deps)) {
       if (!isTable(spec)) continue;
-      for (const k of SOURCE_KEYS) if (spec[k] !== undefined) add(`${where}.${name}.${k}`, spec[k]);
+      for (const k of build ? [...SOURCE_KEYS, "package"] : SOURCE_KEYS) if (spec[k] !== undefined) add(`${where}.${name}.${k}`, spec[k]);
     }
   }
   for (const k of ["members", "default-members", "exclude"]) {

@@ -6,15 +6,19 @@ export type TomlTable = { [key: string]: unknown };
 export type TomlResult = { ok: true; data: TomlTable } | { ok: false; error: string };
 
 const BARE = /[A-Za-z0-9_-]/;
+/** Keys that name object machinery in JavaScript; a manifest that uses one is refused, so callers fail closed. */
+const RESERVED = new Set(["__proto__", "constructor", "prototype"]);
 const ESCAPES: Record<string, string> = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", e: "\x1b", '"': '"', "\\": "\\" };
 
 class Fail extends Error {}
 
 export function parseToml(text: string): TomlResult {
   let i = 0;
-  const s = text.replace(/\r\n/g, "\n");
+  const s = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   const fail = (m: string): never => { throw new Fail(`${m} at offset ${i}`); };
-  const root: TomlTable = {};
+  // Tables have no prototype, so no key a manifest names (such as `__proto__`) reaches Object.prototype.
+  const table = (): TomlTable => Object.create(null) as TomlTable;
+  const root = table();
   // Tables a header or a dotted key defined; a header naming one again is a duplicate.
   const defined = new Set<TomlTable>();
   const inlineOrValue = new Set<unknown>();
@@ -97,6 +101,7 @@ export function parseToml(text: string): TomlResult {
         if (i === start) fail("expected a key");
         k = s.slice(start, i);
       }
+      if (RESERVED.has(k)) fail(`reserved key ${k}`);
       parts.push(k);
       ws();
       if (s[i] !== ".") return parts;
@@ -120,7 +125,7 @@ export function parseToml(text: string): TomlResult {
       }
     }
     if (s[i] === "{") {
-      i++; const t: TomlTable = {};
+      i++; const t = table();
       blank();
       if (s[i] === "}") { i++; inlineOrValue.add(t); return t; }
       for (;;) {
@@ -149,7 +154,7 @@ export function parseToml(text: string): TomlResult {
 
   function child(t: TomlTable, k: string, at: string[]): TomlTable {
     const v = t[k];
-    if (v === undefined) { const n: TomlTable = {}; t[k] = n; return n; }
+    if (!Object.hasOwn(t, k)) { const n = table(); t[k] = n; return n; }
     if (Array.isArray(v) && !inlineOrValue.has(v)) { const last = v[v.length - 1]; if (last && typeof last === "object") return last as TomlTable; }
     if (v && typeof v === "object" && !Array.isArray(v) && !inlineOrValue.has(v)) return v as TomlTable;
     return fail(`${at.join(".")} is not a table`);
@@ -162,12 +167,12 @@ export function parseToml(text: string): TomlResult {
       if (!inline) defined.add(cur);
     }
     const last = k[k.length - 1]!;
-    if (Object.prototype.hasOwnProperty.call(cur, last)) fail(`duplicate key ${k.join(".")}`);
+    if (Object.hasOwn(cur, last)) fail(`duplicate key ${k.join(".")}`);
     cur[last] = v;
   }
 
   try {
-    let table = root;
+    let current = root;
     for (;;) {
       blank();
       if (i >= s.length) break;
@@ -178,12 +183,12 @@ export function parseToml(text: string): TomlResult {
         let cur = root;
         for (let n = 0; n < k.length - 1; n++) cur = child(cur, k[n]!, k.slice(0, n + 1));
         const last = k[k.length - 1]!;
-        const arr = cur[last] ?? (cur[last] = []);
+        const arr = Object.hasOwn(cur, last) ? cur[last] : (cur[last] = []);
         if (!Array.isArray(arr) || inlineOrValue.has(arr)) fail(`${k.join(".")} is not an array of tables`);
-        const t: TomlTable = {};
+        const t = table();
         (arr as unknown[]).push(t);
         defined.add(t);
-        table = t;
+        current = t;
       } else if (s[i] === "[") {
         i++; const k = key();
         if (s[i] !== "]") fail("expected ]");
@@ -192,12 +197,12 @@ export function parseToml(text: string): TomlResult {
         for (let n = 0; n < k.length; n++) cur = child(cur, k[n]!, k.slice(0, n + 1));
         if (defined.has(cur)) fail(`table ${k.join(".")} defined twice`);
         defined.add(cur);
-        table = cur;
+        current = cur;
       } else {
         const k = key();
         if (s[i] !== "=") fail("expected =");
         i++; ws();
-        assign(table, k, value(), false);
+        assign(current, k, value(), false);
         endOfLine();
       }
     }

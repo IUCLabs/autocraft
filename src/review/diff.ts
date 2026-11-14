@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { envVar } from "../env.ts";
 import { slugOf } from "../owners.ts";
 import { readEnvFor } from "../github/read.ts";
-import { SCRIPT_LIKE, workflowRuns } from "../core/workflow-runs.ts";
+import { mayBeRun, mergeSteps, workflowSteps, type WorkflowSteps } from "../core/workflow-runs.ts";
+import { lockfileNeedsWhole } from "../core/lockfiles.ts";
 
 // gh picks its account from the working directory, so it runs in this repo.
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
@@ -18,20 +19,25 @@ export function diffCacheDir(): string {
 }
 
 /**
- * `base`: the base branch the diff was computed against (the PR's base at the time of the read). `files`: the head commit's
- * text of each changed file the merge rule reads whole (see `wholeFilesOf`); a file missing from it could not be read.
- * `runs`: the run steps and local actions of the base commit's workflows (see core/workflow-runs.ts); null when unread.
+ * `base`: the base branch the diff was computed against (the PR's base at the time of the read). `extras`: what the merge
+ * rule reads beside the diff (see `DiffExtras`); absent from a fetcher that does not read it.
  */
-export type DiffResult = { ok: true; text: string; base?: string; files?: Record<string, string>; runs?: string[] | null } | { ok: false; tooLarge: boolean; error: string };
+export type DiffResult = { ok: true; text: string; base?: string; extras?: DiffExtras } | { ok: false; tooLarge: boolean; error: string };
+/**
+ * `files`: the head commit's text of each changed file the merge rule reads whole (see `wholeFilesOf`). `runs`: the run
+ * steps and local actions of the workflows on the default branch's current head; empty when no changed path could be
+ * run by name, null when unread. `complete`: every read succeeded.
+ */
+export type DiffExtras = { files: Record<string, string>; runs: WorkflowSteps | null; complete: boolean };
 /** `head`: the commit the diff must be of; the fetch fails when the PR is no longer at it. */
 export type DiffFetcher = (repo: string, number: number, head?: string) => Promise<DiffResult>;
 
 /** The diff of a PR at one commit: GitHub's comparison of the PR's base commit with that commit, so a push after the read cannot change it. */
 export const ghDiff: DiffFetcher = async (repo, number, head) => {
   const slug = slugOf(repo);
-  const view = await gh(["api", `repos/${slug}/pulls/${number}`, "--jq", '[.head.sha, .base.sha, .base.ref, .changed_files, .additions, .deletions] | join(" ")']);
+  const view = await gh(["api", `repos/${slug}/pulls/${number}`, "--jq", '[.head.sha, .base.sha, .base.ref, .changed_files, .additions, .deletions, .base.repo.default_branch] | join(" ")']);
   if (view.code !== 0) return { ok: false, tooLarge: false, error: view.err.trim().slice(0, 300) };
-  const [liveHead, baseSha, baseRef, changedFiles, additions, deletions] = view.out.trim().split(" ");
+  const [liveHead, baseSha, baseRef, changedFiles, additions, deletions, defaultBranch] = view.out.trim().split(" ");
   if (!liveHead || !baseSha || !baseRef) return { ok: false, tooLarge: false, error: "the pull request could not be read" };
   if (head && liveHead !== head) return { ok: false, tooLarge: false, error: `head moved to ${liveHead.slice(0, 7)} since ${head.slice(0, 7)}` };
   // `gh pr diff` failed over 300 files or 20,000 lines; the compare endpoint may cut the diff short instead, so the size is judged from the pull request.
@@ -41,46 +47,64 @@ export const ghDiff: DiffFetcher = async (repo, number, head) => {
   // GitHub refuses diffs over 20,000 lines or 300 files with HTTP 406.
   if (r.code !== 0) return { ok: false, tooLarge: /too_large|too large|406|maximum number of (lines|files)/i.test(r.err), error: r.err.trim().slice(0, 300) };
   if (Number.isFinite(files) && (r.out.match(/^diff --git /gm) ?? []).length < files) return { ok: false, tooLarge: true, error: `the compared diff has ${(r.out.match(/^diff --git /gm) ?? []).length} files, the pull request ${files}` };
-  const whole: Record<string, string> = {};
-  for (const path of wholeFilesOf(r.out).slice(0, MAX_WHOLE_FILES)) {
+  const extras: DiffExtras = { files: {}, runs: { runs: [], actions: [] }, complete: true };
+  const wanted = wholeFilesOf(r.out);
+  if (wanted.length > MAX_WHOLE_FILES) extras.complete = false;
+  for (const path of wanted.slice(0, MAX_WHOLE_FILES)) {
     const c = await gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${slug}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${liveHead}`]);
-    if (c.code === 0) whole[path] = c.out;
+    if (c.code === 0) extras.files[path] = c.out;
+    else extras.complete = false;
   }
-  return { ok: true, text: r.out, base: baseRef, files: whole, runs: await workflowRunsAt(repo, slug, baseSha) };
+  if (splitDiff(r.out).some((f) => mayBeRun(f.path) || mayBeRun(f.oldPath))) {
+    extras.runs = await workflowStepsAt(repo, slug, defaultBranch || baseRef);
+    if (!extras.runs) extras.complete = false;
+  }
+  return { ok: true, text: r.out, base: baseRef, extras };
 };
 
 const MAX_WORKFLOWS = 50;
-/** The run steps of the workflows at a commit, cached by sha; null when they could not be read. */
-async function workflowRunsAt(repo: string, slug: string, sha: string): Promise<string[] | null> {
-  const f = join(diffCacheDir(), repo, `workflows-${sha}.json`);
-  try { if (existsSync(f)) return JSON.parse(readFileSync(f, "utf8")) as string[]; } catch { /* read again */ }
-  const ls = await gh(["api", `repos/${slug}/contents/.github/workflows?ref=${sha}`, "--jq", '.[] | select(.type == "file") | .path']);
-  let paths: string[];
-  if (ls.code === 0) paths = ls.out.split("\n").filter((p) => /\.ya?ml$/i.test(p));
-  else if (/\b404\b|Not Found/i.test(ls.err)) paths = [];
+/** The run steps of the workflows at the head of `ref` (what runs after a merge): one listing, each file's steps cached by blob. Null when unread. */
+async function workflowStepsAt(repo: string, slug: string, ref: string): Promise<WorkflowSteps | null> {
+  const ls = await gh(["api", `repos/${slug}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`, "--jq", '.[] | select(.type == "file") | "\\(.sha) \\(.path)"']);
+  let entries: [string, string][];
+  if (ls.code === 0) entries = ls.out.split("\n").map((l) => l.split(" ") as [string, string]).filter(([sha, p]) => /^[0-9a-f]{40}$/.test(sha) && /\.ya?ml$/i.test(p ?? ""));
+  else if (/\b404\b|Not Found/i.test(ls.err)) entries = [];
   else return null;
-  if (paths.length > MAX_WORKFLOWS) return null;
-  const runs: string[] = [];
-  for (const p of paths) {
-    const c = await gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${slug}/contents/${p.split("/").map(encodeURIComponent).join("/")}?ref=${sha}`]);
+  if (entries.length > MAX_WORKFLOWS) return null;
+  const dir = join(diffCacheDir(), repo);
+  const all: WorkflowSteps[] = [];
+  for (const [sha] of entries) {
+    const f = join(dir, `workflow-${sha}.json`);
+    try { if (existsSync(f)) { all.push(JSON.parse(readFileSync(f, "utf8")) as WorkflowSteps); continue; } } catch { /* read again */ }
+    const c = await gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${slug}/git/blobs/${sha}`]);
     if (c.code !== 0) return null;
-    runs.push(...workflowRuns(c.out));
+    const steps = workflowSteps(c.out);
+    mkdirSync(dir, { recursive: true });
+    const tmp = `${f}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(steps));
+    renameSync(tmp, f);
+    all.push(steps);
   }
-  mkdirSync(join(diffCacheDir(), repo), { recursive: true });
-  const tmp = `${f}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(runs));
-  renameSync(tmp, f);
-  return runs;
+  return mergeSteps(all);
 }
 
 const MANIFEST = /(^|\/)Cargo\.toml$/;
+const PACKAGE_JSON = /(^|\/)package\.json$/;
 const MAX_WHOLE_FILES = 100;
 export const isNewFile = (f: FileDiff): boolean => f.head.some((l) => l.startsWith("new file mode ")) || f.head.includes("--- /dev/null");
 export const isDeletedFile = (f: FileDiff): boolean => f.head.some((l) => l.startsWith("deleted file mode ")) || f.head.includes("+++ /dev/null");
 
-/** The changed files the merge rule reads whole at the head: Cargo manifests that are edited (an added or deleted one is whole in the diff). */
+/**
+ * The changed files the merge rule reads whole at the head: edited Cargo and npm manifests (an added or deleted one is
+ * whole in the diff), and lockfiles whose hunks change a checksum of a package they do not name.
+ */
 export function wholeFilesOf(text: string): string[] {
-  return splitDiff(text).filter((f) => MANIFEST.test(f.path) && f.body.length > 0 && !isNewFile(f) && !isDeletedFile(f)).map((f) => f.path);
+  return splitDiff(text).filter((f) => f.body.length > 0 && !isNewFile(f) && !isDeletedFile(f) && (MANIFEST.test(f.path) || PACKAGE_JSON.test(f.path) || lockfileNeedsWhole(f))).map((f) => f.path);
+}
+
+/** Whether the merge rule reads more than the diff for it: a file it reads whole, or a path a workflow step could run. */
+export function needsExtras(text: string): boolean {
+  return wholeFilesOf(text).length > 0 || splitDiff(text).some((f) => mayBeRun(f.path) || mayBeRun(f.oldPath));
 }
 
 /**
@@ -126,20 +150,21 @@ export function wholeInDiff(f: FileDiff, side: "before" | "after"): string | nul
 export async function cachedDiff(repo: string, number: number, head: string, fetch: DiffFetcher, base?: string | null): Promise<DiffResult> {
   const dir = join(diffCacheDir(), repo);
   const file = join(dir, `${number}-${head}.diff`);
-  const fetchAndStore = async (): Promise<DiffResult> => {
+  const put = (path: string, text: string) => {
+    mkdirSync(dir, { recursive: true });
+    const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    writeFileSync(tmp, text);
+    renameSync(tmp, path);
+  };
+  // An incomplete read is stored with its count, so the rule reads again a few times and then judges what it has.
+  const fetchAndStore = async (tries: number): Promise<DiffResult> => {
     const r = await fetch(repo, number, head);
     if (r.ok) {
-      mkdirSync(dir, { recursive: true });
-      const put = (path: string, text: string) => {
-        const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-        writeFileSync(tmp, text);
-        renameSync(tmp, path);
-      };
       if (r.base) put(`${file}.base`, r.base);
-      // The whole files are written before the diff, so a reader that finds the diff finds them too.
-      put(`${file}.files.json`, JSON.stringify({ files: r.files ?? {}, runs: r.runs ?? null }));
+      // The extras are written before the diff, so a reader that finds the diff finds them too.
+      if (r.extras) put(`${file}.files.json`, JSON.stringify({ ...r.extras, tries: r.extras.complete ? 0 : tries + 1 }));
       put(file, r.text);
-    }
+    } else if (tries > 0 || existsSync(file)) put(`${file}.files.json`, JSON.stringify({ ...(cachedDiffExtras(repo, number, head) ?? { files: {}, runs: null, complete: false }), tries: tries + 1 }));
     return r;
   };
   if (existsSync(file)) {
@@ -147,24 +172,35 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
     // An entry stored before bases were recorded does not say which base it read: with a base given it is read again.
     if (!base || stored === base) {
       const text = readFileSync(file, "utf8");
-      const hit: DiffResult = { ok: true, text, ...(stored !== undefined ? { base: stored } : {}) };
-      // An entry stored without the whole files the rule needs is read again; if that fails the entry stands.
-      if (existsSync(`${file}.files.json`) || !(wholeFilesOf(text).length || splitDiff(text).some((f) => SCRIPT_LIKE.test(f.path) || SCRIPT_LIKE.test(f.oldPath)))) return hit;
-      const again = await fetchAndStore();
+      const extras = cachedDiffExtras(repo, number, head);
+      const hit: DiffResult = { ok: true, text, ...(stored !== undefined ? { base: stored } : {}), ...(extras ? { extras } : {}) };
+      if (!extrasPending(text, extras)) return hit;
+      const again = await fetchAndStore(extras?.tries ?? 0);
       return again.ok ? again : hit;
     }
   }
-  return fetchAndStore();
+  return fetchAndStore(0);
 }
 
-/** What is stored beside a cached diff (see `DiffResult.files` and `runs`); null when nothing is stored. */
-export function cachedDiffFiles(repo: string, number: number, head: string): { files: Record<string, string>; runs: string[] | null } | null {
+/** Reads of the extras before the rule judges a diff with what it has. */
+export const EXTRAS_TRIES = 3;
+
+/** What is stored beside a cached diff (see `DiffExtras`), with the number of incomplete reads; null when nothing is stored. */
+export function cachedDiffExtras(repo: string, number: number, head: string): (DiffExtras & { tries: number }) | null {
   const f = join(diffCacheDir(), repo, `${number}-${head}.diff.files.json`);
   try {
     if (!existsSync(f)) return null;
-    const v = JSON.parse(readFileSync(f, "utf8")) as { files?: Record<string, string>; runs?: string[] | null };
-    return { files: v.files ?? {}, runs: Array.isArray(v.runs) ? v.runs : null };
+    const v = JSON.parse(readFileSync(f, "utf8")) as Partial<DiffExtras> & { tries?: number };
+    const runs = v.runs && Array.isArray(v.runs.runs) && Array.isArray(v.runs.actions) ? v.runs : null;
+    return { files: v.files && typeof v.files === "object" ? v.files : {}, runs, complete: v.complete === true, tries: typeof v.tries === "number" ? v.tries : 0 };
   } catch { return null; }
+}
+
+/** Whether a cached diff still waits for its extras: it needs them and has none, or an incomplete read that is tried again. */
+export function extrasPending(text: string, extras: (DiffExtras & { tries: number }) | null): boolean {
+  if (extras?.complete) return false;
+  if (extras && extras.tries >= EXTRAS_TRIES) return false;
+  return needsExtras(text);
 }
 
 /** Forgets the cached diff of a head, so the next read fetches it (and the PR's current base) again. */

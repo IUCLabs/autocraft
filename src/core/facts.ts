@@ -39,7 +39,7 @@ import { getRule, STATS_SQL, tierOf, tierKey, tiersOf, type AuthorRef, type Tier
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
-import { cachedDiffBase, cachedDiffFiles, diffCacheDir, splitDiff } from "../review/diff.ts";
+import { cachedDiffBase, cachedDiffExtras, extrasPending, diffCacheDir, splitDiff } from "../review/diff.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
@@ -96,21 +96,22 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.author_id, i.assignees, i.s
   WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix'))
     OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
 
-const sensitiveMemo = new Map<string, { reasons: string[]; lines: number }>();
+const sensitiveMemo = new Map<string, { reasons: string[]; lines: number; pending: boolean }>();
 /**
  * The sensitive-content reasons and the changed-line count of the diff cached for this head; null when it is not cached (a
  * review or pre-merge review caches it). The count is the rule's size fact: it is of this head, not of the mirror's row.
- * Kept per base branch the diff was read against.
+ * `pending`: the diff waits for what the rule reads beside it (whole files, workflow steps), so its reasons don't count yet.
  */
-function diffFactsAt(repo: string, number: number, head: string): { reasons: string[]; lines: number } | null {
-  const stored = cachedDiffFiles(repo, number, head);
-  const key = `${repo}#${number}@${head}:${cachedDiffBase(repo, number, head) ?? ""}:${stored ? "files" : ""}`;
+function diffFactsAt(repo: string, number: number, head: string): { reasons: string[]; lines: number; pending: boolean } | null {
+  const extras = cachedDiffExtras(repo, number, head);
+  const key = `${repo}#${number}@${head}:${cachedDiffBase(repo, number, head) ?? ""}:${extras ? `${extras.complete}/${extras.tries}` : ""}`;
   const hit = sensitiveMemo.get(key);
   if (hit) return hit;
   const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
   if (!existsSync(file)) return null;
   const text = readFileSync(file, "utf8");
-  const out = { reasons: sensitiveReasons(text, ownerOf(repo), stored ?? {}), lines: splitDiff(text).reduce((n, f) => n + f.lines, 0) };
+  const pending = extrasPending(text, extras);
+  const out = { reasons: pending ? [] : sensitiveReasons(text, ownerOf(repo), extras ?? {}), lines: splitDiff(text).reduce((n, f) => n + f.lines, 0), pending };
   sensitiveMemo.set(key, out);
   return out;
 }
@@ -330,7 +331,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     if (r.state === "OPEN" && head && head !== r.r_head && (ourFixupHead.get(r.repo, r.number, head) || ourSameDiffMerge.get(r.repo, r.number, head)) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     const diffFacts = diffFactsAt(r.repo, r.number, r.r_head);
-    base.sensitive = diffFacts?.reasons ?? null;
+    base.sensitive = diffFacts && !diffFacts.pending ? diffFacts.reasons : null;
+    if (diffFacts?.pending) base.diffPending = true;
     if (diffFacts) { base.lines = diffFacts.lines; base.size = sizeOf(diffFacts.lines); }
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);
