@@ -5,9 +5,9 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import type { AppSecrets } from "../src/dash/server/config.ts";
 import { InstallTokenMinter, identityGitArgs, withIdentityEnv } from "../src/github/install-token.ts";
-import { scrub } from "../src/runner/scrub.ts";
+import { scrub, scrubCredentials } from "../src/runner/scrub.ts";
 
-test("the scrubber hides hex keys, URL passwords, dotted tokens and encoded tokens, and keeps commit ids and digests", () => {
+test("the scrubber hides hex keys, URL passwords, dotted tokens and encoded tokens, keeps commit ids and digests, and leaves code literals to the credential-only scrub", () => {
   const gh = `ghs_${"Ab1".repeat(12)}`;
   const commit = "0123456789abcdef0123456789abcdef01234567";
   const digest = "a".repeat(32) + "b".repeat(32);
@@ -22,6 +22,10 @@ test("the scrubber hides hex keys, URL passwords, dotted tokens and encoded toke
   for (const [text, secret] of cases) assert.ok(!scrub(text).includes(secret), `${text} -> ${scrub(text)}`);
   const plain = `HEAD is now at ${commit}; sha256:${digest}; see https://github.com/o/r/pull/7 and src/runner/scrub.ts`;
   assert.equal(scrub(plain), plain);
+  // A reply that carries code keeps its literals for the parser; a provider token in it is still hidden.
+  const code = `+const KEY = "${"9f".repeat(24)}"; const DB = "postgres://app:pw@localhost/db";`;
+  assert.equal(scrubCredentials(code), code);
+  assert.ok(!scrubCredentials(`+const T = "${gh}";`).includes(gh));
 });
 
 test("an installation token for a write reaches only its repository, and git hands it only to github.com", async () => {

@@ -15,7 +15,7 @@ import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
 import { fixTurnMessage, mergeFixFields, needsFixTurn, type Lint, type LintProblem } from "../replylint.ts";
 import { coalesce, lineFeed } from "./progress.ts";
 import { scrubError } from "../agents/text.ts";
-import { scrub } from "../runner/scrub.ts";
+import { scrub, scrubCredentials } from "../runner/scrub.ts";
 import { itemTools } from "../itemtools/index.ts";
 import { startBridge, CHECK_SERVER, type Bridge } from "../checktool/bridge.ts";
 import type { CheckTool } from "../checktool/index.ts";
@@ -495,10 +495,11 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
           return null;
         }
         const turns = sandboxed ? j.num_turns : undefined;
-        // Backstop: nothing that looks like a token or key leaves the sandbox call.
-        const text = scrub(j.result);
+        // Backstop: nothing that looks like a token or key leaves the sandbox call. The stored copy gets the whole scrub; a reply that carries code reaches its parser with only the known credential shapes hidden, so no code is rewritten.
+        const stored = scrub(j.result);
+        const text = CLAUDE_PROMPTS[id].codeReply ? scrubCredentials(j.result) : stored;
         const sessionId = typeof j.session_id === "string" ? j.session_id : (Array.isArray(parsed) ? parsed.find((e) => typeof (e as { session_id?: unknown }).session_id === "string") as { session_id?: string } | undefined : undefined)?.session_id;
-        finish({ state: "done", tokens, costUsd, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: text });
+        finish({ state: "done", tokens, costUsd, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(stored, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: stored });
         return { text, usage, ...(turns !== undefined && { turns }), ...(sessionId && { sessionId }) };
       } catch {
         authFailed(r.stderr);

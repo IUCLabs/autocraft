@@ -18,6 +18,7 @@ import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { appChildEnv, AppNotInstalledError, installationToken, RepoNotInInstallationError, type TokenScope } from "./install-token.ts";
 import { type Note, withNote } from "./note.ts";
+import { scrub } from "../runner/scrub.ts";
 import { ownerOf, slugOf, splitSlug } from "../owners.ts";
 import { call, GITHUB_API } from "./app.ts";
 import { currentJobId } from "../agents/call.ts";
@@ -54,6 +55,9 @@ function opensOwnPr(g: Grant, repo: string): void {
  * the grant's identity (src/github/identity.ts). Every write takes it from its grant, so none goes unmapped.
  */
 const idOf = (w: Writer, g: Guarded | Grant, kind: WriteKind = "other"): string => auditIdentity(w.db, g, kind);
+
+/** The text a write puts on GitHub: the note line and the text, with anything that looks like a credential hidden. */
+const posted = (note: Note, text: string): string => withNote(note, scrub(text));
 
 // ---- identity lanes -------------------------------------------------------------
 // A write made under a grant `as: "app"` while the GitHub identity is `app` runs with an installation token: gh and
@@ -268,7 +272,7 @@ export type ItemRef = { repo: string; number: number; id: string };
 export async function commentOn(w: Writer, g: Grant, q: Querier, action: string, item: ItemRef, note: Note, text: string, details: Details = {}): Promise<string> {
   covers(g, item.repo, item.number);
   q = laneQuery(w, g, q);
-  const body = withNote(note, text);
+  const body = posted(note, text);
   const r = await recorded(w, idOf(w, g), action, refOf(item.repo, item.number), { ...details, text: body },
     () => q.query(ADD_COMMENT, { id: item.id, body }) as Promise<{ addComment?: { commentEdge?: { node?: { url?: string } } } }>,
     (x) => ({ url: x.addComment?.commentEdge?.node?.url ?? undefined }));
@@ -354,7 +358,7 @@ export async function requestReviewers(w: Writer, g: Grant, q: Querier, item: It
 /** Posts a review as a plain comment review on the commit; returns the review id (null when GitHub returned none). */
 export async function postReview(w: Writer, q: Querier, g: Guarded<"post-review">, nodeId: string, note: Note, text: string, details: Details = {}): Promise<string | null> {
   q = laneQuery(w, g, q);
-  const body = withNote(note, text);
+  const body = posted(note, text);
   const r = await recorded(w, idOf(w, g), "review-post", refOf(g.repo, g.number), { ...details, head: g.head },
     () => q.query(ADD_REVIEW, { pr: nodeId, oid: g.head, body }) as Promise<{ addPullRequestReview?: { pullRequestReview?: { id?: string } | null } | null }>,
     (x) => ({ review: x.addPullRequestReview?.pullRequestReview?.id ?? undefined }),
@@ -364,7 +368,7 @@ export async function postReview(w: Writer, q: Querier, g: Guarded<"post-review"
 
 export async function editReview(w: Writer, q: Querier, g: Guarded<"post-review">, reviewId: string, note: Note, text: string, details: Details = {}): Promise<void> {
   q = laneQuery(w, g, q);
-  const body = withNote(note, text);
+  const body = posted(note, text);
   await recorded(w, idOf(w, g), "review-edit", refOf(g.repo, g.number), { ...details, head: g.head, review: reviewId }, () => q.query(EDIT_REVIEW, { id: reviewId, body }));
 }
 
@@ -434,7 +438,7 @@ export function ghAskComment(w: Writer, exec: Exec, action: string, g: Guarded<A
 export function ghComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; pr: boolean }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
   exec = laneExec(w, g, exec);
-  const body = withNote(note, text);
+  const body = posted(note, text);
   return viaGh(w, idOf(w, g), exec, action, refOf(o.repo, o.number), { ...details, text: body },
     [o.pr ? "pr" : "issue", "comment", String(o.number), "--repo", `${slugOf(o.repo)}`, "--body-file", "-"], body);
 }
@@ -443,7 +447,7 @@ export function ghComment(w: Writer, g: CommentGrant, exec: Exec, action: string
 export function ghEditComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
   exec = laneExec(w, g, exec);
-  const body = withNote(note, text);
+  const body = posted(note, text);
   return viaGh(w, idOf(w, g), exec, action, refOf(o.repo, o.number), { ...details, text: body, comment: o.commentId },
     ["api", "-X", "PATCH", `repos/${slugOf(o.repo)}/issues/comments/${o.commentId}`, "-F", "body=@-"], body);
 }
@@ -474,15 +478,15 @@ export function ghDeleteComment(w: Writer, g: CommentGrant, exec: Exec, action: 
 export function ghOpenPr(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, note: Note, details: Details = {}): Promise<ExecResult> {
   opensOwnPr(g, o.repo);
   exec = laneExec(w, g, exec);
-  const body = withNote(note, o.body);
+  const body = posted(note, o.body);
   return viaGh(w, idOf(w, g), exec, action, o.target, { ...details, text: body },
-    ["pr", "create", "--repo", `${slugOf(o.repo)}`, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], body);
+    ["pr", "create", "--repo", `${slugOf(o.repo)}`, "--base", o.base, "--head", o.head, "--title", scrub(o.title), "--body-file", "-"], body);
 }
 
 export function ghClosePr(w: Writer, g: Grant, exec: Exec, o: { repo: string; number: number }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
   exec = laneExec(w, g, exec, "close");
-  const comment = withNote(note, text);
+  const comment = posted(note, text);
   return viaGh(w, idOf(w, g, "close"), exec, "batch-pr-close", refOf(o.repo, o.number), { ...details, text: comment },
     ["pr", "close", String(o.number), "--repo", `${slugOf(o.repo)}`, "--comment", comment]);
 }
@@ -511,11 +515,11 @@ const REFUSED = /issues are disabled|has disabled issues|could not resolve to a 
 export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: string; target: string; title: string; body: string; /** The audit action; the post-merge step's by default. */ action?: string }, note: Note, details: Details = {}): Promise<{ number: number; url: string }> {
   covers(g, o.repo);
   exec = laneExec(w, g, exec);
-  const body = withNote(note, o.body);
+  const body = posted(note, o.body);
   let r: ExecResult;
   try {
-    r = await viaGh(w, idOf(w, g), exec, o.action ?? "postmerge-file", o.target, { ...details, title: o.title, text: body },
-      ["issue", "create", "--repo", `${slugOf(o.repo)}`, "--title", o.title, "--body-file", "-"], body);
+    r = await viaGh(w, idOf(w, g), exec, o.action ?? "postmerge-file", o.target, { ...details, title: scrub(o.title), text: body },
+      ["issue", "create", "--repo", `${slugOf(o.repo)}`, "--title", scrub(o.title), "--body-file", "-"], body);
   } catch (e) {
     // exec rejects only when the command could not be started.
     throw new IssueError(oneLine(String((e as Error).message ?? e)), true);
@@ -703,7 +707,7 @@ export function ghAdvisoryPush(w: Writer, g: Grant, git: Pick<Git, "git">, o: { 
 export function ghAdvisoryPr(w: Writer, g: Grant, exec: Exec, o: { repo: string; key: string; fork: string; base: string; head: string; title: string; body: string }): Promise<ExecResult> {
   covers(g, o.repo);
   return viaGh(w, "legacy", exec, "security-advisory-pr", o.key, { repo: o.repo, fork: o.fork },
-    ["pr", "create", "--repo", o.fork, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], o.body);
+    ["pr", "create", "--repo", o.fork, "--base", o.base, "--head", o.head, "--title", scrub(o.title), "--body-file", "-"], scrub(o.body));
 }
 
 /** Sets the affected version range of a draft that has none (GitHub refuses to publish without one). Does nothing, and writes nothing, when the draft has a range. */
