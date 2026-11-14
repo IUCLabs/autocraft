@@ -15,6 +15,7 @@ import { recordReviewFailure, reviewHolds } from "./gate.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawHoldQuestion, withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { headWasUnsure, mergeDecisionId, holdDecisionId } from "../merge/queue.ts";
+import { defaultBranchOf, reviewedBaseOf } from "../merge/base.ts";
 import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
@@ -65,28 +66,38 @@ export function defaultOpusDeps(): OpusDeps {
   return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: MAX_DIFF_CHARS, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
-type Saved = { snap?: Snapshot; mode: "full" | "delta" | "carried"; base: string | null; model: string | null; review: OpusReview; /** The fixes this review was given as unapplied, with what the reply did with each. */ unapplied?: (UnappliedFix & { outcome: string })[] };
+type Saved = { snap?: Snapshot; mode: "full" | "delta" | "carried"; base: string | null; model: string | null; review: OpusReview; /** The fixes this review was given as unapplied, with what the reply did with each. */ unapplied?: (UnappliedFix & { outcome: string })[];
+  /** The base branch the reviewed diff was read against (a delta or carried review: the earlier review's); absent: the cached diff's, else the mirrored base. */ baseRef?: string | null };
 
 /**
  * Stores the Opus row of a head commit, then a `reviewed` stages row and a take/hold/close
  * stages row (take-fix counts as take). A second review of the same head counts against
  * the PR's daily cap unless an operator or a merge-time check asked for it.
+ * A review of the head against another base than the one before it voids what was decided for the old diff:
+ * the Merge answer, the pre-merge review and the verification.
  */
 export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: string; number: number; head_oid: string }, s: Saved): void {
   const at = now(), r = s.review;
   const again = db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
+  const baseRef = s.baseRef !== undefined ? s.baseRef : reviewedBase(db, c);
+  const before = again ? reviewedBaseOf(db, c.repo, c.number, c.head_oid) ?? defaultBranchOf(db, c.repo) : null;
+  const rebased = !!before && !!baseRef && before !== baseRef;
   const reviewed = db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
   if (reviewed && !markedStaleSince(db, c.repo, c.number, reviewed.at)) countRerun(db, c.repo, c.number);
   // A head that was ever unsure keeps its Merge? question (and a person's answer to it) through a re-review that stays take or take-fix.
   // An answered question is withdrawn as for any re-review: the head then needs a new answer.
   const unanswered = !!db.prepare("SELECT 1 FROM decisions WHERE id = ? AND answer IS NULL").get(mergeDecisionId(c.repo, c.number, c.head_oid));
-  const keepsQuestion = !!again && unanswered && (r.verdict === "take" || r.verdict === "take-fix") && headWasUnsure(db, c.repo, c.number, c.head_oid);
-  // An answered, unapplied merge answer stands through a re-review at the same head unless the verdict got worse.
-  const keepsAnswer = !!again && (r.verdict === "take" || r.verdict === "take-fix") && r.sure
+  const keepsQuestion = !!again && !rebased && unanswered && (r.verdict === "take" || r.verdict === "take-fix") && headWasUnsure(db, c.repo, c.number, c.head_oid);
+  // An answered, unapplied merge answer stands through a re-review at the same head and base unless the verdict got worse.
+  const keepsAnswer = !!again && !rebased && (r.verdict === "take" || r.verdict === "take-fix") && r.sure
     && !!db.prepare("SELECT 1 FROM decisions WHERE id = ? AND answer = 'merge' AND applied_at IS NULL").get(mergeDecisionId(c.repo, c.number, c.head_oid));
   if (again && !keepsQuestion && !keepsAnswer) {
     const worse = r.verdict === "take" || r.verdict === "take-fix" ? "the new review is unsure" : `the new review is a ${r.verdict}`;
-    withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at, `superseded by a new review: ${worse}`);
+    withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at, rebased ? `the base branch changed from ${before} to ${baseRef}` : `superseded by a new review: ${worse}`);
+  }
+  if (rebased) {
+    db.prepare("DELETE FROM premerge_reviews WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
+    db.prepare("UPDATE verifications SET state = 'stale' WHERE repo = ? AND number = ? AND head_sha = ?").run(c.repo, c.number, c.head_oid);
   }
   // The Hold question belongs to one review: a review made again at the head asks it anew if the verdict is still hold.
   // An unanswered or Wait-answered question stays while the verdict is still hold: its review time moves, so the prepare is written again.
@@ -103,10 +114,10 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   const blockedBy = blockers.length ? JSON.stringify(blockers) : null;
   db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, trigger, job_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims, blockedBy,
-    again ? (markedStaleSince(db, c.repo, c.number, again.at) ? "operator" : "discussion") : "new-head", currentJobId());
+    again ? (markedStaleSince(db, c.repo, c.number, again.at) ? "operator" : rebased ? "base" : "discussion") : "new-head", currentJobId());
   db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims, blocked_by, base_ref)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
-    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims, blockedBy, reviewedBase(db, c));
+    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims, blockedBy, baseRef);
   db.prepare("DELETE FROM main.settings WHERE key = ?").run(`review_fail:${c.repo}#${c.number}@${c.head_oid}`);
   db.prepare("DELETE FROM opus_carried_fixes WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
   for (const u of s.unapplied ?? []) {
@@ -148,11 +159,12 @@ function reviewedBase(db: DatabaseSync, c: { repo: string; number: number; head_
     ?? (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { base_ref: string | null } | undefined)?.base_ref ?? null;
 }
 
+/** `base`: the earlier head a delta was read from; `baseRef`: the base branch the whole PR diff was read against. */
 export type PreparedOpus =
   | { kind: "no-diff"; error: string }
-  | { kind: "large"; mode: "full" | "delta"; base: string | null }
+  | { kind: "large"; mode: "full" | "delta"; base: string | null; baseRef: string | null }
   | { kind: "no-threads"; error: string }
-  | { kind: "ready"; input: OpusPr; snap: Snapshot; mode: "full" | "delta"; base: string | null };
+  | { kind: "ready"; input: OpusPr; snap: Snapshot; mode: "full" | "delta"; base: string | null; baseRef: string | null; /** A maintainer's entry was left out of the discussion for length. */ maintDropped?: boolean };
 
 /**
  * Builds the Opus prompt input of a candidate: diff (full, or the delta since the last Opus review),
@@ -162,12 +174,13 @@ export type PreparedOpus =
 export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCandidate, deps: OpusDeps, log: (line: string) => void, opts: { independent?: boolean } = {}): Promise<PreparedOpus> {
   const liveBase = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, c.number) as { base_ref: string | null } | undefined)?.base_ref;
   const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff, liveBase);
-  if (!d.ok) return d.tooLarge ? { kind: "large", mode: "full", base: null } : { kind: "no-diff", error: d.error };
+  if (!d.ok) return d.tooLarge ? { kind: "large", mode: "full", base: null, baseRef: liveBase ?? null } : { kind: "no-diff", error: d.error };
+  const baseRef = d.base ?? liveBase ?? null;
   const ch = checksOf(db, repo, c.number);
   let cd = codeDiff(d.text);
   if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
   // The size cap applies to the whole PR, so a small push never lets a too-large PR through as a delta.
-  if (cd.text.length > deps.maxChars) return { kind: "large", mode: "full", base: null };
+  if (cd.text.length > deps.maxChars) return { kind: "large", mode: "full", base: null, baseRef };
   if (opts.independent) {
     const input: OpusPr = {
       ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
@@ -175,10 +188,13 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
       mode: "full", earlier_opus: null, diff: cd.text,
       related_open: relatedOpen(db, repo, c.number, cd.files), review_history: latestReview(db, repo, c.number, c.head_oid),
     };
-    return { kind: "ready", input: { ...input, statements: relatedStatements(db, repo, c.number), ...scopeSettledField(db, repo, c.number) }, snap: { seen: now(), hash: null }, mode: "full", base: null };
+    return { kind: "ready", input: { ...input, statements: relatedStatements(db, repo, c.number), ...scopeSettledField(db, repo, c.number) }, snap: { seen: now(), hash: null }, mode: "full", base: null, baseRef };
   }
   let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
-  const earlier = earlierOpus(db, c);
+  // A delta stands on the earlier review only when that review read the PR against the same base branch; after a retarget the whole diff is reviewed.
+  const prior = earlierOpus(db, c);
+  const priorBase = prior ? reviewedBaseOf(db, repo, c.number, prior.head) ?? defaultBranchOf(db, repo) : null;
+  const earlier = prior && (priorBase === null || baseRef === null || priorBase === baseRef) ? prior : null;
   // A merge commit of ours carries the base branch's changes since the earlier head, so a delta of the heads would show unrelated changes: the delta is taken between the PR's own diffs.
   const merged = db.prepare("SELECT from_head, own_diff, own_delta FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' ORDER BY rowid DESC").get(repo, c.number, c.head_oid) as { from_head: string; own_diff: string | null; own_delta: string | null } | undefined;
   if (earlier && !merged) {
@@ -194,10 +210,10 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
     if (!dd.files.length && dd.testsOmitted.length) dd = codeDiff(merged.own_delta, true);
     if (dd.text) { mode = "delta"; diff = dd.text; base = earlier.head; }
   }
-  if (diff.length > deps.maxChars) return { kind: "large", mode, base };
-  let discussion: DiscussionEntry[], snap: Snapshot;
+  if (diff.length > deps.maxChars) return { kind: "large", mode, base, baseRef };
+  let discussion: DiscussionEntry[], snap: Snapshot, maintDropped: boolean;
   try {
-    ({ entries: discussion, snap } = discussionOf(db, repo, c.number, deps.querier ? await withRetry(() => liveDiscussion(deps.querier!, db, repo, c.number)) : undefined));
+    ({ entries: discussion, snap, maintDropped } = discussionOf(db, repo, c.number, deps.querier ? await withRetry(() => liveDiscussion(deps.querier!, db, repo, c.number)) : undefined));
   } catch (e) {
     return { kind: "no-threads", error: String((e as Error).message ?? e) };
   }
@@ -212,7 +228,7 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
     statements: relatedStatements(db, repo, c.number),
     ...scopeSettledField(db, repo, c.number),
   };
-  return { kind: "ready", input, snap, mode, base };
+  return { kind: "ready", input, snap, mode, base, baseRef, ...(maintDropped ? { maintDropped } : {}) };
 }
 
 export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (line: string) => void = console.log, deps: OpusDeps = defaultOpusDeps()): Promise<OpusSummary> {
@@ -266,7 +282,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     }
     if (p.kind === "large") {
       const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], summary: null, why: null, public: null, conflicts: [], claims: [], blocked_by: [] };
-      saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r });
+      saveOpus(db, runId, c, { mode: p.mode, base: p.base, baseRef: p.baseRef, model: null, review: r });
       tally(c, r);
       params.onHandled?.(++handled);
       return;
@@ -276,7 +292,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       summary.skipped.push(refOf(c));
       return;
     }
-    const { input, snap, mode, base } = p;
+    const { input, snap, mode, base, baseRef } = p;
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;
     const dir = referenceDir(repo);
@@ -299,7 +315,9 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
         const risks = outcomes.filter((u) => u.outcome === "unaddressed").map((u) => `an earlier fix was neither made nor explained: ${u.file}: ${u.change.length > 100 ? `${u.change.slice(0, 100)}...` : u.change}`);
         if (risks.length) got = { ...got, sure: false, risks: [...got.risks, ...risks] };
       }
-      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: outcomes });
+      // A maintainer's word the model was not shown leaves the take to a person.
+      if (p.maintDropped && got.sure && (got.verdict === "take" || got.verdict === "take-fix")) got = { ...got, sure: false, risks: [...got.risks, "a maintainer's comment was left out of the review for length"] };
+      saveOpus(db, runId, c, { mode, base, baseRef, model: deps.model, review: got, snap, unapplied: outcomes });
       tally(c, got);
     } else {
       recordReviewFailure(db, c.repo, c.number, c.head_oid);

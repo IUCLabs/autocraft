@@ -14,7 +14,6 @@ import { ownerOf } from "../owners.ts";
 import type { Exec } from "../fixup/git.ts";
 import { pipelineMe, setPipelineLogin } from "../github/pipeline-account.ts";
 import { allOwnLogins, ownLogins } from "../github/identity.ts";
-import { dropCachedDiff } from "./diff.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
 const LOGIN_KEY = "pipeline_login";
@@ -103,21 +102,24 @@ const NOT_OURS = `COALESCE(c.author, '') NOT IN (SELECT value FROM json_each(:ow
   AND c.id NOT IN (SELECT review_id FROM review_posts WHERE repo = c.repo AND number = c.number)
   AND NOT EXISTS (SELECT 1 FROM main.audit au WHERE au.target = c.repo || '#' || c.number AND c.body IS NOT NULL AND json_extract(au.details, '$.text') = c.body)`;
 
-type MirrorRow = { id: string; kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null; counted: number | null };
+type MirrorRow = { id: string; kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null; counted: number | null; maint: number };
 const mirrorRows = (db: DatabaseSync, repo: string, number: number): MirrorRow[] =>
-  db.prepare(`SELECT c.id, c.kind, c.author, c.created_at, c.body, c.review_state, c.counted FROM comments c
+  db.prepare(`SELECT c.id, c.kind, c.author, c.created_at, c.body, c.review_state, c.counted,
+      c.author_association IN ('OWNER', 'MEMBER', 'COLLABORATOR') OR EXISTS (SELECT 1 FROM main.access a WHERE lower(a.login) = lower(c.author) AND a.role IN ('operator', 'maintainer')) AS maint FROM comments c
     WHERE c.repo = :repo AND c.number = :number AND ${NOT_OURS} ORDER BY c.created_at`).all({ repo, number, own: ownJson(ownLogins(db, repo)) }) as MirrorRow[];
 
 /** Comments and review bodies from the mirror: the fallback for a call that has no GitHub connection. */
-function mirrorDiscussion(db: DatabaseSync, repo: string, number: number): { entries: DiscussionEntry[]; hash: string } {
+function mirrorDiscussion(db: DatabaseSync, repo: string, number: number): { entries: DiscussionEntry[]; hash: string; maint: Set<number> } {
   const rows = mirrorRows(db, repo, number);
   const entries: DiscussionEntry[] = [];
+  const maint = new Set<number>();
   for (const r of rows) {
     const body = cleanBody(r.body);
     if (!body) continue;
+    if (r.maint === 1) maint.add(entries.length);
     entries.push({ kind: r.kind === "review" ? "review" : "comment", author: r.author, at: r.created_at, ...(r.kind === "review" ? { state: r.review_state } : {}), body: clip(body, ENTRY_LIMIT) });
   }
-  return { entries, hash: discussionHash(rows.filter((r) => r.counted === 1)) };
+  return { entries, hash: discussionHash(rows.filter((r) => r.counted === 1)), maint };
 }
 
 export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
@@ -129,7 +131,7 @@ export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number:
       formal: ${FORMAL_REVIEWS}
       reviewThreads(last: 100) { nodes { isResolved isOutdated path line originalLine
         head: comments(first: 1) { nodes { id author { login __typename } authorAssociation createdAt body } }
-        tail: comments(last: 3) { nodes { id author { login } body } } } }
+        tail: comments(last: 3) { nodes { id author { login } authorAssociation body } } } }
     }
   }
 }`;
@@ -142,7 +144,8 @@ type ThreadNode = {
 };
 
 export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null; /** Latest formal review of each reviewer with write access, for the changes-requested rule. */ formal: ReviewFact[]; reviewDecision: string | null;
-  /** Newest counted entry written by a maintainer or dashboard user; the merge-time check goes by this, as stale reviews do. */ newestMaint: string | null };
+  /** Newest counted entry written by a maintainer or dashboard user; the merge-time check goes by this, as stale reviews do. */ newestMaint: string | null;
+  /** Indexes of the entries a maintainer or dashboard user wrote: they are kept first within the prompt's budget. */ maint?: Set<number> };
 
 /**
  * Everything others wrote on the PR, read from GitHub (a read, never a write) in one query: comments, review
@@ -162,9 +165,11 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
   let newest: string | null = null, newestMaint: string | null = null;
   const dash = new Set((db.prepare("SELECT login FROM main.access WHERE role IN ('operator', 'maintainer')").all() as { login: string }[]).map((r) => r.login.toLowerCase()));
   const isMaint = (login: string | null | undefined, assoc: string | undefined) => MAINTAINER_ASSOCIATIONS.includes(assoc ?? "") || (!!login && dash.has(login.toLowerCase()));
+  const maint = new Set<number>();
   const take = (kind: "comment" | "review", n: Node) => {
     if (mine(n.author, n.id)) return;
     const body = cleanBody(n.body);
+    if (body && isMaint(n.author?.login, n.authorAssociation)) maint.add(entries.length);
     if (body) entries.push({ kind, author: n.author?.login ?? null, at: n.createdAt ?? null, ...(kind === "review" ? { state: n.state ?? null } : {}), body: clip(body, ENTRY_LIMIT) });
     if (isCounted({ author: n.author?.login ?? null, association: n.authorAssociation, bot: n.author?.__typename === "Bot", prAuthor, state: n.state, body: n.body ?? null, inline: n.comments?.totalCount })) {
       counted.push({ id: n.id ?? "", body: n.body ?? null });
@@ -184,13 +189,16 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
       if (c.createdAt && (!newest || c.createdAt > newest)) newest = c.createdAt;
       if (c.createdAt && isMaint(c.author?.login, c.authorAssociation) && (!newestMaint || c.createdAt > newestMaint)) newestMaint = c.createdAt;
     }
-    const replies = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
-      .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2) })).filter((r) => r.body);
+    const tail = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
+      .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2), maint: isMaint(r.author?.login, r.authorAssociation) })).filter((r) => r.body);
+    const replies = tail.map(({ author, body }) => ({ author, body }));
+    // A maintainer's reply in someone else's thread ranks the thread as the maintainer's own entry would.
+    if (isMaint(c.author?.login, c.authorAssociation) || tail.some((r) => r.maint)) maint.add(entries.length);
     entries.push({ kind: "thread", author: c.author?.login ?? null, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT), ...(replies.length ? { replies } : {}) });
   }
   const formal = ((pr.formal?.nodes ?? []) as Node[])
     .map((n) => ({ id: n.id ?? null, author: n.author?.login ?? null, association: n.authorAssociation ?? null, state: n.state ?? null, at: n.submittedAt ?? n.createdAt ?? null }));
-  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, newestMaint, formal, reviewDecision: pr.reviewDecision ?? null };
+  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, newestMaint, formal, reviewDecision: pr.reviewDecision ?? null, maint };
 }
 
 /** Retries a read a few times: a failed read must not silently drop what reviewers wrote. */
@@ -201,12 +209,13 @@ export async function withRetry<T>(f: () => Promise<T>, tries = 3): Promise<T> {
 }
 
 /**
- * Entries kept within the total budget: threads first, then reviews, then comments (newest first within
- * each), so a noisy bot cannot push out the findings. The kept entries are returned oldest first.
+ * Entries kept within the total budget: a maintainer's or dashboard user's entries and threads they replied to (`first`, by index) before anyone else's,
+ * then threads, reviews and comments (newest first within each), so neither a noisy bot nor the PR author can push out
+ * the findings or a maintainer's word. The kept entries are returned oldest first.
  */
-export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT): DiscussionEntry[] {
+export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT, first: ReadonlySet<number> = new Set()): DiscussionEntry[] {
   const rank = { thread: 0, review: 1, comment: 2, note: 3 } as const;
-  const order = entries.map((e, i) => ({ e, i })).sort((a, b) => rank[a.e.kind] - rank[b.e.kind] || b.i - a.i);
+  const order = entries.map((e, i) => ({ e, i })).sort((a, b) => Number(first.has(b.i)) - Number(first.has(a.i)) || rank[a.e.kind] - rank[b.e.kind] || b.i - a.i);
   let used = 0;
   const kept = new Set<number>();
   for (const { e, i } of order) {
@@ -221,12 +230,20 @@ export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT): Disc
   return out;
 }
 
-/** The discussion of a PR for a review prompt and the snapshot it came from: `live` when read from GitHub, else the mirror's. */
-export function discussionOf(db: DatabaseSync, repo: string, number: number, live?: LiveDiscussion): { entries: DiscussionEntry[]; snap: Snapshot } {
-  if (live) return { entries: fitBudget(live.entries), snap: live.snap };
+/**
+ * The discussion of a PR for a review prompt and the snapshot it came from: `live` when read from GitHub, else the mirror's.
+ * `maintDropped`: a maintainer's entry did not fit the budget, so the snapshot covers words the model was not shown.
+ */
+export function discussionOf(db: DatabaseSync, repo: string, number: number, live?: LiveDiscussion): { entries: DiscussionEntry[]; snap: Snapshot; maintDropped: boolean } {
+  const fit = (all: DiscussionEntry[], maint: Set<number>, snap: Snapshot) => {
+    const entries = fitBudget(all, TOTAL_LIMIT, maint);
+    const kept = new Set(entries);
+    return { entries, snap, maintDropped: [...maint].some((i) => !kept.has(all[i]!)) };
+  };
+  if (live) return fit(live.entries, live.maint ?? new Set(), live.snap);
   const seen = new Date().toISOString();
   const m = mirrorDiscussion(db, repo, number);
-  return { entries: fitBudget(m.entries), snap: { seen, hash: m.hash } };
+  return fit(m.entries, m.maint, { seen, hash: m.hash });
 }
 
 const staleKey = (repo: string, number: number) => `${STALE_KEY}${repo}#${number}`;
@@ -290,7 +307,7 @@ const rerunKey = (repo: string, number: number) => `${RERUN_KEY}${repo}#${number
 const reruns = (db: DatabaseSync, repo: string, number: number): number =>
   Number((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(rerunKey(repo, number)) as { value: string } | undefined)?.value ?? 0);
 
-/** Whether an operator request or a merge-time check marked the PR stale after `since` (such re-reviews are not counted). */
+/** Whether an operator request or the merge-time discussion check marked the PR stale after `since` (such re-reviews are not counted). */
 export function markedStaleSince(db: DatabaseSync, repo: string, number: number, since: string): boolean {
   const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(staleKey(repo, number)) as { value: string } | undefined)?.value;
   return !!v && v > since;
@@ -304,12 +321,16 @@ export function countRerun(db: DatabaseSync, repo: string, number: number): void
 
 /**
  * PRs, as "repo#n@head", whose Opus review read the discussion before a counted comment or review that it
- * did not read, or that an operator marked stale. With `respectCap`, PRs that already had MAX_RERUNS_PER_DAY
- * discussion-triggered re-reviews today are left out (an operator mark is never capped).
+ * did not read, that an operator marked stale, or whose diff was read against another base branch than the PR has now
+ * (a review that recorded none counts as read against the default branch). With `respectCap`, PRs that already had
+ * MAX_RERUNS_PER_DAY discussion- or base-triggered re-reviews today are left out (an operator mark is never capped).
  */
 export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false): Set<string> {
-  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash, r.blocked_by FROM opus_reviews r WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
-    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null; blocked_by: string | null }[];
+  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash, r.blocked_by,
+      i.base_ref IS NOT NULL AND COALESCE(r.base_ref, p.default_branch) IS NOT NULL AND i.base_ref <> COALESCE(r.base_ref, p.default_branch) AS rebased
+    FROM opus_reviews r LEFT JOIN items i ON i.repo = r.repo AND i.number = r.number LEFT JOIN repos p ON p.name = r.repo
+    WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
+    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null; blocked_by: string | null; rebased: number | null }[];
   const state = discussionState(db, repo);
   const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key.slice(STALE_KEY.length), m.value]));
   const out = new Set<string>();
@@ -326,7 +347,7 @@ export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false
     const talked = maintainerSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
     // A hold that waited for other items is reviewed once when none is open any more.
     const unblocked = !!r.blocked_by && storedBlockedBy(r.blocked_by).length > 0 && activeBlockers(db, ref, r.blocked_by, r.at).length === 0;
-    if (!marked && !unblocked && !(talked && !(respectCap && capped(r)))) continue;
+    if (!marked && !unblocked && !((talked || r.rebased === 1) && !(respectCap && capped(r)))) continue;
     out.add(`${ref}@${r.head_oid}`);
   }
   return out;
@@ -360,16 +381,6 @@ export function markReviewsStale(db: DatabaseSync, by: string, repo: string, num
   const at = new Date().toISOString();
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), at);
   audit(db, by, "review-again", `${repo}#${number}`, { stale: true });
-}
-
-/** The PR's base branch changed after its review: the review counts as older than now, so the PR is reviewed again at the same head. */
-export function markStaleForBase(db: DatabaseSync, repo: string, number: number, head: string, base: string): void {
-  // The re-review must read the current base, not a cached diff of the old one.
-  dropCachedDiff(repo, number, head);
-  const at = (db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as { at: string } | undefined)?.at ?? "";
-  if (markedStaleSince(db, repo, number, at)) return;
-  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), new Date().toISOString());
-  audit(db, "merge", "review-again", `${repo}#${number}`, { stale: true, base });
 }
 
 /** liveGate with retries; null when the read still fails, so the caller skips the PR this run instead of merging blind. */

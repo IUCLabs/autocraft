@@ -25,7 +25,7 @@ import type { Req } from "../types.ts";
 export type ItemPhase = ItemStatus["phase"];
 export type { ItemStatus };
 
-export type ReviewTrigger = "new-head" | "discussion" | "operator" | "model-change";
+export type ReviewTrigger = "new-head" | "discussion" | "operator" | "base" | "model-change";
 export type ReviewVerdict = "take" | "take-fix" | "hold" | "close";
 export interface OpusReviewEntry {
   id: string; head: string; current: boolean; at: string; trigger: ReviewTrigger; why: string; verdict: ReviewVerdict; sure: boolean;
@@ -149,7 +149,7 @@ function reviewsOf(c: Ctx, headNow: string | null, events: Ev[]): ReviewHistory 
   const all = rows.map((r, i): OpusReviewEntry => {
     const older = rows[i + 1];
     // Rows from before the trigger was stored: the same head as the review before means the discussion moved.
-    const trigger = (r.trigger && ["new-head", "discussion", "operator"].includes(r.trigger) ? r.trigger : older && older.head_oid === r.head_oid ? "discussion" : "new-head") as ReviewTrigger;
+    const trigger = (r.trigger && ["new-head", "discussion", "operator", "base"].includes(r.trigger) ? r.trigger : older && older.head_oid === r.head_oid ? "discussion" : "new-head") as ReviewTrigger;
     const fixes = arr<unknown>(r.fixes).map((f) => (typeof f === "string" ? f : `${(f as Json).file}: ${(f as Json).change}`));
     const claims = arr<Json>(r.claims).map((cl) => {
       // Claims are { claim, status, evidence }; the file and line sit in the evidence text.

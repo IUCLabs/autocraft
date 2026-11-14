@@ -100,6 +100,15 @@ function headOf(db: DatabaseSync, repo: string, n: number, kind: string): string
   return (kind === "pr" ? r?.head_oid : r?.embed_hash) ?? null;
 }
 
+/** The head a decision binds a member to: for a PR the head its comparison read (the current one for comparisons stored without heads), so Act never closes, keeps or carries code no comparison saw. */
+function boundHead(db: DatabaseSync, p: GroupPlan, i: { number: number; kind: string }): string | null {
+  if (i.kind !== "pr") return headOf(db, p.repo, i.number, i.kind);
+  const cmp = p.sets.find((s) => s.set.kind === "pr" && s.cmp.members.includes(i.number))?.cmp;
+  let heads: Record<string, string> = {};
+  try { heads = JSON.parse(cmp?.heads ?? "{}") as Record<string, string>; } catch { /* none stored */ }
+  return cmp?.heads != null ? heads[i.number] ?? null : headOf(db, p.repo, i.number, i.kind);
+}
+
 function supersede(db: DatabaseSync, p: GroupPlan, id: string, at: string): void {
   const ph = p.group.members.map(() => "?").join(",");
   const rows = db.prepare(`SELECT id FROM decisions WHERE kind = 'duplicate' AND repo = ? AND answer IS NULL AND id <> ? AND number IN (${ph})`).all(p.repo, id, ...p.group.members) as { id: string }[];
@@ -126,7 +135,7 @@ function unchanged(db: DatabaseSync, q: Record<string, unknown>, p: GroupPlan): 
   if (rows.some((r) => r.role !== r.base_role || r.target !== r.base_target)) return false;
   const key = (number: number, role: string, target: number | null, detail: string | null, head: string | null) => JSON.stringify([number, role, target, detail, head]);
   const stored = rows.map((r) => key(r.number, r.base_role, r.base_target, r.detail, r.head)).sort();
-  const planned = p.items.map((i) => key(i.number, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null, headOf(db, p.repo, i.number, i.kind))).sort();
+  const planned = p.items.map((i) => key(i.number, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null, boundHead(db, p, i))).sort();
   return stored.length === planned.length && stored.every((s, k) => s === planned[k]);
 }
 
@@ -218,7 +227,7 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES (?, ?, ?) ON CONFLICT(decision_id) DO UPDATE SET source = excluded.source, applied_answer = NULL").run(id, p.repo, p.source);
       db.prepare("DELETE FROM dupe_group_items WHERE decision_id = ?").run(id);
       const ins = db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, detail, base_role, base_target, head) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-      for (const i of p.items) ins.run(id, p.repo, i.number, i.kind, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null, i.role, i.target, headOf(db, p.repo, i.number, i.kind));
+      for (const i of p.items) ins.run(id, p.repo, i.number, i.kind, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null, i.role, i.target, boundHead(db, p, i));
       storeOptionTexts(db, id, ["accept", ...alts.map((a) => keepKey(a.number))], (n) => {
         const r = db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?").get(p.repo, n) as { state: string } | undefined;
         return r?.state === "OPEN" && inPilot(db, p.repo, n);

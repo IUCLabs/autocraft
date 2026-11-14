@@ -3,7 +3,7 @@
 // (compare.ts), and the stored result is current while no member's state has changed,
 // no member joined or left, no issue's text has changed and no PR's diff size has moved by
 // more than 20% since the compared head. A head push or a PR text edit alone does not
-// make it stale.
+// make it stale, but a decision binds each PR member to the head the comparison read.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { pickCanonical } from "./canonical.ts";
@@ -92,6 +92,8 @@ export type StoredComparison = {
   summary?: string | null; why?: string | null;
   /** JSON {number: additions + deletions} of the PR members when compared; null on rows stored earlier. */
   sizes?: string | null;
+  /** JSON {number: head} of the PR members the comparison read; null on rows stored earlier. */
+  heads?: string | null;
 };
 /** The per-member answers of a comparison, in the shape of the prompt replies. */
 export type ComparisonResult = {
@@ -110,15 +112,18 @@ export function storedComparison(db: DatabaseSync, repo: string, key: string): S
 
 /** `set` is the compared snapshot: its members' sizes are stored, not whatever the items hold by now. */
 export function saveComparison(db: DatabaseSync, c: StoredComparison, set?: KindSet): void {
-  const sizes: Record<number, number> = {};
+  const sizes: Record<number, number> = {}, heads: Record<number, string> = {};
   if (c.kind === "pr" && set) {
-    for (const m of set.members) { const z = sizeOf(m); if (z !== null) sizes[m.number] = z; }
+    for (const m of set.members) { const z = sizeOf(m); if (z !== null) sizes[m.number] = z; if (m.head_oid) heads[m.number] = m.head_oid; }
   } else if (c.kind === "pr") {
-    const get = db.prepare("SELECT additions, deletions FROM items WHERE repo = ? AND number = ?");
-    for (const n of c.members) { const z = sizeOf((get.get(c.repo, n) as { additions: number | null; deletions: number | null } | undefined) ?? { additions: null, deletions: null }); if (z !== null) sizes[n] = z; }
+    const get = db.prepare("SELECT additions, deletions, head_oid FROM items WHERE repo = ? AND number = ?");
+    for (const n of c.members) {
+      const m = (get.get(c.repo, n) as { additions: number | null; deletions: number | null; head_oid: string | null } | undefined) ?? { additions: null, deletions: null, head_oid: null };
+      const z = sizeOf(m); if (z !== null) sizes[n] = z; if (m.head_oid) heads[n] = m.head_oid;
+    }
   }
-  db.prepare(`INSERT OR REPLACE INTO dupe_comparisons (repo, key, kind, members, hash, kept, source, model, reason, result, error, attempts, at, summary, why, sizes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.key, c.kind, JSON.stringify(c.members), c.hash, c.kept, c.source, c.model, c.reason, c.result ? JSON.stringify(c.result) : null, c.error, c.attempts, c.at, c.summary ?? null, c.why ?? null, c.kind === "pr" ? JSON.stringify(sizes) : null);
+  db.prepare(`INSERT OR REPLACE INTO dupe_comparisons (repo, key, kind, members, hash, kept, source, model, reason, result, error, attempts, at, summary, why, sizes, heads)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.key, c.kind, JSON.stringify(c.members), c.hash, c.kept, c.source, c.model, c.reason, c.result ? JSON.stringify(c.result) : null, c.error, c.attempts, c.at, c.summary ?? null, c.why ?? null, c.kind === "pr" ? JSON.stringify(sizes) : null, c.kind === "pr" ? JSON.stringify(heads) : null);
 }
 
 /** True when a PR member's diff size differs by more than 20% from the size stored at compare time. */
@@ -131,6 +136,16 @@ function diffMoved(c: StoredComparison, members: Member[]): boolean {
     if (now === null) return false;
     return then === undefined || Math.abs(now - then) > DIFF_SIZE_CHANGE * Math.max(then, 1);
   });
+}
+
+/**
+ * The head of PR `n` that its latest stored comparison read; undefined when that comparison recorded no heads (stored
+ * before heads were kept), so nothing binds the PR to code a comparison saw.
+ */
+export function comparedHead(db: DatabaseSync, repo: string, n: number): string | undefined {
+  const r = db.prepare(`SELECT heads, json_extract(heads, '$."' || :n || '"') AS head FROM dupe_comparisons
+    WHERE repo = :repo AND kind = 'pr' AND EXISTS (SELECT 1 FROM json_each(members) WHERE value = :n) ORDER BY at DESC LIMIT 1`).get({ repo, n }) as { heads: string | null; head: string | null } | undefined;
+  return r?.heads != null && r.head !== null ? r.head : undefined;
 }
 
 /** The stored comparison of the set when it is current. */

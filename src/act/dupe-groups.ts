@@ -10,6 +10,8 @@ import { embedHash } from "../itemhash.ts";
 import { backlogHeld } from "../dupes/held.ts";
 import { inPilot } from "../pilot.ts";
 import { textsFor } from "../dupes/texts.ts";
+import { compareAgain } from "../dupes/compare.ts";
+import { comparedHead } from "../dupes/plan.ts";
 
 const ACTOR = "act";
 /** Failed writes on one member before it is recorded as skipped. */
@@ -86,6 +88,13 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       for (const c of closers) if (!posted.get(dec.id, c.number, "close")) run.log(`  would comment and close ${ref(c.number)} (${dec.id})`);
       continue;
     }
+    // A PR is closed or kept only at a head a stored comparison read: a comparison that recorded no heads is made again first.
+    const unbound = items.filter((i) => i.kind === "pr" && i.role !== "stay" && !posted.get(dec.id, i.number, "close") && comparedHead(db, run.repo, i.number) === undefined);
+    if (unbound.length) {
+      for (const i of unbound) compareAgain(db, ACTOR, run.repo, i.number);
+      run.log(`  ${dec.id}: waits for a comparison that records the heads of ${unbound.map((i) => ref(i.number)).join(", ")}`);
+      continue;
+    }
     const waits = await run.io.begin?.(dec.id);
     if (waits) { run.log(`  ${dec.id}: waiting: ${waits}`); continue; }
     const skip = (n: number, step: string, reason: string, release = false) => {
@@ -111,10 +120,15 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         // The kept items must still stand: a closed (unmerged) kept item makes the duplicates' comments wrong.
         for (const k of items.filter((i) => i.role === "keep")) {
           const live = await run.io.live(k.number);
-          if (!live || (live.state !== "OPEN" && !(live.type === "PullRequest" && live.state === "MERGED"))) {
+          const gone = !live || (live.state !== "OPEN" && !(live.type === "PullRequest" && live.state === "MERGED"));
+          // An open kept PR at another head than the comparison read is no longer the code the duplicates were closed for.
+          const moved = !gone && k.kind === "pr" && live!.state === "OPEN" && (!k.head || live!.head !== k.head || comparedHead(db, run.repo, k.number) !== k.head);
+          if (gone || moved) {
             // Nothing stays held by a decision that can no longer close anything: the members are released and the next comparison asks again.
-            const reason = `the kept item ${ref(k.number)} is gone or closed`;
+            const reason = moved ? `the head of the kept PR ${ref(k.number)} moved since the comparison` : `the kept item ${ref(k.number)} is gone or closed`;
             for (const c of closers) if (!posted.get(dec.id, c.number, "close")) skip(c.number, "close", reason, true);
+            // The next comparison reads the kept PR's new head.
+            if (moved) compareAgain(db, ACTOR, run.repo, k.number);
             db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(run.at(), dec.id);
             audit(db, ACTOR, "duplicate-group-ended", dec.id, { reason });
             run.log(`  ${dec.id}: ${reason}; group ended`);
@@ -145,7 +159,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         const live = await run.io.live(c.number);
         if (!live) { skip(c.number, "close", "GitHub returned no such item"); continue; }
         if (live.state !== "OPEN") { skip(c.number, "close", `already ${live.state.toLowerCase()} on GitHub`); continue; }
-        if (c.kind === "pr" && c.head && live.head !== c.head) { skip(c.number, "close", "the head moved since the comparison", true); continue; }
+        if (c.kind === "pr" && (!c.head || live.head !== c.head || comparedHead(db, run.repo, c.number) !== c.head)) { skip(c.number, "close", "the head moved since the comparison", true); compareAgain(db, ACTOR, run.repo, c.number); continue; }
         if (c.kind === "issue" && c.head) {
           const row = db.prepare("SELECT embed_hash, title, body FROM items WHERE repo = ? AND number = ?").get(run.repo, c.number) as { embed_hash: string | null; title: string | null; body: string | null } | undefined;
           // A missing stored hash is computed from the text; an item without a row counts as changed.

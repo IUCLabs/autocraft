@@ -286,9 +286,12 @@ function reviewAt(db: DatabaseSync, p: Row, head: string): ReviewRead {
   return { kind: "bad", why: `the review says ${r.verdict}${r.sure === 1 ? "" : " (unsure)"}${r.reason ? `: ${oneLine(r.reason, 160)}` : ""}` };
 }
 
-/** "base merge" or "fix-up for the review's fixes" when the pipeline itself pushed `cur` on top of the row's head without adding code a person did not see, else null. */
+/**
+ * "base merge" or "fix-up for the review's fixes" when the pipeline itself pushed `cur` on top of the row's head without adding code a person did not see, else null.
+ * The review's fix-up counts only for a row that began with the operator's own fix-up: a plain Merge answer carried across a base merge never covered model-written code.
+ */
 function ownPush(db: DatabaseSync, p: Row, cur: string): string | null {
-  if (db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND COALESCE(source, 'review') = 'review' AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "fix-up for the review's fixes";
+  if (p.fix_id !== null && db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND COALESCE(source, 'review') = 'review' AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "fix-up for the review's fixes";
   // Only a base merge that left the PR's own diff unchanged continues an answer; a CI fix or a resolved conflict is model-written code nobody saw.
   if (db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND state = 'merged' AND own_diff = 'same'").get(p.repo, p.number, p.head, cur)) return "base merge";
   return null;
@@ -382,6 +385,8 @@ function advance(db: DatabaseSync, p: Row): void {
       return;
     }
     if (r.kind === "take") return void move(db, p, "ci", { line: "The review of the fix-up says take; waiting for CI." });
+    // A Merge answer carried across a base merge covers no fix-up: a person decides on the fixes.
+    if (r.kind === "takefix" && p.fix_id === null) return stop("asked", "the review of the merged head asks for fixes", head, [`review of the merged head: take-fix${r.why ? `: ${r.why}` : ""}`]);
     if (r.kind === "takefix") {
       // The planner's fix-up of the review's fixes runs next. Its push is our own (ownPush), so the row stays and the new head is reviewed; when no fix-up can run, a person decides.
       const f = cur === head ? loadPrFact(db, p.repo, p.number) : null;
@@ -398,6 +403,7 @@ function advance(db: DatabaseSync, p: Row): void {
     // A re-review since the move to ci counts: the hand-over needs a sure take at this head now.
     const r = reviewAt(db, p, head);
     if (r.kind === "none" || r.kind === "stale") return void move(db, p, "review", { line: "The review of the pushed head is out of date; Opus reviews it again." });
+    if (r.kind === "takefix" && p.fix_id === null) return stop("asked", "the review of the merged head asks for fixes", head, [`review of the merged head: take-fix${r.why ? `: ${r.why}` : ""}`]);
     if (r.kind === "takefix") return void move(db, p, "review", { line: "The review of the pushed head now asks for fixes; the pipeline's fix-up comes first." });
     if (r.kind === "bad") return stop("asked", r.why, head, [`review of the fix-up: ${r.why}`]);
     const c = db.prepare("SELECT overall, mergeable FROM pr_checks WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head) as { overall: string; mergeable: string | null } | undefined;
