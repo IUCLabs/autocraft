@@ -35,20 +35,30 @@ function decodesToSecret(m: string, encoding: "hex" | "base64"): boolean {
   return /^[\x20-\x7e\t\n\r]+$/.test(d) && [...SECRET_PATTERNS, URL_USERINFO].some((p) => matches(p, d));
 }
 
+/** Hides anything that looks like a credential: for logs, stored copies and text that is shown or posted. */
 export function scrub(text: string): string {
-  // Paths under the home directory show as ~/...: the log is shown to everyone signed in.
-  let t = text.replaceAll(homedir(), "~");
   // Encoded credentials first, while the encoded run is still whole.
-  t = t.replace(B64_RUN, (m) => (/^[0-9a-f]+$/i.test(m) || !decodesToSecret(m, "base64") ? m : "[hidden]"));
+  let t = text.replace(B64_RUN, (m) => (/^[0-9a-f]+$/i.test(m) || !decodesToSecret(m, "base64") ? m : "[hidden]"));
   t = t.replace(HEX_RUN, (m) => (/^[0-9]+$/.test(m) || (DIGEST_LENGTHS.has(m.length) && !decodesToSecret(m, "hex")) ? m : "[hidden]"));
   t = t.replace(URL_USERINFO, "$1[hidden]@");
   t = t.replace(NAMED_HEX, "$1[hidden]");
+  t = t.replace(DOTTED, (m) => (mixed(m) ? "[hidden]" : m));
+  return scrubCredentials(t);
+}
+
+/**
+ * Hides only the known credential shapes (provider token prefixes, keys, auth headers, named values, long mixed random
+ * runs). A model reply that carries code is read through this one: hex literals, URLs with user info and dotted names
+ * in code stay as written, and `scrub` covers the stored copy.
+ */
+export function scrubCredentials(text: string): string {
+  // Paths under the home directory show as ~/...: the log is shown to everyone signed in.
+  let t = text.replaceAll(homedir(), "~");
   for (const p of SECRET_PATTERNS) {
     t = t.replace(p, (m, name?: string) => {
       if (/^(Bearer|token|Basic)$/i.test(name ?? "")) return `${name} [hidden]`;
       return typeof name === "string" && name !== m && /^[A-Za-z_]+$/.test(name) && /[=:]/.test(m) ? `${name}=[hidden]` : "[hidden]";
     });
   }
-  t = t.replace(DOTTED, (m) => (mixed(m) ? "[hidden]" : m));
   return t.replace(LONG_RANDOM, (m) => (/^[0-9a-f]+$/i.test(m) || !mixed(m) ? m : "[hidden]"));
 }

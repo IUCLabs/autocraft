@@ -65,6 +65,8 @@ type Common = {
   sandbox?: { tools: string[]; /** The call may get the maintainers' AGENTS.md and ROADMAP.md of the default branch at /repo-docs when the repo has them. */ docs?: boolean; maxTurns: number; /** The call also gets the workspace: every tracked repository at /repos/<name> and the explorer subagent. */ workspace?: boolean; /** The call may get the repo's reference documentation at /reference when it exists. */ reference?: boolean; /** The call may get the `check` build tool (src/checktool) when its stage provides one. */ check?: boolean };
   /** The reply is linted after parsing (src/replylint.ts); a sandboxed call keeps its session so problems can be sent back as one follow-up message. */
   lint?: boolean;
+  /** The reply carries code (a patch, conflict resolutions, a test): its parser reads it with only the known credential shapes hidden (`scrubCredentials`), so the stricter output scrub never rewrites code. */
+  codeReply?: boolean;
   /** Further rows for the Prompts page's settings table, such as texts the stage posts itself. */
   extra?: { label: string; value: string }[];
 };
@@ -382,6 +384,7 @@ Reply with ONLY one JSON object:
 
 const FIXUP: ClaudePrompt = {
   id: "fixup.patch",
+  codeReply: true,
   stage: "Integrate (fix-ups)",
   runner: "claude",
   purpose: "Turns the small mechanical fixes of a take-fix review into a unified diff for the contributor's branch.",
@@ -425,6 +428,7 @@ Reply with ONLY a unified diff in git format against the file contents shown: fo
 
 const CIFIX: ClaudePrompt = {
   id: "cifix.patch",
+  codeReply: true,
   stage: "Integrate (fix-ups)",
   runner: "claude",
   purpose: "Turns the log of a failing CI check on a wanted pull request into a unified diff that makes the check pass.",
@@ -652,6 +656,7 @@ Reply with ONLY a JSON array holding exactly one object:
 
 const FIXISSUE_PATCH: ClaudePrompt = {
   id: "fixissue.patch",
+  codeReply: true,
   stage: "Fix",
   runner: "claude",
   purpose: "Writes the fix for an issue and a regression test for it as one unified diff.",
@@ -728,6 +733,7 @@ ${CHECK_REPLY}
 
 const FIXUP_CONFLICT: ClaudePrompt = {
   id: "fixup.conflict",
+  codeReply: true,
   stage: "Integrate (fix-ups)",
   runner: "claude",
   purpose: "Resolves the conflicts that merging the default branch into a take or take-fix pull request leaves, keeping what both sides intend.",
@@ -1466,6 +1472,7 @@ const SECURITY_VERIFY: ClaudePrompt = {
 
 const SECURITY_FIX: ClaudePrompt = {
   id: "security.fix",
+  codeReply: true,
   stage: "Security",
   runner: "claude",
   purpose: "Writes the private fix of a confirmed finding and its regression test as one diff, with a plain title and summary for the pull request. The diff stays in the database, on a local branch of the bare cache that is never pushed, until an operator lands it.",
@@ -1481,6 +1488,7 @@ const SECURITY_FIX: ClaudePrompt = {
 
 const SECURITY_SCANTEST: ClaudePrompt = {
   id: "security.scantest",
+  codeReply: true,
   stage: "Security",
   runner: "claude",
   purpose: "Optional (the Run scan tests switch): writes the test file for a verified finding from the test Verify proposed. The build worker runs it on the pinned commit; a failing test marks the finding as shown, a passing one as not shown. The reply is never applied to the repository and never leaves the private finding.",
