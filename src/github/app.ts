@@ -71,13 +71,15 @@ export function appJwt(app: Pick<AppSecrets, "clientId" | "privateKey">, nowMs =
   return `${body}.${createSign("RSA-SHA256").update(body).sign(app.privateKey, "base64url")}`;
 }
 
-export async function call(base: string, path: string, token: string | null, method = "GET"): Promise<unknown> {
+export async function call(base: string, path: string, token: string | null, method = "GET", body?: unknown): Promise<unknown> {
   const r = await fetch(`${base}${path}`, {
     method,
     headers: {
       accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": UA,
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
     },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(15_000),
   });
   if (!r.ok) {

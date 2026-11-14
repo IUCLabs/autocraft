@@ -9,16 +9,21 @@
 set -euo pipefail
 
 branch="${AUTOCRAFT_BRANCH:-main}"
-deploy=0
-while read -r _old _new ref; do
-	if [ "$ref" = "refs/heads/$branch" ]; then deploy=1; fi
+sha=""
+while read -r _old new ref; do
+	if [ "$ref" = "refs/heads/$branch" ]; then sha="$new"; fi
 done
-if [ "$deploy" -eq 0 ]; then
+if [ -z "$sha" ]; then
 	echo "-- no $branch update; nothing to deploy --"
 	exit 0
 fi
+# The pushed commit, resolved once: the hook and the release both come from it, whatever the branch does meanwhile.
+if ! printf '%s\n' "$sha" | grep -Eqx '[0-9a-f]{40}|[0-9a-f]{64}' || ! git cat-file -e "$sha^{commit}" 2>/dev/null; then
+	echo "!! $branch was deleted or does not name a commit; nothing was deployed" >&2
+	exit 1
+fi
 
-if ! git cat-file -e "refs/heads/$branch:deploy/hook.sh" 2>/dev/null; then
+if ! git cat-file -e "$sha:deploy/hook.sh" 2>/dev/null; then
 	echo "!! the pushed commit has no deploy/hook.sh; nothing was deployed" >&2
 	exit 1
 fi
@@ -26,5 +31,5 @@ fi
 # Run the hook from a copy: the checkout it updates may replace deploy/hook.sh mid-run.
 hook="$(mktemp "$(cd "$GIT_DIR/.." && pwd)/.post-receive-hook.XXXXXX")"
 trap 'rm -f "$hook"' EXIT
-git cat-file blob "refs/heads/$branch:deploy/hook.sh" >"$hook"
-AUTOCRAFT_BRANCH="$branch" bash "$hook"
+git cat-file blob "$sha:deploy/hook.sh" >"$hook"
+AUTOCRAFT_BRANCH="$branch" AUTOCRAFT_DEPLOY_SHA="$sha" bash "$hook"

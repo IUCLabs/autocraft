@@ -17,6 +17,9 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=@ROOT@
+# The settings file every unit sources as shell, the deployed code and the tools on PATH stay read-only for the
+# dashboard, the process that faces the network: it writes only its database, caches and config/secrets.json.
+ReadOnlyPaths=@ROOT@/config/autocraft.env @ROOT@/releases @ROOT@/repo.git -@ROOT@/.local
 
 [Install]
 WantedBy=multi-user.target

@@ -22,8 +22,11 @@ export const SHARED_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 export const WORK_PATH = "/work";
 const HOME = "/home/sandbox";
 const CONFIG = `${HOME}/.claude`;
-/** Reads the model is refused outright: the process environments (the long-lived token is in the CLI's) and the CLI's credential directory. */
-export const DENIED_READS = ["Read(/proc/**)", `Read(${CONFIG}/**)`];
+/**
+ * Reads the model is refused outright: the process environments (the long-lived token is in the CLI's) and the CLI's credential directory.
+ * The CLI's rule syntax takes `//path` as absolute (the form the allow rules use) and `/path` as relative to a settings source, so each path is denied in both forms.
+ */
+export const DENIED_READS = ["/proc", CONFIG].flatMap((p) => [`Read(/${p}/**)`, `Read(${p}/**)`]);
 const CLAUDE_PATH = "/opt/claude/claude";
 
 export type SandboxSpec = {

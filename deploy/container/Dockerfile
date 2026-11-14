@@ -20,7 +20,8 @@ FROM ${NODE_DEV_IMAGE} AS web
 RUN npm install -g pnpm@11.28.10
 WORKDIR /app/web
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+# Install scripts stay off, as in deploy/hook.sh; only esbuild needs its own to place its binary.
+RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild esbuild
 # src/ and docs/ are read by the web build too (shared API types, About page text).
 COPY src /app/src
 COPY docs /app/docs
@@ -96,7 +97,10 @@ RUN set -eux; \
     install -d -o 10001 -g 10001 /rootfs/data /rootfs/data/home /rootfs/data/cache /rootfs/config
 
 # Node CLIs: pnpm for the pipeline's build environments and the Claude CLI, pinned
-# like the host install, which updates by hand (DISABLE_AUTOUPDATER).
+# like the host install, which updates by hand (DISABLE_AUTOUPDATER). Every package
+# these installs fetch is an exact version (pnpm has no dependencies; the Claude CLI's
+# platform packages are pinned to its own version), and the registry never replaces
+# a published version. The Claude CLI's install script places its platform binary.
 RUN npm install -g --prefix /rootfs/usr/local pnpm@11.28.10 @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
  && npm cache clean --force
 
@@ -115,7 +119,7 @@ ARG SOURCE_COMMIT=
 WORKDIR /app
 RUN npm install -g pnpm@11.28.10
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile --prod
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 COPY src ./src
 COPY scripts ./scripts
 COPY deploy/backup.sh deploy/container/entrypoint.sh ./deploy/

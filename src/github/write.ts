@@ -16,7 +16,7 @@ export type AskKind = "fixup" | "conflict" | "cifix" | "lint";
 export type CommentGrant = Guarded<AskKind> | GuardedItem | GuardedRepo;
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import { Client, type Querier } from "../mirror.ts";
-import { appChildEnv, AppNotInstalledError, installationToken, RepoNotInInstallationError } from "./install-token.ts";
+import { appChildEnv, AppNotInstalledError, installationToken, RepoNotInInstallationError, type TokenScope } from "./install-token.ts";
 import { type Note, withNote } from "./note.ts";
 import { ownerOf, slugOf, splitSlug } from "../owners.ts";
 import { call, GITHUB_API } from "./app.ts";
@@ -27,7 +27,7 @@ export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
 
 /** Who writes (the audit login: the stage name, or the operator for manual actions) and where the row goes. */
-export type Writer = { db: DatabaseSync; login: string; /** Replaces the clock (tests). */ now?: () => number; /** Replaces the pacing sleep (tests). */ sleep?: (ms: number) => Promise<void>; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
+export type Writer = { db: DatabaseSync; login: string; /** Replaces the clock (tests). */ now?: () => number; /** Replaces the pacing sleep (tests). */ sleep?: (ms: number) => Promise<void>; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string, scope?: TokenScope) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
 type Details = Record<string, unknown>;
 type Retry = <T>(f: () => Promise<T>) => Promise<T>;
 
@@ -65,11 +65,14 @@ const idOf = (w: Writer, g: Guarded | Grant, kind: WriteKind = "other"): string 
 
 const inAppLane = (w: Writer, g: Guarded | Grant, kind: WriteKind = "other"): boolean => githubIdentity(w.db) === "app" && identityFor(g, kind) === "app";
 
-/** The child environment for a grant's repo, holding an installation token. Never falls back to the box account: a failure is a clear error. */
-async function appEnv(w: Writer, g: Guarded | Grant): Promise<Record<string, string>> {
+/**
+ * The child environment for a grant's repo, holding an installation token that reaches that repo only (and `scope`'s).
+ * Never falls back to the box account: a failure is a clear error.
+ */
+async function appEnv(w: Writer, g: Guarded | Grant, scope?: TokenScope): Promise<Record<string, string>> {
   const owner = ownerOf(g.repo);
   try {
-    return appChildEnv(await (w.mint ?? installationToken)(owner, g.repo));
+    return appChildEnv(await (w.mint ?? installationToken)(owner, g.repo, scope));
   } catch (e) {
     const fix = "install it on the repository or set the repository's identity back to legacy";
     if (e instanceof AppNotInstalledError) throw new Error(`app identity: the GitHub App is not installed on ${owner}; ${fix}`);
@@ -90,21 +93,21 @@ function laneExec(w: Writer, g: Guarded | Grant, exec: Exec, kind: WriteKind = "
   };
 }
 
-function laneGit(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">): Pick<Git, "git"> {
+function laneGit(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">, scope?: TokenScope): Pick<Git, "git"> {
   if (!inAppLane(w, g)) return git;
   return {
     git: async (args, opts) => {
       let env: Record<string, string>;
-      try { env = await appEnv(w, g); } catch (e) { return failedResult(e); }
+      try { env = await appEnv(w, g, scope); } catch (e) { return failedResult(e); }
       return git.git(args, { ...opts, app: { env } });
     },
   };
 }
 
-function laneQuery(w: Writer, g: Guarded | Grant, q: Querier, kind: WriteKind = "other"): Querier {
+function laneQuery(w: Writer, g: Guarded | Grant, q: Querier, kind: WriteKind = "other", scope?: TokenScope): Querier {
   if (!inAppLane(w, g, kind)) return q;
   return {
-    query: async (query, variables) => (w.appClient ?? ((env) => new Client(0, env)))(await appEnv(w, g)).query(query, variables),
+    query: async (query, variables) => (w.appClient ?? ((env) => new Client(0, env)))(await appEnv(w, g, scope)).query(query, variables),
     get spent() { return q.spent; },
     get remaining() { return q.remaining; },
   };
@@ -331,8 +334,9 @@ export async function removeLabel(w: Writer, g: Grant, q: Querier, item: ItemRef
 /** Moves an issue to another repository of the organisation (`to.id` is its node id). The grant `gTo` must cover the target repo; returns the issue's new URL. */
 export async function transferIssue(w: Writer, g: Grant, gTo: Grant, q: Querier, item: ItemRef, to: { repo: string; id: string }, details: Details = {}): Promise<string> {
   covers(g, item.repo, item.number);
-  q = laneQuery(w, g, q);
   covers(gTo, to.repo);
+  // The move needs both repositories.
+  q = laneQuery(w, g, q, "other", { also: [to.repo] });
   const r = await recorded(w, idOf(w, g), "act-transfer", refOf(item.repo, item.number), { ...details, to: to.repo },
     () => q.query(TRANSFER_ISSUE, { id: item.id, repo: to.id }) as Promise<{ transferIssue?: { issue?: { url?: string } } }>,
     (x) => ({ url: x.transferIssue?.issue?.url ?? undefined }));
@@ -616,7 +620,8 @@ export function pushOwnBranch(w: Writer, g: Grant, git: Pick<Git, "git">, action
 }
 
 async function pushed(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">, action: string, target: string, o: { remote: string; branch: string; sha: string }, lease: string, details: Details, pr: { repo: string; number: number | null }, asBox = false): Promise<ExecResult> {
-  if (!asBox) git = laneGit(w, g, git);
+  // A contributor's fork is outside the installation: that push keeps the installation-wide token.
+  if (!asBox) git = laneGit(w, g, git, o.remote.toLowerCase() === slugOf(g.repo).toLowerCase() ? undefined : { wide: true });
   // A box-account push (an advisory's private fork) is audited as legacy whatever the repo's identity.
   const identity = asBox ? "legacy" : idOf(w, g);
   const r = await recorded(w, identity, action, target, { ...details, branch: o.branch, remote: o.remote, commit: o.sha },

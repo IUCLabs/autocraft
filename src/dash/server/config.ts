@@ -90,8 +90,8 @@ export function isLoopbackHost(hostHeader: string | undefined): boolean {
   return !!m && isLoopback(m[1] ?? m[2]!);
 }
 
-export function readSecrets(path: string | undefined): Secrets {
-  if (!path) throw new ConfigError("AUTOCRAFT_SECRETS_FILE is not set");
+/** Refuses a secrets file that is missing or open to group or others. Every reader of the file checks it first. */
+export function checkSecretsFileMode(path: string): void {
   let mode: number;
   try {
     mode = statSync(path).mode;
@@ -99,6 +99,11 @@ export function readSecrets(path: string | undefined): Secrets {
     throw new ConfigError("secrets file not found");
   }
   if (mode & 0o077) throw new ConfigError("secrets file is readable or writable by group or others; chmod 600 it");
+}
+
+export function readSecrets(path: string | undefined): Secrets {
+  if (!path) throw new ConfigError("AUTOCRAFT_SECRETS_FILE is not set");
+  checkSecretsFileMode(path);
   let raw: Record<string, unknown>;
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
