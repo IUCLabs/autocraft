@@ -14,6 +14,7 @@ import { itemState } from "./decisions.ts";
 import { flowMembers } from "./flow.ts";
 import { queueSlots } from "../../rank/position.ts";
 import { excludeHidden, hiddenRepos, visibleRepos } from "./visible.ts";
+import { readerOf, statusFor } from "./reader.ts";
 import { statusFromItem } from "../../core/item-status.ts";
 import { ITEM_PHASES, PHASE_SQL, type ItemPhase, type ItemStatus, type ItemStatusList, type ItemStatusRow } from "./home-types.ts";
 
@@ -392,7 +393,8 @@ export async function statusList(db: DatabaseSync, req: Req): Promise<ItemStatus
   for (const k of ["q", "kind"]) if (req.query.get(k)) only.set(k, req.query.get(k)!);
   for (const r of list(req, "repo")) only.append("repo", r);
   only.set("state", "all");
-  const b = build(db, { ...req, query: only }, await hiddenRepos(db, req));
+  const reader = await readerOf(db, req);
+  const b = build(db, { ...req, query: only }, reader.hidden);
   const limit = Math.min(100, Math.max(1, Number(req.query.get("limit")) || 50));
   const from = (cols: string) => (b.text ? `WITH ${HIT_IDS} SELECT ${cols} FROM hits h JOIN items i ON i.rowid = h.rid` : `SELECT ${cols} FROM items i`) +
     " LEFT JOIN main.item_plans p ON p.repo = i.repo AND p.number = i.number";
@@ -431,7 +433,7 @@ export async function statusList(db: DatabaseSync, req: Req): Promise<ItemStatus
       try { status = r.view ? (JSON.parse(r.view) as { status?: ItemStatus }).status : undefined; } catch { /* a malformed view counts as none */ }
       return {
         repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state), title: r.title ?? "",
-        status: status ?? statusFromItem(r, r.updated_at ?? ""), updatedAt: r.updated_at ?? "",
+        status: status ? statusFor(reader, r.repo, r.number, status) : statusFromItem(r, r.updated_at ?? ""), updatedAt: r.updated_at ?? "",
       };
     }),
     nextCursor: got.length > limit && last ? `${last.updated_at ?? ""}|${last.repo}|${last.number}` : null,

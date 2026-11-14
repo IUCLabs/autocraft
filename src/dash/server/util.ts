@@ -47,23 +47,40 @@ export function previewTags(baseUrl: string | null | undefined, path: string, ti
 }
 const PREVIEW_DESCRIPTION = "Automation for GitHub issues and pull requests: reviews, fix-ups and a merge queue, with people deciding.";
 
+/** Keys a limiter keeps; past it, expired keys go (one walk per window at most) and then the oldest. */
+export const LIMITER_KEYS = 10_000;
+
+/** Makes room for a new key in a limiter's map: drops the entries `expired` says are spent, walking the map at most once per `everyMs`, then the oldest entries. */
+export function trimKeys<V>(map: Map<string, V>, now: number, last: number, everyMs: number, expired: (v: V) => boolean): number {
+  if (now - last >= everyMs) {
+    last = now;
+    for (const [k, v] of map) if (expired(v)) map.delete(k);
+  }
+  for (const k of map.keys()) {
+    if (map.size < LIMITER_KEYS) break;
+    map.delete(k);
+  }
+  return last;
+}
+
 // Fixed-window counters, in memory: limits reset with the process, which is
 // enough to slow down a loop or a stuck client.
 export class RateLimiter {
   #hits = new Map<string, { start: number; n: number }>();
   #limit: number;
   #window: number;
+  #swept = 0;
   constructor(limit: number, windowMs: number) {
     this.#limit = limit;
     this.#window = windowMs;
   }
   allow(key: string): boolean {
     const now = Date.now();
-    if (this.#hits.size > 10_000) {
-      for (const [k, v] of this.#hits) if (now - v.start >= this.#window) this.#hits.delete(k);
-    }
+    if (this.#hits.size >= LIMITER_KEYS && !this.#hits.has(key)) this.#swept = trimKeys(this.#hits, now, this.#swept, this.#window, (v) => now - v.start >= this.#window);
     const h = this.#hits.get(key);
     if (!h || now - h.start >= this.#window) {
+      // Re-inserted, so the map stays in order of window start and the oldest go first.
+      this.#hits.delete(key);
       this.#hits.set(key, { start: now, n: 1 });
       return true;
     }

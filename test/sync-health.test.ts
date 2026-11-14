@@ -101,7 +101,8 @@ test("GET /healthz/checks answers 503 with a stale worker and shows no repo name
   db.prepare("INSERT INTO sync_runs (started_at, ended_at, mode, items) VALUES (?, ?, 'search', 0)").run(at(70_000), at(60_000));
   db.prepare("INSERT INTO build_envs (id, label, kind, enabled, slots, key_hash, last_seen_at, created_at) VALUES ('sandbox','Sandbox','local-sandbox',1,2,'h',?,?)").run(at(6 * 60_000), at(86_400_000));
   db.prepare("INSERT INTO sync_repo_errors (repo, kind, message, since, at) VALUES ('a','not-found','x',?,?)").run(at(1000), at(1000));
-  const server = createServer((req, res) => { if (!serveChecks(req, res, db, now, 0)) res.writeHead(404).end(); });
+  // The header stands in for a staff session: anonymous callers get names and states only.
+  const server = createServer((req, res) => { if (!serveChecks(req, res, db, now, 0, (r) => r.headers["x-staff"] === "1")) res.writeHead(404).end(); });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/healthz/checks`;
   try {
@@ -109,8 +110,10 @@ test("GET /healthz/checks answers 503 with a stale worker and shows no repo name
     assert.equal(bad.status, 503);
     const body = await bad.json() as { status: string; checks: { id: string; state: string; count?: number }[] };
     assert.equal(body.checks.find((c) => c.id === "workers")?.state, "fail");
-    assert.equal(body.checks.find((c) => c.id === "sync-repos")?.count, 1);
-    assert.ok(!JSON.stringify(body).includes("storytold/a") && !JSON.stringify(body).includes("sandbox"));
+    assert.deepEqual(body.checks.find((c) => c.id === "sync-repos"), { id: "sync-repos", state: "warn" });
+    const staff = await (await fetch(url, { headers: { "x-staff": "1" } })).json() as typeof body;
+    assert.equal(staff.checks.find((c) => c.id === "sync-repos")?.count, 1);
+    assert.ok(!JSON.stringify(staff).includes("storytold/a") && !JSON.stringify(staff).includes("sandbox"));
     db.prepare("UPDATE build_envs SET last_seen_at = ?").run(at(10_000));
     assert.equal((await fetch(url)).status, 200);
   } finally {

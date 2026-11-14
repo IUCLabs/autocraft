@@ -7,6 +7,7 @@ import type { RankBreakdown } from "../../rank/score.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { visibleRepos } from "./visible.ts";
+import { readerOf, veiledFor } from "./reader.ts";
 
 type Row = { repo: string; number: number; kind: string; title: string | null; score: number; breakdown: string; next: string | null; label: string | null; item_state: string | null };
 
@@ -26,12 +27,14 @@ export async function work(db: DatabaseSync, req: Req): Promise<WorkList> {
   const rows = db.prepare(`SELECT i.repo, i.number, i.kind, i.title, r.score, r.breakdown, json_extract(p.view, '$.next') AS next, json_extract(p.view, '$.label') AS label, p.item_state
     FROM items i JOIN item_rank r ON r.repo = i.repo AND r.number = i.number LEFT JOIN item_plans p ON p.repo = i.repo AND p.number = i.number
     WHERE ${where} ORDER BY r.score DESC, i.repo, i.number LIMIT ? OFFSET ?`).all(...args, limit, offset) as Row[];
+  const reader = await readerOf(db, req);
   const out: WorkRow[] = rows.map((r) => {
     const bd = JSON.parse(r.breakdown) as RankBreakdown;
     return {
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", score: r.score, level: bd.level, size: bd.size,
       breakdown: bd, label: r.label as TypeLabel | null,
-      next: r.next ?? NOT_PLANNED, nextHref: r.item_state === "referee-due" ? classifyListOf(r.repo) : null,
+      // A viewer of a quiet pull request gets no next step: it can quote the planner's reasons.
+      next: veiledFor(reader, r.repo, r.number) ? "" : r.next ?? NOT_PLANNED, nextHref: r.item_state === "referee-due" ? classifyListOf(r.repo) : null,
     };
   });
   return { rows: out, total, next: offset + rows.length < total ? offset + rows.length : null };

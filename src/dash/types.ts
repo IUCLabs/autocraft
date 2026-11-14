@@ -41,5 +41,7 @@ export type Route = {
   method: "GET" | "POST" | "PUT" | "DELETE";
   pattern: string;                  // "/api/items/:repo/:n"
   operator?: boolean;               // server returns 403 unless user.role is operator
+  /** A GET that aggregates the mirror or runs the embedder: it spends the session's expensive-GET budget (for the given query, when a function). */
+  expensive?: true | ((query: URLSearchParams) => boolean);
   handler: (db: DatabaseSync, req: Req) => Res | Promise<Res>;
 };

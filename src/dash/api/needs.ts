@@ -4,7 +4,7 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { NeedsFeedbackPage, NeedsFeedbackRow, NeedsFixPage, NeedsPage, NeedsStoppedRow } from "../../../web/src/api/types.ts";
 import { listAccounts } from "../../agents/accounts.ts";
 import { getDecision, reposOf } from "../../decisions.ts";
-import { needingSql, withoutHidden } from "./decisions.ts";
+import { needingSql, touchesQuiet, withoutHidden } from "./decisions.ts";
 import { stageLimits } from "../../runner/autopilot.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
 import { reviewBots } from "../../review/bots.ts";
@@ -15,6 +15,8 @@ import { fixStoppedWait } from "../../core/decide-item.ts";
 import { blankIfHidden, hiddenRepos } from "./visible.ts";
 import { filtered, hiddenTest, isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import { allOwnLogins } from "../../github/identity.ts";
+import { isQuiet } from "../../security/quiet.ts";
+import { canSeeInternals } from "./staff.ts";
 
 export const NEEDS_PAGE = 30;
 /** Older feedback is not asked for any more; the window also bounds the scans. */
@@ -63,7 +65,19 @@ function hiddenSql(hidden: HiddenRepos, params: Record<string, SQLInputValue>): 
   return `(repo IS NULL OR NOT (${h.sql.replace(/\?/g, () => { params[`h${k}`] = h.args[k]!; return `:h${k++}`; })}))`;
 }
 
-function feedback(db: DatabaseSync, hidden: HiddenRepos, cursor: { at: string; id: string } | null, limit: number): { rows: Raw[]; more: boolean; unhandled: number } {
+/** True when a feedback row is about a quiet pull request: its item, or any item of its decision (batch and duplicate-group members too). */
+function quietRow(db: DatabaseSync, r: Pick<Raw, "repo" | "number" | "decision">, memo: Map<string, boolean>): boolean {
+  if (r.repo !== null && r.number !== null && isQuiet(db, r.repo, r.number)) return true;
+  if (!r.decision) return false;
+  let q = memo.get(r.decision);
+  if (q === undefined) {
+    const d = getDecision(db, r.decision);
+    memo.set(r.decision, (q = !!d && touchesQuiet(db, d)));
+  }
+  return q;
+}
+
+function feedback(db: DatabaseSync, hidden: HiddenRepos, cursor: { at: string; id: string } | null, limit: number, staff: boolean): { rows: Raw[]; more: boolean; unhandled: number } {
   const params: Record<string, SQLInputValue> = { since: new Date(Date.now() - WINDOW_MS).toISOString(), own: ownLogin(db), owns: JSON.stringify([...allOwnLogins(db)]), bots: JSON.stringify(reviewBots()) };
   const union = SOURCES.map((s) => `SELECT * FROM (${s})`).join(" UNION ALL ");
   const where = hiddenSql(hidden, params);
@@ -93,7 +107,10 @@ function feedback(db: DatabaseSync, hidden: HiddenRepos, cursor: { at: string; i
   }
   const open = db.prepare(`SELECT source, number, decision, COUNT(*) AS n FROM (${union}) WHERE ${where} AND NOT handled GROUP BY source, number IS NULL, decision`).all({ ...params, cur: "9999" }) as { source: Raw["source"]; number: number | null; decision: string | null; n: number }[];
   const unhandled = open.reduce((sum, r) => sum + (visible(r) ? r.n : 0), 0);
-  return { rows: rows.slice(0, limit), more: rows.length > limit, unhandled };
+  // What staff wrote about a quiet pull request reaches viewers as the row only, as the decision and conversation APIs give it.
+  const quiet = new Map<string, boolean>();
+  const out = rows.slice(0, limit);
+  return { rows: staff ? out : out.map((r) => (quietRow(db, r, quiet) ? { ...r, text: "" } : r)), more: rows.length > limit, unhandled };
 }
 
 function view(db: DatabaseSync, r: Raw): NeedsFeedbackRow {
@@ -162,8 +179,10 @@ export async function fixes(db: DatabaseSync, req: Req): Promise<NeedsFixPage> {
     { number: number; title: string | null; state: string | null; reason: string | null; summary: string | null; since: string; impact: string | null; score: number }[];
   const page = rows.slice(0, FIXES_PAGE);
   const last = page[page.length - 1];
+  // The attempt's reason and summary are model text: staff only, as on the item page.
+  const staff = canSeeInternals(req);
   return {
-    rows: page.map((r) => ({ id: `fix:${repo}#${r.number}`, repo, number: r.number, title: r.title ?? "", reason: `The fix attempt ${STOP_WORDS[r.state ?? ""] ?? "stopped"}${r.reason ?? r.summary ? `: ${r.reason ?? r.summary}` : ""}`, since: r.since, impact: r.impact })),
+    rows: page.map((r) => ({ id: `fix:${repo}#${r.number}`, repo, number: r.number, title: r.title ?? "", reason: `The fix attempt ${STOP_WORDS[r.state ?? ""] ?? "stopped"}${staff && (r.reason ?? r.summary) ? `: ${r.reason ?? r.summary}` : ""}`, since: r.since, impact: r.impact })),
     nextCursor: rows.length > FIXES_PAGE && last ? `${last.score}|${last.since}|${last.number}` : null,
   };
 }
@@ -181,7 +200,7 @@ export async function needs(db: DatabaseSync, req: Req): Promise<NeedsPage> {
     if (i < 1) throw new HttpError(400, "bad cursor");
     cursor = { at: c.slice(0, i), id: c.slice(i + 1) };
   }
-  const fb = feedback(db, hidden, cursor, q.get("feedback") === "1" ? limit : 1);
+  const fb = feedback(db, hidden, cursor, q.get("feedback") === "1" ? limit : 1, canSeeInternals(req));
   // The same filter as the Needs you list: what this person settles, plus the disputes they resolve; a batch counts only when none of its items is in a hidden repo.
   const dp: Record<string, string> = {};
   const hide = withoutHidden(hidden, dp);

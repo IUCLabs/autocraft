@@ -1,5 +1,6 @@
 // What can keep a PR's review from changing: another open item the review named as the reason for its hold.
 import type { DatabaseSync } from "node:sqlite";
+import { isHiddenRepo, type HiddenRepos } from "../hidden-sql.ts";
 
 const REF = /^([\w.-]+)#(\d+)$/;
 
@@ -60,25 +61,26 @@ export function hasOpenQuestion(db: DatabaseSync, refs: readonly string[]): bool
   return refs.some((ref) => { const m = REF.exec(ref); return !!m && !!pending.get(m[1]!, Number(m[2])); });
 }
 
-/** Facts for an open decision naming the PRs whose review it holds (derived from their stored holds; the decision row is not written). */
-export function blocksFacts(db: DatabaseSync, repo: string | null, number: number | null): string[] {
+/** Facts for an open decision naming the PRs whose review it holds (derived from their stored holds; the decision row is not written). PRs of repos in `hidden` are not named. */
+export function blocksFacts(db: DatabaseSync, repo: string | null, number: number | null, hidden: HiddenRepos): string[] {
   if (repo === null || number === null) return [];
   const me = `${repo}#${number}`;
   const rows = db.prepare(`SELECT o.repo, o.number, o.at, o.blocked_by FROM main.opus_reviews o JOIN main.items i ON i.repo = o.repo AND i.number = o.number AND i.state = 'OPEN'
     WHERE o.verdict IS NOT NULL AND o.blocked_by LIKE ?
       AND o.rowid = (SELECT l.rowid FROM main.opus_reviews l WHERE l.repo = o.repo AND l.number = o.number AND l.verdict IS NOT NULL ORDER BY l.at DESC, l.rowid DESC LIMIT 1)
       AND o.verdict = 'hold' ORDER BY o.repo, o.number LIMIT 5`).all(`%"${me}"%`) as { repo: string; number: number; at: string; blocked_by: string }[];
-  return rows.filter((r) => activeBlockers(db, `${r.repo}#${r.number}`, r.blocked_by, r.at).includes(me)).map((r) => `Blocks the review of ${r.repo}#${r.number}`);
+  return rows.filter((r) => !isHiddenRepo(hidden, r.repo) && activeBlockers(db, `${r.repo}#${r.number}`, r.blocked_by, r.at).includes(me)).map((r) => `Blocks the review of ${r.repo}#${r.number}`);
 }
 
 /** `blocksFacts` for every PR at once: the facts by blocked ref ("repo#number"), from one scan of the latest holds. For a page of decisions. */
-export function blocksIndex(db: DatabaseSync): Map<string, string[]> {
+export function blocksIndex(db: DatabaseSync, hidden: HiddenRepos): Map<string, string[]> {
   const rows = db.prepare(`SELECT o.repo, o.number, o.at, o.blocked_by FROM main.opus_reviews o JOIN main.items i ON i.repo = o.repo AND i.number = o.number AND i.state = 'OPEN'
     WHERE o.verdict = 'hold' AND o.blocked_by LIKE '%"%'
       AND o.rowid = (SELECT l.rowid FROM main.opus_reviews l WHERE l.repo = o.repo AND l.number = o.number AND l.verdict IS NOT NULL ORDER BY l.at DESC, l.rowid DESC LIMIT 1)
     ORDER BY o.repo, o.number`).all() as { repo: string; number: number; at: string; blocked_by: string }[];
   const out = new Map<string, string[]>();
   for (const r of rows) {
+    if (isHiddenRepo(hidden, r.repo)) continue;
     const self = `${r.repo}#${r.number}`;
     for (const ref of activeBlockers(db, self, r.blocked_by, r.at)) {
       const facts = out.get(ref) ?? [];

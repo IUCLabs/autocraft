@@ -185,8 +185,6 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const imageLimitIp = new RateLimiter(240, 60_000);  // and per client address
   // GET endpoints that aggregate the mirror or run the embedder: a burst, then 30 a minute, per session.
   const expensiveGets = new TokenBucket(20, 0.5);
-  const isExpensive = (path: string, q: URLSearchParams) =>
-    path === "/api/queue" || path === "/api/queue/batches" || path.startsWith("/api/contributors") || path.startsWith("/api/similar/") || (path === "/api/search" && q.get("mode") === "semantic");
   const live = new LiveHub(db, opts.live);
   // The Inbox MCP server (POST /mcp): calls per login and failed authentications per client address, and feedback posts per login as on the dashboard.
   const mcpLimitToken = new RateLimiter(120, 60_000);
@@ -284,12 +282,13 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return send(res, nonce, { status: 204 }, [cookie(SESSION_COOKIE, "", 0)]);
       }
     }
-    if (!writes && isExpensive(url.pathname, url.searchParams)) {
+    const { route, params, other } = match(routes, method, url.pathname);
+    if (!route) return out(other ? apiError(405, "method not allowed") : apiError(404, "not found"));
+    // Decided on the matched route, so every spelling of its path spends the same budget.
+    if (!writes && route.expensive && (route.expensive === true || route.expensive(url.searchParams))) {
       const wait = expensiveGets.take(session.idHash);
       if (wait) return out({ status: 429, json: { error: "too many requests; wait a moment" }, headers: { "retry-after": String(wait) } });
     }
-    const { route, params, other } = match(routes, method, url.pathname);
-    if (!route) return out(other ? apiError(405, "method not allowed") : apiError(404, "not found"));
     if (route.operator && session.role !== "operator") return out(apiError(403, "operators only"));
     const r: Req = {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
@@ -482,8 +481,14 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return { r: errorPage(nonce, 404, "Not found", "No such page.") };
   }
 
+  /** A request with an operator's or maintainer's session: /healthz/checks gives them its times and counts. */
+  const staffCaller = (req: IncomingMessage): boolean => {
+    const role = loadSession(db, parseCookies(req.headers.cookie).get(SESSION_COOKIE))?.role;
+    return role === "operator" || role === "maintainer";
+  };
+
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (serveHealth(req, res, () => dbReady(db)) || serveChecks(req, res, db)) return;
+    if (serveHealth(req, res, () => dbReady(db)) || serveChecks(req, res, db, Date.now(), 5_000, staffCaller)) return;
     const nonce = randomToken(16);
     try {
       if (Date.now() - lastPrune > 3_600_000) {

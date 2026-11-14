@@ -153,10 +153,13 @@ export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: HiddenRepo
   return { runs: page.map((x) => toRun(x, shown)), nextCursor: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
-/** SQL (with its `?` arguments) true when a run has no item in a hidden repo. */
-const touchesHidden = (hidden: HiddenRepos): { sql: string; args: string[] } => {
+/**
+ * SQL (with its `?` arguments) true when the run `r` may be shown under a repo filter: it is bound to an item and has no item in a
+ * hidden repo. A run recorded without items is about no repo the filter can test, so only operators (no filter) see it.
+ */
+export const touchesHidden = (hidden: HiddenRepos): { sql: string; args: string[] } => {
   const h = hiddenTest("x.repo", hidden);
-  return { sql: `NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND ${h.sql})`, args: h.args };
+  return { sql: `EXISTS (SELECT 1 FROM agent_run_items y WHERE y.run_id = r.id) AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND ${h.sql})`, args: h.args };
 };
 
 /** A run that touches a hidden repo is not found; prompt and output text go only to `texts` viewers (operators). */

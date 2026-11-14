@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { PlanView, QueueView } from "./plan-cache.ts";
 import { QUEUE_STATES, type Action, type ActionKind, type QueueState } from "./plan.ts";
+import { filtered, hiddenJsonTest, type HiddenRepos } from "../hidden-sql.ts";
 
 /** A PR in a queue state, as the merge queue lists it: the Plan's state, reasons and note, and the cached queue fields. */
 export type CachedEntry = QueueView & {
@@ -18,8 +19,8 @@ export type CachedQueueOptions = {
   /** Keyset page: entries after this PR in (repo, number) order, at most `limit` of them. */
   after?: { repo: string; number: number };
   limit?: number;
-  /** Repos left out. */
-  exclude?: string[];
+  /** Repos left out: a list from the dashboard's `hiddenRepos` allows only the repos it names as visible. */
+  hidden?: HiddenRepos;
   /** Only these PRs, as "repo#number". */
   refs?: Iterable<string>;
 };
@@ -34,7 +35,7 @@ export function cachedQueue(db: DatabaseSync, opts: CachedQueueOptions = {}): Ca
   const params: Record<string, string | number> = {};
   const where = [`p.kind = 'pr'`, `p.state IN (${STATE_LIST})`, `json_extract(p.view, '$.queue') IS NOT NULL`];
   if (opts.repo) { where.push("p.repo = :repo"); params.repo = opts.repo; }
-  if (opts.exclude?.length) where.push(`p.repo NOT IN (SELECT value FROM json_each(:exclude))`), (params.exclude = JSON.stringify(opts.exclude));
+  if (opts.hidden && filtered(opts.hidden)) { const h = hiddenJsonTest("p.repo", opts.hidden, ":hidden"); where.push(`NOT (${h.sql})`); params.hidden = h.arg; }
   if (opts.refs) { where.push("p.repo || '#' || p.number IN (SELECT value FROM json_each(:refs))"); params.refs = JSON.stringify([...opts.refs]); }
   where.push(which === "exclude" ? "json_extract(p.view, '$.gh') = 'OPEN'" : which === "only" ? "json_extract(p.view, '$.gh') = 'MERGED'" : "json_extract(p.view, '$.gh') <> 'CLOSED'");
   if (opts.after) { where.push("(p.repo > :ar OR (p.repo = :ar AND p.number > :an))"); params.ar = opts.after.repo; params.an = opts.after.number; }
@@ -52,10 +53,11 @@ export function countStates(entries: { state: QueueState }[]): Record<QueueState
   return c;
 }
 
-/** How many merged PRs (GitHub says merged) have a Plan in a queue state, in the repo or all repos, without the excluded ones. */
-export function countMergedPlans(db: DatabaseSync, repo?: string, exclude: string[] = []): number {
+/** How many merged PRs (GitHub says merged) have a Plan in a queue state, in the repo or all repos, without the hidden ones. */
+export function countMergedPlans(db: DatabaseSync, repo?: string, hidden: HiddenRepos = []): number {
+  const h = hiddenJsonTest("p.repo", hidden, ":hidden");
   return (db.prepare(`SELECT COUNT(*) AS n FROM main.item_plans p WHERE p.kind = 'pr' AND p.state IN (${STATE_LIST}) AND json_extract(p.view, '$.gh') = 'MERGED'
-    ${repo ? "AND p.repo = :repo" : ""} AND p.repo NOT IN (SELECT value FROM json_each(:exclude))`).get({ ...(repo ? { repo } : {}), exclude: JSON.stringify(exclude) }) as { n: number }).n;
+    ${repo ? "AND p.repo = :repo" : ""} AND NOT (${h.sql})`).get({ ...(repo ? { repo } : {}), hidden: h.arg }) as { n: number }).n;
 }
 
 export type DueOptions = { repo?: string; /** The action's `bucket` param, else its `source` param. */ bucket?: string };

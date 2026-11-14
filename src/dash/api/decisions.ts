@@ -37,6 +37,8 @@ import { isQuiet } from "../../security/quiet.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
 const COMMENT_MAX = 4000;
+/** Hides every repo: the filter for a viewer whose visible repos were not read. */
+const ALL_HIDDEN: HiddenRepos = Object.assign([], { visible: [] });
 
 export const isOperator = (req: Req): boolean => req.user.role === "operator";
 
@@ -185,7 +187,9 @@ function contextOf(c: string | null): string[] {
 
 export type Viewer = { login: string; role: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null; memo?: SettleMemo;
   /** Per-page lookups a list fills once so toDecision does not query per row. */
-  prep?: Map<string, PrepareState>; blocks?: Map<string, string[]>; related?: RelatedIndex };
+  prep?: Map<string, PrepareState>; blocks?: Map<string, string[]>; related?: RelatedIndex;
+  /** Repos the viewer may not see; facts naming their items are left out (without it, a non-operator gets none of those facts). */
+  hidden?: HiddenRepos };
 /** The reason a write waits or failed: the stored text (it may carry GitHub's error text) only for operators and maintainers, one fixed sentence per state for everyone else. */
 export function execReasonFor(state: ExecState, stored: string | null, repo: string | null, staff: boolean): string | null {
   if (staff) return stored;
@@ -217,7 +221,7 @@ export function execOf(db: DatabaseSync, d: DecisionRow, repo: string | null, vi
 }
 export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, role: req.user.role, operator: isOperator(req), staff: canSeeInternals(req) });
 /** The viewer with the queue places of the items they may see, computed once for the response. */
-const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db), memo: settleMemo() });
+const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)), held: heldLookup(db), memo: settleMemo(), hidden: await hiddenRepos(db, req) });
 
 /** Whether Undo would succeed: answered, not acted on, and no GitHub write for the answer exists: no act comment, no group post, no write by the card that gave the answer. */
 export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
@@ -271,7 +275,7 @@ function snoozedOf(db: DatabaseSync, d: DecisionRow): { by: string; at: string }
 }
 
 /** True when any item the decision concerns (its own, a batch member or a duplicate-group member) is a quiet pull request. */
-function touchesQuiet(db: DatabaseSync, d: DecisionRow): boolean {
+export function touchesQuiet(db: DatabaseSync, d: DecisionRow): boolean {
   if (d.repo !== null && d.number !== null && isQuiet(db, d.repo, d.number)) return true;
   if (itemsOf(d).some((r) => isQuiet(db, r.repo, r.number))) return true;
   const members = prep(db, "SELECT repo, number FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { repo: string; number: number }[];
@@ -305,7 +309,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     summary: d.summary ?? "", summaryBy: d.summary_by ?? "", summaryAt: d.summary_at ?? d.asked_at,
     body: batch ? null : (item?.body ?? null),
     context: contextOf(d.context),
-    facts: [...factsOf(d), ...(d.answer === null ? (viewer.blocks ? (viewer.blocks.get(`${d.repo}#${d.number}`) ?? []) : blocksFacts(db, d.repo, d.number)) : [])],
+    facts: [...factsOf(d), ...(d.answer !== null ? [] : viewer.blocks ? (viewer.blocks.get(`${d.repo}#${d.number}`) ?? []) : blocksFacts(db, d.repo, d.number, viewer.hidden ?? (viewer.operator ? [] : ALL_HIDDEN)))],
     // An answer the pipeline or a conversation gave is not one of the asked options; it is listed so every view can name it.
     options: [...optionsOf(d), ...[HANDLED, WITHDRAWN_OPTION].filter((o) => o.key === d.answer)].map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
@@ -475,7 +479,7 @@ export async function listDecisions(db: DatabaseSync, req: Req): Promise<Decisio
   const shown = shownIds.map((r) => rowOf.get(r.id)!);
   const viewer = shown.length ? await viewerWith(db, req) : viewerOf(req);
   viewer.prep = prepareStates(db, shown);
-  if (shown.some((d) => d.answer === null)) viewer.blocks = blocksIndex(db);
+  if (shown.some((d) => d.answer === null)) viewer.blocks = blocksIndex(db, viewer.hidden ?? (viewer.operator ? [] : ALL_HIDDEN));
   if (shown.some((d) => d.number !== null)) viewer.related = relatedIndex(db);
   return {
     decisions: shown.map((d) => toDecision(db, d, viewer)), total, byKind, oldestAskedAt,

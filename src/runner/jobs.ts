@@ -9,6 +9,7 @@ import { accountLabelsByJob, failRunning } from "../agents/runs.ts";
 import { releaseJob } from "./leases.ts";
 import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
 import { shownLookup } from "../dash/api/shown.ts";
+import { blankIfHidden } from "../dash/api/visible.ts";
 
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
 /** Error text of jobs ended by a runner stop or restart; the autopilot does not count them as failures. */
@@ -204,7 +205,8 @@ export function logTail(path: string | null, bytes = LOG_TAIL_BYTES): { log: str
 
 /**
  * `hidden`: the repos the viewer may not see. A job of such a repo is not found.
- * `logs` false (viewers) leaves the log out: its lines can name hidden items and carry command output.
+ * `logs` false (viewers) leaves the log out: its lines can name hidden items and carry command output. For other readers the lines
+ * that name a hidden repo are left out (a job without a repo, or a step that reads other repos, logs items of every repo it worked).
  */
 export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: HiddenRepos; logs?: boolean } = {}): JobDetail {
   const r = jobRow(db, id);
@@ -213,7 +215,9 @@ export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: HiddenR
   const shown = shownLookup(db);
   const items = (db.prepare("SELECT repo, number, outcome, ref FROM job_items WHERE job_id = ? ORDER BY id").all(id) as { repo: string; number: number; outcome: string | null; ref: string | null }[])
     .filter((i) => !isHiddenRepo(hidden, i.repo)).map((i) => ({ repo: i.repo, number: i.number, ...shown(i.repo, i.number), outcome: i.outcome, decision: i.ref }));
-  return { ...toJobs(db, [r])[0]!, items, ...(view.logs === false ? { log: null, logTruncated: false } : logTail(r.log_path)) };
+  if (view.logs === false) return { ...toJobs(db, [r])[0]!, items, log: null, logTruncated: false };
+  const tail = logTail(r.log_path);
+  return { ...toJobs(db, [r])[0]!, items, ...tail, log: tail.log && hidden.length ? tail.log.split("\n").filter((l) => !l || blankIfHidden(l, hidden)).join("\n") : tail.log };
 }
 
 /** Records the end of a job whose process closed: done on exit 0, cancelled when a cancel was asked, else failed with the reason. */

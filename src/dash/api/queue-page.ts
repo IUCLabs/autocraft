@@ -17,7 +17,8 @@ import type { RankBreakdown } from "../../rank/score.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { toBatch, toRow } from "./queue.ts";
-import { hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { needVisible, visibleRepos } from "./visible.ts";
+import { readerOf, veiledFor } from "./reader.ts";
 import { stageById } from "../../stages/registry.ts";
 
 export const TABS: QueueTab[] = ["all", "review", "fix", "verify", "merge"];
@@ -112,20 +113,24 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   // Merge queue rows
   const entries = allEntries.filter((e) => e.state !== "merged" && visibleSet.has(e.repo) && inScope(e.repo, e.number));
   const internals = canSeeInternals(req);
-  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals) });
-  const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOfNext(w.next) === t).length);
+  const reader = await readerOf(db, req);
+  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals) });
+  // Tabs come from the stored next step; the text is veiled afterwards, so a quiet pull request stays in its tab.
+  const tabOf = new Map(work.map((w) => [w, tabOfNext(w.next)]));
+  const veilNext = (w: QueueWorkRow): QueueWorkRow => (veiledFor(reader, w.repo, w.number) ? { ...w, next: "" } : w);
+  const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOf.get(w) === t).length);
   const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
 
   const out: QueuePage = { tab, repos: reposParam, counts, rows: [], mergeRows: [], nextMerges: [], batches: [], total: 0, next: null };
   if (tab !== "merge") {
-    const match = tab === "all" ? work : work.filter((w) => tabOfNext(w.next) === tab);
+    const match = tab === "all" ? work : work.filter((w) => tabOf.get(w) === tab);
     out.itemIndex = indexOf(match);
-    out.rows = match.slice(offset, offset + sizeFor(match, offset));
+    out.rows = match.slice(offset, offset + sizeFor(match, offset)).map(veilNext);
     out.total = match.length;
     out.next = offset + out.rows.length < match.length ? offset + out.rows.length : null;
     return out;
   }
-  const { batches } = pageBatches(db, { exclude: await hiddenRepos(db, req), limit: 100 });
+  const { batches } = pageBatches(db, { hidden: reader.hidden, limit: 100 });
   const active = batches.filter((b) => (b.state === "checking" || b.state === "open") && b.prs.some((p) => inScope(b.repo, p.number)));
   const rowOf = new Map(entries.map((e) => [`${e.repo}#${e.number}`, asRow(e)]));
   const batchOf = new Map(active.flatMap((b) => b.prs.map((p) => [`${b.repo}#${p.number}`, { id: b.id, branch: b.branch }] as const)));

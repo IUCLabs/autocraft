@@ -201,7 +201,7 @@ export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), prob
   return SOURCES.flatMap((f) => f({ db, nowMs, probe }));
 }
 
-/** The answer of GET /healthz/checks: states, times and counts only; no repo, environment, account or error text. */
+/** The answer of GET /healthz/checks for staff: states, times and counts only; no repo, environment, account or error text. */
 export type PublicCheck = { id: string; state: CheckState; since: string | null; count?: number; of?: number };
 
 export function publicChecks(checks: Check[]): { status: CheckState; checks: PublicCheck[] } {
@@ -222,10 +222,18 @@ export function publicChecks(checks: Check[]): { status: CheckState; checks: Pub
   return { status, checks: out };
 }
 
-let cached: { db: DatabaseSync; at: number; text: string; fail: boolean } | null = null;
+/** What an anonymous caller (external monitoring) reads: each check's name and state, without counts or times. */
+export const anonymousChecks = (body: ReturnType<typeof publicChecks>): { status: CheckState; checks: Pick<PublicCheck, "id" | "state">[] } =>
+  ({ status: body.status, checks: body.checks.map(({ id, state }) => ({ id, state })) });
 
-/** Answers GET/HEAD /healthz/checks: 200 when every check is ok or warn, 503 when one fails; returns false for any other request. No auth: see `publicChecks`. The answer is reused for `ttlMs`, since anyone can call this. */
-export function serveChecks(req: IncomingMessage, res: ServerResponse, db: DatabaseSync, nowMs: number = Date.now(), ttlMs = 5_000): boolean {
+let cached: { db: DatabaseSync; at: number; full: string; plain: string; fail: boolean } | null = null;
+
+/**
+ * Answers GET/HEAD /healthz/checks: 200 when every check is ok or warn, 503 when one fails; returns false for any other request.
+ * No auth: anyone gets the names and states (`anonymousChecks`); `staff` (a signed-in operator or maintainer) also gets the times and
+ * counts of `publicChecks`. The answer is reused for `ttlMs`, since anyone can call this.
+ */
+export function serveChecks(req: IncomingMessage, res: ServerResponse, db: DatabaseSync, nowMs: number = Date.now(), ttlMs = 5_000, staff: (req: IncomingMessage) => boolean = () => false): boolean {
   if ((req.method !== "GET" && req.method !== "HEAD") || (req.url ?? "").split("?")[0] !== "/healthz/checks") return false;
   if (!cached || cached.db !== db || Date.now() - cached.at >= ttlMs) {
     let body: ReturnType<typeof publicChecks>;
@@ -234,9 +242,10 @@ export function serveChecks(req: IncomingMessage, res: ServerResponse, db: Datab
     } catch {
       body = { status: "fail", checks: [{ id: "database", state: "fail", since: null }] };
     }
-    cached = { db, at: Date.now(), text: JSON.stringify({ ...body, at: new Date(nowMs).toISOString() }), fail: body.status === "fail" };
+    cached = { db, at: Date.now(), full: JSON.stringify({ ...body, at: new Date(nowMs).toISOString() }), plain: JSON.stringify(anonymousChecks(body)), fail: body.status === "fail" };
   }
-  res.writeHead(cached.fail ? 503 : 200, { ...PROBE_HEADERS, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(cached.text) });
-  res.end(req.method === "HEAD" ? undefined : cached.text);
+  const text = staff(req) ? cached.full : cached.plain;
+  res.writeHead(cached.fail ? 503 : 200, { ...PROBE_HEADERS, "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(text) });
+  res.end(req.method === "HEAD" ? undefined : text);
   return true;
 }
