@@ -30,7 +30,7 @@ function comment(w: ReturnType<typeof world>, id: string, repo: string, number: 
   w.db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body) VALUES (?, ?, ?, 'comment', ?, '2026-03-01T00:00:00Z', ?)").run(repo, number, id, author, body);
 }
 
-test("statements come from operators' own words only, and a related one reaches the review of a similar PR", async () => {
+test("statements come from operators' own words only, and a related one reaches the review of a similar PR of its repo", async () => {
   const w = world().repo().pr(1);
   w.db.prepare("INSERT INTO access (login, role) VALUES ('boss', 'operator'), ('guest', 'maintainer')").run();
   comment(w, "c1", "craft-libs", 5, "boss", "Vendored hyphenation code and dictionaries belong in the shared library, not in the app.");
@@ -53,10 +53,13 @@ test("statements come from operators' own words only, and a related one reaches 
   assert.deepEqual(kinds, ["comment", "conversation", "decision-note"]);
 
   await embedStatements(w.db, fake);
-  w.db.prepare("INSERT OR REPLACE INTO item_embeddings (repo, number, model, hash, vec, at) VALUES ('app', 1, 'fake', 'h', ?, 't')").run(await vec("Add Danish hyphenation dictionary to the app"));
-  const got = relatedStatements(w.db, "app", 1);
+  const pr = await vec("Add Danish hyphenation dictionary to the app");
+  w.db.prepare("INSERT OR REPLACE INTO item_embeddings (repo, number, model, hash, vec, at) VALUES ('craft-libs', 20, 'fake', 'h', ?, 't'), ('app', 1, 'fake', 'h', ?, 't')").run(pr, pr);
+  const got = relatedStatements(w.db, "craft-libs", 20);
   assert.deepEqual(got.map((s) => s.where), ["craft-libs#5"]);
   assert.equal(got[0]!.kind, "comment");
+  // Another repo's PR on the same topic gets none of them.
+  assert.deepEqual(relatedStatements(w.db, "app", 1), []);
 
   // Statements on the PR itself are skipped.
   w.db.prepare("INSERT OR REPLACE INTO item_embeddings (repo, number, model, hash, vec, at) VALUES ('craft-libs', 5, 'fake', 'h', ?, 't')").run(await vec("hyphenation dictionary"));

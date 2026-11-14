@@ -37,9 +37,12 @@ export function parseStatementConflicts(v: unknown, known: readonly { id: number
   return out;
 }
 
-/** The numbered list the prompt shows; the number is the statement's id. */
+/**
+ * The statements as the prompt shows them: a JSON array with `<` escaped, since the item title is written by the item's
+ * author and an operator's text can quote anyone, so neither can close the block or pose as prompt text.
+ */
 export const statementsList = (d: readonly OwnerStatement[] | undefined): string => (d?.length
-  ? d.map((x) => `${x.id}. ${x.where} (${x.kind}: ${x.title}), ${x.at.slice(0, 10)}\n${x.text.replace(/\s+/g, " ").trim().slice(0, STATEMENT_PROMPT_CHARS)}`).join("\n\n")
+  ? JSON.stringify(d.map((x) => ({ id: x.id, where: x.where, kind: x.kind, item_title: x.title, date: x.at.slice(0, 10), text: x.text.replace(/\s+/g, " ").trim().slice(0, STATEMENT_PROMPT_CHARS) })), null, 1).replace(/</g, "\\u003c")
   : "(none)");
 
 /** One PR as the Opus prompt shows it. Every string field is untrusted or derived from untrusted text. */

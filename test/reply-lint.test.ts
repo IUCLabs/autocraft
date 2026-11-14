@@ -54,10 +54,11 @@ describe("lint survives a failing model check", () => {
 
 describe("verbatim reference check", () => {
   const ref = join(dir, "data", "reference", "app");
-  test("12 or more consecutive words of the reference pages count, whatever the case and spacing", () => {
+  test("a passage of the reference pages counts, whatever the case and spacing", () => {
     const run = REFERENCE_TEXT.split(" ").slice(3, 15).join("  ").toUpperCase();
     assert.equal(quotesReference(`The text says: ${run}, and more.`, ref), true);
-    assert.equal(quotesReference(REFERENCE_TEXT.split(" ").slice(3, 14).join(" "), ref), false, "11 words are not enough");
+    assert.equal(quotesReference(REFERENCE_TEXT.split(" ").slice(3, 14).join(" "), ref), true, "11 words of a page are a quote");
+    assert.equal(quotesReference(REFERENCE_TEXT.split(" ").slice(3, 7).join(" "), ref), false, "4 words are not");
     assert.equal(quotesReference("Hold shift and drag a corner to resize it, then let go of the mouse.", ref), false);
   });
 });
