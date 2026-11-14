@@ -22,6 +22,8 @@ import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const db = connect(join(mkdtempSync(join(SCRATCH, "sec-fix-")), "dash.db"));
+// A confidential build environment that has reported: private fixes and their builds can run.
+db.prepare("INSERT INTO build_envs (id, label, kind, slots, key_hash, confidential, confidential_since, confidential_online_at, created_at) VALUES ('vault', 'vault', 'remote', 1, 'x', 1, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')").run();
 const BY = { operator: "boss" };
 const SHA = "b".repeat(40);
 

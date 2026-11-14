@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { FindingAction, FindingState, FindingView, ScanView } from "../../web/src/api/types.ts";
 import { featureOn } from "../build/features.ts";
 import { audit } from "../dash/audit.ts";
-import { TERMINAL, cancelTask, getTask, privateClockStart } from "../build/tasks.ts";
+import { TERMINAL, cancelTask, confidentialReadyAt, getTask, privateClockStart } from "../build/tasks.ts";
 import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
 import { securityRepo, SECURITY_STEP, REASON_MAX, MIN_VERIFY_SCORE } from "./rules.ts";
 import { activeScan, ACTIVE_STATES, advance, clearRounds, finishScan, findingKey, findingRow, moveFinding, reconcileFindings, reconcileScans, reopenUnchecked, scanRow, toFinding, toScan, UNCHECKED_RESULT } from "./store.ts";
@@ -143,7 +143,7 @@ export const ROUND_BUILD_LIMIT_MS = 4 * 3_600_000;
 
 /**
  * Queues a fix job for each fixing finding whose build round has ended (its tasks are done, or it has been building past
- * ROUND_BUILD_LIMIT_MS, when the tasks are cancelled) and that has no fix job queued or running: the job reads the result and
+ * ROUND_BUILD_LIMIT_MS, when the tasks are cancelled), or that waited for a confidential build environment that is now ready, and that has no fix job queued or running: the job reads the result and
  * writes the next round or the commit. The job is requested by whoever started the fix; fixes the pipeline started continue
  * only while `pipelineOn`. Returns how many jobs it queued.
  */
@@ -152,14 +152,21 @@ export async function advanceSecurityFixes(db: DatabaseSync, pipelineOn = true):
       JOIN security_fix_rounds r ON r.repo = f.repo AND r.number = f.number AND r.state = 'building'
       WHERE f.state = 'fixing'
       AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.step = 'security-fix' AND j.state IN ('queued', 'running') AND json_extract(j.params, '$.repo') = f.repo AND json_extract(j.params, '$.number') = f.number)
-      ORDER BY f.repo, f.number`).all() as { repo: string; number: number; by: string | null; created_at: string; head_task: number; base_task: number }[];
+      ORDER BY f.repo, f.number`).all() as { repo: string; number: number; by: string | null; created_at: string | null; head_task: number | null; base_task: number | null }[];
+  // A fix that waits for a confidential build environment continues once one is ready.
+  if (confidentialReadyAt(db) !== null) {
+    rows.push(...db.prepare(`SELECT f.repo, f.number, f.decided_by AS by, NULL AS created_at, NULL AS head_task, NULL AS base_task FROM security_findings f
+      WHERE f.state = 'fixing' AND f.env_wait_at IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.step = 'security-fix' AND j.state IN ('queued', 'running') AND json_extract(j.params, '$.repo') = f.repo AND json_extract(j.params, '$.number') = f.number)
+      ORDER BY f.repo, f.number`).all() as typeof rows);
+  }
   let queued = 0;
   for (const r of rows) {
     const by = r.by ?? "pipeline";
     if (by === "pipeline" && !pipelineOn) continue;
-    const open = [r.head_task, r.base_task].filter((id) => { const t = getTask(db, id); return t && !TERMINAL.includes(t.state); });
+    const open = [r.head_task, r.base_task].filter((id): id is number => { const t = id === null ? null : getTask(db, id); return !!t && !TERMINAL.includes(t.state); });
     if (open.length) {
-      const since = privateClockStart(db, r.created_at);
+      const since = privateClockStart(db, r.created_at!);
       if (since === null || Date.now() - since <= ROUND_BUILD_LIMIT_MS) continue;
       for (const id of open) cancelTask(db, id, "security-fix");
     }

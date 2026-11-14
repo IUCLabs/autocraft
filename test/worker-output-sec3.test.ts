@@ -8,8 +8,11 @@ import { join } from "node:path";
 import { exec, Git } from "../src/fixup/git.ts";
 import { checkFormat, foldFormat } from "../src/prepush/index.ts";
 import { connect } from "../src/db.ts";
-import { claim, createTask, getTask } from "../src/build/tasks.ts";
-import { createEnv, hello, updateEnv } from "../src/build/envs.ts";
+import { claim, createTask, getTask, privateClockStart } from "../src/build/tasks.ts";
+import { createEnv, hello, touch, updateEnv } from "../src/build/envs.ts";
+import { computeChecks } from "../src/health-checks.ts";
+import { runFix, type FixDeps } from "../src/security/fix.ts";
+import { advanceSecurityFixes } from "../src/security/actions.ts";
 import { rustPlan } from "../src/worker/rust.ts";
 
 const HEAD = [
@@ -57,7 +60,7 @@ test("a formatter diff folds in only when every file it writes is the patched fi
   }
 });
 
-test("a security fix's tasks wait for a confidential environment, which takes no PR code", () => {
+test("a security fix waits, with a warning, until a confidential environment has reported; that environment takes no PR code", async () => {
   const db = connect(":memory:");
   db.prepare("INSERT INTO repos (name, visibility) VALUES ('app', 'public')").run();
   db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
@@ -73,7 +76,26 @@ test("a security fix's tasks wait for a confidential environment, which takes no
   const batch = createTask(db, { ...t, step: "merge-batch", headSha: "c".repeat(40) });
   assert.equal(getTask(db, fix)!.summary, "Waiting for a confidential build environment.");
   assert.deepEqual(claim(db, "vault", 4).tasks.map((x) => x.id), [pr, batch]);
+  // The fix itself waits before its model call; the job ends at once.
+  db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, state, refs, reach, impact, fingerprint, created_at, updated_at)
+    VALUES ('app', 1, 1, 'a', 't', 'high', 'fixing', '[]', 'r', 'i', 'f', '2026-01-01', '2026-01-01')`).run();
+  assert.match(await runFix(db, "app", 1, { log: () => {} } as unknown as FixDeps), /waiting for a confidential build environment/);
+  assert.equal((db.prepare("SELECT note FROM security_findings WHERE number = 1").get() as { note: string }).note, "Waiting for a confidential build environment.");
+  const warn = () => computeChecks(db).find((c) => c.id === "confidential-env")!;
+  assert.equal(warn().state, "warn");
+  assert.equal(warn().text, "1 security fix and 1 security build task are waiting for a confidential build environment");
+  // Flagged but not yet reported: still waiting. The build limit starts at its first call and an edit does not move it.
   updateEnv(db, "vault", { confidential: true }, "op");
+  assert.equal(privateClockStart(db, "2026-01-01T00:00:00Z"), null);
+  touch(db, "vault");
+  const start = privateClockStart(db, "2026-01-01T00:00:00Z");
+  updateEnv(db, "vault", { label: "renamed" }, "op");
+  touch(db, "vault");
+  assert.ok(start !== null && privateClockStart(db, "2026-01-01T00:00:00Z") === start);
+  assert.equal(warn().state, "ok");
+  assert.equal(await advanceSecurityFixes(db, false), 0, "a fix the pipeline started waits for the switch");
+  db.prepare("UPDATE security_findings SET decided_by = 'boss'").run();
+  assert.equal(await advanceSecurityFixes(db, false), 1);
   db.prepare("UPDATE build_tasks SET state = 'queued', env_id = NULL WHERE id IN (?, ?)").run(pr, batch);
   assert.equal(getTask(db, fix)!.summary, null);
   assert.deepEqual(claim(db, "plain", 4).tasks.map((x) => x.id), [pr, batch]);

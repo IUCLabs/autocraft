@@ -65,7 +65,7 @@ const parse = <T>(s: string | null, fallback: T): T => {
 
 export type FindingRow = {
   repo: string; number: number; scan_id: number; area: string; title: string; severity: FindingSeverity; urgent: number; state: FindingState; refs: string;
-  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; fork: string | null; fix_patch: string | null; fix_title: string | null; fix_summary: string | null; fix_branch: string | null; fix_files: string | null; fix_ref: string | null; note: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string; fix_attempts: number; last_failure: string | null;
+  reach: string; impact: string; verification: string | null; fix_commit: string | null; fix_pr: number | null; ghsa_id: string | null; fork: string | null; fix_patch: string | null; fix_title: string | null; fix_summary: string | null; fix_branch: string | null; fix_files: string | null; fix_ref: string | null; note: string | null; env_wait_at: string | null; reason: string | null; decided_by: string | null; created_at: string; updated_at: string; fix_attempts: number; last_failure: string | null;
 };
 
 export const findingKey = (repo: string, n: number): string => `${repo}:finding:${n}`;
@@ -105,15 +105,17 @@ export function clearRounds(db: DatabaseSync, repo: string, n: number): void {
 
 /**
  * A finding that is `fixing`, or `landing` without a pull request, while no step job of it is queued or running (the job was
- * killed or cancelled) goes back to where an operator can act again. A fixing finding with a round in the build has no job
- * on purpose: advanceSecurityFixes queues one when the round's tasks end.
+ * killed or cancelled) goes back to where an operator can act again. A fixing finding with a round in the build, or one
+ * waiting for a confidential build environment, has no job on purpose: advanceSecurityFixes queues one when the round's
+ * tasks end or the environment is ready.
  */
 export function reconcileFindings(db: DatabaseSync, repo: string): void {
   const grace = new Date(Date.now() - 60_000).toISOString();
   const rows = db.prepare(`SELECT number, state FROM security_findings WHERE repo = ? AND updated_at < ? AND (state = 'fixing' OR (state = 'landing' AND fix_pr IS NULL))
     AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.step IN ('security-fix', 'security-land', 'security-advisory') AND j.state IN ('queued', 'running')
       AND json_extract(j.params, '$.repo') = security_findings.repo AND json_extract(j.params, '$.number') = security_findings.number)
-    AND NOT EXISTS (SELECT 1 FROM security_fix_rounds r WHERE r.repo = security_findings.repo AND r.number = security_findings.number AND r.state = 'building')`).all(repo, grace) as { number: number; state: FindingState }[];
+    AND NOT EXISTS (SELECT 1 FROM security_fix_rounds r WHERE r.repo = security_findings.repo AND r.number = security_findings.number AND r.state = 'building')
+    AND NOT (state = 'fixing' AND env_wait_at IS NOT NULL)`).all(repo, grace) as { number: number; state: FindingState }[];
   for (const r of rows) {
     const note = "The job ended before it finished. Try again.";
     // The rounds a dead fix job left are logged under the attempt that made them, before the next Fix counts a new one.
