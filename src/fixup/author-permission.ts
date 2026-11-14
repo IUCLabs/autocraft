@@ -13,9 +13,9 @@ const KNOWN = new Set(["admin", "maintain", "write", "triage", "read", "none"]);
 /** "yes" and "no" are known; "unknown" means the permission has not been read yet (a missing entry). */
 export type AuthorWrite = "yes" | "no" | "unknown";
 
-type Row = { author: string | null; author_type: string | null };
+type Row = { author: string | null; author_type: string | null; author_id: number | null };
 const authorOf = (db: DatabaseSync, repo: string, number: number): Row | undefined =>
-  db.prepare("SELECT author, author_type FROM items WHERE repo = ? AND number = ?").get(repo, number) as Row | undefined;
+  db.prepare("SELECT author, author_type, author_id FROM items WHERE repo = ? AND number = ?").get(repo, number) as Row | undefined;
 
 /** The pipeline's own account and bots write to the repository by construction. */
 function writesByRole(db: DatabaseSync, r: Row): boolean {
@@ -24,23 +24,31 @@ function writesByRole(db: DatabaseSync, r: Row): boolean {
   return !!me && !!r.author && me.toLowerCase() === r.author.toLowerCase();
 }
 
-type Cached = { permission: string | null; checked_at: string | null; failures: number; first_failure_at: string | null };
-const cached = (db: DatabaseSync, repo: string, login: string): Cached | undefined =>
-  db.prepare("SELECT permission, checked_at, failures, first_failure_at FROM main.author_permissions WHERE login = ? AND repo = ?").get(login, repo) as Cached | undefined;
+type Cached = { permission: string | null; checked_at: string | null; failures: number; first_failure_at: string | null; author_id: number | null };
+/** The cached entry of the PR's author; a permission read for another account under the login counts as never read. */
+const cached = (db: DatabaseSync, repo: string, r: Row & { author: string }): Cached | undefined => {
+  const c = db.prepare("SELECT permission, checked_at, failures, first_failure_at, author_id FROM main.author_permissions WHERE login = ? AND repo = ?").get(r.author, repo) as Cached | undefined;
+  return c && c.permission && c.author_id !== null && r.author_id !== null && c.author_id !== r.author_id ? { ...c, permission: null, checked_at: null } : c;
+};
+const old = (at: string | null): boolean => !at || Date.now() - Date.parse(at) > AUTHOR_PERMISSION_TTL_MS;
+/** The reads have failed too often or for too long. */
+const gaveUp = (c: Cached): boolean => c.failures >= AUTHOR_READ_FAILURES || (!!c.first_failure_at && old(c.first_failure_at));
 
 /** After this many failed reads, or this long since the first, an author never read counts as unable to write. */
 export const AUTHOR_READ_FAILURES = 3;
 
-/** Database only: whether the PR's author can write to the repository, as last read (a stale entry still counts until it is refreshed). */
+/**
+ * Database only: whether the PR's author can write to the repository, as last read. A stale entry still counts until it is refreshed,
+ * but not once its refresh has failed too often or for too long.
+ */
 export function authorWrites(db: DatabaseSync, repo: string, number: number): AuthorWrite {
   const r = authorOf(db, repo, number);
   if (!r?.author) return "no";
   if (writesByRole(db, r)) return "yes";
-  const c = cached(db, repo, r.author);
-  if (c?.permission) return WRITE.has(c.permission) ? "yes" : "no";
+  const c = cached(db, repo, { ...r, author: r.author });
+  if (c?.permission) return old(c.checked_at) && gaveUp(c) ? "no" : WRITE.has(c.permission) ? "yes" : "no";
   // Never read: waiting, until the reads have failed too often or for too long; then the PR gets the normal cannot-push hold.
-  const gaveUp = !!c && (c.failures >= AUTHOR_READ_FAILURES || (!!c.first_failure_at && Date.now() - Date.parse(c.first_failure_at) > AUTHOR_PERMISSION_TTL_MS));
-  return gaveUp ? "no" : "unknown";
+  return c && gaveUp(c) ? "no" : "unknown";
 }
 
 export type PermissionReader = (repo: string, login: string) => Promise<string | null>;
@@ -64,12 +72,12 @@ export async function ensureAuthorWrites(db: DatabaseSync, repo: string, number:
   const r = authorOf(db, repo, number);
   if (!r?.author) return "no";
   if (!writesByRole(db, r)) {
-    const c = cached(db, repo, r.author);
-    if (!c?.permission || !c.checked_at || Date.now() - Date.parse(c.checked_at) > AUTHOR_PERMISSION_TTL_MS) {
+    const c = cached(db, repo, { ...r, author: r.author });
+    if (!c?.permission || old(c.checked_at)) {
       const now = new Date().toISOString();
       const p = await read(repo, r.author).catch(() => null);
-      if (p) db.prepare(`INSERT INTO main.author_permissions (login, repo, permission, checked_at, failures, first_failure_at) VALUES (?, ?, ?, ?, 0, NULL)
-        ON CONFLICT (login, repo) DO UPDATE SET permission = excluded.permission, checked_at = excluded.checked_at, failures = 0, first_failure_at = NULL`).run(r.author, repo, p, now);
+      if (p) db.prepare(`INSERT INTO main.author_permissions (login, repo, permission, checked_at, failures, first_failure_at, author_id) VALUES (?, ?, ?, ?, 0, NULL, ?)
+        ON CONFLICT (login, repo) DO UPDATE SET permission = excluded.permission, checked_at = excluded.checked_at, failures = 0, first_failure_at = NULL, author_id = excluded.author_id`).run(r.author, repo, p, now, r.author_id);
       else db.prepare(`INSERT INTO main.author_permissions (login, repo, failures, first_failure_at) VALUES (?, ?, 1, ?)
         ON CONFLICT (login, repo) DO UPDATE SET failures = failures + 1, first_failure_at = COALESCE(first_failure_at, excluded.first_failure_at)`).run(r.author, repo, now);
     }

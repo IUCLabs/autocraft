@@ -171,6 +171,10 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["items", "author_type", "TEXT"],
   // GitHub's numeric id of the author's account; a login string can pass to another account, the id cannot.
   ["items", "author_id", "INTEGER"],
+  // The GitHub account an allow override was given to: it counts for that account only, not for a later holder of the login.
+  ["whitelist_overrides", "github_id", "INTEGER"],
+  // The account a cached author permission was read for: another account under the login is read again.
+  ["author_permissions", "author_id", "INTEGER"],
   // The commenter's association with the repository (OWNER, MEMBER, ...).
   ["comments", "author_association", "TEXT"],
   // 1 when the body names the pipeline login (@login); set when the comment is written, backfilled by migrateValues.
@@ -245,6 +249,16 @@ const MIGRATION_VERSION = 16;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
+  // Commits the pipeline pushed to its own branches before own_commits existed, from their audit rows (the repo is the target's prefix).
+  db.exec(`INSERT OR IGNORE INTO main.own_commits (repo, sha, action, at)
+    SELECT CASE WHEN instr(target, '#') > 0 THEN substr(target, 1, instr(target, '#') - 1) ELSE substr(target, 1, instr(target, ':') - 1) END,
+      json_extract(details, '$.commit'), action, at FROM main.audit
+    WHERE action IN ('fixissue-push', 'main-fix-push', 'security-land-push', 'security-advisory-push', 'batch-push')
+      AND json_valid(details) AND json_extract(details, '$.commit') IS NOT NULL AND json_extract(details, '$.state') = 'done'
+      AND (instr(target, '#') > 0 OR instr(target, ':') > 0)`);
+  // Overrides given before their account was stored belong to the account the login's history is bound to; without one an allow counts for nobody.
+  db.exec(`UPDATE main.whitelist_overrides SET github_id = (SELECT a.id FROM main.author_ids a WHERE a.login = whitelist_overrides.login COLLATE NOCASE AND a.id > 0)
+    WHERE github_id IS NULL`);
   // Repos whose work rows outlive their tracking: the list is maintained by a trigger from here on.
   db.exec(`INSERT OR IGNORE INTO main.ever_tracked_repos (name)
     SELECT name FROM main.tracked_repos

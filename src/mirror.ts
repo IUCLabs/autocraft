@@ -330,8 +330,10 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const insert = db.prepare(`INSERT INTO main.items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => c === "mergeable" ? `mergeable=${KEEP_KNOWN_MERGEABLE("items")}` : `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
-  // The first account seen under a login string owns it for the whitelist; a later account with the same login does not inherit its history.
-  const bindId = db.prepare("INSERT OR IGNORE INTO main.author_ids (login, id) VALUES (?, ?)");
+  // The account seen under a login string owns its id-less history for the whitelist; a later account with the same login does not inherit it.
+  // A login with merged or closed PRs mirrored without an id is left to the backfill, which binds the author of that history, not the login's current holder.
+  const bindId = db.prepare(`INSERT OR IGNORE INTO main.author_ids (login, id) SELECT ?1, ?2
+    WHERE NOT EXISTS (SELECT 1 FROM main.items WHERE author = ?1 AND kind = 'pr' AND state IN ('MERGED','CLOSED') AND author_id IS NULL)`);
   const del = db.prepare("DELETE FROM main.comments WHERE repo=? AND number=?");
   const insComment = db.prepare(`INSERT INTO main.comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
@@ -917,6 +919,7 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       const bound = await backfillAuthorIds(db, client);
       if (bound) console.log(`bound ${bound} author account id${bound === 1 ? "" : "s"}`);
       setSetting(db, "author_ids_backfilled", iso(new Date()));
+      db.prepare("DELETE FROM main.settings WHERE key = 'author_ids_error'").run();
     } catch (e) {
       const msg = String((e as Error)?.message ?? e).slice(0, 200);
       console.log(`author ids: ${msg}`);

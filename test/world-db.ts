@@ -42,7 +42,10 @@ type Live = { head: string; state: string; mergeable: string; ci: string; author
 mkdirSync(SCRATCH, { recursive: true });
 export const tmpdir = (name: string): string => mkdtempSync(join(SCRATCH, `${name}-`));
 
-export type PrOpts = { author?: string; lines?: number; label?: string; head?: string; mergeable?: string; ci?: "success" | "failure" | "pending"; canModify?: boolean; flags?: string[] };
+/** `authorId`: the author's GitHub account id (default: the allowed "regular" account for "regular", none for others). */
+export type PrOpts = { author?: string; authorId?: number | null; lines?: number; label?: string; head?: string; mergeable?: string; ci?: "success" | "failure" | "pending"; canModify?: boolean; flags?: string[] };
+/** The GitHub account of the allowed author "regular". */
+export const REGULAR_ID = 7;
 export type ReviewOpts = { verdict?: "take" | "take-fix" | "hold" | "close"; head?: string; sure?: boolean; fixes?: { file: string; change: string }[]; reason?: string };
 export type IssueOpts = { label?: string; flags?: string[]; title?: string; body?: string; impact?: string };
 
@@ -152,7 +155,7 @@ export function world() {
       db.prepare("UPDATE tracked_repos SET pipeline = 1 WHERE name = 'app'").run();
       db.prepare("INSERT OR IGNORE INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')").run();
       db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES (?, 'operator')").run(OPERATOR);
-      db.prepare("INSERT OR IGNORE INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', ?, ?)").run(OPERATOR, T0);
+      db.prepare("INSERT OR IGNORE INTO whitelist_overrides (login, status, by, at, github_id) VALUES ('regular', 'allow', ?, ?, ?)").run(OPERATOR, T0, REGULAR_ID);
       const on = (k: string) => !off.includes(k as never);
       setMergeApproval(db, OPERATOR, "app", on("merge"));
       setPushApproval(db, OPERATOR, "app", on("push"));
@@ -171,8 +174,9 @@ export function world() {
     /** An open PR with its classification and its checks at its head. */
     pr(n: number, o: PrOpts = {}) {
       const head = o.head ?? `sha${n}`;
-      db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, head_ref, created_at, updated_at)
-        VALUES ('app', ?, 'pr', 'OPEN', ?, ?, ?, 0, ?, ?, ?, ?)`).run(n, `PR ${n}`, o.author ?? "regular", o.lines ?? 20, head, `fix-${n}`, T0, T0);
+      const author = o.author ?? "regular";
+      db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, author_id, additions, deletions, head_oid, head_ref, created_at, updated_at)
+        VALUES ('app', ?, 'pr', 'OPEN', ?, ?, ?, ?, 0, ?, ?, ?, ?)`).run(n, `PR ${n}`, author, o.authorId !== undefined ? o.authorId : author === "regular" ? REGULAR_ID : null, o.lines ?? 20, head, `fix-${n}`, T0, T0);
       db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, ?, ?, '{"top":0.95}')`)
         .run(n, T0, o.label ?? "bugfix", JSON.stringify(o.flags ?? []));
       db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)

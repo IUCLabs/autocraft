@@ -1513,6 +1513,16 @@ CREATE TABLE IF NOT EXISTS model_checks (
 CREATE INDEX IF NOT EXISTS model_checks_item ON model_checks(repo, number, id);
 CREATE INDEX IF NOT EXISTS model_checks_median ON model_checks(repo, command, id);
 
+-- Commits the pipeline pushed to a branch of its own (pushOwnBranch: the first commit of a Fix, main CI fix or security fix PR, a batch tip).
+-- The pipeline's own PR keeps its own tier only at such a head, or one reached from it through our own later pushes (pushChainOf).
+CREATE TABLE IF NOT EXISTS own_commits (
+  repo TEXT NOT NULL,
+  sha TEXT NOT NULL,
+  action TEXT NOT NULL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, sha)
+);
+
 -- Every push of ours to a PR branch (fix-up, conflict merge, CI fix, fix-issue PR) and what it did to the PR's required checks.
 -- before_res / after_res: green | red | pending | none | unknown (required checks only; optional ones are ignored). A branch created
 -- by the push has no earlier head: it counts as green before. outcome stays NULL until the checks at to_oid are final;

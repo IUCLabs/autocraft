@@ -464,6 +464,7 @@ The dashboard computes the checks below from the database on each request; nothi
 | `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn; fail when more than half of the tracked repos have an error, for example after a token lost access). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |
 | `accounts` | every enabled Claude account is paused or signed out (fail) |
 | `github-rate` | fewer than 500 (warn) or 100 (fail) GitHub points are left until the next reset |
+| `author-ids` | the last pass that binds contributors' account ids failed (`author_ids_error`) and logins with merged or closed PRs are still unbound: their earlier PRs count toward no whitelist tier until a pass succeeds (warn) |
 
 A repo that fails is skipped for that run and the sync continues with the others; the run exits non-zero only when every repo it tried failed, or after three transient failures in a row or a rate-limit stop (a GitHub outage). A full re-sync keeps its cursor before the first failed repo. A repo is never untracked automatically: untrack it or track it under its new name, and its warning goes with the next successful read (a not-found record also clears when the org listing shows the repo again).
 

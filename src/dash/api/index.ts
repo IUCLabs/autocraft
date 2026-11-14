@@ -450,7 +450,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/contributors", adm.listContributors),
     get("/api/contributors/rule-preview", adm.previewRule),
     post("/api/contributors/rule", adm.saveRule),
-    post("/api/contributors/:login/override", adm.override),
+    post("/api/contributors/:login/override", (db, req) => adm.override(db, req, opts.githubUserId ?? githubUserId)),
     get("/api/repos/all", adm.allRepos),
     post("/api/repos/track", (db, req) => adm.track(db, req, true)),
     post("/api/repos/untrack", (db, req) => adm.track(db, req, false)),

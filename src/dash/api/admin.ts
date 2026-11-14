@@ -22,7 +22,7 @@ import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, type RepoRow, trackRepoChecked, untrackRepo } from "../../repos.ts";
-import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
+import { contributors, getRule, OVERRIDE_LOGIN, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
 import { dropSessionTokens } from "../server/user-tokens.ts";
 import { sessionEndsAt } from "../server/sessions.ts";
@@ -227,17 +227,28 @@ export function saveRule(db: DatabaseSync, req: Req): WhitelistRule {
   return getRule(db);
 }
 
-export function override(db: DatabaseSync, req: Req): Contributor {
+export async function override(db: DatabaseSync, req: Req, lookup: GithubUserLookup): Promise<Contributor> {
   requireOperator(req, "change the whitelist");
   const login = req.params.login!;
   const b = body(req);
   const status = b.status;
   if (status !== "allow" && status !== "deny" && status !== null) throw new HttpError(400, "status must be allow, deny or null");
+  if (!OVERRIDE_LOGIN.test(login)) throw new HttpError(400, `not a GitHub login: ${login}`);
   // Without a note field the override keeps the note it has.
-  const kept = () => (db.prepare("SELECT note FROM whitelist_overrides WHERE login = ?").get(login) as { note: string | null } | undefined)?.note ?? null;
+  const kept = () => (db.prepare("SELECT note FROM whitelist_overrides WHERE login = ? COLLATE NOCASE").get(login) as { note: string | null } | undefined)?.note ?? null;
   const note = status === null ? null : b.note === undefined ? kept() : text(b.note, NOTE_MAX, "note");
+  // An allow belongs to the account that holds the login now; a deny holds for any account, so it does not wait for GitHub.
+  let id: number | null = null;
+  if (status !== null) {
+    try {
+      id = await lookup(login);
+    } catch {
+      if (status === "allow") throw new HttpError(502, "GitHub could not be reached to look up that login. Try again.");
+    }
+    if (id === null && status === "allow") throw new HttpError(400, `${login} is not a GitHub user`);
+  }
   try {
-    setOverride(db, login, status, note, req.user.login);
+    setOverride(db, login, status, note, req.user.login, id);
     clearContributorCache(db);
   } catch (e) {
     throw new HttpError(400, (e as Error).message);

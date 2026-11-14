@@ -15,7 +15,7 @@ import { mainFixApprovalOf } from "../mainfix/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { ciApprovalOf } from "../merge/ci-approval.ts";
 import { decideItem } from "./decide-item.ts";
-import { gateRepo, gates, type Approval, type By, type Want } from "./gates.ts";
+import { gateRepo, gates, type By, type RepoNeed, type Want } from "./gates.ts";
 import { loadItemFact } from "./issue-facts.ts";
 import type { ActionKind, PrFacts } from "./plan.ts";
 import { identityOfDecision, type Identity } from "../github/identity.ts";
@@ -28,7 +28,7 @@ export type Guarded<K extends ActionKind = ActionKind> = { readonly [guarded]: t
 /** What the guard let through for an issue or PR in its item steps (labels, act, fix issue). Only `guardItem` makes one. */
 export type GuardedItem = { readonly [guarded]: true; readonly scope: "item"; readonly action: ItemWant; readonly repo: string; readonly number: number; readonly as: Identity };
 /** What the guard let through for a repo-level write (a label set, a fork, an issue, a batch branch): the approval and the global switch held. Only `guardRepo` makes one. */
-export type GuardedRepo = { readonly [guarded]: true; readonly scope: "repo"; readonly need: Approval | null; readonly repo: string; readonly as: Identity };
+export type GuardedRepo = { readonly [guarded]: true; readonly scope: "repo"; readonly need: RepoNeed; readonly repo: string; readonly as: Identity };
 /** What an item or repo write accepts. A PR grant is left out: no caller writes with one, and a merge or CI grant must not type-check there. */
 export type Grant = GuardedItem | GuardedRepo;
 export type Refused = { refused: string };
@@ -150,7 +150,7 @@ export function repoApprovals(db: DatabaseSync, repo: string): Parameters<typeof
 }
 
 /** Lets a repo-level write through (no item behind it): the repo approval it needs (null: none) and, for the pipeline's own writes, the global switch. */
-export function guardRepo(db: DatabaseSync, repo: string, need: Approval | null, by: By, decisionId?: string, login?: string): GuardedRepo | Refused {
+export function guardRepo(db: DatabaseSync, repo: string, need: RepoNeed, by: By, decisionId?: string, login?: string): GuardedRepo | Refused {
   const why = gateRepo(repoApprovals(db, repo), need, by, repo);
   // `login`: the operator pressing the button right now (a conversation card), who acts as themselves with no answered decision yet.
   return why ? { refused: `${repo}: ${why}` } : ({ scope: "repo", need, repo, as: login ? `user:${login}` : identityOfDecision(db, decisionId) } as unknown as GuardedRepo);

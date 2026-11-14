@@ -57,16 +57,18 @@ const roleOf = (db: DatabaseSync, login: string): Role | null => {
   return r === "operator" || r === "maintainer" || r === "viewer" ? r : null;
 };
 
-/** The same rule as the dashboard's: an operator, or a maintainer while maintainer_writes is on, with write permission where the app acts for them. Read from cached permissions. */
+/** How old a maintainer's cached repo permission may be for alerts: longer than the dashboard's, so a message does not flap between visits. */
+export const RECEIVE_PERMISSION_TTL_MS = 24 * 3600_000;
+
 /**
- * Who receives and keeps alerts: an operator, or a maintainer while maintainer_writes is on, the app acts for them on every repo and their last
- * known permission on each is write or better. The permission has no age limit here (the cache is refreshed only by dashboard visits, and a
- * message must not flap); a press checks it live.
+ * Who receives and keeps alerts: an operator, or a maintainer while maintainer_writes is on, the app acts for them on every repo and their
+ * permission on each, read by a dashboard visit within RECEIVE_PERMISSION_TTL_MS, is write or better. A press checks it live.
  */
-export function mayReceive(db: DatabaseSync, login: string, role: Role, repos: string[]): boolean {
+export function mayReceive(db: DatabaseSync, login: string, role: Role, repos: string[], now: number = Date.now()): boolean {
   if (role === "operator") return true;
   if (role !== "maintainer" || !maintainerWritesOn(db) || !allAppIdentity(db, repos)) return false;
-  return repos.every((r) => !!db.prepare("SELECT 1 FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ('write', 'maintain', 'admin')").get(login, r));
+  const since = new Date(now - RECEIVE_PERMISSION_TTL_MS).toISOString();
+  return repos.every((r) => !!db.prepare("SELECT 1 FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ('write', 'maintain', 'admin') AND checked_at > ?").get(login, r, since));
 }
 
 export function mayAlert(db: DatabaseSync, login: string): boolean {
