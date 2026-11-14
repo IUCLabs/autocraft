@@ -7,7 +7,7 @@ import { issueBody } from "../src/postmerge/template.ts";
 import { cleanReason } from "../src/act/templates.ts";
 import { commitMessage, prTitle } from "../src/fixissue/template.ts";
 import { relatedStatements } from "../src/memory/retrieve.ts";
-import { statementsList } from "../src/review/opus-parse.ts";
+import { publicTexts, statementsList } from "../src/review/opus-parse.ts";
 import { quotedTexts, shingleSet, statementProblems } from "../src/reference-lint.ts";
 import { toBlob } from "../src/embed/store.ts";
 import { world } from "./world-db.ts";
@@ -61,6 +61,9 @@ test("a review gets owner statements of its own repo only, never of a quiet PR, 
   const shown = [{ text: "Exports stay in the shared crate, and the canvas module never writes files of its own." }];
   const posted = [{ field: "public.summary", text: "Looks fine." }, { field: "public.points[0]", text: "Exports stay in the shared crate, and the canvas module" }, { field: "public.points[1]", text: "never writes files of its own." }];
   assert.deepEqual(statementProblems(posted, shown).map((p) => p.field), ["public.points[0]", "public.points[1]"]);
+  // A fix's change is posted when the fix cannot be pushed, so it is checked too.
+  const reply = JSON.stringify({ public: { summary: "Fine.", points: [] }, fixes: [{ file: "src/a.rs", change: "Exports stay in the shared crate, and the canvas module never writes files of its own." }] });
+  assert.deepEqual(statementProblems(publicTexts(reply), shown).map((p) => p.field), ["fixes[0].change"]);
 
   // A page split into short fields, or with a zero-width space and a look-alike letter, still reads as a quote.
   const page = "When the layer is locked the move tool ignores it and the selection handles are hidden until the layer is unlocked again from the panel menu";

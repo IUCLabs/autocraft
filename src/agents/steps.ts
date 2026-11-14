@@ -160,12 +160,12 @@ export type OpusValue = { review: OpusReview; text: string };
 export const REVIEW_OPUS: ClaudeStep<OpusPr, OpusValue, ReferenceCtx> = {
   provider: "claude", id: "review.opus",
   toPrompt: (x) => [x], size: () => 1,
-  lint: { fields: ["summary", "why", "public texts", "claims"], make: (x, c) => async (text, stage) => {
+  lint: { fields: ["summary", "why", "public texts", "claims", "fixes"], make: (x, c) => async (text, stage) => {
     const own = lintOpusReply(text, x.ref, x.unapplied_fixes, x.body);
     if (own === null) return null;
-    // The review's public text is posted without a person reading it: it may not carry the owner statements it was shown.
-    const stated = statementProblems(opusTexts(text), x.statements);
-    return [...own, ...stated, ...await referenceProblems(opusTexts(text), c.dir, c.semantic, { stage, otherProblems: own.length + stated.length })];
+    // The review's public text and fixes reach GitHub without a person reading them: they may not carry the owner statements it was shown.
+    const texts = opusTexts(text), stated = statementProblems(texts, x.statements);
+    return [...own, ...stated, ...await referenceProblems(texts, c.dir, c.semantic, { stage, otherProblems: own.length + stated.length })];
   } },
   parse: (text, x, ctx) => {
     const review = parseOpusReply(text, x.ref, true, dropTexts(ctx.problems), false, x.statements, x.body, x.files);
@@ -179,7 +179,10 @@ export const PREMERGE_OPUS: ClaudeStep<OpusPr & { ref: string }, PremergeReview,
   toPrompt: (x) => [x], size: () => 1,
   lint: { fields: ["findings", "claims"], make: (x, c) => async (text, stage) => {
     const own = lintPremerge(text, x.ref, x.body);
-    return own === null ? null : [...own, ...await referenceProblems(premergeTexts(text, x.ref), c.dir, c.semantic, { stage, otherProblems: own.length })];
+    if (own === null) return null;
+    // Findings and their fixes become fix-up fixes and claims, which reach GitHub: no owner statement it was shown may be in them.
+    const texts = premergeTexts(text, x.ref), stated = statementProblems(texts, x.statements);
+    return [...own, ...stated, ...await referenceProblems(texts, c.dir, c.semantic, { stage, otherProblems: own.length + stated.length })];
   } },
   parse: (text, x, ctx) => { const r = parsePremerge(text, x.ref, dropTexts(ctx.problems), x.statements, x.body, x.files); return r === null ? null : { value: r }; },
 };

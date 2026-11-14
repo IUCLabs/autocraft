@@ -181,7 +181,7 @@ export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set(), k
     const status: ClaimStatus = o.status === "verified" && !evidenceAt(proof, files) ? "unverified" : o.status;
     const f = o.fix as { file?: unknown; change?: unknown } | null | undefined;
     const file = f && typeof f === "object" && typeof f.file === "string" ? stripSandboxPath(f.file.trim()) : "";
-    const fix = f && typeof f === "object" && typeof f.change === "string" && f.change.trim() && safePath(file) && !REFERENCE_LEAK.test(file + f.change)
+    const fix = f && typeof f === "object" && typeof f.change === "string" && f.change.trim() && !drop.has(f.change) && safePath(file) && !REFERENCE_LEAK.test(file + f.change)
       ? { file: file.slice(0, 200), change: f.change.trim().slice(0, 800) } : undefined;
     out.indexes.push(index);
     if (status === "verified") { out.claims.push({ claim, status, evidence }); return; }
@@ -244,7 +244,7 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   if (typeof r.reason !== "string" || !r.reason.trim() || typeof r.sure !== "boolean") return null;
   const fixes = (Array.isArray(r.fixes) ? r.fixes : [])
     .map((f) => (f && typeof f.file === "string" && typeof f.change === "string" ? { file: stripSandboxPath(f.file.trim()).replace(/^\.\//, ""), change: f.change } : null))
-    .filter((f): f is { file: string; change: string } => !!f && safePath(f.file) && !!f.change.trim() && (keepLeaky || (!REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))))
+    .filter((f): f is { file: string; change: string } => !!f && safePath(f.file) && !!f.change.trim() && !drop.has(f.change) && (keepLeaky || (!REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))))
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
   if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
@@ -316,18 +316,24 @@ export function lintOpusReply(text: string, ref: string, unapplied: readonly Una
   return out;
 }
 
-/** The public texts of a reply for the reference checks, with the field each is in (the index is the position in the reply's `points` array). */
+/**
+ * The texts of a reply that can reach GitHub, for the reference and owner-statement checks, with the field each is in (the
+ * index is the position in the reply's array): public text and claims are posted with the review, and a fix's change is
+ * posted in the comment that lists the fixes when they cannot be pushed.
+ */
 export function publicTexts(text: string): { field: string; text: string }[] {
-  const r = replyObject(text) as { public?: { summary?: unknown; points?: unknown }; claims?: unknown } | null;
-  // Claims are posted with the review, so they get the same reference checks.
+  const r = replyObject(text) as { public?: { summary?: unknown; points?: unknown }; claims?: unknown; fixes?: unknown } | null;
   const pc = parseClaims(r?.claims, new Set(), true);
   const claimTexts = (pc?.claims ?? []).flatMap((c, k) => { const i = pc!.indexes[k]!; return [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]; });
+  const claimFixes = (Array.isArray(r?.claims) ? r.claims : []).flatMap((c: { fix?: { change?: unknown } } | null, i) => (typeof c?.fix?.change === "string" && c.fix.change.trim() ? [{ field: `claims[${i}].fix.change`, text: c.fix.change }] : []));
+  const fixes = (Array.isArray(r?.fixes) ? r.fixes : []).flatMap((f: { change?: unknown } | null, i) => (typeof f?.change === "string" && f.change.trim() ? [{ field: `fixes[${i}].change`, text: f.change }] : [])).slice(0, OPUS_MAX_FIXES);
   const p = r?.public;
-  if (!p || typeof p !== "object") return claimTexts;
+  if (!p || typeof p !== "object") return [...claimTexts, ...claimFixes, ...fixes];
   return [
     ...(typeof p.summary === "string" && p.summary.trim() ? [{ field: "public.summary", text: p.summary }] : []),
     ...claimTexts,
     // Only the points parsePublic keeps (the first OPUS_PUBLIC_POINTS non-empty ones), so a long list makes no extra checks.
     ...(Array.isArray(p.points) ? p.points.flatMap((x, i) => (typeof x === "string" && x.trim() ? [{ field: `public.points[${i}]`, text: x }] : [])).slice(0, OPUS_PUBLIC_POINTS) : []),
+    ...claimFixes, ...fixes,
   ];
 }
