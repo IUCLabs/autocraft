@@ -146,7 +146,7 @@ export function createHttpApi(): Api {
       editCard: (id, edit) => post(`/api/conversation-cards/${id}/edit`, edit),
       cancelPreapproval: (repo, n) => post(`/api/items/${repo}/${n}/preapproval/cancel`),
       retryPreapproval: (repo, n) => post(`/api/items/${repo}/${n}/preapproval/retry`),
-      doCard: (id, opts) => post(`/api/conversation-cards/${id}/do`, opts?.skip?.length || opts?.note ? { ...(opts.skip?.length && { skip: opts.skip }), ...(opts.note && { note: opts.note }) } : undefined),
+      doCard: (id, opts) => post(`/api/conversation-cards/${id}/do`, { digest: opts.digest, ...(opts.skip?.length && { skip: opts.skip }), ...(opts.note && { note: opts.note }) }),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
       disputeCard: (id, reason) => post(`/api/conversation-cards/${id}/dispute`, { reason }),
       keepCard: (id) => post(`/api/conversation-cards/${id}/keep`),
@@ -157,7 +157,7 @@ export function createHttpApi(): Api {
         const action = body.core === "backlog" ? "backlog" : body.core.slice(2);
         await post(`/api/security/findings/${encodeURIComponent(f[1]!)}/${f[2]}`, { action, reason: body.note ?? body.params?.reason });
         const at = new Date().toISOString();
-        return { id: 0, kind: "resolution", title: action, label: "Do it", headline: action, steps: [], canSettle: true, state: "done", fromChoice: true, by: "", at, done: { at, link: "", label: action } } as ConversationCard;
+        return { id: 0, digest: "", kind: "resolution", title: action, label: "Do it", headline: action, steps: [], canSettle: true, state: "done", fromChoice: true, by: "", at, done: { at, link: "", label: action } } as ConversationCard;
       },
     },
     areas: {

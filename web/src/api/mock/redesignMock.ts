@@ -152,7 +152,7 @@ export function withFindingChoices(conv: Api["conversations"], base: Pick<Api, "
       await base.security.act(m[1]!, Number(m[2]), key, body.note ?? body.params?.reason);
       changed();
       const when = new Date().toISOString();
-      return { id: Date.now(), kind: "resolution", title: CORE[key].label, label: "Do it", headline: CORE[key].label, steps: [], canSettle: true, state: "done", fromChoice: true, by: me.login, at: when, done: { at: when, link: "", label: CORE[key].label } } as ConversationCard;
+      return { id: Date.now(), digest: "", kind: "resolution", title: CORE[key].label, label: "Do it", headline: CORE[key].label, steps: [], canSettle: true, state: "done", fromChoice: true, by: me.login, at: when, done: { at: when, link: "", label: CORE[key].label } } as ConversationCard;
     },
   };
 }

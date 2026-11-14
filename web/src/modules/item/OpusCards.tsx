@@ -15,8 +15,9 @@ export function ActionCard({ a, operator, editInstructions, className = "ml-7 mt
       editInstructions={editInstructions}
       className={className}
       onRun={async (edit) => {
-        if (edit) await api.conversations.editCard(a.id, edit);
-        const ran = await api.conversations.doCard(a.id);
+        // The press runs the card as shown, with the presser's own edit when there is one.
+        const shown = edit ? await api.conversations.editCard(a.id, edit) : a;
+        const ran = await api.conversations.doCard(a.id, { digest: shown.digest });
         if (item && a.fixup && ran.state !== "failed") markStarting(item.repo, item.number, a.title);
       }}
       onDismiss={() => api.conversations.dismissCard(a.id)}

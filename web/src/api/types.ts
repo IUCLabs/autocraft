@@ -1926,6 +1926,8 @@ export type ConversationCardState = "proposed" | "queued" | "running" | "done" |
  */
 export interface ConversationCard {
   id: number;
+  /** Digest of the card's text and steps: a press sends it back, so it runs only the card as shown. */
+  digest: string;
   /** "resolution" for cards Opus proposes from now on; the other kinds are single actions on older turns. */
   kind: "resolution" | "comment" | "answer" | "label" | "backlog" | "duplicate" | "resolve" | "close";
   title: string;

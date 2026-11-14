@@ -6,7 +6,7 @@ const MIN = 60_000;
 const at = (min: number) => new Date(NOW - min * MIN).toISOString();
 const REF = "designcraft#1484";
 
-const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], headline: c.title, steps: [], canSettle: true, ...c });
+const card = (c: Partial<ConversationCard> & Pick<ConversationCard, "id" | "kind" | "title" | "state">): ConversationCard => ({ label: LABELS[c.kind], headline: c.title, steps: [], canSettle: true, digest: `d${c.id}`, ...c } as ConversationCard);
 const LABELS: Record<ConversationCard["kind"], string> = { resolution: "Do it", comment: "Post comment", answer: "Answer", label: "Add label", backlog: "Move to Backlog", resolve: "Close decision", duplicate: "Close as duplicate", close: "Close issue" };
 
 const issueBody = "designcraft#1484 commits the Hungarian dictionary and hyphenation patterns. craft-i18n ships the same data as the `hu` pack.\n\nSwitch the spellchecker to load the pack through craft-proof and remove the committed files.";
@@ -21,7 +21,7 @@ function mergeChoices(n: number): DecisionChoices {
       writes: ["merge"],
       drafted: true,
       extras: [
-        { id: "e1", kind: "open_issue", tag: "open_issue", on: true, title: "Load Hungarian from the language pack", body: issueBody },
+        { id: "e1", kind: "open_issue", tag: "open_issue", on: true, repo: "craft-i18n", title: "Load Hungarian from the language pack", body: issueBody },
         { id: "e2", kind: "comment", tag: "comment", on: false, text: "Merged. The data files duplicate the `hu` pack, so a follow-up moves the spellchecker onto the pack." },
       ],
     },

@@ -207,6 +207,9 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
   const running = choices.run?.state === "running";
   const blank = on.some((x) => (x.kind === "comment" && !editOf(x).text?.trim()) || (x.kind === "open_issue" && !editOf(x).title?.trim()));
   const label = picked && writes.length ? `Do it: ${tagWords(writes)}` : "Do it";
+  // An issue opened in another repository is named in the confirmation too.
+  const elsewhere = [...new Set(on.flatMap((x) => (x.kind === "open_issue" && x.repo && x.repo !== d.repo ? [x.repo] : [])))];
+  const confirm = `Confirm: ${tagWords(writes)}${elsewhere.length ? ` (issue in ${elsewhere.join(", ")})` : ""}`;
 
   const select = (k: string) => {
     setArmed(false);
@@ -320,7 +323,10 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
             <ActionTag tag={x.tag} className="self-start" />
             {x.on && core.key === choices.pick?.core && opusTag}
             {!(editing && checked && editable) && (
-              <span className={cn("min-w-0 basis-full break-words md:basis-0 md:flex-1", x.kind === "comment" && "line-clamp-3 whitespace-pre-wrap font-normal text-ink/80")}>{x.kind === "open_issue" ? `"${shown}"` : shown}</span>
+              <span className={cn("min-w-0 basis-full break-words md:basis-0 md:flex-1", x.kind === "comment" && "whitespace-pre-wrap font-normal text-ink/80")}>
+                {x.kind === "open_issue" ? `"${shown}"` : shown}
+                {x.kind === "open_issue" && <span className="font-normal text-ink/60"> in {x.repo ?? d.repo}</span>}
+              </span>
             )}
           </span>
         }
@@ -337,6 +343,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
           ) : undefined
         }
       >
+        {!(editing && checked) && x.kind === "open_issue" && <blockquote className={quote}>{e.body}</blockquote>}
         {editing && checked && x.kind === "comment" && (
           <textarea value={e.text ?? ""} onChange={(ev) => patch(core.key, (s) => ({ ...s, edits: { ...s.edits, [x.id]: { ...s.edits[x.id], text: ev.target.value } } }))} rows={5} aria-label="Comment text" disabled={busy || running} className={area} />
         )}
@@ -400,7 +407,7 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
                       disabled={blank}
                       onClick={() => void run()}
                     >
-                      {armed ? `Confirm: ${tagWords(writes)}` : label}
+                      {armed ? confirm : label}
                     </Button>
                     {armed && (
                       <Button variant="ghost" className="max-md:h-11" onClick={() => setArmed(false)}>

@@ -8,7 +8,7 @@ import { getDecision } from "../../decisions.ts";
 import { disputeCard, keepCard, queuePlace, queueReason } from "../../conversations/queue.ts";
 import { audit } from "../audit.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
-import { cardOf, cardRepos, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
+import { cardDigest, cardOf, cardRepos, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, staleOf, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -76,7 +76,7 @@ export function cardView(db: DatabaseSync, c: CardRow, who?: { login: string; ro
     headline: headline(db, params),
     ...(preview && { preview }),
     canSettle: !!who && canSettleCached(db, who.login, who.role, cardRepos(c, params)),
-    id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"],
+    id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"], digest: cardDigest(c),
     ...(c.text !== null && { text: c.text }),
     ...(effect && { writes: effect }),
     ...(c.state === "done" && { done: { at: c.acted_at ?? "", link: c.result_url ?? "", label: c.result ?? "Done" } }),
@@ -261,10 +261,15 @@ export async function keepPress(db: DatabaseSync, req: Req): Promise<Conversatio
   return cardView(db, cardOf(db, c.id)!, req.user);
 }
 
-/** Runs the card once; a second press returns the card as it is. */
+/**
+ * Runs the card once; a second press returns the card as it is. The press carries the digest of the card it was made on,
+ * so an edit by someone else in between is refused instead of running under this press.
+ */
 export async function doIt(db: DatabaseSync, req: Req, deps?: ActDeps): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  const b = req.json as { skip?: unknown; note?: unknown } | null;
+  const b = req.json as { skip?: unknown; note?: unknown; digest?: unknown } | null;
+  if (typeof b?.digest !== "string") throw new HttpError(400, "digest must be the digest of the card as shown");
+  if (c.state === "proposed" && b.digest !== cardDigest(c)) throw new HttpError(409, c.edited_by ? `the card changed since it was shown (edited by ${c.edited_by}); look at it again` : "the card changed since it was shown; look at it again");
   if (b?.note !== undefined && typeof b.note !== "string") throw new HttpError(400, "note must be a string");
   if (b?.skip !== undefined && (!Array.isArray(b.skip) || b.skip.some((k) => !Number.isInteger(k)))) throw new HttpError(400, "skip must be a list of step positions");
   const skip = (b?.skip as number[] | undefined) ?? [];
