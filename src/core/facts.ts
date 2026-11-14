@@ -213,6 +213,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const openQuestion = db.prepare(OPEN_QUESTION_SQL);
   const answeredAfter = db.prepare(`SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND ${settledBySql("decisions")}`);
   const pushChain = pushChainOf(db);
+  const ownHead = ownHeadOf(db);
   const unsureAt = db.prepare(UNSURE_AT_SQL);
   const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");
   const batchTip = db.prepare(`SELECT a.runs, a.approved, a.reread, a.failed, a.cross_repo FROM merge_batches b
@@ -377,8 +378,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       }
     }
     base.tier = (r.author ? tiers.get(tierKey({ login: r.author, id: r.author_id })) : undefined) ?? "not";
-    // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
-    if (base.tier === "not" && r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref)) base.tier = "whitelisted";
+    // The pipeline's own Fix PRs count as whitelisted at a head the pipeline itself pushed (others may push to the branch); an operator's deny still wins.
+    const ownHere = !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref) && !!head && ownHead(r.repo, r.number, head);
+    if (base.tier === "not" && ownHere) base.tier = "whitelisted";
 
     const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string; refusals: number } | undefined;
     // An operator's Retry after a refusal asks for another try now, without waiting for CI or the mergeable state to change.
@@ -432,7 +434,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
     if (r.base_ref && r.state === "OPEN") base.stackedOn = (stackedOnQ.get(r.repo, r.base_ref, `${slugOf(r.repo)}`.toLowerCase(), r.number) as { number: number } | undefined)?.number ?? null;
     base.baseOffDefault = !!r.base_ref && !!rf.defaultBranch && r.base_ref !== rf.defaultBranch;
-    base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
+    base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && ownHere;
     const gate = gates.get(ref);
     const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
     if (gate && gate.failures >= GATE_FAILURES) base.gateFailureNote = failureNote(gate.failures);
@@ -461,6 +463,13 @@ export function pushChainOf(db: DatabaseSync): (repo: string, number: number, he
     for (let k = 0; k < chain.length; k++) for (const f of from.all(repo, number, chain[k]!) as { from_head: string }[]) if (!chain.includes(f.from_head)) chain.push(f.from_head);
     return chain;
   };
+}
+
+/** Returns a function telling whether a PR's head is the pipeline's own work: a commit it pushed to its own branch, or one reached from such a commit only through its own later pushes. */
+export function ownHeadOf(db: DatabaseSync): (repo: string, number: number, head: string) => boolean {
+  const chain = pushChainOf(db);
+  const pushed = db.prepare("SELECT 1 FROM main.own_commits WHERE repo = ? AND sha = ?");
+  return (repo, number, head) => chain(repo, number, head).some((h) => !!pushed.get(repo, h));
 }
 
 /** True when any stored Opus review at the head (the current row or an overwritten one in the history) was a take or take-fix with sure = 0. */

@@ -69,7 +69,7 @@ export async function runLand(db: DatabaseSync, repo: string, n: number, by: By,
     if (!row.fix_commit || !row.fix_title || !row.fix_summary || !row.fix_branch) return back(db, repo, n, "the finding has no fix to land", d.log);
     const git = new Git(d.exec, d.root, repo);
     if (!(await haveCommit(git, row))) return back(db, repo, n, "the fix commit is gone from the local cache; write the fix again", d.log);
-    const g = guardRepo(db, repo, null, by);
+    const g = guardRepo(db, repo, "security", by);
     if ("refused" in g) return back(db, repo, n, g.refused, d.log);
     const who = await d.who();
     const base = branchOf(db, repo);
@@ -182,7 +182,7 @@ export async function runAdvisory(db: DatabaseSync, repo: string, n: number, by:
     if (!row.fix_commit || !row.fix_title || !row.fix_summary || !row.fix_branch) return back(db, repo, n, "the finding has no fix to land", d.log);
     const git = new Git(d.exec, d.root, repo);
     if (!(await haveCommit(git, row))) return back(db, repo, n, "the fix commit is gone from the local cache; write the fix again", d.log);
-    const g = guardRepo(db, repo, null, by);
+    const g = guardRepo(db, repo, "security", by);
     if ("refused" in g) return back(db, repo, n, g.refused, d.log);
     const set: Record<string, string | number | null> = {};
     let ghsa = row.ghsa_id;
@@ -254,7 +254,7 @@ export async function runPublish(db: DatabaseSync, repo: string, n: number, by: 
   const key = findingKey(repo, n);
   const w: Writer = { db, login: ACTOR };
   const note = (why: string): string => { db.prepare("UPDATE security_findings SET note = ?, updated_at = ? WHERE repo = ? AND number = ?").run(oneLine(why, 400), new Date().toISOString(), repo, n); return `finding ${n}: ${oneLine(why, 120)}`; };
-  const g = guardRepo(db, repo, null, by);
+  const g = guardRepo(db, repo, "security", by);
   if ("refused" in g) return note(g.refused);
   let ghsa = row.ghsa_id;
   if (!ghsa) {
@@ -331,7 +331,7 @@ export async function pollLanding(db: DatabaseSync, d: Pick<LandDeps, "exec" | "
       // The draft advisory records the issue once the fix is public. Best effort: Publish creates it when this could not.
       try {
         const row = rawFinding(db, f.repo, f.number)!;
-        const g = row.ghsa_id ? null : guardRepo(db, f.repo, null, "pipeline");
+        const g = row.ghsa_id ? null : guardRepo(db, f.repo, "security", "pipeline");
         if (g && !("refused" in g)) await draftAdvisory(db, row, { db, login: ACTOR }, g, d);
       } catch (e) {
         d.log(`security: ${f.repo}: draft advisory not created: ${oneLine(String((e as Error).message ?? e), 160)}`);

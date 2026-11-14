@@ -12,6 +12,7 @@ import { storedLiveness } from "./liveness.ts";
 import { coverageSnapshot, githubIdentity } from "./github/identity.ts";
 import { readAppSecrets } from "./github/install-token.ts";
 import { PROBE_HEADERS } from "./health.ts";
+import { unboundLogins } from "./author-ids.ts";
 
 /** Thresholds, in one place. */
 export const THRESHOLDS = {
@@ -186,6 +187,18 @@ function appIdentityChecks({ db, probe }: CheckCtx): Check[] {
   return [ok("app-keys", "/admin/github-app"), { id: "app-coverage", state: "warn", text, brief: "The GitHub App does not cover every tracked repo", since: null, count: uncovered.length, to: "/admin/github-app" }];
 }
 
+/** The last pass that binds contributors' account ids failed: the earlier PRs of the logins it did not bind count toward no tier until a pass succeeds. */
+function authorIdsCheck({ db }: CheckCtx): Check[] {
+  const err = (db.prepare("SELECT value FROM settings WHERE key = 'author_ids_error'").get() as { value: string } | undefined)?.value;
+  if (!err) return [ok("author-ids", "/contributors")];
+  const n = unboundLogins(db).length;
+  if (!n) return [ok("author-ids", "/contributors")];
+  const at = err.split(" ")[0] ?? null;
+  return [{ id: "author-ids", state: "warn", count: n, since: at, to: "/contributors",
+    text: `Contributor account ids could not be read (${err.slice(at ? at.length + 1 : 0).trim() || "error"}): the earlier PRs of ${n} login${n === 1 ? "" : "s"} count toward no whitelist tier until the next sync reads them`,
+    brief: "Some contributors' whitelist history cannot be read" }];
+}
+
 /** The outside-author surge breaker (src/outside.ts) while it is tripped; an operator resumes it on the Pipeline page. */
 function outsideSurgeCheck({ db }: CheckCtx): Check[] {
   const t = db.prepare("SELECT reason, tripped_at FROM stage_trips WHERE stage = 'outside-surge' AND active = 1").get() as { reason: string; tripped_at: string } | undefined;
@@ -195,7 +208,7 @@ function outsideSurgeCheck({ db }: CheckCtx): Check[] {
 }
 
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, outsideSurgeCheck];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs, probe }));

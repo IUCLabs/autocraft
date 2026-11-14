@@ -62,7 +62,7 @@ export function setOutsideLimits(db: DatabaseSync, by: string, input: unknown): 
   return next;
 }
 
-type Row = { repo: string; number: number; kind: string; author: string; state: string; created_at: string; author_association: string | null; author_type: string | null };
+type Row = { repo: string; number: number; kind: string; author: string; author_id: number | null; state: string; created_at: string; author_association: string | null; author_type: string | null };
 export type Hold = { repo: string; number: number; author: string; kind: "pr" | "issue"; reason: "limit" | "surge" };
 
 const INSIDE_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
@@ -114,16 +114,17 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
     // Only items in scope for model work count: repos with the pipeline on, and not fast-tracked.
     const scope = pipelineRepos(db);
     const fast = new Set((db.prepare("SELECT repo, number FROM main.fast_track").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
-    const rows = (db.prepare("SELECT repo, number, kind, author, state, created_at, author_association, author_type FROM items WHERE created_at >= ? AND author IS NOT NULL")
+    const rows = (db.prepare("SELECT repo, number, kind, author, author_id, state, created_at, author_association, author_type FROM items WHERE created_at >= ? AND author IS NOT NULL")
       .all(new Date(from).toISOString()) as Row[]).filter((r) => scope.has(r.repo) && !fast.has(`${r.repo}#${r.number}`));
     backfillAdmitted(db, new Date(from).toISOString(), now);
     const admitted = new Set((db.prepare("SELECT repo, number FROM main.outside_admitted").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
     const inside = insiders(db);
     const memo = new Map<string, boolean>();
-    const whitelisted = (login: string): boolean => {
-      const k = login.toLowerCase();
+    // Whitelisting belongs to the author's account, not to the login string.
+    const whitelisted = (r: Row): boolean => {
+      const k = `${r.author.toLowerCase()}|${r.author_id ?? ""}`;
       let v = memo.get(k);
-      if (v === undefined) { v = isWhitelisted(db, login).ok; memo.set(k, v); }
+      if (v === undefined) { v = isWhitelisted(db, r.author, r.author_id).ok; memo.set(k, v); }
       return v;
     };
     const cheap = rows.filter((r) => isOutsideAuthor(db, r, inside));
@@ -133,7 +134,7 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
       const since = Math.max(now - HOUR_MS, Date.parse(sinceOf(db, OUTSIDE_SURGE)) || 0);
       const recent = cheap.filter((r) => Date.parse(r.created_at) > since);
       // The whitelist is read only when the cheap count already passes the threshold.
-      const real = recent.length > lim.surgePerHour ? recent.filter((r) => !whitelisted(r.author)) : [];
+      const real = recent.length > lim.surgePerHour ? recent.filter((r) => !whitelisted(r)) : [];
       if (real.length > lim.surgePerHour) {
         const byAuthor = new Map<string, number>();
         for (const r of real) byAuthor.set(r.author, (byAuthor.get(r.author) ?? 0) + 1);
@@ -144,7 +145,7 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
     }
     const groups = new Map<string, Row[]>();
     for (const r of cheap) {
-      const k = `${r.author.toLowerCase()}|${r.kind}`;
+      const k = `${r.author.toLowerCase()}|${r.author_id ?? ""}|${r.kind}`;
       (groups.get(k) ?? groups.set(k, []).get(k)!).push(r);
     }
     for (const rs of groups.values()) {
@@ -155,7 +156,7 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
       const overLimit = limit > 0 && win.length > limit;
       const inSurge = surgeFrom !== null && rs.some((r) => Date.parse(r.created_at) >= surgeFrom);
       if (!overLimit && !inSurge) continue;
-      if (whitelisted(rs[0]!.author)) continue;
+      if (whitelisted(rs[0]!)) continue;
       // An admitted item (planned without a hold once, or with pipeline work already) is never held again.
       const free = (r: Row) => r.state !== "OPEN" || released.has(`${r.repo}#${r.number}`) || admitted.has(`${r.repo}#${r.number}`);
       for (const r of rs) if (!free(r) && surgeFrom !== null && Date.parse(r.created_at) >= surgeFrom) holds.push({ repo: r.repo, number: r.number, author: r.author, kind, reason: "surge" });

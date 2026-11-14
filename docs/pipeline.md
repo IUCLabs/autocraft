@@ -281,7 +281,7 @@ A PR we want (final review take, or take-fix once its listed fixes are pushed or
 3. The clean commit goes to the pipeline account's fork on `autocraft/main-ci-<check-slug>-<sha7>` (`pushBranch`, fork found or created as for Fix issues). A PR "Fix main CI: <check>" is opened against the default branch with `ghOpenPr`: the body names the failing check with its run link, the culprit commit (and its PR when the message names one) and the patched files, and starts with the AI note (Sonnet). The row becomes `pr-opened` with `pr_number` and `pr_url`. Approval and the red head are read again right before the push.
 4. `fix-failed` (reason on the row) records any other end: no patch, a refusal, an Opus rejection, a failed push. The Main CI page shows "needs a person" and nothing retries it.
 
-The PR is one of our own Fix PRs: the merge queue counts `main_fixes.pr_number` PRs by the pipeline account as whitelisted like Fix issues PRs, and they still need green CI and the Opus review. Only such a PR (branch prefix `autocraft/main-ci-`, by the pipeline account, in `main_fixes`) is merged singly and not held while main is red; the branch name alone does not count.
+The PR is one of our own Fix PRs: the merge queue counts `main_fixes.pr_number` PRs by the pipeline account as whitelisted like Fix issues PRs while the head is a commit the pipeline pushed (or reached from one only through its own fix-ups, conflict merges and CI fixes), and they still need green CI and the Opus review. Only such a PR (branch prefix `autocraft/main-ci-`, by the pipeline account, in `main_fixes`) is merged singly and not held while main is red; the branch name alone does not count.
 
 A head the reader finds nothing to act on (no failed check run, or only optional checks failed) gets one `nothing-to-do` row. `GET /api/main-ci` carries each repo's row as `autocraft` ("rerunning failed jobs", "asked an operator", "needs a fix", "checking a fix", "opened fix PR #N", "needs a person", "nothing to do: infra", or null). `autocraft main-fix --repo R --apply` runs the step by hand.
 
@@ -522,7 +522,7 @@ Untrusted code (a PR's build and tests) never runs where the GitHub token or a C
 
 - **Scope calls**: is this in scope, closer to the reference app, a plug-in rather than core?
 - **Reference behaviour** that public sources don't settle.
-- **Merges outside the rule** (see Merge queue). Contributors shows who is on the whitelist and why. The pipeline's own account counts as whitelisted for the Fix PRs it opened from issues (S or M bugfix after Verify can merge by the rule); an operator's deny still wins.
+- **Merges outside the rule** (see Merge queue). Contributors shows who is on the whitelist and why. The pipeline's own account counts as whitelisted for the Fix PRs it opened from issues (S or M bugfix after Verify can merge by the rule) while the head is the pipeline's own work: a commit someone else pushed to the branch gets a Merge? question. An operator's deny still wins.
 - **Closing a PR** the review says to close.
 - **A label** where Jev and Haiku disagree outside the scope labels: the Work queue says "Referee: waiting for Sonnet", then "Referee: waiting for Opus" when Sonnet was unsure, and links to the Items list of disagreements. When Opus is unsure too, the label stands and the item is asked as a scope question.
 - **Duplicate?** answers: an open one holds the item out of Review, Verify, Fix and the merge queue (Work queue: "Held").

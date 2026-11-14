@@ -42,6 +42,13 @@ function covers(g: Guarded | Grant, repo: string, number?: number): void {
   if (g.repo !== repo || (number !== undefined && "number" in g && g.number !== number)) throw new Error(`the guard covers ${g.repo}${"number" in g ? `#${g.number}` : ""}, not ${repo}${number === undefined ? "" : `#${number}`}`);
 }
 
+/** A push to the pipeline's own branch and a new PR are made only under the grants of the steps that open the pipeline's own PRs. */
+function opensOwnPr(g: Grant, repo: string): void {
+  covers(g, repo);
+  const ok = g.scope === "item" ? g.action.kind === "fixissue-collect" : g.need === "main-fix" || g.need === "merge" || g.need === "security";
+  if (!ok) throw new Error(`a ${g.scope === "item" ? `${g.action.kind} grant` : `grant for ${g.need ?? "no approval"}`} does not allow a push to a new branch or a new pull request`);
+}
+
 /**
  * Who a write is made as, for the audit row's `identity`: `legacy` while the grant's repo is on the box account, else
  * the grant's identity (src/github/identity.ts). Every write takes it from its grant, so none goes unmapped.
@@ -461,7 +468,7 @@ export function ghDeleteComment(w: Writer, g: CommentGrant, exec: Exec, action: 
 }
 
 export function ghOpenPr(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, note: Note, details: Details = {}): Promise<ExecResult> {
-  covers(g, o.repo);
+  opensOwnPr(g, o.repo);
   exec = laneExec(w, g, exec);
   const body = withNote(note, o.body);
   return viaGh(w, idOf(w, g), exec, action, o.target, { ...details, text: body },
@@ -598,10 +605,14 @@ export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: 
 
 /** Pushes `sha` to `branch` of the pipeline's own fork, replacing the branch. */
 export function pushOwnBranch(w: Writer, g: Grant, git: Pick<Git, "git">, action: string, o: { repo: string; number?: number; remote: string; branch: string; sha: string }, details: Details = {}, /** The push needs the box account whatever the repo's identity (an advisory's private fork, which the app cannot reach). */ asBox = false): Promise<ExecResult> {
-  covers(g, o.repo);
+  opensOwnPr(g, o.repo);
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+$/.test(o.remote) || o.branch.startsWith("-") || !/^[0-9a-f]{40,64}$/.test(o.sha)) throw new Error("the push target is not a repository and branch");
   // A new branch has no PR yet: its outcome is matched to the PR by commit once the PR's checks arrive.
-  return pushed(w, g, git, action, o.number === undefined ? `${o.repo}:${o.branch}` : refOf(o.repo, o.number), o, "--force", details, { repo: o.repo, number: null }, asBox);
+  return pushed(w, g, git, action, o.number === undefined ? `${o.repo}:${o.branch}` : refOf(o.repo, o.number), o, "--force", details, { repo: o.repo, number: null }, asBox).then((r) => {
+    // Without this row the pipeline's own PR at this commit is not counted as its own (a person is asked), so a failed write only holds it.
+    if (r.code === 0) try { w.db.prepare("INSERT OR IGNORE INTO main.own_commits (repo, sha, action, at) VALUES (?, ?, ?, ?)").run(o.repo, o.sha, action, new Date().toISOString()); } catch (e) { console.error(`own commit not recorded: ${oneLine(String((e as Error).message ?? e))}`); }
+    return r;
+  });
 }
 
 async function pushed(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">, action: string, target: string, o: { remote: string; branch: string; sha: string }, lease: string, details: Details, pr: { repo: string; number: number | null }, asBox = false): Promise<ExecResult> {

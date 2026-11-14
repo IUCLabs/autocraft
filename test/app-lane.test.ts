@@ -16,7 +16,7 @@ import { SCRATCH } from "./scratch.ts";
 const BOX = "ghp_box_account_token";
 const APP = "ghs_installation_token";
 const item = (as: string): GuardedItem => ({ scope: "item", action: { kind: "act" }, repo: "lane", number: 7, as }) as unknown as GuardedItem;
-const repoGrant = { scope: "repo", need: null, repo: "lane", as: "app" } as unknown as GuardedRepo;
+const repoGrant = { scope: "repo", need: "merge", repo: "lane", as: "app" } as unknown as GuardedRepo;
 const note = { by: "fixed" } as never;
 
 test("app identity: the installation token is the whole child environment; legacy and user grants are untouched", async () => {

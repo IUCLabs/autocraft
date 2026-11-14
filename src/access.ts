@@ -45,6 +45,12 @@ function endSessions(db: DatabaseSync, login: string): number {
   return Number(db.prepare("DELETE FROM sessions WHERE login = ?").run(login).changes);
 }
 
+/** Org setup links are an operator's: they end when their creator stops being one (the link flow also checks the creator's role). */
+function endSetupLinks(db: DatabaseSync, login: string): number {
+  return Number(db.prepare("UPDATE github_setup_links SET revoked_at = ? WHERE created_by = ? COLLATE NOCASE AND revoked_at IS NULL AND used_at IS NULL")
+    .run(new Date().toISOString(), login).changes);
+}
+
 function tx<T>(db: DatabaseSync, f: () => T): T {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -89,9 +95,11 @@ export function removeLogin(db: DatabaseSync, by: string, login: string, opts: A
     // The GitHub App user token goes with the login; its grant is revoked at GitHub later (the vault's sweep).
     const userTokens = dropUserTokens(db, row.login);
     // A linked Discord account acts as the login (presses, alerts); the delete trigger takes the alert opt-ins with the links.
-    const discordLinks = Number(db.prepare("DELETE FROM discord_links WHERE login = ?").run(login).changes);
-    db.prepare("DELETE FROM discord_link_codes WHERE login = ?").run(login);
-    audit(db, by, "access-remove", row.login, { role: row.role, sessions, ...(mcpTokens ? { mcpTokens } : {}), ...(userTokens ? { userTokens } : {}), ...(discordLinks ? { discordLinks } : {}) });
+    // Matched in any letter case: the access list is, and the removal may name the login in another case than the link stores.
+    const discordLinks = Number(db.prepare("DELETE FROM discord_links WHERE login = ? COLLATE NOCASE").run(row.login).changes);
+    db.prepare("DELETE FROM discord_link_codes WHERE login = ? COLLATE NOCASE").run(row.login);
+    const setupLinks = endSetupLinks(db, row.login);
+    audit(db, by, "access-remove", row.login, { role: row.role, sessions, ...(mcpTokens ? { mcpTokens } : {}), ...(userTokens ? { userTokens } : {}), ...(discordLinks ? { discordLinks } : {}), ...(setupLinks ? { setupLinks } : {}) });
   });
 }
 
@@ -110,7 +118,8 @@ export function setRole(db: DatabaseSync, by: string, login: string, role: Role,
     const answerTokens = RANK[role] < RANK[row.role] ? endAnswerTokens(db, login) : 0;
     // A role change ends the sessions, so the login's GitHub App user token goes too and the next sign-in makes a new one.
     const userTokens = dropUserTokens(db, row.login);
-    audit(db, by, "access-role", row.login, { from: row.role, to: role, sessions, ...(answerTokens ? { answerTokens } : {}), ...(userTokens ? { userTokens } : {}) });
+    const setupLinks = role === "operator" ? 0 : endSetupLinks(db, row.login);
+    audit(db, by, "access-role", row.login, { from: row.role, to: role, sessions, ...(answerTokens ? { answerTokens } : {}), ...(userTokens ? { userTokens } : {}), ...(setupLinks ? { setupLinks } : {}) });
     return true;
   });
 }

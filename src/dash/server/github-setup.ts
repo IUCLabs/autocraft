@@ -49,13 +49,16 @@ export function revokeLink(db: DatabaseSync, operator: string, id: string): bool
 
 /** Links that can still be used, newest first. */
 export function openLinks(db: DatabaseSync): GithubSetupLink[] {
-  const rows = db.prepare("SELECT id, org, created_by, created_at, expires_at FROM github_setup_links WHERE revoked_at IS NULL AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC")
+  const rows = db.prepare(`SELECT id, org, created_by, created_at, expires_at FROM github_setup_links WHERE revoked_at IS NULL AND used_at IS NULL AND expires_at > ? AND ${BY_OPERATOR} ORDER BY created_at DESC`)
     .all(new Date().toISOString()) as LinkRow[];
   return rows.map((l) => ({ id: l.id, org: l.org, createdBy: l.created_by, createdAt: l.created_at, expiresAt: l.expires_at }));
 }
 
+/** A link works only while its creator is an operator on the access list. */
+const BY_OPERATOR = "EXISTS (SELECT 1 FROM access a WHERE a.login = github_setup_links.created_by COLLATE NOCASE AND a.role = 'operator')";
+
 const openLink = (db: DatabaseSync, where: "id" | "hash", value: string): LinkRow | null =>
-  (db.prepare(`SELECT * FROM github_setup_links WHERE ${where} = ? AND revoked_at IS NULL AND used_at IS NULL AND expires_at > ?`).get(value, new Date().toISOString()) as LinkRow | undefined) ?? null;
+  (db.prepare(`SELECT * FROM github_setup_links WHERE ${where} = ? AND revoked_at IS NULL AND used_at IS NULL AND expires_at > ? AND ${BY_OPERATOR}`).get(value, new Date().toISOString()) as LinkRow | undefined) ?? null;
 
 // ---- The visitor's flow -----------------------------------------------------
 

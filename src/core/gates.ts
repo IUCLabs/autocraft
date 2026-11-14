@@ -18,9 +18,12 @@ const WHAT: Record<Approval, string> = { merge: "Merges", push: "Pushes", commen
 export type RepoApprovals = Record<Approval, boolean> & { pipelineOn: boolean };
 
 /** Why a write needing `need` is refused, or null. A write with no approval need (`need` null) is gated by the switch only. */
-export function gateRepo(a: RepoApprovals, need: Approval | null, by: By, repo: string): string | null {
+/** What a repo-level write needs: a repo approval, `security` for a security fix's writes (approved per finding, no repo approval), or null for none. */
+export type RepoNeed = Approval | "security" | null;
+
+export function gateRepo(a: RepoApprovals, need: RepoNeed, by: By, repo: string): string | null {
   if (by === "pipeline" && !a.pipelineOn) return "The pipeline is off";
-  return need === null || a[need] ? null : `${WHAT[need]} in ${repo} are not approved`;
+  return need === null || need === "security" || a[need] ? null : `${WHAT[need]} in ${repo} are not approved`;
 }
 
 /** The approval an action's GitHub write needs, or null for an action that writes nothing there. */

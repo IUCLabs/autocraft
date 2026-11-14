@@ -119,7 +119,7 @@ Title, link, author with tier, size, CI, mergeable state; the stage timeline; ev
 
 ### Contributors
 
-Table: login, tier (whitelisted / not / override allow / override deny), merged PRs, closed unmerged, open, merge rate, last merge, repos. Filter by repo and tier; sort by any column. Allow / deny / clear buttons with an optional note. The whitelist rule (`settings.whitelist_min_merged`, `settings.whitelist_min_merge_rate`) shown and editable at the top. Notes on overrides are private.
+Table: login, tier (whitelisted / not / override allow / override deny), merged PRs, closed unmerged, open, merge rate, last merge, repos. Filter by repo and tier; sort by any column. Allow / deny / clear buttons with an optional note. The whitelist rule (`settings.whitelist_min_merged`, `settings.whitelist_min_merge_rate`) shown and editable at the top. Notes on overrides are private. A tier belongs to a GitHub account, not to the login string, which can pass to another account: a PR counts for the account id it was opened by, and PRs mirrored without an id count for the account the login's oldest merged or closed PR was by (looked up once; until then they count for nobody). An allow is given to the account that holds the login when it is set; a deny holds for every account under the login, in any letter case.
 
 ### Classifiers
 
