@@ -2,15 +2,38 @@
 // from a model or a PR, so it is checked before git sees it: no paths outside
 // the tree, no symlinks, no binary content.
 import { execFile } from "node:child_process";
-import { writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export const PATCH_MAX_BYTES = 1024 * 1024;
+
+// git runs on the host with the unpacked source as its working directory, and that tree is a contributor's. git must
+// never take the tree for a repository: a repository's `config` names commands (filters, fsmonitor) that git starts.
+// `safe.bareRepository=explicit` (git 2.38 and later) makes git ignore a bare repository it finds by itself; the other
+// options name the programs and attributes a repository's config could otherwise choose.
+export const UNTRUSTED_TREE = ["-c", "safe.bareRepository=explicit", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null"];
+
+/**
+ * True when git, started in `dir`, would take `dir` itself for a repository: it holds `.git`, or the three entries that
+ * make a bare repository. An older git does not know `safe.bareRepository`, so the worker refuses such a tree
+ * before git sees it. The ceiling in `git()` already stops the search above `dir`.
+ */
+export function repositoryShaped(dir: string): boolean {
+  const has = (name: string): boolean => {
+    try {
+      lstatSync(join(dir, name));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return has(".git") || (has("HEAD") && has("objects") && has("refs"));
+}
 
 // The ceiling keeps git from finding a repository above the source dir, where it would skip every path outside the working directory's prefix.
 function git(args: string[], cwd: string): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise((resolve) =>
-    execFile("git", args, { cwd, timeout: 60_000, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", LC_ALL: "C", GIT_CEILING_DIRECTORIES: dirname(cwd) } }, (err, stdout, stderr) =>
+    execFile("git", [...UNTRUSTED_TREE, ...args], { cwd, timeout: 60_000, maxBuffer: 8 * 1024 * 1024, env: { PATH: process.env.PATH ?? "", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", LC_ALL: "C", GIT_CEILING_DIRECTORIES: dirname(cwd) } }, (err, stdout, stderr) =>
       resolve({ ok: !err, stdout: String(stdout), stderr: String(stderr || (err ? err.message : "")) }),
     ),
   );
@@ -49,6 +72,7 @@ export function scrubGitError(text: string, dirs: string[]): string {
 export async function applyPatch(patch: string, srcDir: string, scratch: string): Promise<string | null> {
   const problem = patchProblem(patch);
   if (problem) return `patch refused: ${problem}`;
+  if (repositoryShaped(srcDir)) return "patch refused: the source tree is shaped like a git repository";
   const file = `${scratch}/change.patch`;
   writeFileSync(file, patch);
   const dirs = [srcDir, scratch];
