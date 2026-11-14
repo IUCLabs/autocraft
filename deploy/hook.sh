@@ -11,6 +11,8 @@
 #   AUTOCRAFT_ROOT             install root (default: parent of the bare repo)
 #   AUTOCRAFT_ENV_FILE         default $AUTOCRAFT_ROOT/config/autocraft.env
 #   AUTOCRAFT_BRANCH           branch that deploys (default main)
+#   AUTOCRAFT_DEPLOY_SHA       the commit to deploy (deploy/post-receive passes the pushed one;
+#                              default: the branch's commit when the hook starts)
 #   AUTOCRAFT_UNITS            systemd units restarted after the build
 #                              (default "autocraft-dashboard autocraft-runner"; empty for none).
 #                              Not restarted while the database file does not exist yet.
@@ -64,7 +66,7 @@ on_exit() {
 	if [ "$timer_stopped" = 1 ]; then $SUDO systemctl start "$TIMER" || true; fi
 	if [ "$rc" -ne 0 ]; then
 		echo "!! deploy failed. After fixing the cause, redeploy this commit by running, as this user:" >&2
-		echo "   cd $GIT_DIR && echo \"0 \$(git rev-parse $BRANCH) refs/heads/$BRANCH\" | GIT_DIR=. hooks/post-receive" >&2
+		echo "   cd $GIT_DIR && echo \"0 ${sha:-\$(git rev-parse $BRANCH)} refs/heads/$BRANCH\" | GIT_DIR=. hooks/post-receive" >&2
 	fi
 }
 trap on_exit EXIT
@@ -75,7 +77,8 @@ if ! flock -n "$lockfd"; then
 	exit 1
 fi
 
-sha="$(git rev-parse "refs/heads/$BRANCH")"
+# Resolved once: everything below deploys this commit, even if the branch moves during the deploy.
+sha="$(git rev-parse --verify --quiet "${AUTOCRAFT_DEPLOY_SHA:-refs/heads/$BRANCH}^{commit}")" || { echo "!! ${AUTOCRAFT_DEPLOY_SHA:-$BRANCH} is not a commit" >&2; exit 1; }
 REL="$ROOT/releases/$sha"
 echo "-- Deploying ${sha:0:12} to $REL --"
 
@@ -107,7 +110,8 @@ else
 	echo "-> Checking out..."
 	rm -rf "$REL"
 	mkdir -p "$REL"
-	git --work-tree="$REL" checkout -f "$BRANCH"
+	# Files of the resolved commit only; HEAD of the bare repo stays on the branch.
+	git --work-tree="$REL" checkout -f --no-overlay "$sha" -- .
 	printf '%s\n' "$sha" >"$REL/.source-commit"
 fi
 cd "$REL"

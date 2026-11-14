@@ -5,7 +5,7 @@
 // children get only the 1 h installation token, through their environment.
 import { readFileSync } from "node:fs";
 import type { AppSecrets } from "../dash/server/config.ts";
-import { appSecretsOf } from "../dash/server/config.ts";
+import { appSecretsOf, checkSecretsFileMode } from "../dash/server/config.ts";
 import { envVar } from "../env.ts";
 import { AppError, appJwt, call, GITHUB_API, type AppDeps } from "./app.ts";
 
@@ -27,6 +27,12 @@ const INSTALLATIONS_MISS_REFETCH_MS = 30_000;
 
 export type MinterDeps = AppDeps & { now?: () => number };
 type Cached = { token: string; expiresAt: number };
+/**
+ * Which repositories a token reaches. With a repo named, the token is minted for that repo plus `also` (the same
+ * owner's other repos the call needs, such as an issue transfer's target); `wide` keeps it installation-wide (a push to
+ * a contributor's fork, which is outside the installation).
+ */
+export type TokenScope = { also?: string[]; wide?: boolean };
 
 export class InstallTokenMinter {
   private app: () => AppSecrets;
@@ -34,8 +40,9 @@ export class InstallTokenMinter {
   private now: () => number;
   private installs: { at: number; byOwner: Map<string, { id: number; selection: "all" | "selected" }> } | null = null;
   private installsInFlight: Promise<void> | null = null;
-  private tokens = new Map<number, Cached>();
-  private minting = new Map<number, Promise<Cached>>();
+  /** Keyed by installation id, and for a repo-scoped token by the id and its repository names. */
+  private tokens = new Map<string, Cached>();
+  private minting = new Map<string, Promise<Cached>>();
   private repos = new Map<number, { token: string; names: Set<string> }>();
 
   constructor(app: AppSecrets | (() => AppSecrets), deps: MinterDeps = {}) {
@@ -44,14 +51,26 @@ export class InstallTokenMinter {
     this.now = deps.now ?? Date.now;
   }
 
-  /** A token for the app's installation on `owner`; with `repo`, also checks the installation covers it. */
-  async token(owner: string, repo?: string): Promise<string> {
+  /**
+   * A token for the app's installation on `owner`. With `repo`, the installation must cover it (and `scope.also`), and
+   * the token reaches only those repositories unless `scope.wide`. Without a repo (reads across repos) it is installation-wide.
+   */
+  async token(owner: string, repo?: string, scope: TokenScope = {}): Promise<string> {
     const inst = await this.installation(owner);
-    const t = await this.mint(inst.id);
-    if (repo !== undefined && inst.selection === "selected" && !(await this.covers(inst.id, t.token, `${owner}/${repo}`))) {
-      throw new RepoNotInInstallationError(owner, repo);
+    if (repo === undefined) return (await this.mint(inst.id)).token;
+    const names = [...new Set([repo, ...(scope.also ?? [])].map((r) => r.toLowerCase()))].sort();
+    if (inst.selection === "selected") {
+      const wide = await this.mint(inst.id);
+      for (const r of names) if (!(await this.covers(inst.id, wide.token, `${owner}/${r}`))) throw new RepoNotInInstallationError(owner, r);
+      if (scope.wide) return wide.token;
+    } else if (scope.wide) return (await this.mint(inst.id)).token;
+    try {
+      return (await this.mint(inst.id, names)).token;
+    } catch (e) {
+      // GitHub refuses a repository the installation cannot reach with 422.
+      if (e instanceof AppError && e.status === 422) throw new RepoNotInInstallationError(owner, names.join(", "));
+      throw e;
     }
-    return t.token;
   }
 
   private async refreshInstallations(): Promise<void> {
@@ -83,28 +102,29 @@ export class InstallTokenMinter {
     return hit;
   }
 
-  private mint(id: number): Promise<Cached> {
-    const c = this.tokens.get(id);
+  private mint(id: number, repos?: string[]): Promise<Cached> {
+    const key = repos ? `${id}:${repos.join(",")}` : String(id);
+    const c = this.tokens.get(key);
     if (c && c.expiresAt - REFRESH_MARGIN_MS > this.now()) return Promise.resolve(c);
-    let p = this.minting.get(id);
+    let p = this.minting.get(key);
     if (!p) {
       p = (async () => {
         try {
-          const j = (await call(this.base, `/app/installations/${id}/access_tokens`, appJwt(this.app()), "POST")) as { token?: unknown; expires_at?: unknown };
+          const j = (await call(this.base, `/app/installations/${id}/access_tokens`, appJwt(this.app()), "POST", repos && { repositories: repos })) as { token?: unknown; expires_at?: unknown };
           const expires = typeof j.expires_at === "string" ? Date.parse(j.expires_at) : NaN;
           if (typeof j.token !== "string" || !j.token || Number.isNaN(expires)) throw new AppError("GitHub gave no usable installation token");
           const fresh = { token: j.token, expiresAt: expires };
-          this.tokens.set(id, fresh);
+          this.tokens.set(key, fresh);
           return fresh;
         } catch (e) {
           // A vanished installation: forget the lookup so the next call re-lists.
           if (e instanceof AppError && e.status === 404) this.installs = null;
           throw e;
         } finally {
-          this.minting.delete(id);
+          this.minting.delete(key);
         }
       })();
-      this.minting.set(id, p);
+      this.minting.set(key, p);
     }
     return p;
   }
@@ -130,16 +150,17 @@ export class InstallTokenMinter {
 /** The app's keys from the secrets file (the runner reads the same file as the dashboard); null when no app is registered. */
 export function readAppSecrets(path = envVar("SECRETS_FILE")): AppSecrets | null {
   if (!path) return null;
+  checkSecretsFileMode(path);
   return appSecretsOf(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>);
 }
 
 let shared: { appId: string; minter: InstallTokenMinter } | null = null;
 /** The process-wide minter; throws when no app is registered. Its caches belong to one app: another app (or none) starts them afresh. */
-export function installationToken(owner: string, repo?: string): Promise<string> {
+export function installationToken(owner: string, repo?: string, scope?: TokenScope): Promise<string> {
   const app = readAppSecrets();
   if (!app) { shared = null; throw new AppError("no GitHub App is registered"); }
   if (shared?.appId !== app.id) shared = { appId: app.id, minter: new InstallTokenMinter(() => readAppSecrets() ?? app) };
-  return shared.minter.token(owner, repo);
+  return shared.minter.token(owner, repo, scope);
 }
 
 // ---- handing a token to a child process ---------------------------------------
@@ -155,9 +176,15 @@ export const TOKEN_ENV = "AUTOCRAFT_GIT_TOKEN";
  */
 export const APP_CREDENTIAL_HELPER = `!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$${TOKEN_ENV}"; }; f`;
 
+/**
+ * git `-c` options that hand the installation token to github.com only: every helper configured before (for any host,
+ * the box's own github.com helper among them) is dropped, and the app's helper is set for https://github.com alone.
+ */
+export const APP_CREDENTIAL_ARGS = ["-c", "credential.helper=", "-c", "credential.https://github.com.helper=", "-c", `credential.https://github.com.helper=${APP_CREDENTIAL_HELPER}`];
+
 /** git `-c` options that select the identity's credentials; empty for the box account (the caller's defaults apply). */
 export function identityGitArgs(identity: Identity): string[] {
-  return identity.kind === "app" ? ["-c", "credential.helper=", "-c", `credential.helper=${APP_CREDENTIAL_HELPER}`] : [];
+  return identity.kind === "app" ? APP_CREDENTIAL_ARGS : [];
 }
 
 /** The environment for a child running git or gh as `identity`. Never mutates `env`. */

@@ -5,9 +5,9 @@
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { envVar } from "../env.ts";
-import { APP_CREDENTIAL_HELPER } from "../github/install-token.ts";
+import { APP_CREDENTIAL_ARGS } from "../github/install-token.ts";
 import { readEnvFor } from "../github/read.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
@@ -44,7 +44,17 @@ export function fixupDir(): string {
   return envVar("FIXUP_DIR") ?? join(homedir(), ".cache/autocraft/fixups");
 }
 
+/** The empty tree: attributes are read from it, never from a tree in the repository (in a bare repository git may otherwise read HEAD's). */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/**
+ * Options of every git command on a cached clone. The repository is named by GIT_DIR (`gitDirEnv`), so with
+ * `safe.bareRepository=explicit` git never takes a directory it finds by itself for one; the rest pins the programs,
+ * attribute sources and transports a repository's config or tree could otherwise choose.
+ */
 export const HARDENING = [
+  "-c", "safe.bareRepository=explicit",
+  "-c", "attr.tree=" + EMPTY_TREE,
   "-c", "core.hooksPath=/dev/null",
   "-c", "protocol.file.allow=never",
   "-c", "protocol.ext.allow=never",
@@ -58,6 +68,8 @@ export const HARDENING = [
   "-c", "credential.helper=!gh auth git-credential",
 ];
 export const GIT_ENV = { GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" };
+/** GIT_DIR for the bare repository `dir`: the repository is given, not discovered. */
+export const gitDirEnv = (dir: string): { GIT_DIR: string } => ({ GIT_DIR: resolve(dir) });
 
 export class Git {
   readonly dir: string;
@@ -74,8 +86,8 @@ export class Git {
   async git(args: string[], opts: { input?: string; env?: Record<string, string>; app?: { env: Record<string, string> } } = {}): Promise<ExecResult> {
     const app = opts.app;
     const go = () => app
-      ? this.run("git", [...HARDENING, "-c", "credential.helper=", "-c", `credential.helper=${APP_CREDENTIAL_HELPER}`, ...args], { cwd: this.dir, input: opts.input, env: { ...app.env, ...GIT_ENV, ...opts.env }, replaceEnv: true })
-      : this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...GIT_ENV, ...opts.env } });
+      ? this.run("git", [...HARDENING, ...APP_CREDENTIAL_ARGS, ...args], { cwd: this.dir, input: opts.input, env: { ...app.env, ...GIT_ENV, ...gitDirEnv(this.dir), ...opts.env }, replaceEnv: true })
+      : this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...GIT_ENV, ...gitDirEnv(this.dir), ...opts.env } });
     if (args[0] !== "fetch") return go();
     // Sessions fetch into the same bare cache at once; a ref lock held by another fetch clears within moments.
     let r = await go();
@@ -95,8 +107,9 @@ export class Git {
 
   async init(): Promise<void> {
     mkdirSync(this.dir, { recursive: true });
+    // GIT_DIR names the directory, so rev-parse succeeds only when it holds a repository.
     const r = await this.git(["rev-parse", "--git-dir"]);
-    if (r.code !== 0 || r.stdout.trim() !== ".") await this.must(["init", "--bare", "--quiet", "."]);
+    if (r.code !== 0) await this.must(["init", "--bare", "--quiet", "."]);
   }
 
   /** Fetches the PR's head (`refs/pull/N/head` of the base repo) and returns the commit it points at. */

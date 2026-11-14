@@ -40,6 +40,17 @@ export function jevInstalled(): boolean {
   return false;
 }
 
+// Search path, home, locale, temp and cache directories, TLS and proxy settings, and Jev's own (TYPESAFE_*, JEV_*) and its launcher's (UV_*) variables.
+const JEV_ENV_KEYS = new Set(["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"]);
+const JEV_ENV_PREFIXES = ["TYPESAFE_", "JEV_", "UV_"];
+
+/** The whole environment of a `jev` child: the variables it needs to start and reach its API. The runner's GitHub and Claude tokens are not among them. */
+export function jevEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v !== undefined && (JEV_ENV_KEYS.has(k) || JEV_ENV_PREFIXES.some((p) => k.startsWith(p)))) out[k] = v;
+  return out;
+}
+
 /** Turns Jev on or off; turning it on also forgets an earlier failure so the next pass tries it. */
 export function setJevEnabled(db: DatabaseSync, on: boolean, by: string): void {
   const was = jevEnabled(db);
