@@ -29,7 +29,7 @@ test("a refused patch reports the error lines of git apply, not its progress lin
     writeFileSync(join(dir, "r", "a.rs"), "x\n");
     g("add", "."); g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "m");
     const patch = patchFor(".", "autocraft_regression_1", "y").replace("tests/autocraft_regression_1.rs", "a.rs").replaceAll("tests/autocraft_regression_1.rs", "a.rs");
-    const r = await new Git(exec, dir, "r").applyToTree("HEAD", patch, join(dir, "idx"));
+    const r = await new Git(exec, dir, "r/.git").applyToTree("HEAD", patch, join(dir, "idx"));
     assert.ok(!r.ok);
     if (!r.ok) assert.match(r.reason, /^git apply --check: a\.rs: already exists in index/);
   } finally { rmSync(dir, { recursive: true, force: true }); }

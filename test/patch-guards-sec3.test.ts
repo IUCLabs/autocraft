@@ -20,7 +20,7 @@ test("the CI-fix guard judges the lines where git applies the patch, and attribu
     writeFileSync(join(dir, "r", "src", "price.rs"), LIB);
     const g = (...a: string[]) => execFileSync("git", ["-C", join(dir, "r"), ...a], { encoding: "utf8" }).trim();
     g("add", "."); g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "m");
-    const git = new Git(exec, dir, "r");
+    const git = new Git(exec, dir, "r/.git");
     const guard = (patch: string) => guardApplied(git, dir, "HEAD", patch, []);
     const testEdit = "     fn price_is_four() {\n-        let expected = 4;\n+        let expected = 6;\n         assert_eq!(price(), expected);\n";
     // The header claims line 5, outside the test module; git places the hunk by its context, inside it.
