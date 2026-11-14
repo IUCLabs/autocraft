@@ -13,46 +13,14 @@ const hashOf = (state: string): string => createHash("sha256").update(state).dig
 const EXPIRY_MARGIN = 60_000;
 export const STATE_TTL_MS = 10 * 60_000;
 
-/**
- * Stores the sign-in, waiting for its code: the token is used only after the Discord user enters, in Discord, the code
- * the sign-in page showed (confirmReporter). Whoever opens a sign-in link signs in, so a link passed on to someone else
- * does not give the Discord user who asked for it that person's account. Returns the code. A token the reporter had
- * before is queued for revocation (a new sign-in replaces it).
- */
-export function saveReporter(db: DatabaseSync, box: TokenBox, reporter: string, githubId: number, login: string, tokens: Tokens, now = Date.now()): string {
+/** Stores the sign-in. A token the reporter had before is queued for revocation (a new sign-in replaces it). */
+export function saveReporter(db: DatabaseSync, box: TokenBox, reporter: string, githubId: number, login: string, tokens: Tokens, now = Date.now()): void {
   const old = db.prepare("SELECT login, token_enc FROM reporter_tokens WHERE reporter = ?").get(reporter) as { login: string; token_enc: string } | undefined;
   if (old) queueRevoke(db, reporter, old.login, old.token_enc, now);
-  const code = confirmCode();
-  db.prepare(`INSERT INTO reporter_tokens (reporter, github_id, login, token_enc, version, updated_at, status, confirm_hash) VALUES (?, ?, ?, ?, 1, ?, 'confirm', ?)
+  db.prepare(`INSERT INTO reporter_tokens (reporter, github_id, login, token_enc, version, updated_at, status) VALUES (?, ?, ?, ?, 1, ?, 'ok')
               ON CONFLICT (reporter) DO UPDATE SET github_id = excluded.github_id, login = excluded.login, token_enc = excluded.token_enc,
-                version = reporter_tokens.version + 1, updated_at = excluded.updated_at, status = 'confirm', confirm_hash = excluded.confirm_hash`)
-    .run(reporter, githubId, login, box.seal(JSON.stringify(tokens), aad(reporter)), new Date(now).toISOString(), hashOf(normalCode(code)));
-  return code;
-}
-
-/** Eight letters and digits without look-alikes, shown as two groups of four. */
-function confirmCode(): string {
-  const abc = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  const c = [...randomBytes(8)].map((b) => abc[b % abc.length]).join("");
-  return `${c.slice(0, 4)}-${c.slice(4)}`;
-}
-const normalCode = (s: string): string => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
-
-/**
- * The Discord user enters the code of their sign-in: right, within STATE_TTL_MS of the sign-in, the token becomes usable.
- * One try: a wrong or late code drops the sign-in (its token is revoked) and the next File it asks for a new one.
- */
-export function confirmReporter(db: DatabaseSync, reporter: string, code: string, now = Date.now()): boolean {
-  const row = db.prepare("SELECT login, token_enc, updated_at, confirm_hash FROM reporter_tokens WHERE reporter = ? AND status = 'confirm'").get(reporter) as { login: string; token_enc: string; updated_at: string; confirm_hash: string | null } | undefined;
-  if (!row) return false;
-  const ok = !!row.confirm_hash && row.confirm_hash === hashOf(normalCode(code)) && Date.parse(row.updated_at) + STATE_TTL_MS >= now;
-  if (ok) {
-    db.prepare("UPDATE reporter_tokens SET status = 'ok', confirm_hash = NULL, version = version + 1, updated_at = ? WHERE reporter = ? AND status = 'confirm'").run(new Date(now).toISOString(), reporter);
-    return true;
-  }
-  queueRevoke(db, reporter, row.login, row.token_enc, now);
-  db.prepare("DELETE FROM reporter_tokens WHERE reporter = ?").run(reporter);
-  return false;
+                version = reporter_tokens.version + 1, updated_at = excluded.updated_at, status = 'ok'`)
+    .run(reporter, githubId, login, box.seal(JSON.stringify(tokens), aad(reporter)), new Date(now).toISOString());
 }
 
 function queueRevoke(db: DatabaseSync, reporter: string, login: string, tokenEnc: string, now: number): void {
@@ -76,8 +44,7 @@ export function failReporter(db: DatabaseSync, reporter: string, version: number
     .run(new Date(now).toISOString(), reporter, version).changes) > 0;
 }
 
-/** `confirm`: signed in, and the code of the sign-in page is still to be entered in Discord. */
-export type ReporterToken = { ok: true; access: string; login: string; version: number } | { ok: false; signIn: true } | { ok: false; signIn: false; confirm?: true };
+export type ReporterToken = { ok: true; access: string; login: string; version: number } | { ok: false; signIn: true } | { ok: false; signIn: false };
 
 const inflight = new Map<string, Promise<ReporterToken>>();
 
@@ -93,7 +60,6 @@ export function reporterToken(db: DatabaseSync, box: TokenBox, provider: Provide
 
 async function obtain(db: DatabaseSync, box: TokenBox, provider: Provider, reporter: string, now: number, rejected: string | undefined): Promise<ReporterToken> {
   const row = readReporter(db, box, reporter);
-  if (row?.tokens && row.status === "confirm") return { ok: false, signIn: false, confirm: true };
   if (!row?.tokens || row.status !== "ok") return { ok: false, signIn: true };
   const t = row.tokens;
   if (t.access !== rejected && (t.expiresAt === null || t.expiresAt - EXPIRY_MARGIN > now)) return { ok: true, access: t.access, login: row.login, version: row.version };

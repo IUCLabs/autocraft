@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { fileIssue, forgetReporter, type FileHooks } from "../src/discord/file-issue.ts";
-import { confirmReporter, readReporter } from "../src/discord/reporter.ts";
+import { readReporter } from "../src/discord/reporter.ts";
 import { TokenBox } from "../src/dash/server/crypto.ts";
 import type { Provider, Tokens } from "../src/dash/server/provider.ts";
 import { reporterSignIn } from "../src/dash/server/reporter-signin.ts";
@@ -54,13 +54,9 @@ describe("filing from Discord", () => {
     const cb = new URL(`http://x/discord/github/callback?state=${state}&code=good`);
     assert.equal((await reporterSignIn(d, cb, new Map(), "n"))!.r.status, 400, "needs the browser's cookie");
     const ok = await reporterSignIn(d, new URL(`http://x/discord/github/callback?state=${state}&code=good`), new Map([["__Host-craft_reporter", state]]), "n");
-    assert.match(ok!.r.html!, /Signed in as octo\. To finish, go back to Discord, press File it and enter this code/);
+    assert.match(ok!.r.html!, /Signed in as octo\. Go back to Discord and press File it\./);
     assert.equal(readReporter(db, box, "rep1")!.tokens!.access, "ghu_access");
     assert.equal((await reporterSignIn(d, cb, new Map([["__Host-craft_reporter", state]]), "n"))!.r.status, 400, "the state is single use");
-    // The token is used only after the Discord user enters the code the page showed.
-    assert.deepEqual(await fileIssue(deps, req, hooks), { status: "confirm" });
-    const code = /<strong>([A-Z0-9]{4}-[A-Z0-9]{4})<\/strong>/.exec(ok!.r.html!)![1]!;
-    assert.equal(confirmReporter(db, "rep1", code.toLowerCase()), true);
   });
 
   test("signed in: junk is refused, then the issue is created with the footer and audited", async () => {

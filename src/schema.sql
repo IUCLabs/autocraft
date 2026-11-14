@@ -271,8 +271,7 @@ CREATE TABLE IF NOT EXISTS reporter_tokens (
   token_enc TEXT NOT NULL,            -- sealed JSON of the token set; aad names this table and the reporter
   version INTEGER NOT NULL DEFAULT 1, -- compare-and-swap counter for refreshes
   updated_at TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'ok',  -- ok; confirm: signed in, waits for the code in Discord; refresh-failed: the reporter must sign in again
-  confirm_hash TEXT                   -- status confirm: sha256 of the code the sign-in page showed
+  status TEXT NOT NULL DEFAULT 'ok'   -- ok; refresh-failed: the reporter must sign in again
 );
 -- Single-use sign-in states of reporters; only the hash of the state is kept.
 CREATE TABLE IF NOT EXISTS reporter_states (
