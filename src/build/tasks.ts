@@ -170,6 +170,9 @@ export function cancelIds(db: DatabaseSync, envId: string): number[] {
   return (db.prepare("SELECT id FROM build_tasks WHERE env_id = ? AND cancel_requested_at > ? ORDER BY id").all(envId, since) as { id: number }[]).map((r) => r.id);
 }
 
+/** The task builds code from a PR: its head, or an integration branch of PRs. */
+const runsPrCode = (t: { step: string; number: number | null }): boolean => t.step === "pr-build" || t.step === "merge-batch" || t.number !== null;
+
 /**
  * Hands out queued tasks to an environment that has `free` slots: the oldest of the highest priority
  * whose requirements it meets, at most min(free, its slots minus the tasks it is running). A disabled,
@@ -180,7 +183,7 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
   db.exec("BEGIN IMMEDIATE");
   try {
     const env = db.prepare("SELECT * FROM build_envs WHERE id = ?").get(envId) as
-      { enabled: number; kind: string; slots: number; reported_slots: number | null; capabilities: string | null; paused_reason: string | null } | undefined;
+      { enabled: number; kind: string; slots: number; reported_slots: number | null; capabilities: string | null; paused_reason: string | null; confidential: number } | undefined;
     const caps = env?.capabilities ? json<Capabilities | null>(env.capabilities, null) : null;
     const out: ClaimedTask[] = [];
     if (env && env.enabled === 1 && caps && !env.paused_reason && !draining(db, env.kind) && Number.isInteger(free) && free > 0) {
@@ -196,7 +199,9 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
           if (!satisfies(caps, json<Requires>(t.requires, {}))) continue;
           // Untrusted-code builds run only while their feature's switch is on for the repo.
           // A worker that holds the warm-snapshot signing key takes no task that runs PR code.
-          if (caps.warmSigner && (t.step === "pr-build" || t.number !== null)) continue;
+          if (caps.warmSigner && runsPrCode(t)) continue;
+          // A security finding's private tasks go only to environments an operator marked confidential, which take no PR code.
+          if (env.confidential === 1 ? runsPrCode(t) : PRIVATE_STEPS.includes(t.step)) continue;
           // The CI gate of a PR build comes from its base commit.
           if (t.step === "pr-build" && t.base_sha === null) continue;
           if (t.step === "pr-build" && !featureOn(db, "pr-builds", t.repo)) continue;
@@ -409,13 +414,14 @@ function batchesOf(db: DatabaseSync, ids: number[], shown: (repo: string, number
   return out;
 }
 
-function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null, shown: (repo: string, number: number) => ItemShown): BuildTask {
+function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null, shown: (repo: string, number: number) => ItemShown, noConfidential: boolean): BuildTask {
   return {
     id: r.id, jobId: r.job_id, step: r.step, repo: r.repo, number: r.number, headSha: r.head_sha, baseSha: r.base_sha,
     requires: json<Requires>(r.requires, {}), priority: r.priority, plan: json<TaskStep[]>(r.plan, []),
     state: r.state, envId: r.env_id, envLabel: r.env_label ?? null, cancelRequested: r.cancel_requested_at !== null,
     queuedAt: r.queued_at, claimedAt: r.claimed_at, startedAt: r.started_at, endedAt: r.ended_at, heartbeatAt: r.heartbeat_at,
-    results: json<TaskResult[]>(r.results, []), artifacts, summary: r.summary,
+    results: json<TaskResult[]>(r.results, []), artifacts,
+    summary: r.summary ?? (r.state === "queued" && noConfidential && PRIVATE_STEPS.includes(r.step) ? CONFIDENTIAL_WAIT : null),
     patchBytes: r.patch ? Buffer.byteLength(r.patch) : null,
     warm: r.warm_key && (r.warm_role === "use" || r.warm_role === "build") ? { key: r.warm_key, role: r.warm_role } : null,
     batch,
@@ -428,7 +434,7 @@ function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null, 
 export function getTask(db: DatabaseSync, id: number): BuildTask | null {
   const r = db.prepare(`${SELECT} WHERE t.id = ?`).get(id) as TaskRow | undefined;
   const shown = shownLookup(db);
-  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? [], batchesOf(db, [r.id], shown).get(r.id) ?? null, shown) : null;
+  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? [], batchesOf(db, [r.id], shown).get(r.id) ?? null, shown, confidentialSince(db) === null) : null;
 }
 
 /** The last bytes of the log, from whole chunks. */
@@ -461,6 +467,24 @@ const FILTER_STATES = ["queued", "claimed", "running", "done", "failed", "cancel
 export const FIX_CHECK_STEP = "fix-check";
 /** Steps whose tasks hold a private finding: staff only. */
 export const PRIVATE_STEPS = [FIX_CHECK_STEP, "scan-test"];
+/** A private task's wait while no enabled environment is marked confidential. */
+export const CONFIDENTIAL_WAIT = "Waiting for a confidential build environment.";
+
+/**
+ * Since when the private tasks could be claimed: the last change of the longest-standing enabled confidential
+ * environment (an edit only moves it later), or null when there is none.
+ */
+export function confidentialSince(db: DatabaseSync): number | null {
+  const r = db.prepare("SELECT MIN(COALESCE(updated_at, created_at)) AS at FROM build_envs WHERE enabled = 1 AND confidential = 1").get() as { at: string | null };
+  return r.at ? Date.parse(r.at) : null;
+}
+
+/** When a private task's build limit starts: when it was queued, or when a confidential environment could first take it. null: it waits for one. */
+export function privateClockStart(db: DatabaseSync, queuedAt: string): number | null {
+  const since = confidentialSince(db);
+  return since === null ? null : Math.max(Date.parse(queuedAt), since);
+}
+
 /** SQL for the steps hidden from viewers, for `step NOT IN (...)`. */
 export const PRIVATE_STEPS_SQL = PRIVATE_STEPS.map((x) => `'${x}'`).join(", ");
 
@@ -487,7 +511,8 @@ export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = []
   const arts = artifactsOf(db, page.map((r) => r.id));
   const shown = shownLookup(db);
   const batches = batchesOf(db, page.map((r) => r.id), shown);
-  return { tasks: page.map((r) => toTask(r, arts.get(r.id) ?? [], batches.get(r.id) ?? null, shown)), next: rows.length > limit ? String(page[page.length - 1]!.id) : null };
+  const noConfidential = confidentialSince(db) === null;
+  return { tasks: page.map((r) => toTask(r, arts.get(r.id) ?? [], batches.get(r.id) ?? null, shown, noConfidential)), next: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
 export type { BuildSummary };

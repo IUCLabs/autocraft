@@ -1,4 +1,5 @@
-// What a build worker reports is untrusted: its formatter diff is folded into a pipeline commit only when the files git writes differ from the patched files by whitespace alone.
+// A build worker is untrusted: its formatter diff is folded into a pipeline commit only when the files git writes differ from the
+// patched files by whitespace alone, and a security finding's private tasks go only to environments an operator marked confidential.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -6,6 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exec, Git } from "../src/fixup/git.ts";
 import { checkFormat, foldFormat } from "../src/prepush/index.ts";
+import { connect } from "../src/db.ts";
+import { claim, createTask, getTask } from "../src/build/tasks.ts";
+import { createEnv, hello, updateEnv } from "../src/build/envs.ts";
+import { rustPlan } from "../src/worker/rust.ts";
 
 const HEAD = [
   "fn add(a: i32, b: i32) -> i32 { a + b }",
@@ -50,4 +55,27 @@ test("a formatter diff folds in only when every file it writes is the patched fi
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a security fix's tasks wait for a confidential environment, which takes no PR code", () => {
+  const db = connect(":memory:");
+  db.prepare("INSERT INTO repos (name, visibility) VALUES ('app', 'public')").run();
+  db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
+  const caps = { os: "linux", arch: "x86_64", cpus: 8, memGb: 32, diskGb: 200, display: false, gpu: false, toolchains: ["rust-stable"] };
+  for (const id of ["plain", "vault"]) {
+    createEnv(db, { id, label: id, kind: "remote", slots: 4 }, "op");
+    // What the worker says about itself never makes it confidential.
+    hello(db, id, { version: "1", capabilities: { ...caps, confidential: true }, slots: 4 });
+  }
+  const t = { repo: "app", plan: rustPlan(), requires: { os: "linux" as const } };
+  const fix = createTask(db, { ...t, step: "fix-check", headSha: "a".repeat(40), patch: "secret" });
+  const pr = createTask(db, { ...t, step: "fixup", number: 7, headSha: "b".repeat(40) });
+  const batch = createTask(db, { ...t, step: "merge-batch", headSha: "c".repeat(40) });
+  assert.equal(getTask(db, fix)!.summary, "Waiting for a confidential build environment.");
+  assert.deepEqual(claim(db, "vault", 4).tasks.map((x) => x.id), [pr, batch]);
+  updateEnv(db, "vault", { confidential: true }, "op");
+  db.prepare("UPDATE build_tasks SET state = 'queued', env_id = NULL WHERE id IN (?, ?)").run(pr, batch);
+  assert.equal(getTask(db, fix)!.summary, null);
+  assert.deepEqual(claim(db, "plain", 4).tasks.map((x) => x.id), [pr, batch]);
+  assert.deepEqual(claim(db, "vault", 4).tasks.map((x) => x.id), [fix]);
 });

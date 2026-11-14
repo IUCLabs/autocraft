@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { FindingAction, FindingState, FindingView, ScanView } from "../../web/src/api/types.ts";
 import { featureOn } from "../build/features.ts";
 import { audit } from "../dash/audit.ts";
-import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
+import { TERMINAL, cancelTask, getTask, privateClockStart } from "../build/tasks.ts";
 import { enqueue, JobError, requestCancel } from "../runner/jobs.ts";
 import { securityRepo, SECURITY_STEP, REASON_MAX, MIN_VERIFY_SCORE } from "./rules.ts";
 import { activeScan, ACTIVE_STATES, advance, clearRounds, finishScan, findingKey, findingRow, moveFinding, reconcileFindings, reconcileScans, reopenUnchecked, scanRow, toFinding, toScan, UNCHECKED_RESULT } from "./store.ts";
@@ -138,7 +138,7 @@ export async function autoFixConfirmed(db: DatabaseSync, repo?: string, n?: numb
   return queued;
 }
 
-/** The longest a round's build tasks may run before the round counts as ended and its tasks are cancelled. */
+/** The longest a round's build tasks may run before the round counts as ended and its tasks are cancelled; the clock waits for a confidential environment (privateClockStart). */
 export const ROUND_BUILD_LIMIT_MS = 4 * 3_600_000;
 
 /**
@@ -159,7 +159,8 @@ export async function advanceSecurityFixes(db: DatabaseSync, pipelineOn = true):
     if (by === "pipeline" && !pipelineOn) continue;
     const open = [r.head_task, r.base_task].filter((id) => { const t = getTask(db, id); return t && !TERMINAL.includes(t.state); });
     if (open.length) {
-      if (Date.now() - Date.parse(r.created_at) <= ROUND_BUILD_LIMIT_MS) continue;
+      const since = privateClockStart(db, r.created_at);
+      if (since === null || Date.now() - since <= ROUND_BUILD_LIMIT_MS) continue;
       for (const id of open) cancelTask(db, id, "security-fix");
     }
     try {

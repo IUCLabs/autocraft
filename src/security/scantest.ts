@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { featureOn } from "../build/features.ts";
 import { BuildError } from "../build/envs.ts";
-import { TERMINAL, cancelTask, createTask, getTask } from "../build/tasks.ts";
+import { TERMINAL, cancelTask, createTask, getTask, privateClockStart } from "../build/tasks.ts";
 import { tasksFor } from "../fixissue/index.ts";
 import { cloneTask } from "../verify/tasks.ts";
 import { outcomeOf } from "../verify/results.ts";
@@ -93,7 +93,8 @@ export function advanceScanTests(db: DatabaseSync): { repo: string; number: numb
     const task = getTask(db, r.task_id);
     if (!task) { end(r, "could-not-build", "the build task no longer exists"); continue; }
     if (!TERMINAL.includes(task.state)) {
-      if (Date.now() - Date.parse(r.created_at) <= ROUND_BUILD_LIMIT_MS) continue;
+      const since = privateClockStart(db, r.created_at);
+      if (since === null || Date.now() - since <= ROUND_BUILD_LIMIT_MS) continue;
       cancelTask(db, r.task_id, "security-scan");
       end(r, "could-not-build", "the build did not finish in time");
       continue;

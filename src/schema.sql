@@ -748,6 +748,7 @@ CREATE TABLE IF NOT EXISTS build_envs (
   kind TEXT NOT NULL,                 -- local-sandbox | remote
   enabled INTEGER NOT NULL DEFAULT 1,
   slots INTEGER NOT NULL,             -- the operator's cap; the worker may report fewer
+  confidential INTEGER NOT NULL DEFAULT 0, -- set by an operator, never by the worker: takes the security lane's private tasks and no PR code
   key_hash TEXT NOT NULL,
   capabilities TEXT,                  -- JSON Capabilities as last reported by the worker
   reported_slots INTEGER,

@@ -22,7 +22,7 @@ export const KINDS: EnvKind[] = ["local-sandbox", "remote"];
 const KEY_PREFIX = "cwk";
 
 type Row = {
-  id: string; label: string; kind: EnvKind; enabled: number; slots: number; key_hash: string; capabilities: string | null;
+  id: string; label: string; kind: EnvKind; enabled: number; slots: number; key_hash: string; capabilities: string | null; confidential: number;
   reported_slots: number | null; version: string | null; paused_reason: string | null; last_seen_at: string | null;
 };
 
@@ -66,7 +66,7 @@ function toEnv(r: Row, running: number, nowMs: number): BuildEnv {
   return {
     id: r.id, label: r.label, kind: r.kind, enabled: r.enabled === 1, online, lastSeenAt: r.last_seen_at,
     slots: slotsOf(r), running, capabilities: parseCaps(r.capabilities), version: r.version,
-    pausedReason: r.enabled === 1 && online ? r.paused_reason : null,
+    pausedReason: r.enabled === 1 && online ? r.paused_reason : null, confidential: r.confidential === 1,
   };
 }
 
@@ -92,6 +92,11 @@ function checkSlots(v: unknown): number {
   return v;
 }
 
+function checkFlag(v: unknown, name: string): boolean {
+  if (typeof v !== "boolean") throw new BuildError(400, `${name} must be true or false`);
+  return v;
+}
+
 function object(input: unknown): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new BuildError(400, "the body must be a JSON object");
   return input as Record<string, unknown>;
@@ -100,29 +105,30 @@ function object(input: unknown): Record<string, unknown> {
 /** Registers an environment. The key is returned here and never again. */
 export function createEnv(db: DatabaseSync, input: unknown, by: string): { env: BuildEnv; key: string } {
   const o = object(input);
-  const bad = Object.keys(o).find((k) => !["id", "label", "kind", "slots"].includes(k));
+  const bad = Object.keys(o).find((k) => !["id", "label", "kind", "slots", "confidential"].includes(k));
   if (bad) throw new BuildError(400, `${bad} cannot be set`);
   const id = o.id;
   if (typeof id !== "string" || !ENV_ID_RE.test(id)) throw new BuildError(400, "id must be 3 to 32 lowercase letters, digits or hyphens, starting with a letter");
   const label = checkLabel(o.label);
   if (!KINDS.includes(o.kind as EnvKind)) throw new BuildError(400, `kind must be ${KINDS.join(" or ")}`);
   const slots = checkSlots(o.slots);
+  const confidential = o.confidential === undefined ? false : checkFlag(o.confidential, "confidential");
   const key = newKey(id);
   const at = new Date().toISOString();
   try {
-    db.prepare("INSERT INTO build_envs (id, label, kind, slots, key_hash, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, label, o.kind as EnvKind, slots, hashKey(key), at, by, at);
+    db.prepare("INSERT INTO build_envs (id, label, kind, slots, confidential, key_hash, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, label, o.kind as EnvKind, slots, confidential ? 1 : 0, hashKey(key), at, by, at);
   } catch (e) {
     if (/UNIQUE|constraint/i.test((e as Error).message)) throw new BuildError(409, `environment ${id} exists`);
     throw e;
   }
-  audit(db, by, "env-create", `env:${id}`, { label, kind: o.kind, slots });
+  audit(db, by, "env-create", `env:${id}`, { label, kind: o.kind, slots, ...(confidential && { confidential }) });
   return { env: getEnv(db, id)!, key };
 }
 
 export function updateEnv(db: DatabaseSync, id: unknown, input: unknown, by: string): BuildEnv {
   const o = object(input);
-  const bad = Object.keys(o).find((k) => !["label", "enabled", "slots"].includes(k));
+  const bad = Object.keys(o).find((k) => !["label", "enabled", "slots", "confidential"].includes(k));
   if (bad) throw new BuildError(400, `${bad} cannot be set`);
   const before = typeof id === "string" ? (db.prepare("SELECT * FROM build_envs WHERE id = ?").get(id) as Row | undefined) : undefined;
   if (!before) throw new BuildError(404, "no such environment");
@@ -130,17 +136,16 @@ export function updateEnv(db: DatabaseSync, id: unknown, input: unknown, by: str
     label: o.label !== undefined ? checkLabel(o.label) : before.label,
     enabled: before.enabled === 1,
     slots: o.slots !== undefined ? checkSlots(o.slots) : before.slots,
+    confidential: o.confidential !== undefined ? checkFlag(o.confidential, "confidential") : before.confidential === 1,
   };
-  if (o.enabled !== undefined) {
-    if (typeof o.enabled !== "boolean") throw new BuildError(400, "enabled must be true or false");
-    next.enabled = o.enabled;
-  }
-  db.prepare("UPDATE build_envs SET label = ?, enabled = ?, slots = ?, updated_by = ?, updated_at = ? WHERE id = ?")
-    .run(next.label, next.enabled ? 1 : 0, next.slots, by, new Date().toISOString(), before.id);
+  if (o.enabled !== undefined) next.enabled = checkFlag(o.enabled, "enabled");
+  db.prepare("UPDATE build_envs SET label = ?, enabled = ?, slots = ?, confidential = ?, updated_by = ?, updated_at = ? WHERE id = ?")
+    .run(next.label, next.enabled ? 1 : 0, next.slots, next.confidential ? 1 : 0, by, new Date().toISOString(), before.id);
   audit(db, by, "env-change", `env:${before.id}`, {
     ...(next.label !== before.label && { label: next.label, was: before.label }),
     ...(next.enabled !== (before.enabled === 1) && { enabled: next.enabled }),
     ...(next.slots !== before.slots && { slots: next.slots, was: before.slots }),
+    ...(next.confidential !== (before.confidential === 1) && { confidential: next.confidential }),
   });
   return getEnv(db, before.id)!;
 }

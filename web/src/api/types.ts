@@ -1735,9 +1735,11 @@ export type BuildEnv = {
   capabilities: Capabilities | null;   // as last reported by the worker
   version: string | null;              // worker software version
   pausedReason: string | null;         // e.g. "disk 12 GB free (needs 20)"
+  /** Set by an operator: the only environments that take the security lane's private tasks, and they take no PR code. */
+  confidential: boolean;
 };
-export type EnvInput = { label?: string; enabled?: boolean; slots?: number };
-export type EnvCreate = { id: string; label: string; kind: EnvKind; slots: number };
+export type EnvInput = { label?: string; enabled?: boolean; slots?: number; confidential?: boolean };
+export type EnvCreate = { id: string; label: string; kind: EnvKind; slots: number; confidential?: boolean };
 export type TaskStep = {
   name: string;                         // "fetch deps", "build", "test", "screenshot"
   cmd: string[];                        // argv, run inside the container

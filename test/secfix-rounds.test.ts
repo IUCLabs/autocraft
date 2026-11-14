@@ -156,6 +156,8 @@ describe("security fix rounds", () => {
 
   test("a round building past 4 hours is cancelled and read; a pipeline fix waits for the switch, an operator's does not", async () => {
     const n = finding(), m = finding();
+    // The limit counts from when a confidential environment could take the tasks.
+    db.prepare("INSERT OR IGNORE INTO build_envs (id, label, kind, slots, key_hash, confidential, created_at, updated_at) VALUES ('vault', 'vault', 'remote', 1, 'x', 1, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')").run();
     for (const [k, by] of [[n, "boss"], [m, "pipeline"]] as const) {
       db.prepare("UPDATE security_findings SET decided_by = ? WHERE number = ?").run(by, k);
       await runFix(db, "photocraft", k, world(k, () => reply(k)).deps);

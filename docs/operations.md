@@ -171,8 +171,8 @@ Operators manage environments on the Build environments page (`/envs`) or from a
 
 ```
 autocraft envs list
-autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N (--out FILE | --print)
-autocraft envs set <id> [--label TEXT] [--enabled yes|no] [--slots N]
+autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N [--confidential yes|no] (--out FILE | --print)
+autocraft envs set <id> [--label TEXT] [--enabled yes|no] [--slots N] [--confidential yes|no]
 autocraft envs rotate-key <id> (--out FILE | --print)
 autocraft tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
 autocraft tasks show <id>
@@ -180,6 +180,8 @@ autocraft tasks cancel <id>
 autocraft tasks mem [--days N]
 autocraft tasks enqueue-test --env-requires linux --repo NAME --sha SHA
 ```
+
+**Confidential environments.** The build tasks of a security fix (its rounds and its model's checks) and of a scan test hold an undisclosed fix or test. Only an environment an operator marked confidential (the Confidential box on the Build environments page, or `--confidential yes`) takes them; the worker cannot report itself as one. A confidential environment takes no task that builds PR code (PR builds, integration batches, and every task for a PR or issue). While no enabled environment is confidential, these tasks stay queued and read "Waiting for a confidential build environment.", the security fix's model gets no build checks, and the 4-hour build limit of a round or scan test starts only once a confidential environment can take the tasks. Run a confidential environment on its own host and user, apart from the workers that build PRs.
 
 `tasks mem` prints, per repo and step name, the number of steps with a memory measurement, their median and maximum peak memory in GB and the number killed for running out of memory (default: tasks that ended in the last 30 days). Use it to size build nodes.
 

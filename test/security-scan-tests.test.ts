@@ -122,6 +122,7 @@ describe("scan tests", () => {
 
   test("a test that builds for over four hours is cancelled and read as could-not-build", () => {
     const n = findings("on")[0]!.number;
+    db.prepare("INSERT OR IGNORE INTO build_envs (id, label, kind, slots, key_hash, confidential, created_at, updated_at) VALUES ('vault', 'vault', 'remote', 1, 'x', 1, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')").run();
     db.prepare("INSERT OR REPLACE INTO security_scan_tests (repo, number, test_path, crate, test_patch, test_source, task_id, state, created_at) VALUES ('stuck', ?, 'p', 'psd', 'x', 'x', ?, 'building', ?)")
       .run(n, testRow("on", n)!.task_id, new Date(Date.now() - 5 * 3_600_000).toISOString());
     db.prepare("UPDATE build_tasks SET state = 'queued', results = '[]' WHERE id = ?").run(testRow("on", n)!.task_id);

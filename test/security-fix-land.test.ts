@@ -210,7 +210,7 @@ describe("private fix and landing", () => {
 
   test("a security fix's build tasks run for a repo outside the pipeline scope", () => {
     const id = "fixenv";
-    createEnv(db, { id, label: id, kind: "local-sandbox", slots: 2 }, "op");
+    createEnv(db, { id, label: id, kind: "local-sandbox", slots: 2, confidential: true }, "op");
     hello(db, id, { version: "1.0", capabilities: { os: "linux", arch: "x86_64", cpus: 8, memGb: 32, diskGb: 200, display: false, gpu: false, toolchains: ["rust-stable"] }, slots: 8 });
     const plan = [{ name: "t", cmd: ["true"], network: "none" as const, timeoutSec: 10 }];
     db.exec("DELETE FROM tracked_repos");
