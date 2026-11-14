@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DEFAULT_OWNER, slugOf } from "../owners.ts";
 // The CI gate of a repo, read from its default branch so a task's environment matches upstream CI
 // on Linux: apt packages, the craft-fonts and craft-i18n checkouts, and the gate's extra env.
@@ -10,8 +11,24 @@ const GATE_USES = /^storytold\/craft-common-actions\/\.github\/workflows\/gate\.
 const PACKAGE = /^[a-z0-9][a-z0-9+.-]{0,99}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
-/** Names a gate cannot set: the step container's own, and the ones this worker sets for craft-fonts and craft-i18n. */
-const RESERVED_ENV = /^(HOME|PATH|CI|CARGO_HOME|CARGO_TARGET_DIR|LD_.*|RUSTUP_.*|RUSTC.*|RUSTDOC.*|CARGO_BUILD_RUSTC.*|CRAFT_FONTS_.*|CRAFT_I18N_.*)$/;
+/**
+ * Env names a gate may set besides the repo's own switches (names that start with the repo's name, such as
+ * `PDFCRAFT_ORACLES_REQUIRED`): output, retry and cargo profile settings. Nothing that selects a program, a
+ * compiler or linker flag, a credential, a registry or a proxy (git, ssh, cargo config, rustc, linker) is allowed.
+ */
+const SHARED_ENV = /^(CARGO_TERM_COLOR|CARGO_TERM_VERBOSE|CARGO_INCREMENTAL|CARGO_NET_RETRY|RUST_BACKTRACE|RUST_LIB_BACKTRACE|RUST_LOG|RUST_MIN_STACK|RUST_TEST_THREADS|CARGO_PROFILE_(DEV|TEST|RELEASE|BENCH)_(DEBUG|OPT_LEVEL|DEBUG_ASSERTIONS|OVERFLOW_CHECKS|CODEGEN_UNITS|INCREMENTAL|STRIP|SPLIT_DEBUGINFO))$/;
+/** Repo names whose prefix would reach a tool's own variables; such a repo gets no prefix rule. */
+const TOOL_PREFIX = /^(GIT|SSH|CARGO|RUST|RUSTC|RUSTUP|RUSTDOC|RUSTFLAGS|LD|HTTP|HTTPS|ALL|NO|CC|CXX|AR|PKG|CMAKE|CRAFT|CI|HOME|PATH|TMP|XDG|LC|LANG|SHELL|BASH|ENV|PYTHON|NODE|NPM|PERL)$/;
+/** The values cargo accepts for `profile.dev.debug`. */
+const DEV_DEBUG = /^(0|1|2|true|false|none|line-directives-only|line-tables-only|limited|full)$/;
+
+/** Whether a gate env line named `name` is kept for `repo`. */
+export function gateEnvAllowed(repo: string, name: string): boolean {
+  if (SHARED_ENV.test(name)) return true;
+  if (/^CRAFT_(FONTS|I18N)_/.test(name)) return false;
+  const prefix = repo.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return prefix.length >= 3 && !TOOL_PREFIX.test(prefix) && name.startsWith(`${prefix}_`) && /^[A-Z0-9_]+$/.test(name);
+}
 export const MAX_PACKAGES = 100;
 const MAX_YAML_BYTES = 256 * 1024;
 
@@ -106,19 +123,21 @@ export function parseGateDefaults(gateYml: string): Record<string, string> {
 export type GateEnv = {
   /** Ref of craft-common-actions the repo's CI calls. */
   gateRef: string;
+  /** sha256 of the gate.yml read at that ref, for the task log (the ref may be a branch). */
+  gateSha256?: string;
   /** Sorted, de-duplicated Debian package names. */
   packages: string[];
   /** craft-fonts commit; null when the gate builds without it. */
   craftFontsRef: string | null;
   requireFonts: boolean;
-  /** The gate's extra env for Linux (`env`, `linux-env`, `dev-debug`), minus names the worker owns. */
+  /** The gate's extra env for Linux (`env`, `linux-env`, `dev-debug`), only the names `gateEnvAllowed` keeps. */
   env: Record<string, string>;
   /** Env lines that were left out, for the task log. */
   dropped: string[];
 };
 
-/** Combines the call's inputs with gate.yml's defaults. Throws on a malformed package name or ref. */
-export function gateEnv(call: GateCall, defaults: Record<string, string>): GateEnv {
+/** Combines the call's inputs with gate.yml's defaults for `repo`. Throws on a malformed package name or ref. */
+export function gateEnv(call: GateCall, defaults: Record<string, string>, repo: string): GateEnv {
   const input = (k: string): string => call.with[k] ?? defaults[k] ?? "";
   const packages = [...new Set(input("packages").split(/\s+/).filter(Boolean))].sort();
   if (packages.length > MAX_PACKAGES) throw new Error(`gate lists ${packages.length} packages (limit ${MAX_PACKAGES})`);
@@ -128,14 +147,15 @@ export function gateEnv(call: GateCall, defaults: Record<string, string>): GateE
   const env: Record<string, string> = {};
   const dropped: string[] = [];
   const debug = input("dev-debug").trim();
-  if (debug) env.CARGO_PROFILE_DEV_DEBUG = debug;
+  if (debug && DEV_DEBUG.test(debug)) env.CARGO_PROFILE_DEV_DEBUG = debug;
+  else if (debug) dropped.push("CARGO_PROFILE_DEV_DEBUG");
   for (const line of `${input("env")}\n${input("linux-env")}`.split("\n")) {
     const t = line.trim();
     if (!t) continue;
     const eq = t.indexOf("=");
     const name = eq > 0 ? t.slice(0, eq) : "";
     const value = t.slice(eq + 1);
-    if (!ENV_NAME.test(name) || RESERVED_ENV.test(name) || value.includes("${{") || value.length > 1000 || value.includes("\0")) {
+    if (!ENV_NAME.test(name) || !gateEnvAllowed(repo, name) || value.includes("${{") || value.length > 1000 || value.includes("\0")) {
       dropped.push(name.slice(0, 60) || "(malformed line)");
       continue;
     }
@@ -167,7 +187,7 @@ export async function resolveGate(repo: string, sha: string, fetchImpl: typeof f
   if (!call) return null;
   const gate = await getText(`${RAW}/${DEFAULT_OWNER}/craft-common-actions/${call.ref}/.github/workflows/gate.yml`, fetchImpl);
   if (gate === null) throw new Error(`craft-common-actions gate.yml not found at ${call.ref}`);
-  return gateEnv(call, parseGateDefaults(gate));
+  return { ...gateEnv(call, parseGateDefaults(gate), repo), gateSha256: createHash("sha256").update(gate).digest("hex") };
 }
 
 /** craft-i18n.rev at `sha` (the task's base commit): the commit of craft-i18n the task gets, or null when the repo has no such file or it is not one commit id. */

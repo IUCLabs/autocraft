@@ -37,11 +37,11 @@ export function validSpec(s: UpdateSpec): boolean {
   );
 }
 
-/** When `<keyFile>.known_hosts` exists, only the host keys in it are accepted; otherwise a first-seen key is trusted once. */
+/** Only known host keys are accepted: those in `<keyFile>.known_hosts` when it exists, else the user's known_hosts. An unknown key fails the update. */
 const sshArgs = (s: UpdateSpec): string[] => {
   if (!validSpec(s)) throw new Error("invalid worker update spec");
   const pinned = `${s.keyFile}.known_hosts`;
-  const hostKeys = existsSync(pinned) ? ["-o", `UserKnownHostsFile=${pinned}`, "-o", "StrictHostKeyChecking=yes"] : ["-o", "StrictHostKeyChecking=accept-new"];
+  const hostKeys = [...(existsSync(pinned) ? ["-o", `UserKnownHostsFile=${pinned}`] : []), "-o", "StrictHostKeyChecking=yes"];
   return ["-i", s.keyFile, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", ...hostKeys, s.ssh];
 };
 

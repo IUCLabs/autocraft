@@ -1,5 +1,7 @@
 // One step = one fresh, locked-down container. Nothing from the host
-// environment is passed in: the only env vars are the ones set below.
+// environment is passed in: the only env vars are the ones set below. A step
+// with network gets neither the gate's env nor the extra mounts, so nothing a
+// repository's CI file names can select a program that runs with network.
 import { execFile, spawn } from "node:child_process";
 import type { WorkerConfig } from "./config.ts";
 import { sampleMemory, type MemoryReading } from "./memory.ts";
@@ -21,9 +23,9 @@ export type RunSpec = {
   cmd: string[];
   /** Leave out the /target and /cache mounts. */
   bare?: boolean;
-  /** Extra env vars from the repo's CI gate (environment.ts); the worker's own vars win. */
+  /** Extra env vars from the repo's CI gate (environment.ts); the worker's own vars win. Not passed to a `fetch` step. */
   env?: Record<string, string>;
-  /** Read-only bind mounts: craft-fonts and craft-i18n checkouts. */
+  /** Read-only bind mounts: craft-fonts and craft-i18n checkouts. Not mounted in a `fetch` step. */
   extraMounts?: { source: string; target: string }[];
 };
 
@@ -41,6 +43,7 @@ function extraMounts(s: RunSpec): string[] {
 }
 
 export function runArgs(cfg: WorkerConfig, s: RunSpec): string[] {
+  const offline = s.network !== "fetch";
   const mem = `${Math.round(cfg.limits.memoryGb * 1024)}m`;
   return [
     "run",
@@ -63,8 +66,8 @@ export function runArgs(cfg: WorkerConfig, s: RunSpec): string[] {
     "--volume", overlay(s.mounts.src, "/src"),
     ...(s.bare ? [] : ["--mount", bind(s.mounts.target, "/target"), "--mount", bind(s.mounts.cache, "/cache")]),
     "--mount", bind(s.mounts.out, "/out"),
-    ...extraMounts(s),
-    ...Object.entries(s.env ?? {}).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
+    ...(offline ? extraMounts(s) : []),
+    ...(offline ? Object.entries(s.env ?? {}).flatMap(([k, v]) => ["--env", `${k}=${v}`]) : []),
     "--env", "HOME=/tmp",
     "--env", "CARGO_HOME=/cache/cargo",
     "--env", "CARGO_TARGET_DIR=/target",

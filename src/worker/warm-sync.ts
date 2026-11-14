@@ -86,7 +86,7 @@ async function download(cfg: WorkerConfig, key: string, say: Say): Promise<void>
   try {
     if (!(await hasZstd())) return say("warm store: zstd is missing, download skipped");
     const auth = { authorization: `Bearer ${s.readKey}` };
-    const head = await fetch(`${s.url}/store/${key}`, { headers: auth, signal: ac.signal });
+    const head = await fetch(`${s.url}/store/${key}`, { headers: auth, signal: ac.signal, redirect: "error" });
     if (head.status === 404) return;
     if (!head.ok) return say(`warm store: lookup answered ${head.status}`);
     const rec: unknown = await head.json();
@@ -101,7 +101,7 @@ async function download(cfg: WorkerConfig, key: string, say: Say): Promise<void>
     reserved = rec.bytes + rec.size;
     if (freeDiskGb(cfg.warmDir) * 1024 ** 3 - reservedBytes < reserved + cfg.limits.minFreeDiskGb * 1024 ** 3) return say("warm store: not enough free disk, skipped");
     reservedBytes += reserved;
-    const res = await fetch(`${s.url}/store/${key}/blob`, { headers: auth, signal: ac.signal });
+    const res = await fetch(`${s.url}/store/${key}/blob`, { headers: auth, signal: ac.signal, redirect: "error" });
     if (!res.ok || !res.body) return say(`warm store: download answered ${res.status}`);
     // Nothing is unpacked until the whole blob has matched the signed sha256.
     const hash = createHash("sha256");
@@ -183,6 +183,7 @@ export async function uploadWarm(cfg: WorkerConfig, key: string, commit: string,
       headers: { authorization: `Bearer ${s.writeKey}`, "content-type": "application/zstd", "content-length": String(statSync(spool).size) },
       body: Readable.toWeb(createReadStream(spool)) as never,
       duplex: "half",
+      redirect: "error",
       signal: ac.signal,
     } as RequestInit);
     say(res.ok ? `warm store: uploaded snapshot of ${commit.slice(0, 12)}` : `warm store: upload answered ${res.status}`);

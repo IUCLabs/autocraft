@@ -112,21 +112,24 @@ export const DISPLAY_PACKAGES = ["mesa-vulkan-drivers", "libvulkan1", "libgl1-me
 export type PrepareOptions = { fetchImpl?: typeof fetch; log: (s: string) => void; note?: (s: string) => void };
 
 /**
- * The environment of a task: `sha` is the base commit whose CI file decides (never the PR head).
- * A repo whose CI does not call the suite's gate runs in the stock image. Throws on any failure, so
+ * The environment of a task: the task's base commit (a default-branch commit the runner names, never
+ * the PR head) decides through its CI file. A task without a base commit, or a repo whose CI does not
+ * call the suite's gate, runs in the stock image. Throws on any failure, so
  * a task never runs in a weaker environment than CI without saying so.
  */
 export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string; baseSha: string | null; headSha: string; display?: boolean }, toolchain: string, baseImage: string, srcDir: string, o: PrepareOptions): Promise<PreparedEnv> {
   const toolImage = componentsFor(toolchain).length ? await ensureImage(cfg, toolchain, baseImage, [], (s) => o.log(`${s}\n`)) : baseImage;
   const display = task.display === true;
   const stock: PreparedEnv = { image: toolImage, env: {}, mounts: [], info: { image: toolImage, baseImage, packages: [], craftFontsRef: null, craftI18nRev: null } };
-  const gate = await resolveGate(task.repo, task.baseSha ?? task.headSha, o.fetchImpl);
-  if (!gate) {
+  const base = task.baseSha;
+  const gate = base ? await resolveGate(task.repo, base, o.fetchImpl) : null;
+  if (!base || !gate) {
+    const why = base ? "no CI gate for this repo at the base commit" : "no base commit for this task";
     if (!display) {
-      o.log("no CI gate for this repo at the base commit; using the stock image\n");
+      o.log(`${why}; using the stock image\n`);
       return stock;
     }
-    o.log("no CI gate for this repo at the base commit; using the stock image plus display packages\n");
+    o.log(`${why}; using the stock image plus display packages\n`);
     const image = await ensureImage(cfg, toolchain, baseImage, DISPLAY_PACKAGES, (s) => o.log(`${s}\n`));
     return { image, env: { WGPU_BACKEND: "vulkan" }, mounts: [], info: { ...stock.info, image, packages: [...DISPLAY_PACKAGES] } };
   }
@@ -143,13 +146,13 @@ export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string
     if (gate.requireFonts) env.CRAFT_FONTS_REQUIRED = "1";
   }
   // The commit comes from the base commit, so a PR cannot make the host download a commit of its choosing.
-  const rev = await resolveI18nRev(task.repo, task.baseSha ?? task.headSha, o.fetchImpl);
+  const rev = await resolveI18nRev(task.repo, base, o.fetchImpl);
   if (rev) {
     mounts.push({ source: await ensureCheckout(cfg, "craft-i18n", rev, o.fetchImpl), target: "/craft-i18n" });
     env.CRAFT_I18N_DIR = "/craft-i18n";
     env.CRAFT_I18N_REQUIRED = "1";
   }
   if (gate.dropped.length) o.log(`gate env left out: ${gate.dropped.join(", ")}\n`);
-  o.log(`environment: image ${image}, craft-fonts ${gate.craftFontsRef?.slice(0, 12) ?? "none"}, craft-i18n ${rev?.slice(0, 12) ?? "none"}, gate env ${Object.keys(gate.env).join(", ") || "none"}\n`);
+  o.log(`environment: image ${image}, gate ${gate.gateRef} (gate.yml sha256 ${gate.gateSha256?.slice(0, 16) ?? "unknown"}), craft-fonts ${gate.craftFontsRef?.slice(0, 12) ?? "none"}, craft-i18n ${rev?.slice(0, 12) ?? "none"}, gate env ${Object.keys(gate.env).join(", ") || "none"}\n`);
   return { image, env, mounts, info: { image, baseImage, packages, craftFontsRef: gate.craftFontsRef, craftI18nRev: rev } };
 }

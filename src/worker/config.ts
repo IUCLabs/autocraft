@@ -77,16 +77,16 @@ export function plainHttpHostAllowed(hostname: string): boolean {
   return /\.(svc|cluster\.local|internal)$/.test(h);
 }
 
-/** Throws unless `url` is https, or http to a host plainHttpHostAllowed accepts. */
-export function checkCoordinatorUrl(url: string): void {
+/** Throws unless `url` (the config key `field`) is https, or http to a host plainHttpHostAllowed accepts: the keys it carries never travel in cleartext over another network. */
+export function checkServiceUrl(url: string, field: string): void {
   let u: URL;
   try {
     u = new URL(url);
   } catch {
-    throw new Error("config: coordinatorUrl must be an http(s) URL");
+    throw new Error(`config: ${field} must be an http(s) URL`);
   }
   if (u.protocol === "http:" && !plainHttpHostAllowed(u.hostname)) {
-    throw new Error("config: coordinatorUrl uses plain http, which is accepted only for loopback, private-network and cluster-internal hosts (.svc, .cluster.local, .internal); use https");
+    throw new Error(`config: ${field} uses plain http, which is accepted only for loopback, private-network and cluster-internal hosts (.svc, .cluster.local, .internal); use https`);
   }
 }
 
@@ -95,7 +95,7 @@ export function parseWorkerConfig(raw: unknown): WorkerConfig {
   const o = raw as Record<string, unknown>;
   const coordinatorUrl = str(o, "coordinatorUrl").replace(/\/+$/, "");
   if (!/^https?:\/\/[^\s]+$/.test(coordinatorUrl)) throw new Error("config: coordinatorUrl must be an http(s) URL");
-  checkCoordinatorUrl(coordinatorUrl);
+  checkServiceUrl(coordinatorUrl, "coordinatorUrl");
   const keyFile = expand(str(o, "keyFile"));
   const workDir = expand(str(o, "workDir"));
   const warmDir = expand(typeof o.warmDir === "string" && o.warmDir ? o.warmDir : join(dirname(workDir), "warm"));
@@ -121,6 +121,7 @@ export function parseWorkerConfig(raw: unknown): WorkerConfig {
     if (typeof w !== "object" || w === null || Array.isArray(w)) throw new Error("config: warmStore must be an object");
     const url = str(w, "url").replace(/\/+$/, "");
     if (!/^https?:\/\/[^\s]+$/.test(url)) throw new Error("config: warmStore.url must be an http(s) URL");
+    checkServiceUrl(url, "warmStore.url");
     if (w.writeKey !== undefined && (typeof w.writeKey !== "string" || !w.writeKey)) throw new Error("config: warmStore.writeKey must be a non-empty string");
     const verify = w.verifyKeyFiles;
     if (!Array.isArray(verify) || !verify.length || verify.some((f) => typeof f !== "string" || !isAbsolute(expand(f)))) throw new Error("config: warmStore.verifyKeyFiles must list absolute public key paths");

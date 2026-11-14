@@ -1,13 +1,14 @@
 // Runs one claimed task: fresh work dir, source tarball, one container per
 // plan step, artifact collection, cleanup.
 import { randomBytes } from "node:crypto";
-import { globSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { globSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import { admitCrates, CrateVerifier, seedCargoHome } from "./cache.ts";
 import type { WorkerConfig } from "./config.ts";
 import { prepareEnvironment, type PreparedEnv, type SandboxInfo } from "./environment.ts";
 import { removeContainer, runContainer, type RunOutcome } from "./container.ts";
 import { applyPatch } from "./patch.ts";
+import { discardDir, removeTree, STUCK_PREFIX } from "./rmtree.ts";
 import { downloadAndExtract } from "./tarball.ts";
 import { copyWarm, storeWarm, taskFieldProblem } from "./warm.ts";
 import { downloadWarm, uploadWarm } from "./warm-sync.ts";
@@ -30,14 +31,26 @@ export function cacheDir(cfg: WorkerConfig): string {
   return join(cfg.workDir, "crate-cache");
 }
 
-/** Removes work dirs of tasks that were running when a previous worker died. */
-export function removeStaleWorkDirs(cfg: WorkerConfig): number {
+/**
+ * Removes work dirs of tasks that were running when a previous worker died, and dirs an earlier cleanup could
+ * not remove. A dir that still cannot be removed is logged and left out of the `task-*` names; it never stops the worker.
+ */
+export function removeStaleWorkDirs(cfg: WorkerConfig, note: (s: string) => void = () => {}): number {
   mkdirSync(cfg.workDir, { recursive: true });
   let n = 0;
   for (const e of readdirSync(cfg.workDir)) {
+    const path = join(cfg.workDir, e);
     if (/^task-\d+$/.test(e)) {
-      rmSync(join(cfg.workDir, e), { recursive: true, force: true });
-      n++;
+      const left = discardDir(path);
+      if (left) note(left);
+      else n++;
+    } else if (e.startsWith(STUCK_PREFIX)) {
+      try {
+        removeTree(path);
+        n++;
+      } catch (err) {
+        note(`could not remove ${e} (${(err as Error).message})`);
+      }
     }
   }
   return n;
@@ -98,7 +111,8 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
   try {
     const bad = taskFieldProblem(task);
     if (bad) return { results, summary: `malformed task: ${bad}`, cancelled: false };
-    rmSync(dir, { recursive: true, force: true });
+    const old = discardDir(dir);
+    if (old) note(old);
     const paths = { src: join(dir, "src"), target: join(dir, "target"), cache: join(dir, "cache") };
     for (const p of Object.values(paths)) mkdirSync(p, { recursive: true });
     const wanted = task.requires.toolchains ?? [];
@@ -135,7 +149,8 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
         await emit("source", hit ? "warm target dir copied\n" : "no warm target dir, starting cold\n");
       } catch (e) {
         note(`warm copy failed: ${(e as Error).message}`);
-        rmSync(paths.target, { recursive: true, force: true });
+        const left = discardDir(paths.target);
+        if (left) note(left);
         mkdirSync(paths.target, { recursive: true });
       }
     }
@@ -204,6 +219,8 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
     return { results, summary: failed ?? `${results.length} step${results.length === 1 ? "" : "s"} passed`, cancelled: false, environment };
   } finally {
     for (const n of names) await removeContainer(cfg, n);
-    rmSync(dir, { recursive: true, force: true });
+    // A step can leave directories it made unreadable; that never replaces the task's result or keeps the dir under its task name.
+    const left = discardDir(dir);
+    if (left) note(left);
   }
 }

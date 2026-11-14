@@ -102,7 +102,9 @@ export type CheckTarget = {
   db: DatabaseSync;
   /** The pipeline step that owns the model call: fixup, cifix or fixissue. */
   step: "fixup" | "cifix" | "fixissue" | "fix-check";
-  repo: string; number: number | null; head: string; base: string | null;
+  repo: string; number: number | null; head: string;
+  /** The default-branch commit the check tasks take their CI gate from; null runs them in the stock image. */
+  base: string | null;
   /** The repo name under which the model_checks row is recorded, when it differs from `repo` (the tasks need the real repo to fetch it; a private call records its check under a hidden name). */
   recordRepo?: string;
   /** Null when the patch applies to `head`, else why it does not. */
@@ -198,7 +200,7 @@ export class CheckTool {
     let taskId: number | null = null;
     try {
       taskId = createTask(t.db, {
-        step: t.step, repo: t.repo, number: t.number, headSha: t.head, baseSha: t.base ?? t.head, requires: { os: "linux", toolchains: ["rust-stable"] },
+        step: t.step, repo: t.repo, number: t.number, headSha: t.head, baseSha: t.base, requires: { os: "linux", toolchains: ["rust-stable"] },
         warm: { key: warmKeyOf(t.repo), role: "use" }, plan, patch: i.patch,
       });
       this.open.add(taskId);

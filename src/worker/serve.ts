@@ -51,8 +51,8 @@ export async function serve(d: ServeDeps, signal: AbortSignal): Promise<void> {
   const sleep = d.sleep ?? realSleep;
   const pollMs = d.pollMs ?? POLL_MS;
   const disk = d.freeDiskGb ?? (() => Math.min(freeDiskGb(cfg.workDir), freeDiskGb(cfg.warmDir)));
-  log(`removed ${removeStaleWorkDirs(cfg)} stale work dir(s)`);
-  cleanWarm(cfg);
+  log(`removed ${removeStaleWorkDirs(cfg, log)} stale work dir(s)`);
+  cleanWarm(cfg, log);
   await removeStaleContainers(cfg);
 
   const running = new Map<number, AbortController>();

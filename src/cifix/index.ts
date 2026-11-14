@@ -257,6 +257,8 @@ export type PatchRequest = {
   number: number;
   /** The commit the patch applies to. */
   head: string;
+  /** The default-branch commit the check tool's tasks take their CI gate from (the PR's base, or `head` on the default branch). */
+  base: string | null;
   /** The fix round or try. */
   round: number;
   failure: CiFailure;
@@ -313,7 +315,7 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   }
   if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
   const quiet = !!r.quiet || isQuiet(db, repo, r.number);
-  const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, shown.map((s) => s.path), (x) => editable(x, scripts)))) });
+  const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: r.base, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, shown.map((s) => s.path), (x) => editable(x, scripts)))) });
   const reply = await d.ask(db, [{ ref, title, failure: logText(failure), ...(quiet ? { quiet } : {}), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool, r.session);
   if (reply === null) return no("failed", "the model gave no answer");
   const v = validatePatch(reply, shown.map((s) => s.path), (x) => editable(x, scripts));
@@ -574,7 +576,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); return; }
     if (diff.text.length > DIFF_CAP) { fail("failed", `the PR diff is over the ${DIFF_CAP} character limit`); return; }
     const made = await patchFromFailure(db, d, { git, ref, title: ((db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(repo, c.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300),
-      repo, number: c.number, head, round: c.attempt, failure, diffText: diff.text, ...(previous ? { previous } : {}), session: ses, runId, actor: ACTOR, at, checkout: async () => d.checkout?.(repo, c.number, head) });
+      repo, number: c.number, head, base: pr.baseRefOid ?? null, round: c.attempt, failure, diffText: diff.text, ...(previous ? { previous } : {}), session: ses, runId, actor: ACTOR, at, checkout: async () => d.checkout?.(repo, c.number, head) });
     ledger.hold(ses.kept);
     if (c.lint) dropSessions(c.lint.session, ses.kept ? { "": ses.kept } : {});
     if (!made.ok) { fail(made.state, made.reason); return; }

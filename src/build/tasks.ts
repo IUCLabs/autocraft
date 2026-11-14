@@ -195,8 +195,8 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
           if (out.length >= room) break;
           if (!satisfies(caps, json<Requires>(t.requires, {}))) continue;
           // Untrusted-code builds run only while their feature's switch is on for the repo.
-          // A worker that holds the warm-snapshot signing key takes no task that runs PR code.
-          if (caps.warmSigner && (t.step === "pr-build" || t.number !== null)) continue;
+          // A worker that holds the warm-snapshot signing key runs only default-branch code as it is: no PR, no patch, no merge batch.
+          if (caps.warmSigner && (t.step === "pr-build" || t.step === "merge-batch" || t.number !== null || !!t.patch)) continue;
           // The CI gate of a PR build comes from its base commit.
           if (t.step === "pr-build" && t.base_sha === null) continue;
           if (t.step === "pr-build" && !featureOn(db, "pr-builds", t.repo)) continue;

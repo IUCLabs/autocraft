@@ -46,7 +46,7 @@ export function queueWarmBuild(db: DatabaseSync, repo: string, mainSha: string, 
   const since = new Date(nowMs - WARM_EVERY_MS).toISOString();
   if (db.prepare("SELECT 1 FROM build_tasks WHERE repo = ? AND warm_role = 'build' AND queued_at > ?").get(repo, since)) return null;
   return createTask(db, {
-    step: "verify", repo, headSha: mainSha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, priority: WARM_PRIORITY,
+    step: "verify", repo, headSha: mainSha, baseSha: mainSha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, priority: WARM_PRIORITY,
     plan: rustPlan({ cargoArgs: ["--workspace"], test: false }), warm: { key: warmKeyOf(repo), role: "build" },
   });
 }

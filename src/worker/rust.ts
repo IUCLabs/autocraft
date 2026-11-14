@@ -14,9 +14,11 @@ export type RustPlanOptions = {
 };
 
 /**
- * The networked fetch runs with the image's own default toolchain and no repository cargo config, so
- * neither a toolchain file, a config wrapper nor a credential helper from the PR tree can start a
- * program with network access. The source overlay is discarded after the step, so deleting the config files is local to it.
+ * The networked fetch runs with the image's own default toolchain, no repository cargo config and an
+ * empty environment except the toolchain paths, so neither a toolchain file, a config wrapper, a
+ * credential helper nor a git or cargo variable can start a program with network access (git is never
+ * run: cargo fetches with its built-in client). The source overlay is discarded after the step, so
+ * deleting the config files is local to it.
  */
 export const FETCH_SCRIPT = [
   "cd /tmp",
@@ -24,9 +26,8 @@ export const FETCH_SCRIPT = [
   'if [ -z "$tc" ]; then echo "no active rust toolchain in the image; refusing to run cargo with a toolchain chosen by the repository" >&2; exit 1; fi',
   "cd /src",
   "rm -f .cargo/config .cargo/config.toml",
-  'export RUSTUP_TOOLCHAIN="$tc"',
-  "export RUSTC=/usr/local/cargo/bin/rustc RUSTC_WRAPPER= RUSTC_WORKSPACE_WRAPPER= CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS=cargo:token",
-  "exec /usr/local/cargo/bin/cargo fetch --locked",
+  'exec env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/tmp CARGO_HOME=/cache/cargo RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}" RUSTUP_TOOLCHAIN="$tc" ' +
+    "RUSTC=/usr/local/cargo/bin/rustc CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS=cargo:token CARGO_NET_GIT_FETCH_WITH_CLI=false /usr/local/cargo/bin/cargo fetch --locked",
 ].join("\n");
 
 /** Whether the checkout can use a locked plan (`--locked` needs Cargo.lock). */

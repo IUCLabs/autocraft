@@ -344,7 +344,7 @@ function queueRun(db: DatabaseSync, repo: string, deps: NightlyDeps, s: NightlyS
       if (!have.has(check.toolchain)) { insert(null, "skipped", "no toolchain"); s.skipped++; continue; }
       const plan = check.steps(opts);
       if (!plan) { insert(null, "skipped", check.id === "fuzz" ? "no fuzz targets chosen" : "no crates chosen"); s.skipped++; continue; }
-      const id = createTask(db, { step: "nightly", repo, headSha: sha, requires: { os: "linux", toolchains: [check.toolchain] }, priority: NIGHTLY_PRIORITY, plan });
+      const id = createTask(db, { step: "nightly", repo, headSha: sha, baseSha: sha, requires: { os: "linux", toolchains: [check.toolchain] }, priority: NIGHTLY_PRIORITY, plan });
       insert(id, "queued", null);
       s.queued++;
     }

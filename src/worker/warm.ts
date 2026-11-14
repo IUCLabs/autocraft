@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { join } from "node:path";
 import type { WorkerConfig } from "./config.ts";
 import { PATCH_MAX_BYTES } from "./patch.ts";
+import { removeTree } from "./rmtree.ts";
 
 export const WARM_KEY = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -68,13 +69,17 @@ export function warmKeys(cfg: WorkerConfig): string[] {
   return readdirSync(cfg.warmDir).filter((e) => WARM_KEY.test(e) && existsSync(recOf(cfg, e)) && existsSync(dirOf(cfg, e)));
 }
 
-/** At startup: drops half-finished replacements and dirs without a record. */
-export function cleanWarm(cfg: WorkerConfig): void {
+/** At startup: drops half-finished replacements and dirs without a record. One that cannot be removed is logged and kept. */
+export function cleanWarm(cfg: WorkerConfig, note: (s: string) => void = () => {}): void {
   mkdirSync(cfg.warmDir, { recursive: true, mode: 0o700 });
   for (const e of readdirSync(cfg.warmDir)) {
     const key = e.replace(/\.json$/, "");
     if (e.startsWith(".") || e.endsWith(".tmp") || !WARM_KEY.test(key) || !existsSync(recOf(cfg, key)) || !existsSync(dirOf(cfg, key))) {
-      rmSync(join(cfg.warmDir, e), { recursive: true, force: true });
+      try {
+        removeTree(join(cfg.warmDir, e));
+      } catch (err) {
+        note(`could not remove warm entry ${e} (${(err as Error).message})`);
+      }
     }
   }
 }
@@ -106,7 +111,7 @@ export function storeWarm(cfg: WorkerConfig, key: string, commit: string, target
     if (had) renameSync(dirOf(cfg, key), old);
     renameSync(stage, dirOf(cfg, key));
     writeRecord(cfg, key, { commit, bytes, lastUsed: Date.now(), stored: opts.stored ?? Date.now() });
-    if (had) rmSync(old, { recursive: true, force: true });
+    if (had) removeTree(old);
   }).then(async () => {
     if (done) await evictWarm(cfg);
     return done;
@@ -124,7 +129,7 @@ export async function evictWarm(cfg: WorkerConfig): Promise<string[]> {
     const victim = all.sort((a, b) => a.rec.lastUsed - b.rec.lastUsed)[0].key;
     await locked(victim, async () => {
       rmSync(recOf(cfg, victim), { force: true });
-      rmSync(dirOf(cfg, victim), { recursive: true, force: true });
+      removeTree(dirOf(cfg, victim));
     });
     evicted.push(victim);
   }

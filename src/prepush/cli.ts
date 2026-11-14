@@ -55,7 +55,7 @@ export async function runLint(db: DatabaseSync, a: { repo: string; number: numbe
   try {
     const sha = (await ghExec(["api", `repos/${slugOf(a.repo)}/pulls/${a.number}`, "--jq", ".base.sha"])).trim();
     if (/^[0-9a-f]{40}$/.test(sha)) base = sha;
-  } catch { /* the head stands in for the base */ }
+  } catch { /* without a base the task runs in the stock image */ }
   const job: LintJob = { step: "lint", repo: a.repo, number: a.number, head, base, ...(patch !== undefined ? { patch } : { files: files! }) };
   // --tests adds the affected crates' tests whatever the switch says.
   const crates = a.tests ? await cratesForTests(job, ghCrates) : null;

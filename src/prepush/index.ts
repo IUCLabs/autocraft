@@ -47,7 +47,9 @@ export function lintSteps(files: string[]): TaskStep[] {
 
 export type LintJob = {
   /** The pipeline step that queues it (fixup, cifix, fixissue). */
-  step: string; repo: string; number: number | null; head: string; base: string | null;
+  step: string; repo: string; number: number | null; head: string;
+  /** The default-branch commit the task takes its CI gate from; null runs it in the stock image. */
+  base: string | null;
   /** The model's patch, applied to the checkout before the plan runs. Without one the head is linted as it is, and `files` names what to format. */
   patch?: string;
   files?: string[];
@@ -62,7 +64,7 @@ export function queueLint(db: DatabaseSync, j: LintJob): number | null {
   const plan = lintPlan(j.files ?? changedRsFiles(j.patch ?? ""), j.crates);
   if (!plan) return null;
   return createTask(db, {
-    step: j.step, repo: j.repo, number: j.number, headSha: j.head, baseSha: j.base ?? j.head, requires: { os: "linux", toolchains: ["rust-stable"] },
+    step: j.step, repo: j.repo, number: j.number, headSha: j.head, baseSha: j.base, requires: { os: "linux", toolchains: ["rust-stable"] },
     warm: j.warm ?? { key: warmKeyOf(j.repo), role: "use" }, plan, ...(j.patch ? { patch: j.patch } : {}),
   });
 }

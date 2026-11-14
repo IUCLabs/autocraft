@@ -3,7 +3,7 @@
 // no `..`, links only inside the tree, no devices, no special mode bits) are
 // then the same on every host and testable without a tar binary.
 import { chmodSync, closeSync, linkSync, lstatSync, mkdirSync, openSync, realpathSync, symlinkSync, unlinkSync, writeSync } from "node:fs";
-import { dirname, join, posix, resolve, sep } from "node:path";
+import { join, posix, sep } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
@@ -31,6 +31,8 @@ function octal(b: Buffer, off: number, len: number): number {
     return v;
   }
   const s = b.toString("latin1", off, off + len).replace(/\0.*$/s, "").trim();
+  // A field that is not octal would parse as NaN and switch off the size limits.
+  if (!/^[0-7]*$/.test(s)) throw new TarError("header field is not an octal number");
   return s ? parseInt(s, 8) : 0;
 }
 
@@ -204,19 +206,17 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
     }
     symlinkSync(l.target, full);
   }
-  // The checks above are lexical; a chain of links can still resolve outside the tree. Dangling links may stay.
+  // The checks above are lexical; a chain of links can still resolve outside the tree. A dangling link is removed:
+  // where it points depends on what is created later, so it could come to resolve outside.
   const root = realpathSync.native(dest);
   for (const l of symlinks) {
     let real: string;
     try {
       real = realpathSync.native(join(dest, l.path)); // native: the JS version resolves ".." lexically
     } catch {
-      // Dangling: keep it only when its target, resolved from the real directory of the link, stays inside the tree.
       try {
-        const at = realpathSync.native(dirname(join(dest, l.path)));
-        const t = resolve(at, l.target);
-        if (t !== root && !t.startsWith(root + sep)) unlinkSync(join(dest, l.path));
-      } catch { /* the link's directory is gone too: nothing to keep */ }
+        unlinkSync(join(dest, l.path));
+      } catch { /* the link's directory is gone too: nothing to remove */ }
       continue;
     }
     if (real !== root && !real.startsWith(root + sep)) throw new TarError(`symlink resolves outside the tree: ${l.path}`);

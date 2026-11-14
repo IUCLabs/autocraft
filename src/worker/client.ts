@@ -43,6 +43,8 @@ export class WorkerApi {
         headers: { authorization: `Bearer ${this.#key}`, ...(raw === undefined ? {} : { "content-type": contentType }) },
         body: raw as BodyInit | undefined,
         signal: AbortSignal.timeout(60_000),
+        // The key goes only to the configured coordinator, never to a host a redirect names.
+        redirect: "error",
       });
     } catch (e) {
       throw new Error(`${path}: ${(e as Error).name}: ${(e as Error).message}`.replaceAll(this.#key, "***"));
