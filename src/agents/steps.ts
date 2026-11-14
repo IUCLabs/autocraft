@@ -4,7 +4,7 @@ import { refOf, parseHaikuReply, jevVerdict, type Item, type JevAnswers, type Ve
 import { jevAreaChoice, parseAreaReply, settles, type AreaAnswer } from "../areas/parse.ts";
 import type { Area, AreaItem } from "../areas/types.ts";
 import { parsePairReply, type DupePair, type PairAnswer } from "../dupes/pair.ts";
-import { lintComparison, parseIssueComparison, parsePrComparison, type CompareIssues, type ComparePrs, type IssueComparison, type PrComparison } from "../dupes/group.ts";
+import { carryTexts, lintComparison, parseIssueComparison, parsePrComparison, type CompareIssues, type ComparePrs, type IssueComparison, type PrComparison } from "../dupes/group.ts";
 import { jevImpact, parseHaikuImpacts, SURE, type Impact, type JevImpactAnswers } from "../priority/score.ts";
 import { renderAreaJev, renderReferenceJev } from "../prompts/index.ts";
 import type { ReferenceLintInput } from "../replylint.ts";
@@ -112,14 +112,18 @@ export const DUPES_HAIKU: ClaudeStep<DupePair[], PairAnswer[]> = {
 // Dupe comparison: one call for a group of PRs (with a lint and fix turn) or of issues.
 export type PrCompareInput = { numbers: number[]; input: ComparePrs };
 export type IssueCompareInput = { numbers: number[]; input: CompareIssues };
-export const COMPARE_PRS: ClaudeStep<PrCompareInput, PrComparison> = {
+export const COMPARE_PRS: ClaudeStep<PrCompareInput, PrComparison, ReferenceCtx> = {
   provider: "claude", id: "dupes.compare-prs.opus",
   toPrompt: (x) => [x.input],
   size: () => 1,
-  // A long summary or why goes back to the model as a fix turn (src/replylint.ts); a reply that is not a valid comparison is asked for again.
-  lint: { fields: ["summary", "why"], make: (x) => (text) => lintComparison(text, x.numbers) },
-  // Anything the fix turn did not clear is cut to its first sentence; the call is never repeated for it.
-  parse: (text, x) => single(parsePrComparison(text, x.numbers, true)),
+  // A long summary or why, and a carry point that quotes the reference pages, go back to the model as a fix turn (src/replylint.ts);
+  // a reply that is not a valid comparison is asked for again.
+  lint: { fields: ["summary", "why", "carry"], make: (x, c) => async (text, stage) => {
+    const own = lintComparison(text, x.numbers);
+    return own === null ? null : [...own, ...await referenceProblems(carryTexts(text, x.numbers), c?.dir, c?.semantic, { stage, otherProblems: own.length })];
+  } },
+  // Anything the fix turn did not clear is cut to its first sentence, or left out for a flagged carry point; the call is never repeated for it.
+  parse: (text, x, ctx) => single(parsePrComparison(text, x.numbers, true, dropTexts(ctx.problems))),
 };
 export const COMPARE_ISSUES: ClaudeStep<IssueCompareInput, IssueComparison> = {
   provider: "claude", id: "dupes.compare-issues.sonnet",

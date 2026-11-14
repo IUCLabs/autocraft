@@ -8,6 +8,7 @@
 //   autocraft dupe-compare [--limit N] [--dry-run]
 import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
+import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { queueRoom } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
@@ -47,6 +48,8 @@ export type CompareDeps = {
   ask(id: "dupes.compare-prs.opus", model: string, input: ComparePrs, checkout?: string, lint?: Lint): Promise<Reply>;
   ask(id: "dupes.compare-issues.sonnet", model: string, input: CompareIssues): Promise<Reply>;
   now(): Date;
+  /** The semantic reference check of carry points; absent: the default (Jev, then Haiku). */
+  semantic?: SemanticDeps;
 };
 
 export type CompareParams = { limit?: number; repo?: string; dryRun?: boolean; onHandled?: (n: number) => void };
@@ -154,7 +157,10 @@ async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: U
     if (checkout) input.repo_dir = REPO_PATH;
     const model = PR_PROMPT.models[0]!;
     usage.model = model;
-    const r = await runModelStep(x.db, COMPARE_PRS, { numbers, input }, { ask: (i, lint) => deps.ask("dupes.compare-prs.opus", model, i.input, checkout ?? undefined, lint) });
+    // Carry points reach the close comment and the kept PR's suggestion: they get the reference checks of posted text.
+    const dir = referenceDir(s.repo);
+    const semantic = dir ? deps.semantic ?? defaultSemanticDeps(x.db, input.ref) : undefined;
+    const r = await runModelStep(x.db, COMPARE_PRS, { numbers, input }, { ctx: { dir, semantic }, ask: (i, lint) => deps.ask("dupes.compare-prs.opus", model, i.input, checkout ?? undefined, lint) });
     usage.u = add(usage.u, r.usage);
     return r.ok ? r.value : null;
   }

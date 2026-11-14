@@ -68,16 +68,26 @@ function shape(text: string, numbers: number[], last: boolean): ({ keep: number;
   return { keep: o.keep, reason: words(o.reason, GROUP_REASON_WORDS), byNumber, summary: summary.text, why: oneSentence(why.text) };
 }
 
-/** A summary or why over its word cap fails the reply unless `last` (the final attempt), which keeps its first sentence. */
-export function parsePrComparison(text: string, numbers: number[], last = true): PrComparison | null {
+/**
+ * A summary or why over its word cap fails the reply unless `last` (the final attempt), which keeps its first sentence.
+ * `drop`: carry points the reply lint still flagged after the fix turn (a reference quote); they are left out.
+ */
+export function parsePrComparison(text: string, numbers: number[], last = true, drop: ReadonlySet<string> = new Set()): PrComparison | null {
   const s = shape(text, numbers, last);
   if (!s) return null;
   const others: PrOther[] = [];
   for (const [number, x] of s.byNumber) {
     if (typeof x.duplicate !== "boolean") return null;
-    others.push({ number, duplicate: x.duplicate, better: list(x.better), carry: list(x.carry) });
+    others.push({ number, duplicate: x.duplicate, better: list(x.better), carry: list(x.carry).filter((t) => !drop.has(t)) });
   }
   return { keep: s.keep, reason: s.reason, summary: s.summary, why: s.why, others: others.sort((p, q) => p.number - q.number) };
+}
+
+/** The carry points of a comparison reply, as parsePrComparison keeps them: they reach the close comment and the kept PR's suggestion, so they get the reference checks. */
+export function carryTexts(text: string, numbers: number[]): { field: string; text: string }[] {
+  const s = shape(text, numbers, true);
+  if (!s) return [];
+  return [...s.byNumber].flatMap(([number, x]) => list(x.carry).map((t, i) => ({ field: `others[#${number}].carry[${i}]`, text: t })));
 }
 
 /** The problems of a valid comparison reply that the model can fix itself: a summary or why over its cap, a why of more than one sentence. Null when the reply is not a valid comparison. */

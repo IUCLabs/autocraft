@@ -10,6 +10,7 @@ import { relatedStatements } from "../src/memory/retrieve.ts";
 import { publicTexts, statementsList } from "../src/review/opus-parse.ts";
 import { quotedTexts, shingleSet, statementProblems } from "../src/reference-lint.ts";
 import { toBlob } from "../src/embed/store.ts";
+import { carryTexts, parsePrComparison } from "../src/dupes/group.ts";
 import { world } from "./world-db.ts";
 
 const review = (point: string) => reviewBody({ verdict: "take", sure: true, summary: "", points: [point], head: "abc1234", owner: "acme", recommendation: "R." });
@@ -74,4 +75,9 @@ test("a review gets owner statements of its own repo only, never of a quiet PR, 
   assert.ok(quotedTexts(parts, src).size >= parts.length - 1, "split into fields");
   assert.equal(quotedTexts([page.replace("locked", "lo\u200bcked").replace("move", "mоve").replace("selection", "selec-tion")], src).size, 1, "changed characters");
   assert.equal(quotedTexts(["The move tool skips a locked layer, so the handles stay hidden."], src).size, 0, "a paraphrase is not a quote");
+
+  // A duplicate group's carry points reach the close comment: they are checked, and a flagged one is left out.
+  const cmp = JSON.stringify({ keep: 1, reason: "r", summary: "S.", why: "W.", others: [{ number: 2, duplicate: true, better: [], carry: [page, "Keep the new test."] }] });
+  assert.deepEqual(quotedTexts(carryTexts(cmp, [1, 2]).map((t) => t.text), src), new Set([0]));
+  assert.deepEqual(parsePrComparison(cmp, [1, 2], true, new Set([page]))?.others[0]?.carry, ["Keep the new test."]);
 });
