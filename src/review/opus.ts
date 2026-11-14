@@ -15,7 +15,7 @@ import { recordReviewFailure, reviewHolds } from "./gate.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawHoldQuestion, withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { headWasUnsure, mergeDecisionId, holdDecisionId } from "../merge/queue.ts";
-import { defaultBranchOf, reviewedBaseOf } from "../merge/base.ts";
+import { defaultBranchOf, recordLiveBase, reviewedBaseOf } from "../merge/base.ts";
 import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
@@ -175,6 +175,8 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff, liveBase);
   if (!d.ok) return d.tooLarge ? { kind: "large", mode: "full", base: null, baseRef: liveBase ?? null } : { kind: "no-diff", error: d.error };
   const baseRef = d.base ?? liveBase ?? null;
+  // The read saw the PR's live base: the mirror takes it at once, so the review is not compared with a base the next sync would replace.
+  if (d.base && liveBase !== undefined && d.base !== liveBase) recordLiveBase(db, repo, c.number, c.head_oid, d.base, { by: "opus-review", keepDiff: true });
   const ch = checksOf(db, repo, c.number);
   // Test files are shown while they fit the size cap; the merge rule sends a PR whose tests do not fit to a person.
   const cd = codeDiff(d.text, deps.maxChars);
@@ -210,7 +212,9 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   if (diff.length > deps.maxChars) return { kind: "large", mode, base, baseRef };
   let discussion: DiscussionEntry[], snap: Snapshot, maintDropped: boolean;
   try {
-    ({ entries: discussion, snap, maintDropped } = discussionOf(db, repo, c.number, deps.querier ? await withRetry(() => liveDiscussion(deps.querier!, db, repo, c.number)) : undefined));
+    // What the PR's previous review read is not lost to the budget silently: only maintainers' words since then must fit.
+    const since = (db.prepare("SELECT COALESCE(seen_at, at) AS seen FROM opus_reviews WHERE repo = ? AND number = ? AND verdict IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1").get(repo, c.number) as { seen: string } | undefined)?.seen ?? "";
+    ({ entries: discussion, snap, maintDropped } = discussionOf(db, repo, c.number, deps.querier ? await withRetry(() => liveDiscussion(deps.querier!, db, repo, c.number)) : undefined, since));
   } catch (e) {
     return { kind: "no-threads", error: String((e as Error).message ?? e) };
   }

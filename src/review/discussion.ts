@@ -105,7 +105,8 @@ const NOT_OURS = `COALESCE(c.author, '') NOT IN (SELECT value FROM json_each(:ow
 type MirrorRow = { id: string; kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null; counted: number | null; maint: number };
 const mirrorRows = (db: DatabaseSync, repo: string, number: number): MirrorRow[] =>
   db.prepare(`SELECT c.id, c.kind, c.author, c.created_at, c.body, c.review_state, c.counted,
-      c.author_association IN ('OWNER', 'MEMBER', 'COLLABORATOR') OR EXISTS (SELECT 1 FROM main.access a WHERE lower(a.login) = lower(c.author) AND a.role IN ('operator', 'maintainer')) AS maint FROM comments c
+      (c.author_association IN ('OWNER', 'MEMBER', 'COLLABORATOR') OR EXISTS (SELECT 1 FROM main.access a WHERE lower(a.login) = lower(c.author) AND a.role IN ('operator', 'maintainer')))
+        AND COALESCE(c.author, '') <> COALESCE((SELECT i.author FROM items i WHERE i.repo = c.repo AND i.number = c.number), '') AS maint FROM comments c
     WHERE c.repo = :repo AND c.number = :number AND ${NOT_OURS} ORDER BY c.created_at`).all({ repo, number, own: ownJson(ownLogins(db, repo)) }) as MirrorRow[];
 
 /** Comments and review bodies from the mirror: the fallback for a call that has no GitHub connection. */
@@ -145,7 +146,8 @@ type ThreadNode = {
 
 export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null; /** Latest formal review of each reviewer with write access, for the changes-requested rule. */ formal: ReviewFact[]; reviewDecision: string | null;
   /** Newest counted entry written by a maintainer or dashboard user; the merge-time check goes by this, as stale reviews do. */ newestMaint: string | null;
-  /** Indexes of the entries a maintainer or dashboard user wrote: they are kept first within the prompt's budget. */ maint?: Set<number> };
+  /** Indexes of the entries a maintainer or dashboard user other than the PR author wrote, and of threads one replied to: they are kept first within the prompt's budget. */ maint?: Set<number>;
+  /** Of those, the entries the maintainer wrote (a comment, a review body, a thread they started). */ wrote?: Set<number> };
 
 /**
  * Everything others wrote on the PR, read from GitHub (a read, never a write) in one query: comments, review
@@ -165,11 +167,13 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
   let newest: string | null = null, newestMaint: string | null = null;
   const dash = new Set((db.prepare("SELECT login FROM main.access WHERE role IN ('operator', 'maintainer')").all() as { login: string }[]).map((r) => r.login.toLowerCase()));
   const isMaint = (login: string | null | undefined, assoc: string | undefined) => MAINTAINER_ASSOCIATIONS.includes(assoc ?? "") || (!!login && dash.has(login.toLowerCase()));
-  const maint = new Set<number>();
+  // The PR author's own words never rank as a maintainer's, whatever their association.
+  const otherMaint = (login: string | null | undefined, assoc: string | undefined) => isMaint(login, assoc) && login !== prAuthor;
+  const maint = new Set<number>(), wrote = new Set<number>();
   const take = (kind: "comment" | "review", n: Node) => {
     if (mine(n.author, n.id)) return;
     const body = cleanBody(n.body);
-    if (body && isMaint(n.author?.login, n.authorAssociation)) maint.add(entries.length);
+    if (body && otherMaint(n.author?.login, n.authorAssociation)) { maint.add(entries.length); wrote.add(entries.length); }
     if (body) entries.push({ kind, author: n.author?.login ?? null, at: n.createdAt ?? null, ...(kind === "review" ? { state: n.state ?? null } : {}), body: clip(body, ENTRY_LIMIT) });
     if (isCounted({ author: n.author?.login ?? null, association: n.authorAssociation, bot: n.author?.__typename === "Bot", prAuthor, state: n.state, body: n.body ?? null, inline: n.comments?.totalCount })) {
       counted.push({ id: n.id ?? "", body: n.body ?? null });
@@ -190,15 +194,16 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
       if (c.createdAt && isMaint(c.author?.login, c.authorAssociation) && (!newestMaint || c.createdAt > newestMaint)) newestMaint = c.createdAt;
     }
     const tail = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
-      .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2), maint: isMaint(r.author?.login, r.authorAssociation) })).filter((r) => r.body);
+      .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2), maint: otherMaint(r.author?.login, r.authorAssociation) })).filter((r) => r.body);
     const replies = tail.map(({ author, body }) => ({ author, body }));
     // A maintainer's reply in someone else's thread ranks the thread as the maintainer's own entry would.
-    if (isMaint(c.author?.login, c.authorAssociation) || tail.some((r) => r.maint)) maint.add(entries.length);
+    if (otherMaint(c.author?.login, c.authorAssociation)) wrote.add(entries.length);
+    if (otherMaint(c.author?.login, c.authorAssociation) || tail.some((r) => r.maint)) maint.add(entries.length);
     entries.push({ kind: "thread", author: c.author?.login ?? null, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT), ...(replies.length ? { replies } : {}) });
   }
   const formal = ((pr.formal?.nodes ?? []) as Node[])
     .map((n) => ({ id: n.id ?? null, author: n.author?.login ?? null, association: n.authorAssociation ?? null, state: n.state ?? null, at: n.submittedAt ?? n.createdAt ?? null }));
-  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, newestMaint, formal, reviewDecision: pr.reviewDecision ?? null, maint };
+  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, newestMaint, formal, reviewDecision: pr.reviewDecision ?? null, maint, wrote };
 }
 
 /** Retries a read a few times: a failed read must not silently drop what reviewers wrote. */
@@ -211,19 +216,24 @@ export async function withRetry<T>(f: () => Promise<T>, tries = 3): Promise<T> {
 /**
  * Entries kept within the total budget: a maintainer's or dashboard user's entries and threads they replied to (`first`, by index) before anyone else's,
  * then threads, reviews and comments (newest first within each), so neither a noisy bot nor the PR author can push out
- * the findings or a maintainer's word. The kept entries are returned oldest first.
+ * the findings or a maintainer's word. The `must` entries (by index) have a budget of the same size of their own, taken first.
+ * The kept entries are returned oldest first.
  */
-export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT, first: ReadonlySet<number> = new Set()): DiscussionEntry[] {
+export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT, first: ReadonlySet<number> = new Set(), must: ReadonlySet<number> = new Set()): DiscussionEntry[] {
   const rank = { thread: 0, review: 1, comment: 2, note: 3 } as const;
   const order = entries.map((e, i) => ({ e, i })).sort((a, b) => Number(first.has(b.i)) - Number(first.has(a.i)) || rank[a.e.kind] - rank[b.e.kind] || b.i - a.i);
-  let used = 0;
   const kept = new Set<number>();
-  for (const { e, i } of order) {
-    const n = e.body.length + (e.path?.length ?? 0) + (e.replies?.reduce((t, r) => t + r.body.length, 0) ?? 0) + 40;
-    if (used + n > total) continue;
-    used += n;
-    kept.add(i);
-  }
+  const fill = (part: { e: DiscussionEntry; i: number }[]) => {
+    let used = 0;
+    for (const { e, i } of part) {
+      const n = e.body.length + (e.path?.length ?? 0) + (e.replies?.reduce((t, r) => t + r.body.length, 0) ?? 0) + 40;
+      if (used + n > total) continue;
+      used += n;
+      kept.add(i);
+    }
+  };
+  fill(order.filter((x) => must.has(x.i)));
+  fill(order.filter((x) => !must.has(x.i)));
   const out = entries.filter((_, i) => kept.has(i));
   const dropped = entries.length - out.length;
   if (dropped) out.push({ kind: "note", body: `${dropped} more entries left out for length` });
@@ -232,18 +242,21 @@ export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT, first
 
 /**
  * The discussion of a PR for a review prompt and the snapshot it came from: `live` when read from GitHub, else the mirror's.
- * `maintDropped`: a maintainer's entry did not fit the budget, so the snapshot covers words the model was not shown.
+ * A maintainer's entry the model must see is a comment or review newer than `since` (the PR's previous review read the rest)
+ * or an unresolved thread they started that is not outdated; these have a budget of their own.
+ * `maintDropped`: such an entry still did not fit, so the snapshot covers words the model was not shown.
  */
-export function discussionOf(db: DatabaseSync, repo: string, number: number, live?: LiveDiscussion): { entries: DiscussionEntry[]; snap: Snapshot; maintDropped: boolean } {
-  const fit = (all: DiscussionEntry[], maint: Set<number>, snap: Snapshot) => {
-    const entries = fitBudget(all, TOTAL_LIMIT, maint);
+export function discussionOf(db: DatabaseSync, repo: string, number: number, live?: LiveDiscussion, since = ""): { entries: DiscussionEntry[]; snap: Snapshot; maintDropped: boolean } {
+  const fit = (all: DiscussionEntry[], maint: Set<number>, wrote: Set<number>, snap: Snapshot) => {
+    const must = new Set([...wrote].filter((i) => (all[i]!.kind === "thread" ? !all[i]!.outdated : (all[i]!.at ?? "") > since)));
+    const entries = fitBudget(all, TOTAL_LIMIT, maint, must);
     const kept = new Set(entries);
-    return { entries, snap, maintDropped: [...maint].some((i) => !kept.has(all[i]!)) };
+    return { entries, snap, maintDropped: [...must].some((i) => !kept.has(all[i]!)) };
   };
-  if (live) return fit(live.entries, live.maint ?? new Set(), live.snap);
+  if (live) return fit(live.entries, live.maint ?? new Set(), live.wrote ?? new Set(), live.snap);
   const seen = new Date().toISOString();
   const m = mirrorDiscussion(db, repo, number);
-  return fit(m.entries, m.maint, { seen, hash: m.hash });
+  return fit(m.entries, m.maint, m.maint, { seen, hash: m.hash });
 }
 
 const staleKey = (repo: string, number: number) => `${STALE_KEY}${repo}#${number}`;
