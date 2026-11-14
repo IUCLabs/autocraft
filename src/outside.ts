@@ -2,7 +2,7 @@
 //
 // An outside author is an item's author who is not an operator or maintainer of the dashboard, not a GitHub Bot account (an app can open items only where it is installed),
 // not a member, owner or collaborator of the repo (the mirror's author association), and not whitelisted (the Contributors page:
-// an `allow` override or a whitelisted tier). Two protections, each off at 0:
+// an `allow` override or a whitelisted tier). A post-merge follow-up issue counts as an item of the merged PR's author. Two protections, each off at 0:
 //   - Daily budget: of one outside author's items created in the last 24 hours, only the first `outside_prs_per_day` PRs and the
 //     first `outside_issues_per_day` issues get model work. Later open ones wait until the window frees.
 //   - Surge breaker: more than `outside_surge_per_hour` new outside-author items in the last hour trips the stage_trips row
@@ -114,7 +114,15 @@ export function refreshOutsideHolds(db: DatabaseSync, now: number = Date.now()):
     // Only items in scope for model work count: repos with the pipeline on, and not fast-tracked.
     const scope = pipelineRepos(db);
     const fast = new Set((db.prepare("SELECT repo, number FROM main.fast_track").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
-    const rows = (db.prepare("SELECT repo, number, kind, author, author_id, state, created_at, author_association, author_type FROM items WHERE created_at >= ? AND author IS NOT NULL")
+    // A post-merge follow-up issue is opened by the pipeline from a review of a merged PR: it counts as an item of that PR's author.
+    const rows = (db.prepare(`SELECT i.repo, i.number, i.kind, i.state, i.created_at,
+        COALESCE(p.author, i.author) AS author,
+        CASE WHEN p.author IS NULL THEN i.author_id ELSE p.author_id END AS author_id,
+        CASE WHEN p.author IS NULL THEN i.author_association ELSE p.author_association END AS author_association,
+        CASE WHEN p.author IS NULL THEN i.author_type ELSE p.author_type END AS author_type
+      FROM items i LEFT JOIN items p ON i.kind = 'issue' AND p.repo = i.repo
+        AND p.number = (SELECT f.number FROM main.postmerge_followups f WHERE f.repo = i.repo AND f.issue_number = i.number LIMIT 1)
+      WHERE i.created_at >= ? AND i.author IS NOT NULL`)
       .all(new Date(from).toISOString()) as Row[]).filter((r) => scope.has(r.repo) && !fast.has(`${r.repo}#${r.number}`));
     backfillAdmitted(db, new Date(from).toISOString(), now);
     const admitted = new Set((db.prepare("SELECT repo, number FROM main.outside_admitted").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));

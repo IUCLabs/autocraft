@@ -4,6 +4,7 @@ import { guardRepo } from "../core/guard.ts";
 import { githubIdentity } from "../github/identity.ts";
 import { claimSettling, pendingAnswerRefusal, releaseSettling, RUNNING_STALE_MS, sweepSettling } from "../answers/hold.ts";
 import { initExecState, laneForOperator, type Lane, type LaneDeps } from "../github/user-lane.ts";
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { readLive, writeEffect } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
@@ -56,6 +57,10 @@ const ref = (repo: string, n: number) => `${repo}#${n}`;
 /** The repos a card writes to: its item's, and where a resolution transfers the item or opens an issue. */
 export const cardRepos = (c: CardRow, params: CardParams): string[] =>
   [...new Set([c.repo, ...(params.kind === "resolution" ? params.steps.flatMap((x) => (x.kind === "transfer" ? [x.to] : x.kind === "open_issue" ? [x.repo] : [])) : [])])];
+
+
+/** What a press is bound to: the card's text and steps as the presser's screen showed them. Any edit gives a new digest. */
+export const cardDigest = (c: Pick<CardRow, "text" | "params">): string => createHash("sha256").update(JSON.stringify([c.text, c.params])).digest("hex").slice(0, 16);
 
 /** Replaces the drafts of a card that has not run: the comment text, the open_issue step's title and body, the fixup step's instructions. A field left out stays. */
 export function editCard(db: DatabaseSync, id: number, by: string, edit: CardEdit, deps?: StoreDeps): CardRow {

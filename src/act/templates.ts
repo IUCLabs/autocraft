@@ -4,22 +4,23 @@
 import type { CommentTemplate } from "../../web/src/api/types.ts";
 import { withNote } from "../github/note.ts";
 import { recommendation, reviewBody } from "../review/post-template.ts";
+import { scrubMarkdown } from "../review/public-text.ts";
 import { slugOf } from "../owners.ts";
 
 export const REASON_MAX = 200;
 
 /** One plain line: no mentions, no URLs or Markdown links, cut to `max` (REASON_MAX by default). */
 export function cleanReason(s: string | null | undefined, max = REASON_MAX): string | null {
-  const t = (s ?? "")
-    .replace(/(^|\n)[ \t]*\[[^\]]*\]:[^\n]*/g, "$1")
-    .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+  const t = scrubMarkdown((s ?? "").replace(/\s+/g, " "), (x) => x
+    .replace(/(^|\n)[ \t>]*\[[^\]]*\]:[^\n]*/g, "$1")
+    .replace(/!?\[([^[\]]*)\]\[[^\]]*\]/g, "$1")
+    .replace(/!?\[([^[\]]*)\]\([^)]*\)/g, "$1")
     .replace(/<\/?[a-z!][^>]*>/gi, "")
     .replace(/<?(?<![A-Za-z0-9])(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
     .replace(/(^|\s)\/\/[^\s]*/g, "$1")
     .replace(/(?<![A-Za-z0-9])GH-(\d+)(?![A-Za-z0-9])/gi, "issue $1")
     .replace(/(?<![A-Za-z0-9/&])(?:[\w.-]+\/[\w.-]+)?#(\d+)(?![A-Za-z0-9])/g, "issue $1")
-    .replace(/@/g, "")
+    .replace(/@/g, ""))
     .replace(/\s+/g, " ").trim();
   if (!t) return null;
   const cut = t.length > max ? cutAtBoundary(t, max) : t;

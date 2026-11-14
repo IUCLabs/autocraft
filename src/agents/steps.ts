@@ -21,7 +21,7 @@ import { parseCompareReply, parsePlanReply, parseScreenshotReply, type ComparePa
 import type { ScreenshotConfigBody } from "../verify/screenshot-config.ts";
 import type { Crate } from "../verify/types.ts";
 import type { ScreenshotCompareInput, ScreenshotPlanInput, VerifyPlanInput } from "../verify/types.ts";
-import { referenceProblems, type SemanticDeps } from "../reference-lint.ts";
+import { referenceProblems, statementProblems, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
 import { wholeReplyJson } from "../core/reply-json.ts";
 
@@ -162,7 +162,10 @@ export const REVIEW_OPUS: ClaudeStep<OpusPr, OpusValue, ReferenceCtx> = {
   toPrompt: (x) => [x], size: () => 1,
   lint: { fields: ["summary", "why", "public texts", "claims"], make: (x, c) => async (text, stage) => {
     const own = lintOpusReply(text, x.ref, x.unapplied_fixes, x.body);
-    return own === null ? null : [...own, ...await referenceProblems(opusTexts(text), c.dir, c.semantic, { stage, otherProblems: own.length })];
+    if (own === null) return null;
+    // The review's public text is posted without a person reading it: it may not carry the owner statements it was shown.
+    const stated = statementProblems(opusTexts(text), x.statements);
+    return [...own, ...stated, ...await referenceProblems(opusTexts(text), c.dir, c.semantic, { stage, otherProblems: own.length + stated.length })];
   } },
   parse: (text, x, ctx) => {
     const review = parseOpusReply(text, x.ref, true, dropTexts(ctx.problems), false, x.statements, x.body, x.files);

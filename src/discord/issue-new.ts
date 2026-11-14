@@ -14,6 +14,7 @@ import { BUTTON_URL_MAX, ISSUE_URL_MAX, cleanDraft, followUp, formDraft, issueUr
 import { FOLLOW_UPS, ISSUE_ANSWER_CHARS, ISSUE_BODY_CHARS, ISSUE_FORM_BODY_CHARS, ISSUE_TITLE_CHARS, parseDraft, parseQuestions, type FollowUpId, type IssueDraftInput, type IssueQuestionsInput } from "./issue-prompt.ts";
 import type { Call, Interactions } from "./interactions.ts";
 import type { DiscordKeys } from "./keys.ts";
+import { confirmReporter } from "./reporter.ts";
 import { FILING_IN_DISCORD, fileIssue, type FileDeps, type FileRequest, type FileResult, type IssueKind } from "./file-issue.ts";
 import { fileRepoUrl, plain, renderMatches } from "./reply.ts";
 import { QUESTION_CHARS, type Match, type Search } from "./search.ts";
@@ -75,6 +76,8 @@ export type IssueNewDeps = {
   db: DatabaseSync; keys: DiscordKeys; search: Search; log: (line: string) => void; ask?: IssueAsk; now?: () => number;
   /** Replaced in tests. */
   file?: (deps: FileDeps, req: FileRequest) => Promise<FileResult>;
+  /** Checks the code of a reporter's GitHub sign-in (tests replace it). */
+  confirm?: (db: DatabaseSync, reporter: string, code: string) => boolean;
   /** Whether the draft offers File it; FILING_IN_DISCORD unless a test sets it. */
   filing?: boolean;
 };
@@ -294,13 +297,14 @@ export class IssueNew {
   }
 
   /** "File it": files the draft under the person's GitHub account, or asks them to sign in first. */
-  async file(call: Call, sid: string): Promise<void> {
+  async file(call: Call, sid: string, deferred = false): Promise<void> {
     const { keys, log } = this.#d;
     const s = this.#session(call, sid);
-    if (!s?.draft) return void (await call.reply({ content: "This draft has expired. Start again with /autocraft search." }));
-    if (s.filing) return void (await call.reply({ content: "Filing is already in progress." }));
+    const say = (content: string) => (deferred ? call.edit({ content }) : call.reply({ content }));
+    if (!s?.draft) return void (await say("This draft has expired. Start again with /autocraft search."));
+    if (s.filing) return void (await say("Filing is already in progress."));
     s.filing = true;
-    await call.defer();
+    if (!deferred) await call.defer();
     const { url } = issueUrl(s.repoUrl, s.draft.title, s.draft.body, ISSUE_URL_MAX);
     // Discord refuses a link button over BUTTON_URL_MAX; a longer link goes into the text, as in #render.
     const asButton = url.length <= BUTTON_URL_MAX;
@@ -308,7 +312,10 @@ export class IssueNew {
     const githubText = asButton ? "" : `\n[Open on GitHub instead](<${url}>)`;
     try {
       const r = await (this.#d.file ?? fileIssue)({ db: this.#d.db, log }, { reporter: keys.hash("author", s.user), repo: s.repo, title: s.draft.title, body: s.draft.body, kind: s.kind });
-      if (r.status === "sign-in") {
+      if (r.status === "confirm") {
+        s.expires = this.#now() + SESSION_MS;
+        await call.edit({ content: "Enter the code the GitHub sign-in page showed, to finish signing in.", components: [{ type: 1, components: [button("Enter code", `inewi:code:${sid}`, 1)] }] });
+      } else if (r.status === "sign-in") {
         // The session stays, and gets time for the sign-in; File it works on the draft message afterwards.
         s.expires = this.#now() + SESSION_MS;
         await call.edit({ content: "Sign in with GitHub to file this issue under your account, then press File it again.", components: [{ type: 1, components: [{ type: 2, style: 5, label: "Sign in with GitHub", url: r.url }] }] });
@@ -321,6 +328,22 @@ export class IssueNew {
     } finally {
       s.filing = false;
     }
+  }
+
+  /** "Enter code": the code of the GitHub sign-in page, in a form. */
+  async code(call: Call, sid: string): Promise<void> {
+    const s = this.#session(call, sid);
+    if (!s?.draft) return void (await call.reply({ content: "This draft has expired. Start again with /autocraft search." }));
+    await call.showModal({ custom_id: `inew:code:${sid}`, title: "Finish the GitHub sign-in", components: [field("code", "Code from the sign-in page", 1, 12)] });
+  }
+
+  /** The code is checked once; then File it runs again: it files, or asks for a new sign-in after a wrong code. */
+  async confirm(call: Call, sid: string): Promise<void> {
+    const s = this.#session(call, sid);
+    if (!s?.draft) return void (await call.edit({ content: "This draft has expired. Start again with /autocraft search." }));
+    const ok = (this.#d.confirm ?? confirmReporter)(this.#d.db, this.#d.keys.hash("author", s.user), call.fields().code ?? "");
+    if (!ok) return void (await call.edit({ content: "That code did not match, or it expired. Press File it to sign in again.", components: [{ type: 1, components: [button("File it", `inewi:file:${sid}`, 1)] }] }));
+    await this.file(call, sid, true);
   }
 
   /** "Edit": the draft's title and body in a form. */
@@ -358,6 +381,7 @@ export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew 
     else if (action === "edit") await flow.edit(call, a ?? "");
     else if (action === "kind") await flow.kind(call, a ?? "");
     else if (action === "file" && (deps.filing ?? FILING_IN_DISCORD)) await flow.file(call, a ?? "");
+    else if (action === "code" && (deps.filing ?? FILING_IN_DISCORD)) await flow.code(call, a ?? "");
     else await call.reply({ content: "This form has expired. Start again with /autocraft search." });
   }, { immediate: true });
   ix.component("inew", async (call) => {
@@ -365,6 +389,7 @@ export function installIssueNew(ix: Interactions, deps: IssueNewDeps): IssueNew 
     if (action === "form") await flow.form(call, sid ?? "");
     else if (action === "ans") await flow.answers(call, sid ?? "");
     else if (action === "fix") await flow.fix(call, sid ?? "");
+    else if (action === "code" && (deps.filing ?? FILING_IN_DISCORD)) await flow.confirm(call, sid ?? "");
     else await call.edit({ content: "This form has expired. Start again with /autocraft search." });
   });
   return flow;
