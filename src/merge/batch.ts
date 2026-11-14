@@ -38,6 +38,7 @@ import { refreshChecks } from "../review/checks.ts";
 import { BatchGit } from "./batch-git.ts";
 import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES, PUBLISH_FAILED, RUNS_WAIT_NOTE, BUILD_MAX_MS, MAX_BUILD_TRIES, activeBatches, admits, batchSizeOf, cancelBuild, retryDelayMs, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, publishDelayMs, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
+import { baseRefusal, recordLiveBase } from "./base.ts";
 import { allowFailedArgs, prInfo, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
 import { redMainRepos } from "../mainci/index.ts";
@@ -148,7 +149,14 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (sha !== c.head) { log(`  ${refOf(c.number)}: head moved to ${short(sha)}; left out`); continue; }
       // A batch is built on the default branch: a PR aimed at another base would bring that base's commits along.
       const info = await prInfo(d.querier, repo, c.number);
-      if (!info || info.baseRef !== branch) { log(`  ${refOf(c.number)}: left out: its base branch is ${info?.baseRef ?? "unknown"}, not ${branch}`); continue; }
+      if (!info || info.baseRef !== branch) {
+        if (info) recordLiveBase(db, repo, c.number, c.head, info.baseRef);
+        log(`  ${refOf(c.number)}: left out: its base branch is ${info?.baseRef ?? "unknown"}, not ${branch}`);
+        continue;
+      }
+      // The review must have read the diff against the default branch too, or the batch would bring in commits no review read.
+      const baseWhy = baseRefusal(db, repo, c.head, c.number, info.baseRef);
+      if (baseWhy) { log(`  ${refOf(c.number)}: left out: ${baseWhy}`); continue; }
       const g = await guard(db, { repo, number: c.number }, { kind: "merge", head: c.head, batch: true }, by, liveRead);
       if ("refused" in g) { log(`  ${refOf(c.number)}: left out: ${g.refused}`); continue; }
       const tree = await git.mergeTree(cur, sha);
@@ -388,6 +396,10 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       return;
     }
     for (const m of members) {
+      // A member retargeted or reviewed again against another base since the batch was built: what lands is no longer what its review read.
+      const mirrored = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, m.number) as { base_ref: string | null } | undefined)?.base_ref ?? branch;
+      const baseWhy = mirrored !== branch ? `its base branch is ${mirrored}, not ${branch}` : baseRefusal(db, repo, m.head_oid, m.number, branch);
+      if (baseWhy) return supersede(b, members.filter((x) => x !== m), `${refOf(m.number)} left the batch: ${baseWhy}`);
       const gate = await liveGateChecked(db, d.querier, repo, m.number, m.head_oid, log);
       if (gate === null) { s.waiting.push(b.branch); return; }
       if (gate.blocked) return supersede(b, members.filter((x) => x !== m), `a PR in the batch has a review: ${gate.blocked}`);

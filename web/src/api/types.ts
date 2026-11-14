@@ -2445,7 +2445,7 @@ export interface Home {
   done: HomeDone[];
 }
 
-export type ReviewTrigger = "new-head" | "discussion" | "operator" | "model-change";
+export type ReviewTrigger = "new-head" | "discussion" | "operator" | "base" | "model-change";
 export type ReviewVerdict = "take" | "take-fix" | "hold" | "close";
 export interface ReviewClaim { path: string; line: number; text: string }
 /** One Opus review of a head. On GitHub the reviews are one comment, edited in place. */

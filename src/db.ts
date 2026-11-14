@@ -114,6 +114,10 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // JSON [{id, reason}]: the owner statements (owner_statements) the PR goes against, as the review named them.
   ["opus_reviews", "conflicts", "TEXT"],
   ["premerge_reviews", "conflicts", "TEXT"],
+  // The base branch the pre-merge review read the diff against; the merge queue uses the row only for the base the Opus review read.
+  ["premerge_reviews", "base_ref", "TEXT"],
+  // JSON {number: head}: the head of each PR member the comparison read.
+  ["dupe_comparisons", "heads", "TEXT"],
   // 1 when a claim of the title or body was unverified (or not listed): a person decides before the rule merges.
   ["premerge_reviews", "unsure", "INTEGER"],
   // JSON Claim[]: the claims of the title and body as the pre-merge review checked them; the Merge? question names the unknown ones.

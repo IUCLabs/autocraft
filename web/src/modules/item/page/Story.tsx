@@ -23,7 +23,7 @@ import { markStarting } from "../starting";
 import { useJump } from "./ItemPage";
 
 const ICON: Record<TimelineEntry["icon"], Icon> = { review: ListChecksIcon, fixup: WrenchIcon, merge: GitMergeIcon, push: UploadSimpleIcon, github: GithubLogoIcon, check: CheckCircleIcon, job: RobotIcon, chat: ChatCircleIcon, person: UserIcon };
-const TRIGGER: Record<string, string> = { "new-head": "new head", discussion: "discussion", operator: "asked by an operator", "model-change": "model change" };
+const TRIGGER: Record<string, string> = { "new-head": "new head", discussion: "discussion", operator: "asked by an operator", base: "base branch changed", "model-change": "model change" };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const dayKey = (iso: string) => {
   const d = new Date(iso);

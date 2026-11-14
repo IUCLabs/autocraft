@@ -1,5 +1,7 @@
 // The base branch a review read its diff against, and what may merge into which base.
 import type { DatabaseSync } from "node:sqlite";
+import { audit } from "../dash/audit.ts";
+import { dropCachedDiff } from "../review/diff.ts";
 
 /** The base branch the review of this head read its diff against; null when none was recorded. */
 export function reviewedBaseOf(db: DatabaseSync, repo: string, number: number, head: string): string | null {
@@ -23,4 +25,17 @@ export function baseRefusal(db: DatabaseSync, repo: string, head: string, number
 /** Whether another branch may be merged into a PR: the default branch or the base its review read. */
 export function mergeInAllowed(db: DatabaseSync, repo: string, number: number, head: string, branch: string): boolean {
   return branch === defaultBranchOf(db, repo) || branch === reviewedBaseOf(db, repo, number, head);
+}
+
+/**
+ * A live read found the PR on another base than the mirror holds: the mirror takes the live base and the cached diff of the
+ * old base is dropped. The planner then counts the review as stale (src/review/discussion.ts staleReviews), and the re-review
+ * waits like one after a push: the PR author's retarget is no request for a review.
+ */
+export function recordLiveBase(db: DatabaseSync, repo: string, number: number, head: string, liveBase: string): void {
+  dropCachedDiff(repo, number, head);
+  const was = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, number) as { base_ref: string | null } | undefined)?.base_ref ?? null;
+  if (was === liveBase) return;
+  db.prepare("UPDATE main.items SET base_ref = ? WHERE repo = ? AND number = ?").run(liveBase, repo, number);
+  audit(db, "merge", "base-changed", `${repo}#${number}`, { head, from: was, base: liveBase });
 }

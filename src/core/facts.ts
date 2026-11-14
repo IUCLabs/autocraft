@@ -39,7 +39,7 @@ import { getRule, STATS_SQL, tierOf, tierKey, tiersOf, type AuthorRef, type Tier
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
-import { diffCacheDir } from "../review/diff.ts";
+import { cachedDiffBase, diffCacheDir } from "../review/diff.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
@@ -97,9 +97,9 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.author_id, i.assignees, i.s
     OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
 
 const sensitiveMemo = new Map<string, string[]>();
-/** The sensitive-content reasons of the diff cached for this head; null when it is not cached (a review or pre-merge review caches it). */
+/** The sensitive-content reasons of the diff cached for this head; null when it is not cached (a review or pre-merge review caches it). Kept per base branch the diff was read against. */
 function sensitiveAt(repo: string, number: number, head: string): string[] | null {
-  const key = `${repo}#${number}@${head}`;
+  const key = `${repo}#${number}@${head}:${cachedDiffBase(repo, number, head) ?? ""}`;
   const hit = sensitiveMemo.get(key);
   if (hit) return hit;
   const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
