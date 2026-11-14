@@ -102,7 +102,7 @@ const TIERS = Object.values(TIER);
 function toContributor(c: Row, rule: Rule, operator: boolean): Contributor {
   const out: Contributor = {
     login: c.login, tier: TIER[c.tier], autoTier: tierOf(c.merged, c.closed, null, rule) === "whitelisted" ? "whitelisted" : "not",
-    override: c.override, overrideBy: c.override_by, overrideAt: c.override_at,
+    override: c.override, overrideInEffect: c.override_in_effect, overrideBy: c.override_by, overrideAt: c.override_at,
     merged: c.merged, closedUnmerged: c.closed, open: c.open, mergeRate: c.rate, lastMerge: c.last_merge,
     repos: c.repos.split(",").filter(Boolean),
   };
@@ -201,7 +201,7 @@ export function previewRule(db: DatabaseSync, req: Req): RulePreview {
   const now = getRule(db);
   const rows = contributors(db).sort((a, b) => b.merged - a.merged || a.login.localeCompare(b.login));
   const allowed = (c: Row, r: Rule) => {
-    const t = tierOf(c.merged, c.closed, c.override, r);
+    const t = tierOf(c.merged, c.closed, c.override_in_effect ? c.override : null, r);
     return t === "whitelisted" || t === "allow";
   };
   const gained: string[] = [], lost: string[] = [];
@@ -256,7 +256,7 @@ export async function override(db: DatabaseSync, req: Req, lookup: GithubUserLoo
   const rule = getRule(db);
   const c = contributors(db, { login }).find((x) => x.login === login);
   return c ? toContributor(c, rule, true) : {
-    login, tier: "not", autoTier: "not", override: null, overrideNote: null, overrideBy: null, overrideAt: null,
+    login, tier: "not", autoTier: "not", override: null, overrideInEffect: false, overrideNote: null, overrideBy: null, overrideAt: null,
     merged: 0, closedUnmerged: 0, open: 0, mergeRate: null, lastMerge: null, repos: [],
   };
 }

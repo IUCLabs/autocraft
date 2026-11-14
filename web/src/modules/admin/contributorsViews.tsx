@@ -140,7 +140,8 @@ function StatusCell({ c }: { c: Contributor }) {
     <div className="flex min-w-0 flex-col gap-0.5">
       <span className="flex items-center gap-1.5">
         <Badge tone={tone}>{label}</Badge>
-        {c.override && <span className="text-2xs text-ink/45">rule: {c.autoTier === "whitelisted" ? "whitelisted" : "not"}</span>}
+        {c.override && !c.overrideInEffect && <span className="whitespace-nowrap text-2xs text-ink/45">{c.override} not in effect</span>}
+        {c.override && c.overrideInEffect && <span className="text-2xs text-ink/45">rule: {c.autoTier === "whitelisted" ? "whitelisted" : "not"}</span>}
       </span>
       {c.overrideNote !== undefined && c.override && (
         <span className="truncate text-2xs text-ink/50" title={c.overrideNote ?? undefined}>

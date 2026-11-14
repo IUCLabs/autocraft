@@ -9,7 +9,7 @@ import { loadPrFact } from "../src/core/facts.ts";
 import { connect } from "../src/db.ts";
 import { createLink, openLinks } from "../src/dash/server/github-setup.ts";
 import { writeItemNode } from "../src/mirror.ts";
-import { isWhitelisted, setOverride, tierKey, tiersOf } from "../src/whitelist.ts";
+import { contributors, isWhitelisted, setOverride, tierKey, tiersOf } from "../src/whitelist.ts";
 import { SCRATCH } from "./scratch.ts";
 import { T0, world, type World } from "./world-db.ts";
 
@@ -45,6 +45,8 @@ test("history and an allow count only for their own account, and the pipeline's 
   assert.equal(tier("alice", 999), "not");
   assert.equal(tier("alice", 42), "allow");
   assert.equal(isWhitelisted(db, "alice", 999).ok, false);
+  const shown = contributors(db, { login: "alice" })[0]!;
+  assert.deepEqual([shown.override, shown.override_in_effect, shown.tier], ["allow", false, "not"]);
   setOverride(db, "Old-Dev", "deny", null, "op", 42);
   assert.equal(tier("old-dev", 42), "deny");
 
