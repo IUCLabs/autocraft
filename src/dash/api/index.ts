@@ -162,7 +162,7 @@ export async function itemCore(db: DatabaseSync, req: Req): Promise<Item> {
     // The reviewer's reasons quote the patch, so viewers get the verdict only.
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) =>
       ({ kind, subject, patchHash, round, verdict, reasons: canSeeInternals(req) ? reasons : "", problems: canSeeInternals(req) ? problems : [], model, createdAt })),
-    reviews: it.kind === "pr" ? reviewsOf(db, repo, n, canSeeInternals(req)) : null,
+    reviews: it.kind === "pr" ? reviewsOf(db, repo, n, canSeeInternals(req), await hiddenRepos(db, req)) : null,
     premerge: it.kind === "pr" ? premergeOf(db, repo, n) : [],
     postmerge: it.kind === "pr" ? postmergeOf(db, repo, n, canSeeInternals(req)) : null,
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
@@ -203,8 +203,11 @@ function premergeOf(db: DatabaseSync, repo: string, n: number): ItemPremerge[] {
 }
 
 /** The Opus review of the newest reviewed head, which is also the final verdict. */
-/** The owner statements the Opus or the pre-merge review at the head named as conflicts, with the reviews' reasons and the item each was said about. */
-function conflictsNamed(db: DatabaseSync, repo: string, n: number, head: string): ItemReviews["conflicts"] {
+/**
+ * The owner statements the Opus or the pre-merge review at the head named as conflicts, with the reviews' reasons and the item each
+ * was said about. A statement made in a repo hidden from the reader is left out; viewers (`internals` false) get no excerpt or reason.
+ */
+function conflictsNamed(db: DatabaseSync, repo: string, n: number, head: string, internals: boolean, hidden: HiddenRepos): ItemReviews["conflicts"] {
   const stored = [
     (db.prepare("SELECT conflicts FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, n, head) as { conflicts: string | null } | undefined)?.conflicts,
     (db.prepare("SELECT conflicts FROM premerge_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, n, head) as { conflicts: string | null } | undefined)?.conflicts,
@@ -218,10 +221,10 @@ function conflictsNamed(db: DatabaseSync, repo: string, n: number, head: string)
       const d = db.prepare(`SELECT s.repo, s.number, s.text, s.item_title, i.kind, i.state, i.title FROM owner_statements s
         LEFT JOIN items i ON i.repo = s.repo AND i.number = s.number WHERE s.id = ?`).get(h.id) as
         { repo: string; number: number | null; text: string; item_title: string; kind: "pr" | "issue" | null; state: string | null; title: string | null } | undefined;
-      if (!d) continue;
+      if (!d || isHiddenRepo(hidden, d.repo)) continue;
       out.push({
         id: h.id, repo: d.repo, number: d.number, kind: d.kind, state: d.state ? (d.state.toLowerCase() as ItemState) : null, title: d.title ?? (d.item_title || null),
-        excerpt: d.text.replace(/\s+/g, " ").trim().slice(0, 200), reason: typeof h.reason === "string" ? h.reason : "",
+        excerpt: internals ? d.text.replace(/\s+/g, " ").trim().slice(0, 200) : "", reason: internals && typeof h.reason === "string" ? h.reason : "",
       });
     }
   }
@@ -229,7 +232,7 @@ function conflictsNamed(db: DatabaseSync, repo: string, n: number, head: string)
 }
 
 /** `internals` false (viewers): the verdict only; the reviewer's reason, fixes and risks quote the patch. */
-function reviewsOf(db: DatabaseSync, repo: string, n: number, internals: boolean): ItemReviews | null {
+function reviewsOf(db: DatabaseSync, repo: string, n: number, internals: boolean, hidden: HiddenRepos): ItemReviews | null {
   const o = db.prepare(`SELECT head_oid, at, mode, base_head, verdict, sure, reason, fixes, risks FROM final_reviews
     WHERE repo = ? AND number = ? ORDER BY at DESC, head_oid DESC LIMIT 1`).get(repo, n) as
     { head_oid: string; at: string; mode: "full" | "delta"; base_head: string | null; verdict: ReviewSide["verdict"]; sure: number; reason: string; fixes: string | null; risks: string | null } | undefined;
@@ -237,7 +240,7 @@ function reviewsOf(db: DatabaseSync, repo: string, n: number, internals: boolean
   const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
   const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
   return {
-    head: o.head_oid, current: o.head_oid === head, conflicts: conflictsNamed(db, repo, n, o.head_oid),
+    head: o.head_oid, current: o.head_oid === head, conflicts: conflictsNamed(db, repo, n, o.head_oid, internals, hidden),
     opus: { verdict: o.verdict, reason: internals ? o.reason : "", fixes: internals ? list(o.fixes) : [], risks: internals ? list(o.risks) : [], at: o.at, sure: o.sure === 1, mode: o.mode, baseHead: o.base_head },
     final: { verdict: o.verdict, reason: internals ? o.reason : "", decided: true },
   };
@@ -387,6 +390,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
   const vectors = new VectorIndex(opts.embedder ?? localEmbedder({ threads: 2 }));
   const get = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "GET", pattern, handler: ok(fn) });
   const post = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "POST", pattern, handler: ok(fn) });
+  const heavy = (r: Route, when?: (q: URLSearchParams) => boolean): Route => ({ ...r, expensive: when ?? true });
   return [
     get("/api/me", me),
     get("/api/repos", visibleRepos),
@@ -439,7 +443,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/area-proposals/:id/dismiss", operator: true, handler: ok(areas.dismiss) },
     { method: "POST", pattern: "/api/items/:repo/:n/batch-again", operator: true, handler: ok(operator.batchItemAgain) },
     get("/api/items", items.listItems),
-    get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),
+    heavy(get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)), (q) => q.get("mode") === "semantic"),
     get("/api/progress", async (db, req) => progress(db, await hiddenRepos(db, req))),
     get("/api/main-ci", async (db, req) => {
       const repos = mainCiRepos(db, await hiddenRepos(db, req));
@@ -447,8 +451,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     }),
     get("/api/stuck", stuck.stuckItems),
     get("/api/main-ci/summary", async (db, req) => summarize(mainCiRepos(db, await hiddenRepos(db, req)))),
-    get("/api/contributors", adm.listContributors),
-    get("/api/contributors/rule-preview", adm.previewRule),
+    heavy(get("/api/contributors", adm.listContributors)),
+    heavy(get("/api/contributors/rule-preview", adm.previewRule)),
     post("/api/contributors/rule", adm.saveRule),
     post("/api/contributors/:login/override", adm.override),
     get("/api/repos/all", adm.allRepos),
@@ -553,8 +557,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "PUT", pattern: "/api/build/screenshots/:repo", operator: true, handler: ok(build.putScreenshots) },
     { method: "DELETE", pattern: "/api/build/screenshots/:repo", operator: true, handler: ok(build.deleteScreenshots) },
     get("/api/next", next),
-    get("/api/queue", queue),
-    get("/api/queue/batches", queueBatches),
+    heavy(get("/api/queue", queue)),
+    heavy(get("/api/queue/batches", queueBatches)),
     get("/api/batches/:id", batchOne),
     get("/api/work", work),
     get("/api/queue/page", queuePage),
@@ -580,7 +584,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/flow", flow),
     get("/api/now", now),
     get("/api/now/feed", nowFeed),
-    get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
+    heavy(get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors))),
     get("/api/security/findings", securityPage.securityFindings),
     get("/api/security/findings/:repo/:n/page", securityPage.findingPage),
     get("/api/home", (db, req) => home(db, req, { progress: (hidden) => progress(db, hidden) })),

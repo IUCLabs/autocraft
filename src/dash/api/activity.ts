@@ -12,7 +12,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import {
   KINDS, actionEvent, activityEvent, writeActions, writeEvent, checkEvent, ciFixEvent, closedEvent, commentEvent, conflictEvent, decisionEvents, feedbackEvent, fixupEvent, hiddenSql, hiddenArgs,
-  iso, jobEvent, mergeEvent, mergedEvent, openedEvent, opusEvent, patchCheckEvent, planEvent, postmergeEvent, premergeEvent, pushEvent, RUN_COLUMNS, rows, runEvent, stageEvent,
+  iso, jobEvent, mergeEvent, mergedEvent, openedEvent, opusEvent, patchCheckEvent, planEvent, planEventFor, postmergeEvent, premergeEvent, pushEvent, RUN_COLUMNS, rows, runEvent, stageEvent,
   taskEvent, turnEvent, verifyEvent, plainSummary, veilEvent, VEILED_KINDS, type DecisionRow, type Ev, type ItemRow, type OpusRow,
 } from "./trace.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -80,7 +80,7 @@ export const SOURCES: Source[] = [
   plain<Parameters<typeof commentEvent>[0] & At>("github", "comments", "created_at", "repo, number, id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len", (r, c) => commentEvent(r, c.own), { only: (c) => (c.own.size ? { where: `author IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
   plain<Parameters<typeof activityEvent>[0] & At>("github", "item_activity", "at", "repo, number, id, kind, at, actor, label, after_oid, before_oid", (r, c) => activityEvent(r, c.own), { only: (c) => (c.own.size ? { where: `actor IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
   plain<Parameters<typeof stageEvent>[0] & At>("plan", "stages", "at", "repo, number, rowid, stage, at, actor, note", stageEvent),
-  plain<Parameters<typeof planEvent>[0] & At>("plan", "plan_history", "at", "repo, number, id, head, old_state, new_state, wait, reasons, at", planEvent),
+  plain<Parameters<typeof planEvent>[0] & At>("plan", "plan_history", "at", "repo, number, id, head, old_state, new_state, wait, reasons, at", (r, c) => planEventFor(c, r)),
   // A job over many items is one row of the stream, at its newest item.
   plain<Parameters<typeof jobEvent>[0] & At>("job", "job_items", "ji.at", "ji.repo AS repo, ji.number AS number, ji.id, ji.job_id, ji.outcome, ji.at, j.step, j.state, j.error", jobEvent, { repoCol: "ji.repo", from: "job_items ji LEFT JOIN jobs j ON j.id = ji.job_id", one: (r) => String(r.job_id) }),
   // A run over many items is one row too: its first item. Runs that touched a hidden repo are left out whole.

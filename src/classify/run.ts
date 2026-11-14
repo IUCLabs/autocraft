@@ -225,7 +225,7 @@ function promptVersion(id: ClaudePromptId | JevPromptId): string {
   return v;
 }
 
-/** Item refs of a prompt's input: items carry repo and number, review PRs a `repo#number` ref. */
+/** Item refs of a prompt's input: items carry repo and number, review PRs a `repo#number` ref. A run without refs is shown to operators only. */
 function refsOf(input: readonly unknown[]): ItemRef[] {
   const out: ItemRef[] = [];
   for (const x of input as { repo?: string; number?: number; ref?: string; a?: { number: number }; b?: { number: number }; items?: unknown[] }[]) {
@@ -236,7 +236,10 @@ function refsOf(input: readonly unknown[]): ItemRef[] {
     else if (typeof x.repo === "string" && x.a && x.b) out.push({ repo: x.repo, number: x.a.number }, { repo: x.repo, number: x.b.number });
     else if (typeof x.ref === "string") {
       const r = parseRef(x.ref);
+      // A group of one repo's items, `repo#12+13` (duplicate comparisons): each of them.
+      const group = r ? null : /^([A-Za-z0-9._-]+)#(\d+(?:\+\d+)+)$/.exec(x.ref.trim());
       if (r) out.push(r);
+      else if (group) out.push(...group[2]!.split("+").map((n) => ({ repo: group[1]!, number: Number(n) })));
     }
   }
   return out;

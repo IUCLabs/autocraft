@@ -13,7 +13,8 @@ import type { Req } from "../types.ts";
 import { AUDIT_ACTIONS, operatorOnly } from "./admin.ts";
 import { detailOf } from "./github-detail.ts";
 import { canSeeInternals } from "./staff.ts";
-import { hiddenRepos, needVisible } from "./visible.ts";
+import { blankIfHidden, hiddenRepos, needVisible } from "./visible.ts";
+import { reasonsFor, waitFor, type Reader } from "./reader.ts";
 import { filtered, hiddenTest, isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import { ownLogins } from "../../github/identity.ts";
 
@@ -107,9 +108,13 @@ export const planEvent = (p: { id: number; head: string | null; old_state: strin
   ref: p.head ? { head: p.head } : {}, detail: { from: p.old_state, to: p.new_state, wait: p.wait, reasons: arr<string>(p.reasons) },
 });
 
+/** `planEvent` for one reader: the wait and reasons without items of repos hidden from them (src/dash/api/reader.ts). */
+export const planEventFor = (r: Pick<Reader, "staff" | "hidden">, p: Parameters<typeof planEvent>[0]): Ev =>
+  planEvent({ ...p, wait: waitFor(r, p.wait), reasons: JSON.stringify(reasonsFor(r, arr<string>(p.reasons))) });
+
 const plans: Source = {
   kinds: ["plan"],
-  run: ({ db, repo, n }) => rows<Parameters<typeof planEvent>[0]>(db, "SELECT id, head, old_state, new_state, wait, reasons, at FROM plan_history WHERE repo = ? AND number = ?", repo, n).map(planEvent),
+  run: (c) => rows<Parameters<typeof planEvent>[0]>(c.db, "SELECT id, head, old_state, new_state, wait, reasons, at FROM plan_history WHERE repo = ? AND number = ?", c.repo, c.n).map((p) => planEventFor(c, p)),
 };
 
 export const jobEvent = (j: { id: number; job_id: number; outcome: string | null; at: string; step: string | null; state: string | null; error: string | null }): Ev => ({
@@ -427,7 +432,8 @@ function veilHeader(h: ItemTraceHeader): ItemTraceHeader {
   };
 }
 
-function headerOf({ db, repo, n, box, hidden }: Ctx): ItemTraceHeader {
+function headerOf(c: Ctx): ItemTraceHeader {
+  const { db, repo, n, box, hidden } = c;
   const plan = db.prepare("SELECT head, state, actions, wait, reasons, note, view, planned_at FROM item_plans WHERE repo = ? AND number = ?").get(repo, n) as
     { head: string | null; state: string; actions: string; wait: string | null; reasons: string; note: string | null; view: string; planned_at: string } | undefined;
   const view = obj(plan?.view);
@@ -435,10 +441,14 @@ function headerOf({ db, repo, n, box, hidden }: Ctx): ItemTraceHeader {
   const it = db.prepare("SELECT assignees FROM items WHERE repo = ? AND number = ?").get(repo, n) as { assignees: string | null } | undefined;
   const assignees = arr(it?.assignees).filter((x): x is string => typeof x === "string");
   const hold = db.prepare("SELECT held_by, held_at FROM merge_holds WHERE repo = ? AND number = ?").get(repo, n) as { held_by: string; held_at: string } | undefined;
+  // The planner's texts as this reader may see them: no item of a hidden repo, and for viewers no note and plain reasons.
+  const wait = waitFor(c, plan?.wait ?? null);
+  const note = c.staff ? blankIfHidden(plan?.note ?? null, hidden) || null : null;
+  const next = typeof view.next === "string" ? blankIfHidden(view.next, hidden) || null : null;
   return {
     now: {
       state: plan?.state ?? null, head: plan?.head ?? null, plannedAt: plan?.planned_at ?? null,
-      text: plan ? (typeof view.next === "string" ? view.next : plan.wait ?? plan.note ?? plan.state) : "Not planned yet", waitsOn: plan?.wait ?? null, reasons: arr<string>(plan?.reasons), note: plan?.note ?? null,
+      text: plan ? (next ?? wait ?? note ?? plan.state) : "Not planned yet", waitsOn: wait, reasons: reasonsFor(c, arr<string>(plan?.reasons)), note,
     },
     next: acts.map((a) => ({ kind: a.kind as string, head: typeof a.head === "string" ? a.head : null })),
     who: {

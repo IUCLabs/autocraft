@@ -81,10 +81,10 @@ Both endpoints need no sign-in and return no data. `deploy/k8s/autocraft.yaml` p
 `GET /healthz/checks` on the dashboard port needs no sign-in. It answers 200 while every check is `ok` or `warn` and 503 when one is `fail`:
 
 ```json
-{"status":"fail","checks":[{"id":"runner","state":"ok","since":null},{"id":"workers","state":"fail","since":"2026-11-05T14:15:02Z","count":1,"of":1},{"id":"sync-repos","state":"warn","since":"2026-11-05T16:00:12Z","count":1,"of":20}],"at":"2026-11-05T18:00:00Z"}
+{"status":"fail","checks":[{"id":"runner","state":"ok"},{"id":"workers","state":"fail"},{"id":"sync-repos","state":"warn"}]}
 ```
 
-It lists check ids, states, the time a check turned bad (`since`) and counts (`count` bad of `of`; build workers and repos are one entry each). It carries no repo, environment or account names and no error text. The answer is cached for 5 seconds. Point an external monitor at it and alert on a non-200 answer or on a `warn` that persists. The checks are described in `docs/operations.md` (Health checks).
+It lists check ids and states; build workers and repos are one entry each. A request with an operator's or maintainer's session also gets the time a check turned bad (`since`), counts (`count` bad of `of`) and the answer's time (`at`). It carries no repo, environment or account names and no error text. The answer is cached for 5 seconds. Point an external monitor at it and alert on a non-200 answer or on a `warn` that persists. The checks are described in `docs/operations.md` (Health checks).
 
 ## Runner security settings (bubblewrap)
 

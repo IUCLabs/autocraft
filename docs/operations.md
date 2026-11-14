@@ -453,7 +453,7 @@ The dashboard, the runner, sync and backup write to stdout and stderr. The runne
 
 ### Health checks
 
-The dashboard computes the checks below from the database on each request; nothing runs on a timer. The warnings menu in the header lists the ones that are not `ok` (red for `fail`; viewers see that a check is bad but not its cause or repos they cannot see), and `GET /healthz/checks` returns them for external monitoring (no sign-in; ids, states, `since` and counts only; 200 for `ok` and `warn`, 503 when any check is `fail`). Thresholds are the constants in `THRESHOLDS` in `src/health-checks.ts`.
+The dashboard computes the checks below from the database on each request; nothing runs on a timer. The warnings menu in the header lists the ones that are not `ok` (red for `fail`; viewers see that a check is bad but not its cause or repos they cannot see), and `GET /healthz/checks` returns them for external monitoring (no sign-in; ids and states only, plus `since` and counts for a signed-in operator or maintainer; 200 for `ok` and `warn`, 503 when any check is `fail`). Thresholds are the constants in `THRESHOLDS` in `src/health-checks.ts`.
 
 | Id | Fails or warns when |
 |---|---|

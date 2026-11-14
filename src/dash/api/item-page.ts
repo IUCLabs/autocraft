@@ -19,6 +19,7 @@ import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { preapprovalOf, preapprovalsOf } from "../../preapproval/index.ts";
 import { queueSlots } from "../../rank/position.ts";
 import { visibleRepos } from "./visible.ts";
+import { itemReader, statusFor } from "./reader.ts";
 import type { Req } from "../types.ts";
 
 export type ItemPhase = ItemStatus["phase"];
@@ -125,8 +126,8 @@ function statusOf(c: Ctx, it: Item): ItemStatus {
   const stored = obj(row?.view).status as Partial<ItemStatus> | undefined;
   const since = it.mergedAt ?? it.closedAt ?? it.updatedAt ?? it.createdAt;
   const s = stored && typeof stored.phase === "string" ? ({ waiting: null, next: null, since, ...stored } as ItemStatus) : statusFromItem({ merged_at: it.mergedAt, closed_at: it.closedAt }, since);
-  // A quiet pull request shows its viewers the phase only: the wait and next step quote the planner's reasons.
-  return c.veiled ? { ...s, waiting: null, next: null } : s;
+  // A quiet pull request shows its viewers the phase only: the wait and next step quote the planner's reasons. A wait naming a hidden repo's item does not name it.
+  return statusFor(itemReader(c), c.repo, c.n, s);
 }
 
 // ---- Opus reviews ------------------------------------------------------------------------------------------------------

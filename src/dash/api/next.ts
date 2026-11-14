@@ -8,6 +8,7 @@ import { trackedNames } from "../../repos.ts";
 import type { Req } from "../types.ts";
 import { shownLookup } from "./shown.ts";
 import { blankIfHidden, visibleRepos } from "./visible.ts";
+import { readerOf, statusFor, veiledFor, type Reader } from "./reader.ts";
 
 const WAITING_LIMIT = 500;
 
@@ -15,14 +16,18 @@ type PlanRow = { repo: string; number: number; wait: string | null; view: string
 const parseView = (view: string): { next?: string; scope?: true } => { try { return (JSON.parse(view) as { next?: string; scope?: true } | null) ?? {}; } catch { return {}; } };
 const nextText = (view: string): string | null => parseView(view).next ?? null;
 
-export async function nextPage(db: DatabaseSync, visibleNames: string[], opts: { nowMs?: number } = {}): Promise<NextPage> {
-  const visible = new Set(visibleNames), hidden = trackedNames(db).filter((r) => !visible.has(r)), ms = opts.nowMs ?? Date.now();
+/** `reader`: what the requester may read of the stored texts; without one (tests), every repo outside `visibleNames` is hidden. */
+export async function nextPage(db: DatabaseSync, visibleNames: string[], opts: { nowMs?: number; reader?: Reader } = {}): Promise<NextPage> {
+  const visible = new Set(visibleNames), ms = opts.nowMs ?? Date.now();
+  const reader = opts.reader ?? { staff: true, quiet: new Set<string>(), hidden: Object.assign(trackedNames(db).filter((r) => !visible.has(r)), { visible: visibleNames }) };
+  const hidden = reader.hidden;
   const stored = storedLaneItems(db);
   const shown = shownLookup(db);
   const stepDefs = await loadSteps();
   const status = stageStatus(db);
   const plan = db.prepare("SELECT repo, number, wait, view FROM item_plans WHERE repo = ? AND number = ?");
-  const why = (repo: string, number: number, action: string): string => nextText((plan.get(repo, number) as PlanRow | undefined)?.view ?? "{}") ?? action;
+  const why = (repo: string, number: number, action: string): string =>
+    (veiledFor(reader, repo, number) ? null : blankIfHidden(nextText((plan.get(repo, number) as PlanRow | undefined)?.view ?? "{}"), hidden) || null) ?? action;
   const stageOf = new Map(lanesInOrder().map((l) => [l.name, STAGES.find((s) => s.id === l.stage)?.title ?? l.stage]));
   const steps: NextStep[] = [];
   for (const lane of LANES) {
@@ -41,10 +46,13 @@ export async function nextPage(db: DatabaseSync, visibleNames: string[], opts: {
   }
   const rows = db.prepare("SELECT repo, number, wait, view FROM item_plans WHERE wait IS NOT NULL ORDER BY repo, number").all() as PlanRow[];
   const scoped = rows.filter((r) => visible.has(r.repo) && parseView(r.view).scope);
-  const waiting: NextWaiting[] = scoped.slice(0, WAITING_LIMIT).map((r) => ({ repo: r.repo, number: r.number, ...shown(r.repo, r.number), wait: r.wait!, why: nextText(r.view) }));
+  const waiting: NextWaiting[] = scoped.slice(0, WAITING_LIMIT).map((r) => {
+    const s = statusFor(reader, r.repo, r.number, { waiting: r.wait, next: nextText(r.view) });
+    return { repo: r.repo, number: r.number, ...shown(r.repo, r.number), wait: s.waiting ?? "", why: s.next };
+  });
   return { steps, waiting, waitingTotal: scoped.length };
 }
 
 export async function next(db: DatabaseSync, req: Req): Promise<NextPage> {
-  return nextPage(db, await visibleRepos(db, req));
+  return nextPage(db, await visibleRepos(db, req), { reader: await readerOf(db, req) });
 }

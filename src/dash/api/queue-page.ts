@@ -17,7 +17,8 @@ import type { RankBreakdown } from "../../rank/score.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { toBatch, toRow } from "./queue.ts";
-import { hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { needVisible, visibleRepos } from "./visible.ts";
+import { readerOf } from "./reader.ts";
 import { stageById } from "../../stages/registry.ts";
 
 export const TABS: QueueTab[] = ["all", "review", "fix", "verify", "merge"];
@@ -112,7 +113,8 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   // Merge queue rows
   const entries = allEntries.filter((e) => e.state !== "merged" && visibleSet.has(e.repo) && inScope(e.repo, e.number));
   const internals = canSeeInternals(req);
-  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals) });
+  const reader = await readerOf(db, req);
+  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals) });
   const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOfNext(w.next) === t).length);
   const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
 
@@ -125,7 +127,7 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
     out.next = offset + out.rows.length < match.length ? offset + out.rows.length : null;
     return out;
   }
-  const { batches } = pageBatches(db, { exclude: await hiddenRepos(db, req), limit: 100 });
+  const { batches } = pageBatches(db, { hidden: reader.hidden, limit: 100 });
   const active = batches.filter((b) => (b.state === "checking" || b.state === "open") && b.prs.some((p) => inScope(b.repo, p.number)));
   const rowOf = new Map(entries.map((e) => [`${e.repo}#${e.number}`, asRow(e)]));
   const batchOf = new Map(active.flatMap((b) => b.prs.map((p) => [`${b.repo}#${p.number}`, { id: b.id, branch: b.branch }] as const)));

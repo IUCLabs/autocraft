@@ -1,5 +1,6 @@
 // Tables and pure rules of the merge queue's integration batches (see batch.ts).
 import type { DatabaseSync } from "node:sqlite";
+import { filtered, hiddenJsonTest, type HiddenRepos } from "../hidden-sql.ts";
 import { mergeApprovalOf as mergeApprovalOfSafe } from "./approval.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 
@@ -134,11 +135,12 @@ export function batchesDue(db: DatabaseSync, now = new Date()): string[] {
 }
 
 /** One page of batches, newest first (ids below `before`), with their members in order: two queries, whatever the page size. */
-export function pageBatches(db: DatabaseSync, o: { repo?: string; exclude?: string[]; before?: number; limit: number }): { batches: (BatchRow & { prs: BatchMember[] })[]; total: number; more: boolean } {
+export function pageBatches(db: DatabaseSync, o: { repo?: string; hidden?: HiddenRepos; before?: number; limit: number }): { batches: (BatchRow & { prs: BatchMember[] })[]; total: number; more: boolean } {
   const where: string[] = [];
   const params: (string | number)[] = [];
   if (o.repo) { where.push("repo = ?"); params.push(o.repo); }
-  for (const r of o.exclude ?? []) { where.push("repo <> ?"); params.push(r); }
+  // A list from the dashboard's `hiddenRepos` allows only its visible repos, so batches of untracked repos stay out too.
+  if (o.hidden && filtered(o.hidden)) { const h = hiddenJsonTest("repo", o.hidden); where.push(`NOT (${h.sql})`); params.push(h.arg); }
   const filter = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const total = (db.prepare(`SELECT COUNT(*) AS n FROM main.merge_batches ${filter}`).get(...params) as { n: number }).n;
   const paged = o.before === undefined ? filter : `${filter ? `${filter} AND` : "WHERE"} id < ?`;
