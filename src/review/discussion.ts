@@ -131,7 +131,7 @@ export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number:
       formal: ${FORMAL_REVIEWS}
       reviewThreads(last: 100) { nodes { isResolved isOutdated path line originalLine
         head: comments(first: 1) { nodes { id author { login __typename } authorAssociation createdAt body } }
-        tail: comments(last: 3) { nodes { id author { login } body } } } }
+        tail: comments(last: 3) { nodes { id author { login } authorAssociation body } } } }
     }
   }
 }`;
@@ -189,9 +189,11 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
       if (c.createdAt && (!newest || c.createdAt > newest)) newest = c.createdAt;
       if (c.createdAt && isMaint(c.author?.login, c.authorAssociation) && (!newestMaint || c.createdAt > newestMaint)) newestMaint = c.createdAt;
     }
-    const replies = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
-      .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2) })).filter((r) => r.body);
-    if (isMaint(c.author?.login, c.authorAssociation)) maint.add(entries.length);
+    const tail = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
+      .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2), maint: isMaint(r.author?.login, r.authorAssociation) })).filter((r) => r.body);
+    const replies = tail.map(({ author, body }) => ({ author, body }));
+    // A maintainer's reply in someone else's thread ranks the thread as the maintainer's own entry would.
+    if (isMaint(c.author?.login, c.authorAssociation) || tail.some((r) => r.maint)) maint.add(entries.length);
     entries.push({ kind: "thread", author: c.author?.login ?? null, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT), ...(replies.length ? { replies } : {}) });
   }
   const formal = ((pr.formal?.nodes ?? []) as Node[])
@@ -207,7 +209,7 @@ export async function withRetry<T>(f: () => Promise<T>, tries = 3): Promise<T> {
 }
 
 /**
- * Entries kept within the total budget: a maintainer's or dashboard user's entries (`first`, by index) before anyone else's,
+ * Entries kept within the total budget: a maintainer's or dashboard user's entries and threads they replied to (`first`, by index) before anyone else's,
  * then threads, reviews and comments (newest first within each), so neither a noisy bot nor the PR author can push out
  * the findings or a maintainer's word. The kept entries are returned oldest first.
  */
