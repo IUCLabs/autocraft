@@ -18,7 +18,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { toBatch, toRow } from "./queue.ts";
 import { needVisible, visibleRepos } from "./visible.ts";
-import { readerOf } from "./reader.ts";
+import { readerOf, veiledFor } from "./reader.ts";
 import { stageById } from "../../stages/registry.ts";
 
 export const TABS: QueueTab[] = ["all", "review", "fix", "verify", "merge"];
@@ -115,14 +115,17 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const internals = canSeeInternals(req);
   const reader = await readerOf(db, req);
   const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals) });
-  const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOfNext(w.next) === t).length);
+  // Tabs come from the stored next step; the text is veiled afterwards, so a quiet pull request stays in its tab.
+  const tabOf = new Map(work.map((w) => [w, tabOfNext(w.next)]));
+  const veilNext = (w: QueueWorkRow): QueueWorkRow => (veiledFor(reader, w.repo, w.number) ? { ...w, next: "" } : w);
+  const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOf.get(w) === t).length);
   const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
 
   const out: QueuePage = { tab, repos: reposParam, counts, rows: [], mergeRows: [], nextMerges: [], batches: [], total: 0, next: null };
   if (tab !== "merge") {
-    const match = tab === "all" ? work : work.filter((w) => tabOfNext(w.next) === tab);
+    const match = tab === "all" ? work : work.filter((w) => tabOf.get(w) === tab);
     out.itemIndex = indexOf(match);
-    out.rows = match.slice(offset, offset + sizeFor(match, offset));
+    out.rows = match.slice(offset, offset + sizeFor(match, offset)).map(veilNext);
     out.total = match.length;
     out.next = offset + out.rows.length < match.length ? offset + out.rows.length : null;
     return out;

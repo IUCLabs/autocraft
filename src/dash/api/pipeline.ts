@@ -45,7 +45,14 @@ async function pipelineState(db: DatabaseSync, req: Req): Promise<PipelineState>
 }
 
 /** Viewers read that a job failed, not why: the error carries log and command text. */
-const forViewer = (req: Req) => (j: Job): Job => (canSeeInternals(req) || !j.error ? j : { ...j, error: "failed" });
+/**
+ * A job as the reader may see it: viewers get "failed" for an error; no reader gets a summary, progress or error that names a repo
+ * hidden from them (a job without a repo works across repos), and an error left out that way reads "failed". Operators hide nothing.
+ */
+const forViewer = (req: Req, hidden: HiddenRepos) => (j: Job): Job => ({
+  ...j, summary: blankIfHidden(j.summary, hidden) || null, progress: blankIfHidden(j.progress, hidden) || null,
+  error: j.error && (canSeeInternals(req) ? blankIfHidden(j.error, hidden) || "failed" : "failed"),
+});
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
   try {
@@ -94,10 +101,12 @@ export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOver
   const steps: PipelineStep[] = all.map((s) => ({
     name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires,
     params: wireParams(s, repos), unavailable: s.available?.() ?? null,
-    lastJob: lastJob(db, s.name, forViewer(req), hidden),
+    lastJob: lastJob(db, s.name, forViewer(req, hidden), hidden),
   }));
-  const runs = db.prepare("SELECT started_at AS startedAt, ended_at AS endedAt, mode, items, error FROM sync_runs ORDER BY started_at DESC LIMIT 10").all() as unknown as SyncRun[];
-  const lastSync = runs.find((r) => r.endedAt);
+  const raw = db.prepare("SELECT started_at AS startedAt, ended_at AS endedAt, mode, items, error FROM sync_runs ORDER BY started_at DESC LIMIT 10").all() as unknown as SyncRun[];
+  const lastSync = raw.find((r) => r.endedAt);
+  // A sync error can quote GitHub's answer about any repo: staff read it unless it names a repo hidden from them, viewers read "failed".
+  const runs = raw.map((r) => ({ ...r, error: r.error && (canSeeInternals(req) ? blankIfHidden(r.error, hidden) || "failed" : "failed") }));
   const high = (db.prepare("SELECT value FROM settings WHERE key = 'org_high_water'").get() as { value: string } | undefined)?.value ?? null;
   const stages: PipelineStage[] = STAGES.map((st) => {
     const names = steps.filter((s) => s.stage === st.n).map((s) => s.name);
@@ -129,8 +138,9 @@ const intQuery = (req: Req, name: string): number | undefined => {
 export async function jobs(db: DatabaseSync, req: Req) {
   const state = req.query.get("state") || undefined;
   if (state && !JOB_STATES.includes(state as JobState)) throw new HttpError(400, "unknown state");
-  const list = listJobs(db, { step: req.query.get("step") || undefined, state: state as JobState | undefined, limit: intQuery(req, "limit"), offset: intQuery(req, "offset") }, await hiddenRepos(db, req));
-  return { ...list, jobs: list.jobs.map(forViewer(req)) };
+  const hidden = await hiddenRepos(db, req);
+  const list = listJobs(db, { step: req.query.get("step") || undefined, state: state as JobState | undefined, limit: intQuery(req, "limit"), offset: intQuery(req, "offset") }, hidden);
+  return { ...list, jobs: list.jobs.map(forViewer(req, hidden)) };
 }
 
 const jobId = (req: Req): number => {
@@ -140,11 +150,12 @@ const jobId = (req: Req): number => {
 };
 
 export const job = (db: DatabaseSync, req: Req) => wrap(async () => {
-  const d = jobDetail(db, jobId(req), { hidden: await hiddenRepos(db, req), logs: canSeeInternals(req) });
-  if (canSeeInternals(req)) return d;
+  const hidden = await hiddenRepos(db, req);
+  const d = jobDetail(db, jobId(req), { hidden, logs: canSeeInternals(req) });
+  if (canSeeInternals(req)) return forViewer(req, hidden)(d) as typeof d;
   // An item's outcome reads "failed: <reason>" or carries notes: viewers get the leading state word, and nothing for a quiet pull request.
   const items = d.items.map((i) => ({ ...i, outcome: isQuiet(db, i.repo, i.number) ? null : /^[A-Za-z-]+/.exec(i.outcome ?? "")?.[0] ?? null }));
-  return { ...d, items, error: forViewer(req)(d).error };
+  return { ...forViewer(req, hidden)(d) as typeof d, items };
 });
 
 function body(req: Req): Record<string, unknown> {

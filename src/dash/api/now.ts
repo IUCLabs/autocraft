@@ -201,7 +201,9 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, before: str
     const idle = !its.length && !j.items && !j.acted;
     const e = base({
       key: `job:${j.id}`, kind: "job", state: live ? "running" : j.state === "failed" ? "failed" : "done", at: j.at, endedAt: j.ended_at, title: stepTitle(j.step),
-      summary: live ? null : j.state === "failed" ? (staff && j.error ? clip(j.error, 100) : null) : j.summary, progress: live ? j.progress : null,
+      // A job without a repo works across repos: its texts name no item of a repo hidden from the reader.
+      summary: live ? null : j.state === "failed" ? (staff && j.error ? clip(blankIfHidden(j.error, hidden) || "failed", 100) : null) : blankIfHidden(j.summary, hidden) || null,
+      progress: live ? blankIfHidden(j.progress, hidden) || null : null,
       item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.slice(0, ITEM_CAP).map((i) => item(i.repo, i.number)), itemCount: its.length, repo: j.repo,
       event: its[0] ? `job:${its[0].id}` : null, detail: `/pipeline/${j.id}`,
     });
