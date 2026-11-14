@@ -16,8 +16,11 @@ export function diffCacheDir(): string {
   return envVar("DIFF_CACHE") ?? join(homedir(), ".cache/autocraft/diffs");
 }
 
-/** `base`: the base branch the diff was computed against (the PR's base at the time of the read). */
-export type DiffResult = { ok: true; text: string; base?: string } | { ok: false; tooLarge: boolean; error: string };
+/**
+ * `base`: the base branch the diff was computed against (the PR's base at the time of the read). `files`: the head commit's
+ * text of each changed file the merge rule reads whole (see `wholeFilesOf`); a file missing from it could not be read.
+ */
+export type DiffResult = { ok: true; text: string; base?: string; files?: Record<string, string> } | { ok: false; tooLarge: boolean; error: string };
 /** `head`: the commit the diff must be of; the fetch fails when the PR is no longer at it. */
 export type DiffFetcher = (repo: string, number: number, head?: string) => Promise<DiffResult>;
 
@@ -36,8 +39,58 @@ export const ghDiff: DiffFetcher = async (repo, number, head) => {
   // GitHub refuses diffs over 20,000 lines or 300 files with HTTP 406.
   if (r.code !== 0) return { ok: false, tooLarge: /too_large|too large|406|maximum number of (lines|files)/i.test(r.err), error: r.err.trim().slice(0, 300) };
   if (Number.isFinite(files) && (r.out.match(/^diff --git /gm) ?? []).length < files) return { ok: false, tooLarge: true, error: `the compared diff has ${(r.out.match(/^diff --git /gm) ?? []).length} files, the pull request ${files}` };
-  return { ok: true, text: r.out, base: baseRef };
+  const whole: Record<string, string> = {};
+  for (const path of wholeFilesOf(r.out).slice(0, MAX_WHOLE_FILES)) {
+    const c = await gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${slug}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${liveHead}`]);
+    if (c.code === 0) whole[path] = c.out;
+  }
+  return { ok: true, text: r.out, base: baseRef, files: whole };
 };
+
+const MANIFEST = /(^|\/)Cargo\.toml$/;
+const MAX_WHOLE_FILES = 100;
+export const isNewFile = (f: FileDiff): boolean => f.head.some((l) => l.startsWith("new file mode ")) || f.head.includes("--- /dev/null");
+export const isDeletedFile = (f: FileDiff): boolean => f.head.some((l) => l.startsWith("deleted file mode ")) || f.head.includes("+++ /dev/null");
+
+/** The changed files the merge rule reads whole at the head: Cargo manifests that are edited (an added or deleted one is whole in the diff). */
+export function wholeFilesOf(text: string): string[] {
+  return splitDiff(text).filter((f) => MANIFEST.test(f.path) && f.body.length > 0 && !isNewFile(f) && !isDeletedFile(f)).map((f) => f.path);
+}
+
+/**
+ * A file's text before the diff: `after` (its text at the head) with the section's hunks applied in reverse. null when the
+ * hunks do not match `after`.
+ */
+export function textBefore(after: string, f: FileDiff): string | null {
+  const lines = after.split("\n");
+  const out: string[] = [];
+  let at = 0;
+  for (let k = 0; k < f.body.length; k++) {
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(f.body[k]!);
+    if (!h) continue;
+    const start = h[2] === "0" ? Number(h[1]) : Number(h[1]) - 1;
+    if (start < at || start > lines.length) return null;
+    out.push(...lines.slice(at, start));
+    at = start;
+    for (k++; k < f.body.length && !f.body[k]!.startsWith("@@ "); k++) {
+      const l = f.body[k]!, c = l[0];
+      if (c === "-") out.push(l.slice(1));
+      else if (c === " " || c === "+") { if (lines[at] !== l.slice(1)) return null; if (c === " ") out.push(l.slice(1)); at++; }
+      else if (l === "" && k === f.body.length - 1) continue;
+      else if (c !== "\\") return null;
+    }
+    k--;
+  }
+  out.push(...lines.slice(at));
+  return out.join("\n");
+}
+
+/** The file's text at one side of the diff when the section holds it whole (an added or deleted file); null otherwise. */
+export function wholeInDiff(f: FileDiff, side: "before" | "after"): string | null {
+  if (side === "after" ? !isNewFile(f) : !isDeletedFile(f)) return null;
+  const mark = side === "after" ? "+" : "-";
+  return f.body.filter((l) => l.startsWith(mark)).map((l) => l.slice(1)).join("\n");
+}
 
 /**
  * The diff of `repo#number` at `head`, from the cache when present. The fetch is of that commit, and a diff is stored only under
@@ -47,23 +100,41 @@ export const ghDiff: DiffFetcher = async (repo, number, head) => {
 export async function cachedDiff(repo: string, number: number, head: string, fetch: DiffFetcher, base?: string | null): Promise<DiffResult> {
   const dir = join(diffCacheDir(), repo);
   const file = join(dir, `${number}-${head}.diff`);
+  const fetchAndStore = async (): Promise<DiffResult> => {
+    const r = await fetch(repo, number, head);
+    if (r.ok) {
+      mkdirSync(dir, { recursive: true });
+      const put = (path: string, text: string) => {
+        const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+        writeFileSync(tmp, text);
+        renameSync(tmp, path);
+      };
+      if (r.base) put(`${file}.base`, r.base);
+      // The whole files are written before the diff, so a reader that finds the diff finds them too.
+      put(`${file}.files.json`, JSON.stringify(r.files ?? {}));
+      put(file, r.text);
+    }
+    return r;
+  };
   if (existsSync(file)) {
     const stored = existsSync(`${file}.base`) ? readFileSync(`${file}.base`, "utf8") : undefined;
     // An entry stored before bases were recorded does not say which base it read: with a base given it is read again.
-    if (!base || stored === base) return { ok: true, text: readFileSync(file, "utf8"), ...(stored !== undefined ? { base: stored } : {}) };
+    if (!base || stored === base) {
+      const text = readFileSync(file, "utf8");
+      const hit: DiffResult = { ok: true, text, ...(stored !== undefined ? { base: stored } : {}) };
+      // An entry stored without the whole files the rule needs is read again; if that fails the entry stands.
+      if (existsSync(`${file}.files.json`) || !wholeFilesOf(text).length) return hit;
+      const again = await fetchAndStore();
+      return again.ok ? again : hit;
+    }
   }
-  const r = await fetch(repo, number, head);
-  if (r.ok) {
-    mkdirSync(dir, { recursive: true });
-    const put = (path: string, text: string) => {
-      const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-      writeFileSync(tmp, text);
-      renameSync(tmp, path);
-    };
-    if (r.base) put(`${file}.base`, r.base);
-    put(file, r.text);
-  }
-  return r;
+  return fetchAndStore();
+}
+
+/** The whole files stored beside a cached diff (see `DiffResult.files`); null when none are stored. */
+export function cachedDiffFiles(repo: string, number: number, head: string): Record<string, string> | null {
+  const f = join(diffCacheDir(), repo, `${number}-${head}.diff.files.json`);
+  try { return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) as Record<string, string> : null; } catch { return null; }
 }
 
 /** Forgets the cached diff of a head, so the next read fetches it (and the PR's current base) again. */
@@ -71,6 +142,7 @@ export function dropCachedDiff(repo: string, number: number, head: string): void
   const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
   rmSync(file, { force: true });
   rmSync(`${file}.base`, { force: true });
+  rmSync(`${file}.files.json`, { force: true });
 }
 
 /** The base branch a cached diff was computed against; null when unknown. */
@@ -79,15 +151,82 @@ export function cachedDiffBase(repo: string, number: number, head: string): stri
   try { return existsSync(f) ? readFileSync(f, "utf8") : null; } catch { return null; }
 }
 
-export type FileDiff = { path: string; text: string; lines: number };
+/**
+ * One file's section of a unified diff. `path` is the new name and `oldPath` the old one (equal unless renamed or copied);
+ * "?" when the header cannot be read. `head`: the header lines before the first hunk; `body`: the hunk lines.
+ */
+/** Diff characters above which a PR is held as too large to review. */
+export const MAX_DIFF_CHARS = 120_000;
+
+export type FileDiff = { path: string; oldPath: string; text: string; lines: number; head: string[]; body: string[] };
+
+const C_ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+
+/** A name as git writes it: plain, or C-quoted ("...") with octal bytes of UTF-8. null when the quoting is malformed. */
+export function gitName(s: string): string | null {
+  if (!s.startsWith('"')) return s;
+  if (s.length < 2 || !s.endsWith('"')) return null;
+  const bytes: number[] = [];
+  const body = s.slice(1, -1);
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i]!;
+    if (c === '"') return null;
+    if (c !== "\\") { bytes.push(...Buffer.from(c, "utf8")); continue; }
+    const e = body[++i] ?? "";
+    const oct = /^[0-7]{3}/.exec(body.slice(i, i + 3));
+    if (oct) { bytes.push(parseInt(oct[0], 8)); i += 2; continue; }
+    const v = C_ESCAPES[e];
+    if (v === undefined) return null;
+    bytes.push(v);
+  }
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes)); } catch { return null; }
+}
+
+/** The path of a `--- a/x`, `+++ b/x` or `rename from x` value; null for /dev/null or a malformed name. */
+function sidePath(v: string, prefix: string): string | null {
+  const t = v.replace(/\t$/, "");
+  if (t === "/dev/null") return null;
+  const n = gitName(t);
+  if (n === null) return null;
+  if (!prefix) return n;
+  return n.startsWith(prefix) ? n.slice(prefix.length) : null;
+}
+
+/** Both names of a `diff --git` header: quoted names, or the halves of `a/X b/X` (for a rename without other lines, the only " b/" split). */
+function headerPaths(line: string): [string, string] | null {
+  const rest = line.slice("diff --git ".length);
+  const q = /^("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*")$/.exec(rest) ?? /^("(?:[^"\\]|\\.)*") (.+)$/.exec(rest);
+  if (q && (q[1]!.startsWith('"') || q[2]!.startsWith('"'))) {
+    const a = sidePath(q[1]!, "a/"), b = sidePath(q[2]!, "b/");
+    return a !== null && b !== null ? [a, b] : null;
+  }
+  if (rest.length % 2 === 1) {
+    const half = (rest.length - 1) / 2, a = rest.slice(0, half), b = rest.slice(half + 1);
+    if (a.startsWith("a/") && b.startsWith("b/") && a.slice(2) === b.slice(2)) return [a.slice(2), b.slice(2)];
+  }
+  const parts = rest.split(" b/");
+  if (parts.length === 2 && parts[0]!.startsWith("a/")) return [parts[0]!.slice(2), parts[1]!];
+  return null;
+}
 
 export function splitDiff(text: string): FileDiff[] {
   const parts = text.split(/^(?=diff --git )/m).filter((p) => p.startsWith("diff --git "));
   return parts.map((p) => {
-    const m = /^diff --git a\/(.+?) b\/(.+)$/m.exec(p);
-    const path = m ? m[2]! : "?";
-    const lines = p.split("\n").filter((l) => (l.startsWith("+") || l.startsWith("-")) && !l.startsWith("+++") && !l.startsWith("---")).length;
-    return { path, text: p, lines };
+    const all = p.split("\n");
+    const first = all.findIndex((l) => l.startsWith("@@ "));
+    const head = first < 0 ? all : all.slice(0, first), body = first < 0 ? [] : all.slice(first);
+    let oldPath: string | null | undefined, path: string | null | undefined;
+    for (const l of head.slice(1)) {
+      if (l.startsWith("rename from ") || l.startsWith("copy from ")) oldPath = sidePath(l.replace(/^(rename|copy) from /, ""), "") ?? "?";
+      else if (l.startsWith("rename to ") || l.startsWith("copy to ")) path = sidePath(l.replace(/^(rename|copy) to /, ""), "") ?? "?";
+      else if (l.startsWith("--- ") && oldPath === undefined) oldPath = sidePath(l.slice(4), "a/") ?? (l.slice(4).replace(/\t$/, "") === "/dev/null" ? undefined : "?");
+      else if (l.startsWith("+++ ") && path === undefined) path = sidePath(l.slice(4), "b/") ?? (l.slice(4).replace(/\t$/, "") === "/dev/null" ? undefined : "?");
+    }
+    const h = headerPaths(all[0]!);
+    const np = path ?? h?.[1] ?? oldPath ?? "?", op = oldPath ?? h?.[0] ?? np;
+    // Only hunk lines count: an added line whose text starts with "++" is content, not a file header.
+    const lines = body.filter((l) => l.startsWith("+") || l.startsWith("-")).length;
+    return { path: np, oldPath: op, text: p, lines, head, body };
   });
 }
 
@@ -111,20 +250,31 @@ export type CodeDiff = {
   lockfilesOmitted: string[];
 };
 
-/** Keeps the code: owner rule, reviews judge code, not tests. `keepTests` treats test files as code. */
-export function codeDiff(text: string, keepTests = false): CodeDiff {
+/**
+ * The diff a model reads: code first, lockfiles listed and left out. `keepTests`: true keeps every test file; a number is a
+ * character budget, and test files are kept in diff order while the kept text stays within it (the rest are listed).
+ */
+export function codeDiff(text: string, keepTests: boolean | number = false): CodeDiff {
   const out: CodeDiff = { files: [], text: "", codeLines: 0, testsOmitted: [], lockfilesOmitted: [] };
-  const kept: string[] = [];
-  for (const f of splitDiff(text)) {
+  const sections = splitDiff(text);
+  const kept = new Set<FileDiff>();
+  let size = 0;
+  for (const f of sections) if (!isLockfile(f.path) && !isTestPath(f.path)) { kept.add(f); size += f.text.length; }
+  for (const f of sections) {
+    if (isLockfile(f.path) || !isTestPath(f.path)) continue;
+    if (keepTests === true || (typeof keepTests === "number" && size + f.text.length <= keepTests)) { kept.add(f); size += f.text.length; }
+  }
+  const parts: string[] = [];
+  for (const f of sections) {
     if (isLockfile(f.path)) out.lockfilesOmitted.push(f.path);
-    else if (!keepTests && isTestPath(f.path)) out.testsOmitted.push(f.path);
+    else if (!kept.has(f)) out.testsOmitted.push(f.path);
     else {
       out.files.push(f.path);
-      kept.push(f.text);
+      parts.push(f.text);
       out.codeLines += f.lines;
     }
   }
-  out.text = kept.join("");
+  out.text = parts.join("");
   return out;
 }
 
