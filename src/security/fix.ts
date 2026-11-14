@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { BuildError } from "../build/envs.ts";
 import { queueRound, readRound, requeueRound, type RoundRead } from "../build/rounds.ts";
-import { confidentialSince } from "../build/tasks.ts";
+import { CONFIDENTIAL_WAIT, confidentialReadyAt } from "../build/tasks.ts";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { runModelStep } from "../agents/step.ts";
 import { textStep } from "../agents/steps.ts";
@@ -112,6 +112,16 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
   const row = rawFinding(db, repo, n);
   if (!row || row.state !== "fixing") return `finding ${n}: not fixing`;
   const { log } = d;
+  // The model's checks and the round's builds run only in a confidential build environment: without one ready, the fix
+  // waits before any model call, and advanceSecurityFixes queues the next job once one is.
+  if (!roundRows(db, repo, n).some((r) => r.state === "building")) {
+    if (confidentialReadyAt(db) === null) {
+      db.prepare("UPDATE security_findings SET env_wait_at = COALESCE(env_wait_at, ?), note = ? WHERE repo = ? AND number = ? AND state = 'fixing'").run(new Date().toISOString(), CONFIDENTIAL_WAIT, repo, n);
+      log(`${repo} finding ${n}: waiting for a confidential build environment`);
+      return `${repo} finding ${n}: waiting for a confidential build environment`;
+    }
+    if (row.env_wait_at) db.prepare("UPDATE security_findings SET env_wait_at = NULL, note = CASE WHEN note = ? THEN NULL ELSE note END WHERE repo = ? AND number = ?").run(CONFIDENTIAL_WAIT, repo, n);
+  }
   // The model session of the last fix call, continued by the next round while the prompt cache is warm; its store is deleted when the job ends.
   const ledger = new SessionLedger();
   try {
@@ -201,7 +211,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     else if (last) {
       const ids: [number, number] = [last.head_task, last.base_task];
       let read: RoundRead = readRound(db, ids, last.retried === 1);
-      if (read.kind === "pending") return `${repo} finding ${n}: round ${last.round} ${confidentialSince(db) === null ? "is waiting for a confidential build environment" : "is still building"}`;
+      if (read.kind === "pending") return `${repo} finding ${n}: round ${last.round} ${confidentialReadyAt(db) === null ? "is waiting for a confidential build environment" : "is still building"}`;
       if (read.kind === "retry-env") {
         try {
           const again = requeueRound(db, ids);
@@ -278,7 +288,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       db.prepare("INSERT OR REPLACE INTO security_fix_rounds (repo, number, round, patch, test_patch, title, summary, head_task, base_task, session, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'building', ?)")
         .run(repo, n, round, v.patch, v.testPatch, parsed.title, parsed.summary, ids[0], ids[1], storeSessions(keptNow, new Date()), new Date().toISOString());
       ledger.stored(keptNow);
-      const queued = `${repo} finding ${n}: round ${round} queued for build${confidentialSince(db) === null ? "; waiting for a confidential build environment" : ""}`;
+      const queued = `${repo} finding ${n}: round ${round} queued for build${confidentialReadyAt(db) === null ? "; waiting for a confidential build environment" : ""}`;
       log(queued);
       return queued;
     }

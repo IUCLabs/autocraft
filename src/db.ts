@@ -212,6 +212,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["pr_commits", "message", "TEXT"],
   ["dupe_comparisons", "sizes", "TEXT"],
   ["build_envs", "confidential", "INTEGER NOT NULL DEFAULT 0"],
+  ["build_envs", "confidential_since", "TEXT"],
+  ["build_envs", "confidential_online_at", "TEXT"],
+  ["security_findings", "env_wait_at", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

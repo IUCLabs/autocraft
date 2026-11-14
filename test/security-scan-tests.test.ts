@@ -19,6 +19,8 @@ const tree = join(dir, "tree");
 mkdirSync(join(tree, "crates/psd/src"), { recursive: true });
 writeFileSync(join(tree, "crates/psd/src/layer.rs"), Array.from({ length: 200 }, (_, i) => `// line ${i + 1}`).join("\n"));
 const db = connect(join(dir, "dash.db"));
+// A confidential build environment that has reported: private fixes and their builds can run.
+db.prepare("INSERT INTO build_envs (id, label, kind, slots, key_hash, confidential, confidential_since, confidential_online_at, created_at) VALUES ('vault', 'vault', 'remote', 1, 'x', 1, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')").run();
 after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
 
 for (const r of ["plain", "wired", "on"]) db.prepare("INSERT INTO repos (name, visibility, default_branch, open_prs, open_issues) VALUES (?, 'public', 'main', 0, 0)").run(r);
@@ -122,7 +124,6 @@ describe("scan tests", () => {
 
   test("a test that builds for over four hours is cancelled and read as could-not-build", () => {
     const n = findings("on")[0]!.number;
-    db.prepare("INSERT OR IGNORE INTO build_envs (id, label, kind, slots, key_hash, confidential, created_at, updated_at) VALUES ('vault', 'vault', 'remote', 1, 'x', 1, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')").run();
     db.prepare("INSERT OR REPLACE INTO security_scan_tests (repo, number, test_path, crate, test_patch, test_source, task_id, state, created_at) VALUES ('stuck', ?, 'p', 'psd', 'x', 'x', ?, 'building', ?)")
       .run(n, testRow("on", n)!.task_id, new Date(Date.now() - 5 * 3_600_000).toISOString());
     db.prepare("UPDATE build_tasks SET state = 'queued', results = '[]' WHERE id = ?").run(testRow("on", n)!.task_id);

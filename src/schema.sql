@@ -749,6 +749,8 @@ CREATE TABLE IF NOT EXISTS build_envs (
   enabled INTEGER NOT NULL DEFAULT 1,
   slots INTEGER NOT NULL,             -- the operator's cap; the worker may report fewer
   confidential INTEGER NOT NULL DEFAULT 0, -- set by an operator, never by the worker: takes the security lane's private tasks and no PR code
+  confidential_since TEXT,            -- when the flag (or the environment, while flagged) was last turned on
+  confidential_online_at TEXT,        -- the worker's first call after confidential_since: from then on it can take private tasks
   key_hash TEXT NOT NULL,
   capabilities TEXT,                  -- JSON Capabilities as last reported by the worker
   reported_slots INTEGER,
@@ -1777,6 +1779,7 @@ CREATE TABLE IF NOT EXISTS security_findings (
   fix_files TEXT,                     -- JSON: the files the diff edits and its test file
   fix_ref TEXT,                       -- local ref of the commit in the bare cache: refs/autocraft/security/<repo>-<n>
   note TEXT,                          -- one line: why a fix failed, or what an admin must do
+  env_wait_at TEXT,                   -- set while a fixing finding waits, with no job, for a confidential build environment
   reason TEXT,
   decided_by TEXT,
   duplicate_of INTEGER,               -- a repeat of this earlier finding of the repo (state duplicate)

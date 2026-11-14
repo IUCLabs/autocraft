@@ -434,7 +434,7 @@ function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null, 
 export function getTask(db: DatabaseSync, id: number): BuildTask | null {
   const r = db.prepare(`${SELECT} WHERE t.id = ?`).get(id) as TaskRow | undefined;
   const shown = shownLookup(db);
-  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? [], batchesOf(db, [r.id], shown).get(r.id) ?? null, shown, confidentialSince(db) === null) : null;
+  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? [], batchesOf(db, [r.id], shown).get(r.id) ?? null, shown, confidentialReadyAt(db) === null) : null;
 }
 
 /** The last bytes of the log, from whole chunks. */
@@ -467,22 +467,22 @@ const FILTER_STATES = ["queued", "claimed", "running", "done", "failed", "cancel
 export const FIX_CHECK_STEP = "fix-check";
 /** Steps whose tasks hold a private finding: staff only. */
 export const PRIVATE_STEPS = [FIX_CHECK_STEP, "scan-test"];
-/** A private task's wait while no enabled environment is marked confidential. */
+/** A private task's wait while no confidential environment can take it. */
 export const CONFIDENTIAL_WAIT = "Waiting for a confidential build environment.";
 
 /**
- * Since when the private tasks could be claimed: the last change of the longest-standing enabled confidential
- * environment (an edit only moves it later), or null when there is none.
+ * Since when the private tasks can be claimed: the earliest first worker call of an enabled confidential environment
+ * after its flag (or the environment) was turned on; null while none has called since.
  */
-export function confidentialSince(db: DatabaseSync): number | null {
-  const r = db.prepare("SELECT MIN(COALESCE(updated_at, created_at)) AS at FROM build_envs WHERE enabled = 1 AND confidential = 1").get() as { at: string | null };
+export function confidentialReadyAt(db: DatabaseSync): number | null {
+  const r = db.prepare("SELECT MIN(confidential_online_at) AS at FROM build_envs WHERE enabled = 1 AND confidential = 1").get() as { at: string | null };
   return r.at ? Date.parse(r.at) : null;
 }
 
 /** When a private task's build limit starts: when it was queued, or when a confidential environment could first take it. null: it waits for one. */
 export function privateClockStart(db: DatabaseSync, queuedAt: string): number | null {
-  const since = confidentialSince(db);
-  return since === null ? null : Math.max(Date.parse(queuedAt), since);
+  const ready = confidentialReadyAt(db);
+  return ready === null ? null : Math.max(Date.parse(queuedAt), ready);
 }
 
 /** SQL for the steps hidden from viewers, for `step NOT IN (...)`. */
@@ -511,7 +511,7 @@ export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = []
   const arts = artifactsOf(db, page.map((r) => r.id));
   const shown = shownLookup(db);
   const batches = batchesOf(db, page.map((r) => r.id), shown);
-  const noConfidential = confidentialSince(db) === null;
+  const noConfidential = confidentialReadyAt(db) === null;
   return { tasks: page.map((r) => toTask(r, arts.get(r.id) ?? [], batches.get(r.id) ?? null, shown, noConfidential)), next: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 

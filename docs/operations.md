@@ -181,7 +181,7 @@ autocraft tasks mem [--days N]
 autocraft tasks enqueue-test --env-requires linux --repo NAME --sha SHA
 ```
 
-**Confidential environments.** The build tasks of a security fix (its rounds and its model's checks) and of a scan test hold an undisclosed fix or test. Only an environment an operator marked confidential (the Confidential box on the Build environments page, or `--confidential yes`) takes them; the worker cannot report itself as one. A confidential environment takes no task that builds PR code (PR builds, integration batches, and every task for a PR or issue). While no enabled environment is confidential, these tasks stay queued and read "Waiting for a confidential build environment.", the security fix's model gets no build checks, and the 4-hour build limit of a round or scan test starts only once a confidential environment can take the tasks. Run a confidential environment on its own host and user, apart from the workers that build PRs.
+**Confidential environments.** The build tasks of a security fix (its rounds and its model's checks) and of a scan test hold an undisclosed fix or test. Only an environment an operator marked confidential (the Confidential box on the Build environments page, or `--confidential yes`) takes them; the worker cannot report itself as one. A confidential environment takes no task that builds PR code (PR builds, integration batches, and every task for a PR or issue). A confidential environment is ready from its worker's first call after the flag, or the environment, was turned on; label, slot and key changes do not affect it. Until one is ready, a security fix waits before its model call (the finding's note reads "Waiting for a confidential build environment."; it continues on its own once one is ready), private tasks stay queued with the same text, the `confidential-env` health check warns, and the 4-hour build limit of a round or scan test starts only once one is ready. Run a confidential environment on its own host and user, apart from the workers that build PRs.
 
 `tasks mem` prints, per repo and step name, the number of steps with a memory measurement, their median and maximum peak memory in GB and the number killed for running out of memory (default: tasks that ended in the last 30 days). Use it to size build nodes.
 
@@ -461,7 +461,8 @@ The dashboard computes the checks below from the database on each request; nothi
 |---|---|
 | `runner` | `runner_heartbeat` is missing or older than 2 minutes (fail) |
 | `worker:<env id>` (`workers` in the endpoint) | an enabled build environment has not reported (`last_seen_at`) for 5 minutes, or never (fail) |
-| `build-queue` | a build task has been queued for over 10 minutes: fail when no enabled environment has reported in 5 minutes, else warn |
+| `build-queue` | a build task has been queued for over 10 minutes: fail when no enabled environment has reported in 5 minutes, else warn (a security task while no confidential environment is ready counts under `confidential-env` instead) |
+| `confidential-env` | a security fix or a security build task waits and no confidential build environment is ready (warn) |
 | `sync` | no successful `sync_runs` row ended in the last 10 minutes, or the last 3 runs failed (fail) |
 | `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn; fail when more than half of the tracked repos have an error, for example after a token lost access). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |
 | `accounts` | every enabled Claude account is paused or signed out (fail) |

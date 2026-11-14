@@ -116,8 +116,8 @@ export function createEnv(db: DatabaseSync, input: unknown, by: string): { env: 
   const key = newKey(id);
   const at = new Date().toISOString();
   try {
-    db.prepare("INSERT INTO build_envs (id, label, kind, slots, confidential, key_hash, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, label, o.kind as EnvKind, slots, confidential ? 1 : 0, hashKey(key), at, by, at);
+    db.prepare("INSERT INTO build_envs (id, label, kind, slots, confidential, confidential_since, key_hash, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, label, o.kind as EnvKind, slots, confidential ? 1 : 0, confidential ? at : null, hashKey(key), at, by, at);
   } catch (e) {
     if (/UNIQUE|constraint/i.test((e as Error).message)) throw new BuildError(409, `environment ${id} exists`);
     throw e;
@@ -139,8 +139,12 @@ export function updateEnv(db: DatabaseSync, id: unknown, input: unknown, by: str
     confidential: o.confidential !== undefined ? checkFlag(o.confidential, "confidential") : before.confidential === 1,
   };
   if (o.enabled !== undefined) next.enabled = checkFlag(o.enabled, "enabled");
+  const at = new Date().toISOString();
   db.prepare("UPDATE build_envs SET label = ?, enabled = ?, slots = ?, confidential = ?, updated_by = ?, updated_at = ? WHERE id = ?")
-    .run(next.label, next.enabled ? 1 : 0, next.slots, next.confidential ? 1 : 0, by, new Date().toISOString(), before.id);
+    .run(next.label, next.enabled ? 1 : 0, next.slots, next.confidential ? 1 : 0, by, at, before.id);
+  // The private tasks' build limit starts at the worker's first call after the flag, or the environment, is turned on.
+  if (!next.confidential) db.prepare("UPDATE build_envs SET confidential_since = NULL, confidential_online_at = NULL WHERE id = ?").run(before.id);
+  else if (before.confidential !== 1 || (next.enabled && before.enabled !== 1)) db.prepare("UPDATE build_envs SET confidential_since = ?, confidential_online_at = NULL WHERE id = ?").run(at, before.id);
   audit(db, by, "env-change", `env:${before.id}`, {
     ...(next.label !== before.label && { label: next.label, was: before.label }),
     ...(next.enabled !== (before.enabled === 1) && { enabled: next.enabled }),
@@ -182,9 +186,15 @@ export function parseCapabilities(v: unknown): Capabilities {
   };
 }
 
+/** A flagged, enabled environment's first worker call since the flag was turned on. */
+function markOnline(db: DatabaseSync, id: string, at: string): void {
+  db.prepare("UPDATE build_envs SET confidential_online_at = ? WHERE id = ? AND confidential = 1 AND enabled = 1 AND confidential_online_at IS NULL").run(at, id);
+}
+
 /** Records a call from the worker: the heartbeat and, when given, its paused reason. */
 export function touch(db: DatabaseSync, id: string, paused?: string | null): void {
   const at = new Date().toISOString();
+  markOnline(db, id, at);
   if (paused === undefined) db.prepare("UPDATE build_envs SET last_seen_at = ? WHERE id = ?").run(at, id);
   else db.prepare("UPDATE build_envs SET last_seen_at = ?, paused_reason = ? WHERE id = ?").run(at, paused, id);
 }
@@ -198,6 +208,7 @@ export function hello(db: DatabaseSync, id: string, body: unknown): { envId: str
   const at = new Date().toISOString();
   db.prepare("UPDATE build_envs SET capabilities = ?, reported_slots = ?, version = ?, last_seen_at = ?, paused_reason = NULL WHERE id = ?")
     .run(JSON.stringify(caps), o.slots, version, at, id);
+  markOnline(db, id, at);
   const r = db.prepare("SELECT * FROM build_envs WHERE id = ?").get(id) as Row;
   return { envId: id, label: r.label, slots: slotsOf(r) };
 }

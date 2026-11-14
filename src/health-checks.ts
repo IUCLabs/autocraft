@@ -13,6 +13,7 @@ import { coverageSnapshot, githubIdentity } from "./github/identity.ts";
 import { readAppSecrets } from "./github/install-token.ts";
 import { PROBE_HEADERS } from "./health.ts";
 import { unboundLogins } from "./author-ids.ts";
+import { confidentialReadyAt, PRIVATE_STEPS_SQL } from "./build/tasks.ts";
 
 /** Thresholds, in one place. */
 export const THRESHOLDS = {
@@ -86,12 +87,26 @@ function workerChecks({ db, nowMs }: CheckCtx): Check[] {
 
 function queueCheck({ db, nowMs }: CheckCtx): Check[] {
   const cutoff = new Date(nowMs - THRESHOLDS.taskQueuedMs).toISOString();
-  const r = db.prepare("SELECT COUNT(*) AS n, MIN(queued_at) AS oldest FROM build_tasks WHERE state = 'queued' AND queued_at < ?").get(cutoff) as { n: number; oldest: string | null };
+  // Private tasks that no confidential environment can take are the confidential-env check's.
+  const private_ = confidentialReadyAt(db) === null ? ` AND step NOT IN (${PRIVATE_STEPS_SQL})` : "";
+  const r = db.prepare(`SELECT COUNT(*) AS n, MIN(queued_at) AS oldest FROM build_tasks WHERE state = 'queued' AND queued_at < ?${private_}`).get(cutoff) as { n: number; oldest: string | null };
   if (!r.n) return [ok("build-queue", "/envs")];
   // Workers that are up but busy leave tasks waiting: that is slow, not broken.
   const anyUp = enabledEnvs(db).some((e) => seenRecently(e, nowMs));
   const text = `${r.n} build task${r.n === 1 ? " has" : "s have"} waited over ${minutes(THRESHOLDS.taskQueuedMs)} for a worker`;
   return [{ id: "build-queue", state: anyUp ? "warn" : "fail", text, brief: text, since: r.oldest, to: "/envs" }];
+}
+
+/** Security fixes and scan tests wait, with no other sign, until a confidential build environment has reported. */
+function confidentialCheck({ db }: CheckCtx): Check[] {
+  if (confidentialReadyAt(db) !== null) return [ok("confidential-env", "/envs")];
+  const t = db.prepare(`SELECT COUNT(*) AS n, MIN(queued_at) AS oldest FROM build_tasks WHERE state = 'queued' AND step IN (${PRIVATE_STEPS_SQL})`).get() as { n: number; oldest: string | null };
+  const f = db.prepare("SELECT COUNT(*) AS n, MIN(env_wait_at) AS oldest FROM security_findings WHERE state = 'fixing' AND env_wait_at IS NOT NULL").get() as { n: number; oldest: string | null };
+  if (!t.n && !f.n) return [ok("confidential-env", "/envs")];
+  const parts = [f.n ? `${f.n} security fix${f.n === 1 ? "" : "es"}` : "", t.n ? `${t.n} security build task${t.n === 1 ? "" : "s"}` : ""].filter(Boolean);
+  const text = `${parts.join(" and ")} ${t.n + f.n === 1 ? "is" : "are"} waiting for a confidential build environment`;
+  const since = [t.oldest, f.oldest].filter((x): x is string => !!x).sort()[0] ?? null;
+  return [{ id: "confidential-env", state: "warn", text, brief: "Some builds are waiting for a build environment", since, to: "/envs" }];
 }
 
 function syncCheck({ db, nowMs }: CheckCtx): Check[] {
@@ -208,7 +223,7 @@ function outsideSurgeCheck({ db }: CheckCtx): Check[] {
 }
 
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs, probe }));
