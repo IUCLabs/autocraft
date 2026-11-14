@@ -215,6 +215,8 @@ export type PrFacts = {
   /** Owner statements (owner_statements) that the Opus review or the pre-merge review at the reviewed head says the PR goes against; any makes the PR ask for a Merge? answer. */
   /** Reasons from the PR's diff that keep it off the merge rule (README, brand files, third-party links); read from the diff cache at the reviewed head, null when the diff is not cached. */
   sensitive: string[] | null;
+  /** The cached diff waits for what the merge rule reads beside it (whole files, workflow steps); the pre-merge step reads it again. */
+  diffPending?: true;
   statementConflicts: { id: number; where: string; text: string; reason: string }[];
   /** The PR's head branch may be pushed to (source of the maintainer flag follows `checksHere`). */
   pushable: boolean;

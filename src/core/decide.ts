@@ -12,7 +12,8 @@ import type { Action, Plan, PlanState, PrFacts, QueueState, WaitKind } from "./p
 /** The start of a statement for a reason line: one line, at most 80 characters. */
 const excerpt = (t: string): string => { const s = t.replace(/\s+/g, " ").trim(); return s.length > 80 ? `${s.slice(0, 79).trimEnd()}…` : s; };
 
-type PremergeState = "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry";
+/** "diff": the review is clean, and the diff it cached waits for what the merge rule reads beside it. */
+type PremergeState = "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry" | "diff";
 export type Entry = { state: QueueState; path: "rule" | "operator" | null; reasons: string[]; note: string | null; conflictNote: string | null; premerge: PremergeState | null; premergeDefects: number; answer: string | null; noCi: boolean; refusedReason: string | null };
 
 const verifyState = (f: PrFacts): QueueState | null => {
@@ -69,7 +70,10 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
     else if (premerge === "unsure") reasons.push(PREMERGE_UNSURE_REASON);
     else if (premerge === "failed") reasons.push(PREMERGE_FAILED_REASON);
     // The pre-merge review caches the diff, so a diff still unchecked after it is a reason; before it the PR waits for it.
-    else if (premerge === "clean" && f.sensitive === null) reasons.push(UNCHECKED_REASON);
+    else if (premerge === "clean" && f.sensitive === null) {
+      if (f.diffPending) premerge = "diff";
+      else reasons.push(UNCHECKED_REASON);
+    }
   }
   const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi, refusedReason: null };
 
@@ -104,7 +108,7 @@ function stateOf(f: PrFacts, e: Entry, merged: boolean, held: "backlog" | "dupli
   const v = verifyState(f);
   if (v && !(e.path === "operator" && f.verifyOverride && (v === "verify-failed" || v === "verify-error"))) return v;
   if (e.path === "rule" && e.premerge) {
-    if (e.premerge === "none" || e.premerge === "retry") return "waiting-premerge";
+    if (e.premerge === "none" || e.premerge === "retry" || e.premerge === "diff") return "waiting-premerge";
     if (e.premerge === "fix") {
       const n = e.premergeDefects;
       e.note = `pre-merge review: ${n} defect${n === 1 ? "" : "s"} to fix`;
@@ -467,7 +471,7 @@ export function decidePr(f: PrFacts): Plan {
   }
 
   if (e) {
-    if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && premergeRetryDue(f)) actions.push(act("premerge", r!.head));
+    if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && (premergeRetryDue(f) || e.premerge === "diff")) actions.push(act("premerge", r!.head));
     if (e.state === "needs-decision" && !f.decision.asked && !f.decision.inOpenGroup) actions.push(act("ask-merge", r!.head));
     if (eligible(f, e) && !refusedAsBefore(f, e)) {
       const singleOnly = f.verification?.state === VERIFY_UNAVAILABLE || f.verifyOverride || e.noCi || f.mainFix || f.baseOffDefault;
