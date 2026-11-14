@@ -1,6 +1,7 @@
 // The model steps of the Discord "new issue" helper: which follow-up questions to ask, and the written draft. Pure; no
 // Node imports (the Prompts page imports it). The person's text is data, and so is every model reply: the questions are
 // chosen by id from a fixed list, and the draft is checked before it is shown (see issue-draft.ts).
+import { wholeReplyJson } from "../core/reply-json.ts";
 export const FOLLOW_UPS = [
   { id: "steps", label: "Steps to reproduce", placeholder: "What do you do, in order, to see the problem?" },
   { id: "expected", label: "Expected and actual result", placeholder: "What did you expect, and what happened instead?" },
@@ -25,11 +26,7 @@ export const SAMPLE_ISSUE_DRAFT: IssueDraftInput[] = [{
   answers: [{ question: "Steps to reproduce", answer: "Open a photo, export as WebP at quality 20 and at 90." }, { question: "Version and platform", answer: "1.4.2 on Windows 11" }],
 }];
 
-const first = (text: string): unknown => {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a < 0 || b < a) return null;
-  try { return JSON.parse(text.slice(a, b + 1)); } catch { return null; }
-};
+const first = (text: string): unknown => wholeReplyJson(text);
 
 /** The ids of the chosen follow-up questions, in the list's order, each once; null when the reply holds no object. */
 export function parseQuestions(text: string): FollowUpId[] | null {

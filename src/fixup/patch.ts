@@ -6,6 +6,7 @@ import { isInstructionPath } from "../sandbox/instruction-paths.ts";
 import { QUOTE_WORDS } from "../replylint.ts";
 import type { ShownFile } from "./excerpt.ts";
 import { wholeReplyJson } from "../core/reply-json.ts";
+import { rustTokens, rustTokenSpans } from "../cifix/guard.ts";
 
 export const MAX_CHANGED_LINES = 300;
 
@@ -17,25 +18,32 @@ export function safePath(p: string): boolean {
   return p.split("/").every((s) => s !== "" && s !== "." && s !== ".." && s.toLowerCase() !== ".git");
 }
 
-/** Files a fix-up may edit: Rust files and Markdown files, with the same exclusions as `editable`. */
+/** Files a fix-up may edit: Rust files and Markdown files outside hidden directories, other than the trust paths. */
 export function fixupEditable(path: string, scripts: BuildScripts = null): boolean {
   if (editable(path, scripts)) return true;
-  const parts = path.split("/");
-  return safePath(path) && path.toLowerCase().endsWith(".md") && !parts.some((s) => s.startsWith(".")) && !AGENT_DOCS.test(parts[parts.length - 1]!);
+  return path.toLowerCase().endsWith(".md") && !path.split("/").some((s) => s.startsWith(".")) && !trustPath(path, scripts);
 }
 
 /**
- * Files an operator's fix-up may edit: any file of the repository except what every fix-up refuses (CI workflows, cargo
- * configuration, build scripts, files that instruct coding agents) and hidden-directory paths of the git metadata.
+ * Files no model patch of any lane writes to: build scripts, CI workflows, cargo and tool configuration, files that
+ * run on a contributor's or CI machine, files that instruct coding agents, git metadata files and unsafe paths.
+ * Every model-patch lane (fix-up, CI fix, issue fix, operator fix-up, conflict resolution) refuses these.
  */
-export function operatorEditable(path: string, scripts: BuildScripts = null): boolean {
+export function trustPath(path: string, scripts: BuildScripts = null): boolean {
   const parts = path.split("/");
   const name = parts[parts.length - 1]!.toLowerCase();
-  return safePath(path) && !isBuildScript(path, scripts) && !parts.some((s) => TRUST_DIRS.has(s.toLowerCase()))
-    && !TRUST_FILES.has(name)
-    && !AGENT_DOCS.test(parts[parts.length - 1]!) && !isInstructionPath(path)
-    && name !== "cargo.toml" && name !== "cargo.lock" && !name.startsWith("rust-toolchain")
-    && name !== ".gitmodules" && name !== ".gitattributes" && name !== "codeowners";
+  return !safePath(path) || isBuildScript(path, scripts) || parts.some((s) => TRUST_DIRS.has(s.toLowerCase()))
+    || TRUST_FILES.has(name) || AGENT_DOCS.test(name) || isInstructionPath(path) || name.startsWith("rust-toolchain")
+    || name === ".gitmodules" || name === ".gitattributes" || name === "codeowners";
+}
+
+/**
+ * Files an operator's fix-up may edit: any file of the repository except the trust paths and the cargo manifests and
+ * lockfile.
+ */
+export function operatorEditable(path: string, scripts: BuildScripts = null): boolean {
+  const name = path.split("/").pop()!.toLowerCase();
+  return !trustPath(path, scripts) && name !== "cargo.toml" && name !== "cargo.lock";
 }
 
 const words = (s: string): string[] => s.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
@@ -145,9 +153,9 @@ const AGENT_DOCS = /^(claude(\.local)?|agents|gemini|copilot-instructions|roadma
 const TRUST_DIRS = new Set([".cargo", ".github", ".vscode", ".devcontainer", ".config", ".husky"]);
 const TRUST_FILES = new Set([".envrc", "makefile", "gnumakefile", "justfile", ".pre-commit-config.yaml", "rustfmt.toml", ".rustfmt.toml", "clippy.toml", ".clippy.toml", "deny.toml"]);
 
-/** Source files an automated fix (a CI fix or an issue fix) may edit: Rust files other than build scripts, nothing under .cargo or .github. */
+/** Source files an automated fix (a CI fix or an issue fix) may edit: Rust files other than the trust paths. */
 export function editable(path: string, scripts: BuildScripts = null): boolean {
-  return safePath(path) && path.endsWith(".rs") && !isBuildScript(path, scripts) && !path.split("/").some((s) => TRUST_DIRS.has(s.toLowerCase()));
+  return path.endsWith(".rs") && !trustPath(path, scripts);
 }
 
 /** The diff text without a surrounding Markdown fence or leading prose lines. */
@@ -356,9 +364,12 @@ export function parseResolution(text: string, ids: number[]): Resolution {
   return { ok: true, sections: out };
 }
 
-/** Conflicted files a resolution may be written for: safe paths outside CI, cargo config and build scripts. */
-export function resolvablePath(p: string): boolean {
-  return safePath(p) && p !== "build.rs" && !p.endsWith("/build.rs") && !p.split("/").some((s) => s === ".cargo" || s === ".github");
+/**
+ * Conflicted files a resolution may be written for: any file but the trust paths, with `scripts` the build scripts of
+ * both merge parents. Manifests and lockfiles are resolvable under their own section rules (see spliceSections).
+ */
+export function resolvablePath(p: string, scripts: BuildScripts): boolean {
+  return !trustPath(p, scripts);
 }
 
 /** True when the text holds conflict markers (the merge tree's files do before resolving). */
@@ -390,17 +401,110 @@ function parseSections(text: string): Sections | null {
 
 /** Lines a resolution may not introduce unless a side of the conflict already has them. */
 const RISKY_LINE = /^\s*(pub\s+)?(use|extern|mod|fn|impl|macro_rules!|import)\b|\bunsafe\b|include(_str|_bytes)?!|build\.rs|\brequire\(/;
-/** A Rust attribute, or a line that starts an item (after visibility, async, const, unsafe, default or extern "ABI"). */
-const RUST_ITEM_LINE = /^\s*(#!?\[|(pub(\s*\([^)]*\))?\s+)?((async|const|unsafe|default|extern(\s+"[^"]*")?)\s+)*(use|mod|fn|struct|enum|trait|impl|type|const|static|union|macro_rules!|macro|extern)\b)/;
 const MAX_OTHER_LINES = 3;
+/** Rust identifiers that declare an item, open unsafe code or include a file. */
+const RUST_ITEM_WORDS = new Set(["use", "mod", "fn", "struct", "enum", "union", "trait", "impl", "type", "static", "const", "extern", "macro_rules", "macro", "unsafe", "include", "include_str", "include_bytes"]);
 
-/** True when a section's resolved text is made of lines from its two sides plus at most three others, none risky (for Rust, none that adds an item or an attribute). */
-function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, rust: boolean): boolean {
+type Side = { ours: string[]; theirs: string[] };
+const answerLines = (text: string): string[] => text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "");
+
+/** True when `kept` keeps the lines of `side` in the side's order (a subsequence of it). */
+function inOrder(kept: string[], side: string[]): boolean {
+  let j = 0;
+  for (const l of kept) { while (j < side.length && side[j] !== l) j++; if (j++ >= side.length) return false; }
+  return true;
+}
+
+/** True when each side's own lines (those the other side lacks) appear in the answer in that side's order. */
+function sidesInOrder(section: Side, lines: string[]): boolean {
+  const ours = new Set(section.ours), theirs = new Set(section.theirs);
+  return inOrder(lines.filter((l) => ours.has(l) && !theirs.has(l)), section.ours) && inOrder(lines.filter((l) => theirs.has(l) && !ours.has(l)), section.theirs);
+}
+
+/** True when the answer holds every line of `side` in order. */
+const keepsWhole = (side: string[], lines: string[]): boolean => inOrder(side, lines);
+
+/**
+ * True when a section's resolved text is made of lines from its two sides plus at most three others, none risky.
+ * Outside Rust (whose side lines rustAnswersOk reads in context), a side line counts as a side's only when the answer
+ * keeps that whole side: a line taken out of a partly kept side (out of a comment the answer drops, say) is tested like
+ * a new line.
+ */
+function sectionOk(section: Side, text: string, rust: boolean): boolean {
+  const lines = answerLines(text);
+  const whole = new Set([...(rust || keepsWhole(section.ours, lines) ? section.ours : []), ...(rust || keepsWhole(section.theirs, lines) ? section.theirs : [])]);
   const sides = new Set([...section.ours, ...section.theirs]);
   let other = 0;
-  for (const line of text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "")) {
-    if (sides.has(line)) continue;
-    if (++other > MAX_OTHER_LINES || RISKY_LINE.test(line) || (rust && RUST_ITEM_LINE.test(line))) return false;
+  for (const line of lines) {
+    if (!sides.has(line) && ++other > MAX_OTHER_LINES) return false;
+    if (!whole.has(line) && RISKY_LINE.test(line)) return false;
+  }
+  return true;
+}
+
+/** Per kind, how many risky tokens (an attribute's `#`, an item word, a `name! {` macro call) a Rust token list holds; comments and strings hold none. */
+function riskyCounts(tokens: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  const add = (k: string) => out.set(k, (out.get(k) ?? 0) + 1);
+  const code = tokens.filter((t) => !/^[cC]:/.test(t));
+  code.forEach((t, i) => {
+    if (t === "p:#") add("#");
+    else if (t.startsWith("i:") && RUST_ITEM_WORDS.has(t.slice(2))) add(t.slice(2));
+    else if (t.startsWith("i:") && code[i + 1] === "p:!" && code[i + 2] === "p:{") add("macro{");
+  });
+  return out;
+}
+
+/** The tokens of `src` (see rustTokenSpans) whose start falls in each of `ranges` (offsets); null when `src` is not tokenizable. */
+function tokensIn(src: string, ranges: [number, number][]): string[][] | null {
+  const spans = rustTokenSpans(src);
+  return spans && ranges.map(([a, b]) => spans.filter((x) => x.at >= a && x.at < b).map((x) => x.t));
+}
+
+/** The attributes (`#` tokens) that end `code` with nothing after them: those that guard whatever comes next. */
+function trailingAttributes(code: string[]): number {
+  let n = 0, i = code.length - 1;
+  while (i >= 0 && code[i] === "p:]") {
+    let depth = 0, j = i;
+    for (; j >= 0; j--) { if (code[j] === "p:]") depth++; else if (code[j] === "p:[" && --depth === 0) break; }
+    if (j < 1) break;
+    const hash = code[j - 1] === "p:!" ? j - 2 : j - 1;
+    if (code[hash] !== "p:#") break;
+    n++;
+    i = hash - 1;
+  }
+  return n;
+}
+
+/**
+ * True when no Rust section answer adds an item, an attribute, unsafe code or an item macro: an answer line on neither
+ * side holds none of them (read as Rust tokens, so spacing, comments and line position do not matter), and per kind the
+ * answer, read in the resolved file, holds no more than its two sides read in their own files. A line kept from a side
+ * that was commented out or inside a string there counts as new. The attributes just above a section guard the first
+ * item of both sides, so an answer that keeps both items may repeat them once.
+ */
+function rustAnswersOk(pieces: string[], sections: Side[], answers: string[]): boolean {
+  const file = (pick: (i: number) => string) => {
+    let text = pieces[0]!;
+    const ranges: [number, number][] = [];
+    for (let i = 0; i < sections.length; i++) { const t = pick(i); ranges.push([text.length, text.length + t.length]); text += t + pieces[i + 1]!; }
+    return { text, ranges };
+  };
+  const joined = (l: string[]) => l.map((x) => `${x}\n`).join("");
+  const res = file((i) => answers[i]!), ours = file((i) => joined(sections[i]!.ours)), theirs = file((i) => joined(sections[i]!.theirs));
+  const r = tokensIn(res.text, res.ranges), o = tokensIn(ours.text, ours.ranges), t = tokensIn(theirs.text, theirs.ranges);
+  const above = tokensIn(res.text, res.ranges.map(([a], i) => [i ? res.ranges[i - 1]![1] : 0, a]));
+  if (!r || !o || !t || !above) return false;
+  for (let i = 0; i < sections.length; i++) {
+    const sides = new Set([...sections[i]!.ours, ...sections[i]!.theirs]);
+    for (const line of answerLines(answers[i]!)) {
+      if (sides.has(line)) continue;
+      const own = rustTokens(line);
+      if (!own || riskyCounts(own).size) return false;
+    }
+    const have = riskyCounts(r[i]!), a = riskyCounts(o[i]!), b = riskyCounts(t[i]!);
+    const repeated = trailingAttributes(above[i]!.filter((x) => !/^[cC]:/.test(x)));
+    for (const [k, n] of have) if (n > (a.get(k) ?? 0) + (b.get(k) ?? 0) + (k === "#" ? repeated : 0)) return false;
   }
   return true;
 }
@@ -409,16 +513,57 @@ const LOCKFILE = /(^|\/)(Cargo\.lock|package-lock\.json|pnpm-lock\.yaml|yarn\.lo
 const MANIFEST = /(^|\/)(Cargo\.toml|package\.json)$/;
 
 /** True when a lockfile section's resolved text is, line for line and in order, exactly one side of the conflict. */
-function oneSide(section: { ours: string[]; theirs: string[] }, text: string): boolean {
-  const lines = text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "");
+function oneSide(section: Side, text: string): boolean {
+  const lines = answerLines(text);
   const same = (side: string[]) => side.length === lines.length && side.every((l, k) => l === lines[k]);
   return same(section.ours) || same(section.theirs);
 }
 
-/** True when every line of a manifest section's resolved text is, verbatim, a line of one of its two sides (any order, no new lines), so both sides' additions can stay. */
-function fromSides(section: { ours: string[]; theirs: string[] }, text: string): boolean {
-  const sides = new Set([...section.ours, ...section.theirs]);
-  return text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "").every((l) => sides.has(l));
+/**
+ * Per line of a manifest, what it sits in: the TOML table header above it and the lines that opened the brackets still
+ * open (a JSON object's key, an inline TOML array). Quoted text and TOML comments do not count.
+ */
+function manifestContext(lines: string[], toml: boolean): string[] {
+  const out: string[] = [];
+  let header = "";
+  const open: string[] = [];
+  for (const line of lines) {
+    out.push(`${header}\u0000${open.join("\u0000")}`);
+    const unquoted = line.replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, '""');
+    const bare = toml ? unquoted.replace(/#.*$/, "") : unquoted;
+    if (toml && open.length === 0 && /^\s*\[/.test(bare)) { header = bare.trim(); continue; }
+    for (const ch of bare) {
+      if (ch === "{" || ch === "[") open.push(line.trim());
+      else if ((ch === "}" || ch === "]") && open.length) open.pop();
+    }
+  }
+  return out;
+}
+
+/**
+ * True when every manifest section answer is made only of lines of its two sides, each side's own lines in that side's
+ * order, and every kept line sits in the same table and under the same keys as in a side's file it came from: a
+ * dependency cannot move out of a metadata table, nor a script into `scripts`.
+ */
+function manifestAnswersOk(pieces: string[], sections: Side[], answers: string[], toml: boolean): boolean {
+  const build = (pick: (i: number) => string[]) => {
+    const all = answerLines(pieces[0]!);
+    const at: number[] = [];
+    for (let i = 0; i < sections.length; i++) { at.push(all.length); all.push(...pick(i), ...answerLines(pieces[i + 1]!)); }
+    return { ctx: manifestContext(all, toml), at };
+  };
+  const res = build((i) => answerLines(answers[i]!)), ours = build((i) => sections[i]!.ours), theirs = build((i) => sections[i]!.theirs);
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i]!, lines = answerLines(answers[i]!);
+    const sides = new Set([...sec.ours, ...sec.theirs]);
+    if (!lines.every((l) => sides.has(l)) || !sidesInOrder(sec, lines)) return false;
+    for (let k = 0; k < lines.length; k++) {
+      const ctx = res.ctx[res.at[i]! + k];
+      const from = (side: string[], f: { ctx: string[]; at: number[] }) => side.some((l, j) => l === lines[k] && f.ctx[f.at[i]! + j] === ctx);
+      if (!from(sec.ours, ours) && !from(sec.theirs, theirs)) return false;
+    }
+  }
+  return true;
 }
 
 /** A resolution's text ends with a newline when the conflicted file's does. */
@@ -475,15 +620,14 @@ export const answerText = (a: string): string => (a === "" || a.endsWith("\n") ?
 export function spliceSections(text: string, answers: string[], path = ""): string | null {
   const parsed = parseSections(text);
   if (!parsed || parsed.sections.length !== answers.length) return null;
-  // Lockfiles take exactly one side; manifests (dependencies, build configuration) take only lines of the two sides.
-  const lock = LOCKFILE.test(path);
-  const manifest = MANIFEST.test(path);
-  const rust = path.endsWith(".rs");
-  let out = parsed.pieces[0]!;
-  for (let i = 0; i < answers.length; i++) {
-    const resolved = answerText(answers[i]!);
-    if (lock ? !oneSide(parsed.sections[i]!, resolved) : manifest ? !fromSides(parsed.sections[i]!, resolved) : !sectionOk(parsed.sections[i]!, resolved, rust)) return null;
-    out += resolved + parsed.pieces[i + 1]!;
-  }
+  // Lockfiles take exactly one side; manifests (dependencies, build configuration) take only lines of the two sides, where those lines were.
+  const resolved = answers.map(answerText);
+  const { pieces, sections } = parsed;
+  if (LOCKFILE.test(path)) { if (!sections.every((sec, i) => oneSide(sec, resolved[i]!))) return null; }
+  else if (MANIFEST.test(path)) { if (!manifestAnswersOk(pieces, sections, resolved, path.endsWith(".toml"))) return null; }
+  else if (!sections.every((sec, i) => sectionOk(sec, resolved[i]!, path.endsWith(".rs")))) return null;
+  if (path.endsWith(".rs") && !rustAnswersOk(pieces, sections, resolved)) return null;
+  let out = pieces[0]!;
+  for (let i = 0; i < resolved.length; i++) out += resolved[i]! + pieces[i + 1]!;
   return out;
 }

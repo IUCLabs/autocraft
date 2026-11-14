@@ -28,7 +28,7 @@ import { BASE_NAME, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
 import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger } from "../prepush/resume.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
-import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
+import { answerText, buildScriptsAt, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
 import { ensureAuthorWrites } from "./author-permission.ts";
 import { longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentCount, conflictCommentText, mergeMessage } from "./template.ts";
@@ -212,6 +212,11 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if ((await git.git(["merge-base", "--is-ancestor", baseSha, head])).code === 0) { skip(`${c.base} is already in the branch`); return; }
     const who = await x.who();
     const merge = await git.mergeInto(head, baseSha);
+    // A resolution may not write a build script of either parent.
+    const scriptsOf = async (): Promise<ReadonlySet<string> | null> => {
+      const [h, b] = [await buildScriptsAt(git, head), await buildScriptsAt(git, baseSha!)];
+      return h && b ? new Set([...h, ...b]) : null;
+    };
     let tree = merge.tree;
     let checkout: string | undefined;
     // Refused for the same reason at every run for this head: recorded as a skip so the head is not tried again, and never claimed.
@@ -226,7 +231,9 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       const scratch = mkdtempSync(join(x.d.root, ".index-"));
       try {
         const stored = JSON.parse(c.lint.resolved) as { path: string; mode: string; content: string }[];
-        if (stored.some((f) => !resolvablePath(f.path) || (f.mode !== "100644" && f.mode !== "100755"))) { fail("refused", "the stored resolution touches a path or mode a resolution may not"); return; }
+        const scripts = await scriptsOf();
+        if (!scripts) { fail("failed", "the build scripts of the branch or the base could not be read"); return; }
+        if (stored.some((f) => !resolvablePath(f.path, scripts) || (f.mode !== "100644" && f.mode !== "100755"))) { fail("refused", "the stored resolution touches a path or mode a resolution may not"); return; }
         tree = await git.withFiles(merge.tree, stored, join(scratch, "index"));
       } finally {
         rmSync(scratch, { recursive: true, force: true });
@@ -266,8 +273,10 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       let allSections = 0;
       const shown: { view: ConflictFile; content: string; mode: string; crlf: boolean }[] = [];
       let nextId = 1;
+      const scripts = await scriptsOf();
+      if (!scripts) { fail("failed", "the build scripts of the branch or the base could not be read"); return; }
       for (const path of files) {
-        if (!resolvablePath(path)) { refuse(`${path} is not a file a conflict resolution may touch`); return; }
+        if (!resolvablePath(path, scripts)) { refuse(`${path} is not a file a conflict resolution may touch`); return; }
         const f = await git.file(merge.tree, path);
         if (!f.ok) { if (f.tooLarge) refuse(f.reason); else fail("refused", f.reason); return; }
         if (!hasMarkers(f.content)) { refuse(`${path} conflicts without content markers`); return; }
@@ -278,6 +287,9 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
         const view = conflictView(path, content, nextId);
         if (!view) { refuse(`${path} has malformed conflict markers`); return; }
         const headFile = await git.file(head, path);
+        // Marker-shaped lines of a side's own text would split the sections elsewhere than git did.
+        const baseFile = await git.file(baseSha, path);
+        if ((headFile.ok && hasMarkers(headFile.content)) || (baseFile.ok && hasMarkers(baseFile.content))) { refuse(`${path} has lines shaped like conflict markers of its own`); return; }
         if (headFile.ok) locateInHead(view, headFile.content.replace(/\r\n/g, "\n"));
         nextId += view.sections.length;
         const size = view.sections.reduce((n, s) => n + s.before.length + s.ours.length + s.theirs.length + s.after.length, 0);

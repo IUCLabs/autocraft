@@ -36,6 +36,7 @@ import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeA
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 import { envVar } from "../env.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 export function loadRefs(file: string): { repo: string; number: number }[] {
   const out: { repo: string; number: number }[] = [];
@@ -247,19 +248,15 @@ function refsOf(input: readonly unknown[]): ItemRef[] {
 
 /** One line for the Agents page: how many answers came back and, where the answers carry one, their verdicts. */
 function replySummary(text: string, asked: number): string {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  try {
-    const arr = JSON.parse(text.slice(a, b + 1)) as { verdict?: string; type_label?: string }[];
-    const tally = new Map<string, number>();
-    for (const x of arr) {
-      const k = x.verdict ?? x.type_label;
-      if (typeof k === "string") tally.set(k, (tally.get(k) ?? 0) + 1);
-    }
-    const parts = [...tally].map(([k, n]) => `${n} ${k}`);
-    return `${arr.length} of ${asked} answered${parts.length ? `: ${parts.join(", ")}` : ""}`;
-  } catch {
-    return "answer is not a JSON list";
+  const arr = wholeReplyJson(text);
+  if (!Array.isArray(arr)) return "answer is not a JSON list";
+  const tally = new Map<string, number>();
+  for (const x of arr as ({ verdict?: unknown; type_label?: unknown } | null)[]) {
+    const k = x?.verdict ?? x?.type_label;
+    if (typeof k === "string") tally.set(k, (tally.get(k) ?? 0) + 1);
   }
+  const parts = [...tally].map(([k, n]) => `${n} ${k}`);
+  return `${arr.length} of ${asked} answered${parts.length ? `: ${parts.join(", ")}` : ""}`;
 }
 
 /** The result of a `--output-format json` run: with a subagent the event list holds several `result` events and the last one is final. */
@@ -536,13 +533,19 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     try { problems = await opts.lint(reply.text, "first"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
     if (problems === null) return reply;
     if (!problems.length) return { ...reply, problems };
-    if (!sessions || !sessionId) return { ...reply, problems };
+    // The first lint may put off its slow checks to the fix reply's lint; every exit that uses the first reply runs them on it.
+    const lint = opts.lint;
+    const firstProblems = problems;
+    const full = async (): Promise<LintProblem[]> => {
+      try { return (await lint(reply.text, "fix")) ?? firstProblems; } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); return firstProblems; }
+    };
+    if (!sessions || !sessionId) return { ...reply, problems: await full() };
     // Problems only in text nobody sees are recorded; a model turn for them would cost more than they matter.
-    if (!needsFixTurn(problems)) return { ...reply, problems };
+    if (!needsFixTurn(problems)) return { ...reply, problems: await full() };
     // The fix turn can run as long as the call's own limit; with less token life than that (plus the sandbox's margin) it is skipped, because the sandbox never refreshes the token.
     if (spec && credentialsNearExpiry(db, run.accountId, run.configDir, Date.now(), timeoutMs + TOKEN_MARGIN_MS)) {
       console.log("fix turn skipped: token near expiry");
-      return { ...reply, problems };
+      return { ...reply, problems: await full() };
     }
 
     // One fix turn on the same session and account; its own agent run, so its tokens and outcome show on the Agents page.
@@ -552,12 +555,12 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       const started = tryStartFollowUp(db, run.accountId, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: message });
       if (started === null) {
         console.log("fix turn skipped: the account has no free slot or headroom");
-        return { ...reply, problems };
+        return { ...reply, problems: await full() };
       }
       fixRun = started;
     } catch (e) {
       console.log(`fix turn not started: ${(e as Error).message}`);
-      return { ...reply, problems };
+      return { ...reply, problems: await full() };
     }
     let fix: (Reply & { sessionId?: string }) | null = null;
     try {
@@ -565,15 +568,15 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     } catch (e) {
       finishRun(db, fixRun, { state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
     }
-    if (!fix) return { ...reply, problems, fixTurn: true };
+    if (!fix) return { ...reply, problems: await full(), fixTurn: true };
     const total = add(reply.usage, fix.usage);
     // The fix reply holds only the corrected fields; they are put into the first reply, which stays as it was otherwise.
     const merged = mergeFixFields(reply.text, fix.text, problems);
-    if (merged === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems, fixTurn: true };
+    if (merged === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
     let after: LintProblem[] | null = null;
     try { after = await opts.lint(merged, "fix"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
     // A merged reply the lint cannot read is not used; the first reply stands.
-    if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems, fixTurn: true };
+    if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
     return { text: merged, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
   } catch (e) {
     end({ state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });

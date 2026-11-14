@@ -1,6 +1,6 @@
 // The strict reader for a model reply that must be one JSON value. Gates read verdicts from replies that quote
 // contributor text, so a reply is accepted only when it holds exactly one JSON value (an optional code fence and
-// brace-free prose around it are fine) and no object repeats a key.
+// prose without a second answer around it are fine) and no object repeats a key.
 
 class Bad extends Error {}
 
@@ -20,8 +20,8 @@ function parseString(s: string, i: number): number {
   throw new Bad();
 }
 
-/** Parses the value at `i`; returns [value, end]. Objects with a repeated key are refused. */
-function parseValue(s: string, i: number, depth: number): [unknown, number] {
+/** Parses the value at `i`; returns [value, end]. Objects with a repeated key are refused unless `dupes`. */
+function parseValue(s: string, i: number, depth: number, dupes = false): [unknown, number] {
   if (depth > 40) throw new Bad();
   i = skipWs(s, i);
   const c = s[i];
@@ -35,11 +35,11 @@ function parseValue(s: string, i: number, depth: number): [unknown, number] {
       if (s[i] !== '"') throw new Bad();
       const e = parseString(s, i);
       const key = JSON.parse(s.slice(i, e)) as string;
-      if (seen.has(key)) throw new Bad();
+      if (seen.has(key) && !dupes) throw new Bad();
       seen.add(key);
       i = skipWs(s, e);
       if (s[i] !== ":") throw new Bad();
-      const [v, n] = parseValue(s, i + 1, depth + 1);
+      const [v, n] = parseValue(s, i + 1, depth + 1, dupes);
       Object.defineProperty(o, key, { value: v, enumerable: true, writable: true, configurable: true });
       i = skipWs(s, n);
       if (s[i] === ",") { i++; continue; }
@@ -52,7 +52,7 @@ function parseValue(s: string, i: number, depth: number): [unknown, number] {
     i = skipWs(s, i + 1);
     if (s[i] === "]") return [a, i + 1];
     for (;;) {
-      const [v, n] = parseValue(s, i, depth + 1);
+      const [v, n] = parseValue(s, i, depth + 1, dupes);
       a.push(v);
       i = skipWs(s, n);
       if (s[i] === ",") { i++; continue; }
@@ -78,10 +78,39 @@ function fencedBlocks(text: string): string[] | null {
   return cur ? null : blocks;
 }
 
+/** The reply's lines outside its fenced blocks. */
+function outsideFence(text: string): string {
+  let inside = false;
+  return text.split("\n").filter((l) => (/^\s*```/.test(l) ? ((inside = !inside), false) : !inside)).join("\n");
+}
+
+/** The top-level keys of an object, or of the objects in an array. */
+function keysOf(v: unknown): Set<string> {
+  const objs = Array.isArray(v) ? v : [v];
+  return new Set(objs.flatMap((o) => (typeof o === "object" && o !== null && !Array.isArray(o) ? Object.keys(o) : [])));
+}
+
+/**
+ * True when `text` holds, anywhere, a JSON value with one of the `keys`: the shape of a second, quoted answer. Brackets
+ * in prose (`v[0]`, `{}`) and example objects with other keys are not.
+ */
+function holdsAnswer(text: string, keys: Set<string>): boolean {
+  if (!keys.size) return false;
+  for (const m of [...text.matchAll(/[{[]/g)].slice(0, 500)) {
+    try {
+      const [v] = parseValue(text, m.index, 0, true);
+      if ([...keysOf(v)].some((k) => keys.has(k))) return true;
+    } catch { /* not a value here */ }
+  }
+  return false;
+}
+
 /**
  * The one JSON value of a reply, or null. With a fenced code block, the reply must hold exactly one, its whole content
- * must be one JSON value, and the prose outside it is ignored. Without a fence, text before and after the value may not
- * contain "{" or "[" (a sentence is fine; a quoted object is not). No object may repeat a key.
+ * must be one JSON value, and the prose outside it may hold brackets and example values but no other value with one of
+ * its keys (a second answer). Without a fence, text
+ * before and after the value may not contain "{" or "[" (a sentence is fine; a quoted object is not). No object may
+ * repeat a key.
  */
 export function wholeReplyJson(text: string): unknown {
   const blocks = fencedBlocks(text);
@@ -90,7 +119,7 @@ export function wholeReplyJson(text: string): unknown {
   try {
     if (blocks.length === 1) {
       const [v, end] = parseValue(blocks[0]!, 0, 0);
-      return skipWs(blocks[0]!, end) === blocks[0]!.length ? v : null;
+      return skipWs(blocks[0]!, end) === blocks[0]!.length && !holdsAnswer(outsideFence(text), keysOf(v)) ? v : null;
     }
     const a = text.search(/[{[]/);
     if (a < 0) return null;

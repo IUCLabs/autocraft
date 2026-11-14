@@ -1,6 +1,7 @@
 // The junk check before an issue is filed from Discord: is the drafted title and body a real report or request, or spam,
 // abuse, empty or a test? Pure; no Node imports (the Prompts page imports it).
 import { flagBand, type FlagBand } from "../classify/parse.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 /** Jev's yes-probability from which a draft counts as junk; below JEV_FLAG_NO (0.3) it is real, and Haiku decides in between. */
 export const JUNK_JEV_YES = 0.8;
@@ -26,14 +27,8 @@ export function jevJunk(answers: unknown): number | null {
   return typeof p === "number" && p >= 0 && p <= 1 ? p : null;
 }
 
-/** Haiku's reply: `{"junk": true|false}` somewhere in the text; null when there is none. */
+/** Haiku's reply: `{"junk": true|false}` as its one JSON value; null otherwise. */
 export function parseJunk(text: string): boolean | null {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a < 0 || b < a) return null;
-  try {
-    const v = (JSON.parse(text.slice(a, b + 1)) as { junk?: unknown }).junk;
-    return typeof v === "boolean" ? v : null;
-  } catch {
-    return null;
-  }
+  const v = (wholeReplyJson(text) as { junk?: unknown } | null)?.junk;
+  return typeof v === "boolean" ? v : null;
 }

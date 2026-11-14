@@ -5,6 +5,7 @@ export { editable };
 import { patchFor, patchProblem } from "../verify/plan.ts";
 import { isSize, type Size } from "../rank/score.ts";
 import { MAX_FILES, TRIAGE_REASON_WORDS, type Crate } from "./types.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 export type Triage = { fixable: false; reason: string } | { fixable: true; reason: string; crate: Crate; files: string[]; /** The triage's estimate of the fix; null when the reply gave none. */ size: Size | null };
 export type TriageParse = { ok: true; triage: Triage } | { ok: false; error: string };
@@ -18,10 +19,8 @@ export function sourcePaths(all: string[], cap: number): string[] {
 }
 
 export function parseTriage(text: string, ref: string, crates: Crate[], paths: string[]): TriageParse {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  if (a < 0 || b < a) return { ok: false, error: "no JSON list in the reply" };
-  let arr: unknown;
-  try { arr = JSON.parse(text.slice(a, b + 1)); } catch { return { ok: false, error: "reply is not valid JSON" }; }
+  const arr = wholeReplyJson(text);
+  if (arr === null) return { ok: false, error: "the reply is not exactly one JSON value" };
   if (!Array.isArray(arr) || arr.length !== 1 || !isObj(arr[0])) return { ok: false, error: "reply must be a list of one object" };
   const o = arr[0];
   if (o.ref !== ref) return { ok: false, error: "reply is for another issue" };

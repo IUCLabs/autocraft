@@ -31,6 +31,7 @@ import { mainFixApprovalOf } from "./approval.ts";
 import { lintReady, openFixPrs, type FixPrDeps } from "./pr.ts";
 import { REASON_WORDS, VERDICTS, type MainFixInput, type MainFixVerdict } from "./types.ts";
 import { slugOf } from "../owners.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 export { mainFixApprovalOf, setMainFixApproval } from "./approval.ts";
 export { autocraftText } from "./status.ts";
@@ -94,11 +95,8 @@ export function defaultDeps(): MainFixDeps {
 
 /** The checks of a reply; a check the reply leaves out or sorts into no known kind is code. Null when the reply holds no JSON object with a checks array. */
 export function parseVerdicts(text: string, checks: string[]): Verdict[] | null {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a < 0 || b < a) return null;
-  let parsed: { checks?: unknown };
-  try { parsed = JSON.parse(text.slice(a, b + 1)) as { checks?: unknown }; } catch { return null; }
-  if (!Array.isArray(parsed.checks)) return null;
+  const parsed = wholeReplyJson(text) as { checks?: unknown } | null;
+  if (!parsed || !Array.isArray(parsed.checks)) return null;
   const given = new Map<string, { verdict?: unknown; reason?: unknown }>();
   for (const c of parsed.checks as { check?: unknown; verdict?: unknown; reason?: unknown }[]) if (c && typeof c.check === "string") given.set(c.check, c);
   return checks.map((check) => {

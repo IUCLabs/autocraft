@@ -3,6 +3,7 @@
 
 import { firstSentence, oneSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
 import type { LintProblem } from "../replylint.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 /** Most members compared in one call; a larger group is compared in rounds. */
 export const GROUP_MAX = 10;
@@ -49,12 +50,8 @@ const list = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()).slice(0, GROUP_MAX_POINTS).map((x) => x.trim().slice(0, 400)) : [];
 
 function object(text: string): Record<string, unknown> | null {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a < 0 || b <= a) return null;
-  try {
-    const o = JSON.parse(text.slice(a, b + 1)) as unknown;
-    return o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, unknown>) : null;
-  } catch { return null; }
+  const o = wholeReplyJson(text);
+  return o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, unknown>) : null;
 }
 
 /** The numbers of a reply's keep and others, checked against the asked numbers; null when keep is unknown or an other is missing. */

@@ -1,5 +1,6 @@
 // The model step of Discord issue search: from the candidates the embedding search found, pick up to ten that answer
 // the question, each with a one-line reason. Pure; no Node imports (the Prompts page imports it).
+import { wholeReplyJson } from "../core/reply-json.ts";
 export const PICK_MAX = 10;
 export const PICK_CANDIDATES = 20;
 export const PICK_BODY_CHARS = 300;
@@ -22,17 +23,10 @@ export const SAMPLE_PICK: PickInput[] = [{
 
 const clean = (s: string): string => s.replace(/\s+/g, " ").trim();
 
-/** The picks of a reply: each ref must be one of the candidates, each ref once, at most PICK_MAX; reasons are one line, cut to PICK_REASON_CHARS. Null when the reply holds no object. */
+/** The picks of a reply: each ref must be one of the candidates, each ref once, at most PICK_MAX; reasons are one line, cut to PICK_REASON_CHARS. Null when the reply is not one JSON object. */
 export function parsePicks(text: string, candidates: { ref: string }[]): Pick[] | null {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a < 0 || b < a) return null;
-  let v: unknown;
-  try {
-    v = JSON.parse(text.slice(a, b + 1));
-  } catch {
-    return null;
-  }
-  const list = (v as { picks?: unknown }).picks;
+  const v = wholeReplyJson(text) as { picks?: unknown } | null;
+  const list = v?.picks;
   if (!Array.isArray(list)) return null;
   const allowed = new Set(candidates.map((c) => c.ref));
   const out: Pick[] = [];

@@ -23,6 +23,7 @@ import type { Crate } from "../verify/types.ts";
 import type { ScreenshotCompareInput, ScreenshotPlanInput, VerifyPlanInput } from "../verify/types.ts";
 import { referenceProblems, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 /** The part of `xs` whose key is in `missing`, or undefined when none is: the `rest` of a batch parse. */
 export function leftOf<T>(xs: T[], key: (x: T) => string, missing: string[]): T[] | undefined {
@@ -138,12 +139,10 @@ export const REFERENCE_JEV: JevStep<ReferenceLintInput, number> = {
 export const REFERENCE_HAIKU: ClaudeStep<ReferenceLintInput[], boolean> = {
   provider: "claude", id: "lint.reference.haiku",
   parse: (text, input) => {
-    const a = text.indexOf("["), b = text.lastIndexOf("]");
-    try {
-      const o = (JSON.parse(text.slice(a, b + 1)) as { ref?: unknown; refers?: unknown }[])[0];
-      if (o && o.ref === input[0]!.ref && typeof o.refers === "boolean") return { value: o.refers };
-    } catch { /* an unreadable reply is asked for again */ }
-    return null;
+    // An unreadable reply is asked for again.
+    const arr = wholeReplyJson(text);
+    const o = Array.isArray(arr) ? arr[0] as { ref?: unknown; refers?: unknown } | undefined : undefined;
+    return o && o.ref === input[0]!.ref && typeof o.refers === "boolean" ? { value: o.refers } : null;
   },
 };
 
