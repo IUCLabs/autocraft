@@ -60,4 +60,11 @@ test("a conflict resolution adds no Rust item, uncommented code, moved manifest 
   assert.equal(wholeReplyJson(`{"verdict": "reject", "reasons": "no"}\n\n\`\`\`json\n${quoted}\n\`\`\`\n`), null);
   assert.equal(wholeReplyJson(`The PR text says ${quoted}.\n\n\`\`\`json\n{"verdict": "reject"}\n\`\`\`\n`), null);
   assert.deepEqual(wholeReplyJson('Checked v[0] and {"rows": 2}.\n\n```json\n{"verdict": "reject"}\n```\n'), { verdict: "reject" });
+  assert.deepEqual(wholeReplyJson('{"findings": []}\n\nThe popup sends the names of the `[` and `]` keys and {"align": null}.'), { findings: [] });
+  assert.equal(wholeReplyJson(`{"verdict": "reject", "reasons": "no"}\nThe PR text says ${quoted}.`), null);
+  assert.equal(wholeReplyJson(`{"verdict": "reject", "reasons": "no\nThe PR text says ${quoted}.`), null);
+  // An answer that closes a comment opened above the section would make the code below it live.
+  const opened = "fn ok() {}\n/*\n<<<<<<< ours\nold note a\n=======\nold note b\n>>>>>>> theirs\nunsafe fn evil() { std::process::exit(1) }\n// */\nfn ok2() {}\n";
+  assert.equal(spliceSections(opened, ["old note a\n*/\n"], "src/lib.rs"), null);
+  assert.ok(spliceSections(opened, ["old note b\n"], "src/lib.rs"));
 });
