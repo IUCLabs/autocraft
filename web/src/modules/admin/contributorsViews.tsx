@@ -156,18 +156,18 @@ function Table({ list, operator, filter, onSort }: { list: ContributorList; oper
   const sort = { k: filter.sort ?? "merged", desc: !!filter.desc };
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1040px] border-collapse text-sm">
+      <table className="w-full min-w-[960px] border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs">
           <tr className="border-b border-line">
             <Th k="login" sort={sort} onSort={onSort}>Login</Th>
             <Th k="tier" sort={sort} onSort={onSort} className="w-[220px]">Status</Th>
             <Th k="merged" sort={sort} onSort={onSort} right className="w-[80px]">Merged</Th>
-            <Th k="closed" sort={sort} onSort={onSort} right className="w-[90px]">Closed unmerged</Th>
+            <Th k="closed" sort={sort} onSort={onSort} right className="w-[80px] whitespace-normal leading-tight">Closed unmerged</Th>
             <Th k="open" sort={sort} onSort={onSort} right className="w-[64px]">Open</Th>
             <Th k="rate" sort={sort} onSort={onSort} right className="w-[90px]">Merge rate</Th>
             <Th k="last" sort={sort} onSort={onSort} className="w-[100px]">Last merge</Th>
-            <Th k="repos" sort={sort} onSort={onSort} className="w-[150px]">Repos</Th>
-            {operator && <th className="w-[110px]" aria-label="Override" />}
+            <Th k="repos" sort={sort} onSort={onSort} className="w-[130px]">Repos</Th>
+            {operator && <th className="w-[100px]" aria-label="Override" />}
           </tr>
         </thead>
         <tbody>
@@ -187,11 +187,11 @@ function Table({ list, operator, filter, onSort }: { list: ContributorList; oper
               <td className="num px-3 text-right">{num(c.open)}</td>
               <td className={cn("num px-3 text-right", c.mergeRate !== null && c.mergeRate < list.rule.minRate && "text-ink/50")}>{rateText(c.mergeRate)}</td>
               <td className="num whitespace-nowrap px-3 text-ink/70">{day(c.lastMerge)}</td>
-              <td className="max-w-[150px] truncate px-3 text-xs text-ink/60" title={c.repos.join(", ")}>
+              <td className="max-w-[130px] truncate px-3 text-xs text-ink/60" title={c.repos.join(", ")}>
                 {c.repos.join(", ") || "–"}
               </td>
               {operator && (
-                <td className="px-3 text-right">
+                <td className="whitespace-nowrap px-3 text-right">
                   <OverrideEditor c={c} />
                 </td>
               )}
