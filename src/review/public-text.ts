@@ -77,11 +77,12 @@ export const dropMarkup = (s: string): string => settle(s, (t) => dropMentions(o
 /**
  * What is left of a text's Markdown link syntax, escaped: brackets get one backslash (so neither an inline link, a
  * reference definition nor a shortcut reference forms), `<` becomes `&lt;` (no tag or autolink) and an `&` that starts a
- * character reference becomes `&amp;` (no `&colon;`, `&#58;` or encoded bracket). Rendered, the text reads the same.
+ * character reference becomes `&amp;` (no `&colon;`, `&#58;` or encoded bracket; `&amp;` and `&lt;` stay, so cleaning
+ * twice changes nothing). Rendered, the text reads the same.
  */
 const escapeLinks = (t: string): string => t
   .replace(/\\*([[\]])/g, "\\$1")
-  .replace(/&(?=#?[A-Za-z0-9]+;)/g, "&amp;")
+  .replace(/&(?!(?:amp|lt);)(?=#?[A-Za-z0-9]+;)/g, "&amp;")
   .replace(/</g, "&lt;");
 
 /**
