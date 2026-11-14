@@ -1,6 +1,7 @@
 // The question of Discord attention signals: does a message that names a tracked item ask for attention on it? Pure; no
 // Node imports (the Prompts page imports it).
 import { flagBand, type FlagBand } from "../classify/parse.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 /** Jev's yes-probability from which a message counts as asking; below JEV_FLAG_NO (0.3) it does not, and Haiku decides in between. */
 export const SIGNAL_JEV_YES = 0.8;
@@ -27,14 +28,8 @@ export function jevSignal(answers: unknown): number | null {
   return typeof p === "number" && p >= 0 && p <= 1 ? p : null;
 }
 
-/** Haiku's reply: `{"asks": true|false}` somewhere in the text; null when there is none. */
+/** Haiku's reply: `{"asks": true|false}` as its one JSON value; null otherwise. */
 export function parseSignal(text: string): boolean | null {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a < 0 || b < a) return null;
-  try {
-    const v = (JSON.parse(text.slice(a, b + 1)) as { asks?: unknown }).asks;
-    return typeof v === "boolean" ? v : null;
-  } catch {
-    return null;
-  }
+  const v = (wholeReplyJson(text) as { asks?: unknown } | null)?.asks;
+  return typeof v === "boolean" ? v : null;
 }

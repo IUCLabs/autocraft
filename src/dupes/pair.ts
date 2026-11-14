@@ -1,5 +1,6 @@
 // Pair input and reply handling for the duplicate checks. Pure: no I/O, no Node
 // imports, because the prompt registry (shared with the web mockup) imports it.
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 export const PAIR_BODY_LIMIT = 2000;
 /** Jev's yes-probability at or above this makes a pair a duplicate; at or below 1 minus this, distinct. */
@@ -27,9 +28,7 @@ export type PairAnswer = { ref: string; verdict: PairVerdict; reason: string };
 
 /** Keeps one answer per asked ref with a known verdict. */
 export function parsePairReply(text: string, refs: string[]): { answers: PairAnswer[]; missing: string[] } {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  let arr: unknown;
-  try { arr = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { arr = null; }
+  const arr = wholeReplyJson(text);
   const answers: PairAnswer[] = [];
   const seen = new Set<string>();
   if (Array.isArray(arr)) {

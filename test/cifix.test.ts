@@ -100,33 +100,39 @@ describe("triage", () => {
 });
 
 describe("guard", () => {
-  const edit = (file: string, body: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n${body}`;
+  /** A one-hunk git diff of `before` to `after`, at the lines that really change, and the guard's verdict on it. */
+  const judge = (before: string, after: string, file = "src/lib.rs", sides = new Map([[file, { before, after }]])) => {
+    const a = before.split("\n"), b = after.split("\n");
+    let p = 0;
+    while (p < a.length && p < b.length && a[p] === b[p]) p++;
+    let q = 0;
+    while (q < a.length - p && q < b.length - p && a[a.length - 1 - q] === b[b.length - 1 - q]) q++;
+    const old = a.slice(p, a.length - q), now = b.slice(p, b.length - q);
+    const diff = `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -${p + (old.length ? 1 : 0)},${old.length} +${p + (now.length ? 1 : 0)},${now.length} @@\n${[...old.map((l) => `-${l}`), ...now.map((l) => `+${l}`)].join("\n")}\n`;
+    return guardPatch(diff, sides);
+  };
   test("a patch that edits tests, disables lints or drops assertions is refused", () => {
-    assert.match(guardPatch(edit("tests/png.rs", "-a\n+b\n"), ["tests/png.rs"])!, /test file/);
-    assert.match(guardPatch(edit("src/png/tests.rs", "-a\n+b\n"), ["src/png/tests.rs"])!, /test file/);
-    assert.match(guardPatch(edit("src/lib.rs", "-fn a() {}\n+#[allow(dead_code)] fn a() {}\n"), ["src/lib.rs"])!, /disables/);
-    assert.match(guardPatch(edit("src/lib.rs", "-    assert_eq!(a(), 1);\n+    let _ = a();\n"), ["src/lib.rs"])!, /assertion/);
-    assert.equal(guardPatch(edit("src/lib.rs", "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"]), null);
-    assert.match(guardPatch(edit("src/lib.rs", "-fn a() {}\n+#[cfg(feature = \"x\")] fn a() {}\n"), ["src/lib.rs"])!, /disables/);
-    assert.match(guardPatch(edit("src/lib.rs", "-fn a() {}\n+#[should_panic] fn a() {}\n"), ["src/lib.rs"])!, /disables/);
+    assert.match(judge("a\n", "b\n", "tests/png.rs")!, /test file/);
+    assert.match(judge("a\n", "b\n", "src/png/tests.rs")!, /test file/);
+    assert.match(judge("fn a() {}\n", "#[allow(dead_code)] fn a() {}\n")!, /disables/);
+    assert.match(judge("fn a() {\n    assert_eq!(a(), 1);\n}\n", "fn a() {\n    let _ = a();\n}\n")!, /assertion/);
+    assert.equal(judge("fn a() {}\n", "fn b() {}\n"), null);
+    assert.match(judge("fn a() {}\n", "#[cfg(feature = \"x\")] fn a() {}\n")!, /disables/);
+    assert.match(judge("fn a() {}\n", "#[should_panic] fn a() {}\n")!, /disables/);
   });
 
   const SRC = "fn a() {}\n\n#[cfg(test)]\nmod tests {\n    fn helper() {\n        let x = \"}\";\n    }\n\n    #[test]\n    fn t() {\n        check();\n    }\n}\n\nfn last() {}\n";
-  const hunk = (at: number, body: string) => `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -${at} +${at} @@\n${body}`;
-  const heads = new Map([["src/lib.rs", SRC]]);
 
-  test("a hunk inside a #[cfg(test)] module is refused; one outside is allowed", () => {
-    assert.match(guardPatch(hunk(6, "-        let x = \"}\";\n+        let x = \"{\";\n"), ["src/lib.rs"], heads)!, /test code/);
-    assert.equal(guardPatch(hunk(1, "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"], heads), null);
-    assert.equal(guardPatch(hunk(15, "-fn last() {}\n+fn end() {}\n"), ["src/lib.rs"], heads), null);
-    assert.match(guardPatch(hunk(1, "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"], new Map())!, /could not be read/);
-    assert.match(guardPatch(hunk(1, "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"], new Map([["src/lib.rs", "#[test]\nfn a() {\n"]]))!, /could not be checked/);
+  test("a change inside a #[cfg(test)] module is refused; one outside is allowed", () => {
+    assert.match(judge(SRC, SRC.replace('let x = "}";', 'let x = "{";'))!, /test code/);
+    assert.equal(judge(SRC, SRC.replace("fn a() {}", "fn b() {}")), null);
+    assert.equal(judge(SRC, SRC.replace("fn last() {}", "fn end() {}")), null);
+    assert.match(judge(SRC, SRC.replace("fn a() {}", "fn b() {}"), "src/lib.rs", new Map())!, /could not be read/);
+    assert.match(judge("#[test]\nfn a() {\n", "#[test]\nfn b() {\n")!, /could not be checked/);
   });
 
   test("an early return added to a #[test] function is refused", () => {
-    const src = "#[test]\nfn t() {\n    check();\n}\n";
-    const patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -2,2 +2,3 @@\n fn t() {\n+    return;\n     check();\n";
-    assert.match(guardPatch(patch, ["src/lib.rs"], new Map([["src/lib.rs", src]]))!, /early return/);
+    assert.match(judge("#[test]\nfn t() {\n    check();\n}\n", "#[test]\nfn t() {\n    return;\n    check();\n}\n")!, /early return/);
   });
 });
 

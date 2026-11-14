@@ -1,5 +1,6 @@
 // Pure input/output handling for the classifiers: no I/O, so tests can use fake data.
 import { LABELS, type Label } from "./rules.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 export type Item = {
   repo: string; number: number; kind: "pr" | "issue";
@@ -55,9 +56,7 @@ const isLabel = (v: unknown): v is Label => typeof v === "string" && (LABELS as 
 
 /** Pulls the JSON array out of a model reply (code fences and prose around it are tolerated). */
 export function parseHaikuReply(text: string, refs: string[]): { verdicts: Verdict[]; missing: string[] } {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  let arr: unknown;
-  try { arr = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { arr = null; }
+  const arr = wholeReplyJson(text);
   const verdicts: Verdict[] = [];
   const seen = new Set<string>();
   if (Array.isArray(arr)) {
@@ -114,9 +113,7 @@ export function flagsOf(v: { security: boolean; needs_decision: boolean }): stri
 export type Referee = { ref: string; type_label: Label; why: string; sure: boolean | null };
 
 export function parseRefereeReply(text: string, refs: string[]): Referee[] {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  let arr: unknown;
-  try { arr = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { arr = null; }
+  const arr = wholeReplyJson(text);
   if (!Array.isArray(arr)) return [];
   const out: Referee[] = [];
   for (const o of arr as Record<string, unknown>[]) {

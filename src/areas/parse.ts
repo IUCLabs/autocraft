@@ -1,6 +1,7 @@
 // Reading model answers for the area prompts. Pure functions: tests feed them fake replies.
 import { AREAS_MAX, AREAS_MIN, AREA_SURE, NONE_OF_THESE, SUGGEST_MAX, type Area } from "./types.ts";
 import { lenientAreas } from "./store.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 /** The list's own spelling of `choice`, null for "none of these", undefined when it is neither. */
 export function canonicalArea(choice: unknown, areas: Area[]): string | null | undefined {
@@ -26,9 +27,7 @@ export const settles = (top: number): boolean => top >= AREA_SURE;
 
 /** One area (or none) per asked ref, from Haiku's reply. Refs without a valid entry are returned as missing. */
 export function parseAreaReply(text: string, refs: string[], areas: Area[]): { answers: Map<string, string | null>; missing: string[] } {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  let arr: unknown;
-  try { arr = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { arr = null; }
+  const arr = wholeReplyJson(text);
   const answers = new Map<string, string | null>();
   if (Array.isArray(arr)) {
     for (const o of arr as Record<string, unknown>[]) {
@@ -43,9 +42,7 @@ export function parseAreaReply(text: string, refs: string[], areas: Area[]): { a
 
 /** The areas of a propose or suggest reply; null when the reply has no usable list. */
 export function parseAreaList(text: string, opts: { min: number; max: number; exclude?: Area[] }): Area[] | null {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  let o: unknown;
-  try { o = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { return null; }
+  const o = wholeReplyJson(text);
   if (!o || typeof o !== "object" || !Array.isArray((o as { areas?: unknown }).areas)) return null;
   const ex = (opts.exclude ?? []).map((x) => x.name.toLowerCase());
   const list = lenientAreas((o as { areas: unknown[] }).areas, AREAS_MAX + ex.length).filter((x) => !ex.includes(x.name.toLowerCase())).slice(0, opts.max);

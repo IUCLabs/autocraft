@@ -54,11 +54,12 @@ describe("reply lint fix turn", () => {
     assert.deepEqual(r.problems, []);
   });
 
-  test("a fix reply that is not the flagged fields leaves the first reply in place", async () => {
-    const lint: Lint = (_t, stage) => (stage === "first" ? [{ field: "public.points[0]", message: "m", text: "a leaky point" }] : []);
+  test("a fix reply that is not the flagged fields leaves the first reply in place, with every check run on it", async () => {
+    // The first stage puts off the slow check (the second problem); the first reply is then linted in full.
+    const lint: Lint = (_t, stage) => [{ field: "public.points[0]", message: "m", text: "a leaky point" }, ...(stage === "fix" ? [{ field: "public.points[1]", message: "slow", text: "second" }] : [])];
     const { r } = await run(lint, "Sorry, here is a long prose answer.");
     assert.equal(r.text, first);
-    assert.equal(r.problems?.length, 1);
+    assert.deepEqual(r.problems?.map((p) => p.field), ["public.points[0]", "public.points[1]"]);
   });
 
   test("problems only in internal text skip the fix turn", async () => {

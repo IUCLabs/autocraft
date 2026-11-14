@@ -1,6 +1,7 @@
 // Constants, types and the pure parsers of the security deep scan (src/security). No Node imports: the
 // prompt registry (src/prompts) imports this file, and the web mockup imports that.
 import type { FindingSeverity } from "../../web/src/api/types.ts";
+import { wholeReplyJson } from "../core/reply-json.ts";
 
 /** The repo name under which the scan's agent runs and job are recorded. It is never a tracked repo, so every listing that leaves out the repos a viewer may not see also leaves out the scan's runs. */
 export const SECURITY_PREFIX = "(security):";
@@ -37,16 +38,10 @@ export type SecurityVerifyInput = Base & { finding: Candidate & { area: string }
 
 const str = (v: unknown, max: number): string | null => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
 
-/** The JSON object in a reply: from the first "{" to the last "}". */
+/** The reply's one JSON value when it is an object (see wholeReplyJson). */
 export function jsonObject(text: string): Record<string, unknown> | null {
-  const a = text.indexOf("{"), b = text.lastIndexOf("}");
-  if (a < 0 || b <= a) return null;
-  try {
-    const v = JSON.parse(text.slice(a, b + 1)) as unknown;
-    return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
+  const v = wholeReplyJson(text);
+  return v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : null;
 }
 
 /** A repository-relative path, or null: the sandbox's /repo prefix is dropped; absolute, parent and empty segments are refused. */

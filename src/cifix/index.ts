@@ -280,6 +280,33 @@ export type PatchResult =
   | { ok: true; v: { patch: string; files: string[]; changed: number }; shown: CifixPr["files"]; names: string[]; model: string; check: (patch: string) => Promise<string | null> };
 
 /**
+ * The guard (see guardPatch) on the patch as git applies it at `head`: the patched tree is built in a scratch index under
+ * `root`, and git's own diff and the files before and after it are judged.
+ */
+export async function guardApplied(git: Git, root: string, head: string, patch: string, exact: string[]): Promise<string | null> {
+  const scratch = mkdtempSync(join(root, ".index-"));
+  let applied;
+  try {
+    applied = await git.applyToTree(head, patch, join(scratch, "index"), exact);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+  return applied.ok ? guardTree(git, head, applied.tree) : applied.reason;
+}
+
+/** The guard on the change from commit `head` to `tree`. */
+async function guardTree(git: Git, head: string, tree: string): Promise<string | null> {
+  const diff = await git.diffText(head, tree);
+  const sides = new Map<string, { before: string; after: string }>();
+  for (const m of diff.matchAll(/^diff --git a\/(\S+) b\//gm)) {
+    const before = await git.file(head, m[1]!), after = await git.file(tree, m[1]!);
+    if (!before.ok || !after.ok) return `the content of ${m[1]} could not be read to check it`;
+    sides.set(m[1]!, { before: before.content, after: after.content });
+  }
+  return guardPatch(diff, sides);
+}
+
+/**
  * The model patch for a failed check at `head`: the files the log names (and the diff's files) are shown whole or in
  * part, Sonnet writes the patch, and the validators and the size limit run. `check` is the Opus check: null when it
  * approves, else the refusal (`rejected: ...` when Opus said no).
@@ -296,13 +323,10 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   const checkout = (await r.checkout()) ?? undefined;
   const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
   const shown: CifixPr["files"] = [];
-  // The guard reads whole files even when the model sees only parts.
-  const contents = new Map<string, string>();
   let total = 0;
   for (const path of named) {
     const f = await git.file(head, path);
     if (!f.ok) continue;
-    contents.set(path, f.content);
     if (checkout) { shown.push({ path }); continue; }
     // The log lines that mention the file give the lines a large file is cut around.
     const v = viewFile(path, f.content, text.split("\n").filter((l) => l.includes(path)), r.diffText, FILE_CAP);
@@ -320,7 +344,7 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   if (!v.ok) return no("refused", v.reason);
   const word = quiet ? patchGiveaway(v.patch) : null;
   if (word) return no("refused", QUIET_PATCH_REFUSAL);
-  const guard = guardPatch(v.patch, v.files, contents);
+  const guard = await guardApplied(git, d.root, head, v.patch, shown.flatMap((f) => ("excerpt" in f ? [f.path] : [])));
   if (guard) return no("refused", guard);
   if (v.patch.length > CHECK_PATCH_CAP) return no("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`);
   const names = failure.checks.map((x) => x.name);
@@ -389,17 +413,6 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     return pr;
   };
 
-  /** The content at `head` of each file, or the reason one cannot be read. */
-  const headFiles = async (head: string, files: string[]): Promise<Map<string, string> | string> => {
-    const out = new Map<string, string>();
-    for (const f of files) {
-      const r = await git.file(head, f);
-      if (!r.ok) return r.reason;
-      out.set(f, r.content);
-    }
-    return out;
-  };
-
   /** Applies a validated patch to the PR head: pushed to the branch, or posted as a comment where the branch is closed to us. */
   const deliver = async (c: CifixCandidate, kind: "format" | "code", pr: PrNode, v: Fix, checkName: string, check?: (patch: string) => Promise<string | null>, shown: CifixPr["files"] = [], folded: string | null = null, ses: SessionAsk = {}): Promise<void> => {
     const ref = refOf(c);
@@ -425,12 +438,6 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       fail("failed", `fetched head ${short(head)} is not the checked ${short(c.head)}`);
       return;
     }
-    if (kind === "format") {
-      // Formatting alone, whatever produced the diff: whitespace-only per hunk, and the same limits as any patch.
-      const heads = await headFiles(head, v.files);
-      const guard = typeof heads === "string" ? heads : guardPatch(v.patch, v.files, heads);
-      if (guard) { fail("refused", guard); return; }
-    }
     const scratch = mkdtempSync(join(d.root, ".index-"));
     let applied;
     try {
@@ -440,7 +447,9 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     }
     if (!applied.ok) { fail("refused", applied.reason); return; }
     if (kind === "format") {
-      // Formatting alone, by tokens, on the whole files before and after.
+      // Formatting alone, whatever produced the diff: the same limits as any patch, and by tokens on the whole files before and after.
+      const guard = await guardTree(git, head, applied.tree);
+      if (guard) { fail("refused", guard); return; }
       for (const f of v.files) {
         const before = await git.file(head, f), after = await git.file(applied.tree, f);
         const why = !before.ok ? before.reason : !after.ok ? after.reason : formattingOnly(f, before.content, after.content);

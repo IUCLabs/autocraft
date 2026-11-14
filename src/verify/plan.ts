@@ -93,10 +93,8 @@ const shotFail = (error: string): ScreenshotParsed => ({ ok: false, error });
  * config's, every argument passes its validator, and the script has 1 to MAX_SHOT_STEPS steps of which 1 to MAX_SHOTS capture.
  */
 export function parseScreenshotReply(text: string, ref: string, config: Pick<ScreenshotConfigBody, "commands">): ScreenshotParsed {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  if (a < 0 || b < a) return shotFail("no JSON list in the reply");
-  let arr: unknown;
-  try { arr = JSON.parse(text.slice(a, b + 1)); } catch { return shotFail("reply is not valid JSON"); }
+  const arr = wholeReplyJson(text);
+  if (arr === null) return shotFail("the reply is not exactly one JSON value");
   if (!Array.isArray(arr) || arr.length !== 1 || !isObj(arr[0])) return shotFail("reply must be a list of one object");
   const o = arr[0];
   const extra = Object.keys(o).find((k) => !["ref", "screenshot", "reason", "steps"].includes(k));
@@ -140,10 +138,8 @@ export type CompareParsed = { ok: true; result: CompareResult } | { ok: false; e
 /** Parses the comparison reply for the PR `ref`: one object with a verdict, `clear` and a summary cut to MAX_COMPARE_WORDS words. */
 export function parseCompareReply(text: string, ref: string): CompareParsed {
   const bad = (error: string): CompareParsed => ({ ok: false, error });
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  if (a < 0 || b < a) return bad("no JSON list in the reply");
-  let arr: unknown;
-  try { arr = JSON.parse(text.slice(a, b + 1)); } catch { return bad("reply is not valid JSON"); }
+  const arr = wholeReplyJson(text);
+  if (arr === null) return bad("the reply is not exactly one JSON value");
   if (!Array.isArray(arr) || arr.length !== 1 || !isObj(arr[0])) return bad("reply must be a list of one object");
   const o = arr[0];
   const extra = Object.keys(o).find((k) => !["ref", "verdict", "clear", "summary"].includes(k));

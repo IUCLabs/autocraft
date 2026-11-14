@@ -14,6 +14,8 @@
 //                     (each is another person who hit the same thing, like several reactions)
 //   security    0.15  a classifier raised the security flag
 //   age         0.10  days open, capped at 365 (older means people have waited longer)
+import { wholeReplyJson } from "../core/reply-json.ts";
+
 
 export const LEVELS = ["P0", "P1", "P2", "P3", "P4"] as const;
 export type Level = (typeof LEVELS)[number];
@@ -74,9 +76,7 @@ export type HaikuImpact = { ref: string; impact: Impact; reason: string };
 
 /** Keeps one answer per asked ref with a known level. */
 export function parseHaikuImpacts(text: string, refs: string[]): { answers: HaikuImpact[]; missing: string[] } {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  let arr: unknown;
-  try { arr = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { arr = null; }
+  const arr = wholeReplyJson(text);
   const answers: HaikuImpact[] = [];
   if (Array.isArray(arr)) {
     for (const o of arr as Record<string, unknown>[]) {

@@ -1,5 +1,6 @@
 // Reply lint: checks a parsed reply for problems the model can fix itself, and the one follow-up message that
 // sends them back. No I/O and no Node imports: the prompt registry imports this file.
+import { wholeReplyJson } from "./core/reply-json.ts";
 
 /** One problem of a reply: the field it is in and what is wrong, in one short line. `text` is the offending text where the fallback needs to find it again. */
 export type LintProblem = {
@@ -28,12 +29,11 @@ export function fixTurnMessage(problems: readonly LintProblem[]): string {
   return `Your reply has these problems:\n${list.map((p) => `- ${p.field}: ${p.message}`).join("\n")}\nDo not use tools. Send only the corrected fields as one JSON object whose keys are these field names exactly (${fieldsOf(problems).join(", ")}) and whose values are the corrected values, in the same format as in your reply. Send nothing else.`;
 }
 
+/** The reply's one JSON value (see wholeReplyJson) when it is an object or a list of one. */
 const jsonRoot = (text: string): { root: unknown; array: boolean } | null => {
-  const a = text.indexOf("["), b = text.lastIndexOf("]"), c = text.indexOf("{"), d = text.lastIndexOf("}");
-  try {
-    if (a >= 0 && b > a && (c < 0 || a < c)) { const arr = JSON.parse(text.slice(a, b + 1)) as unknown[]; return arr.length === 1 ? { root: arr, array: true } : null; }
-    return c >= 0 && d > c ? { root: JSON.parse(text.slice(c, d + 1)), array: false } : null;
-  } catch { return null; }
+  const v = wholeReplyJson(text);
+  if (Array.isArray(v)) return v.length === 1 ? { root: v, array: true } : null;
+  return typeof v === "object" && v !== null ? { root: v, array: false } : null;
 };
 
 const isObj = (v: unknown): v is Record<string, unknown> | unknown[] => typeof v === "object" && v !== null;
@@ -59,7 +59,7 @@ const blockOfField = (field: string): { lang: "actions" | "choices"; path: strin
 /**
  * The first reply with the fix turn's corrected fields put in. Only the fields the problems asked for are taken, and only where they exist in the first reply
  * (or are new top-level fields); the rest stays as the first turn wrote it. Fields in a fenced `choices` or `actions` block are patched inside that block, and all prose and
- * other blocks stay; other fields are patched in the reply's JSON object. Null when the fix reply is not a JSON object or nothing could be put in.
+ * other blocks stay; other fields are patched in the reply's one JSON value, fenced or not. Null when the fix reply is not a JSON object or nothing could be put in.
  */
 export function mergeFixFields(original: string, fix: string, problems: readonly LintProblem[]): string | null {
   const f = jsonRoot(fix);
@@ -82,7 +82,7 @@ export function mergeFixFields(original: string, fix: string, problems: readonly
       if (b && isObj(b.root)) set = setPath(b.root as Record<string, unknown>, at.path);
       if (set) changed.add(at.lang);
     } else {
-      plain ??= original.includes("```") ? null : jsonRoot(original);
+      plain ??= /```(choices|actions)/.test(original) ? null : jsonRoot(original);
       const target = plain && (plain.array ? (plain.root as unknown[])[0] : plain.root);
       if (isObj(target) && !Array.isArray(target)) set = setPath(target as Record<string, unknown>, field);
     }
