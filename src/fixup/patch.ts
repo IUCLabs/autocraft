@@ -448,7 +448,8 @@ function trailingAttributes(code: string[]): number {
  * True when no Rust section answer adds an item, an attribute, unsafe code or an item macro: an answer line on neither
  * side holds none of them (read as Rust tokens, so spacing, comments and line position do not matter), and per kind the
  * answer, read in the resolved file, holds no more than its two sides read in their own files. A line kept from a side
- * that was commented out or inside a string there counts as new. The attributes just above a section guard the first
+ * that was commented out or inside a string there counts as new, and the text between and around the sections must read
+ * the same (code, comments, strings) as in one of the side files. The attributes just above a section guard the first
  * item of both sides, so an answer that keeps both items may repeat them once.
  */
 function rustAnswersOk(pieces: string[], sections: Side[], answers: string[]): boolean {
@@ -461,8 +462,12 @@ function rustAnswersOk(pieces: string[], sections: Side[], answers: string[]): b
   const joined = (l: string[]) => l.map((x) => `${x}\n`).join("");
   const res = file((i) => answers[i]!), ours = file((i) => joined(sections[i]!.ours)), theirs = file((i) => joined(sections[i]!.theirs));
   const r = tokensIn(res.text, res.ranges), o = tokensIn(ours.text, ours.ranges), t = tokensIn(theirs.text, theirs.ranges);
-  const above = tokensIn(res.text, res.ranges.map(([a], i) => [i ? res.ranges[i - 1]![1] : 0, a]));
-  if (!r || !o || !t || !above) return false;
+  const gaps = (f: { text: string; ranges: [number, number][] }): [number, number][] => [...f.ranges.map(([a], i): [number, number] => [i ? f.ranges[i - 1]![1] : 0, a]), [f.ranges.at(-1)![1], f.text.length]];
+  const above = tokensIn(res.text, gaps(res)), oursOut = tokensIn(ours.text, gaps(ours)), theirsOut = tokensIn(theirs.text, gaps(theirs));
+  if (!r || !o || !t || !above || !oursOut || !theirsOut) return false;
+  // The text outside the sections must read as it does in a side's file: an answer that closes a comment or string opened above it would make the lines below live.
+  const shape = (tokens: string[]) => tokens.map((x) => (/^[cCsh]:/.test(x) ? x[0] : x)).join("\u0000");
+  if (above.some((g, i) => shape(g) !== shape(oursOut[i]!) && shape(g) !== shape(theirsOut[i]!))) return false;
   for (let i = 0; i < sections.length; i++) {
     const sides = new Set([...sections[i]!.ours, ...sections[i]!.theirs]);
     for (const line of answerLines(answers[i]!)) {

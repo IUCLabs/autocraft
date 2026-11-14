@@ -105,12 +105,35 @@ function holdsAnswer(text: string, keys: Set<string>): boolean {
   return false;
 }
 
+/** An object with a key, or an array holding an object: the shape of an answer, as opposed to `v[0]` or `{}` in prose. */
+const answerLike = (v: unknown): boolean => (Array.isArray(v) ? v.some((x) => typeof x === "object" && x !== null) : typeof v === "object" && v !== null && Object.keys(v).length > 0);
+
+/**
+ * The JSON values of `text` that are not inside another one, in order (repeated keys allowed: this only finds them),
+ * and whether some text starts like an object (`{"`, `[{`) but does not parse: a broken answer.
+ */
+function topValues(text: string): { values: { v: unknown; at: number }[]; broken: boolean } {
+  const values: { v: unknown; at: number }[] = [];
+  let from = 0, broken = false;
+  for (const m of [...text.matchAll(/[{[]/g)].slice(0, 500)) {
+    if (m.index < from) continue;
+    try {
+      const [v, end] = parseValue(text, m.index, 0, true);
+      values.push({ v, at: m.index });
+      from = end;
+    } catch { if (/^(?:\{\s*"|\[\s*\{)/.test(text.slice(m.index, m.index + 20))) broken = true; }
+  }
+  return { values, broken };
+}
+
 /**
  * The one JSON value of a reply, or null. With a fenced code block, the reply must hold exactly one, its whole content
  * must be one JSON value, and the prose outside it may hold brackets and example values but no other value with one of
- * its keys (a second answer). Without a fence, text
- * before and after the value may not contain "{" or "[" (a sentence is fine; a quoted object is not). No object may
- * repeat a key.
+ * its keys (a second answer). Without a fence, the
+ * answer is the first object with a key (or array holding an object), and the text around it may hold brackets and
+ * example values but no other value with one of its keys nor a broken object; a reply with no such object must be its
+ * value alone (`[]`).
+ * No object may repeat a key.
  */
 export function wholeReplyJson(text: string): unknown {
   const blocks = fencedBlocks(text);
@@ -121,9 +144,18 @@ export function wholeReplyJson(text: string): unknown {
       const [v, end] = parseValue(blocks[0]!, 0, 0);
       return skipWs(blocks[0]!, end) === blocks[0]!.length && !holdsAnswer(outsideFence(text), keysOf(v)) ? v : null;
     }
-    const a = text.search(/[{[]/);
-    if (a < 0) return null;
-    const [v, end] = parseValue(text, a, 0);
-    return /[{[]/.test(text.slice(end)) || /[{[]/.test(text.slice(0, a)) ? null : v;
+    // A broken answer-shaped text next to a valid one could be the model's own, with the valid one quoted.
+    const { values, broken } = topValues(text);
+    if (broken) return null;
+    const answer = values.find((x) => answerLike(x.v));
+    if (!answer) {
+      // No object with keys: the reply's only bracketed text must be the value (`[]`, `{}`).
+      const a = text.search(/[{[]/);
+      if (a < 0) return null;
+      const [v, end] = parseValue(text, a, 0);
+      return /[{[]/.test(text.slice(end)) || /[{[]/.test(text.slice(0, a)) ? null : v;
+    }
+    const [v, end] = parseValue(text, answer.at, 0);
+    return holdsAnswer(`${text.slice(0, answer.at)}\n${text.slice(end)}`, keysOf(v)) ? null : v;
   } catch { return null; }
 }
