@@ -182,30 +182,44 @@ export function readLint(db: DatabaseSync, taskId: number, o: { /** A diff whose
 
 export type Fold = { ok: true; patch: string } | { ok: false; reason: string };
 
-/** The two sides of a file's diff, hunk bodies only, joined: enough to compare their token streams. */
+/**
+ * The two sides of a file's diff, hunk bodies only, joined. Every line git could act on outside a hunk is refused: text
+ * before the first file header, a header that is not one file, and any section line other than its `---`/`+++` pair
+ * (index, mode, rename and binary lines).
+ */
 function sides(diff: string): Map<string, { before: string[]; after: string[] }> | string {
   const out = new Map<string, { before: string[]; after: string[] }>();
-  let cur: { before: string[]; after: string[] } | null = null, inHunk = false;
-  for (const l of diff.split("\n")) {
-    if (l.startsWith("diff --git ") && !/^diff --git a\/(\S+) b\/\1$/.test(l)) return `the formatter diff has a section header that is not one file: ${l.slice(0, 80)}`;
-    const f = /^diff --git a\/(\S+) b\/\1$/.exec(l);
-    if (f) {
+  let cur: { before: string[]; after: string[] } | null = null, path = "", inHunk = false;
+  for (const l of diff.replace(/\n+$/, "").split("\n")) {
+    if (l.startsWith("diff ")) {
+      const f = /^diff --git a\/(\S+) b\/\1$/.exec(l);
+      if (!f) return `the formatter diff has a section header that is not one file: ${l.slice(0, 80)}`;
       // Every section is checked: a second section for a file would be applied unseen.
       if (out.has(f[1]!)) return `the formatter diff has two sections for ${f[1]}`;
-      cur = { before: [], after: [] }; out.set(f[1]!, cur); inHunk = false; continue;
+      path = f[1]!; cur = { before: [], after: [] }; out.set(path, cur); inHunk = false; continue;
     }
-    if (l.startsWith("@@")) { inHunk = true; cur?.before.push(""); cur?.after.push(""); continue; }
-    if (!cur || !inHunk || l.startsWith("\\")) continue;
+    if (!cur) {
+      if (l.trim()) return "the formatter diff has text before its first file header";
+      continue;
+    }
+    if (l.startsWith("@@ ")) { inHunk = true; cur.before.push(""); cur.after.push(""); continue; }
+    if (!inHunk) {
+      if (l !== `--- a/${path}` && l !== `+++ b/${path}`) return `the formatter diff has a line outside a hunk in ${path}: ${l.slice(0, 80)}`;
+      continue;
+    }
+    if (l === "" || l.startsWith("\\")) continue;
     if (l.startsWith("-")) cur.before.push(l.slice(1));
     else if (l.startsWith("+")) cur.after.push(l.slice(1));
     else if (l.startsWith(" ")) { cur.before.push(l.slice(1)); cur.after.push(l.slice(1)); }
+    else return `the formatter diff has a line in a hunk of ${path} that is not a diff line: ${l.slice(0, 80)}`;
   }
   return out;
 }
 
 /**
- * The patch followed by the formatter's diff, which `git apply` applies in order to the same files. Refused unless every
- * file's formatter changes are whitespace-only (by tokens), whatever produced the diff.
+ * The patch followed by the formatter's diff, which `git apply` applies in order to the same files. A first check on
+ * the diff text alone: each file's formatter changes must be whitespace-only (by tokens) in its hunks. foldFormat
+ * proves it on the files git actually writes.
  */
 export function checkFormat(patch: string, formatDiff: string): Fold {
   if (!formatDiff.trim()) return { ok: true, patch };
@@ -220,15 +234,30 @@ export function checkFormat(patch: string, formatDiff: string): Fold {
   return { ok: true, patch: `${patch.replace(/\n*$/, "\n")}${formatDiff.replace(/\n*$/, "\n")}` };
 }
 
-/** The patch with the formatter's changes folded in as ONE diff against `head`: both are applied to a temporary index and the result is diffed. */
-export async function foldFormat(git: Pick<Git, "applyToTree" | "diffText">, head: string, patch: string, formatDiff: string, scratchRoot: string): Promise<Fold> {
+/**
+ * The patch with the formatter's changes folded in as ONE diff against `head`. The formatter diff comes from a build
+ * worker and is not trusted to say what it does: the tree of the patch alone and the tree of the patch plus the
+ * formatter diff are compared, and every file that differs must be one the patch changes, keep its mode, and have the
+ * same Rust tokens in both.
+ */
+export async function foldFormat(git: Pick<Git, "applyToTree" | "diffText" | "rawChanges" | "file">, head: string, patch: string, formatDiff: string, scratchRoot: string): Promise<Fold> {
   const both = checkFormat(patch, formatDiff);
   if (!both.ok || !formatDiff.trim()) return both;
   mkdirSync(scratchRoot, { recursive: true });
   const scratch = mkdtempSync(join(scratchRoot, ".fold-"));
   try {
+    const alone = await git.applyToTree(head, patch, join(scratch, "patch"));
+    if (!alone.ok) return { ok: false, reason: alone.reason };
     const applied = await git.applyToTree(head, both.patch, join(scratch, "index"));
     if (!applied.ok) return { ok: false, reason: applied.reason };
+    const allowed = new Set(changedRsFiles(patch));
+    for (const [from, to, status, path] of await git.rawChanges(alone.tree, applied.tree)) {
+      if (!allowed.has(path!)) return { ok: false, reason: `the formatter changed ${path}, which the patch does not change` };
+      if (status !== "M" || from !== to) return { ok: false, reason: `the formatter diff changes more than the content of ${path}` };
+      const before = await git.file(alone.tree, path!), after = await git.file(applied.tree, path!);
+      const why = !before.ok ? before.reason : !after.ok ? after.reason : formattingOnly(path!, before.content, after.content);
+      if (why) return { ok: false, reason: why };
+    }
     return { ok: true, patch: await git.diffText(head, applied.tree) };
   } finally {
     rmSync(scratch, { recursive: true, force: true });

@@ -203,6 +203,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // First line of the commit message.
   ["pr_commits", "message", "TEXT"],
   ["dupe_comparisons", "sizes", "TEXT"],
+  ["build_envs", "confidential", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

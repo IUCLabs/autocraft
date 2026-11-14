@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { TaskStep } from "../../web/src/api/types.ts";
-import { cancelTask, createTask, getTask, logTail, TERMINAL, warmKeyOf } from "../build/tasks.ts";
+import { cancelTask, confidentialSince, createTask, getTask, logTail, PRIVATE_STEPS, TERMINAL, warmKeyOf } from "../build/tasks.ts";
 import { gitFormatDiff } from "../cifix/index.ts";
 import { CHECK_HISTORY_MIN, CHECK_HISTORY_RUNS, CHECK_LIMIT_FACTOR, CHECK_LIMIT_MAX_MS, CHECK_LIMIT_MIN_MS, CHECK_MAX_CALLS, CHECK_MAX_WALL_MS, CHECK_OUTPUT_LINES } from "../core/rules.ts";
 import { scrub } from "../runner/scrub.ts";
@@ -189,6 +189,7 @@ export class CheckTool {
     const bad = await t.applies(i.patch);
     if (bad) return { text: `the patch does not apply to the head commit: ${bad}`, isError: true };
     const plan = checkPlan(i);
+    if (plan && PRIVATE_STEPS.includes(t.step) && confidentialSince(t.db) === null) return { text: "no build environment may run checks for this patch right now; answer with your best patch", isError: true };
     if (!plan) return { text: i.command === "fmt" ? "rustfmt: the patch changes no .rs file; nothing to format" : "clippy: the patch changes no .rs file; nothing to lint" };
 
     this.calls++;

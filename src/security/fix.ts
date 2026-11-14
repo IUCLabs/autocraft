@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { BuildError } from "../build/envs.ts";
 import { queueRound, readRound, requeueRound, type RoundRead } from "../build/rounds.ts";
+import { confidentialSince } from "../build/tasks.ts";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { runModelStep } from "../agents/step.ts";
 import { textStep } from "../agents/steps.ts";
@@ -197,7 +198,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     else if (last) {
       const ids: [number, number] = [last.head_task, last.base_task];
       let read: RoundRead = readRound(db, ids, last.retried === 1);
-      if (read.kind === "pending") return `${repo} finding ${n}: round ${last.round} is still building`;
+      if (read.kind === "pending") return `${repo} finding ${n}: round ${last.round} ${confidentialSince(db) === null ? "is waiting for a confidential build environment" : "is still building"}`;
       if (read.kind === "retry-env") {
         try {
           const again = requeueRound(db, ids);
@@ -274,8 +275,9 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       db.prepare("INSERT OR REPLACE INTO security_fix_rounds (repo, number, round, patch, test_patch, title, summary, head_task, base_task, session, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'building', ?)")
         .run(repo, n, round, v.patch, v.testPatch, parsed.title, parsed.summary, ids[0], ids[1], storeSessions(keptNow, new Date()), new Date().toISOString());
       ledger.stored(keptNow);
-      log(`${repo} finding ${n}: round ${round} queued for build`);
-      return `${repo} finding ${n}: round ${round} queued for build`;
+      const queued = `${repo} finding ${n}: round ${round} queued for build${confidentialSince(db) === null ? "; waiting for a confidential build environment" : ""}`;
+      log(queued);
+      return queued;
     }
     return giveUp(db, repo, n, lastWhy, log);
   } catch (e) {

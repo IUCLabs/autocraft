@@ -11,8 +11,8 @@ import { BuildError, createEnv, KINDS, listEnvs, rotateKey, updateEnv } from "./
 import { cancelTask, createTask, getTaskDetail, listTasks, memorySummary } from "./tasks.ts";
 
 const USAGE = `usage: autocraft envs list
-       autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N (--out FILE | --print)
-       autocraft envs set <id> [--label TEXT] [--enabled yes|no] [--slots N]
+       autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N [--confidential yes|no] (--out FILE | --print)
+       autocraft envs set <id> [--label TEXT] [--enabled yes|no] [--slots N] [--confidential yes|no]
        autocraft envs rotate-key <id> (--out FILE | --print)
        autocraft tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
        autocraft tasks show <id>
@@ -72,6 +72,14 @@ function keyFile(opt: Map<string, string>): { write: (key: string) => void; remo
   };
 }
 
+/** A yes|no option as a boolean; undefined when it is not given. */
+function yesNo(opt: Map<string, string>, name: string): boolean | undefined {
+  if (!opt.has(name)) return undefined;
+  const v = opt.get(name);
+  if (v !== "yes" && v !== "no") die(`--${name} must be yes or no`);
+  return v === "yes";
+}
+
 function run<T>(f: () => T): T {
   try {
     return f();
@@ -87,15 +95,16 @@ function envs(args: string[]): void {
   if (sub === "list") {
     for (const e of listEnvs(db)) {
       const c = e.capabilities;
-      console.log(`${e.id.padEnd(16)} ${safe(e.label).padEnd(24)} ${e.kind.padEnd(14)} ${e.enabled ? (e.online ? "online " : "offline") : "disabled"} ${e.running}/${e.slots} slots  ${c ? `${c.os}/${c.arch} ${c.cpus} cpu ${c.memGb} GB ${c.toolchains.join(",")}` : "no report yet"}${e.pausedReason ? `  paused: ${safe(e.pausedReason)}` : ""}`);
+      console.log(`${e.id.padEnd(16)} ${safe(e.label).padEnd(24)} ${e.kind.padEnd(14)} ${e.enabled ? (e.online ? "online " : "offline") : "disabled"} ${e.running}/${e.slots} slots${e.confidential ? "  confidential" : ""}  ${c ? `${c.os}/${c.arch} ${c.cpus} cpu ${c.memGb} GB ${c.toolchains.join(",")}` : "no report yet"}${e.pausedReason ? `  paused: ${safe(e.pausedReason)}` : ""}`);
     }
   } else if (sub === "add") {
     const { pos, opt } = options(rest, ["print"]);
     if (!pos[0] || !opt.get("label") || !opt.get("kind") || !opt.get("slots")) die(USAGE);
     if (!KINDS.includes(opt.get("kind") as EnvKind)) die(`--kind must be ${KINDS.join(" or ")}`);
+    const confidential = yesNo(opt, "confidential");
     const f = keyFile(opt);
     try {
-      const { env, key } = (() => createEnv(db, { id: pos[0], label: opt.get("label"), kind: opt.get("kind"), slots: Number(opt.get("slots")) }, "cli"))();
+      const { env, key } = (() => createEnv(db, { id: pos[0], label: opt.get("label"), kind: opt.get("kind"), slots: Number(opt.get("slots")), ...(confidential !== undefined && { confidential }) }, "cli"))();
       f.write(key);
       console.log(`environment ${env.id} created`);
     } catch (e) {
@@ -109,14 +118,13 @@ function envs(args: string[]): void {
     const input: Record<string, unknown> = {};
     if (opt.has("label")) input.label = opt.get("label");
     if (opt.has("slots")) input.slots = Number(opt.get("slots"));
-    if (opt.has("enabled")) {
-      const v = opt.get("enabled");
-      if (v !== "yes" && v !== "no") die("--enabled must be yes or no");
-      input.enabled = v === "yes";
+    for (const name of ["enabled", "confidential"]) {
+      const v = yesNo(opt, name);
+      if (v !== undefined) input[name] = v;
     }
     if (!Object.keys(input).length) die(USAGE);
     const e = run(() => updateEnv(db, pos[0], input, "cli"));
-    console.log(`${e.id}: ${safe(e.label)}, ${e.enabled ? "enabled" : "disabled"}, ${e.slots} slots`);
+    console.log(`${e.id}: ${safe(e.label)}, ${e.enabled ? "enabled" : "disabled"}, ${e.slots} slots${e.confidential ? ", confidential" : ""}`);
   } else if (sub === "rotate-key") {
     const { pos, opt } = options(rest, ["print"]);
     if (!pos[0]) die(USAGE);
