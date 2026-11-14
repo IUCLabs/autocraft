@@ -1,6 +1,7 @@
 // The nightly check catalogue: data, not code paths. Each check names the toolchain image it needs and builds its
 // sandbox steps from the repo's selection. Only steps with network "fetch" touch the network; the rest run offline on
 // what the fetch step downloaded. Artifacts are written under /out by `sh -c` redirects.
+import { fetchScript } from "../worker/rust.ts";
 import type { TaskStep } from "../worker/types.ts";
 
 export type CheckKind = "pass-fail" | "audit" | "bench";
@@ -29,7 +30,10 @@ export type NightlyCheck = {
   workspaceDefault: boolean;
 };
 
-const FETCH_DEPS = (min: number): TaskStep => ({ name: "fetch deps", cmd: ["cargo", "fetch", "--locked"], network: "fetch", timeoutSec: min * 60 });
+const CARGO = "/usr/local/cargo/bin/cargo";
+/** Networked steps run through fetchScript: the image's toolchain, no repository cargo config, an empty environment. */
+const fetchStep = (name: string, commands: string[], timeoutSec: number): TaskStep => ({ name, cmd: ["sh", "-c", fetchScript(commands)], network: "fetch", timeoutSec });
+const FETCH_DEPS = (min: number): TaskStep => fetchStep("fetch deps", [`${CARGO} fetch --locked`], min * 60);
 const pkgs = (crates: string[]): string[] => (crates.length ? crates.flatMap((c) => ["-p", c]) : ["--workspace"]);
 const sh = (name: string, script: string, min: number, artifacts?: string[]): TaskStep =>
   ({ name, cmd: ["sh", "-c", script], network: "none", timeoutSec: min * 60, ...(artifacts ? { artifacts } : {}) });
@@ -41,7 +45,7 @@ export const NIGHTLY_CHECKS: NightlyCheck[] = [
   {
     id: "audit", label: "Dependency audit", toolchain: "rust-audit", timeoutMin: 15, kind: "audit", defaultOn: true, artifact: "audit.json", workspaceDefault: true,
     steps: () => [
-      { name: "fetch advisories", cmd: ["cargo", "audit", "fetch"], network: "fetch", timeoutSec: 600 },
+      fetchStep("fetch advisories", [`${CARGO} audit fetch`], 600),
       { name: "audit", cmd: ["sh", "-c", "cargo audit --no-fetch --json > /out/audit.json"], network: "none", timeoutSec: 600, artifacts: ["audit.json"] },
     ],
   },
@@ -77,7 +81,7 @@ export const NIGHTLY_CHECKS: NightlyCheck[] = [
     id: "asan", label: "AddressSanitizer tests", toolchain: "rust-nightly", timeoutMin: 60, kind: "pass-fail", defaultOn: false, experimental: true, workspaceDefault: true,
     // build-std compiles the standard library offline, so its dependencies are fetched in the fetch step.
     steps: (o) => [
-      { name: "fetch deps", cmd: ["sh", "-c", "cargo fetch --locked && cargo fetch --locked -Zbuild-std --target x86_64-unknown-linux-gnu"], network: "fetch", timeoutSec: 1200 },
+      fetchStep("fetch deps", [`${CARGO} fetch --locked`, `${CARGO} fetch --locked -Zbuild-std --target x86_64-unknown-linux-gnu`], 1200),
       sh("asan test", `RUSTFLAGS=-Zsanitizer=address cargo test --offline --locked -Zbuild-std --target x86_64-unknown-linux-gnu ${pkgs(safe(o.crates)).join(" ")}`, 60),
     ],
   },

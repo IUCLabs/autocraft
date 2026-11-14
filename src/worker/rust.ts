@@ -18,17 +18,24 @@ export type RustPlanOptions = {
  * empty environment except the toolchain paths, so neither a toolchain file, a config wrapper, a
  * credential helper nor a git or cargo variable can start a program with network access (git is never
  * run: cargo fetches with its built-in client). The source overlay is discarded after the step, so
- * deleting the config files is local to it.
+ * deleting the config files is local to it. The toolchain is the image's active one, read outside the
+ * checkout (an image may pin it, as the nightly image does with RUSTUP_TOOLCHAIN).
+ * `commands` are fixed command lines (never repository input), each run in that environment in turn.
  */
-export const FETCH_SCRIPT = [
-  "cd /tmp",
-  "tc=$(/usr/local/cargo/bin/rustup show active-toolchain 2>/dev/null | cut -d' ' -f1)",
-  'if [ -z "$tc" ]; then echo "no active rust toolchain in the image; refusing to run cargo with a toolchain chosen by the repository" >&2; exit 1; fi',
-  "cd /src",
-  "rm -f .cargo/config .cargo/config.toml",
-  'exec env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/tmp CARGO_HOME=/cache/cargo RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}" RUSTUP_TOOLCHAIN="$tc" ' +
-    "RUSTC=/usr/local/cargo/bin/rustc CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS=cargo:token CARGO_NET_GIT_FETCH_WITH_CLI=false /usr/local/cargo/bin/cargo fetch --locked",
-].join("\n");
+export function fetchScript(commands: string[]): string {
+  const env = 'env -i PATH=/usr/local/cargo/bin:/usr/bin:/bin HOME=/tmp CARGO_HOME=/cache/cargo RUSTUP_HOME="${RUSTUP_HOME:-/usr/local/rustup}" RUSTUP_TOOLCHAIN="$tc" ' +
+    "RUSTC=/usr/local/cargo/bin/rustc CARGO_REGISTRY_GLOBAL_CREDENTIAL_PROVIDERS=cargo:token CARGO_NET_GIT_FETCH_WITH_CLI=false";
+  return [
+    "cd /tmp",
+    "tc=$(/usr/local/cargo/bin/rustup show active-toolchain 2>/dev/null | cut -d' ' -f1)",
+    'if [ -z "$tc" ]; then echo "no active rust toolchain in the image; refusing to run cargo with a toolchain chosen by the repository" >&2; exit 1; fi',
+    "cd /src",
+    "rm -f .cargo/config .cargo/config.toml",
+    ...commands.map((c, i) => (i === commands.length - 1 ? `exec ${env} ${c}` : `${env} ${c} || exit 1`)),
+  ].join("\n");
+}
+
+export const FETCH_SCRIPT = fetchScript(["/usr/local/cargo/bin/cargo fetch --locked"]);
 
 /** Whether the checkout can use a locked plan (`--locked` needs Cargo.lock). */
 export function hasCargoLock(checkoutDir: string): boolean {

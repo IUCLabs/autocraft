@@ -97,6 +97,28 @@ function ensureDir(dest: string, parts: string[]): string {
   return cur;
 }
 
+/**
+ * Whether a dangling link at `path` to `target` stays: walked component by component from the link's directory
+ * (before any `..` is folded away), the target never leaves the tree and passes through no existing symlink.
+ */
+function danglingKept(dest: string, path: string, target: string): boolean {
+  if (target.startsWith("/")) return false;
+  const at = path.split("/").slice(0, -1);
+  for (const part of target.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (!at.length) return false;
+      at.pop();
+      continue;
+    }
+    at.push(part);
+    try {
+      if (lstatSync(join(dest, ...at)).isSymbolicLink()) return false;
+    } catch { /* not there yet */ }
+  }
+  return true;
+}
+
 export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limits = DEFAULT_EXTRACT_LIMITS, strip = 1): Promise<number> {
   const r = new Reader(src);
   const files = new Set<string>();
@@ -206,17 +228,20 @@ export async function extractTar(src: AsyncIterable<Buffer>, dest: string, limit
     }
     symlinkSync(l.target, full);
   }
-  // The checks above are lexical; a chain of links can still resolve outside the tree. A dangling link is removed:
-  // where it points depends on what is created later, so it could come to resolve outside.
+  // The checks above are lexical; a chain of links can still resolve outside the tree. A dangling link (for example
+  // to a file the build generates) is kept only when its target, resolved from the link's directory, stays inside
+  // the tree and passes through no link: a chain could come to resolve outside once more is created.
   const root = realpathSync.native(dest);
   for (const l of symlinks) {
     let real: string;
     try {
       real = realpathSync.native(join(dest, l.path)); // native: the JS version resolves ".." lexically
     } catch {
-      try {
-        unlinkSync(join(dest, l.path));
-      } catch { /* the link's directory is gone too: nothing to remove */ }
+      if (!danglingKept(dest, l.path, l.target)) {
+        try {
+          unlinkSync(join(dest, l.path));
+        } catch { /* the link's directory is gone too: nothing to remove */ }
+      }
       continue;
     }
     if (real !== root && !real.startsWith(root + sep)) throw new TarError(`symlink resolves outside the tree: ${l.path}`);
