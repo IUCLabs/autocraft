@@ -7,6 +7,7 @@ import type { PostmergeReviewRow, RelatedItem } from "../postmerge/parse.ts";
 import type { LintProblem } from "../replylint.ts";
 import { safePath } from "../fixup/patch.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
+import { dropMarkup } from "./public-text.ts";
 
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
 
@@ -142,7 +143,7 @@ const SANDBOX_PREFIX = new RegExp(`(^|[^\\w./-])${REPO_PATH}/`, "g");
 /** The model reads the repository at the sandbox path; the posted text names repo-relative paths. */
 export const stripSandboxPath = (s: string): string => s.replace(SANDBOX_PREFIX, "$1");
 /** One line of plain text for a posted claim: no mentions, no raw HTML tags. */
-const squashText = (s: string) => s.replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9_])/g, "$1").replace(/<\/?[A-Za-z][^>]*>/g, "").replace(/\s+/g, " ").trim();
+const squashText = (s: string) => dropMarkup(s.replace(/\s+/g, " ")).trim();
 /** What a posted claim says in place of a text that mentions the reference documentation. */
 export const NEUTRAL_CLAIM = "a claim of the description";
 export const NEUTRAL_EVIDENCE = "withheld";

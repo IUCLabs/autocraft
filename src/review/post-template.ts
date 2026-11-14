@@ -3,16 +3,9 @@
 // (cleaned: it is untrusted model output) and the short head commit. No Node imports:
 // the Prompts page lists the template through src/act/templates.ts.
 
-/**
- * Closed fenced blocks (fences at the start of a line) and inline code spans; the capturing group makes split() keep them at
- * odd indices. A fence that never closes is not code: its text is cleaned like any other.
- */
-const CODE = /(^ {0,3}```[^\n]*\n[\s\S]*?\n {0,3}```[ \t]*$|`[^`\n]*`)/m;
+import { dropMarkup, outsideCode, scrubMarkdown } from "./public-text.ts";
 
-/** `fix` runs on the text outside code only: code keeps its URLs and references. */
-export function outsideCode(s: string, fix: (t: string) => string): string {
-  return s.split(CODE).map((part, i) => (i % 2 ? part : fix(part))).join("");
-}
+export { outsideCode };
 
 export const REVIEW_BODY_MAX = 6000;
 const ITEM_MAX = 600;
@@ -43,48 +36,48 @@ function verdictLine(verdict: string, sure: boolean, override?: string): string 
   return sure ? line : `${line.slice(0, -1)} (not certain)${line.slice(-1)}`;
 }
 
-/** One line of plain text: no mentions (nobody gets pinged), no raw HTML tags, cut to `max` characters. */
+/** One line of plain text: no mentions (nobody gets pinged), no raw HTML tags outside code, cut to `max` characters. */
 export function cleanLine(s: string | null | undefined, max = ITEM_MAX): string {
-  const t = (s ?? "")
-    .replace(/(^|[^A-Za-z0-9])@(?=[A-Za-z0-9_])/g, "$1")
-    .replace(/<\/?[A-Za-z][^>]*>/g, "")
-    .replace(/\s+/g, " ").trim();
+  const t = dropMarkup((s ?? "").replace(/\s+/g, " ")).trim();
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
 }
 
 const SAME_OWNER_HOSTS = new Set(["github.com", "www.github.com"]);
 
-function keptLink(url: string, owner: string | undefined): boolean {
-  if (!owner) return false;
+/** The link as it is posted when it is one the text may keep: https or http to github.com under `owner`, written by the URL parser. */
+function keptLink(url: string, owner: string | undefined): string | null {
+  if (!owner) return null;
   try {
     const u = new URL(url);
-    return (u.protocol === "https:" || u.protocol === "http:") && SAME_OWNER_HOSTS.has(u.hostname.toLowerCase())
+    const ok = (u.protocol === "https:" || u.protocol === "http:") && SAME_OWNER_HOSTS.has(u.hostname.toLowerCase())
       && u.pathname.split("/")[1]?.toLowerCase() === owner.toLowerCase();
+    return ok && !/[`\\[\]<>]/.test(u.href) ? u.href : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
  * Review text without links, except links to github.com under `owner`. A markdown link elsewhere becomes its text; a bare
- * URL elsewhere becomes "(link removed)".
+ * URL elsewhere becomes "(link removed)"; an issue or PR reference ("#12", "GH-12", "owner/repo#12"), which would link or
+ * notify another thread, reads "issue 12". Code keeps its text (colours, anchors). What is left of the link syntax is
+ * escaped (see scrubMarkdown).
  */
 export function stripLinks(s: string, owner?: string): string {
-  const md = s
-    // Reference-style links: the definition line is dropped (its target is never checked) and a use reads as its text.
-    .replace(/(^|\n)[ \t]*\[[^\]]*\]:[^\n]*/g, "$1")
-    .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
-    .replace(/\[([^\]]*)\]\(\s*<?([^\s)>]*)>?[^)]*\)/g, (all, text: string, url: string) => (keptLink(url, owner) ? all : text));
-  const out = md.replace(/(?<![A-Za-z0-9])(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (url) => {
-    const tail = /[.,;:!?]+$/.exec(url)?.[0] ?? "";
-    const bare = tail ? url.slice(0, -tail.length) : url;
-    return keptLink(bare, owner) ? url : `(link removed)${tail}`;
-  });
-  // Issue and PR references would link or notify other threads: "#12", "GH-12" and "owner/repo#12" read as plain numbers.
-  // Code keeps its text (colours, anchors); a reference is 1-7 digits ending at a word boundary.
-  return outsideCode(out, (t) => t
-    .replace(/(?<![A-Za-z0-9])GH-(\d{1,7})(?![A-Za-z0-9_])/gi, "issue $1")
-    .replace(/(?<![A-Za-z0-9/&])(?:[\w.-]+\/[\w.-]+)?#(\d{1,7})(?![A-Za-z0-9_])/g, "issue $1"));
+  return scrubMarkdown(s, (t, keep) => t
+    .replace(/(^|\n)[ \t>]*\[[^\]]*\]:[^\n]*/g, "$1")
+    .replace(/!?\[([^[\]]*)\]\[[^\]]*\]/g, "$1")
+    .replace(/!?\[([^[\]]*)\]\(\s*<?([^\s)>]*)>?[^)]*\)/g, (_all, text: string, url: string) => {
+      const href = keptLink(url, owner);
+      return href ? keep(`[${text.replace(/[`\\[\]<>@&]/g, "")}](${href})`) : text;
+    })
+    .replace(/(?<![A-Za-z0-9])(?:https?:\/\/|www\.)[^\s<>"')\]]+/gi, (url) => {
+      const tail = /[.,;:!?]+$/.exec(url)?.[0] ?? "";
+      const href = keptLink(tail ? url.slice(0, -tail.length) : url, owner);
+      return href ? `${keep(href)}${tail}` : `(link removed)${tail}`;
+    })
+    .replace(/(?<![A-Za-z0-9])GH-(\d{1,7})(?![A-Za-z0-9])/gi, "issue $1")
+    .replace(/(?<![A-Za-z0-9/&])(?:[\w.-]+\/[\w.-]+)?#(\d{1,7})(?![A-Za-z0-9])/g, "issue $1"));
 }
 
 /** What the pipeline will do next with the PR, as far as the posting moment shows. */
@@ -141,7 +134,8 @@ export function reviewBody(r: ReviewPostInput): string {
   const fixedIn = r.fixedIn ? short(r.fixedIn) : null;
   const head = verdictLine(r.verdict, r.sure, fixedIn && r.verdict === "take-fix" ? `Small fixes needed, made in ${fixedIn}:` : undefined);
   const foot = `Reviewed at ${short(r.head)}.${fixedIn ? ` Fixes pushed in ${fixedIn}.` : ""}`;
-  const clean = (t: string, max?: number): string => cleanLine(stripLinks(t, r.owner), max);
+  // One line first: the code spans and escapes stripLinks sees are the ones the posted line has.
+  const clean = (t: string, max?: number): string => cleanLine(stripLinks(t.replace(/\s+/g, " "), r.owner), max);
   const summary = clean(r.summary);
   const items: string[] = [];
   for (const p of r.points.slice(0, MAX_POINTS)) {

@@ -1,6 +1,7 @@
 // The issue the postmerge-file step opens for a defect. Fixed layout; the variable parts are the PR number, the finding's
 // own text (untrusted model output, cleaned) and the model name (shown in the note line). No Node imports: the Prompts page lists the template.
 import { cleanLine, outsideCode } from "../review/post-template.ts";
+import { dropMarkup, scrubMarkdown, settle } from "../review/public-text.ts";
 
 export const ISSUE_TITLE_MAX = 120;
 export const ISSUE_BODY_MAX = 6000;
@@ -13,21 +14,20 @@ export const ISSUE_TEMPLATE = "_AI-generated issue ({model}). Not a maintainer d
  */
 function cleanOutsideCode(t: string): string {
   return t
-    .replace(/(^|\n)[ \t]*\[[^\]]*\]:[^\n]*/g, "$1")
-    .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, "$1")
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(^|\n)[ \t>]*\[[^\]]*\]:[^\n]*/g, "$1")
+    .replace(/!?\[([^[\]]*)\]\[[^\]]*\]/g, "$1")
+    .replace(/!?\[([^[\]]*)\]\([^)]*\)/g, "$1")
     .replace(/<\/?[A-Za-z][^>]*>/g, "")
     .replace(/<?(?<![A-Za-z0-9])(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
     .replace(/(?<![A-Za-z0-9])GH-(\d+)(?![A-Za-z0-9])/gi, "issue $1")
     .replace(/(\b(?:issues?|pull requests?|PRs?)\s+)?(?<![A-Za-z0-9/])(?:[\w.-]+\/[\w.-]+)?#(\d+)(?![A-Za-z0-9])/gi, (_m, pre: string | undefined, n: string) => (pre ? `${pre}${n}` : `issue ${n}`));
 }
 
-// A mention pings even when it sits in code once the text is edited or quoted, so `@` goes everywhere.
-const stripAt = (s: string): string => s.replace(/(^|[^A-Za-z0-9])@(?=[A-Za-z0-9_])/g, "$1");
-const cleanBody = (s: string): string => stripAt(outsideCode(s, cleanOutsideCode)).trim();
+// Mentions go everywhere, code included (scrubMarkdown, dropMarkup): a mention pings once the text is edited or quoted.
+const cleanBody = (s: string): string => scrubMarkdown(s, cleanOutsideCode).trim();
 
 export function issueTitle(title: string): string {
-  return cleanLine(stripAt(outsideCode(title, cleanOutsideCode)), ISSUE_TITLE_MAX);
+  return cleanLine(settle(title, (t) => dropMarkup(outsideCode(t, cleanOutsideCode))), ISSUE_TITLE_MAX);
 }
 
 /** Why a title or body must not be filed: it names the product or the pipeline's account. Null when it is fine. */
