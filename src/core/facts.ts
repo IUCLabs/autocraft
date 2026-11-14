@@ -102,14 +102,14 @@ const sensitiveMemo = new Map<string, { reasons: string[]; lines: number }>();
  * review or pre-merge review caches it). The count is the rule's size fact: it is of this head, not of the mirror's row.
  */
 function diffFactsAt(repo: string, number: number, head: string): { reasons: string[]; lines: number } | null {
-  const files = cachedDiffFiles(repo, number, head);
-  const key = `${repo}#${number}@${head}:${files ? "files" : ""}`;
+  const stored = cachedDiffFiles(repo, number, head);
+  const key = `${repo}#${number}@${head}:${stored ? "files" : ""}`;
   const hit = sensitiveMemo.get(key);
   if (hit) return hit;
   const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
   if (!existsSync(file)) return null;
   const text = readFileSync(file, "utf8");
-  const out = { reasons: sensitiveReasons(text, ownerOf(repo), files ?? {}), lines: splitDiff(text).reduce((n, f) => n + f.lines, 0) };
+  const out = { reasons: sensitiveReasons(text, ownerOf(repo), stored ?? {}), lines: splitDiff(text).reduce((n, f) => n + f.lines, 0) };
   sensitiveMemo.set(key, out);
   return out;
 }

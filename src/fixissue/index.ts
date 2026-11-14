@@ -53,7 +53,7 @@ import { fixIssueApprovalOf } from "./approval.ts";
 import { hasOpenPr, notRustKey, textHash, type IssueCandidate } from "./candidates.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
-import { buildScriptsAt, editable } from "../fixup/patch.ts";
+import { buildScriptsAt, editable, type BuildScripts } from "../fixup/patch.ts";
 import { branchName, claimCommentText, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { changedRsFiles, foldFormat, lintSteps, readLint } from "../prepush/index.ts";
 import { ghComment, ghDeleteComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
@@ -255,6 +255,14 @@ async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueChe
   return x.d.ask(x.db, id, checkout ? { ...input, repo_dir: REPO_PATH } : input, x.runId, checkout, tool);
 }
 
+/** The build scripts of `sha` from its manifests; null (every build.rs refused) when the commit cannot be fetched or read. */
+async function scriptsAt(x: Ctx, repo: string, branch: string, sha: string): Promise<BuildScripts> {
+  try {
+    if (!(await x.git.fetchBranch(ownerOf(repo), repo, branch, sha))) return null;
+  } catch { return null; }
+  return buildScriptsAt(x.git, sha);
+}
+
 /** Triage of a new candidate, then its first patch round. */
 async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "skipped" | "none"> {
   const { db, d, log } = x;
@@ -269,13 +277,16 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
     log(`  ${c.repo}: not a Rust workspace`);
     return "none";
   }
-  const paths = await cachedPaths(c.repo, main, d.fetchPaths);
-  if (!paths) { log(`  ${ref}: no file list`); return "none"; }
+  const listed = await cachedPaths(c.repo, main, d.fetchPaths);
+  if (!listed) { log(`  ${ref}: no file list`); return "none"; }
+  // Build scripts the manifests name are left out of the paths the triage is offered and refused in its reply.
+  const scripts = await scriptsAt(x, c.repo, branch, main);
+  const paths = sourcePaths(listed, MAX_PATHS, scripts);
   const input: TriageInput = { ...issueText(db, c), crates: cr.crates, paths };
   let parsed: ReturnType<typeof parseTriage> | null = null;
   for (let attempt = 0; attempt < TRIAGE.limits.attempts && !(parsed && parsed.ok); attempt++) {
     const reply = await ask(x, "fixissue.triage", input, { repo: c.repo, sha: main });
-    if (reply !== null) parsed = parseTriage(reply, ref, cr.crates, paths);
+    if (reply !== null) parsed = parseTriage(reply, ref, cr.crates, paths, scripts);
   }
   const at = iso(d);
   const row = (state: string, reason: string, extra: Partial<AttemptRow> = {}): AttemptRow => {

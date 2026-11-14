@@ -23,7 +23,7 @@ describe("merge hardening", () => {
     // An edited manifest is read whole at the head; the base is the head with the diff taken back.
     const toml = (path: string, line: string) => {
       const before = '[package]\nname = "x"\n\n[dependencies]\n', after = `${before}${line}\n`;
-      return sensitiveReasons(`diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -4,1 +4,2 @@\n [dependencies]\n+${line}\n`, "org", { [path]: after });
+      return sensitiveReasons(`diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -4,1 +4,2 @@\n [dependencies]\n+${line}\n`, "org", { files: { [path]: after } });
     };
     assert.deepEqual(toml("Cargo.toml", 'serde = "1.0.200"'), []);
     assert.deepEqual(toml("Cargo.toml", 'serde = { git = "https://example.com/serde" }'), [CI_FILES_REASON]);

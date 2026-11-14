@@ -7,6 +7,8 @@ import {
 import { LOCK_ALONE_REASON, LOCK_CHECKSUM_REASON, LOCK_SOURCE_REASON } from "../src/core/lockfiles.ts";
 import { MAX_DIFF_CHARS, codeDiff } from "../src/review/diff.ts";
 import { buildScripts } from "../src/fixup/patch.ts";
+import { workflowRuns } from "../src/core/workflow-runs.ts";
+import { parseTriage, sourcePaths } from "../src/fixissue/parse.ts";
 
 /** A section that edits `path` from `before` to `after` in one hunk (whole file), and the head text the cache keeps for it. */
 const edit = (path: string, before: string[], after: string[]) =>
@@ -15,7 +17,7 @@ const added = (path: string, ...lines: string[]) =>
   `diff --git a/${path} b/${path}\nnew file mode 100644\nindex 0000000..2222222\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`;
 
 test("the content check reads whole manifests, lockfiles, file kinds, both names of a file, and links as a browser resolves them", () => {
-  const manifest = (before: string[], after: string[], path = "crates/a/Cargo.toml") => sensitiveReasons(edit(path, before, after), "storytold", { [path]: `${after.join("\n")}\n` });
+  const manifest = (before: string[], after: string[], path = "crates/a/Cargo.toml") => sensitiveReasons(edit(path, before, after), "storytold", { files: { [path]: `${after.join("\n")}\n` }, runs: [] });
   const pkg = ["[package]", 'name = "a"', 'version = "0.1.0"'];
   // Entries under an unchanged header, dotted keys and literal strings are read as Cargo reads them.
   assert.deepEqual(manifest([...pkg, "[build-dependencies]", 'cc = "1"'], [...pkg, "[build-dependencies]", 'cc = "1"', 'evil = "1"']), [CI]);
@@ -28,7 +30,7 @@ test("the content check reads whole manifests, lockfiles, file kinds, both names
   assert.deepEqual(sensitiveReasons(edit("Cargo.toml", ['a = "1"'], ['a = "2"']), "storytold"), [CI]);
 
   const bump = edit("Cargo.toml", ["[dependencies]", 'serde = "1.0.200"'], ["[dependencies]", 'serde = "1.0.201"']);
-  const files = { "Cargo.toml": '[dependencies]\nserde = "1.0.201"\n' };
+  const files = { files: { "Cargo.toml": '[dependencies]\nserde = "1.0.201"\n' }, runs: [] };
   const lock = (lines: string[]) => `diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -10,6 +10,6 @@\n${lines.join("\n")}\n`;
   const crates = ' source = "registry+https://github.com/rust-lang/crates.io-index"';
   const routine = lock([" [[package]]", ' name = "serde"', '-version = "1.0.200"', '+version = "1.0.201"', crates, '-checksum = "aaa"', '+checksum = "bbb"']);
@@ -44,9 +46,15 @@ test("the content check reads whole manifests, lockfiles, file kinds, both names
   const symlink = "diff --git a/src/a.rs b/src/a.rs\nnew file mode 120000\nindex 0000000..2222222\n--- /dev/null\n+++ b/src/a.rs\n@@ -0,0 +1 @@\n+/etc/passwd\n\\ No newline at end of file\n";
   const mode = "diff --git a/scripts/release.sh b/scripts/release.sh\nold mode 100644\nnew mode 100755\n";
   const binary = (p: string) => `diff --git a/${p} b/${p}\nindex 1111111..2222222 100644\nBinary files a/${p} and b/${p} differ\n`;
-  for (const d of [gitlink, symlink, mode, binary("assets/filter.wasm")]) assert.deepEqual(sensitiveReasons(d, "storytold"), [KIND], d);
+  for (const d of [gitlink, symlink, mode, binary("assets/filter.wasm")]) assert.deepEqual(sensitiveReasons(d, "storytold", { runs: [] }), [KIND], d);
   assert.deepEqual(sensitiveReasons(binary("docs/shot.png"), "storytold"), []);
   for (const p of [".github/actions/setup/action.yml", "rust-toolchain.toml", "justfile", ".gitmodules", "crates/a/build.rs"]) assert.deepEqual(sensitiveReasons(added(p, "x"), "storytold"), [CI], p);
+  // Files the base commit's workflows run, read from their run steps and local actions; unread workflows hold every script-like path.
+  const runs = workflowRuns("jobs:\n  t:\n    steps:\n      - uses: ./tools/setup\n      - run: ./ci/test.sh --all\n      - run: |\n          cargo build --manifest-path Cargo.toml\n          python tools/gen.py > out.txt\n");
+  for (const p of ["ci/test.sh", "tools/gen.py", "tools/setup/action.yml"]) assert.deepEqual(sensitiveReasons(added(p, "x"), "storytold", { runs }), [CI], p);
+  for (const p of ["src/lib.rs", "scripts/other.sh"]) assert.deepEqual(sensitiveReasons(added(p, "x"), "storytold", { runs }), [], p);
+  assert.deepEqual(sensitiveReasons(added("scripts/other.sh", "x"), "storytold", { runs: null }), [CI]);
+  assert.deepEqual(sensitiveReasons(bump, "storytold", { files: files.files, runs }), []);
   // Both names of a renamed file, and git's quoted names.
   assert.deepEqual(sensitiveReasons("diff --git a/.github/workflows/ci.yml b/notes/ci-old.yml\nsimilarity index 100%\nrename from .github/workflows/ci.yml\nrename to notes/ci-old.yml\n", "storytold"), [CI]);
   assert.deepEqual(sensitiveReasons('diff --git "a/.github/workflows/\\303\\251.yml" "b/.github/workflows/\\303\\251.yml"\nnew file mode 100644\n--- /dev/null\n+++ "b/.github/workflows/\\303\\251.yml"\n@@ -0,0 +1 @@\n+on: push\n', "storytold"), [CI]);
@@ -70,6 +78,11 @@ test("the reviews are shown test files while they fit, the rule counts the rest 
 
   const forms = ['package = { name = "a", build = "gen.rs" }', '[package]\n"build" = "gen.rs"', '["package"]\nbuild = "gen.rs"', '[package]\nbuild = """gen.rs"""', '[package]\nbuild = "g\\u0065n.rs"', 'package . build = "gen.rs"'];
   for (const toml of forms) assert.deepEqual([...buildScripts(["c/Cargo.toml", "c/gen.rs"], () => toml)], ["c/gen.rs"], toml);
+  // The Fix-issue triage is neither offered nor allowed a build script a manifest names.
+  const scripts = new Set(["c/gen.rs"]);
+  assert.deepEqual(sourcePaths(["c/gen.rs", "c/src/lib.rs"], 10, scripts), ["c/src/lib.rs"]);
+  const reply = (f: string) => JSON.stringify([{ ref: "app#5", fixable: true, reason: "r", crate: "c", files: [f] }]);
+  assert.deepEqual([reply("c/src/lib.rs"), reply("c/gen.rs")].map((r) => parseTriage(r, "app#5", [{ name: "c", dir: "c" }], ["c/gen.rs", "c/src/lib.rs"], scripts).ok), [true, false]);
   // A manifest that does not parse makes every Rust file of its crate outside src/ a build script.
   assert.deepEqual([...buildScripts(["c/Cargo.toml", "c/gen.rs", "c/src/lib.rs"], () => "[package\nbuild = 'gen.rs'")].sort(), ["c/gen.rs"]);
 });

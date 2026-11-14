@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { envVar } from "../env.ts";
 import { slugOf } from "../owners.ts";
 import { readEnvFor } from "../github/read.ts";
+import { SCRIPT_LIKE, workflowRuns } from "../core/workflow-runs.ts";
 
 // gh picks its account from the working directory, so it runs in this repo.
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
@@ -19,8 +20,9 @@ export function diffCacheDir(): string {
 /**
  * `base`: the base branch the diff was computed against (the PR's base at the time of the read). `files`: the head commit's
  * text of each changed file the merge rule reads whole (see `wholeFilesOf`); a file missing from it could not be read.
+ * `runs`: the run steps and local actions of the base commit's workflows (see core/workflow-runs.ts); null when unread.
  */
-export type DiffResult = { ok: true; text: string; base?: string; files?: Record<string, string> } | { ok: false; tooLarge: boolean; error: string };
+export type DiffResult = { ok: true; text: string; base?: string; files?: Record<string, string>; runs?: string[] | null } | { ok: false; tooLarge: boolean; error: string };
 /** `head`: the commit the diff must be of; the fetch fails when the PR is no longer at it. */
 export type DiffFetcher = (repo: string, number: number, head?: string) => Promise<DiffResult>;
 
@@ -44,8 +46,32 @@ export const ghDiff: DiffFetcher = async (repo, number, head) => {
     const c = await gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${slug}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${liveHead}`]);
     if (c.code === 0) whole[path] = c.out;
   }
-  return { ok: true, text: r.out, base: baseRef, files: whole };
+  return { ok: true, text: r.out, base: baseRef, files: whole, runs: await workflowRunsAt(repo, slug, baseSha) };
 };
+
+const MAX_WORKFLOWS = 50;
+/** The run steps of the workflows at a commit, cached by sha; null when they could not be read. */
+async function workflowRunsAt(repo: string, slug: string, sha: string): Promise<string[] | null> {
+  const f = join(diffCacheDir(), repo, `workflows-${sha}.json`);
+  try { if (existsSync(f)) return JSON.parse(readFileSync(f, "utf8")) as string[]; } catch { /* read again */ }
+  const ls = await gh(["api", `repos/${slug}/contents/.github/workflows?ref=${sha}`, "--jq", '.[] | select(.type == "file") | .path']);
+  let paths: string[];
+  if (ls.code === 0) paths = ls.out.split("\n").filter((p) => /\.ya?ml$/i.test(p));
+  else if (/\b404\b|Not Found/i.test(ls.err)) paths = [];
+  else return null;
+  if (paths.length > MAX_WORKFLOWS) return null;
+  const runs: string[] = [];
+  for (const p of paths) {
+    const c = await gh(["api", "-H", "Accept: application/vnd.github.raw", `repos/${slug}/contents/${p.split("/").map(encodeURIComponent).join("/")}?ref=${sha}`]);
+    if (c.code !== 0) return null;
+    runs.push(...workflowRuns(c.out));
+  }
+  mkdirSync(join(diffCacheDir(), repo), { recursive: true });
+  const tmp = `${f}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(runs));
+  renameSync(tmp, f);
+  return runs;
+}
 
 const MANIFEST = /(^|\/)Cargo\.toml$/;
 const MAX_WHOLE_FILES = 100;
@@ -111,7 +137,7 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
       };
       if (r.base) put(`${file}.base`, r.base);
       // The whole files are written before the diff, so a reader that finds the diff finds them too.
-      put(`${file}.files.json`, JSON.stringify(r.files ?? {}));
+      put(`${file}.files.json`, JSON.stringify({ files: r.files ?? {}, runs: r.runs ?? null }));
       put(file, r.text);
     }
     return r;
@@ -123,7 +149,7 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
       const text = readFileSync(file, "utf8");
       const hit: DiffResult = { ok: true, text, ...(stored !== undefined ? { base: stored } : {}) };
       // An entry stored without the whole files the rule needs is read again; if that fails the entry stands.
-      if (existsSync(`${file}.files.json`) || !wholeFilesOf(text).length) return hit;
+      if (existsSync(`${file}.files.json`) || !(wholeFilesOf(text).length || splitDiff(text).some((f) => SCRIPT_LIKE.test(f.path) || SCRIPT_LIKE.test(f.oldPath)))) return hit;
       const again = await fetchAndStore();
       return again.ok ? again : hit;
     }
@@ -131,10 +157,14 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
   return fetchAndStore();
 }
 
-/** The whole files stored beside a cached diff (see `DiffResult.files`); null when none are stored. */
-export function cachedDiffFiles(repo: string, number: number, head: string): Record<string, string> | null {
+/** What is stored beside a cached diff (see `DiffResult.files` and `runs`); null when nothing is stored. */
+export function cachedDiffFiles(repo: string, number: number, head: string): { files: Record<string, string>; runs: string[] | null } | null {
   const f = join(diffCacheDir(), repo, `${number}-${head}.diff.files.json`);
-  try { return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) as Record<string, string> : null; } catch { return null; }
+  try {
+    if (!existsSync(f)) return null;
+    const v = JSON.parse(readFileSync(f, "utf8")) as { files?: Record<string, string>; runs?: string[] | null };
+    return { files: v.files ?? {}, runs: Array.isArray(v.runs) ? v.runs : null };
+  } catch { return null; }
 }
 
 /** Forgets the cached diff of a head, so the next read fetches it (and the PR's current base) again. */

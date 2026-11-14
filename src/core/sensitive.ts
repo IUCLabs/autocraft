@@ -5,6 +5,7 @@ import { MAX_DIFF_CHARS, codeDiff, isDeletedFile, isNewFile, splitDiff, textBefo
 import { isTrustPath } from "./trust-paths.ts";
 import { manifestRiskChanged } from "./cargo-manifest.ts";
 import { lockfileReasons } from "./lockfiles.ts";
+import { SCRIPT_LIKE, runByWorkflow, runPaths } from "./workflow-runs.ts";
 
 export const README_REASON = "changes the README";
 export const UNCHECKED_REASON = "diff not checked for README or third-party links";
@@ -108,11 +109,16 @@ function externalLink(f: FileDiff, own: Set<string>, org: string): boolean {
 }
 
 /**
- * The reasons (in a fixed order) this diff keeps a PR outside the merge rule. `org` is the GitHub org of the repo; `files`
- * the whole head text of edited manifests, as the diff cache stores it beside the diff.
+ * The reasons (in a fixed order) this diff keeps a PR outside the merge rule. `org` is the GitHub org of the repo. `ctx`, as
+ * the diff cache stores it beside the diff: `files` the whole head text of edited manifests, `runs` the base commit's
+ * workflow run steps (null or absent: unread).
  */
-export function sensitiveReasons(diff: string, org: string, files: Record<string, string> = {}): string[] {
+export function sensitiveReasons(diff: string, org: string, ctx: { files?: Record<string, string>; runs?: string[] | null } = {}): string[] {
   const own = new Set([...OWN_HOSTS, `${org}.github.io`].map((h) => h.toLowerCase()));
+  const files = ctx.files ?? {};
+  // Files the base commit's workflows run; with the workflows unread, every script-like path counts.
+  const named = ctx.runs ? runPaths(ctx.runs) : null;
+  const runByCi = (p: string) => (named ? runByWorkflow(p, named) : SCRIPT_LIKE.test(p));
   const sections = splitDiff(diff);
   let readme = false, brand = false, ci = false, kind = false, unreadable = false, external = false;
   for (const f of sections) {
@@ -120,7 +126,7 @@ export function sensitiveReasons(diff: string, org: string, files: Record<string
     if (paths.includes("?")) unreadable = true;
     if (paths.some((p) => README_FILE.test(p))) readme = true;
     if (paths.some((p) => BRAND_FILE.test(p))) brand = true;
-    if (paths.some((p) => isTrustPath(p) || BUILD_SCRIPT.test(p)) || (paths.some((p) => CARGO_FILE.test(p)) && cargoRisk(f, files))) ci = true;
+    if (paths.some((p) => isTrustPath(p) || BUILD_SCRIPT.test(p) || runByCi(p)) || (paths.some((p) => CARGO_FILE.test(p)) && cargoRisk(f, files))) ci = true;
     if (oddKind(f)) kind = true;
     if (!external && DOC_FILE.test(f.path) && externalLink(f, own, org)) external = true;
   }
