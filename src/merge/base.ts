@@ -30,12 +30,13 @@ export function mergeInAllowed(db: DatabaseSync, repo: string, number: number, h
 /**
  * A live read found the PR on another base than the mirror holds: the mirror takes the live base and the cached diff of the
  * old base is dropped. The planner then counts the review as stale (src/review/discussion.ts staleReviews), and the re-review
- * waits like one after a push: the PR author's retarget is no request for a review.
+ * waits like one after a push: the PR author's retarget is no request for a review. `keepDiff`: the cached diff was just read
+ * against the live base (a review's own read), so it stays.
  */
-export function recordLiveBase(db: DatabaseSync, repo: string, number: number, head: string, liveBase: string): void {
-  dropCachedDiff(repo, number, head);
+export function recordLiveBase(db: DatabaseSync, repo: string, number: number, head: string, liveBase: string, o: { by?: string; keepDiff?: boolean } = {}): void {
+  if (!o.keepDiff) dropCachedDiff(repo, number, head);
   const was = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, number) as { base_ref: string | null } | undefined)?.base_ref ?? null;
   if (was === liveBase) return;
   db.prepare("UPDATE main.items SET base_ref = ? WHERE repo = ? AND number = ?").run(liveBase, repo, number);
-  audit(db, "merge", "base-changed", `${repo}#${number}`, { head, from: was, base: liveBase });
+  audit(db, o.by ?? "merge", "base-changed", `${repo}#${number}`, { head, from: was, base: liveBase });
 }

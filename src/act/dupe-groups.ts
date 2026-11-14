@@ -122,10 +122,13 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
           const live = await run.io.live(k.number);
           const gone = !live || (live.state !== "OPEN" && !(live.type === "PullRequest" && live.state === "MERGED"));
           // An open kept PR at another head than the comparison read is no longer the code the duplicates were closed for.
-          const moved = !gone && k.kind === "pr" && live!.state === "OPEN" && (!k.head || live!.head !== k.head || comparedHead(db, run.repo, k.number) !== k.head);
-          if (gone || moved) {
+          const bound = k.kind === "pr" ? comparedHead(db, run.repo, k.number) : undefined;
+          // A kept PR with no known head is no code a comparison saw: the decision ends, and comparing again would not tell more.
+          const unknown = !gone && k.kind === "pr" && live!.state === "OPEN" && (!k.head || !bound);
+          const moved = !gone && !unknown && k.kind === "pr" && live!.state === "OPEN" && (live!.head !== k.head || bound !== k.head);
+          if (gone || unknown || moved) {
             // Nothing stays held by a decision that can no longer close anything: the members are released and the next comparison asks again.
-            const reason = moved ? `the head of the kept PR ${ref(k.number)} moved since the comparison` : `the kept item ${ref(k.number)} is gone or closed`;
+            const reason = moved ? `the head of the kept PR ${ref(k.number)} moved since the comparison` : unknown ? `no comparison read a head of the kept PR ${ref(k.number)}` : `the kept item ${ref(k.number)} is gone or closed`;
             for (const c of closers) if (!posted.get(dec.id, c.number, "close")) skip(c.number, "close", reason, true);
             // The next comparison reads the kept PR's new head.
             if (moved) compareAgain(db, ACTOR, run.repo, k.number);
@@ -159,7 +162,12 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         const live = await run.io.live(c.number);
         if (!live) { skip(c.number, "close", "GitHub returned no such item"); continue; }
         if (live.state !== "OPEN") { skip(c.number, "close", `already ${live.state.toLowerCase()} on GitHub`); continue; }
-        if (c.kind === "pr" && (!c.head || live.head !== c.head || comparedHead(db, run.repo, c.number) !== c.head)) { skip(c.number, "close", "the head moved since the comparison", true); compareAgain(db, ACTOR, run.repo, c.number); continue; }
+        if (c.kind === "pr") {
+          const bound = comparedHead(db, run.repo, c.number);
+          // No head known: released without comparing again, which would read no head either.
+          if (!c.head || !bound) { skip(c.number, "close", "no comparison read a head of it", true); continue; }
+          if (live.head !== c.head || bound !== c.head) { skip(c.number, "close", "the head moved since the comparison", true); compareAgain(db, ACTOR, run.repo, c.number); continue; }
+        }
         if (c.kind === "issue" && c.head) {
           const row = db.prepare("SELECT embed_hash, title, body FROM items WHERE repo = ? AND number = ?").get(run.repo, c.number) as { embed_hash: string | null; title: string | null; body: string | null } | undefined;
           // A missing stored hash is computed from the text; an item without a row counts as changed.

@@ -140,12 +140,13 @@ function diffMoved(c: StoredComparison, members: Member[]): boolean {
 
 /**
  * The head of PR `n` that its latest stored comparison read; undefined when that comparison recorded no heads (stored
- * before heads were kept), so nothing binds the PR to code a comparison saw.
+ * before heads were kept), so nothing binds the PR to code a comparison saw; null when no comparison read a head of it.
  */
-export function comparedHead(db: DatabaseSync, repo: string, n: number): string | undefined {
+export function comparedHead(db: DatabaseSync, repo: string, n: number): string | null | undefined {
   const r = db.prepare(`SELECT heads, json_extract(heads, '$."' || :n || '"') AS head FROM dupe_comparisons
     WHERE repo = :repo AND kind = 'pr' AND EXISTS (SELECT 1 FROM json_each(members) WHERE value = :n) ORDER BY at DESC LIMIT 1`).get({ repo, n }) as { heads: string | null; head: string | null } | undefined;
-  return r?.heads != null && r.head !== null ? r.head : undefined;
+  if (!r) return null;
+  return r.heads == null ? undefined : r.head ?? null;
 }
 
 /** The stored comparison of the set when it is current. */
