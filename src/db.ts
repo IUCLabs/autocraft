@@ -27,6 +27,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["opus_reviews", "base_ref", "TEXT"],
   ["items", "reactions_count", "INTEGER"],
   ["discord_channels", "default_repo", "TEXT"],
+  ["reporter_tokens", "confirm_hash", "TEXT"],
   ["discord_channels", "position", "INTEGER"],
   ["discord_channels", "category_id", "TEXT"],
   ["oauth_states", "identity", "TEXT"],

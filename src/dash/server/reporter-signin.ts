@@ -1,8 +1,9 @@
 // The two public routes of a Discord reporter's GitHub sign-in (src/discord/reporter.ts): /discord/github/start sends the
 // browser to GitHub's authorization page, /discord/github/callback stores the token. No dashboard session is involved and
 // none is created: the token only lets the bot file an issue as that account. The state, bound to the Discord user, is
-// single use and expires after ten minutes; a cookie set at the start binds the callback to the same browser, so a
-// link cannot be used to sign someone else's GitHub account in for a stranger's Discord user.
+// single use and expires after ten minutes; a cookie set at the start binds the callback to the same browser. Whoever
+// opens a link signs in, so the token is used only once the Discord user enters, in Discord, the code the callback page
+// shows (src/discord/reporter.ts): a link passed on to someone else does not sign that person in for the Discord user.
 import type { DatabaseSync } from "node:sqlite";
 import { peekReporterState, saveReporter, takeReporterState } from "../../discord/reporter.ts";
 import type { Res } from "../types.ts";
@@ -41,8 +42,8 @@ export async function reporterSignIn(d: ReporterSignIn, url: URL, cookies: Map<s
     const tokens = await d.provider.exchange(code, s.verifier, redirectUri);
     const who = tokens ? await d.provider.identity(tokens.access) : null;
     if (!tokens || !who) return { r: page(nonce, 400, "Sign-in failed", "GitHub did not accept the sign-in. Go back to Discord and try again."), cookies: clear };
-    saveReporter(d.db, d.box, s.reporter, who.id, who.login, tokens);
-    return { r: { html: plainPage(nonce, "Signed in", `<p>Signed in as ${esc(who.login)}. Go back to Discord and press File it.</p>`) }, cookies: clear };
+    const confirm = saveReporter(d.db, d.box, s.reporter, who.id, who.login, tokens);
+    return { r: { html: plainPage(nonce, "Signed in", `<p>Signed in as ${esc(who.login)}. To finish, go back to Discord, press File it and enter this code within ten minutes:</p><p><strong>${esc(confirm)}</strong></p><p>Enter it only in your own Discord. If you did not ask to file an issue from Discord, close this page: nothing is filed without the code.</p>`) }, cookies: clear };
   } catch (e) {
     console.error(`reporter sign-in: ${(e as Error).message}`);
     return { r: page(nonce, 502, "Sign-in failed", "GitHub did not answer. Try again in a minute."), cookies: clear };

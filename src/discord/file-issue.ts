@@ -33,6 +33,8 @@ export type FileRequest = {
 export type FileResult =
   /** The person has not signed in with GitHub (or the sign-in expired): show a link button to `url`. */
   | { status: "sign-in"; url: string }
+  /** Signed in: the code of the sign-in page is still to be entered (confirmReporter). */
+  | { status: "confirm" }
   | { status: "filed"; number: number; url: string; login: string }
   /** Not filed: a limit, the junk check or a GitHub error. `reason` is shown to the person; the flow offers the GitHub link instead. */
   | { status: "refused"; reason: string };
@@ -124,6 +126,7 @@ export async function fileIssue(deps: FileDeps, req: FileRequest, hooks: FileHoo
 
   const tok = await reporterToken(db, keys.box, keys.provider, req.reporter, now);
   if (!tok.ok && tok.signIn) return { status: "sign-in", url: `${baseUrl}/discord/github/start?state=${encodeURIComponent(newReporterState(db, req.reporter, now))}` };
+  if (!tok.ok && tok.confirm) return { status: "confirm" };
   if (!tok.ok) return { status: "refused", reason: "GitHub did not answer. Try again in a minute." };
 
   const since = new Date(now - DAY_MS).toISOString();
