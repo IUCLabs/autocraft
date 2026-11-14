@@ -190,7 +190,9 @@ function appIdentityChecks({ db, probe }: CheckCtx): Check[] {
 /** The last pass that binds contributors' account ids failed: the earlier PRs of the logins it did not bind count toward no tier until a pass succeeds. */
 function authorIdsCheck({ db }: CheckCtx): Check[] {
   const err = (db.prepare("SELECT value FROM settings WHERE key = 'author_ids_error'").get() as { value: string } | undefined)?.value;
-  if (!err) return [ok("author-ids", "/contributors")];
+  const passed = (db.prepare("SELECT value FROM settings WHERE key = 'author_ids_backfilled'").get() as { value: string } | undefined)?.value;
+  // A pass that succeeded after the error supersedes it.
+  if (!err || (passed && passed >= (err.split(" ")[0] ?? ""))) return [ok("author-ids", "/contributors")];
   const n = unboundLogins(db).length;
   if (!n) return [ok("author-ids", "/contributors")];
   const at = err.split(" ")[0] ?? null;

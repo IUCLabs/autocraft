@@ -781,6 +781,8 @@ export interface Contributor {
   /** From merge history under the current rule, ignoring any override. */
   autoTier: "whitelisted" | "not";
   override: OverrideStatus | null;
+  /** False for an allow given to another GitHub account than the one the login is bound to now (or to no recorded account). */
+  overrideInEffect: boolean;
   /** Operators only; absent for everyone else. */
   overrideNote?: string | null;
   overrideBy: string | null;

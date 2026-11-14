@@ -25,6 +25,7 @@ export type Contributor = {
   last_merge: string | null;
   repos: string;           // comma-separated
   override: "allow" | "deny" | null;
+  override_in_effect: boolean; // false for an allow given to another account than the one the login is bound to (or with no account)
   note: string | null;     // private
   override_by: string | null;
   override_at: string | null;
@@ -76,15 +77,19 @@ function standings(db: DatabaseSync, authors: AuthorRef[]): Map<string, Standing
   const out = new Map<string, Standing>();
   if (!authors.length) return out;
   const logins = [...new Set(authors.map((a) => a.login))];
+  // A long list (the contributors page) reads every login rather than binding thousands of parameters.
+  const all = logins.length > 500;
   const marks = logins.map(() => "?").join(",");
+  const only = (col: string, nocase = false): string => (all ? "1" : `${col}${nocase ? " COLLATE NOCASE" : ""} IN (${marks})`);
+  const args = all ? [] : logins;
   const rows = new Map<string, { id: number | null; merged: number; closed: number }[]>();
   for (const r of db.prepare(`SELECT author AS login, author_id AS id, SUM(state = 'MERGED') AS merged, SUM(state = 'CLOSED') AS closed
-    FROM items WHERE kind = 'pr' AND author IN (${marks}) GROUP BY author, author_id`).all(...logins) as { login: string; id: number | null; merged: number; closed: number }[]) {
+    FROM items WHERE kind = 'pr' AND author IS NOT NULL AND ${only("author")} GROUP BY author, author_id`).all(...args) as { login: string; id: number | null; merged: number; closed: number }[]) {
     (rows.get(r.login) ?? rows.set(r.login, []).get(r.login)!).push(r);
   }
-  const over = new Map((db.prepare(`SELECT login, status, github_id FROM whitelist_overrides WHERE login COLLATE NOCASE IN (${marks})`).all(...logins) as { login: string; status: string; github_id: number | null }[])
+  const over = new Map((db.prepare(`SELECT login, status, github_id FROM whitelist_overrides WHERE ${only("login", true)}`).all(...args) as { login: string; status: string; github_id: number | null }[])
     .map((r) => [r.login.toLowerCase(), r]));
-  const bound = new Map((db.prepare(`SELECT login, id FROM author_ids WHERE login IN (${marks})`).all(...logins) as { login: string; id: number }[]).map((r) => [r.login, r.id]));
+  const bound = new Map((db.prepare(`SELECT login, id FROM author_ids WHERE ${only("login")}`).all(...args) as { login: string; id: number }[]).map((r) => [r.login, r.id]));
   for (const a of authors) {
     const owner = bound.get(a.login);
     const account = a.id ?? owner ?? null;
@@ -103,17 +108,10 @@ export function tiersOf(db: DatabaseSync, authors: AuthorRef[]): Map<string, Tie
   return new Map([...standings(db, authors)].map(([k, s]) => [k, tierOf(s.merged, s.closed, s.override, rule)]));
 }
 
-// SQL expression for the tier, given columns merged, closed, override and
-// bound parameters :min_merged, :min_rate.
-export const TIER_SQL = `CASE
-  WHEN override IN ('allow','deny') THEN override
-  WHEN merged >= :min_merged AND merged + closed > 0 AND CAST(merged AS REAL) / (merged + closed) >= :min_rate THEN 'whitelisted'
-  ELSE 'not' END`;
-
 export function contributors(db: DatabaseSync, opts: { repo?: string; login?: string } = {}): Contributor[] {
   const rule = getRule(db);
   const where = [opts.repo ? "AND repo = :repo" : "", opts.login ? "AND author = :login" : ""].join(" ");
-  const params: Record<string, string | number> = { min_merged: rule.minMerged, min_rate: rule.minRate };
+  const params: Record<string, string | number> = {};
   if (opts.repo) params.repo = opts.repo;
   if (opts.login) params.login = opts.login;
   // Stats always come from every repo; the repo filter only picks who is listed.
@@ -128,8 +126,14 @@ export function contributors(db: DatabaseSync, opts: { repo?: string; login?: st
       SELECT o.login, 0, 0, 0, NULL, '', o.status, o.note, o.by, o.at FROM whitelist_overrides o
       WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.kind = 'pr' AND i.author = o.login COLLATE NOCASE) ${opts.repo ? "AND 0" : ""} ${opts.login ? "AND o.login = :login" : ""}
     )
-    SELECT j.*, ${TIER_SQL} AS tier FROM j`).all(params) as Omit<Contributor, "rate">[];
-  return rows.map((r) => ({ ...r, rate: r.merged + r.closed > 0 ? r.merged / (r.merged + r.closed) : null }));
+    SELECT j.* FROM j`).all(params) as Omit<Contributor, "rate" | "tier" | "override_in_effect">[];
+  // History, override and tier are those of the account the login is bound to, as the merge rule reads them.
+  const st = standings(db, rows.map((r) => ({ login: r.login, id: null })));
+  return rows.map((r) => {
+    const s = st.get(tierKey({ login: r.login, id: null }))!;
+    return { ...r, merged: s.merged, closed: s.closed, override_in_effect: r.override !== null && s.override === r.override,
+      tier: tierOf(s.merged, s.closed, s.override, rule), rate: s.merged + s.closed > 0 ? s.merged / (s.merged + s.closed) : null };
+  });
 }
 
 /** Whether the author account is whitelisted (by history or an allow override), with the facts; `id` null stands for the login's bound account. */

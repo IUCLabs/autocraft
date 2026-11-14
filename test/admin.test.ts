@@ -37,6 +37,8 @@ before(async () => {
   prs("veteran", 10, 1);
   prs("steady", 4, 1, 2);
   prs("newbie", 1, 3);
+  // Each login's history is bound to the account the lookup below gives it.
+  for (const l of ["veteran", "steady", "newbie"]) db.prepare("INSERT INTO author_ids (login, id) VALUES (?, ?)").run(l, 5000 + l.length);
   db.prepare("INSERT INTO repos (name, visibility, open_prs, open_issues) VALUES ('photocraft', 'public', 2, 0), ('not-yet', 'public', 5, 7)").run();
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);

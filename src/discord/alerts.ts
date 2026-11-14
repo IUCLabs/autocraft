@@ -21,6 +21,7 @@ import type { DiscordKeys } from "./keys.ts";
 import { loginOf } from "./links.ts";
 import type { Call, Interactions } from "./interactions.ts";
 import { RestError, type DiscordRest, type EditBody } from "./rest.ts";
+import { ghPermission, type PermissionReader } from "../fixup/author-permission.ts";
 
 /** What the alerts need from Discord beyond messages: the direct-message channel of a user. */
 export type DmRest = DiscordRest & { createDm(userId: string): Promise<{ id: string }> };
@@ -60,22 +61,27 @@ const roleOf = (db: DatabaseSync, login: string): Role | null => {
 /** How old a maintainer's cached repo permission may be for alerts: longer than the dashboard's, so a message does not flap between visits. */
 export const RECEIVE_PERMISSION_TTL_MS = 24 * 3600_000;
 
+const permKey = (login: string, repo: string): string => `${login.toLowerCase()}|${repo}`;
+
 /**
  * Who receives and keeps alerts: an operator, or a maintainer while maintainer_writes is on, the app acts for them on every repo and their
- * permission on each, read by a dashboard visit within RECEIVE_PERMISSION_TTL_MS, is write or better. A press checks it live.
+ * permission on each, read within RECEIVE_PERMISSION_TTL_MS (by a dashboard visit or the alert pass), is write or better. `kept`: pairs
+ * (permKey) whose refresh failed in this pass, where the older row still counts. A press checks it live.
  */
-export function mayReceive(db: DatabaseSync, login: string, role: Role, repos: string[], now: number = Date.now()): boolean {
+export function mayReceive(db: DatabaseSync, login: string, role: Role, repos: string[], now: number = Date.now(), kept: ReadonlySet<string> = new Set()): boolean {
   if (role === "operator") return true;
   if (role !== "maintainer" || !maintainerWritesOn(db) || !allAppIdentity(db, repos)) return false;
   const since = new Date(now - RECEIVE_PERMISSION_TTL_MS).toISOString();
-  return repos.every((r) => !!db.prepare("SELECT 1 FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ('write', 'maintain', 'admin') AND checked_at > ?").get(login, r, since));
+  return repos.every((r) => !!db.prepare("SELECT 1 FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ('write', 'maintain', 'admin') AND (checked_at > ? OR ?)")
+    .get(login, r, since, Number(kept.has(permKey(login, r)))));
 }
 
 export function mayAlert(db: DatabaseSync, login: string): boolean {
   const role = roleOf(db, login);
   if (role === "operator") return true;
   if (role !== "maintainer" || !maintainerWritesOn(db)) return false;
-  return trackedNames(db).some((r) => mayReceive(db, login, role, [r]));
+  // Turning alerts on takes a write permission of any age: the alert pass reads a stale one again before it sends.
+  return trackedNames(db).some((r) => mayReceive(db, login, role, [r], Date.now(), new Set([permKey(login, r)])));
 }
 
 export function setAlerts(db: DatabaseSync, keys: DiscordKeys, userId: string, channelId: string | null): void {
@@ -143,6 +149,8 @@ export type AlertDeps = {
   perHour?: number;
   now?: () => number;
   act?: ActDeps;
+  /** A login's permission on a repo from GitHub (the normal read path); null when it cannot be told. */
+  readPermission?: PermissionReader;
 };
 
 export class DecisionAlerts {
@@ -153,6 +161,10 @@ export class DecisionAlerts {
   #lastSlow = "";
   #slowAt = 0;
   #seen = new Map<string, string>();
+  /** When the alert pass last read a (login, repo) permission (permKey), and whether the read failed. */
+  #permRead = new Map<string, { at: number; failed: boolean }>();
+  /** Pairs whose last refresh failed: their older row counts until a read answers. */
+  #kept = new Set<string>();
 
   constructor(d: AlertDeps) {
     this.#d = d;
@@ -211,6 +223,7 @@ export class DecisionAlerts {
     const { db, keys, rest, log } = this.#d;
     const now = (this.#d.now ?? Date.now)();
     const people = this.#alerters();
+    await this.#refreshPermissions(people, now);
     // Messages first: an answer or new choices change what is shown.
     for (const m of db.prepare("SELECT decision_id, user_hash, sealed, choices_id, sent_at FROM discord_alert_msgs").all() as MsgRow[]) {
       const owner = people.find((x) => x.userHash === m.user_hash);
@@ -219,7 +232,7 @@ export class DecisionAlerts {
     for (const p of people) {
       const open = db.prepare(`SELECT * FROM decisions WHERE answer IS NULL AND NOT ${SNOOZED_SQL} AND NOT ${lockLiveSql("decisions")} AND asked_at >= (SELECT created_at FROM discord_alerts WHERE user_hash = ?) ORDER BY asked_at`).all(p.userHash) as DecisionRow[];
       const have = new Set((db.prepare("SELECT decision_id FROM discord_alert_msgs WHERE user_hash = ?").all(p.userHash) as { decision_id: string }[]).map((r) => r.decision_id));
-      const fresh = open.filter((d) => !have.has(d.id) && itemsOf(d).length > 0 && mayReceive(db, p.login, p.role, reposOf(d)));
+      const fresh = open.filter((d) => !have.has(d.id) && itemsOf(d).length > 0 && mayReceive(db, p.login, p.role, reposOf(d), now, this.#kept));
       if (!fresh.length) continue;
       let room = (this.#d.perHour ?? PER_HOUR) - Number((db.prepare("SELECT COUNT(*) AS n FROM discord_alert_msgs WHERE user_hash = ? AND (sealed IS NOT NULL OR decision_id LIKE 'summary:%') AND sent_at > ?").get(p.userHash, new Date(now - HOUR_MS).toISOString()) as { n: number }).n);
       const overflow: DecisionRow[] = [];
@@ -261,6 +274,38 @@ export class DecisionAlerts {
     }
   }
 
+  /**
+   * Maintainers' permissions older than RECEIVE_PERMISSION_TTL_MS on the repos of open decisions are read again from GitHub, at most once a
+   * day per (login, repo): the cache is otherwise written only by the maintainer's own dashboard visits. A failed read keeps the older row,
+   * so a sent message does not flip on a read error; only an answer without write access ends the alerts.
+   */
+  async #refreshPermissions(people: Alerter[], now: number): Promise<void> {
+    const { db, log } = this.#d;
+    const maintainers = people.filter((p) => p.role === "maintainer");
+    if (!maintainers.length || !maintainerWritesOn(db)) return;
+    const repos = new Set<string>();
+    for (const d of db.prepare("SELECT * FROM decisions WHERE answer IS NULL").all() as DecisionRow[]) for (const r of reposOf(d)) repos.add(r);
+    if (!repos.size) return;
+    const since = new Date(now - RECEIVE_PERMISSION_TTL_MS).toISOString();
+    const stale = db.prepare("SELECT 1 FROM main.repo_permissions WHERE login = ? AND repo = ? AND checked_at <= ?");
+    const store = db.prepare(`INSERT INTO main.repo_permissions (login, repo, permission, checked_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT (login, repo) DO UPDATE SET permission = excluded.permission, checked_at = excluded.checked_at`);
+    const read = this.#d.readPermission ?? ghPermission;
+    for (const login of new Set(maintainers.map((p) => p.login))) {
+      for (const repo of repos) {
+        const k = permKey(login, repo);
+        if (!stale.get(login, repo, since)) { this.#kept.delete(k); continue; }
+        const last = this.#permRead.get(k);
+        if (last && now - last.at < RECEIVE_PERMISSION_TTL_MS) continue;
+        const p = await read(repo, login).catch(() => null);
+        this.#permRead.set(k, { at: now, failed: p === null });
+        if (p === null) { this.#kept.add(k); log(`discord: permission of ${login} on ${repo} could not be read`); continue; }
+        this.#kept.delete(k);
+        store.run(login, repo, p, new Date(now).toISOString());
+      }
+    }
+  }
+
   /** Brings one message up to date: answered or withdrawn decisions lose their buttons; prepared or replaced choices change them. */
   async #refresh(m: MsgRow, p: Alerter): Promise<void> {
     const { db, keys, rest, log } = this.#d;
@@ -281,7 +326,7 @@ export class DecisionAlerts {
     let gone = false;
     if (open) {
       // Nothing to redo while the decision and its choices are as they were at the last pass.
-      const may = mayReceive(db, p.login, p.role, reposOf(d));
+      const may = mayReceive(db, p.login, p.role, reposOf(d), (this.#d.now ?? Date.now)(), this.#kept);
       const key = [may, d.answer, d.question, currentChoices(db, d.id)?.id, decisionStamp(db, d), m.choices_id, coresFor(db, d).map((c) => c.key).join()].join("|");
       const k = `${m.decision_id}|${m.user_hash}`;
       if (this.#seen.get(k) === key) return;

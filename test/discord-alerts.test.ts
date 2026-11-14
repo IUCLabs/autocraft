@@ -45,15 +45,16 @@ test("alerts: opt-in, a new decision reaches only people who may settle it, a pr
   // Mia may settle while maintainer writes are on, the app acts for her on the repo and her write permission is fresh.
   setMaintainerWrites(db, true);
   db.prepare("INSERT INTO settings (key, value) VALUES ('github_identity', 'app')").run();
-  // The permission was read hours ago: it still counts, so alerts do not flap between dashboard visits.
-  db.prepare("INSERT INTO repo_permissions (login, repo, permission, checked_at) VALUES ('mia', 'app', 'write', ?)").run(new Date(Date.now() - 3 * 3_600_000).toISOString());
+  // The permission was read by a dashboard visit over a day ago: the alert pass reads it again from GitHub, once.
+  db.prepare("INSERT INTO repo_permissions (login, repo, permission, checked_at) VALUES ('mia', 'app', 'write', ?)").run(new Date(Date.now() - 30 * 3_600_000).toISOString());
+  const reads: string[] = [];
 
   const keys = new DiscordKeys("k".repeat(40));
   const rest = new FakeRest();
   const logs: string[] = [];
   const act = { querier: { query: async () => ({}) } as never, exec: (async () => ({ code: 0, stdout: "", stderr: "" })) as never };
   const mk = (perHour?: number) => new DecisionAlerts({
-    db, keys, rest, log: (l) => logs.push(l), baseUrl: "https://ac.example", perHour, act,
+    db, keys, rest, log: (l) => logs.push(l), baseUrl: "https://ac.example", perHour, act, readPermission: async (repo, login) => { reads.push(`${login}@${repo}`); return "write"; },
     userFor: (login, role) => ({ login, role, canWrite: async () => role !== "viewer", canRead: async () => true }),
   });
   const alerts = mk();
@@ -80,6 +81,8 @@ test("alerts: opt-in, a new decision reaches only people who may settle it, a pr
   ask(db, [{ id: "app#2:merge", kind: "merge", repo: "app", number: 2, question: "Merge PR 2?", options: [{ key: "merge", label: "Merge" }, { key: "hold", label: "Hold" }] }]);
   await alerts.sync();
   assert.deepEqual(rest.sent.map((m) => m.channelId).sort(), ["dm-1", "dm-2"]);
+  assert.deepEqual(reads, ["mia@app"]);
+  assert.ok(Date.now() - Date.parse((db.prepare("SELECT checked_at FROM repo_permissions WHERE login = 'mia'").get() as { checked_at: string }).checked_at) < 60_000);
   const comps = (m: { components?: unknown[] }) => (m.components as { components: { custom_id?: string; url?: string }[] }[]).flatMap((r) => r.components);
   assert.deepEqual(comps(rest.sent[0]!.body).map((c) => c.url), ["https://ac.example/items/app/2#decision-app%232%3Amerge"]);
 

@@ -347,6 +347,9 @@ function dropColumns(db: DatabaseSync): void {
 function migrateValues(db: DatabaseSync): void {
   // A bot login stored as the pipeline account (learnt through app-token reads) is wrong; the box account is learnt again.
   db.exec("DELETE FROM main.settings WHERE key = 'pipeline_login' AND value LIKE '%[bot]'");
+  // An account-id error that a later successful pass superseded (passes before the error was cleared on success left it behind).
+  db.exec(`DELETE FROM main.settings WHERE key = 'author_ids_error' AND substr(value, 1, instr(value || ' ', ' ') - 1)
+    <= (SELECT value FROM main.settings WHERE key = 'author_ids_backfilled')`);
   // A new duplicate cut-off applies to every item, so each one is scanned again at it.
   const cut = String(SIM_THRESHOLD);
   const scannedAt = () => (db.prepare("SELECT value FROM main.settings WHERE key = 'dupes_scan_threshold'").get() as { value: string } | undefined)?.value;

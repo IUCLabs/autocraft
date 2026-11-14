@@ -34,6 +34,8 @@ interface Author {
   lastMerge: string | null;
   repos: string[];
   override: OverrideStatus | null;
+  /** The allow was given to another account than the login's current one. */
+  otherAccount?: boolean;
   note: string | null;
   by: string | null;
   at: string | null;
@@ -69,6 +71,7 @@ function buildAuthors(): Author[] {
   for (const login of allow) {
     out.push({ login, merged: 0, closed: 0, open: 1, lastMerge: null, repos: ["craft-libs"], override: "allow", note: "Invited contributor for the font pipeline.", by: "ochre-fox", at: iso(3 * D) });
   }
+  out.push({ login: "renamed-dev", merged: 2, closed: 0, open: 1, lastMerge: iso(40 * D), repos: ["craft-libs"], override: "allow", otherAccount: true, note: null, by: "ochre-fox", at: iso(90 * D) });
   return out;
 }
 
@@ -76,7 +79,7 @@ const autoTier = (a: Author, rule: WhitelistRule): "whitelisted" | "not" => {
   const done = a.merged + a.closed;
   return a.merged >= rule.minMerged && done > 0 && a.merged / done >= rule.minRate ? "whitelisted" : "not";
 };
-const tierOf = (a: Author, rule: WhitelistRule): Tier => (a.override === "allow" ? "override-allow" : a.override === "deny" ? "override-deny" : autoTier(a, rule));
+const tierOf = (a: Author, rule: WhitelistRule): Tier => (a.otherAccount ? autoTier(a, rule) : a.override === "allow" ? "override-allow" : a.override === "deny" ? "override-deny" : autoTier(a, rule));
 const allowed = (a: Author, rule: WhitelistRule) => {
   const t = tierOf(a, rule);
   return t === "whitelisted" || t === "override-allow";
@@ -224,7 +227,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
 
   const view = (a: Author): Contributor => {
     const c: Contributor = {
-      login: a.login, tier: tierOf(a, rule), autoTier: autoTier(a, rule), override: a.override, overrideBy: a.by, overrideAt: a.at,
+      login: a.login, tier: tierOf(a, rule), autoTier: autoTier(a, rule), override: a.override, overrideInEffect: a.override !== null && !a.otherAccount, overrideBy: a.by, overrideAt: a.at,
       merged: a.merged, closedUnmerged: a.closed, open: a.open, mergeRate: rate(a), lastMerge: a.lastMerge, repos: a.repos,
     };
     if (me.role !== "viewer") c.overrideNote = a.note;
