@@ -20,7 +20,7 @@ import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { reviewAfterBaseMerge } from "./own-diff.ts";
-import { cachedDiff, cachedDiffBase, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
+import { MAX_DIFF_CHARS, cachedDiff, cachedDiffBase, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { carriedOutcome, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
 import { ourCommitsSince } from "./ours.ts";
@@ -32,8 +32,7 @@ import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { jobItem } from "../runner/job-items.ts";
 
 const PROMPT = CLAUDE_PROMPTS["review.opus"];
-/** Diff characters above which a PR is held as too large to review. */
-export const MAX_DIFF_CHARS = 120_000;
+export { MAX_DIFF_CHARS };
 export const TOO_LARGE = "too large to review automatically";
 
 export type OpusParams = {
@@ -177,10 +176,10 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   if (!d.ok) return d.tooLarge ? { kind: "large", mode: "full", base: null, baseRef: liveBase ?? null } : { kind: "no-diff", error: d.error };
   const baseRef = d.base ?? liveBase ?? null;
   const ch = checksOf(db, repo, c.number);
-  let cd = codeDiff(d.text);
-  if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
+  // Test files are shown while they fit the size cap; the merge rule sends a PR whose tests do not fit to a person.
+  const cd = codeDiff(d.text, deps.maxChars);
   // The size cap applies to the whole PR, so a small push never lets a too-large PR through as a delta.
-  if (cd.text.length > deps.maxChars) return { kind: "large", mode: "full", base: null, baseRef };
+  if (cd.text.length > deps.maxChars || (!cd.files.length && cd.testsOmitted.length)) return { kind: "large", mode: "full", base: null, baseRef };
   if (opts.independent) {
     const input: OpusPr = {
       ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
@@ -199,16 +198,14 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   const merged = db.prepare("SELECT from_head, own_diff, own_delta FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' ORDER BY rowid DESC").get(repo, c.number, c.head_oid) as { from_head: string; own_diff: string | null; own_delta: string | null } | undefined;
   if (earlier && !merged) {
     const delta = await deps.fetchDelta(repo, earlier.head, c.head_oid);
-    if (delta.ok) {
-      let dd = codeDiff(delta.text);
-      if (!dd.files.length && dd.testsOmitted.length) dd = codeDiff(delta.text, true);
-      mode = "delta"; diff = dd.text; base = earlier.head;
-    } else log(`  ${refOf(c)}: delta since ${earlier.head.slice(0, 7)} unavailable (${delta.error}); full diff`);
+    // A delta whose test files do not all fit is not used: the full diff shows them.
+    const dd = delta.ok ? codeDiff(delta.text, deps.maxChars) : null;
+    if (dd && !dd.testsOmitted.length) { mode = "delta"; diff = dd.text; base = earlier.head; }
+    else if (!delta.ok) log(`  ${refOf(c)}: delta since ${earlier.head.slice(0, 7)} unavailable (${delta.error}); full diff`);
   } else if (earlier && merged?.own_delta && reviewAfterBaseMerge(merged.own_diff) === "delta" && merged.from_head === earlier.head && earlier.sure && (earlier.verdict === "take" || earlier.verdict === "take-fix")) {
     // The delta was computed from the local commits when the merge was made; the diff of the earlier head is never fetched by number.
-    let dd = codeDiff(merged.own_delta);
-    if (!dd.files.length && dd.testsOmitted.length) dd = codeDiff(merged.own_delta, true);
-    if (dd.text) { mode = "delta"; diff = dd.text; base = earlier.head; }
+    const dd = codeDiff(merged.own_delta, deps.maxChars);
+    if (dd.text && !dd.testsOmitted.length) { mode = "delta"; diff = dd.text; base = earlier.head; }
   }
   if (diff.length > deps.maxChars) return { kind: "large", mode, base, baseRef };
   let discussion: DiscussionEntry[], snap: Snapshot, maintDropped: boolean;

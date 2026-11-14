@@ -16,6 +16,7 @@ import { whoAmI } from "../fixup/index.ts";
 import { commitIdentity } from "../github/identity.ts";
 import { branchOf } from "../fixissue/index.ts";
 import { editable, validateFixPatch } from "../fixissue/parse.ts";
+import { buildScriptsAt } from "../fixup/patch.ts";
 import { parseCheck } from "../patchcheck/index.ts";
 import { CHECK_PATCH_CAP } from "../patchcheck/types.ts";
 import { foldFormat } from "../prepush/index.ts";
@@ -136,7 +137,9 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     const crate = cr.rust ? crateOf(cr.crates, refs[0]?.path ?? "") : null;
     if (!crate || !/^[A-Za-z0-9_./-]+$/.test(crate.dir) || crate.dir.split("/").includes("..")) return giveUp(db, repo, n, "the fix step covers Rust crates only, and the finding is not in one", log);
     const listed = (await git.must(["ls-tree", "-r", "--name-only", sha, "--", crate.dir === "." ? "" : crate.dir].filter((x) => x !== ""))).split("\n").filter(Boolean);
-    const allowed = listed.filter((p) => editable(p));
+    // Build scripts are resolved from the manifests of the scanned commit, so one with a custom name is never editable.
+    const scripts = await buildScriptsAt(git, sha);
+    const allowed = listed.filter((p) => editable(p, scripts));
     const testName = securityTestName(repo, n);
     const testPath = regressionPath(crate.dir, testName);
     const verification = row.verification ? JSON.parse(row.verification) as { proposedTest?: string | null } : null;
@@ -149,7 +152,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     const scanTest = ran && ran.state !== "building" ? { result: ran.state, path: ran.path, source: ran.source } : null;
     /** The rest of a round whose build passed: formatter changes, the fresh Opus review, the local commit. */
     const finalize = async (r: RoundRow, formatDiff: string | null): Promise<{ ok: true; summary: string } | { ok: false; why: string }> => {
-      const v = validateFixPatch(r.patch, allowed, testPath, crate.dir, testName);
+      const v = validateFixPatch(r.patch, allowed, testPath, crate.dir, testName, scripts);
       if (!v.ok) return { ok: false, why: v.reason };
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;
@@ -241,7 +244,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
         continue;
       }
       const input: SecurityFixInput = { ...base, finding, crate: { name: crate.name, dir: crate.dir }, test_path: testPath, proposed_test: verification?.proposedTest ?? null, ...(scanTest && { scan_test: scanTest }), ...(previous && { previous }) };
-      const tool = new CheckTool({ db, step: "fix-check", repo, number: null, recordRepo: securityRepo(repo), head: sha, base: sha, applies: applyCheck(git, d.root, sha, (p) => refusal(validateFixPatch(p, allowed, testPath, crate.dir, testName))) });
+      const tool = new CheckTool({ db, step: "fix-check", repo, number: null, recordRepo: securityRepo(repo), head: sha, base: sha, applies: applyCheck(git, d.root, sha, (p) => refusal(validateFixPatch(p, allowed, testPath, crate.dir, testName, scripts))) });
       const started = new Date().toISOString();
       // A later round continues the earlier session within the window; `input` (with `previous`) is the new call it falls back to.
       const ses: SessionAsk = kept && previous && Date.now() - kept.at <= RESUME_WINDOW_MS ? { resume: { session: kept.session, message: resumeFixMessage(previous.failure) } } : {};
@@ -259,7 +262,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       if (!parsed) { failRound("the reply did not follow the form: TITLE line, SUMMARY line, the marker line and the diff"); continue; }
       const quiet = quietProblem(parsed.title, parsed.summary) ?? (patchGiveaway(parsed.patch) ? `the diff adds the word "${patchGiveaway(parsed.patch)}"; name things for what the code does` : null);
       if (quiet) { failRound(quiet, parsed.patch); continue; }
-      const v = validateFixPatch(parsed.patch, allowed, testPath, crate.dir, testName);
+      const v = validateFixPatch(parsed.patch, allowed, testPath, crate.dir, testName, scripts);
       if (!v.ok) { failRound(v.reason, parsed.patch); continue; }
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;

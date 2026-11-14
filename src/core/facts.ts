@@ -39,7 +39,7 @@ import { getRule, STATS_SQL, tierOf, tierKey, tiersOf, type AuthorRef, type Tier
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
-import { cachedDiffBase, diffCacheDir } from "../review/diff.ts";
+import { cachedDiffBase, cachedDiffFiles, diffCacheDir, splitDiff } from "../review/diff.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
@@ -96,15 +96,21 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.author_id, i.assignees, i.s
   WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix'))
     OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
 
-const sensitiveMemo = new Map<string, string[]>();
-/** The sensitive-content reasons of the diff cached for this head; null when it is not cached (a review or pre-merge review caches it). Kept per base branch the diff was read against. */
-function sensitiveAt(repo: string, number: number, head: string): string[] | null {
-  const key = `${repo}#${number}@${head}:${cachedDiffBase(repo, number, head) ?? ""}`;
+const sensitiveMemo = new Map<string, { reasons: string[]; lines: number }>();
+/**
+ * The sensitive-content reasons and the changed-line count of the diff cached for this head; null when it is not cached (a
+ * review or pre-merge review caches it). The count is the rule's size fact: it is of this head, not of the mirror's row.
+ * Kept per base branch the diff was read against.
+ */
+function diffFactsAt(repo: string, number: number, head: string): { reasons: string[]; lines: number } | null {
+  const stored = cachedDiffFiles(repo, number, head);
+  const key = `${repo}#${number}@${head}:${cachedDiffBase(repo, number, head) ?? ""}:${stored ? "files" : ""}`;
   const hit = sensitiveMemo.get(key);
   if (hit) return hit;
   const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
   if (!existsSync(file)) return null;
-  const out = sensitiveReasons(readFileSync(file, "utf8"), ownerOf(repo));
+  const text = readFileSync(file, "utf8");
+  const out = { reasons: sensitiveReasons(text, ownerOf(repo), stored ?? {}), lines: splitDiff(text).reduce((n, f) => n + f.lines, 0) };
   sensitiveMemo.set(key, out);
   return out;
 }
@@ -323,7 +329,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.decision.hold = holdQuestionOf(r.repo, r.number, holdDecisionId(r.repo, r.number, r.r_head));
     if (r.state === "OPEN" && head && head !== r.r_head && (ourFixupHead.get(r.repo, r.number, head) || ourSameDiffMerge.get(r.repo, r.number, head)) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
-    base.sensitive = sensitiveAt(r.repo, r.number, r.r_head);
+    const diffFacts = diffFactsAt(r.repo, r.number, r.r_head);
+    base.sensitive = diffFacts?.reasons ?? null;
+    if (diffFacts) { base.lines = diffFacts.lines; base.size = sizeOf(diffFacts.lines); }
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);
     // A carried review has no text of its own: the post uses the text of the review it was carried from.
@@ -408,7 +416,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     if (row) {
       const all = findingsOf(row);
       const defects = all.filter((f) => f.severity === "defect");
-      base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, unsure: row.unsure === 1, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), fixesSafe: parseFixes(JSON.stringify(defects.map((f) => f.fix))).length === defects.length, minor: all.length - defects.length, error: row.error ?? null };
+      base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, unsure: row.unsure !== 0, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), fixesSafe: parseFixes(JSON.stringify(defects.map((f) => f.fix))).length === defects.length, minor: all.length - defects.length, error: row.error ?? null };
       if (defects.length) base.premergeFixUsed = premergeFixUsed(db, r.repo, r.number);
     }
     if (base.mergeable === "CONFLICTING" && r.base_ref) {

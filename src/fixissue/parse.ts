@@ -14,11 +14,11 @@ const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 
 const clip = (s: string): string => s.trim().split(/\s+/).slice(0, TRIAGE_REASON_WORDS).join(" ");
 
 /** Rust source paths for the triage prompt, capped. */
-export function sourcePaths(all: string[], cap: number): string[] {
-  return all.filter((p) => editable(p) && !/(^|\/)(target|vendor|node_modules)\//.test(p)).slice(0, cap);
+export function sourcePaths(all: string[], cap: number, scripts: BuildScripts = null): string[] {
+  return all.filter((p) => editable(p, scripts) && !/(^|\/)(target|vendor|node_modules)\//.test(p)).slice(0, cap);
 }
 
-export function parseTriage(text: string, ref: string, crates: Crate[], paths: string[]): TriageParse {
+export function parseTriage(text: string, ref: string, crates: Crate[], paths: string[], scripts: BuildScripts = null): TriageParse {
   const arr = wholeReplyJson(text);
   if (arr === null) return { ok: false, error: "the reply is not exactly one JSON value" };
   if (!Array.isArray(arr) || arr.length !== 1 || !isObj(arr[0])) return { ok: false, error: "reply must be a list of one object" };
@@ -34,7 +34,7 @@ export function parseTriage(text: string, ref: string, crates: Crate[], paths: s
   if (!Array.isArray(files) || files.length < 1 || files.length > MAX_FILES) return { ok: false, error: `files must list 1 to ${MAX_FILES} paths` };
   if (o.size !== undefined && !isSize(o.size)) return { ok: false, error: "size must be S, M, L or XL" };
   const known = new Set(paths);
-  if (files.some((f) => typeof f !== "string" || !editable(f) || !known.has(f))) return { ok: false, error: "a file is not an editable source path of the repository" };
+  if (files.some((f) => typeof f !== "string" || !editable(f, scripts) || !known.has(f))) return { ok: false, error: "a file is not an editable source path of the repository" };
   return { ok: true, triage: { fixable: true, reason, crate, files: [...new Set(files as string[])], size: o.size ?? null } };
 }
 

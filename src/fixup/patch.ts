@@ -2,7 +2,8 @@
 // checks; whether it applies is decided by `git apply --check` in index.ts.
 
 import { cleanReason } from "../act/templates.ts";
-import { isInstructionPath } from "../sandbox/instruction-paths.ts";
+import { isTrustPath } from "../core/trust-paths.ts";
+import { joinPath, packageBuild } from "../core/cargo-manifest.ts";
 import { QUOTE_WORDS } from "../replylint.ts";
 import type { ShownFile } from "./excerpt.ts";
 import { wholeReplyJson } from "../core/reply-json.ts";
@@ -30,11 +31,7 @@ export function fixupEditable(path: string, scripts: BuildScripts = null): boole
  * Every model-patch lane (fix-up, CI fix, issue fix, operator fix-up, conflict resolution) refuses these.
  */
 export function trustPath(path: string, scripts: BuildScripts = null): boolean {
-  const parts = path.split("/");
-  const name = parts[parts.length - 1]!.toLowerCase();
-  return !safePath(path) || isBuildScript(path, scripts) || parts.some((s) => TRUST_DIRS.has(s.toLowerCase()))
-    || TRUST_FILES.has(name) || AGENT_DOCS.test(name) || isInstructionPath(path) || name.startsWith("rust-toolchain")
-    || name === ".gitmodules" || name === ".gitattributes" || name === "codeowners";
+  return !safePath(path) || isBuildScript(path, scripts) || isTrustPath(path);
 }
 
 /**
@@ -78,38 +75,10 @@ export function isBuildScript(path: string, scripts: BuildScripts): boolean {
   return scripts.has(path);
 }
 
-/** The `[package]` table's `build` setting of a Cargo.toml: a path, false (none), or undefined (Cargo's default `build.rs`). null: no `[package]` table. */
-function packageBuild(toml: string): string | false | undefined | null {
-  let table = "", has = false, build: string | false | undefined;
-  for (const raw of toml.split(/\r?\n/)) {
-    const line = raw.replace(/^\s+/, "");
-    const h = /^\[\s*([^\]]*?)\s*\]/.exec(line);
-    if (h && !line.startsWith("[[")) { table = h[1]!.replace(/\s+/g, ""); if (table === "package") has = true; continue; }
-    if (line.startsWith("[[")) { table = "[[]]"; continue; }
-    const k = table === "package" ? /^build\s*=\s*(.*)$/.exec(line) : table === "" ? /^package\.build\s*=\s*(.*)$/.exec(line) : null;
-    if (!k) continue;
-    if (table === "") has = true;
-    const v = k[1]!.trim();
-    const str = /^(?:"([^"]*)"|'([^']*)')/.exec(v);
-    if (str) build = str[1] ?? str[2]!;
-    else if (/^false\b/.test(v)) build = false;
-  }
-  return has ? build : null;
-}
-
-/** The normalized `dir/rel`, or null when it leaves the repository. */
-function joinPath(dir: string, rel: string): string | null {
-  const out = dir ? dir.split("/") : [];
-  for (const s of rel.split("/")) {
-    if (s === "" || s === ".") continue;
-    if (s === "..") { if (!out.pop()) return null; } else out.push(s);
-  }
-  return out.join("/");
-}
-
 /**
  * The build scripts Cargo runs in a checkout, from its file list and a reader of file contents: for every Cargo.toml with a
- * `[package]` table, the path its `build` key names, `build.rs` beside it when the key is absent, nothing for `build = false`.
+ * package, the path its `build` key names, `build.rs` beside it when the key is absent, nothing for `build = false`. A
+ * manifest that does not parse, or whose `build` value is unclear, makes every Rust file of its crate outside `src/` a build script.
  */
 export function buildScripts(files: string[], read: (path: string) => string | null): Set<string> {
   const out = new Set<string>();
@@ -120,6 +89,11 @@ export function buildScripts(files: string[], read: (path: string) => string | n
     const b = packageBuild(toml);
     if (b === null || b === false) continue;
     const dir = f.slice(0, -"Cargo.toml".length).replace(/\/$/, "");
+    if (b === "unreadable") {
+      const pre = dir ? `${dir}/` : "";
+      for (const g of files) if (g.startsWith(pre) && g.endsWith(".rs") && !g.startsWith(`${pre}src/`)) out.add(g);
+      continue;
+    }
     const p = joinPath(dir, b ?? "build.rs");
     if (p !== null) out.add(p);
   }
@@ -146,12 +120,6 @@ export async function buildScriptsAt(git: TreeReader, sha: string): Promise<Buil
   }
   return buildScripts(files, (p) => text.get(p) ?? null);
 }
-
-/** Markdown files that instruct coding agents; a fix-up never edits them. */
-const AGENT_DOCS = /^(claude(\.local)?|agents|gemini|copilot-instructions|roadmap)\.md$/i;
-/** Directories and files whose content runs or configures tools on a contributor's or CI machine; no fix-up edits them (lowercase). */
-const TRUST_DIRS = new Set([".cargo", ".github", ".vscode", ".devcontainer", ".config", ".husky"]);
-const TRUST_FILES = new Set([".envrc", "makefile", "gnumakefile", "justfile", ".pre-commit-config.yaml", "rustfmt.toml", ".rustfmt.toml", "clippy.toml", ".clippy.toml", "deny.toml"]);
 
 /** Source files an automated fix (a CI fix or an issue fix) may edit: Rust files other than the trust paths. */
 export function editable(path: string, scripts: BuildScripts = null): boolean {
