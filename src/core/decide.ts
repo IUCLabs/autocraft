@@ -12,8 +12,7 @@ import type { Action, Plan, PlanState, PrFacts, QueueState, WaitKind } from "./p
 /** The start of a statement for a reason line: one line, at most 80 characters. */
 const excerpt = (t: string): string => { const s = t.replace(/\s+/g, " ").trim(); return s.length > 80 ? `${s.slice(0, 79).trimEnd()}…` : s; };
 
-/** "diff": the review is clean, and the diff it cached waits for what the merge rule reads beside it. */
-type PremergeState = "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry" | "diff";
+type PremergeState = "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry";
 export type Entry = { state: QueueState; path: "rule" | "operator" | null; reasons: string[]; note: string | null; conflictNote: string | null; premerge: PremergeState | null; premergeDefects: number; answer: string | null; noCi: boolean; refusedReason: string | null };
 
 const verifyState = (f: PrFacts): QueueState | null => {
@@ -70,10 +69,7 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
     else if (premerge === "unsure") reasons.push(PREMERGE_UNSURE_REASON);
     else if (premerge === "failed") reasons.push(PREMERGE_FAILED_REASON);
     // The pre-merge review caches the diff, so a diff still unchecked after it is a reason; before it the PR waits for it.
-    else if (premerge === "clean" && f.sensitive === null) {
-      if (f.diffPending) premerge = "diff";
-      else reasons.push(UNCHECKED_REASON);
-    }
+    else if (premerge === "clean" && f.sensitive === null) reasons.push(UNCHECKED_REASON);
   }
   const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi, refusedReason: null };
 
@@ -108,7 +104,7 @@ function stateOf(f: PrFacts, e: Entry, merged: boolean, held: "backlog" | "dupli
   const v = verifyState(f);
   if (v && !(e.path === "operator" && f.verifyOverride && (v === "verify-failed" || v === "verify-error"))) return v;
   if (e.path === "rule" && e.premerge) {
-    if (e.premerge === "none" || e.premerge === "retry" || e.premerge === "diff") return "waiting-premerge";
+    if (e.premerge === "none" || e.premerge === "retry") return "waiting-premerge";
     if (e.premerge === "fix") {
       const n = e.premergeDefects;
       e.note = `pre-merge review: ${n} defect${n === 1 ? "" : "s"} to fix`;
@@ -134,6 +130,8 @@ const refusedAsBefore = (f: PrFacts, e: Entry): boolean => {
   if (f.runsApprovedAfterMerge || transientRetry(f)) return false;
   return m.ci === null || m.mergeable === null || (m.ci === f.ci && m.mergeable === f.mergeable);
 };
+
+const rereadDue = (f: PrFacts): boolean => f.diffPending?.lastRead == null || f.now - f.diffPending.lastRead >= RETRY_AFTER_MS;
 
 const premergeRetryDue = (f: PrFacts): boolean => {
   const row = f.premerge;
@@ -471,8 +469,9 @@ export function decidePr(f: PrFacts): Plan {
   }
 
   if (e) {
-    if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && (premergeRetryDue(f) || e.premerge === "diff")) actions.push(act("premerge", r!.head));
-    if (e.state === "needs-decision" && !f.decision.asked && !f.decision.inOpenGroup) actions.push(act("ask-merge", r!.head));
+    if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && premergeRetryDue(f)) actions.push(act("premerge", r!.head));
+    // While the diff's reasons are the conservative ones, the Merge? question waits for the re-read that settles them.
+    if (e.state === "needs-decision" && !f.decision.asked && !f.decision.inOpenGroup && !f.diffPending) actions.push(act("ask-merge", r!.head));
     if (eligible(f, e) && !refusedAsBefore(f, e)) {
       const singleOnly = f.verification?.state === VERIFY_UNAVAILABLE || f.verifyOverride || e.noCi || f.mainFix || f.baseOffDefault;
       actions.push(act("merge", r!.head, { singleOnly, batchable: !singleOnly }));
@@ -483,6 +482,9 @@ export function decidePr(f: PrFacts): Plan {
   if (f.operator?.hold) for (let i = actions.length - 1; i >= 0; i--) if (["merge", "ask-merge", "premerge"].includes(actions[i]!.kind)) actions.splice(i, 1);
   // Its pre-merge review is the one thing it still needs from the queue: the merge answer is handed over only after a clean one at the head.
   if (f.operator?.premerge && e && r && inQueue && f.repoFacts.mergeApproved && !f.draft && !f.mergeHeld && ciAllows("operator", f.ci, e.noCi) && f.mergeable === "MERGEABLE" && premergeRetryDue(f)) actions.push(act("premerge", r.head));
+
+  // A diff that waits for what the merge rule reads beside it is read again by the pre-merge step, with no model call; after a read that left it waiting, an hour later.
+  if (f.diffPending && r && f.ghState === "OPEN" && rereadDue(f) && !actions.some((a) => a.kind === "premerge")) actions.push(act("premerge", r.head));
 
   actions.push(...unassignOf(f, state, actions));
 

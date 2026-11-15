@@ -15,7 +15,8 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { defaultOpusDeps, prepareOpusInput, type OpusDeps } from "../review/opus.ts";
-import { cachedDiff } from "../review/diff.ts";
+import { rereadDiff } from "../review/diff.ts";
+import { recordLiveBase } from "../merge/base.ts";
 import { opusCandidateOf, type OpusCandidate } from "../review/opus-candidates.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
@@ -56,6 +57,7 @@ export function premergeCandidates(db: DatabaseSync, opts: { repo?: string; at?:
     onPlan: wake ? (f, plan) => {
       const pm = f.premerge;
       if ((plan.state === "waiting-premerge" || f.operator?.premerge) && f.repoFacts.mergeApproved && pm && !pm.hasFindings && pm.tries < PREMERGE_MAX_TRIES) wake.push(Date.parse(pm.at) + RETRY_AFTER_MS);
+      if (f.diffPending?.lastRead != null) wake.push(f.diffPending.lastRead + RETRY_AFTER_MS);
     } : undefined,
   }).map((p) => ({ repo: p.facts.repo, number: p.facts.number, head: p.action.head!, facts: p.facts }));
 }
@@ -87,10 +89,11 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
       savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, error, final });
       s.failed.push(ref);
     };
-    // A clean review whose cached diff waits for what the merge rule reads beside it: the diff is read again, no model call.
-    if (e.facts.premerge?.hasFindings) {
-      const base = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, e.number) as { base_ref: string | null } | undefined)?.base_ref;
-      const d = await cachedDiff(repo, e.number, head, deps.fetchDiff, base);
+    // A diff that waits for what the merge rule reads beside it is read again, with no model call.
+    if (e.facts.diffPending) {
+      const liveBase = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, e.number) as { base_ref: string | null } | undefined)?.base_ref;
+      const d = await rereadDiff(repo, e.number, head, deps.fetchDiff, liveBase, deps.now?.() ?? Date.now());
+      if (d.ok && d.base && liveBase !== undefined && d.base !== liveBase) recordLiveBase(db, repo, e.number, head, d.base, { by: "premerge", keepDiff: true });
       jobItem(db, repo, e.number, d.ok ? "diff read again for the merge rule" : `diff not read again: ${d.error}`, log);
       params.onHandled?.(++handled);
       return;

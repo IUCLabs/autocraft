@@ -5,7 +5,7 @@ import { pipelineWrites } from "./rules.ts";
 import { quietFixPrs } from "../security/quiet.ts";
 export { quietFixPrs };
 import type { DatabaseSync } from "node:sqlite";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { commentApprovalOf } from "../act/approval.ts";
 import { actionable } from "../decisions.ts";
@@ -39,9 +39,9 @@ import { getRule, STATS_SQL, tierOf, tierKey, tiersOf, type AuthorRef, type Tier
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
-import { cachedDiffBase, cachedDiffExtras, extrasPending, diffCacheDir, splitDiff } from "../review/diff.ts";
+import { cachedDiffExtras, diffRereads, extrasPending, diffCacheDir, splitDiff } from "../review/diff.ts";
 import { ownerOf, slugOf } from "../owners.ts";
-import { sensitiveReasons } from "./sensitive.ts";
+import { EXTRAS_PENDING_REASON, sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
 import { postSource } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
@@ -96,22 +96,27 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.author_id, i.assignees, i.s
   WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix'))
     OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
 
-const sensitiveMemo = new Map<string, { reasons: string[]; lines: number; pending: boolean }>();
+const sensitiveMemo = new Map<string, { reasons: string[]; lines: number; pending: boolean; lastRead: number | null }>();
+/** A file's identity for the memo: modification time and size, without reading it. */
+const stamp = (f: string): string => { try { const st = statSync(f); return `${st.mtimeMs}/${st.size}`; } catch { return "-"; } };
 /**
  * The sensitive-content reasons and the changed-line count of the diff cached for this head; null when it is not cached (a
  * review or pre-merge review caches it). The count is the rule's size fact: it is of this head, not of the mirror's row.
- * `pending`: the diff waits for what the rule reads beside it (whole files, workflow steps), so its reasons don't count yet.
+ * `pending`: the diff waits for what the rule reads beside it (whole files, workflow steps); its reasons are then the
+ * conservative ones, holding the PR for whatever could not be read, until a re-read settles them.
  */
-function diffFactsAt(repo: string, number: number, head: string): { reasons: string[]; lines: number; pending: boolean } | null {
-  const extras = cachedDiffExtras(repo, number, head);
-  const key = `${repo}#${number}@${head}:${cachedDiffBase(repo, number, head) ?? ""}:${extras ? `${extras.complete}/${extras.tries}` : ""}`;
+function diffFactsAt(repo: string, number: number, head: string): { reasons: string[]; lines: number; pending: boolean; lastRead: number | null } | null {
+  const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
+  const key = `${repo}#${number}@${head}:${stamp(file)}:${stamp(`${file}.base`)}:${stamp(`${file}.files.json`)}:${stamp(`${file}.reread`)}`;
   const hit = sensitiveMemo.get(key);
   if (hit) return hit;
-  const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
   if (!existsSync(file)) return null;
   const text = readFileSync(file, "utf8");
-  const pending = extrasPending(text, extras);
-  const out = { reasons: pending ? [] : sensitiveReasons(text, ownerOf(repo), extras ?? {}), lines: splitDiff(text).reduce((n, f) => n + f.lines, 0), pending };
+  const extras = cachedDiffExtras(repo, number, head), rereads = diffRereads(repo, number, head);
+  const out = {
+    reasons: sensitiveReasons(text, ownerOf(repo), extras ?? {}), lines: splitDiff(text).reduce((n, f) => n + f.lines, 0),
+    pending: extrasPending(text, extras, rereads.count), lastRead: rereads.at,
+  };
   sensitiveMemo.set(key, out);
   return out;
 }
@@ -331,8 +336,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     if (r.state === "OPEN" && head && head !== r.r_head && (ourFixupHead.get(r.repo, r.number, head) || ourSameDiffMerge.get(r.repo, r.number, head)) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     const diffFacts = diffFactsAt(r.repo, r.number, r.r_head);
-    base.sensitive = diffFacts && !diffFacts.pending ? diffFacts.reasons : null;
-    if (diffFacts?.pending) base.diffPending = true;
+    // While the extras are pending the reasons are the conservative ones, and the wait itself keeps the PR off the rule.
+    base.sensitive = diffFacts ? (diffFacts.pending ? [...diffFacts.reasons, EXTRAS_PENDING_REASON] : diffFacts.reasons) : null;
+    if (diffFacts?.pending) base.diffPending = { lastRead: diffFacts.lastRead };
     if (diffFacts) { base.lines = diffFacts.lines; base.size = sizeOf(diffFacts.lines); }
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);
