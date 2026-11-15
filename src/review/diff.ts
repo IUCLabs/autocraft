@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { envVar } from "../env.ts";
 import { slugOf } from "../owners.ts";
-import { readEnvFor } from "../github/read.ts";
+import { readEnv, readEnvFor } from "../github/read.ts";
 import { mayBeRun, mergeSteps, workflowSteps, type WorkflowSteps } from "../core/workflow-runs.ts";
 import { lockfileNeedsWhole } from "../core/lockfiles.ts";
 
@@ -63,13 +63,26 @@ export const ghDiff: DiffFetcher = async (repo, number, head) => {
 };
 
 const MAX_WORKFLOWS = 50;
-/** The run steps of the workflows at the head of `ref` (what runs after a merge): one listing, each file's steps cached by blob. Null when unread. */
-async function workflowStepsAt(repo: string, slug: string, ref: string): Promise<WorkflowSteps | null> {
+/** How long a workflows listing serves the reads of other PRs of the repo: about one pass of a step over the repo's PRs. */
+const LISTING_TTL_MS = 10 * 60_000;
+const listings = new Map<string, { at: number; entries: [string, string][] }>();
+
+/** The workflow files (blob sha, path) at the head of `ref`, one listing call per repo and branch within `LISTING_TTL_MS`; null when unread. */
+async function workflowListing(slug: string, ref: string): Promise<[string, string][] | null> {
+  const key = `${slug}@${ref}`, hit = listings.get(key);
+  if (hit && Date.now() - hit.at < LISTING_TTL_MS) return hit.entries;
   const ls = await gh(["api", `repos/${slug}/contents/.github/workflows?ref=${encodeURIComponent(ref)}`, "--jq", '.[] | select(.type == "file") | "\\(.sha) \\(.path)"']);
   let entries: [string, string][];
   if (ls.code === 0) entries = ls.out.split("\n").map((l) => l.split(" ") as [string, string]).filter(([sha, p]) => /^[0-9a-f]{40}$/.test(sha) && /\.ya?ml$/i.test(p ?? ""));
   else if (/\b404\b|Not Found/i.test(ls.err)) entries = [];
   else return null;
+  listings.set(key, { at: Date.now(), entries });
+  return entries;
+}
+/** The run steps of the workflows at the head of `ref` (what runs after a merge): one listing, each file's steps cached by blob. Null when unread. */
+async function workflowStepsAt(repo: string, slug: string, ref: string): Promise<WorkflowSteps | null> {
+  const entries = await workflowListing(slug, ref);
+  if (!entries) return null;
   if (entries.length > MAX_WORKFLOWS) return null;
   const dir = join(diffCacheDir(), repo);
   const all: WorkflowSteps[] = [];
@@ -187,6 +200,52 @@ export async function rereadDiff(repo: string, number: number, head: string, fet
   const r = await cachedDiff(repo, number, head, fetch, base, { reread: true });
   noteReread(repo, number, head, at);
   return r;
+}
+
+/** Re-reads across the instance in a rolling hour: they share the account's GitHub rate with every other step. */
+export const REREADS_PER_HOUR = 200;
+const HOUR_MS = 3600_000;
+const paceFile = () => join(diffCacheDir(), "reread-pace.json");
+type Pace = { at: number[]; pauseUntil: number | null };
+function readPace(now: number): Pace {
+  try {
+    const v = JSON.parse(readFileSync(paceFile(), "utf8")) as Partial<Pace>;
+    return { at: (Array.isArray(v.at) ? v.at.filter((t): t is number => typeof t === "number") : []).filter((t) => now - t < HOUR_MS).sort((a, b) => a - b), pauseUntil: typeof v.pauseUntil === "number" ? v.pauseUntil : null };
+  } catch { return { at: [], pauseUntil: null }; }
+}
+function writePace(p: Pace): void {
+  mkdirSync(diffCacheDir(), { recursive: true });
+  const tmp = `${paceFile()}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(p));
+  renameSync(tmp, paceFile());
+}
+
+/** The earliest time a re-read may run: now, or when the hour's oldest re-read ages out, or when a pause for the rate limit ends. */
+export function rereadPaceAt(now: number): number {
+  const p = readPace(now);
+  const full = p.at.length >= REREADS_PER_HOUR ? p.at[p.at.length - REREADS_PER_HOUR]! + HOUR_MS : now;
+  return Math.max(now, full, p.pauseUntil ?? 0);
+}
+
+/** Takes one re-read slot of the hour, synchronously so parallel re-reads cannot pass the limit together; false when none is free. */
+export function takeRereadSlot(now: number): boolean {
+  if (rereadPaceAt(now) > now) return false;
+  const p = readPace(now);
+  writePace({ at: [...p.at, now], pauseUntil: p.pauseUntil });
+  return true;
+}
+
+/** Pauses the re-reads until `until` (ms), when the core rate limit resets. */
+export function pauseRereads(until: number): void {
+  const now = Date.now();
+  writePace({ ...readPace(now), pauseUntil: until });
+}
+
+/** The core REST rate left for the read identity of `owner`, and when it resets (ms); null when it cannot be read. The rate_limit call itself is free. */
+export async function coreRate(owner: string): Promise<{ remaining: number; resetAt: number } | null> {
+  const r = await gh(["api", "rate_limit", "--jq", '"\\(.resources.core.remaining) \\(.resources.core.reset)"'], owner);
+  const [left, reset] = r.code === 0 ? r.out.trim().split(" ").map(Number) : [];
+  return Number.isFinite(left) && Number.isFinite(reset) ? { remaining: left!, resetAt: reset! * 1000 } : null;
 }
 
 /** Re-reads of a diff's extras (see `noteReread`) before the rule judges the diff with what it has. */
@@ -374,9 +433,10 @@ export function codeDiff(text: string, keepTests: boolean | number = false): Cod
 /** The diff between two heads of one PR, or a failure. Not cached: it is read once per new head. */
 export type DeltaFetcher = (repo: string, base: string, head: string) => Promise<DiffResult>;
 
-export async function gh(args: string[]): Promise<{ code: number | null; out: string; err: string }> {
+/** Runs gh with the read identity of the owner the arguments name, or of `owner` when given. */
+export async function gh(args: string[], owner?: string): Promise<{ code: number | null; out: string; err: string }> {
   let env: Awaited<ReturnType<typeof readEnvFor>>;
-  try { env = await readEnvFor("gh", args); } catch (e) { return { code: -1, out: "", err: String((e as Error).message ?? e) }; }
+  try { env = owner !== undefined ? await readEnv(owner) : await readEnvFor("gh", args); } catch (e) { return { code: -1, out: "", err: String((e as Error).message ?? e) }; }
   return new Promise((resolve) => {
     const p = spawn("gh", args, { cwd: REPO_DIR, timeout: 120_000, ...(env ? { env } : {}) });
     const out: Buffer[] = [];

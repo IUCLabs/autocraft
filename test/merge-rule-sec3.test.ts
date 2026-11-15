@@ -8,7 +8,10 @@ import { LOCK_ALONE_REASON, LOCK_CHECKSUM_REASON, LOCK_SOURCE_REASON } from "../
 import { MAX_DIFF_CHARS, codeDiff } from "../src/review/diff.ts";
 import { buildScripts } from "../src/fixup/patch.ts";
 import { workflowSteps } from "../src/core/workflow-runs.ts";
-import { extrasPending } from "../src/review/diff.ts";
+import { REREADS_PER_HOUR, extrasPending, rereadPaceAt, takeRereadSlot } from "../src/review/diff.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseToml } from "../src/core/toml.ts";
 import { decidePr } from "../src/core/decide.ts";
 import { EXTRAS_PENDING_REASON } from "../src/core/sensitive.ts";
@@ -124,6 +127,18 @@ test("the reviews are shown test files while they fit, the rule counts the rest 
   const kinds = (p: ReturnType<typeof decidePr>) => p.actions.map((a) => a.kind);
   assert.deepEqual([waiting(null).state, kinds(waiting(null))], ["needs-decision", ["premerge"]]);
   assert.deepEqual([kinds(waiting(NOW - 60_000)), kinds(waiting(NOW - 2 * 3600_000))], [[], ["premerge"]]);
+  assert.deepEqual(kinds(decidePr(prFacts({ sensitive: [EXTRAS_PENDING_REASON], diffPending: { lastRead: null, paceAt: NOW + 60_000 } }))), []);
+  // The instance runs at most REREADS_PER_HOUR re-reads in a rolling hour.
+  const cache = mkdtempSync(join(tmpdir(), "reread-pace-")), was = process.env.AUTOCRAFT_DIFF_CACHE;
+  process.env.AUTOCRAFT_DIFF_CACHE = cache;
+  try {
+    const t0 = 1_000_000;
+    for (let i = 0; i < REREADS_PER_HOUR; i++) assert.equal(takeRereadSlot(t0 + i), true);
+    assert.deepEqual([takeRereadSlot(t0 + 1000), rereadPaceAt(t0 + 1000), takeRereadSlot(t0 + 3600_000)], [false, t0 + 3600_000, true]);
+  } finally {
+    if (was === undefined) delete process.env.AUTOCRAFT_DIFF_CACHE; else process.env.AUTOCRAFT_DIFF_CACHE = was;
+    rmSync(cache, { recursive: true, force: true });
+  }
   // A manifest that does not parse makes every Rust file of its crate outside src/ a build script.
   assert.deepEqual([...buildScripts(["c/Cargo.toml", "c/gen.rs", "c/src/lib.rs"], () => "[package\nbuild = 'gen.rs'")].sort(), ["c/gen.rs"]);
 });

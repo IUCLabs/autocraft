@@ -131,7 +131,7 @@ const refusedAsBefore = (f: PrFacts, e: Entry): boolean => {
   return m.ci === null || m.mergeable === null || (m.ci === f.ci && m.mergeable === f.mergeable);
 };
 
-const rereadDue = (f: PrFacts): boolean => f.diffPending?.lastRead == null || f.now - f.diffPending.lastRead >= RETRY_AFTER_MS;
+const rereadDue = (f: PrFacts): boolean => (f.diffPending?.paceAt ?? 0) <= f.now && (f.diffPending?.lastRead == null || f.now - f.diffPending.lastRead >= RETRY_AFTER_MS);
 
 const premergeRetryDue = (f: PrFacts): boolean => {
   const row = f.premerge;

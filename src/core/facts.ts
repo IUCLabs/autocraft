@@ -39,7 +39,7 @@ import { getRule, STATS_SQL, tierOf, tierKey, tiersOf, type AuthorRef, type Tier
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
-import { cachedDiffExtras, diffRereads, extrasPending, diffCacheDir, splitDiff } from "../review/diff.ts";
+import { cachedDiffExtras, diffRereads, extrasPending, rereadPaceAt, diffCacheDir, splitDiff } from "../review/diff.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { EXTRAS_PENDING_REASON, sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
@@ -138,6 +138,8 @@ function statementConflicts(find: { get(id: number): unknown }, stored: unknown[
 /** Facts of every open PR (and merged PRs with a take or take-fix review) of the database, repo or refs given. One pass: per-repo values are read once. */
 export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[] {
   const now = opts.now ?? Date.now();
+  // When the next diff re-read may run (the instance's hourly pace, a rate-limit pause); read once per load.
+  let paceAt: number | undefined;
   const params: Record<string, string> = {};
   let where = "";
   if (opts.repo) { where += " AND i.repo = :repo"; params.repo = opts.repo; }
@@ -338,7 +340,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const diffFacts = diffFactsAt(r.repo, r.number, r.r_head);
     // While the extras are pending the reasons are the conservative ones, and the wait itself keeps the PR off the rule.
     base.sensitive = diffFacts ? (diffFacts.pending ? [...diffFacts.reasons, EXTRAS_PENDING_REASON] : diffFacts.reasons) : null;
-    if (diffFacts?.pending) base.diffPending = { lastRead: diffFacts.lastRead };
+    if (diffFacts?.pending) base.diffPending = { lastRead: diffFacts.lastRead, paceAt: paceAt ??= rereadPaceAt(now) };
     if (diffFacts) { base.lines = diffFacts.lines; base.size = sizeOf(diffFacts.lines); }
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);

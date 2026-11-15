@@ -217,9 +217,10 @@ export type PrFacts = {
   sensitive: string[] | null;
   /**
    * The cached diff waits for what the merge rule reads beside it (whole files, workflow steps): `sensitive` holds the
-   * conservative reasons, and the pre-merge step reads the diff again (no model call). `lastRead`: the last such re-read (ms).
+   * conservative reasons, and the pre-merge step reads the diff again (no model call). `lastRead`: the last such re-read (ms);
+   * `paceAt`: the earliest time the instance's re-read pace and the rate-limit pause allow the next one (ms).
    */
-  diffPending?: { lastRead: number | null };
+  diffPending?: { lastRead: number | null; paceAt?: number };
   statementConflicts: { id: number; where: string; text: string; reason: string }[];
   /** The PR's head branch may be pushed to (source of the maintainer flag follows `checksHere`). */
   pushable: boolean;

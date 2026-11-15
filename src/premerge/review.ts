@@ -15,7 +15,9 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { defaultOpusDeps, prepareOpusInput, type OpusDeps } from "../review/opus.ts";
-import { rereadDiff } from "../review/diff.ts";
+import { REREADS_PER_HOUR, coreRate, pauseRereads, rereadDiff, takeRereadSlot } from "../review/diff.ts";
+import { SYNC_RESERVE } from "../mirror.ts";
+import { ownerOf } from "../owners.ts";
 import { recordLiveBase } from "../merge/base.ts";
 import { opusCandidateOf, type OpusCandidate } from "../review/opus-candidates.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
@@ -57,7 +59,10 @@ export function premergeCandidates(db: DatabaseSync, opts: { repo?: string; at?:
     onPlan: wake ? (f, plan) => {
       const pm = f.premerge;
       if ((plan.state === "waiting-premerge" || f.operator?.premerge) && f.repoFacts.mergeApproved && pm && !pm.hasFindings && pm.tries < PREMERGE_MAX_TRIES) wake.push(Date.parse(pm.at) + RETRY_AFTER_MS);
-      if (f.diffPending?.lastRead != null) wake.push(f.diffPending.lastRead + RETRY_AFTER_MS);
+      if (f.diffPending) {
+        const t = Math.max(f.diffPending.lastRead != null ? f.diffPending.lastRead + RETRY_AFTER_MS : 0, f.diffPending.paceAt ?? 0);
+        if (t > f.now) wake.push(t);
+      }
     } : undefined,
   }).map((p) => ({ repo: p.facts.repo, number: p.facts.number, head: p.action.head!, facts: p.facts }));
 }
@@ -82,6 +87,8 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
   }
   const opusDeps: OpusDeps = { ...deps, fetchDelta: async () => ({ ok: false, tooLarge: false, error: "not used" }) };
   let handled = 0;
+  // Read once per pass, before the first re-read.
+  let rateLowP: Promise<boolean> | undefined;
   await pool(cands.map((e) => async () => {
     const start = now(), ref = refOf(e), head = e.head;
     const fail = (error: string, final = false) => {
@@ -89,8 +96,20 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
       savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, error, final });
       s.failed.push(ref);
     };
-    // A diff that waits for what the merge rule reads beside it is read again, with no model call.
+    // A diff that waits for what the merge rule reads beside it is read again, with no model call, within the hour's re-reads
+    // and only while the token keeps the sync's reserve of its core rate.
     if (e.facts.diffPending) {
+      rateLowP ??= coreRate(ownerOf(repo)).then((rate) => {
+        const low = !!rate && rate.remaining < SYNC_RESERVE;
+        if (rate && low) pauseRereads(rate.resetAt);
+        return low;
+      });
+      const rateLow = await rateLowP;
+      if (rateLow || !takeRereadSlot(deps.now?.() ?? Date.now())) {
+        jobItem(db, repo, e.number, rateLow ? "diff re-read waits for GitHub's rate limit reset" : `diff re-read waits: ${REREADS_PER_HOUR} re-reads this hour`, log);
+        params.onHandled?.(++handled);
+        return;
+      }
       const liveBase = (db.prepare("SELECT base_ref FROM items WHERE repo = ? AND number = ?").get(repo, e.number) as { base_ref: string | null } | undefined)?.base_ref;
       const d = await rereadDiff(repo, e.number, head, deps.fetchDiff, liveBase, deps.now?.() ?? Date.now());
       if (d.ok && d.base && liveBase !== undefined && d.base !== liveBase) recordLiveBase(db, repo, e.number, head, d.base, { by: "premerge", keepDiff: true });

@@ -935,9 +935,12 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
   return { mode, items };
 }
 
+/** The GitHub rate the sync leaves for everything else: it waits for the reset below this many points; the diff re-reads use the same floor. */
+export const SYNC_RESERVE = 1000;
+
 async function sync(args: string[]): Promise<void> {
   const opts: SyncOpts = { only: [], all: false, full: false, perRepo: false };
-  let reserve = 1000;
+  let reserve = SYNC_RESERVE;
   let keep = FULL_KEEP;
   let restart = false;
   for (let i = 0; i < args.length; i++) {
