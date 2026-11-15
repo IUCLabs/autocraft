@@ -370,7 +370,7 @@ A production install runs the dashboard, the runner, the sync timer and a daily 
 |---|---|
 | `autocraft.env.example` | The settings file, `<root>/config/autocraft.env`: every path (database, caches, secrets, accounts), the listen addresses and the public URL. |
 | `systemd/autocraft-*.service`, `*.timer` | System units with `@ROOT@` and `@USER@` placeholders: dashboard, runner, sync (every minute) and backup (daily). They read the settings file. |
-| `post-receive` | Bootstrap hook for `<root>/repo.git` (a bare repo). Install it once; it runs `deploy/hook.sh` from the pushed commit and passes that commit (`AUTOCRAFT_DEPLOY_SHA`), so the release is the commit that was pushed even if the branch moves during the deploy. |
+| `post-receive` | Bootstrap hook for `<root>/repo.git` (a bare repo). Install it once; each deploy replaces it with the copy in the deployed commit. It runs `deploy/hook.sh` from the pushed commit and passes that commit (`AUTOCRAFT_DEPLOY_SHA`), so the release is the commit that was pushed even if the branch moves during the deploy. |
 | `hook.sh` | Snapshots the database, pauses the sync timer, builds `<root>/releases/<commit>` (dependencies, `web/dist`), updates the sandbox worker code (when `AUTOCRAFT_WORKER_SSH` is set; SSH accepts only a known host key, from `<key>.known_hosts` when it exists, else the user's `known_hosts`) switches the `<root>/app` symlink and restarts the units named by `AUTOCRAFT_UNITS`. A failed deploy prints the command that redeploys the same commit. |
 | `push.sh` | `deploy/push.sh REMOTE [REF]`: pushes a branch to the bare repo. |
 | `backup.sh` | `backup.sh [PREFIX [KEEP]]`: consistent snapshot with `sqlite3 .backup`, compressed, newest KEEP kept. |

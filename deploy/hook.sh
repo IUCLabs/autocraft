@@ -116,6 +116,13 @@ else
 fi
 cd "$REL"
 
+# The bootstrap hook is part of the release: the next push runs the one this commit carries.
+if [ -f "$REL/deploy/post-receive" ] && ! cmp -s "$REL/deploy/post-receive" "$GIT_DIR/hooks/post-receive"; then
+	echo "-> Updating the post-receive hook..."
+	install -m 0755 "$REL/deploy/post-receive" "$GIT_DIR/hooks/post-receive.new"
+	mv -f "$GIT_DIR/hooks/post-receive.new" "$GIT_DIR/hooks/post-receive"
+fi
+
 if [ "${snapshot_pending:-0}" = 1 ]; then
 	echo "-> Snapshotting the database..."
 	bash "$REL/deploy/backup.sh" predeploy 3
