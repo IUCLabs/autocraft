@@ -65,7 +65,7 @@ type Common = {
   sandbox?: { tools: string[]; /** The call may get the maintainers' AGENTS.md and ROADMAP.md of the default branch at /repo-docs when the repo has them. */ docs?: boolean; maxTurns: number; /** The call also gets the workspace: every tracked repository at /repos/<name> and the explorer subagent. */ workspace?: boolean; /** The call may get the repo's reference documentation at /reference when it exists. */ reference?: boolean; /** The call may get the `check` build tool (src/checktool) when its stage provides one. */ check?: boolean };
   /** The reply is linted after parsing (src/replylint.ts); a sandboxed call keeps its session so problems can be sent back as one follow-up message. */
   lint?: boolean;
-  /** The reply carries code (a patch, conflict resolutions, a test): its parser reads it with only the known credential shapes hidden (`scrubCredentials`), so the stricter output scrub never rewrites code. */
+  /** The reply carries code (a patch, conflict resolutions, a test): its parser reads it as written, and a reply holding a credential of a fixed shape (`hasFixedCredential`) is refused as unreadable. */
   codeReply?: boolean;
   /** Further rows for the Prompts page's settings table, such as texts the stage posts itself. */
   extra?: { label: string; value: string }[];

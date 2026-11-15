@@ -5,9 +5,9 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import type { AppSecrets } from "../src/dash/server/config.ts";
 import { InstallTokenMinter, identityGitArgs, withIdentityEnv } from "../src/github/install-token.ts";
-import { scrub, scrubCredentials } from "../src/runner/scrub.ts";
+import { hasFixedCredential, scrub } from "../src/runner/scrub.ts";
 
-test("the scrubber hides hex keys, URL passwords, dotted tokens and encoded tokens, keeps commit ids and digests, and leaves code literals to the credential-only scrub", () => {
+test("the scrubber hides hex keys, URL passwords, dotted tokens and encoded tokens, keeps commit ids and digests, keeps review text readable, and refuses code replies holding a fixed-shape credential", () => {
   const gh = `ghs_${"Ab1".repeat(12)}`;
   const commit = "0123456789abcdef0123456789abcdef01234567";
   const digest = "a".repeat(32) + "b".repeat(32);
@@ -22,10 +22,17 @@ test("the scrubber hides hex keys, URL passwords, dotted tokens and encoded toke
   for (const [text, secret] of cases) assert.ok(!scrub(text).includes(secret), `${text} -> ${scrub(text)}`);
   const plain = `HEAD is now at ${commit}; sha256:${digest}; see https://github.com/o/r/pull/7 and src/runner/scrub.ts`;
   assert.equal(scrub(plain), plain);
-  // A reply that carries code keeps its literals for the parser; a provider token in it is still hidden.
-  const code = `+const KEY = "${"9f".repeat(24)}"; const DB = "postgres://app:pw@localhost/db";`;
-  assert.equal(scrubCredentials(code), code);
-  assert.ok(!scrubCredentials(`+const T = "${gh}";`).includes(gh));
+  // Review text keeps permalinks, long paths and code with credential-like names.
+  const review = [
+    `See https://github.com/o/r/blob/${commit}/src/modules/admin/ContributorsViews2/TierTable.tsx#L10 and src/modules/admin/ContributorsViews2/TierTable.tsx.`,
+    "Set `max_tokens: 4096` and keep `password: String` as is; `let token = req.header(\"Authorization\")?;` reads the header.",
+  ].join("\n");
+  assert.equal(scrub(review), review);
+  assert.equal(scrub("`SESSION_KEY=aB3dE9fG2hJ5kL8mN4pQ`"), "`SESSION_KEY=[hidden]`");
+  // A reply that carries code is refused, not rewritten, when it holds a credential of a fixed shape.
+  const code = `+const KEY = "${"9f".repeat(24)}"; const DB = "postgres://app:pw@localhost/db"; <div class="sk-loading-spinner-component">`;
+  assert.equal(hasFixedCredential(code), false);
+  assert.equal(hasFixedCredential(`+const T = "${gh}";`), true);
 });
 
 test("an installation token for a write reaches only its repository, and git hands it only to github.com", async () => {

@@ -194,12 +194,13 @@ describe("askClaude in tool mode", () => {
   test("the reply is parsed before scrubbing, so token-like review text keeps the JSON valid", async () => {
     const cfg = box.configDir + "t";
     process.env.AUTOCRAFT_CLAUDE_BIN = "/usr/bin/true";
-    const reply = '{"ref":"x","reason":"token: abc and password=x in the text"}';
+    const reply = '{"ref":"x","reason":"token: aB3dE9fG2hJ5kL8mN4pQ and password=Zx9Yw8Vu7Ts6Rq5Po4 in the text"}';
     const restore = setRunner(async () => ({ code: 0, stdout: JSON.stringify({ type: "result", result: reply, num_turns: 2, usage: {} }), stderr: "password=hunter2" }));
     try {
       const r = await askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db, { checkout: join(dir, "co") });
       assert.ok(r, "parsed");
-      assert.ok(!r!.text.includes("abc") && !r!.text.includes("password=x"), r!.text);
+      assert.ok(!r!.text.includes("aB3dE9") && !r!.text.includes("Zx9Yw8"), r!.text);
+      assert.doesNotThrow(() => JSON.parse(r!.text));
       assert.ok(cfg);
     } finally {
       restore();
