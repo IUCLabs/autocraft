@@ -15,6 +15,7 @@ export const FILE_KIND_REASON = "changes a submodule, symlink, file mode or bina
 export const TESTS_UNREAD_REASON = "test files left out of the review for size";
 export const UNREADABLE_PATH_REASON = "changes a file whose name the check cannot read";
 export const EXTERNAL_LINK_REASON = "adds a third-party image or link";
+export const EXTRAS_PENDING_REASON = "waiting to read the files the merge rule checks beside the diff";
 
 /** Hosts that do not count as third-party, besides the repo's own org pages on GitHub. */
 const OWN_HOSTS = ["github.com", "www.github.com", "raw.githubusercontent.com"];

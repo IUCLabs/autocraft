@@ -147,7 +147,7 @@ export function wholeInDiff(f: FileDiff, side: "before" | "after"): string | nul
  * the commit it was read at. A stored entry records the base branch it was computed against; with `base` given, an entry for
  * another base is read again.
  */
-export async function cachedDiff(repo: string, number: number, head: string, fetch: DiffFetcher, base?: string | null): Promise<DiffResult> {
+export async function cachedDiff(repo: string, number: number, head: string, fetch: DiffFetcher, base?: string | null, opts: { reread?: boolean } = {}): Promise<DiffResult> {
   const dir = join(diffCacheDir(), repo);
   const file = join(dir, `${number}-${head}.diff`);
   const put = (path: string, text: string) => {
@@ -156,15 +156,14 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
     writeFileSync(tmp, text);
     renameSync(tmp, path);
   };
-  // An incomplete read is stored with its count, so the rule reads again a few times and then judges what it has.
-  const fetchAndStore = async (tries: number): Promise<DiffResult> => {
+  const fetchAndStore = async (): Promise<DiffResult> => {
     const r = await fetch(repo, number, head);
     if (r.ok) {
       if (r.base) put(`${file}.base`, r.base);
       // The extras are written before the diff, so a reader that finds the diff finds them too.
-      if (r.extras) put(`${file}.files.json`, JSON.stringify({ ...r.extras, tries: r.extras.complete ? 0 : tries + 1 }));
+      if (r.extras) put(`${file}.files.json`, JSON.stringify(r.extras));
       put(file, r.text);
-    } else if (tries > 0 || existsSync(file)) put(`${file}.files.json`, JSON.stringify({ ...(cachedDiffExtras(repo, number, head) ?? { files: {}, runs: null, complete: false }), tries: tries + 1 }));
+    }
     return r;
   };
   if (existsSync(file)) {
@@ -173,33 +172,60 @@ export async function cachedDiff(repo: string, number: number, head: string, fet
     if (!base || stored === base) {
       const text = readFileSync(file, "utf8");
       const extras = cachedDiffExtras(repo, number, head);
-      const hit: DiffResult = { ok: true, text, ...(stored !== undefined ? { base: stored } : {}), ...(extras ? { extras } : {}) };
-      if (!extrasPending(text, extras)) return hit;
-      const again = await fetchAndStore(extras?.tries ?? 0);
-      return again.ok ? again : hit;
+      // An entry whose extras the rule still waits for is read again only by the re-read (see `rereadDiff`).
+      if (!opts.reread) return { ok: true, text, ...(stored !== undefined ? { base: stored } : {}), ...(extras ? { extras } : {}) };
     }
   }
-  return fetchAndStore(0);
+  return fetchAndStore();
 }
 
-/** Reads of the extras before the rule judges a diff with what it has. */
+/**
+ * Reads a cached diff again for the extras the merge rule waits for, counted as one re-read; on a failed read the cached
+ * entry stands.
+ */
+export async function rereadDiff(repo: string, number: number, head: string, fetch: DiffFetcher, base: string | null | undefined, at: number): Promise<DiffResult> {
+  const r = await cachedDiff(repo, number, head, fetch, base, { reread: true });
+  noteReread(repo, number, head, at);
+  return r;
+}
+
+/** Re-reads of a diff's extras (see `noteReread`) before the rule judges the diff with what it has. */
 export const EXTRAS_TRIES = 3;
 
-/** What is stored beside a cached diff (see `DiffExtras`), with the number of incomplete reads; null when nothing is stored. */
-export function cachedDiffExtras(repo: string, number: number, head: string): (DiffExtras & { tries: number }) | null {
+/**
+ * Records one re-read of a diff for its extras: a GitHub read made because the rule waits for them. Only these count
+ * towards `EXTRAS_TRIES`, so reads other steps make, or skip, never use them up.
+ */
+export function noteReread(repo: string, number: number, head: string, at: number): void {
+  const f = join(diffCacheDir(), repo, `${number}-${head}.diff.reread`);
+  mkdirSync(join(diffCacheDir(), repo), { recursive: true });
+  writeFileSync(f, JSON.stringify({ count: diffRereads(repo, number, head).count + 1, at }));
+}
+
+/** The re-reads recorded for a diff and the time of the last one. */
+export function diffRereads(repo: string, number: number, head: string): { count: number; at: number | null } {
+  const f = join(diffCacheDir(), repo, `${number}-${head}.diff.reread`);
+  try {
+    if (!existsSync(f)) return { count: 0, at: null };
+    const v = JSON.parse(readFileSync(f, "utf8")) as { count?: unknown; at?: unknown };
+    return { count: typeof v.count === "number" ? v.count : EXTRAS_TRIES, at: typeof v.at === "number" ? v.at : null };
+  } catch { return { count: EXTRAS_TRIES, at: null }; }
+}
+
+/** What is stored beside a cached diff (see `DiffExtras`); null when nothing is stored. */
+export function cachedDiffExtras(repo: string, number: number, head: string): DiffExtras | null {
   const f = join(diffCacheDir(), repo, `${number}-${head}.diff.files.json`);
   try {
     if (!existsSync(f)) return null;
-    const v = JSON.parse(readFileSync(f, "utf8")) as Partial<DiffExtras> & { tries?: number };
+    const v = JSON.parse(readFileSync(f, "utf8")) as Partial<DiffExtras>;
     const runs = v.runs && Array.isArray(v.runs.runs) && Array.isArray(v.runs.actions) ? v.runs : null;
-    return { files: v.files && typeof v.files === "object" ? v.files : {}, runs, complete: v.complete === true, tries: typeof v.tries === "number" ? v.tries : 0 };
+    return { files: v.files && typeof v.files === "object" ? v.files : {}, runs, complete: v.complete === true };
   } catch { return null; }
 }
 
-/** Whether a cached diff still waits for its extras: it needs them and has none, or an incomplete read that is tried again. */
-export function extrasPending(text: string, extras: (DiffExtras & { tries: number }) | null): boolean {
-  if (extras?.complete) return false;
-  if (extras && extras.tries >= EXTRAS_TRIES) return false;
+/** Whether a cached diff still waits for its extras: it needs them, has no complete read of them, and has re-reads left. */
+export function extrasPending(text: string, extras: DiffExtras | null, rereads: number): boolean {
+  if (extras?.complete || rereads >= EXTRAS_TRIES) return false;
   return needsExtras(text);
 }
 
@@ -209,6 +235,7 @@ export function dropCachedDiff(repo: string, number: number, head: string): void
   rmSync(file, { force: true });
   rmSync(`${file}.base`, { force: true });
   rmSync(`${file}.files.json`, { force: true });
+  rmSync(`${file}.reread`, { force: true });
 }
 
 /** The base branch a cached diff was computed against; null when unknown. */

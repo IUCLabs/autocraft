@@ -10,6 +10,9 @@ import { buildScripts } from "../src/fixup/patch.ts";
 import { workflowSteps } from "../src/core/workflow-runs.ts";
 import { extrasPending } from "../src/review/diff.ts";
 import { parseToml } from "../src/core/toml.ts";
+import { decidePr } from "../src/core/decide.ts";
+import { EXTRAS_PENDING_REASON } from "../src/core/sensitive.ts";
+import { NOW, prFacts } from "./world.ts";
 
 const NONE = { runs: [], actions: [] };
 import { parseTriage, sourcePaths } from "../src/fixissue/parse.ts";
@@ -57,10 +60,10 @@ test("the content check reads whole manifests, lockfiles, file kinds, both names
   const runs = workflowSteps([
     "defaults:", "  run:", "    working-directory: app", "jobs:", "  t:", "    steps:", "      - uses: ./tools/setup",
     "      - run: ./ci/test.sh --all", "      - name: web", "        working-directory: web", "        run: ./build.sh",
-    "      - run: |", "          cargo build --manifest-path Cargo.toml", "          python tools/gen.py > out.txt", "          pytest tests/", "      - run: cargo xtask dist", "",
+    "      - run: |", "          cargo build --manifest-path Cargo.toml", "          python tools/gen.py > out.txt", "          pytest tests/", "      - run: cargo xtask dist", "      - working-directory: ${{ matrix.dir }}", "        run: ./make.sh", "",
   ].join("\n"));
-  for (const p of ["ci/test.sh", "app/ci/test.sh", "tools/gen.py", "tools/setup/action.yml", "web/build.sh", "xtask/src/main.rs"]) assert.deepEqual(sensitiveReasons(added(p, "x"), "storytold", { runs }), [CI], p);
-  for (const p of ["src/lib.rs", "scripts/other.sh", "tests/test_a.py", "build.sh"]) assert.deepEqual(sensitiveReasons(added(p, "x"), "storytold", { runs }), [], p);
+  for (const p of ["ci/test.sh", "app/ci/test.sh", "tools/gen.py", "tools/setup/action.yml", "web/build.sh", "xtask/src/main.rs", "pkgs/a/make.sh"]) assert.deepEqual(sensitiveReasons(added(p, "x"), "storytold", { runs }), [CI], p);
+  for (const p of ["src/lib.rs", "scripts/other.sh", "tests/test_a.py", "build.sh", "web/ci/test.sh", "pkgs/a/make.shx"]) assert.deepEqual(sensitiveReasons(added(p, "x"), "storytold", { runs }), [], p);
   assert.deepEqual(sensitiveReasons(added("xtask/src/main.rs", "x"), "storytold", { runs: NONE }), []);
   assert.deepEqual(sensitiveReasons(added("scripts/other.sh", "x"), "storytold", { runs: null }), [CI]);
   // npm scripts are commands CI runs; a dependency bump in the same manifest is not.
@@ -114,7 +117,13 @@ test("the reviews are shown test files while they fit, the rule counts the rest 
   assert.deepEqual([reply("c/src/lib.rs"), reply("c/gen.rs")].map((r) => parseTriage(r, "app#5", [{ name: "c", dir: "c" }], ["c/gen.rs", "c/src/lib.rs"], scripts).ok), [true, false]);
   // A cached diff that needs what the rule reads beside it waits for it, a few reads at most; one that needs nothing does not.
   const script = added("ci/run.sh", "x");
-  assert.deepEqual([extrasPending(script, null), extrasPending(script, { files: {}, runs: null, complete: false, tries: 1 }), extrasPending(script, { files: {}, runs: null, complete: false, tries: 3 }), extrasPending(added("src/lib.rs", "x"), null)], [true, true, false, false]);
+  const incomplete = { files: {}, runs: null, complete: false };
+  assert.deepEqual([extrasPending(script, null, 0), extrasPending(script, incomplete, 2), extrasPending(script, incomplete, 3), extrasPending(added("src/lib.rs", "x"), null, 0)], [true, true, false, false]);
+  // While they are pending the PR holds on the conservative reasons, is not asked about, and gets a re-read (an hour after the last one).
+  const waiting = (lastRead: number | null) => decidePr(prFacts({ sensitive: [EXTRAS_PENDING_REASON], diffPending: { lastRead } }));
+  const kinds = (p: ReturnType<typeof decidePr>) => p.actions.map((a) => a.kind);
+  assert.deepEqual([waiting(null).state, kinds(waiting(null))], ["needs-decision", ["premerge"]]);
+  assert.deepEqual([kinds(waiting(NOW - 60_000)), kinds(waiting(NOW - 2 * 3600_000))], [[], ["premerge"]]);
   // A manifest that does not parse makes every Rust file of its crate outside src/ a build script.
   assert.deepEqual([...buildScripts(["c/Cargo.toml", "c/gen.rs", "c/src/lib.rs"], () => "[package\nbuild = 'gen.rs'")].sort(), ["c/gen.rs"]);
 });
