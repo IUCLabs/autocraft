@@ -88,8 +88,9 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       for (const c of closers) if (!posted.get(dec.id, c.number, "close")) run.log(`  would comment and close ${ref(c.number)} (${dec.id})`);
       continue;
     }
-    // A PR is closed or kept only at a head a stored comparison read: a comparison that recorded no heads is made again first.
-    const unbound = items.filter((i) => i.kind === "pr" && i.role !== "stay" && !posted.get(dec.id, i.number, "close") && comparedHead(db, run.repo, i.number) === undefined);
+    // A PR is closed or kept only at a head a stored comparison read: with none that recorded heads, the set is compared first
+    // (compareAgain marks a stored row; a set with no row is due anyway). A PR with no head is released below instead.
+    const unbound = items.filter((i) => i.kind === "pr" && i.role !== "stay" && !!i.head && !posted.get(dec.id, i.number, "close") && comparedHead(db, run.repo, i.number) === undefined);
     if (unbound.length) {
       for (const i of unbound) compareAgain(db, ACTOR, run.repo, i.number);
       run.log(`  ${dec.id}: waits for a comparison that records the heads of ${unbound.map((i) => ref(i.number)).join(", ")}`);
