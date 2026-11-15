@@ -203,7 +203,7 @@ export async function rereadDiff(repo: string, number: number, head: string, fet
 }
 
 /** Re-reads across the instance in a rolling hour: they share the account's GitHub rate with every other step. */
-export const REREADS_PER_HOUR = 200;
+export const REREADS_PER_HOUR = 600;
 const HOUR_MS = 3600_000;
 const paceFile = () => join(diffCacheDir(), "reread-pace.json");
 type Pace = { at: number[]; pauseUntil: number | null };
