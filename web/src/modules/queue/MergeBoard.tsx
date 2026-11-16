@@ -1,5 +1,5 @@
 // The merge queue, on the Merge queue tab: every PR with a take or take-fix review as one Workable table, grouped by the step it waits on,
-// nearest to merging first; integration batches are groups of their own, then the stopped PRs.
+// in the order a PR passes them; integration batches are groups of their own, then the stopped PRs.
 import { Fragment, useEffect, useMemo, type ReactNode } from "react";
 import { CheckCircleIcon, CircleNotchIcon, ClockIcon, MinusCircleIcon, WarningCircleIcon, XCircleIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
@@ -18,15 +18,15 @@ import { BatchFacts, CI_TONE, DecisionLink, MERGEABLE, STATE, StateChip, TIER, V
 import { RowMenu } from "./RowMenu";
 import { usePage } from "./usePage";
 
-type StepId = "ready" | "batch" | "premerge" | "ci" | "verify";
+type StepId = "verify" | "ci" | "premerge" | "ready" | "batch";
 
-/** The steps before a merge, nearest to merging first. */
+/** The steps before a merge, in the order a PR passes them. */
 const STEPS: { id: StepId; label: string; hint: string; dot: string; states: QueueState[] }[] = [
+  { id: "verify", label: "Verify", hint: "Build and tests run at the reviewed head", dot: "bg-c1", states: ["waiting-verify"] },
+  { id: "ci", label: "CI", hint: "Upstream CI at the head, a red default branch, or CI runs waiting for approval", dot: "bg-c2", states: ["waiting-ci", "waiting-main-ci", "ci-approval"] },
+  { id: "premerge", label: "Pre-merge review", hint: "Opus reviews the head commit once more before it merges", dot: "bg-c3", states: ["waiting-premerge"] },
   { id: "ready", label: "Ready", hint: "Covered by the merge rule or approved by an operator; merges on the next run", dot: "bg-ok", states: ["ready", "decision-answered-merge"] },
   { id: "batch", label: "In a batch", hint: "Lands with its integration batch once the batch's checks are green", dot: "bg-accent", states: ["batch-checking", "in-batch"] },
-  { id: "premerge", label: "Pre-merge review", hint: "Opus reviews the head commit once more before it merges", dot: "bg-c3", states: ["waiting-premerge"] },
-  { id: "ci", label: "CI", hint: "Upstream CI at the head, a red default branch, or CI runs waiting for approval", dot: "bg-c2", states: ["waiting-ci", "waiting-main-ci", "ci-approval"] },
-  { id: "verify", label: "Verify", hint: "Build and tests run at the reviewed head", dot: "bg-c1", states: ["waiting-verify"] },
 ];
 
 /** States that stop a PR until something changes: a person, a fix-up or a new head. */
@@ -227,7 +227,7 @@ export function MergeBoard({ repo }: { repo: string | null }) {
       <ErrorLine error={error?.message} className="mt-3" />
       {q.loaded && (
         <p className="mt-4 text-sm text-ink/60">
-          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on, nearest to merging first. The number before a PR is its place in the merge order.
+          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on, in the order a PR passes them. The number before a PR is its place in the merge order.
         </p>
       )}
       <FlowBar counts={counts} total={total} />
