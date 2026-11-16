@@ -4,7 +4,7 @@ AutoCraft is a model harness for maintaining GitHub repositories with a large ba
 
 The models' tools are a fixed set of GitHub actions (comments, labels, branches, PRs, merges), all behind one write module and `safe-merge`-style checks. Actions run automatically where the rules say they are safe. Otherwise a model proposes and a person accepts. Each issue and PR has its own conversation between Opus and a maintainer, with action cards the maintainer can run. The pipeline is built around maintainers' judgement, which is the limited resource, not around token cost.
 
-Originally written for the [storytold](https://github.com/storytold) craft apps, AutoCraft can also track repositories owned by other GitHub organizations or users via `autocraft repos track owner/name` without requiring source edits. See [Track repos and sync](#track-repos-and-sync) for naming limitations.
+Originally written for the [storytold](https://github.com/storytold) craft apps, AutoCraft can also track repositories owned by other GitHub organizations or users via `autocraft repos track owner/name` without requiring source edits. See [Track repos and sync](#track-repos-and-sync) for naming and GitHub App sync limitations.
 
 ## How it works
 
@@ -141,7 +141,7 @@ autocraft repos list
 autocraft sync                   # first sync of the tracked repos
 ```
 
-Repository names must be unique across owners within an instance. Tracking `owner/name` is refused if that name is already known under another owner. When adding a previously unknown repository outside `storytold`, tracking is also refused if `storytold` has a repository of that name. An already-known bare name refers to its recorded owner. The repository must exist and be readable; when using the GitHub App identity, its installation must cover the repository.
+Use the repository name’s exact casing as shown on GitHub: tracking preserves the supplied name, and sync compares repository names case-sensitively. Repository names must be unique across owners within an instance. Tracking `owner/name` is refused if that name is already known under another owner. When adding a previously unknown repository outside `storytold`, tracking is also refused if `storytold` has a repository of that name. An already-known bare name refers to its recorded owner. The repository must exist and be readable; when using the GitHub App identity, its installation must cover the repository. There is also a current sync limitation: refreshing the repository list first reads `storytold`, requiring a GitHub App installation there as well. An App installed only on the external owner can allow tracking but fail during sync. External-only GitHub App deployments are therefore not supported by this setup.
 
 Newly tracked repositories start with their pipeline disabled. Sync, Embed, and Rank remain available; operator conversations and explicitly fast-tracked items are exceptions to the pipeline-off restriction. For recurring sync, install and enable the supplied systemd timer (`deploy/systemd/autocraft-sync.timer`) or use the periodic service in the Docker Compose deployment. Running the initial sync does not schedule future runs. `autocraft embed` populates vectors. With the default model and an empty cache, the first embedding operation downloads the approximately 34 MB model plus supporting files.
 
