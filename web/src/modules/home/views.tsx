@@ -1,4 +1,5 @@
 // Home: what needs me, is anything broken, is it moving.
+import { ProjectLive, ProjectMergeQueue } from "./live";
 import { useEffect } from "react";
 import { setScope } from "../../api/scope";
 import { Link, useParams } from "react-router-dom";
@@ -70,6 +71,10 @@ export function HomeView(_: ViewProps) {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-[1180px] flex-col gap-7 px-4 pb-10 pt-5 md:px-6">
         <ProjectHeader repo={repo} scoped={scoped} />
+        <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          <ProjectLive repo={repo} />
+          <ProjectMergeQueue repo={repo} />
+        </div>
         <div className={cn("grid gap-7", problems.length > 0 && "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]")}>
           <Section title="Needs you" count={needs.total} to={scoped("/needs")} linkLabel="All decisions">
             {needs.total === 0 ? (
