@@ -32,6 +32,10 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
     const order = new Map(fast.map((x, i) => [x, i]));
     fast = [...fast].sort((a, b) => weightOf(b) - weightOf(a) || order.get(a)! - order.get(b)!);
   };
+  // Two seeded items carry other weights, so the marks and the order show them.
+  if (fast[1]) weights.set(fast[1], 8);
+  if (fast[2]) weights.set(fast[2], 3);
+  resort();
   // One designcraft PR starts out held, so the Merge tab shows a held row.
   const first = allMerge.find((r) => r.repo === "designcraft" && r.state === "ready");
   const held = new Set<string>(first ? [`${first.repo}#${first.number}`] : []);
