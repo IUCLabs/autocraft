@@ -1,11 +1,13 @@
 import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useRef } from "react";
 import { topicsFor } from "./topics";
+import { usePageProject, withProject } from "./scope";
 import type {
   DiscordAccount,
   DiscordLinkCode,
   DiscordSetup,
   Home,
+  OpenDecisionCounts,
   ItemPageData,
   ItemStatusFilter,
   ItemStatusList,
@@ -128,6 +130,8 @@ export interface Api {
   repoOwners(): Promise<Record<string, string>>;
   decisions: {
     list(filter: DecisionFilter): Promise<DecisionList>;
+    /** The requester's inbox count in total and per repo, over every repo: the project picker's numbers. */
+    openCounts(): Promise<OpenDecisionCounts>;
     get(id: string): Promise<Decision>;
     /** The decision a readable link opens: the item's first open one, else its latest; null when it has none. */
     forItem(repo: RepoName, number: number, kind?: DecisionKind): Promise<Decision | null>;
@@ -209,7 +213,7 @@ export interface Api {
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */
   items(filter: ItemFilter): Promise<ItemList>;
   progress(): Promise<Progress>;
-  /** Home: needs, problems, phase counts, progress and what was done today, in one payload. */
+  /** Home: needs, problems, phase counts, progress and what was done today, in one payload; the page's project narrows all of it. */
   home(): Promise<Home>;
   /** The item page's AutoCraft and GitHub sides: status, reviews with earlier ones, result cards, history, GitHub's own sections. `since` as for `itemTrace`. */
   itemPage(repo: RepoName, number: number, since?: string): Promise<ItemPageData | ItemPageUnchanged>;
@@ -481,9 +485,11 @@ export interface Query<T> {
  */
 export function useQuery<T>(key: string, fn: (api: Api) => Promise<T>, opts: { pollMs?: number | false | ((data: T | undefined) => number | false); enabled?: boolean } = {}): Query<T> {
   const api = useApi();
+  // The page's project is part of the key: the same view of another project is another entry.
+  const project = usePageProject();
   const q = useTanstackQuery<T, Error>({
-    queryKey: [key],
-    queryFn: () => fn(api),
+    queryKey: [key, project],
+    queryFn: () => withProject(project, () => fn(api)),
     meta: { topics: topicsFor(key) },
     placeholderData: keepPreviousData,
     enabled: opts.enabled ?? true,
@@ -515,16 +521,19 @@ export function usePagedQuery<P>(key: string, fn: (api: Api, cursor: string | un
   const api = useApi();
   // With `keepPageMs`, a change event refetches the first page only; a later page is read again when its cursor changed or its copy is older than that.
   const kept = useRef(new Map<string, { page: P; at: number }>());
-  const q = useInfiniteQuery<P, Error, { pages: P[] }, string[], string | undefined>({
-    queryKey: [key],
+  const project = usePageProject();
+  const q = useInfiniteQuery<P, Error, { pages: P[] }, (string | null)[], string | undefined>({
+    queryKey: [key, project],
     queryFn: async ({ pageParam }) => {
       const keep = opts.keepPageMs;
-      if (!keep || pageParam === undefined) return fn(api, pageParam);
-      const hit = kept.current.get(pageParam);
+      const read = () => withProject(project, () => fn(api, pageParam));
+      if (!keep || pageParam === undefined) return read();
+      const at = `${project ?? ""} ${pageParam}`;
+      const hit = kept.current.get(at);
       if (hit && Date.now() - hit.at < keep) return hit.page;
-      const page = await fn(api, pageParam);
+      const page = await read();
       for (const [k, v] of kept.current) if (Date.now() - v.at >= keep) kept.current.delete(k);
-      kept.current.set(pageParam, { page, at: Date.now() });
+      kept.current.set(at, { page, at: Date.now() });
       return page;
     },
     initialPageParam: undefined,

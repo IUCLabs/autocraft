@@ -9,5 +9,5 @@ export const activityModule: FeatureModule = {
   permission: "viewer",
   nav: { label: "Activity", icon: ListBulletsIcon, to: "/activity" },
   commands: [{ id: "go-activity", keys: "g e", label: "Go to activity", group: "Go to" }],
-  routes: [{ path: "activity", view: { id: "activity", title: "Activity", panels: [{ id: "main", title: "Activity", component: ActivityView, defaultSize: 100 }] } }],
+  routes: [{ path: "activity", scoped: true, view: { id: "activity", title: "Activity", panels: [{ id: "main", title: "Activity", component: ActivityView, defaultSize: 100 }] } }],
 };

@@ -88,8 +88,8 @@ const signedIn = (login: string): ReturnType<typeof signIn> => {
 
 async function signIn(login: string) {
   const jar = new Map<string, string>();
-  const send = async (path: string) => {
-    const r = await fetch(new URL(path, base), { headers: { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json" }, redirect: "manual" });
+  const send = async (path: string, extra: Record<string, string> = {}) => {
+    const r = await fetch(new URL(path, base), { headers: { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json", ...extra }, redirect: "manual" });
     for (const c of r.headers.getSetCookie()) {
       const [kv] = c.split(";");
       const k = kv!.slice(0, kv!.indexOf("=")), v = kv!.slice(kv!.indexOf("=") + 1);
@@ -102,9 +102,9 @@ async function signIn(login: string) {
   const auth = await send(`${start.headers.get("location")}&login=${login}`);
   assert.equal((await send(auth.headers.get("location")!)).status, 303);
   return {
-    status: async (path: string) => (await send(path)).status,
-    get: async <T>(path: string): Promise<T> => {
-      const r = await send(path);
+    status: async (path: string, headers?: Record<string, string>) => (await send(path, headers)).status,
+    get: async <T>(path: string, headers?: Record<string, string>): Promise<T> => {
+      const r = await send(path, headers);
       assert.equal(r.status, 200, path);
       return (await r.json()) as T;
     },
@@ -259,6 +259,29 @@ describe("repo visibility", () => {
     assert.deepEqual(viewer.needs.oldest, []);
     assert.ok(maint.needs.oldest.length > 0);
     assert.equal(viewer.needs.total, maint.needs.total);
+  });
+
+  test("the project scope narrows lists to one repo; pages reached by their own link show every repo; a scope the user cannot see is ignored", async () => {
+    const scope = (repo: string) => ({ "x-autocraft-scope": repo });
+    const boss = await signedIn("boss");
+    const scoped = await boss.get<DecisionList>("/api/decisions", scope("open-app"));
+    assert.ok(scoped.decisions.length > 0);
+    assert.ok(scoped.decisions.every((d) => d.repo === "open-app"));
+    const home = await boss.get<{ needs: { oldest: { repo: string }[] } }>("/api/home", scope("open-app"));
+    assert.ok(home.needs.oldest.length > 0);
+    assert.ok(home.needs.oldest.every((n) => n.repo === "open-app"));
+    // Another repo's item page and decision open with their decision and reviews; the picker's list and counts name every repo.
+    assert.equal((await boss.get<DecisionOne>(`/api/decisions/${encodeURIComponent("vault#1:scope")}`, scope("open-app"))).repo, "vault");
+    assert.equal((await boss.get<DecisionOne | null>("/api/items/vault/1/decision", scope("open-app")))?.id, "vault#1:scope");
+    assert.ok((await boss.get<ItemPageData>("/api/items/vault/1/page", scope("open-app"))).reviews.latest);
+    assert.deepEqual((await boss.get<string[]>("/api/repos", scope("open-app"))).sort(), ["open-app", "vault"]);
+    assert.ok((await boss.get<{ byRepo: Record<string, number> }>("/api/decisions/open-counts", scope("open-app"))).byRepo.vault! > 0);
+    // A scope the user cannot see is ignored: the outsider gets the open-app list, never vault's.
+    const outsider = await signedIn("outsider");
+    const out = await outsider.get<DecisionList>("/api/decisions", scope("vault"));
+    assert.ok(out.decisions.some((d) => d.repo === "open-app"));
+    assert.ok(!out.decisions.some((d) => d.repo === "vault"));
+    assert.equal(await outsider.status("/api/items/vault/1", scope("vault")), 404);
   });
 
   test("rows of an untracked repo and of a private repo the user cannot read are operator-only", async () => {

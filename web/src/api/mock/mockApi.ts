@@ -166,6 +166,12 @@ export function createMockApi(): Api {
         const more = page.length > 0 && from + page.length < sorted.length;
         return wait({ decisions: page, total: sorted.length, byKind, oldestAskedAt: sorted[0]?.askedAt ?? null, next: more ? page[page.length - 1]!.id : null }, lag());
       },
+      openCounts() {
+        const open = decisions.filter((d) => matches(d, { status: "open" }));
+        const byRepo: Record<string, number> = {};
+        for (const d of open) for (const r of new Set([d.repo, ...d.items.map((i) => i.repo)])) byRepo[r] = (byRepo[r] ?? 0) + 1;
+        return wait({ total: open.length, byRepo }, lag());
+      },
       get: (id) => wait(find(id), lag()),
       forItem: (repo, number, kind) => wait(pickDecision(decisions.filter((d) => d.repo === shortRepo(repo) && d.number === number && (!kind || d.kind === kind))) ?? null),
       async answer(id, input) {

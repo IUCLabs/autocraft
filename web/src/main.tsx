@@ -26,7 +26,7 @@ disableGlobalCursorStyles();
 
 // `VITE_MOCK=1` builds the fake-data mockup, which runs without a server.
 const loadApi = async (): Promise<Api> =>
-  import.meta.env.VITE_MOCK === "1" ? (await import("./api/mock/realStore").then((m) => m.loadRealData()), (await import("./api/mock/mockApi")).createMockApi()) : createHttpApi();
+  import.meta.env.VITE_MOCK === "1" ? (await import("./api/mock/realStore").then((m) => m.loadRealData()), (await import("./api/mock/scoped")).scopedMockApi((await import("./api/mock/mockApi")).createMockApi())) : createHttpApi();
 
 // The cache holds server views only and is never written locally. Retries are off: a failed view
 // shows its error, and the next change event or focus refetches it.

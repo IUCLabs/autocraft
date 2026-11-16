@@ -8,6 +8,7 @@ import { useNow } from "../../lib/useNow";
 import { EntryRow } from "../../ui/molecules/EntryRow";
 import { ErrorLine } from "../admin/parts";
 import { useFeed } from "./useFeed";
+import { usePageProject, withProject } from "../../api/scope";
 
 /** Pull distance (after resistance) that releases into a refresh. */
 const THRESHOLD = 64;
@@ -28,7 +29,8 @@ export function NowView(_: ViewProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const bottom = useRef<HTMLLIElement>(null);
   const hold = useRef(false);
-  const f = useFeed(d, (before) => api.nowFeed(before), hold);
+  const project = usePageProject();
+  const f = useFeed(d, (before) => withProject(project, () => api.nowFeed(before)), hold);
   const { fresh, markSeen, release } = f;
   const client = useQueryClient();
   const list = useRef<HTMLUListElement>(null);

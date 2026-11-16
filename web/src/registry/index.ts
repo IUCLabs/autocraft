@@ -1,6 +1,7 @@
 // The one list of feature modules. Adding a feature means adding its module here;
 // the shell builds nav, routes, panels and shortcut help from these declarations.
 import type { FeatureModule } from "./types";
+import { setListPages } from "../api/scope";
 import { needsModule } from "../modules/needs";
 import { flowModule } from "../modules/flow";
 import { nowModule } from "../modules/now";
@@ -31,3 +32,5 @@ import { homeModule } from "../modules/home";
 import { hubModule } from "../modules/hub";
 
 export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, downloadsModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, nightlyModule, stuckModule, batchModule, securityModule];
+
+setListPages(modules.flatMap((m) => m.routes.filter((r) => r.scoped).map((r) => r.path)));

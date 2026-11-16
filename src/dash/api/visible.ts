@@ -25,8 +25,17 @@ export async function visibleTo(db: DatabaseSync, user: Pick<User, "role" | "can
   return tracked.filter((r) => pub.has(r) || allowed.has(r));
 }
 
-/** Tracked repos the requester may see, sorted by name. */
-export function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
+/**
+ * Tracked repos the requester may see, sorted by name; with a project scope (`req.scope`, set only on `scoped` list routes)
+ * that is one of them, only that repo. A scope the requester cannot see is ignored, so a stale picker never empties the app.
+ */
+export async function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
+  const all = await allVisibleRepos(db, req);
+  return req.scope && all.includes(req.scope) ? [req.scope] : all;
+}
+
+/** Tracked repos the requester may see, ignoring the project scope: for the picker itself, write rights and repo checks. */
+export function allVisibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   let p = memo.get(req);
   if (!p) memo.set(req, (p = visibleTo(db, req.user)));
   return p;
@@ -35,7 +44,7 @@ export function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
 /** Owner of each visible repo that is not storytold's; the web app builds GitHub links from it. */
 export async function repoOwners(db: DatabaseSync, req: Req): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
-  for (const r of await visibleRepos(db, req)) if (ownerOf(r) !== DEFAULT_OWNER) out[r] = ownerOf(r);
+  for (const r of await allVisibleRepos(db, req)) if (ownerOf(r) !== DEFAULT_OWNER) out[r] = ownerOf(r);
   return out;
 }
 
@@ -51,6 +60,7 @@ function knownRepos(db: DatabaseSync): string[] {
  * and from maintainers who cannot see the repo, so every listing that leaves out hidden repos leaves the scans out too.
  */
 export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<HiddenRepos> {
+  if (req.scope && (await allVisibleRepos(db, req)).includes(req.scope)) return scopedHiddenRepos(db, req, req.scope);
   if (req.user.role === "operator") return [];
   const visibleList = await visibleRepos(db, req);
   const visible = new Set(visibleList);
@@ -62,9 +72,20 @@ export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<HiddenRep
   return Object.assign([...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)], { visible: staff ? [...visibleList, ...visibleList.map(securityRepo)] : visibleList });
 }
 
+/**
+ * Hidden repos for a view scoped to one repo: every other known repo is hidden, as if the requester could see only `repo`
+ * (and, for staff, its security pseudo repo). 404 unless `repo` is visible.
+ */
+async function scopedHiddenRepos(db: DatabaseSync, req: Req, repo: string): Promise<HiddenRepos> {
+  await needVisible(db, req, repo);
+  const staff = canSeeInternals(req);
+  const others = knownRepos(db).filter((r) => r !== repo);
+  return Object.assign([...others, ...others.map(securityRepo), ...(staff ? [] : [securityRepo(repo)])], { visible: staff ? [repo, securityRepo(repo)] : [repo] });
+}
+
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */
 export async function needVisible(db: DatabaseSync, req: Req, repo: string): Promise<void> {
-  if (!(await visibleRepos(db, req)).includes(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
+  if (!(await allVisibleRepos(db, req)).includes(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
 }
 
 /**

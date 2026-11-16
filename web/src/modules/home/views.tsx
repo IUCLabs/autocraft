@@ -1,6 +1,8 @@
 // Home: what needs me, is anything broken, is it moving.
-import { Link } from "react-router-dom";
-import { CaretRightIcon, GitMergeIcon, ProhibitIcon, ChatTeardropTextIcon, ShieldWarningIcon, WarningCircleIcon, XCircleIcon, type Icon } from "@phosphor-icons/react";
+import { ProjectLive, ProjectMergeQueue } from "./live";
+import { ALL } from "../../api/scope";
+import { Link, useParams } from "react-router-dom";
+import { ArrowLeftIcon, CaretRightIcon, GitMergeIcon, ProhibitIcon, ChatTeardropTextIcon, ShieldWarningIcon, WarningCircleIcon, XCircleIcon, type Icon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { HomeDone, HomeNeed, ItemPhase, NeedKind } from "../../api/types";
 import { Pending } from "../../ui/atoms/Pending";
@@ -48,9 +50,15 @@ function NeedRow({ n, canOpen }: { n: HomeNeed; canOpen: boolean }) {
   );
 }
 
+/** A project's page: the home view for one repo, or for every repo when the project is `all`. */
 export function HomeView(_: ViewProps) {
   const user = useUser();
+  const { repo: param } = useParams();
+  const repo = param && param !== ALL ? param : undefined;
+  // The page's path names its project, so every request on it is that project's.
   const { data, error } = useQuery("home", (a) => a.home());
+  // Links to other pages carry the project as their repo filter.
+  const scoped = (to: string) => (repo ? `${to}${to.includes("?") ? "&" : "?"}repo=${encodeURIComponent(repo)}` : to);
   if (!data) return <Pending error={error} />;
   const { needs, problems, phases, progress, done } = data;
   const kinds = KIND_ORDER.filter((k) => needs.byKind[k]);
@@ -58,8 +66,13 @@ export function HomeView(_: ViewProps) {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-[1180px] flex-col gap-7 px-4 pb-10 pt-5 md:px-6">
+        <ProjectHeader repo={repo} scoped={scoped} />
+        <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+          <ProjectLive to={scoped("/now")} />
+          <ProjectMergeQueue repo={repo} />
+        </div>
         <div className={cn("grid gap-7", problems.length > 0 && "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]")}>
-          <Section title="Needs you" count={needs.total} to="/needs" linkLabel="All decisions">
+          <Section title="Needs you" count={needs.total} to={scoped("/needs")} linkLabel="All decisions">
             {needs.total === 0 ? (
               <p className="border-t border-line py-3 text-sm text-ink/55">Nothing is waiting for a person.</p>
             ) : (
@@ -67,7 +80,7 @@ export function HomeView(_: ViewProps) {
                 const rows = needs.oldest.filter((n) => n.kind === k);
                 return (
                   <div key={k}>
-                    <Link to={NEED_TO[k] ?? `/needs?kind=${k}`} className="flex min-h-9 items-center gap-2 border-t border-line text-xs text-ink/60 hover:text-ink max-md:min-h-11">
+                    <Link to={scoped(NEED_TO[k] ?? `/needs?kind=${k}`)} className="flex min-h-9 items-center gap-2 border-t border-line text-xs text-ink/60 hover:text-ink max-md:min-h-11">
                       {NEED_LABEL[k]} <span className="num font-medium text-ink">{needs.byKind[k]}</span>
                       <CaretRightIcon className="ml-auto text-ink/30" />
                     </Link>
@@ -98,7 +111,7 @@ export function HomeView(_: ViewProps) {
         <Section title="Pipeline">
           <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-4 lg:grid-cols-8">
             {SHOWN.map((p) => (
-              <Link key={p} to={`/items?phase=${encodeURIComponent(p)}`} className="flex min-h-[60px] flex-col justify-center bg-panel px-3 py-2 hover:bg-ink/[0.04]">
+              <Link key={p} to={scoped(`/items?phase=${encodeURIComponent(p)}`)} className="flex min-h-[60px] flex-col justify-center bg-panel px-3 py-2 hover:bg-ink/[0.04]">
                 <span className="num text-xl font-semibold leading-6">{num(phases[p])}</span>
                 <span className={cn("text-xs", p === "Waiting for a person" ? "text-warn" : "text-ink/60")}>{PHASE_LABEL[p] ?? p}</span>
               </Link>
@@ -121,7 +134,8 @@ export function HomeView(_: ViewProps) {
             </div>
             <div className="mt-1 flex justify-between text-2xs text-ink/45"><span>24 h ago</span><span>now</span></div>
           </Section>
-          <Section title="Done today" to="/activity" linkLabel="All activity">
+          <Section title="Done today" to={scoped("/activity")} linkLabel="All activity">
+            {done.length === 0 && <p className="border-t border-line py-3 text-sm text-ink/55">Nothing done today.</p>}
             <ul>
               {done.map((d) => {
                 const Ico = DONE_ICON[d.what];
@@ -150,6 +164,23 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
       <dt className="text-xs text-ink/55">{label}</dt>
       <dd className="num text-xl font-semibold leading-7">{value}</dd>
       {sub && <dd className="text-xs text-ink/50">{sub}</dd>}
+    </div>
+  );
+}
+
+/** The project page's title row: which project, the way back to the overview, and the pages it filters. */
+function ProjectHeader({ repo, scoped }: { repo: string | undefined; scoped: (to: string) => string }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <Link to="/" className="inline-flex items-center gap-1 text-sm text-ink/60 hover:text-ink max-md:h-11">
+        <ArrowLeftIcon size={14} /> Projects
+      </Link>
+      <h1 className="text-xl font-semibold">{repo ?? "All projects"}</h1>
+      <nav className="ml-auto flex flex-wrap items-center gap-1" aria-label="Project pages">
+        <Link to={scoped("/items")} className="chip max-md:h-11">Items</Link>
+        <Link to={scoped("/needs")} className="chip max-md:h-11">Decisions</Link>
+        <Link to={scoped("/next")} className="chip max-md:h-11">Merge queue</Link>
+      </nav>
     </div>
   );
 }

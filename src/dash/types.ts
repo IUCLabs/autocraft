@@ -24,6 +24,8 @@ export type Req = {
   form: URLSearchParams;            // POST body (application/x-www-form-urlencoded)
   json?: unknown;                   // POST body of an /api/ route (application/json)
   user: User;
+  /** The one repo a `scoped` route's list is narrowed to (`x-autocraft-scope`), null on every other route; only ever hides more, see visibleRepos. */
+  scope?: string | null;
   csrf: string;                     // the session's CSRF token
   nonce: string;                    // put on every <script> and <style> as nonce="..."
 };
@@ -43,5 +45,7 @@ export type Route = {
   operator?: boolean;               // server returns 403 unless user.role is operator
   /** A GET that aggregates the mirror or runs the embedder: it spends the session's expensive-GET budget (for the given query, when a function). */
   expensive?: true | ((query: URLSearchParams) => boolean);
+  /** A GET list narrowed to the web app's picked project (`Req.scope`); every other route sees every repo the requester may see. */
+  scoped?: true;
   handler: (db: DatabaseSync, req: Req) => Res | Promise<Res>;
 };

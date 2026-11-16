@@ -1,6 +1,6 @@
 // Home: what needs a person, what is wrong, where items are, and what just got done, in one read.
 // Viewers get counts and short texts; the lists of needs name items only for staff.
-import { isHiddenRepo } from "../../hidden-sql.ts";
+import { isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { Progress } from "../../../web/src/api/types.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
@@ -35,7 +35,7 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
 }
 
 /** `total` is the nav badge's number: decisions, unanswered feedback and stopped items. `oldest` lists decisions and, for staff, high or critical findings still new (not in the total). */
-async function needs(db: DatabaseSync, req: Req, hidden: string[], staff: boolean, deps: Deps): Promise<Home["needs"]> {
+async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, staff: boolean): Promise<Home["needs"]> {
   const params: Record<string, string> = {};
   const hide = withoutHidden(hidden, params);
   const where = `${needingSql(req)}${hide ? ` AND ${hide}` : ""}`;
@@ -131,13 +131,14 @@ function byAutoCraftPct(db: DatabaseSync, hidden: string[], since: string): numb
   return r.n ? Math.round(((r.ours ?? 0) / r.n) * 100) : 0;
 }
 
+/** With a project scope (`req.scope`), every part is that repo's only, as if it were the only one the requester could see. */
 export async function home(db: DatabaseSync, req: Req, deps: Deps): Promise<Home> {
   const hidden = await hiddenRepos(db, req);
   const staff = canSeeInternals(req);
   const pg = deps.progress(hidden);
   const start = pg.repos.reduce((s, r) => s + (r.openTrend[0] ?? 0), 0);
   return {
-    needs: await needs(db, req, hidden, staff, deps),
+    needs: await needs(db, req, hidden, staff),
     problems: await problems(db, hidden, staff),
     phases: phases(db, hidden),
     running: running(db, hidden),

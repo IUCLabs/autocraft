@@ -7,7 +7,7 @@ import { prep } from "../../sql-cache.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  Claim, Classification, Decision, ExecState, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
+  Claim, Classification, Decision, ExecState, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, OpenDecisionCounts, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
@@ -383,6 +383,19 @@ export function needingSql(req: Req, everything = false): string {
   everything ||= req.user.role === "viewer";
   const open = `answer IS NULL AND NOT ${SNOOZED_SQL}${everything ? "" : ` AND ${canSettleSql(req.user.login, req.user.role)}`}`;
   return `((${open}) OR ${heldOpenSql(req.user.login, isOperator(req))})`;
+}
+
+/**
+ * The requester's decisions inbox count (the Needs you page's), in total and per repo, over every repo they may see.
+ * A batch counts once in the total and once for each repo it names.
+ */
+export async function openCounts(db: DatabaseSync, req: Req): Promise<OpenDecisionCounts> {
+  const params: Record<string, string> = {};
+  const hide = withoutHidden(await hiddenRepos(db, req), params);
+  const rows = db.prepare(`SELECT repo, number, items FROM decisions WHERE ${needingSql(req)}${hide ? ` AND ${hide}` : ""}`).all(params) as Pick<DecisionRow, "repo" | "number" | "items">[];
+  const byRepo: Record<string, number> = {};
+  for (const r of rows) for (const repo of reposOf(r as DecisionRow)) byRepo[repo] = (byRepo[repo] ?? 0) + 1;
+  return { total: rows.length, byRepo };
 }
 
 // Pages are cut by keyset: `after` is the `next` of the previous page, "<sort key>|<id>".

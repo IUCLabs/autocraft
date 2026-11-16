@@ -149,6 +149,12 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 // API clients send the session's CSRF token in this header; every /api/
 // response carries it, so the client reads it from GET /api/me.
 export const CSRF_HEADER = "x-csrf-token";
+/** The web app's project: one repo name a `scoped` route narrows its list to, or absent for every repo. */
+export const SCOPE_HEADER = "x-autocraft-scope";
+const scopeOf = (req: IncomingMessage): string | null => {
+  const v = req.headers[SCOPE_HEADER];
+  return typeof v === "string" && v ? v : null;
+};
 
 function cookie(name: string, value: string, maxAgeSec: number): string {
   return `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSec}`;
@@ -293,6 +299,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const r: Req = {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
       user: makeUser(db, box, provider, session, writes, githubIdentity(db) === "app"),
+      scope: route.scoped && !writes ? scopeOf(req) : null,
       csrf: session.csrf, nonce,
     };
     const res2 = await route.handler(db, r);

@@ -1,4 +1,5 @@
 import type { Api } from "./client";
+import { requestProject, SCOPE_HEADER } from "./scope";
 import type { ConversationCard, DecisionFilter, ItemFilter } from "./types";
 
 /** Query string from the set fields; booleans as 1 / 0. */
@@ -25,8 +26,9 @@ export function createHttpApi(): Api {
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
 
-  async function call<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+  async function call<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown, project?: string | null): Promise<T> {
     const headers: Record<string, string> = { accept: "application/json" };
+    if (project) headers[SCOPE_HEADER] = project;
     if (method !== "GET") {
       // Every /api/ response carries the session's token; a POST before any GET fetches it first.
       if (!csrf) await call("GET", "/api/me");
@@ -60,10 +62,12 @@ export function createHttpApi(): Api {
   // Views that mount together often ask for the same thing; they share one request.
   const inflight = new Map<string, Promise<unknown>>();
   const get = <T>(path: string): Promise<T> => {
-    let p = inflight.get(path) as Promise<T> | undefined;
+    const project = requestProject();
+    const key = `${project ?? ""} ${path}`;
+    let p = inflight.get(key) as Promise<T> | undefined;
     if (!p) {
-      p = call<T>("GET", path).finally(() => inflight.delete(path));
-      inflight.set(path, p);
+      p = call<T>("GET", path, undefined, project).finally(() => inflight.delete(key));
+      inflight.set(key, p);
     }
     return p;
   };
@@ -116,6 +120,7 @@ export function createHttpApi(): Api {
     repoOwners: () => get("/api/repos/owners"),
     decisions: {
       list: (filter) => get(`/api/decisions${query(filter)}`),
+      openCounts: () => get("/api/decisions/open-counts"),
       get: (id) => get(dec(id)),
       forItem: (repo, number, kind) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/decision${qs({ kind })}`),
       answer: (id, input) => post(dec(id, "/answer"), input),
