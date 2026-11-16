@@ -1,22 +1,23 @@
-// Workable: the one way to show a PR or an issue in a list. A table whose rows are items: the item (lead, icon, repo#number, title and a
-// line below it) in the first column, the page's own columns after it, and an optional detail that opens under the row. Rows sit in groups
-// with a header (title, count, hint and a control). On a phone the header hides and a row's cells wrap under the item.
-import { createContext, useContext, useState, type CSSProperties, type ReactNode } from "react";
-import { CaretRightIcon } from "@phosphor-icons/react";
+// Workable: the one way to show a PR or an issue in a list. A table whose rows are items: the item's id and the issues it closes (both open
+// GitHub), its title (opens the item page) with a line below it, then the page's own columns. Rows sit in groups with a header (title,
+// count, hint and a control). On a phone the header hides and a row's cells wrap under the title.
+import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import type { ItemKind, ItemState } from "../../api/types";
-import { ItemRef } from "../molecules/ItemRef";
+import { ItemIcon } from "../atoms/ItemIcon";
+import { githubItemUrl, itemPath } from "../../lib/links";
 import { num } from "../../lib/format";
 import { cn } from "../cn";
 
 export interface WorkableColumn {
   id: string;
   label: ReactNode;
-  /** A CSS grid track, e.g. `120px`. */
+  /** A CSS grid track in px, e.g. `120px`. */
   width: string;
   /** Header tooltip. */
   hint?: string;
   align?: "start" | "end";
-  /** Shown only on wide screens (xl and up) and on a phone, where cells wrap; left out in between so the item keeps its room. */
+  /** Shown only on wide screens (xl and up) and on a phone, where cells wrap; left out in between so the title keeps its room. */
   wide?: boolean;
 }
 
@@ -27,45 +28,72 @@ export interface WorkableItem {
   state?: ItemState | null;
   draft?: boolean;
   title: string | null | undefined;
+  /** Issues in the same repo this PR closes when it merges. */
+  closes?: number[];
 }
 
-const Columns = createContext<WorkableColumn[]>([]);
+interface Shape {
+  columns: WorkableColumn[];
+  closes: boolean;
+}
+const Shape = createContext<Shape>({ columns: [], closes: false });
 
-/** The item column never gets narrower than this; below the table's full width it scrolls sideways. */
-const ITEM_MIN = 280;
+const ID_W = 104;
+const CLOSES_W = 96;
+/** The title column never gets narrower than this; below the table's full width it scrolls sideways. */
+const TITLE_MIN = 260;
 const GAP = 16;
 const PAD = 32;
 
-/** Item column, then the page's columns. */
-const template = (cols: WorkableColumn[]) => [`minmax(${ITEM_MIN}px,1fr)`, ...cols.map((c) => c.width)].join(" ");
-/** The width the columns need: the item minimum, every column, the gaps and the row padding. Widths given in px count; others count 0. */
-const minWidth = (cols: WorkableColumn[]) => ITEM_MIN + PAD + cols.reduce((s, c) => s + (parseFloat(c.width) || 0) + GAP, 0);
-const grid = "md:grid md:grid-cols-[var(--wk-cols-md)] xl:grid-cols-[var(--wk-cols)] md:gap-x-4";
+const lead = (closes: boolean) => [`${ID_W}px`, ...(closes ? [`${CLOSES_W}px`] : []), `minmax(${TITLE_MIN}px,1fr)`];
+const template = (cols: WorkableColumn[], closes: boolean) => [...lead(closes), ...cols.map((c) => c.width)].join(" ");
+/** The width the columns need: the lead columns, every page column, the gaps and the row padding. */
+const minWidth = (cols: WorkableColumn[], closes: boolean) =>
+  ID_W + (closes ? CLOSES_W + GAP : 0) + TITLE_MIN + PAD + cols.reduce((s, c) => s + (parseFloat(c.width) || 0) + GAP, GAP);
 const narrow = (cols: WorkableColumn[]) => cols.filter((c) => !c.wide);
+const grid = "md:grid md:grid-cols-[var(--wk-cols-md)] xl:grid-cols-[var(--wk-cols)] md:gap-x-4";
 
-export function WorkableTable({ columns, label, itemLabel = "Item", children, className }: { columns: WorkableColumn[]; label: string; itemLabel?: string; children: ReactNode; className?: string }) {
+/** `closes` adds the Closes column after the id. */
+export function WorkableTable({ columns, label, closes = false, titleLabel = "Title", children, className }: {
+  columns: WorkableColumn[];
+  label: string;
+  closes?: boolean;
+  titleLabel?: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  const vars = {
+    "--wk-cols": template(columns, closes),
+    "--wk-cols-md": template(narrow(columns), closes),
+    "--wk-min": `${minWidth(columns, closes)}px`,
+    "--wk-min-md": `${minWidth(narrow(columns), closes)}px`,
+  } as CSSProperties;
   return (
-    <Columns.Provider value={columns}>
+    <Shape.Provider value={{ columns, closes }}>
       <div className={cn("overflow-x-auto rounded-md border border-line", className)}>
-      <div role="table" aria-label={label} style={{ "--wk-cols": template(columns), "--wk-cols-md": template(narrow(columns)), "--wk-min": `${minWidth(columns)}px`, "--wk-min-md": `${minWidth(narrow(columns))}px` } as CSSProperties} className="text-sm md:min-w-[var(--wk-min-md)] xl:min-w-[var(--wk-min)]">
-        <div role="row" className={cn(grid, "border-b border-line bg-ink/[0.03] px-4 py-1.5 text-xs font-medium text-ink/55 max-md:hidden")}>
-          <span role="columnheader" className="pl-8">
-            {itemLabel}
-          </span>
-          {columns.map((c) => (
-            <span key={c.id} role="columnheader" title={c.hint} className={cn(c.align === "end" && "text-right", c.wide && "max-xl:hidden")}>
-              {c.label}
-            </span>
-          ))}
+        <div role="table" aria-label={label} style={vars} className="text-sm md:min-w-[var(--wk-min-md)] xl:min-w-[var(--wk-min)]">
+          <div role="row" className={cn(grid, "border-b border-line bg-ink/[0.03] px-4 py-1.5 text-xs font-medium text-ink/55 max-md:hidden")}>
+            <span role="columnheader">ID</span>
+            {closes && (
+              <span role="columnheader" title="Issues it closes when it merges">
+                Closes
+              </span>
+            )}
+            <span role="columnheader">{titleLabel}</span>
+            {columns.map((c) => (
+              <span key={c.id} role="columnheader" title={c.hint} className={cn(c.align === "end" && "text-right", c.wide && "max-xl:hidden")}>
+                {c.label}
+              </span>
+            ))}
+          </div>
+          {children}
         </div>
-        {children}
       </div>
-      </div>
-    </Columns.Provider>
+    </Shape.Provider>
   );
 }
 
-/** A group of rows under a header bar; nothing renders when it has no rows. */
+/** A group of rows under a header bar. */
 export function WorkableGroup({ title, count, hint, dot, aside, children, id }: { title: ReactNode; count?: number; hint?: ReactNode; dot?: string; aside?: ReactNode; children: ReactNode; id?: string }) {
   return (
     <div role="rowgroup" id={id} className="border-b border-line last:border-0">
@@ -83,37 +111,62 @@ export function WorkableGroup({ title, count, hint, dot, aside, children, id }: 
   );
 }
 
+/** `#123` that opens the item on GitHub. */
+function GithubId({ repo, number, kind }: { repo: string; number: number; kind: ItemKind | null | undefined }) {
+  return (
+    <a href={githubItemUrl(repo, number, kind)} target="_blank" rel="noopener noreferrer" title={`Open ${repo}#${number} on GitHub`} className="code relative z-10 text-accent-ink hover:underline">
+      #{number}
+    </a>
+  );
+}
+
 /**
- * One item. `lead` is a short mark before the icon in a fixed slot (a merge position; null keeps the slot empty so titles line up); `sub` is a line under the title; `cells` fill the table's columns
- * by id; `detail` opens under the row by its caret. The item link covers the row, so controls in cells need `relative z-10`.
+ * One item. `mark` sits before the title (a fast-track marker); `sub` is a line under the title; `cells` fill the table's columns by id.
+ * The title link covers the row, so controls in cells need `relative z-10`.
  */
-export function WorkableRow({ item, lead, sub, cells, detail, highlight, dataItem }: {
+export function WorkableRow({ item, mark, sub, cells, highlight, dataItem }: {
   item: WorkableItem;
-  lead?: ReactNode;
+  mark?: ReactNode;
   sub?: ReactNode;
   cells: Record<string, ReactNode>;
-  detail?: ReactNode;
   highlight?: boolean;
   dataItem?: string;
 }) {
-  const columns = useContext(Columns);
-  const [open, setOpen] = useState(false);
+  const { columns, closes } = useContext(Shape);
   return (
     <div role="row" data-item={dataItem} className={cn("relative border-b border-line px-4 py-2 last:border-0 hover:bg-ink/[0.03]", highlight && "bg-accent/10")}>
       <div className={cn(grid, "items-start max-md:flex max-md:flex-wrap max-md:items-center max-md:gap-x-2.5 max-md:gap-y-1.5")}>
-        <div role="cell" className="flex min-w-0 items-start gap-1.5 max-md:basis-full">
-          <span className="flex w-6 shrink-0 justify-end pt-px">
-            {detail ? (
-              <button type="button" aria-expanded={open} aria-label={open ? "Hide details" : "Show details"} onClick={() => setOpen(!open)} className="relative z-10 mt-0.5 text-ink/40 hover:text-ink max-md:-m-3 max-md:p-3">
-                <CaretRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
-              </button>
-            ) : null}
+        <div role="cell" className="flex min-w-0 items-start gap-1.5">
+          <ItemIcon kind={item.kind} state={item.state} draft={item.draft} />
+          <span className="min-w-0">
+            <GithubId repo={item.repo} number={item.number} kind={item.kind} />
+            <span className="block truncate text-2xs text-ink/45 max-md:hidden" title={item.repo}>
+              {item.repo}
+            </span>
           </span>
-          {lead !== undefined && <span className="flex w-10 shrink-0 justify-end pt-px">{lead}</span>}
-          <div className="min-w-0 flex-1">
-            <ItemRef repo={item.repo} number={item.number} kind={item.kind} state={item.state} draft={item.draft} title={item.title} stretch />
-            {sub && <div className="mt-0.5 pl-6 text-2xs text-ink/55">{sub}</div>}
+        </div>
+        {closes && (
+          <div role="cell" className={cn("flex min-w-0 flex-wrap items-start gap-x-1.5", !item.closes?.length && "max-md:hidden")}>
+            {item.closes?.length ? (
+              <>
+                <span className="text-2xs text-ink/45 md:hidden">closes</span>
+                {item.closes.map((n) => (
+                  <GithubId key={n} repo={item.repo} number={n} kind="issue" />
+                ))}
+              </>
+            ) : (
+              <span className="text-ink/30">–</span>
+            )}
           </div>
+        )}
+        <div role="cell" className="min-w-0 max-md:order-first max-md:basis-full">
+          <div className="flex items-start gap-1.5">
+            {mark}
+            <Link to={itemPath(item.repo, item.number)} className="min-w-0 break-words after:absolute after:inset-0 hover:underline [overflow-wrap:anywhere]">
+              {item.title || `${item.repo}#${item.number}`}
+            </Link>
+          </div>
+          {sub && <div className="mt-0.5 text-2xs text-ink/55">{sub}</div>}
         </div>
         {columns.map((c) => {
           const v = cells[c.id];
@@ -124,7 +177,6 @@ export function WorkableRow({ item, lead, sub, cells, detail, highlight, dataIte
           );
         })}
       </div>
-      {detail && open && <div className="mt-2 pl-8 md:pr-4">{detail}</div>}
     </div>
   );
 }

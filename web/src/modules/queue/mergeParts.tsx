@@ -1,4 +1,4 @@
-// Parts of the merge queue: state labels and chips, the Verify cell, why a PR waits, its decision link, and the batch header facts.
+// Parts of the merge queue: state labels and chips, Verify labels, why a PR waits, its decision link, and the batch header facts.
 import { Link } from "react-router-dom";
 import type { BatchState, QueueBatch, QueueRow, QueueState, Tier } from "../../api/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -108,17 +108,3 @@ export function Why({ row }: { row: QueueRow }) {
 
 export const V_TONE: Record<string, Tone> = { unavailable: "warn", passed: "ok", "ci-enough": "ok", failed: "bad", error: "warn", running: "accent", planned: "neutral", stale: "neutral" };
 export const V_LABEL: Record<string, string> = { unavailable: "Not verified", passed: "Passed", "ci-enough": "CI is enough", failed: "Failed", error: "Error", running: "Running", planned: "Planned", stale: "Stale" };
-
-/** The Verify result at the reviewed head; the summary shows on hover and below the badge. */
-export function VerifyCell({ row, detail = true }: { row: QueueRow; detail?: boolean }) {
-  const v = row.verify;
-  if (!v) return <span className="text-ink/30">–</span>;
-  const text = [v.summary, v.note].filter(Boolean).join(" · ");
-  return (
-    <span className="relative z-10 block" title={text || undefined}>
-      <Badge tone={V_TONE[v.state] ?? "neutral"}>{V_LABEL[v.state] ?? v.state}</Badge>
-      {detail && v.kind && <span className="ml-1.5 text-2xs text-ink/50">{v.kind}</span>}
-      {detail && text && <span className="mt-0.5 line-clamp-2 block text-2xs text-ink/55">{text}</span>}
-    </span>
-  );
-}

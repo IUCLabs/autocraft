@@ -7,14 +7,13 @@ import type { FastPosition, NextMerge, QueueBatch, QueueRow, QueueState } from "
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
-import { PrBuildLine } from "../../ui/molecules/PrBuildLine";
 import { WorkableGroup, WorkableRow, WorkableTable, type WorkableColumn } from "../../ui/organisms/Workable";
 import { cn } from "../../ui/cn";
-import { num, when } from "../../lib/format";
+import { num } from "../../lib/format";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { FastMark } from "./fastTrack";
 import { useIsLinked } from "./highlight";
-import { BatchFacts, CI_TONE, DecisionLink, MERGEABLE, STATE, StateChip, TIER, V_LABEL, V_TONE, VerifyCell, Why } from "./mergeParts";
+import { BatchFacts, CI_TONE, DecisionLink, MERGEABLE, STATE, StateChip, TIER, V_LABEL, V_TONE, Why } from "./mergeParts";
 import { RowMenu } from "./RowMenu";
 import { usePage } from "./usePage";
 
@@ -69,37 +68,19 @@ function Check({ label, tone, value }: { label: string; tone: Tone; value: strin
   );
 }
 
-/** Review, CI, Verify and mergeability in one run of icons; each names its state on hover. */
+const BUILD_TONE: Record<NonNullable<QueueRow["prBuild"]>["state"], Tone> = { queued: "neutral", running: "accent", passed: "ok", failed: "bad", error: "warn", stale: "neutral" };
+const BUILD_LABEL: Record<NonNullable<QueueRow["prBuild"]>["state"], string> = { queued: "queued", running: "running", passed: "passed", failed: "failed", error: "error", stale: "stale" };
+
+/** Review, CI, Verify, mergeability and our own build in one run of icons; each names its state, and the failure, on hover. */
 function Checks({ r }: { r: QueueRow }) {
   return (
     <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <Check label="Review" tone={r.verdict === "take" ? "ok" : "warn"} value={r.verdict} />
       <Check label="CI" tone={CI_TONE[r.ci]} value={r.ci} />
-      <Check label="Verify" tone={r.verify ? V_TONE[r.verify.state] ?? "neutral" : "neutral"} value={r.verify ? V_LABEL[r.verify.state] ?? r.verify.state : "none"} />
+      <Check label="Verify" tone={r.verify ? V_TONE[r.verify.state] ?? "neutral" : "neutral"} value={r.verify ? [V_LABEL[r.verify.state] ?? r.verify.state, r.verify.summary, r.verify.note].filter(Boolean).join(" · ") : "none"} />
       <Check label="Merge" tone={MERGEABLE[r.mergeable][1]} value={MERGEABLE[r.mergeable][0]} />
+      {r.prBuild && <Check label="Build" tone={BUILD_TONE[r.prBuild.state]} value={[BUILD_LABEL[r.prBuild.state], r.prBuild.current ? null : "older head", r.prBuild.summary].filter(Boolean).join(" · ")} />}
     </span>
-  );
-}
-
-/** What opens under a PR: the review, why it waits, the decision, the Verify summary and our own build. */
-function Detail({ r }: { r: Row }) {
-  return (
-    <div className="flex flex-col gap-1.5 text-xs text-ink/70">
-      <p>
-        {r.fixes > 0 && <span className="mr-1.5 text-ink/50">{r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
-        {r.reason}
-      </p>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
-        <DecisionLink row={r} />
-        {r.label && <span className="text-ink/50">label {r.label}</span>}
-        <span className="text-ink/50">{TIER[r.tier]} author</span>
-        <span className="code text-ink/45" title={`reviewed ${when(r.reviewedAt)}`}>
-          at {r.head.slice(0, 7)}
-        </span>
-      </div>
-      {r.verify && <VerifyCell row={r} />}
-      <PrBuildLine b={r.prBuild} />
-    </div>
   );
 }
 
@@ -108,22 +89,19 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
   const fast = r.fast ?? n?.merge.fast ?? null;
   const linked = useIsLinked(r.repo, r.number);
   const wait = n?.merge.label;
+  const sub = (
+    <span className="flex flex-wrap items-center gap-x-3">
+      <Why row={r} />
+      {r.decisionId && <DecisionLink row={r} />}
+    </span>
+  );
   return (
     <WorkableRow
-      item={{ repo: r.repo, number: r.number, kind: "pr", state: "open", title: r.title }}
+      item={{ repo: r.repo, number: r.number, kind: "pr", state: "open", title: r.title, closes: r.closes }}
       dataItem={`${r.repo}:${r.number}`}
       highlight={linked}
-      lead={
-        <span className="flex items-center gap-1">
-          {n && (
-            <span title={`Merges ${n.position === 1 ? "next" : `as number ${n.position}`}`} className="num rounded bg-accent/15 px-1 text-2xs font-semibold text-accent-ink">
-              {n.position}
-            </span>
-          )}
-          <FastMark fast={fast} />
-        </span>
-      }
-      sub={<Why row={r} />}
+      mark={<FastMark fast={fast} />}
+      sub={r.decisionId || r.refusedReason || r.note || r.outsideRule.length ? sub : undefined}
       cells={{
         step: (
           <span className="flex flex-col items-start gap-0.5">
@@ -146,7 +124,6 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
         when: <TimeAgo iso={r.reviewedAt} className="num text-xs text-ink/50" />,
         actions: <RowMenu repo={r.repo} number={r.number} fast={fast} held={!!r.held} pr inBatch={r.batch !== undefined} />,
       }}
-      detail={<Detail r={r} />}
     />
   );
 }
@@ -227,12 +204,12 @@ export function MergeBoard({ repo }: { repo: string | null }) {
       <ErrorLine error={error?.message} className="mt-3" />
       {q.loaded && (
         <p className="mt-4 text-sm text-ink/60">
-          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on, in the order a PR passes them. The number before a PR is its place in the merge order.
+          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on, in the order a PR passes them.
         </p>
       )}
       <FlowBar counts={counts} total={total} />
       {q.loaded && (
-        <WorkableTable columns={COLUMNS} label="Merge queue" itemLabel="Pull request" className="mt-5">
+        <WorkableTable columns={COLUMNS} label="Merge queue" closes className="mt-5">
           {total === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue.</p>}
           {STEPS.map((s) => {
             const rows = q.steps.get(s.id)!;

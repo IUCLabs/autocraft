@@ -33,14 +33,13 @@ export function RecentlyMerged({ repo }: { repo: string | null }) {
         </p>
       )}
       {data && data.rows.length > 0 && (
-        <WorkableTable columns={COLUMNS} label="Recently merged" itemLabel="Pull request" className="mt-4">
+        <WorkableTable columns={COLUMNS} label="Recently merged" className="mt-4">
           {data.rows.map((r) => {
             const how = r.mergedHow ? HOW[r.mergedHow] : null;
             return (
               <WorkableRow
                 key={`${r.repo}#${r.number}`}
                 item={{ repo: r.repo, number: r.number, kind: r.kind, state: r.state, title: r.title }}
-                lead={null}
                 cells={{
                   how: how ? (
                     <span title={how[1]}>
