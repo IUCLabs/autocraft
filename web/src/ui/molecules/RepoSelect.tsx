@@ -7,7 +7,7 @@ import { cn } from "../cn";
 
 const SHOWN = 80;
 
-export function RepoSelect({ value, onChange, className }: { value: string | null; onChange: (repo: string | null) => void; className?: string }) {
+export function RepoSelect({ value, onChange, className, allLabel = "Every repo", align = "end" }: { value: string | null; onChange: (repo: string | null) => void; className?: string; allLabel?: string; align?: "start" | "end" }) {
   const { data: repos } = useQuery("repos", (api) => api.repos());
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -30,13 +30,13 @@ export function RepoSelect({ value, onChange, className }: { value: string | nul
           aria-label="Repo"
           className={cn("inline-flex h-8 max-w-[260px] items-center gap-1.5 rounded border border-line bg-sunken px-2.5 text-sm max-md:h-11", value ? "text-accent-ink" : "text-ink/70", className)}
         >
-          <span className="truncate">{value ?? "Every repo"}</span>
+          <span className="truncate">{value ?? allLabel}</span>
           <CaretDownIcon className="shrink-0 text-[11px] opacity-60" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
-          align="end"
+          align={align}
           sideOffset={4}
           className="z-50 flex max-h-[min(60vh,420px)] w-[min(280px,calc(100vw-24px))] flex-col rounded-md border border-line-strong bg-raised shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise"
         >
@@ -55,7 +55,7 @@ export function RepoSelect({ value, onChange, className }: { value: string | nul
             />
           </div>
           <div role="listbox" aria-label="Repos" className="min-h-0 flex-1 overflow-y-auto p-1">
-            {!q && <Option label="Every repo" on={value === null} onPick={() => pick(null)} />}
+            {!q && <Option label={allLabel} on={value === null} onPick={() => pick(null)} />}
             {hits.slice(0, SHOWN).map((r) => (
               <Option key={r} label={r} on={value === r} onPick={() => pick(r)} mono />
             ))}

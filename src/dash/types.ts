@@ -24,6 +24,8 @@ export type Req = {
   form: URLSearchParams;            // POST body (application/x-www-form-urlencoded)
   json?: unknown;                   // POST body of an /api/ route (application/json)
   user: User;
+  /** The one repo the web app's project picker narrows lists to (`x-autocraft-scope`); only ever hides more, see visibleRepos. */
+  scope?: string | null;
   csrf: string;                     // the session's CSRF token
   nonce: string;                    // put on every <script> and <style> as nonce="..."
 };

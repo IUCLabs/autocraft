@@ -88,8 +88,8 @@ const signedIn = (login: string): ReturnType<typeof signIn> => {
 
 async function signIn(login: string) {
   const jar = new Map<string, string>();
-  const send = async (path: string) => {
-    const r = await fetch(new URL(path, base), { headers: { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json" }, redirect: "manual" });
+  const send = async (path: string, extra: Record<string, string> = {}) => {
+    const r = await fetch(new URL(path, base), { headers: { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json", ...extra }, redirect: "manual" });
     for (const c of r.headers.getSetCookie()) {
       const [kv] = c.split(";");
       const k = kv!.slice(0, kv!.indexOf("=")), v = kv!.slice(kv!.indexOf("=") + 1);
@@ -102,9 +102,9 @@ async function signIn(login: string) {
   const auth = await send(`${start.headers.get("location")}&login=${login}`);
   assert.equal((await send(auth.headers.get("location")!)).status, 303);
   return {
-    status: async (path: string) => (await send(path)).status,
-    get: async <T>(path: string): Promise<T> => {
-      const r = await send(path);
+    status: async (path: string, headers?: Record<string, string>) => (await send(path, headers)).status,
+    get: async <T>(path: string, headers?: Record<string, string>): Promise<T> => {
+      const r = await send(path, headers);
       assert.equal(r.status, 200, path);
       return (await r.json()) as T;
     },
@@ -259,6 +259,37 @@ describe("repo visibility", () => {
     assert.deepEqual(viewer.needs.oldest, []);
     assert.ok(maint.needs.oldest.length > 0);
     assert.equal(viewer.needs.total, maint.needs.total);
+  });
+
+  test("Home scoped to one repo names only that repo's needs, and 404s on a repo the user cannot see", async () => {
+    type H = { needs: { total: number; oldest: { repo: string }[] } };
+    const boss = await signedIn("boss");
+    const all = await boss.get<H>("/api/home");
+    const open = await boss.get<H>("/api/home?repo=open-app");
+    assert.ok(open.needs.oldest.length > 0);
+    assert.ok(open.needs.oldest.every((n) => n.repo === "open-app"));
+    assert.ok(open.needs.total < all.needs.total);
+    assert.equal(await boss.status("/api/home?repo=vault"), 200);
+    assert.equal(await (await signedIn("outsider")).status("/api/home?repo=vault"), 404);
+    assert.equal(await boss.status("/api/home?repo=no-such-app"), 404);
+  });
+
+  test("the project scope header narrows every list to one repo, and never widens what a user may see", async () => {
+    const scope = (repo: string) => ({ "x-autocraft-scope": repo });
+    const boss = await signedIn("boss");
+    const scoped = await boss.get<DecisionList>("/api/decisions", scope("open-app"));
+    assert.ok(scoped.decisions.length > 0);
+    assert.ok(scoped.decisions.every((d) => d.repo === "open-app"));
+    const home = await boss.get<{ needs: { oldest: { repo: string }[] } }>("/api/home", scope("open-app"));
+    assert.ok(home.needs.oldest.every((n) => n.repo === "open-app"));
+    // The picker's own list and direct links ignore the scope.
+    assert.deepEqual((await boss.get<string[]>("/api/repos", scope("open-app"))).sort(), (await boss.get<string[]>("/api/repos")).sort());
+    assert.equal(await boss.status("/api/items/vault/1", scope("open-app")), 200);
+    // A scope the user cannot see is ignored: the outsider still sees only open-app, never vault.
+    const outsider = await signedIn("outsider");
+    const out = await outsider.get<DecisionList>("/api/decisions", scope("vault"));
+    assert.ok(!out.decisions.some((d) => d.repo === "vault"));
+    assert.equal(await outsider.status("/api/items/vault/1", scope("vault")), 404);
   });
 
   test("rows of an untracked repo and of a private repo the user cannot read are operator-only", async () => {

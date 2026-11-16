@@ -187,8 +187,9 @@ export async function fixes(db: DatabaseSync, req: Req): Promise<NeedsFixPage> {
   };
 }
 
-export async function needs(db: DatabaseSync, req: Req): Promise<NeedsPage> {
-  const hidden = await hiddenRepos(db, req);
+/** `scoped`: hidden repos to use instead of the requester's own, for a view of one repo. */
+export async function needs(db: DatabaseSync, req: Req, scoped?: HiddenRepos): Promise<NeedsPage> {
+  const hidden = scoped ?? (await hiddenRepos(db, req));
   const q = req.query;
   const limitRaw = q.get("limit");
   if (limitRaw !== null && !/^\d{1,3}$/.test(limitRaw)) throw new HttpError(400, "limit must be a whole number");
