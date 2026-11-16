@@ -20,7 +20,12 @@ const MIN_SPIN_MS = 300;
 /** Entries arriving during a touch or scroll wait until the list has been still this long. */
 const IDLE_MS = 150;
 
-export function NowView(_: ViewProps) {
+/** The feed keeps every entry it has seen and pages older ones from its cursor, so another project starts a new feed. */
+export function NowView(props: ViewProps) {
+  return <NowFeed key={usePageProject() ?? ""} {...props} />;
+}
+
+function NowFeed(_: ViewProps) {
   const api = useApi();
   const q = useQuery("now", (a) => a.now());
   const d = q.data;

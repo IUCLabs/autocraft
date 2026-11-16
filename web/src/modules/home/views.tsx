@@ -57,8 +57,11 @@ export function HomeView(_: ViewProps) {
   const repo = param && param !== ALL ? param : undefined;
   // The page's path names its project, so every request on it is that project's.
   const { data, error } = useQuery("home", (a) => a.home());
+  const repos = useQuery("repos", (a) => a.repos());
   // Links to other pages carry the project as their repo filter.
   const scoped = (to: string) => (repo ? `${to}${to.includes("?") ? "&" : "?"}repo=${encodeURIComponent(repo)}` : to);
+  // The server ignores a project the user cannot see, so its page would show every repo under that name.
+  if (repo && repos.data && !repos.data.includes(repo)) return <div className="p-8 text-ink/60">Nothing here.</div>;
   if (!data) return <Pending error={error} />;
   const { needs, problems, phases, progress, done } = data;
   const kinds = KIND_ORDER.filter((k) => needs.byKind[k]);

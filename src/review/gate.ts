@@ -73,7 +73,8 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
   const runs = db.prepare(`SELECT COUNT(CASE WHEN s >= :today THEN 1 END) AS n, MAX(s) AS last FROM (
       SELECT MIN(r.started_at) AS s FROM main.agent_run_items i JOIN main.agent_runs r ON r.id = i.run_id
       WHERE i.repo = :repo AND i.number = :number AND r.step = 'opus-review' GROUP BY COALESCE(r.job_id, -r.id))`);
-  const preapproved = db.prepare("SELECT 1 FROM main.preapprovals WHERE repo = ? AND number = ? AND head = ? AND state = 'review'");
+  // An "Add to merge queue" row at the head it started on (no fix-up, no push since) asks for no review of its own: CI, the cap and the interval hold it as any PR.
+  const preapproved = db.prepare("SELECT 1 FROM main.preapprovals WHERE repo = ? AND number = ? AND head = ? AND state = 'review' AND (fix_id IS NOT NULL OR head <> from_head)");
   const failure = db.prepare("SELECT value FROM main.settings WHERE key = ?");
   const interval = reviewMinInterval(db) * 60_000;
   const today = new Date(nowMs).toISOString().slice(0, 10);
@@ -93,7 +94,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
         if (!asked) return { kind: "failed", wait: `its review failed ${n} times at this commit; a new commit, a Review again press or a maintainer's comment gives it one more try` };
       } else if (at + delay > nowMs) return { kind: "failed", wait: `the review after ${n} failed ${n === 1 ? "try" : "tries"} at this commit, from ${new Date(at + delay).toISOString().slice(11, 16)}`, until: at + delay };
     }
-    // A person's pre-approved merge waits for the review of the head its fix-up pushed: that is their request for it, as a review-again press would be.
+    // A person's pre-approved merge waits for the review of the head the pipeline pushed for it: that is their request for it, as a review-again press would be.
     if (preapproved.get(repo, number, head)) return null;
     if (last) {
       let state = states.get(repo);

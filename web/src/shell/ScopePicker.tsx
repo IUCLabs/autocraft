@@ -1,5 +1,5 @@
 // The project picker at the top of the navigation: narrows the list pages to one repo, with each repo's open decisions beside it.
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "../api/client";
 import { setScope, useScope } from "../api/scope";
@@ -26,4 +26,13 @@ export function ScopePicker({ className, onPicked }: { className?: string; onPic
 /** A list page's own repo filter: shown only under All projects; with a project picked, the picker is the repo control. */
 export function UnlessProject({ children }: { children: ReactNode }) {
   return useScope() ? null : <>{children}</>;
+}
+
+/** Clears a pick the user can no longer see (untracked, or access lost); the server ignores it anyway. */
+export function useStalePickCleared(): void {
+  const scope = useScope();
+  const { data: repos } = useQuery("repos", (api) => api.repos());
+  useEffect(() => {
+    if (scope && repos && !repos.includes(scope)) setScope(null);
+  }, [scope, repos]);
 }

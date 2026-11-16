@@ -244,7 +244,9 @@ export async function queueAdd(db: DatabaseSync, req: Req): Promise<{ label: str
     throw new HttpError(409, (e as Error).message);
   }
   const ref = `${r.repo}#${r.number}`;
-  await guarded(() => (addFastTrack(db, req.user.login, ref, w).added ? null : setFastTrackWeight(db, req.user.login, ref, w)));
+  // An item already fast-tracked keeps a heavier weight it has; the add only ever moves it up.
+  const had = (db.prepare("SELECT weight FROM main.fast_track WHERE repo = ? AND number = ?").get(r.repo, r.number) as { weight: number } | undefined)?.weight;
+  await guarded(() => (had === undefined ? addFastTrack(db, req.user.login, ref, w) : w > had ? setFastTrackWeight(db, req.user.login, ref, w) : null));
   return { label: done.label, fast: await fastTrackRefs(db, req) };
 }
 

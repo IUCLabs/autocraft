@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ScopePicker } from "./ScopePicker";
+import { ScopePicker, useStalePickCleared } from "./ScopePicker";
 import { useProjectInUrl } from "../api/scope";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
@@ -40,6 +40,7 @@ const MAIN = ["/", "/needs", "/items", "/next", "/security"];
 const PHONE_TABS = ["/", "/needs", "/items", "/next"];
 
 export function AppShell() {
+  useStalePickCleared();
   const user = useUser();
   const phone = useIsPhone();
   const navigate = useNavigate();

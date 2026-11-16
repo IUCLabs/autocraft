@@ -59,7 +59,7 @@ export const COMMON = `number title body url author { login __typename ... on Us
 export const COMMENTS = "comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body url } }";
 export const PR_EXTRA = `isDraft mergedAt mergedBy { login } additions deletions changedFiles
   headRefName headRefOid headRepository { nameWithOwner } baseRefName
-  closingIssuesReferences(first: 10) { nodes { number } }`;
+  closingIssuesReferences(first: 10) { nodes { number repository { nameWithOwner } } }`;
 export const PR_FULL = `maintainerCanModify mergeable reviewDecision
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body url state commit { oid } comments { totalCount } } }`;
@@ -269,6 +269,10 @@ function toRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<string
   return Object.assign(r, hashColumns(r as Parameters<typeof hashColumns>[0]));
 }
 
+/** True when `nameWithOwner` is the repo of the item at `url` (https://github.com/<owner>/<repo>/...). */
+const sameRepo = (nameWithOwner: unknown, url: unknown): boolean =>
+  typeof nameWithOwner === "string" && typeof url === "string" && url.toLowerCase().startsWith(`https://github.com/${nameWithOwner.toLowerCase()}/`);
+
 function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<string, SQLInputValue> {
   const r: Record<string, SQLInputValue> = Object.fromEntries(COLUMNS.map((c) => [c, null]));
   Object.assign(r, {
@@ -288,7 +292,8 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
     additions: n.additions, deletions: n.deletions, changed_files: n.changedFiles,
     head_ref: n.headRefName, head_oid: n.headRefOid, head_repo: n.headRepository?.nameWithOwner ?? null,
     base_ref: n.baseRefName,
-    closing_issues: JSON.stringify((n.closingIssuesReferences?.nodes ?? []).filter(Boolean).map((x: Node) => x.number)),
+    // Numbers only, so an issue of another repo would read as this repo's: those are left out.
+    closing_issues: JSON.stringify((n.closingIssuesReferences?.nodes ?? []).filter((x: Node) => x && (!x.repository || sameRepo(x.repository.nameWithOwner, n.url))).map((x: Node) => x.number)),
   });
   if (detail === "full") {
     Object.assign(r, {

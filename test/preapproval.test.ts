@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 import { actionable } from "../src/decisions.ts";
 import { mergeDecisionId } from "../src/core/rules.ts";
+import { reviewHolds } from "../src/review/gate.ts";
 import { advancePreapprovals, cancelPreapproval, preapprovalOf, preapproveMerge, runPipelineStep } from "../src/preapproval/index.ts";
 import { addFastTrack, fastScoreOf, fastTrackList, setFastTrackWeight, workScores } from "../src/fasttrack.ts";
 import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
@@ -292,6 +293,13 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     const [q] = w.rows("SELECT context, facts FROM decisions WHERE id = ?", mergeDecisionId("app", 12, "sha12")) as { context: string; facts: string }[];
     assert.doesNotMatch(`${q.context} ${q.facts}`, /fix-up/);
     assert.match(q.facts, /review of the PR's head: take-fix/);
+  });
+
+  test("the add asks for no review of its own: running CI still holds the review of the PR's head", () => {
+    const w = fresh().pr(13);
+    w.db.prepare("UPDATE pr_checks SET overall = 'pending' WHERE number = 13").run();
+    preapproveMerge(w.db, { repo: "app", number: 13, by: OPERATOR });
+    assert.equal(reviewHolds(w.db)("app", 13, "sha13")?.kind, "ci");
   });
 });
 
