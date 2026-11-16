@@ -4,7 +4,7 @@ AutoCraft is a model harness for maintaining GitHub repositories with a large ba
 
 The models' tools are a fixed set of GitHub actions (comments, labels, branches, PRs, merges), all behind one write module and `safe-merge`-style checks. Actions run automatically where the rules say they are safe. Otherwise a model proposes and a person accepts. Each issue and PR has its own conversation between Opus and a maintainer, with action cards the maintainer can run. The pipeline is built around maintainers' judgement, which is the limited resource, not around token cost.
 
-It was written for the [storytold](https://github.com/storytold) craft apps. The organization name is a constant (`ORG` in `src/mirror.ts` and `src/act/templates.ts`); tracking another organization means changing it.
+Originally written for the [storytold](https://github.com/storytold) craft apps, AutoCraft can also track repositories owned by other GitHub organizations or users via `autocraft repos track owner/name` without requiring source edits. See [Track repos and sync](#track-repos-and-sync) for naming limitations.
 
 ## How it works
 
@@ -39,7 +39,7 @@ The image is the dashboard's home page (mock data). Each column is a stage with 
 - Only `src/github/write.ts` writes to GitHub. Every write is recorded in an audit table, and a test fails if another file writes.
 - Every GitHub write needs an operator's approval for that repo. Approvals are given on the dashboard and cannot be set from the CLI.
 - The dashboard needs GitHub sign-in. Roles are `operator` (answers, approvals, switches, accounts), `maintainer` (read and comment) and `viewer` (read only).
-- Contributors' own agents reach the Inbox through an MCP server on the dashboard (`POST /mcp`) with a personal token. They act with their user's role, and what they send back is feedback, the same as the dashboard's Feedback box: an operator still answers. An operator can opt a token in to answering decisions, but answering from an agent stays refused until AutoCraft has GitHub App sign-in, since an answer has to run as the user.
+- Contributors' own agents reach the Inbox through an MCP server on the dashboard (`POST /mcp`) with a personal token. They act with their user's role, and what they send back is feedback, the same as the dashboard's Feedback box: an operator still answers. MCP decision answering and undo are currently disabled (`answering.enabled` in `src/dash/mcp/index.ts`), including when GitHub App sign-in is configured. Answer decisions on the dashboard.
 - A pipeline switch (on/off) turns the whole pipeline off, a per-repo pipeline switch limits it to chosen repos, and each step has a daily limit.
 
 See [Trust boundary](docs/pipeline.md#trust-boundary).
@@ -135,12 +135,15 @@ See [Claude accounts and agent runs](docs/pipeline.md#claude-accounts-and-agent-
 ### Track repos and sync
 
 ```sh
-autocraft repos track <name>     # a repo of the organization, without the owner
+autocraft repos track <name>        # a new bare name defaults to storytold
+autocraft repos track <owner/name>  # a repository owned by another organization or user
 autocraft repos list
 autocraft sync                   # first sync of the tracked repos
 ```
 
-A newly tracked repo has its pipeline off: only Sync, Embed and Rank run for it. After the first sync, `autocraft sync` runs every minute from a timer (`deploy/systemd/autocraft-sync.timer`). `autocraft embed` fills the vectors; the first run downloads a 34 MB embedding model.
+Repository names must be unique across owners within an instance. Tracking `owner/name` is refused if that name is already known under another owner. When adding a previously unknown repository outside `storytold`, tracking is also refused if `storytold` has a repository of that name. An already-known bare name refers to its recorded owner. The repository must exist and be readable; when using the GitHub App identity, its installation must cover the repository.
+
+Newly tracked repositories start with their pipeline disabled; only Sync, Embed, and Rank will run. For recurring sync, install and enable the supplied systemd timer (`deploy/systemd/autocraft-sync.timer`) or use the periodic service in the Docker Compose deployment. Running the initial sync does not schedule future runs. `autocraft embed` populates vectors; the first run downloads a 34 MB embedding model.
 
 ### Start the dashboard and add the first operator
 
@@ -159,7 +162,7 @@ Sign in at the base URL. Further users are added on the Access page or with `aut
 
 ### Contributors' agents
 
-Maintainers (and operators) can work the Inbox from their own agent: from the user menu (top right, **Connect agent**) they make an agent token and get the command that adds the Inbox MCP server to Claude Code (`claude mcp add --transport http autocraft-inbox <base URL>/mcp --header "Authorization: Bearer <token>"`). Then they ask things like "is there anything open in photocraft I can help with?" or "give me 5 PRs that need a fix-up". The agent lists open decisions and held fix-ups, works one through with them locally, and sends their pick and note back as feedback. Answering and undoing from an agent is refused until AutoCraft offers GitHub App sign-in. See [Inbox MCP server](docs/operations.md#inbox-mcp-server).
+Maintainers (and operators) can work the Inbox from their own agent: from the user menu (top right, **Connect agent**) they make an agent token and get the command that adds the Inbox MCP server to Claude Code (`claude mcp add --transport http autocraft-inbox <base URL>/mcp --header "Authorization: Bearer <token>"`). Then they ask things like "is there anything open in photocraft I can help with?" or "give me 5 PRs that need a fix-up". The agent lists open decisions and held fix-ups, works one through with them locally, and sends their pick and note back as feedback. MCP decision answering and undo remain disabled, even with GitHub App sign-in configured; use the dashboard for these actions. See [Inbox MCP server](docs/operations.md#inbox-mcp-server).
 
 ### Discord mentions (optional)
 
@@ -183,13 +186,15 @@ AutoCraft can count how often tracked items are mentioned in Discord channels yo
 | `backup.sh` | Consistent SQLite snapshots |
 | `craft-runner.service`, `craft-worker.service` | User units for the runner and the sandbox worker |
 
+A Docker Compose deployment is available in `deploy/compose/compose.yaml`. This deploys the dashboard, runner, and periodic sync/backup service, while sandbox workers run separately. See [Running in a container](docs/operations.md#running-in-a-container) and [VPS with Docker Compose](docs/migration.md#vps-with-docker-compose).
+
 Details, including the worker and build environments: [docs/operations.md](docs/operations.md).
 
 ## Development
 
 ```sh
 pnpm test        # node --test
-pnpm check       # tsc --noEmit
+pnpm check       # typecheck and verify generated documentation
 pnpm -C web dev  # frontend on http://127.0.0.1:5173 with mock data
 VITE_MOCK=1 pnpm -C web build   # static mockup build, no server needed
 ```
