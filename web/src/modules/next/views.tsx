@@ -1,4 +1,5 @@
 // Merge queue (the default tab): every PR in the merge queue as one table, by the step it waits on. Steps: what each pipeline step takes next, in the planner's order, and what waits on something outside.
+import { UnlessProject } from "../../shell/ScopePicker";
 import { useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
@@ -96,7 +97,7 @@ export function NextView() {
         {tab !== "steps" && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             {tab === "merge" && <QueueAdd />}
-            <RepoSelect value={repo} onChange={setRepo} />
+            <UnlessProject><RepoSelect value={repo} onChange={setRepo} /></UnlessProject>
           </div>
         )}
       </div>

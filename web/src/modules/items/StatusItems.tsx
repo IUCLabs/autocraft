@@ -1,4 +1,5 @@
 // Items: every issue and PR with one status line, filtered by phase.
+import { UnlessProject } from "../../shell/ScopePicker";
 import { ChatsCircleIcon, MagnifyingGlassIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import { usePagedQuery } from "../../api/client";
@@ -47,7 +48,7 @@ export function StatusItemsView(_: ViewProps) {
           <MagnifyingGlassIcon className="shrink-0 text-ink/45" />
           <input value={state.q ?? ""} onChange={(e) => update({ q: e.target.value || null })} placeholder="Filter by number or title" aria-label="Filter items" className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40" />
         </label>
-        <RepoSelect value={repo ?? null} onChange={(r) => update({ repo: r })} />
+        <UnlessProject><RepoSelect value={repo ?? null} onChange={(r) => update({ repo: r })} /></UnlessProject>
         <Link to="/items/filters" className="ml-auto inline-flex h-8 items-center gap-1.5 px-2 text-xs text-ink/60 hover:text-ink max-md:h-11"><SlidersHorizontalIcon /> More filters</Link>
       </div>
       <div className="-mx-4 mt-3 flex gap-1.5 overflow-x-auto px-4 pb-1 scrollbar-none md:mx-0 md:flex-wrap md:px-0" role="group" aria-label="Phase">

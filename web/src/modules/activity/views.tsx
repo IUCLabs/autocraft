@@ -1,4 +1,5 @@
 // Activity: every item's trace events in one stream, newest first.
+import { UnlessProject } from "../../shell/ScopePicker";
 import { useRef, useState } from "react";
 import { useApi, useQuery } from "../../api/client";
 import type { ActivityEvent, ActivityPage, TraceKind } from "../../api/types";
@@ -82,7 +83,7 @@ export function ActivityView() {
   return (
     <Page title="Activity">
       <div className="mt-3 flex flex-col gap-2">
-        <RepoSelect value={repo} onChange={setRepo} className="self-start" />
+        <UnlessProject><RepoSelect value={repo} onChange={setRepo} className="self-start" /></UnlessProject>
         <TraceFilters kinds={kinds} onKinds={setKinds} autocraftOnly={autocraftOnly} onAutocraftOnly={setAutocraftOnly} />
       </div>
       <ErrorLine error={q.error?.message} className="mt-3" />

@@ -1,5 +1,6 @@
 // Items: every issue and PR in the tracked repos, with full-text search and the
 // settled type label. Every filter lives in the URL.
+import { UnlessProject } from "../../shell/ScopePicker";
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useEffect, useState } from "react";
 import { Popover } from "radix-ui";
@@ -94,7 +95,7 @@ export function ItemsView(_: ViewProps) {
           <option value="pr">PRs</option>
           <option value="issue">Issues</option>
         </select>
-        <RepoPicker value={filter.repo ?? []} onChange={(r) => set({ repo: r.length ? r.join(",") : null })} />
+        <UnlessProject><RepoPicker value={filter.repo ?? []} onChange={(r) => set({ repo: r.length ? r.join(",") : null })} /></UnlessProject>
         <select aria-label="Type label" value={filter.label ?? ""} onChange={(e) => set({ label: e.target.value || null })} className={cn(selectCls, filter.label ? "text-accent-ink" : "text-ink/70")}>
           <option value="">Any type</option>
           {LABELS.map((l) => (

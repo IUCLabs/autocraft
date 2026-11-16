@@ -1,3 +1,4 @@
+import { UnlessProject } from "../../shell/ScopePicker";
 import { DropdownMenu } from "radix-ui";
 import { CaretDownIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
@@ -63,7 +64,7 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
         ))}
       </div>
       <div className={cn("flex items-center gap-2", !phone && "ml-auto")}>
-        <RepoPicker selected={filter.repo ?? []} onChange={(r) => update({ repo: r.length ? r.join(",") : null })} />
+        <UnlessProject><RepoPicker selected={filter.repo ?? []} onChange={(r) => update({ repo: r.length ? r.join(",") : null })} /></UnlessProject>
         <Picker label={AGES.find((a) => a.v === String(filter.minAge ?? ""))?.label ?? "Any age"} items={AGES} onPick={(v) => update({ age: v || null })} />
         <button className="chip" data-active={!!filter.all} aria-pressed={!!filter.all} onClick={() => update({ all: filter.all ? null : "1" })} title="Also the questions only others can settle">
           Everything

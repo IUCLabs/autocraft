@@ -1,4 +1,5 @@
 // The project picker at the top of the navigation: narrows the list pages to one repo, with each repo's open decisions beside it.
+import type { ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "../api/client";
 import { setScope, useScope } from "../api/scope";
@@ -20,4 +21,9 @@ export function ScopePicker({ className, onPicked }: { className?: string; onPic
     onPicked?.();
   };
   return <RepoSelect value={scope} onChange={pick} counts={counts.data} allLabel="All projects" align="start" className={cn("w-full max-w-none justify-between", scope && "border-accent-ink/50", className)} />;
+}
+
+/** A list page's own repo filter: shown only under All projects; with a project picked, the picker is the repo control. */
+export function UnlessProject({ children }: { children: ReactNode }) {
+  return useScope() ? null : <>{children}</>;
 }
