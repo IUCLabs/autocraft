@@ -9,7 +9,8 @@ import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
 import { operatorCommentText } from "../src/fixup/template.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { OPERATOR, T0, world, type World } from "./world-db.ts";
-import { queueOrigins } from "../src/dash/api/queue-page.ts";
+import { queueAdd, queueOrigins } from "../src/dash/api/queue-page.ts";
+import type { Req } from "../src/dash/types.ts";
 import type { CachedEntry } from "../src/core/plan-read.ts";
 
 let current: World | null = null;
@@ -300,6 +301,20 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     assert.deepEqual({ ...staff(entry(13)), at: null }, { how: "queued", by: OPERATOR, at: null });
     assert.deepEqual(queueOrigins(w.db, false)(entry(13)).by, null);
     assert.deepEqual(staff(entry(14)), { how: "review", by: null, at: T0 });
+  });
+});
+
+describe("queue items: an issue", () => {
+  test("is fast-tracked, and the open PR that closes it is queued", async () => {
+    const w = fresh().issue(31).pr(32).issue(33);
+    w.db.prepare("UPDATE items SET closing_issues = '[31]' WHERE repo = 'app' AND number = 32").run();
+    const req = (item: string) => ({ query: new URLSearchParams(), json: { item, weight: 7 }, user: { login: OPERATOR, role: "operator", canWrite: async () => true } }) as unknown as Req;
+    const one = await queueAdd(w.db, req("app#31"));
+    assert.match(one.label, /Fast-tracked.*queued #32/);
+    assert.equal(preapprovalOf(w.db, "app", 32)?.state, "review");
+    assert.deepEqual(fastTrackList(w.db).map((f) => [f.number, f.weight]), [[31, 7], [32, 7]]);
+    const two = await queueAdd(w.db, req("app#33"));
+    assert.match(two.label, /no open PR closes it yet/);
   });
 });
 

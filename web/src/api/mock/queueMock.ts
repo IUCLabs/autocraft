@@ -127,6 +127,7 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
         need();
         // A GitHub link or owner/repo#n becomes repo#n, as the server's parseItemRef reads it.
         const url = /github\.com\/[\w.-]+\/([\w.-]+)\/(?:pull|issues)\/(\d+)/.exec(item);
+        const issue = /\/issues\/\d+/.test(item);
         item = url ? `${url[1]}#${url[2]}` : item.replace(/^[\w.-]+\/(?=[\w.-]+#\d+$)/, "");
         if (!/^[\w.-]+#\d+$/.test(item)) throw new Error("not an item: use a GitHub URL, repo#number or owner/repo#number");
         if (!fast.includes(item)) fast = [...fast, item];
@@ -134,6 +135,7 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
         weights.set(item, weight);
         resort();
         changed();
+        if (issue) return { label: "Fast-tracked: Fix works the issue first; no open PR closes it yet", fast: [...fast] };
         return { label: "Added to the merge queue; it merges once the review says take and CI is green", fast: [...fast] };
       },
       async fastTrackRemove(item) {

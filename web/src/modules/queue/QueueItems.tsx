@@ -1,6 +1,6 @@
-// "Queue items": a button on the Merge queue page that opens a dialog to add several PRs at once, one GitHub link or id per line. Each is
-// pre-approved at its current head (it merges once the review there says take, the pre-merge review is clean and CI is green) and
-// fast-tracked with the chosen weight. Operators only.
+// "Queue items": a button on the Merge queue page that opens a dialog to add several PRs and issues at once, one GitHub link or id per
+// line. A PR is pre-approved at its current head (it merges once the review there says take, the pre-merge review is clean and CI is
+// green) and fast-tracked with the chosen weight; an issue is fast-tracked, and the open PRs that close it are queued. Operators only.
 import { useState } from "react";
 import { CheckCircleIcon, PlusIcon, XCircleIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
@@ -41,7 +41,7 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <Dialog open onClose={onClose} title="Queue items">
+    <Dialog open onClose={onClose} title="Queue items" size="lg">
       <form
         className="flex flex-col gap-3"
         onSubmit={(e) => {
@@ -49,18 +49,24 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
           if (items.length && !busy) void submit();
         }}
       >
-        <p className="text-xs text-ink/65">
-          One pull request per line: a GitHub link, <span className="code">repo#123</span> or <span className="code">owner/repo#123</span>. Each merges once the review at its
-          current head says take, the pre-merge review is clean and CI is green; its review, checks and merge go first by the weight.
-        </p>
+        <div className="flex flex-col gap-1.5 text-sm text-ink/70">
+          <p>
+            One pull request or issue per line: a GitHub link, <span className="code">repo#123</span> or <span className="code">owner/repo#123</span>.
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5 text-xs text-ink/60">
+            <li>A pull request merges once the review at its current head says take, the pre-merge review is clean and CI is green.</li>
+            <li>An issue is worked first by Fix; an open pull request that closes it is queued too.</li>
+            <li>The weight puts them ahead in every step: heavier goes first.</li>
+          </ul>
+        </div>
         <Textarea
-          aria-label="Pull requests to queue, one per line"
-          rows={7}
+          aria-label="Pull requests and issues to queue, one per line"
+          rows={12}
           autoFocus
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder={"https://github.com/storytold/designcraft/pull/1842\ndesigncraft#2122"}
-          className="code text-xs"
+          placeholder={"https://github.com/storytold/designcraft/pull/1842\nhttps://github.com/storytold/designcraft/issues/1802\ndesigncraft#2122"}
+          className="code text-sm"
         />
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-ink/65">
@@ -72,7 +78,7 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
           </Button>
         </div>
         {results.length > 0 && (
-          <ul className="flex max-h-48 flex-col gap-1 overflow-y-auto border-t border-line pt-2 text-xs">
+          <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto border-t border-line pt-2 text-xs">
             {results.map((r) => (
               <li key={r.item} className="flex items-start gap-1.5">
                 {r.ok ? <CheckCircleIcon weight="fill" className="mt-0.5 shrink-0 text-ok" aria-label="Queued" /> : <XCircleIcon weight="fill" className="mt-0.5 shrink-0 text-bad" aria-label="Refused" />}

@@ -251,21 +251,46 @@ export async function fastTrackWeight(db: DatabaseSync, req: Req): Promise<strin
 }
 
 /**
- * "Add to merge queue": a pre-approved merge at the PR's current head (it merges once the review says take, the pre-merge review
- * is clean and CI is green) and a fast-track mark with the given weight, so the PR's review, checks and merge come first.
+ * "Queue items", one line: a PR is pre-approved at its current head (it merges once the review says take, the pre-merge review is clean
+ * and CI is green) and fast-tracked with the weight, so its review, checks and merge come first. An issue is fast-tracked, so Fix works
+ * it first; each open PR that closes it (GitHub's closing references) is queued as above.
  */
 export async function queueAdd(db: DatabaseSync, req: Req): Promise<{ label: string; fast: string[] }> {
   const r = item(req);
   const w = weightOf(req);
   await needVisible(db, req, r.repo);
+  const by = req.user.login;
+  const mark = (number: number) => guarded(() => (addFastTrack(db, by, `${r.repo}#${number}`, w).added ? null : setFastTrackWeight(db, by, `${r.repo}#${number}`, w)));
+  const kind = (db.prepare("SELECT kind FROM main.items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { kind: string } | undefined)?.kind;
+  if (kind === "issue") {
+    await mark(r.number);
+    const prs = (db.prepare("SELECT number, closing_issues FROM main.items INDEXED BY items_closing WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND closing_issues IS NOT NULL AND closing_issues <> '[]'").all(r.repo) as { number: number; closing_issues: string }[])
+      .filter((p) => { try { return (JSON.parse(p.closing_issues) as unknown[]).includes(r.number); } catch { return false; } })
+      .map((p) => p.number);
+    const queued: number[] = [];
+    const refused: string[] = [];
+    for (const n of prs) {
+      try {
+        preapproveMerge(db, { repo: r.repo, number: n, by });
+        await mark(n);
+        queued.push(n);
+      } catch (e) {
+        refused.push(`#${n}: ${(e as Error).message}`);
+      }
+    }
+    const parts = ["Fast-tracked: Fix works the issue first"];
+    if (queued.length) parts.push(`queued ${queued.map((n) => `#${n}`).join(", ")}, which close${queued.length === 1 ? "s" : ""} it`);
+    else if (!prs.length) parts.push("no open PR closes it yet");
+    if (refused.length) parts.push(`not queued: ${refused.join("; ")}`);
+    return { label: parts.join("; "), fast: await fastTrackRefs(db, req) };
+  }
   let done: { label: string };
   try {
-    done = preapproveMerge(db, { repo: r.repo, number: r.number, by: req.user.login });
+    done = preapproveMerge(db, { repo: r.repo, number: r.number, by });
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }
-  const ref = `${r.repo}#${r.number}`;
-  await guarded(() => (addFastTrack(db, req.user.login, ref, w).added ? null : setFastTrackWeight(db, req.user.login, ref, w)));
+  await mark(r.number);
   return { label: done.label, fast: await fastTrackRefs(db, req) };
 }
 
