@@ -17,7 +17,7 @@ export interface WorkableColumn {
   /** Header tooltip. */
   hint?: string;
   align?: "start" | "end";
-  /** Shown only on wide screens (xl and up) and on a phone, where cells wrap; left out in between so the title keeps its room. */
+  /** Shown only on wide screens (1800px and up) and on a phone, where cells wrap; left out in between so the title keeps its room. */
   wide?: boolean;
 }
 
@@ -51,7 +51,7 @@ const template = (cols: WorkableColumn[], closes: boolean) => [...lead(closes), 
 const minWidth = (cols: WorkableColumn[], closes: boolean) =>
   ID_W + (closes ? CLOSES_W + GAP : 0) + TITLE_MIN + PAD + cols.reduce((s, c) => s + (parseFloat(c.width) || 0) + GAP, GAP);
 const narrow = (cols: WorkableColumn[]) => cols.filter((c) => !c.wide);
-const grid = "md:grid md:grid-cols-[var(--wk-cols-md)] xl:grid-cols-[var(--wk-cols)] md:gap-x-4";
+const grid = "md:grid md:grid-cols-[var(--wk-cols-md)] min-[1800px]:grid-cols-[var(--wk-cols)] md:gap-x-4";
 
 /** `closes` adds the Closes column after the id. */
 export function WorkableTable({ columns, label, closes = false, titleLabel = "Title", children, className }: {
@@ -71,7 +71,7 @@ export function WorkableTable({ columns, label, closes = false, titleLabel = "Ti
   return (
     <Shape.Provider value={{ columns, closes }}>
       <div className={cn("overflow-x-auto rounded-md border border-line", className)}>
-        <div role="table" aria-label={label} style={vars} className="text-sm md:min-w-[var(--wk-min-md)] xl:min-w-[var(--wk-min)]">
+        <div role="table" aria-label={label} style={vars} className="text-sm md:min-w-[var(--wk-min-md)] min-[1800px]:min-w-[var(--wk-min)]">
           <div role="row" className={cn(grid, "border-b border-line bg-ink/[0.03] px-4 py-1.5 text-xs font-medium text-ink/55 max-md:hidden")}>
             <span role="columnheader">ID</span>
             {closes && (
@@ -81,7 +81,7 @@ export function WorkableTable({ columns, label, closes = false, titleLabel = "Ti
             )}
             <span role="columnheader">{titleLabel}</span>
             {columns.map((c) => (
-              <span key={c.id} role="columnheader" title={c.hint} className={cn(c.align === "end" && "text-right", c.wide && "max-xl:hidden")}>
+              <span key={c.id} role="columnheader" title={c.hint} className={cn(c.align === "end" && "text-right", c.wide && "max-[1799px]:hidden")}>
                 {c.label}
               </span>
             ))}
@@ -171,7 +171,7 @@ export function WorkableRow({ item, mark, sub, cells, highlight, dataItem }: {
         {columns.map((c) => {
           const v = cells[c.id];
           return (
-            <div key={c.id} role="cell" className={cn("min-w-0 md:pt-0.5", c.align === "end" && "md:flex md:justify-end", c.wide && "md:max-xl:hidden", v == null && "max-md:hidden", c.align === "end" && "max-md:ml-auto")}>
+            <div key={c.id} role="cell" className={cn("min-w-0 md:pt-0.5", c.align === "end" && "md:flex md:justify-end", c.wide && "md:max-[1799px]:hidden", v == null && "max-md:hidden", c.align === "end" && "max-md:ml-auto")}>
               {v ?? <span className="text-ink/30">–</span>}
             </div>
           );
