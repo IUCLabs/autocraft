@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ScopePicker, useStalePickCleared } from "./ScopePicker";
-import { useProjectInUrl } from "../api/scope";
+import { ScopePicker, projectPath, useStalePickCleared } from "./ScopePicker";
+import { useProjectInUrl, useScope } from "../api/scope";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon, HeartbeatIcon, CloudIcon, CloudCheckIcon, CloudSlashIcon } from "@phosphor-icons/react";
@@ -49,6 +49,7 @@ export function AppShell() {
   const [help, setHelp] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
+  const scope = useScope();
 
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
   const entries = visible.flatMap((m) => (m.nav ? [m.nav] : []));
@@ -61,7 +62,7 @@ export function AppShell() {
     "mod+k": () => (phone ? setSearchOpen(true) : document.getElementById("global-search")?.focus()),
     "?": () => setHelp(true),
     "[": () => setRailOpen(!railOpen),
-    "g h": () => navigate("/"),
+    "g h": () => navigate(projectPath(scope)),
     "g q": () => navigate("/next"),
     "g d": () => navigate("/needs"),
     "g i": () => navigate("/items"),
@@ -186,8 +187,17 @@ function Wordmark() {
   );
 }
 
+/** Home opens the picked project's home, and stays lit on any project home; other entries link as they are. */
+function useEntryLink(entry: NavEntry): { to: string; active?: boolean } {
+  const scope = useScope();
+  const { pathname } = useLocation();
+  if (entry.to !== "/") return { to: entry.to };
+  return { to: projectPath(scope), active: pathname === "/" || pathname.startsWith("/projects/") };
+}
+
 function RailLink({ entry, open, tall }: { entry: NavEntry; open: boolean; tall?: boolean }) {
   const count = entry.useBadge?.();
+  const link = useEntryLink(entry);
   const cls = (isActive: boolean) =>
     cn(
       "relative flex items-center gap-2 rounded px-2 text-sm",
@@ -205,7 +215,7 @@ function RailLink({ entry, open, tall }: { entry: NavEntry; open: boolean; tall?
     </>
   );
   return (
-    <NavLink to={entry.to} end={entry.to === "/"} title={open ? undefined : entry.label} className={({ isActive }) => cls(isActive)}>
+    <NavLink to={link.to} end={entry.to === "/"} title={open ? undefined : entry.label} className={({ isActive }) => cls(link.active ?? isActive)}>
       {inner}
     </NavLink>
   );
@@ -308,8 +318,9 @@ function PhoneTabs({ rail }: { rail: RailGroup[] }) {
 
 function PhoneTab({ entry }: { entry: NavEntry }) {
   const count = entry.useBadge?.();
+  const link = useEntryLink(entry);
   return (
-    <NavLink to={entry.to} end={entry.to === "/"} className={({ isActive }) => cn("relative flex h-14 flex-col items-center justify-center gap-0.5 text-2xs font-medium text-ink/55", isActive && "text-accent-ink")}>
+    <NavLink to={link.to} end={entry.to === "/"} className={({ isActive }) => cn("relative flex h-14 flex-col items-center justify-center gap-0.5 text-2xs font-medium text-ink/55", (link.active ?? isActive) && "text-accent-ink")}>
       <span className="relative">
         <entry.icon className="text-[20px]" />
         {count !== undefined && count > 0 && <span className="num absolute -right-3.5 -top-1 rounded-full bg-accent px-1 text-[10px] font-semibold leading-[14px] text-white">{count}</span>}
