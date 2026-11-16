@@ -1,4 +1,5 @@
 import type { Api } from "./client";
+import { getScope, SCOPE_HEADER } from "./scope";
 import type { ConversationCard, DecisionFilter, ItemFilter } from "./types";
 
 /** Query string from the set fields; booleans as 1 / 0. */
@@ -27,6 +28,8 @@ export function createHttpApi(): Api {
 
   async function call<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { accept: "application/json" };
+    const scope = getScope();
+    if (scope) headers[SCOPE_HEADER] = scope;
     if (method !== "GET") {
       // Every /api/ response carries the session's token; a POST before any GET fetches it first.
       if (!csrf) await call("GET", "/api/me");

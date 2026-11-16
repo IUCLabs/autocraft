@@ -1,4 +1,6 @@
 // Home: what needs me, is anything broken, is it moving.
+import { useEffect } from "react";
+import { setScope } from "../../api/scope";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeftIcon, CaretRightIcon, GitMergeIcon, ProhibitIcon, ChatTeardropTextIcon, ShieldWarningIcon, WarningCircleIcon, XCircleIcon, type Icon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
@@ -55,6 +57,8 @@ export function HomeView(_: ViewProps) {
   const user = useUser();
   const { repo: param } = useParams();
   const repo = param && param !== ALL ? param : undefined;
+  // Opening a project picks it, so every other page is narrowed to it too.
+  useEffect(() => setScope(repo ?? null), [repo]);
   const { data, error } = useQuery(`home:${repo ?? ""}`, (a) => a.home(repo));
   // Links to other pages carry the project as their repo filter.
   const scoped = (to: string) => (repo ? `${to}${to.includes("?") ? "&" : "?"}repo=${encodeURIComponent(repo)}` : to);

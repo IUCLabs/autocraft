@@ -56,16 +56,19 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
   return {
     async home(repo?: string): Promise<Home> {
       const d = await base.decisions.list({ status: "open", limit: 100, ...(repo ? { repo: [repo] } : {}) });
+      // The mock security finding is designcraft's.
+      const finding = staff && (!repo || repo === "designcraft");
       const rec = (x: (typeof d.decisions)[number]) => x.options.find((o) => o.key === x.recommended)?.label ?? null;
-      const problems: Home["problems"] = [
-        { kind: "stopped", title: "Fix-up stopped by the breaker", detail: staff ? "3 pushes in a row broke CI on photocraft; resume after a look." : "Fix-ups are stopped.", to: "/needs/stopped" },
-        ...(staff ? [{ kind: "gave-up" as const, title: "designcraft finding 11: fix gave up after 3 rounds", detail: "The regression test passes without the fix.", to: "/security/designcraft/11" }] : []),
-      ];
+      // Each mock problem belongs to one repo, so a project's home shows only its own.
+      const problems: Home["problems"] = ([
+        ["photocraft", { kind: "stopped", title: "Fix-up stopped by the breaker", detail: staff ? "3 pushes in a row broke CI on photocraft; resume after a look." : "Fix-ups are stopped.", to: "/needs/stopped" }],
+        ...(staff ? [["designcraft", { kind: "gave-up" as const, title: "designcraft finding 11: fix gave up after 3 rounds", detail: "The regression test passes without the fix.", to: "/security/designcraft/11" }]] : []),
+      ] as [string, Home["problems"][number]][]).filter(([r]) => !repo || r === repo).map(([, p]) => p);
       return wait({
         needs: {
-          total: d.total + (staff ? 1 : 0), byKind: staff ? { ...d.byKind, security: 1 } : d.byKind,
+          total: d.total + (finding ? 1 : 0), byKind: finding ? { ...d.byKind, security: 1 } : d.byKind,
           oldest: !staff ? [] : [
-            ...(staff ? [{ id: "finding-11", kind: "security" as const, repo: "designcraft", number: 11, title: "Recent-files list opens paths without checking the file type", recommendation: "Fix again with a note", askedAt: at(40), itemKind: null, to: "/security/designcraft/11" }] : []),
+            ...(finding ? [{ id: "finding-11", kind: "security" as const, repo: "designcraft", number: 11, title: "Recent-files list opens paths without checking the file type", recommendation: "Fix again with a note", askedAt: at(40), itemKind: null, to: "/security/designcraft/11" }] : []),
             ...d.decisions.slice(0, staff ? 4 : 5).map((x) => ({ id: x.id, kind: x.kind, repo: x.repo, number: x.number, title: x.title, recommendation: rec(x), askedAt: x.askedAt, itemKind: x.shown?.kind ?? null, to: decisionPath(x) })),
           ],
         },

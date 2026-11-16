@@ -1,6 +1,8 @@
 // Projects: the start page. One tile per tracked repo, plus "All projects"; a tile opens that project's home.
+import { useScope } from "../../api/scope";
+import { projectPath } from "../../shell/ScopePicker";
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom";
 import { MagnifyingGlassIcon, SquaresFourIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { Funnel, Done, RepoProgress } from "../../api/types";
@@ -11,8 +13,6 @@ import type { ViewProps } from "../../registry/types";
 import { ALL } from "./views";
 
 type Tile = { to: string; name: string; funnel: Funnel | null; done: Done | null; decisions: number | null; trend: number[] };
-
-const projectPath = (repo: string) => `/projects/${encodeURIComponent(repo)}`;
 
 /** Open items at the end of each day since tracking began, as a small line. */
 function Trend({ values }: { values: number[] }) {
@@ -61,6 +61,7 @@ export function ProjectsView(_: ViewProps) {
   const progress = useQuery("progress", (api) => api.progress());
   const repos = useQuery("repos", (api) => api.repos());
   const [q, setQ] = useState("");
+  const scope = useScope();
   const tiles = useMemo(() => {
     const by = new Map<string, RepoProgress>((progress.data?.repos ?? []).map((r) => [r.repo, r]));
     const names = [...new Set([...(repos.data ?? []), ...by.keys()])].sort((a, b) => a.localeCompare(b));
@@ -69,6 +70,8 @@ export function ProjectsView(_: ViewProps) {
       return { to: projectPath(name), name, funnel: r?.funnel ?? null, done: r?.done ?? null, decisions: r?.decisionsOpen ?? null, trend: r?.openTrend ?? [] };
     });
   }, [progress.data, repos.data]);
+  // With a project picked, Home is that project's page; the tiles are for picking one.
+  if (scope) return <Navigate to={projectPath(scope)} replace />;
   if (!progress.data || !repos.data) return <Pending error={progress.error ?? repos.error} />;
   const p = progress.data;
   // Sum the repos' trends day by day for the "All projects" tile.

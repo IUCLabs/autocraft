@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { ScopePicker } from "./ScopePicker";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { SignOutIcon, MonitorIcon, MoonIcon, SidebarSimpleIcon, ListIcon, CaretRightIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, ChartBarIcon, GearSixIcon, InfoIcon, LinkBreakIcon, LinkIcon, HeartbeatIcon, CloudIcon, CloudCheckIcon, CloudSlashIcon } from "@phosphor-icons/react";
@@ -91,7 +92,9 @@ export function AppShell() {
             <ListIcon className="text-[20px]" />
           </button>
           <NavLink to="/" aria-label="AutoCraft home" className="flex size-11 shrink-0 items-center justify-center"><Logo size={20} /></NavLink>
-          <div className="flex-1" />
+          <div className="flex min-w-0 flex-1 px-1">
+            <ScopePicker className="max-w-[170px]" />
+          </div>
           <MainCiDots />
           <LiveDot />
           <HealthMenu />
@@ -124,6 +127,11 @@ export function AppShell() {
     <div className="flex h-full bg-bg">
       <aside className={cn("flex shrink-0 flex-col border-r border-line bg-bg transition-[width] duration-base ease-out", railOpen ? "w-[220px]" : "w-[52px]")}>
         <div className={cn("flex h-11 shrink-0 items-center px-4", !railOpen && "justify-center px-0")}>{railOpen ? <Wordmark /> : <Logo size={20} />}</div>
+        {railOpen && (
+          <div className="px-2 pb-2">
+            <ScopePicker />
+          </div>
+        )}
         <RailNav rail={rail} open={railOpen} className="flex-1" />
         <div className="px-2 pb-1">
           <FootLink to="/about" icon={InfoIcon} label="How it works" open={railOpen} />

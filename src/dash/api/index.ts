@@ -12,7 +12,7 @@ import type {
   CiState, DecisionKind, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemPremerge, ItemReviews, ItemState, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
-import { excludeHidden, hiddenRepos, needVisible, repoOwners, visibleRepos } from "./visible.ts";
+import { excludeHidden, hiddenRepos, allVisibleRepos, needVisible, repoOwners, visibleRepos } from "./visible.ts";
 import { withoutHidden } from "./decisions.ts";
 import { contributors } from "../../whitelist.ts";
 import { CLOSED_ITEMS, TRACKED, doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
@@ -90,7 +90,7 @@ const ok = (fn: (db: DatabaseSync, req: Req) => unknown) => async (db: DatabaseS
 };
 
 async function writeRepos(db: DatabaseSync, req: Req): Promise<string[]> {
-  const repos = await visibleRepos(db, req);
+  const repos = await allVisibleRepos(db, req);
   const ok = await Promise.all(repos.map((r) => req.user.canWrite(r).catch(() => false)));
   return repos.filter((_, i) => ok[i]);
 }
@@ -393,7 +393,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
   const heavy = (r: Route, when?: (q: URLSearchParams) => boolean): Route => ({ ...r, expensive: when ?? true });
   return [
     get("/api/me", me),
-    get("/api/repos", visibleRepos),
+    get("/api/repos", allVisibleRepos),
     get("/api/repos/owners", repoOwners),
     get("/api/decisions", (db, req) => dec.listDecisions(db, req)),
     get("/api/decisions/:id", dec.getOne),
