@@ -58,7 +58,7 @@ export function ProjectMergeQueue({ repo }: { repo: string | undefined }) {
   return (
     <Section title="Merge queue" count={data?.counts.merge} to={to} linkLabel="Whole queue">
       <ErrorLine error={error?.message} />
-      {data && next.length === 0 && <p className="border-t border-line py-3 text-sm text-ink/55">No PR is waiting to merge.</p>}
+      {data && next.length === 0 && <p className="border-t border-line py-3 text-sm text-ink/55">{data.counts.merge ? "No PR is lined up to merge next." : "No PR is in the merge queue."}</p>}
       {next.length > 0 && (
         <ol className="rounded-md border border-line">
           {next.map((n, i) => (
@@ -77,7 +77,7 @@ export function ProjectMergeQueue({ repo }: { repo: string | undefined }) {
       )}
       {data && data.counts.merge > next.length && (
         <Link to={to} className="mt-2 block text-xs text-ink/55 hover:text-ink">
-          {num(data.counts.merge - next.length)} more in the queue
+          {next.length ? `${num(data.counts.merge - next.length)} more in the queue` : `${num(data.counts.merge)} in the queue`}
         </Link>
       )}
     </Section>
