@@ -2,7 +2,7 @@ import { HandWavingIcon } from "@phosphor-icons/react";
 import type { FeatureModule, RouteDef, ViewDef } from "../../registry/types";
 import { lazyView } from "../../registry/lazyView";
 import { decisionRedirectView } from "../decisions/DecisionRedirect";
-import { useSummary } from "./state";
+import { useNavSummary } from "./state";
 
 const Tabs = lazyView(() => import("./views"), "Tabs");
 const Body = lazyView(() => import("./views"), "Body");
@@ -17,7 +17,7 @@ const view: ViewDef = {
 const route = (path: string, v: ViewDef = view, scoped?: true): RouteDef => ({ path, view: v, scoped });
 
 function useBadge() {
-  const c = useSummary().data?.counts;
+  const c = useNavSummary().data?.counts;
   return c ? c.decisions + c.feedback + c.stopped : undefined;
 }
 

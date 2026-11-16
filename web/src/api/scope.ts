@@ -50,16 +50,16 @@ let listPages: string[] = [];
 export const setListPages = (paths: string[]): void => void (listPages = paths.map((p) => (p.startsWith("/") ? p : `/${p}`)));
 
 /**
- * The project a page shows: a project page's repo; on a list page the one repo its URL names, else the pick; none elsewhere.
- * A URL naming several repos names no project.
+ * The project a page shows: a project page's repo; on a list page the one repo its URL names, else the pick; `elsewhere`
+ * (none by default) on every other page. A URL naming several repos names no project.
  */
-export function projectOf(pathname: string, search: string, pick: string | null): string | null {
+export function projectOf(pathname: string, search: string, pick: string | null, elsewhere: string | null = null): string | null {
   const page = /^\/projects\/([^/]+)\/?$/.exec(pathname)?.[1];
   if (page !== undefined) {
     const repo = decodeURIComponent(page);
     return repo === ALL ? null : repo;
   }
-  if (!listPages.some((path) => matchPath(path, pathname))) return null;
+  if (!listPages.some((path) => matchPath(path, pathname))) return elsewhere;
   const repo = new URLSearchParams(search).get("repo");
   if (repo !== null) return repo && !repo.includes(",") ? repo : null;
   return pick;
@@ -69,6 +69,16 @@ export function projectOf(pathname: string, search: string, pick: string | null)
 export function usePageProject(): string | null {
   const { pathname, search } = useLocation();
   return projectOf(pathname, search, useScope());
+}
+
+/**
+ * The project for the navigation's badges: the page's project, or the pick on a page that has none (`/`, an item,
+ * settings), so a badge counts what its link opens and doesn't jump when the page changes.
+ */
+export function useNavProject(): string | null {
+  const { pathname, search } = useLocation();
+  const pick = useScope();
+  return projectOf(pathname, search, pick, pick);
 }
 
 /**

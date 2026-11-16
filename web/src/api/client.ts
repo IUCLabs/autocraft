@@ -483,10 +483,11 @@ export interface Query<T> {
  * previous data stays while a refetch is in flight so lists don't flash. `pollMs` is for views that
  * change without a database write (a log file being written); it runs only while the tab is visible.
  */
-export function useQuery<T>(key: string, fn: (api: Api) => Promise<T>, opts: { pollMs?: number | false | ((data: T | undefined) => number | false); enabled?: boolean } = {}): Query<T> {
+export function useQuery<T>(key: string, fn: (api: Api) => Promise<T>, opts: { pollMs?: number | false | ((data: T | undefined) => number | false); enabled?: boolean; project?: string | null } = {}): Query<T> {
   const api = useApi();
-  // The page's project is part of the key: the same view of another project is another entry.
-  const project = usePageProject();
+  // The project (the page's unless `project` is given) is part of the key: the same view of another project is another entry.
+  const page = usePageProject();
+  const project = opts.project === undefined ? page : opts.project;
   const q = useTanstackQuery<T, Error>({
     queryKey: [key, project],
     queryFn: () => withProject(project, () => fn(api)),
