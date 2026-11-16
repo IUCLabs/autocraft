@@ -43,7 +43,7 @@ export function parseFixes(s: string | null): Fix[] {
   } catch { return []; }
 }
 
-export const FIXUP_STATES = ["pushing", "pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "asked", "comment-failed", "push-denied", "superseded"] as const;
+export const FIXUP_STATES = ["pushing", "pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "asked", "comment-failed", "comment-unsent", "push-denied", "superseded"] as const;
 export type FixupState = (typeof FIXUP_STATES)[number];
 
 /** States that count as a try; the other three are recorded once per head and end the step's work on that head. */

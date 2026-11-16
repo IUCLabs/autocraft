@@ -7,7 +7,7 @@ import {
 } from "./rules.ts";
 import { UNCHECKED_REASON } from "./sensitive.ts";
 import { inFlightNow, unassignActions } from "./assignment.ts";
-import type { Action, Plan, PlanState, PrFacts, QueueState, WaitKind } from "./plan.ts";
+import type { Action, Plan, PlanState, PrFacts, QueueState, UnsentAsk, WaitKind } from "./plan.ts";
 
 /** The start of a statement for a reason line: one line, at most 80 characters. */
 const excerpt = (t: string): string => { const s = t.replace(/\s+/g, " ").trim(); return s.length > 80 ? `${s.slice(0, 79).trimEnd()}…` : s; };
@@ -152,7 +152,8 @@ const PERSON_WAITS: ReadonlySet<string> = new Set(["needs-decision", "ci-approva
 /** An operator's Hold or Close answer at the head: nothing is pushed or asked of the contributor, whatever the source. */
 const declinedBy = (f: PrFacts): boolean => f.decision.answer !== null && f.decision.answer !== "merge";
 
-export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "asked" | "hold";
+/** ask-retry: the ask comment never reached GitHub and is due again after a backoff (fixup.unsent). */
+export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "ask-retry" | "asked" | "hold";
 const notHeld = (f: PrFacts): boolean => f.inScope && !f.integration && !f.heldBacklog && !f.heldDuplicate;
 
 /** Where a take-fix review at the current head stands with the fix-up: the bucket and whether the step has recorded a final row for the head. */
@@ -164,9 +165,9 @@ export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | nu
   const has = (s: string) => x.recorded.includes(s);
   const commenting = f.repoFacts.commentApproved;
   // Heads held before the repo got comment approval are asked once it has it.
-  const ask = (held: boolean): { bucket: FixupBucket; done: boolean } => (f.quiet ? { bucket: "cannot-push", done: true } : commenting ? { bucket: "ask", done: false } : { bucket: "cannot-push", done: held });
+  const ask = (held: boolean): { bucket: FixupBucket; done: boolean } => (f.quiet ? { bucket: "cannot-push", done: true } : commenting ? { bucket: x.unsent ? "ask-retry" : "ask", done: false } : { bucket: "cannot-push", done: held });
   if (has("asked") && !f.pushable) return { bucket: "asked", done: true };
-  if (has("comment-failed")) return { bucket: "cannot-push", done: true };
+  if (has("comment-failed") || x.unsent === "final") return { bucket: "cannot-push", done: true };
   // A stored patch waits for its lint task: no new try, no ask.
   if (has("pushed") || has("push-denied") || has("linting")) return { bucket: "hold", done: true };
   if (has("cannot-push") && !f.pushable) return ask(true);
@@ -203,7 +204,8 @@ export function ciFixIdle(f: PrFacts): string | null {
   return `CI fails, but the CI fix has nothing to fix${c.skipReason ? ` (${excerpt(c.skipReason)})` : ""}`;
 }
 
-export type CifixBucket = "unreviewed" | "work" | "unapproved" | "cannot-push" | "formatting" | "linting" | "collect" | "rerun" | "rerun-wait" | "failed" | "capped" | "done";
+/** comment-wait: the step's comment never reached GitHub and the step runs again after a backoff (cifix.unsent). */
+export type CifixBucket = "unreviewed" | "comment-wait" | "work" | "unapproved" | "cannot-push" | "formatting" | "linting" | "collect" | "rerun" | "rerun-wait" | "failed" | "capped" | "done";
 
 /** CI is red at the head, the review gate waits on it, and no take review covers the head. */
 function unreviewedRed(f: PrFacts): boolean {
@@ -223,17 +225,18 @@ export function cifixBucket(f: PrFacts): CifixBucket | null {
   const broke = !!f.brokeByUs || !!f.gateRed;
   // The next review waits for green CI at a head no take review covers, and the CI fix needs a take review: the contributor is asked once.
   if (c && unreviewedRed(f)) {
-    if (CIFIX_FINAL_STATES.some((s) => c.states.includes(s))) return "done";
-    return f.repoFacts.commentApproved && !f.quiet ? "unreviewed" : "cannot-push";
+    if (CIFIX_FINAL_STATES.some((s) => c.states.includes(s)) || c.unsent === "final") return "done";
+    return f.repoFacts.commentApproved && !f.quiet ? (c.unsent ? "comment-wait" : "unreviewed") : "cannot-push";
   }
   if (declinedBy(f) || !r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || (r.head !== f.head && !broke) || f.ghState !== "OPEN" || (f.ci !== "failure" && !broke) || f.draft || !notHeld(f)) return null;
   if (f.mergeable === "CONFLICTING" || (r.stale && !broke) || f.changesRequested || f.mergeHeld) return null;
   if (r.verdict === "take-fix") {
     const fx = fixupOf(f);
-    if (fx && ["fix", "unapproved", "ask"].includes(fx.bucket)) return null;
+    if (fx && ["fix", "unapproved", "ask", "ask-retry"].includes(fx.bucket)) return null;
   }
   const has = (s: string) => c.states.includes(s);
-  if (CIFIX_FINAL_STATES.some(has)) return "done";
+  if (CIFIX_FINAL_STATES.some(has) || c.unsent === "final") return "done";
+  if (c.unsent) return "comment-wait";
   if (has("linting")) return "linting";
   if (c.formattingTask !== null || has("formatting")) return c.formattingTask !== null && c.formatterEnded ? "collect" : "formatting";
   if (has("capped")) return "failed";
@@ -263,13 +266,18 @@ type Wait = { text: string; kind: WaitKind };
 const person = (text: string): Wait => ({ text, kind: "person" });
 const contributor = (text: string): Wait => ({ text, kind: "contributor" });
 const system = (text: string): Wait => ({ text, kind: "system" });
+/** A step's comment that never reached GitHub, due again at `until` (ms). */
+const unsentWait = (what: string, until?: number): Wait => system(`${what} again ${until === undefined ? "later" : `after ${new Date(until).toISOString().slice(11, 16)}`}: the last one did not reach GitHub`);
+const unsentUntil = (u: UnsentAsk | undefined): number | undefined => (u && u !== "final" ? u.until : undefined);
 
 /** What a PR waits on when its conflict or CI fix is left to the contributor. */
 const stuckWait = (f: PrFacts): Wait | null => {
   const approval = person("comment approval for the repo");
   if (f.mergeable === "CONFLICTING" && f.conflict?.bucket === "capped") return system("conflict merge cap for today reached; next merge tomorrow");
+  if (f.mergeable === "CONFLICTING" && f.conflict?.bucket === "ask-retry") return unsentWait("the comment asking the contributor to resolve the conflict", f.conflict.until);
   if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return f.conflict.bucket === "held" ? (f.repoFacts.commentApproved ? person("a person to resolve the conflict") : approval) : contributor("the contributor to resolve the conflict");
   const cf = cifixBucket(f);
+  if (cf === "comment-wait") return unsentWait("the CI fix comment", unsentUntil(f.cifix?.unsent));
   if (cf === "done" && f.cifix?.states.includes("asked")) return contributor("the contributor to fix CI");
   if (cf === "failed" || cf === "capped") return f.brokeByUs ? person("a person to fix CI our push broke") : f.repoFacts.commentApproved ? contributor("the contributor to fix CI") : approval;
   return cf === "cannot-push" ? approval : null;
@@ -281,7 +289,8 @@ const unreviewedWait = (f: PrFacts): Wait | null => {
   const s = f.cifix.states;
   if (s.includes("asked")) return contributor("the contributor to fix CI");
   if (!f.repoFacts.commentApproved) return person("comment approval for the repo");
-  if (s.includes("comment-failed")) return person("a person: the comment to the contributor failed");
+  if (s.includes("comment-failed") || f.cifix.unsent === "final") return person("a person: the comment to the contributor failed");
+  if (f.cifix.unsent) return unsentWait("the comment asking the contributor to fix CI", f.cifix.unsent.until);
   if (s.includes("skipped")) return person(`a person: CI is red and the CI fix has nothing to fix${f.cifix.skipReason ? ` (${excerpt(f.cifix.skipReason)})` : ""}`);
   return CIFIX_FINAL_STATES.some((x) => s.includes(x)) ? person("a person to look at the red CI") : null;
 };
@@ -322,10 +331,13 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
 /** Who a PR in needs-fix-up waits on. Null while a fix-up, conflict, CI-fix or lint action of the PR is due (the action is the next step). */
 function fixupWait(f: PrFacts, fx: { bucket: FixupBucket; done: boolean } | null, actions: Action[]): Wait | null {
   if (actions.some((a) => ["fixup", "conflict", "cifix", "lint"].includes(a.kind))) return null;
-  if (f.mergeable === "CONFLICTING") return f.conflict?.bucket === "unapproved" ? person("push approval for the repo") : contributor("the contributor's merge of the base branch");
+  if (f.mergeable === "CONFLICTING") return f.conflict?.bucket === "unapproved" ? person("push approval for the repo")
+    : f.conflict?.bucket === "ask-retry" ? unsentWait("the comment asking the contributor to resolve the conflict", f.conflict.until)
+    : contributor("the contributor's merge of the base branch");
   switch (fx?.bucket) {
     case "asked": return contributor("the contributor's fixes");
-    case "cannot-push": return f.fixup?.recorded.includes("comment-failed") ? person("a person: the ask comment failed") : f.repoFacts.commentApproved ? contributor("the contributor's fixes") : person("comment approval for the repo");
+    case "ask-retry": return unsentWait("the comment asking the contributor for the fixes", unsentUntil(f.fixup?.unsent));
+    case "cannot-push": return f.fixup?.recorded.includes("comment-failed") || f.fixup?.unsent === "final" ? person("a person: the ask comment failed") : f.repoFacts.commentApproved ? contributor("the contributor's fixes") : person("comment approval for the repo");
     case "hold": return fx.done ? system("the new review of our pushed fix-up") : person("comment approval for the repo");
     case "unapproved": return person("push approval for the repo");
     case "ask": case "fix": return null;

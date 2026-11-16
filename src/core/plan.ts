@@ -45,6 +45,8 @@ export type AssignFacts = { login: string | null; assignees: string[]; ours: boo
 
 export type Action = { kind: ActionKind; head: string | null; params?: Record<string, unknown> };
 
+/** Where a head's unsent ask comments leave the next ask (src/core/rules.ts unsentAsk); absent when it is due. */
+export type UnsentAsk = { until: number } | "final";
 export type LintFact = { step: "fixup" | "cifix" | "conflict"; source: "review" | "premerge" | "carry" | "operator"; ended: boolean };
 
 /** Who a wait is on: a person at the repo (an operator or maintainer to approve or answer), the PR's contributor, or the system (CI, a sync, a model step, a timer). */
@@ -227,11 +229,11 @@ export type PrFacts = {
   /** Heads the PR was pushed from by AutoCraft, newest first, starting with the reviewed head. */
   pushChain: string[];
   /** For a conflicting open PR: what fix-up does and the base branch. */
-  conflict: { bucket: string; base: string; /** The base branch name is one fix-up may merge. */ baseOk: boolean; /** When a capped bucket ends (ms). */ until?: number } | null;
+  conflict: { bucket: string; base: string; /** The base branch name is one fix-up may merge. */ baseOk: boolean; /** When a capped bucket ends, or an ask-retry bucket's comment is due again (ms). */ until?: number } | null;
   /** Member of a merge batch that is checking or open, at any head. */
   inActiveBatch: boolean;
   /** Fix-up of a take-fix review at the current head: its usable fixes, the tries used and the final rows recorded at the head (fixups.state, no source). */
-  fixup: { fixes: number; attempts: number; recorded: string[] } | null;
+  fixup: { fixes: number; attempts: number; recorded: string[]; /** Ask comments at the head that never reached GitHub: the next one is due at `until` (ms), or the asks are final. */ unsent?: UnsentAsk } | null;
   /** Queued carry-over jobs of the duplicate groups (one per group decision) whose closed PRs left points to carry: tries used. */
   carry: { attempts: number }[];
   /**
@@ -252,6 +254,8 @@ export type PrFacts = {
     skipReason: string | null;
     /** When the checks were fetched (ISO). */
     checksAt: string | null;
+    /** Comments at the head that never reached GitHub, as on `fixup`. */
+    unsent?: UnsentAsk;
   } | null;
   /** The pipeline merged the PR: when, and what the stored post-merge review looks like. */
   postmerge: { mergedAt: string; head: string | null; since: string; review: { at: string; error: string | null } | null } | null;

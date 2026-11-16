@@ -72,6 +72,7 @@ export function conflictNote(bucket: string, base: string): string | null {
   switch (bucket) {
     case "merge": case "linting": return `conflict: merging ${base}`;
     case "ask": case "asked": return "conflict: asked the contributor";
+    case "ask-retry": return "conflict: the ask comment is tried again";
     case "held": return "conflict: held";
     case "capped": return "conflict: merge cap for today reached";
     default: return null;
@@ -97,6 +98,19 @@ export const CIFIX_PUSH_STATES = ["pushing", "pushed"];
 /** A stored model patch waits for its lint task or for the collect step. */
 export const LINT_STATE = "linting";
 export const CIFIX_FINAL_STATES = ["pushed", "pushing", "asked", "push-denied", "cannot-push", "skipped", "comment-failed"];
+
+/**
+ * An ask comment that never reached GitHub (the app lane got no token, so no request went out) is recorded as
+ * `comment-unsent` and asked again after these delays; one more unsent row past them is final, as `comment-failed` is.
+ */
+export const COMMENT_UNSENT_DELAYS_MS = [10 * 60_000, 60 * 60_000];
+/** Where a head's unsent ask comments (`ats`: their rows' times, ISO) leave the next ask: due (null), due at `until` (ms), or final. */
+export function unsentAsk(ats: readonly string[], nowMs: number): { until: number } | "final" | null {
+  if (ats.length === 0) return null;
+  if (ats.length > COMMENT_UNSENT_DELAYS_MS.length) return "final";
+  const until = Math.max(...ats.map((a) => Date.parse(a))) + COMMENT_UNSENT_DELAYS_MS[ats.length - 1]!;
+  return until > nowMs ? { until } : null;
+}
 
 // ---- merge decisions and their SQL (no imports) ----
 

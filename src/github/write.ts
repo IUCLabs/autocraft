@@ -85,8 +85,8 @@ async function appEnv(w: Writer, g: Guarded | Grant, scope?: TokenScope): Promis
   }
 }
 
-/** A failed command result for a mint failure: callers already handle a non-zero exit. */
-const failedResult = (e: unknown): ExecResult => ({ code: 1, stdout: "", stderr: String((e as Error).message ?? e) });
+/** A failed command result for a mint failure: callers already handle a non-zero exit. No request went out, so it is marked not sent. */
+const failedResult = (e: unknown): ExecResult => ({ code: 1, stdout: "", stderr: String((e as Error).message ?? e), sent: false });
 
 function laneExec(w: Writer, g: Guarded | Grant, exec: Exec, kind: WriteKind = "other"): Exec {
   if (!inAppLane(w, g, kind)) return exec;

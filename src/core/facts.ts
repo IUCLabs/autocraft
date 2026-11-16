@@ -11,7 +11,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { actionable } from "../decisions.ts";
 import { ownLogins } from "../github/identity.ts";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
-import { conflictBucket } from "../fixup/conflict-state.ts";
+import { conflictAskRetryAt, conflictBucket } from "../fixup/conflict-state.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { authorWrites } from "../fixup/author-permission.ts";
 import { longLivedOf, pushable, sameRepo, type LongLived } from "../fixup/pushable.ts";
@@ -48,7 +48,7 @@ import { staleReviews } from "../review/discussion.ts";
 import { nextUtcMidnight, reviewHolds } from "../review/gate.ts";
 import { scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
-import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf } from "./rules.ts";
+import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, labelWithScopeAnswer, sizeOf, unsentAsk } from "./rules.ts";
 import type { AssignFacts, PrFacts, PrTier } from "./plan.ts";
 import { settledBySql } from "../settlers.ts";
 import { activeTrips, brokeHeads } from "../push-outcomes.ts";
@@ -138,6 +138,8 @@ function statementConflicts(find: { get(id: number): unknown }, stored: unknown[
 /** Facts of every open PR (and merged PRs with a take or take-fix review) of the database, repo or refs given. One pass: per-repo values are read once. */
 export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[] {
   const now = opts.now ?? Date.now();
+  /** The `unsent` fact of a step's ask comments that never reached GitHub; absent when the ask is due as if none had failed. */
+  const unsentOf = (ats: string[]): { unsent?: { until: number } | "final" } => { const u = unsentAsk(ats, now); return u === null ? {} : { unsent: u }; };
   // When the next diff re-read may run (the instance's hourly pace, a rate-limit pause); read once per load.
   let paceAt: number | undefined;
   const params: Record<string, string> = {};
@@ -183,6 +185,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const carries = db.prepare(`SELECT k.decision_id, k.attempts FROM dupe_carries k WHERE k.repo = ? AND k.number = ? AND k.state = 'queued' ORDER BY k.number`);
   const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
   const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'comment-failed', 'push-denied', 'linting')");
+  const fixupUnsent = db.prepare("SELECT created_at FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state = 'comment-unsent'");
   const lintFixup = db.prepare("SELECT source, lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' AND COALESCE(source, '') != 'operator' ORDER BY rowid");
   // An operator's fix-up works the current head, with or without a review there, so its stored patch is read at the head before the review is.
   const lintOperator = db.prepare("SELECT lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' AND source = 'operator' ORDER BY rowid");
@@ -366,6 +369,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
         formattingTask: formatting?.task_id ?? null, formatterEnded: !task || TERMINAL.includes(task.state),
         totalPushes: totals.pushes, totalTries: totals.tries, checksAt: r.c_at,
         skipReason: [...prior].reverse().find((x) => x.state === "skipped")?.reason ?? null,
+        ...unsentOf(prior.filter((x) => x.state === "comment-unsent").map((x) => x.created_at)),
       };
     };
     // A non-take review at an earlier head while the review gate waits on red CI at the new head: the CI fix cannot start, so the contributor is asked (src/core/decide.ts unreviewedRed).
@@ -431,10 +435,14 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     }
     if (base.mergeable === "CONFLICTING" && r.base_ref) {
       const bucket = conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: base.pushable }, { push: rf.f.pushApproved, comment: rf.f.commentApproved }, now);
-      base.conflict = { bucket, base: r.base_ref, baseOk: BASE_NAME.test(r.base_ref), ...(bucket === "capped" ? { until: nextUtcMidnight(now) } : {}) };
+      const until = bucket === "capped" ? nextUtcMidnight(now) : bucket === "ask-retry" ? conflictAskRetryAt(db, r.repo, r.number, r.r_head, now) : undefined;
+      base.conflict = { bucket, base: r.base_ref, baseOk: BASE_NAME.test(r.base_ref), ...(until !== undefined ? { until } : {}) };
     }
     if (r.r_verdict === "take-fix") {
-      base.fixup = { fixes: parseFixes(r.r_fixes).length, attempts: attemptsOf(db, r.repo, r.number), recorded: (fixupRows.all(r.repo, r.number, r.r_head) as { state: string }[]).map((x) => x.state) };
+      base.fixup = {
+        fixes: parseFixes(r.r_fixes).length, attempts: attemptsOf(db, r.repo, r.number), recorded: (fixupRows.all(r.repo, r.number, r.r_head) as { state: string }[]).map((x) => x.state),
+        ...unsentOf((fixupUnsent.all(r.repo, r.number, r.r_head) as { created_at: string }[]).map((x) => x.created_at)),
+      };
     }
     {
       const ended = taskEnded;

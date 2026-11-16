@@ -217,10 +217,11 @@ class Recorder {
   }
 
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
-  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked" | "comment-failed" | "push-denied", reason: string | null, files: string[], toHead: string | null = null): void {
+  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked" | "comment-failed" | "comment-unsent" | "push-denied", reason: string | null, files: string[], toHead: string | null = null): void {
     const at = this.at();
     if (c.carry) {
       // A carry-over keeps its own record; the PR's take-fix tries and stage are not touched.
+      // A comment that never reached GitHub counts as a try: the carry-over stays queued until its tries are used.
       const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large" || state === "push-denied" || state === "comment-failed";
       const tried = !ended;
       const next = ended || c.attempt >= MAX_ATTEMPTS ? (state === "pushed" || state === "asked" ? "done" : "held") : "queued";
@@ -329,7 +330,13 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const cm = earlier
         ? (withNote(note, body) === earlier.text ? { code: 0, stdout: "", stderr: "" } : await ghEditComment(gw, g, d.exec, "fixup-comment-edit", { repo, number: c.number, commentId: earlier.id }, note, body, { run: runId, head: c.head }))
         : await ghAskComment(gw, d.exec, "fixup-comment", g, note, body, { run: runId, head: c.head });
-      if (cm.code !== 0) { const why = scrubReason(oneLine(cm.stderr), d.root); rec.fixup(c, "comment-failed", why, []); log(`  ${ref}: comment failed: ${why}`); return; }
+      if (cm.code !== 0) {
+        // Not sent: nothing reached GitHub, so the ask is tried again after a backoff. Otherwise GitHub may have posted it.
+        const why = scrubReason(oneLine(cm.stderr), d.root), state = cm.sent === false ? "comment-unsent" : "comment-failed";
+        rec.fixup(c, state, why, []);
+        log(`  ${ref}: comment ${state === "comment-unsent" ? "not sent" : "failed"}: ${why}`);
+        return;
+      }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       if (count) params.onHandled?.(++handled.n);
       summary.asked.push(ref);

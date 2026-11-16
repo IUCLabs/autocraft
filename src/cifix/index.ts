@@ -499,8 +499,9 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       const shownPatch = folded ?? v.patch;
       const cm = await ghAskComment(gw, d.exec, "cifix-comment", g, codeNote, askText(checkName, shownPatch), { run: runId, head: c.head });
       if (cm.code !== 0) {
-        const reason = `the comment failed: ${scrubReason(oneLine(cm.stderr), d.root)}`;
-        rec.set(c, kind, "comment-failed", reason, { files: v.files });
+        // Not sent: nothing reached GitHub, so the step tries again after a backoff. Otherwise GitHub may have posted it.
+        const reason = `the comment ${cm.sent === false ? "was not sent" : "failed"}: ${scrubReason(oneLine(cm.stderr), d.root)}`;
+        rec.set(c, kind, cm.sent === false ? "comment-unsent" : "comment-failed", reason, { files: v.files });
         summary.failed.push({ ref, reason });
         log(`  ${ref}: ${reason}`);
         return;
@@ -751,8 +752,8 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       if ("refused" in g) { summary.skipped.push(ref); log(`  ${ref}: skipped: ${g.refused}`); continue; }
       const cm = await ghAskComment(gw, d.exec, "cifix-comment", g, { by: "fixed" }, askCiText(reading.failure.checks.map((x) => x.name)), { run: runId, head: c.head });
       if (cm.code !== 0) {
-        const reason = `the comment failed: ${scrubReason(oneLine(cm.stderr), d.root)}`;
-        rec.set(c, "code", "comment-failed", reason);
+        const reason = `the comment ${cm.sent === false ? "was not sent" : "failed"}: ${scrubReason(oneLine(cm.stderr), d.root)}`;
+        rec.set(c, "code", cm.sent === false ? "comment-unsent" : "comment-failed", reason);
         summary.failed.push({ ref, reason });
         log(`  ${ref}: ${reason}`);
         continue;

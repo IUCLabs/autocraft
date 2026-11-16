@@ -10,7 +10,8 @@ import { envVar } from "../env.ts";
 import { APP_CREDENTIAL_ARGS } from "../github/install-token.ts";
 import { readEnvFor } from "../github/read.ts";
 
-export type ExecResult = { code: number; stdout: string; stderr: string };
+/** `sent: false`: the command failed before any request went out (the app lane could not get its token), so nothing reached GitHub. */
+export type ExecResult = { code: number; stdout: string; stderr: string; sent?: false };
 /** `replaceEnv`: `env` is the child's whole environment, not an addition to this process's (the app lane, which must not inherit the box account's tokens). */
 /** `inherit`: run with this process's own environment and the box account's login, never the app's read token (the security-advisory writes, the pipeline account lookup). */
 export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string; replaceEnv?: boolean; inherit?: boolean };

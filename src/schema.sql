@@ -836,7 +836,8 @@ CREATE INDEX IF NOT EXISTS actions_item ON actions(repo, number);
 -- Fix-up tries by the Integrate stage on take-fix PRs, one row per try (or per
 -- head for cannot-push and too-large). state: pushed | failed | refused (the
 -- patch or a pre-push check said no) | cannot-push | too-large | asked (the fixes
--- were posted as a comment on a PR we can't push to), pushing (written before the push, to_head is the commit about to be
+-- were posted as a comment on a PR we can't push to), comment-failed (final: that comment failed after its request went out),
+-- comment-unsent (that comment never reached GitHub: asked again after a backoff, src/core/rules.ts unsentAsk), pushing (written before the push, to_head is the commit about to be
 -- pushed; replaced by the push's outcome; one left behind by a crash counts as a try). Only the first
 -- three count against the two tries per PR. superseded: a row whose reason no longer applies (kept for the record, ignored).
 -- source: NULL = the review's fix list, 'premerge' = the pre-merge review's fix list (one round per PR).
@@ -854,7 +855,7 @@ CREATE INDEX IF NOT EXISTS fixups_item ON fixups(repo, number, created_at);
 -- CI fix tries (src/cifix): one row per try at a head whose gate check failed. kind: format | code | infra.
 -- state: infra (waiting for the one rerun) | rerun | formatting (formatter task queued, task_id) | pushed | asked (patch posted as a comment) |
 -- linting (a model patch is stored, patch/lint_task/lint_round/lint_state, and waits for its lint task) | failed | refused | rejected | cannot-push | push-denied | pushing (written before the push, to_head is the commit about to be pushed) |
--- skipped (final: nothing to fix here, not a try) | capped (final: the PR's limit of 2 pushed fixes or 4 tries is used; not a try) | rerunning (rerun requested, written before the gh calls) | comment-failed (final: the patch comment failed) | superseded (a row whose reason no longer applies; ignored). Tries are the rows in formatting, pushing, pushed, failed, refused and rejected.
+-- skipped (final: nothing to fix here, not a try) | capped (final: the PR's limit of 2 pushed fixes or 4 tries is used; not a try) | rerunning (rerun requested, written before the gh calls) | comment-failed (final: the patch comment failed) | comment-unsent (the comment never reached GitHub: the step runs again after a backoff, src/core/rules.ts unsentAsk) | superseded (a row whose reason no longer applies; ignored). Tries are the rows in formatting, pushing, pushed, failed, refused and rejected.
 CREATE TABLE IF NOT EXISTS ci_fixes (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   head TEXT NOT NULL,                 -- the head commit whose check failed
@@ -1341,7 +1342,8 @@ CREATE TABLE IF NOT EXISTS ci_run_approvals (
 
 -- Merges of the default branch into conflicted take / take-fix PRs by the Fix-up step (src/fixup/conflict.ts), one row per try (or
 -- per head for asked). state: merged (pushed) | failed | refused (validation said no) | rejected (the Opus check said no) | asked
--- (a comment asked the contributor to merge or rebase), superseded (a skip or refusal under limits since replaced; neither held nor a try), pushing (written before the push, to_head is the merge commit about to be pushed). merged, pushing, failed, refused and rejected are tries; two per head.
+-- (a comment asked the contributor to merge or rebase), comment-failed (final: that comment failed after its request went out), comment-unsent (that comment never
+-- reached GitHub: asked again after a backoff, src/core/rules.ts unsentAsk), superseded (a skip or refusal under limits since replaced; neither held nor a try), pushing (written before the push, to_head is the merge commit about to be pushed). merged, pushing, failed, refused and rejected are tries; two per head.
 CREATE TABLE IF NOT EXISTS conflict_merges (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   from_head TEXT NOT NULL,            -- the PR head the base was merged into

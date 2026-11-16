@@ -418,6 +418,12 @@ function migrateValues(db: DatabaseSync): void {
     for (const t of db.prepare(`SELECT id, repo, number FROM main.conversation_turns WHERE ${UNSEQ} ORDER BY id`).all() as { id: number; repo: string; number: number }[])
       set.run((next.get(t.repo, t.number) as { n: number }).n, t.id);
   }
+  // Ask comments that failed on the GitHub App's installation token never reached GitHub: they are asked again, as an unsent comment is.
+  const UNSENT_REASONS = ["app identity: no installation token%", "app identity: the GitHub App is not installed%", "app identity: % is not in the GitHub App''s installation%"];
+  const unsentWhere = (prefix: string) => `state = 'comment-failed' AND (${UNSENT_REASONS.map((r) => `reason LIKE '${prefix}${r}'`).join(" OR ")})`;
+  for (const [table, prefix] of [["fixups", ""], ["conflict_merges", ""], ["ci_fixes", "the comment failed: "]] as const) {
+    if (db.prepare(`SELECT 1 FROM main.${table} WHERE ${unsentWhere(prefix)} LIMIT 1`).get()) db.exec(`UPDATE main.${table} SET state = 'comment-unsent' WHERE ${unsentWhere(prefix)}`);
+  }
   // Conflict merges refused or skipped for size under the whole-file rule are tried again under the section rule.
   const OLD_SIZE = "state IN ('skipped', 'refused') AND (reason = 'the conflicted files are over the size limit' OR reason LIKE 'the merge is over the % character limit for the check')";
   if (db.prepare(`SELECT 1 FROM main.conflict_merges WHERE ${OLD_SIZE} LIMIT 1`).get()) db.exec(`DELETE FROM main.conflict_merges WHERE ${OLD_SIZE}`);

@@ -461,7 +461,7 @@ export interface ItemPremerge {
   tries: number;
 }
 
-export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected" | "push-denied" | "superseded" | "infra" | "rerun" | "rerunning" | "formatting" | "pushing" | "skipped" | "capped" | "comment-failed";
+export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected" | "push-denied" | "superseded" | "infra" | "rerun" | "rerunning" | "formatting" | "pushing" | "skipped" | "capped" | "comment-failed" | "comment-unsent";
 /** The operator releases of an item: the last path segment of POST /api/items/:repo/:n/<action>. */
 export type ReleaseAction = "review-again" | "verify-again" | "fix-again" | "batch-again";
 

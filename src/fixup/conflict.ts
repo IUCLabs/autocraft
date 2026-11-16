@@ -163,7 +163,13 @@ export async function askConflict(db: DatabaseSync, x: ConflictRun, c: ConflictC
     const g = await guard(db, { repo: x.repo, number: c.number }, { kind: "conflict", bucket: "ask", head: c.head }, x.by);
     if ("refused" in g) { x.log(`  ${ref}: skipped: ${g.refused}`); return; }
     const cm = await ghAskComment(x.gw, x.d.exec, "conflict-comment", g, { by: "fixed" }, conflictAskText(c.base), { run: x.runId, head: c.head });
-    if (cm.code !== 0) { const why = x.scrub(oneLine(cm.stderr)); record(db, x.at(), c, "comment-failed", why, [], null); x.log(`  ${ref}: comment failed: ${why}`); return; }
+    if (cm.code !== 0) {
+      // Not sent: nothing reached GitHub, so the ask is tried again after a backoff. Otherwise GitHub may have posted it.
+      const why = x.scrub(oneLine(cm.stderr)), state = cm.sent === false ? "comment-unsent" : "comment-failed";
+      record(db, x.at(), c, state, why, [], null);
+      x.log(`  ${ref}: comment ${state === "comment-unsent" ? "not sent" : "failed"}: ${why}`);
+      return;
+    }
     record(db, x.at(), c, "asked", null, [], null);
     x.summary.asked.push(ref);
     x.onHandled?.(++x.handled.n);

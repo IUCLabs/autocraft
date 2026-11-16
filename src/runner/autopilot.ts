@@ -310,8 +310,14 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => {
       const out: Candidate[] = [];
       const top = firstByRepo(planned(db, "review", { plans: plansOf(db, ctx) }));
-      // A PR waiting out the minimum time between reviews is planned again when it ends.
-      for (const p of plansOf(db, ctx).prs) { if (p.facts.reviewHold?.until) ctx.wake?.push(p.facts.reviewHold.until); if (p.facts.conflict?.until) ctx.wake?.push(p.facts.conflict.until); }
+      // A PR waiting out the minimum time between reviews, the conflict merge cap or the backoff of an unsent comment is planned again when it ends.
+      for (const p of plansOf(db, ctx).prs) {
+        const f = p.facts;
+        for (const t of [f.reviewHold?.until, f.conflict?.until, f.fixup?.unsent, f.cifix?.unsent]) {
+          const at = typeof t === "object" ? t.until : t;
+          if (typeof at === "number") ctx.wake?.push(at);
+        }
+      }
       // No other stage re-reads the checks of a head that was stored as running or red: a PR whose review waits for CI has its repo's checks read again, at most once per WAITING_CI_RECHECK_MS.
       const ciWait = new Set(plansOf(db, ctx).prs.filter((p) => p.facts.reviewHold?.kind === "ci" && !p.facts.reviewHold.red && p.plan.wait === p.facts.reviewHold.wait).map((p) => p.facts.repo));
       for (const repo of flightFirst(plansOf(db, ctx), fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number))) {
