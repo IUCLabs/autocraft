@@ -209,8 +209,8 @@ export interface Api {
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */
   items(filter: ItemFilter): Promise<ItemList>;
   progress(): Promise<Progress>;
-  /** Home: needs, problems, phase counts, progress and what was done today, in one payload. */
-  home(): Promise<Home>;
+  /** Home: needs, problems, phase counts, progress and what was done today, in one payload. With `repo`, all of it for that repo only. */
+  home(repo?: RepoName): Promise<Home>;
   /** The item page's AutoCraft and GitHub sides: status, reviews with earlier ones, result cards, history, GitHub's own sections. `since` as for `itemTrace`. */
   itemPage(repo: RepoName, number: number, since?: string): Promise<ItemPageData | ItemPageUnchanged>;
   /** The Items list with a status per row, one page at a time. */

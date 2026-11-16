@@ -1,6 +1,6 @@
 // Home: what needs a person, what is wrong, where items are, and what just got done, in one read.
 // Viewers get counts and short texts; the lists of needs name items only for staff.
-import { isHiddenRepo } from "../../hidden-sql.ts";
+import { isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { Progress } from "../../../web/src/api/types.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
@@ -10,7 +10,7 @@ import { needingSql, withoutHidden } from "./decisions.ts";
 import { healthOf } from "./now.ts";
 import { needs as needsPage, stopped } from "./needs.ts";
 import { canSeeInternals } from "./staff.ts";
-import { excludeHidden, hiddenRepos } from "./visible.ts";
+import { excludeHidden, hiddenRepos, scopedHiddenRepos } from "./visible.ts";
 import { ITEM_PHASES, PHASE_SQL, type Home, type HomeDone, type HomeNeed, type HomeProblem, type ItemPhase, type NeedKind } from "./home-types.ts";
 
 const OLDEST = 5;
@@ -35,14 +35,14 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
 }
 
 /** `total` is the nav badge's number: decisions, unanswered feedback and stopped items. `oldest` lists decisions and, for staff, high or critical findings still new (not in the total). */
-async function needs(db: DatabaseSync, req: Req, hidden: string[], staff: boolean, deps: Deps): Promise<Home["needs"]> {
+async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, scoped: boolean, staff: boolean): Promise<Home["needs"]> {
   const params: Record<string, string> = {};
   const hide = withoutHidden(hidden, params);
   const where = `${needingSql(req)}${hide ? ` AND ${hide}` : ""}`;
   const byKind: Partial<Record<NeedKind, number>> = {};
   for (const r of db.prepare(`SELECT kind, COUNT(*) AS n FROM decisions WHERE ${where} GROUP BY kind`).all(params) as { kind: NeedKind; n: number }[]) byKind[r.kind] = r.n;
   // The Needs page's own counts, so the total is the nav badge's number for this user.
-  const { counts } = await needsPage(db, req);
+  const { counts } = await needsPage(db, req, scoped ? hidden : undefined);
   const total = counts.decisions + counts.feedback + counts.stopped;
   if (counts.feedback) byKind.feedback = counts.feedback;
   if (counts.stopped) byKind.stopped = counts.stopped;
@@ -131,13 +131,15 @@ function byAutoCraftPct(db: DatabaseSync, hidden: string[], since: string): numb
   return r.n ? Math.round(((r.ours ?? 0) / r.n) * 100) : 0;
 }
 
+/** `?repo=NAME` scopes every part to that repo, as if it were the only one the requester could see. */
 export async function home(db: DatabaseSync, req: Req, deps: Deps): Promise<Home> {
-  const hidden = await hiddenRepos(db, req);
+  const repo = req.query.get("repo");
+  const hidden = repo ? await scopedHiddenRepos(db, req, repo) : await hiddenRepos(db, req);
   const staff = canSeeInternals(req);
   const pg = deps.progress(hidden);
   const start = pg.repos.reduce((s, r) => s + (r.openTrend[0] ?? 0), 0);
   return {
-    needs: await needs(db, req, hidden, staff, deps),
+    needs: await needs(db, req, hidden, repo !== null, staff),
     problems: await problems(db, hidden, staff),
     phases: phases(db, hidden),
     running: running(db, hidden),

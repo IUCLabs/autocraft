@@ -62,6 +62,17 @@ export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<HiddenRep
   return Object.assign([...hidden, ...known.filter((r) => !staff || !visible.has(r)).map(securityRepo)], { visible: staff ? [...visibleList, ...visibleList.map(securityRepo)] : visibleList });
 }
 
+/**
+ * Hidden repos for a view scoped to one repo: every other known repo is hidden, as if the requester could see only `repo`
+ * (and, for staff, its security pseudo repo). 404 unless `repo` is visible.
+ */
+export async function scopedHiddenRepos(db: DatabaseSync, req: Req, repo: string): Promise<HiddenRepos> {
+  await needVisible(db, req, repo);
+  const staff = canSeeInternals(req);
+  const others = knownRepos(db).filter((r) => r !== repo);
+  return Object.assign([...others, ...others.map(securityRepo), ...(staff ? [] : [securityRepo(repo)])], { visible: staff ? [repo, securityRepo(repo)] : [repo] });
+}
+
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */
 export async function needVisible(db: DatabaseSync, req: Req, repo: string): Promise<void> {
   if (!(await visibleRepos(db, req)).includes(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);

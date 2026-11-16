@@ -179,7 +179,7 @@ export function createHttpApi(): Api {
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
     items: (f) => get(`/api/items${itemQuery(f)}`),
     progress: () => get("/api/progress"),
-    home: () => get("/api/home"),
+    home: (repo) => get(repo ? `/api/home?repo=${encodeURIComponent(repo)}` : "/api/home"),
     itemPage: (repo, number, since) => get(`/api/items/${encodeURIComponent(repo)}/${number}/page${qs({ since })}`),
     itemStatusList: (f) => get(`/api/items/status${qs({ q: f.q, phase: f.phase, kind: f.kind, repo: f.repo?.join(","), discord: f.discord ? "1" : undefined, cursor: f.cursor })}`),
     securityList: () => get("/api/security/findings"),

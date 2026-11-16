@@ -261,6 +261,19 @@ describe("repo visibility", () => {
     assert.equal(viewer.needs.total, maint.needs.total);
   });
 
+  test("Home scoped to one repo names only that repo's needs, and 404s on a repo the user cannot see", async () => {
+    type H = { needs: { total: number; oldest: { repo: string }[] } };
+    const boss = await signedIn("boss");
+    const all = await boss.get<H>("/api/home");
+    const open = await boss.get<H>("/api/home?repo=open-app");
+    assert.ok(open.needs.oldest.length > 0);
+    assert.ok(open.needs.oldest.every((n) => n.repo === "open-app"));
+    assert.ok(open.needs.total < all.needs.total);
+    assert.equal(await boss.status("/api/home?repo=vault"), 200);
+    assert.equal(await (await signedIn("outsider")).status("/api/home?repo=vault"), 404);
+    assert.equal(await boss.status("/api/home?repo=no-such-app"), 404);
+  });
+
   test("rows of an untracked repo and of a private repo the user cannot read are operator-only", async () => {
     const now = new Date().toISOString();
     const rows = (repo: string) => {
