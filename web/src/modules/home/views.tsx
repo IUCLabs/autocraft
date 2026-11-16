@@ -1,7 +1,6 @@
 // Home: what needs me, is anything broken, is it moving.
 import { ProjectLive, ProjectMergeQueue } from "./live";
-import { useEffect } from "react";
-import { setScope } from "../../api/scope";
+import { ALL } from "../../api/scope";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeftIcon, CaretRightIcon, GitMergeIcon, ProhibitIcon, ChatTeardropTextIcon, ShieldWarningIcon, WarningCircleIcon, XCircleIcon, type Icon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
@@ -21,8 +20,6 @@ const NEED_LABEL: Record<NeedKind, string> = { merge: "Merge?", scope: "Scope", 
 const NEED_ICON: Record<NeedKind, Icon> = { ...KIND_ICON, security: ShieldWarningIcon, feedback: ChatTeardropTextIcon, stopped: XCircleIcon };
 const KIND_ORDER: NeedKind[] = ["merge", "security", "scope", "duplicate", "close", "hold", "split", "other", "feedback", "stopped"];
 const NEED_TO: Partial<Record<NeedKind, string>> = { security: "/security", feedback: "/needs?tab=feedback", stopped: "/needs?tab=stopped" };
-/** The project that stands for every repo, as in `/projects/all`. */
-export const ALL = "all";
 const SHOWN: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed"];
 const PHASE_LABEL: Partial<Record<ItemPhase, string>> = { "Waiting for a person": "Waiting", Merged: "Merged today", Closed: "Closed today" };
 const DONE_LABEL: Record<HomeDone["what"], string> = { merged: "Merged", closed: "Closed", "review posted": "Review posted" };
@@ -58,9 +55,8 @@ export function HomeView(_: ViewProps) {
   const user = useUser();
   const { repo: param } = useParams();
   const repo = param && param !== ALL ? param : undefined;
-  // Opening a project picks it, so every other page is narrowed to it too.
-  useEffect(() => setScope(repo ?? null), [repo]);
-  const { data, error } = useQuery(`home:${repo ?? ""}`, (a) => a.home(repo));
+  // The page's path names its project, so every request on it is that project's.
+  const { data, error } = useQuery("home", (a) => a.home());
   // Links to other pages carry the project as their repo filter.
   const scoped = (to: string) => (repo ? `${to}${to.includes("?") ? "&" : "?"}repo=${encodeURIComponent(repo)}` : to);
   if (!data) return <Pending error={error} />;
@@ -72,7 +68,7 @@ export function HomeView(_: ViewProps) {
       <div className="mx-auto flex max-w-[1180px] flex-col gap-7 px-4 pb-10 pt-5 md:px-6">
         <ProjectHeader repo={repo} scoped={scoped} />
         <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-          <ProjectLive repo={repo} />
+          <ProjectLive to={scoped("/now")} />
           <ProjectMergeQueue repo={repo} />
         </div>
         <div className={cn("grid gap-7", problems.length > 0 && "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]")}>
@@ -138,7 +134,7 @@ export function HomeView(_: ViewProps) {
             </div>
             <div className="mt-1 flex justify-between text-2xs text-ink/45"><span>24 h ago</span><span>now</span></div>
           </Section>
-          <Section title="Done today" to="/activity" linkLabel="All activity">
+          <Section title="Done today" to={scoped("/activity")} linkLabel="All activity">
             {done.length === 0 && <p className="border-t border-line py-3 text-sm text-ink/55">Nothing done today.</p>}
             <ul>
               {done.map((d) => {
@@ -183,7 +179,7 @@ function ProjectHeader({ repo, scoped }: { repo: string | undefined; scoped: (to
       <nav className="ml-auto flex flex-wrap items-center gap-1" aria-label="Project pages">
         <Link to={scoped("/items")} className="chip max-md:h-11">Items</Link>
         <Link to={scoped("/needs")} className="chip max-md:h-11">Decisions</Link>
-        <Link to="/next/merge" className="chip max-md:h-11">Merge queue</Link>
+        <Link to={scoped("/next")} className="chip max-md:h-11">Merge queue</Link>
       </nav>
     </div>
   );

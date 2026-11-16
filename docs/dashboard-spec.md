@@ -73,7 +73,14 @@ Done counts and trends start at `settings.tracking_started_at`, set when the dat
 
 ## Pages
 
-### Pipeline flow (home, `/`)
+### Projects (`/`, `/projects/<repo>`)
+
+- `/` is a tile per tracked repo plus "All projects": open items, the user's open decisions and PRs merged by AutoCraft, with the open-item trend. Clicking a tile picks that project and opens its page; "All projects" clears the pick and opens `/projects/all`.
+- A project page shows what runs in the project now, what merges next, what needs the user, problems, pipeline counts, progress and what was done today. Its Items, Decisions and Merge queue links open those lists for the project.
+- The project picker (top of the rail; in the phone's navigation drawer) lists every repo the user may see with the user's open decisions for each, and the total beside "All projects". The pick is kept in the browser. `/` opens the picked project only when the app first loads; the logo and the "Projects" link show the tiles.
+- The pick narrows the list pages only: Needs you, Items, the merge queue and next steps, Activity, Now and the project page. A list page keeps its project in its URL (`?repo=`; with a pick and none in the URL it adds the pick, without a new history entry), so a copied link shows the same list; opening a link with `?repo=X` shows X's list and leaves the pick as it is. The server applies the project only on its list routes (`x-autocraft-scope`, routes marked `scoped`) and only to hide more. Pages reached by their own link (an item, a decision, a batch, a job, an agent run, a security finding), search, settings and every write show every repo the user may see.
+
+### Pipeline flow (`/flow`)
 
 The pipeline as a flowchart, so maintainers see at a glance what moves, what is stuck and what waits for them.
 

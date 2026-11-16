@@ -1,9 +1,10 @@
-// The mockup's stand-in for the server's project scope: drops every listed row that names another repo.
-// Counts are left as they are; it is good enough to see the app narrowed to one project.
+// The mockup's stand-in for the server's project scope: the list calls the server narrows drop every row that names another repo.
+// Counts are left as they are; it is good enough to see a list narrowed to one project.
 import type { Api } from "../client";
-import { getScope } from "../scope";
+import { requestProject } from "../scope";
 
-const UNSCOPED = new Set(["repos", "repoOwners", "me"]);
+/** The Api calls whose server routes are `scoped` (src/dash/api/index.ts). */
+const SCOPED = new Set(["decisions.list", "needs", "needsOutside", "items", "itemStatusList", "activity", "now", "nowFeed", "home", "next", "queuePage", "queue", "queueBatches", "work"]);
 
 function narrow(v: unknown, repo: string, depth = 0): unknown {
   if (depth > 8 || v === null || typeof v !== "object") return v;
@@ -20,14 +21,17 @@ function wrap<T extends object>(target: T, path: string): T {
   return new Proxy(target, {
     get(t, key, recv) {
       const v = Reflect.get(t, key, recv) as unknown;
-      if (typeof key !== "string" || (path === "" && UNSCOPED.has(key))) return v;
-      if (typeof v === "function")
+      if (typeof key !== "string") return v;
+      const name = path ? `${path}.${key}` : key;
+      if (typeof v === "function") {
+        if (!SCOPED.has(name)) return v;
         return (...args: unknown[]) => {
+          const repo = requestProject();
           const out = (v as (...a: unknown[]) => unknown).apply(t, args);
-          const repo = getScope();
           return repo && out instanceof Promise ? out.then((x) => narrow(x, repo)) : out;
         };
-      if (v && typeof v === "object" && !Array.isArray(v)) return wrap(v, `${path}.${key}`);
+      }
+      if (v && typeof v === "object" && !Array.isArray(v)) return wrap(v, name);
       return v;
     },
   });

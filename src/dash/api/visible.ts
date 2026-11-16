@@ -26,15 +26,15 @@ export async function visibleTo(db: DatabaseSync, user: Pick<User, "role" | "can
 }
 
 /**
- * Tracked repos the requester may see, sorted by name; with a project scope (`req.scope`) that is one of them, only that repo.
- * A scope the requester cannot see is ignored, so a stale picker never empties the app.
+ * Tracked repos the requester may see, sorted by name; with a project scope (`req.scope`, set only on `scoped` list routes)
+ * that is one of them, only that repo. A scope the requester cannot see is ignored, so a stale picker never empties the app.
  */
 export async function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   const all = await allVisibleRepos(db, req);
   return req.scope && all.includes(req.scope) ? [req.scope] : all;
 }
 
-/** Tracked repos the requester may see, ignoring the project scope: for the picker itself, write rights and direct links. */
+/** Tracked repos the requester may see, ignoring the project scope: for the picker itself, write rights and repo checks. */
 export function allVisibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   let p = memo.get(req);
   if (!p) memo.set(req, (p = visibleTo(db, req.user)));
@@ -76,7 +76,7 @@ export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<HiddenRep
  * Hidden repos for a view scoped to one repo: every other known repo is hidden, as if the requester could see only `repo`
  * (and, for staff, its security pseudo repo). 404 unless `repo` is visible.
  */
-export async function scopedHiddenRepos(db: DatabaseSync, req: Req, repo: string): Promise<HiddenRepos> {
+async function scopedHiddenRepos(db: DatabaseSync, req: Req, repo: string): Promise<HiddenRepos> {
   await needVisible(db, req, repo);
   const staff = canSeeInternals(req);
   const others = knownRepos(db).filter((r) => r !== repo);

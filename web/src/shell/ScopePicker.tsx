@@ -1,19 +1,23 @@
-// The project picker at the top of the navigation: narrows every list in the app to one repo.
+// The project picker at the top of the navigation: narrows the list pages to one repo, with each repo's open decisions beside it.
 import { useLocation, useNavigate } from "react-router-dom";
+import { useQuery } from "../api/client";
 import { setScope, useScope } from "../api/scope";
 import { RepoSelect } from "../ui/molecules/RepoSelect";
 import { cn } from "../ui/cn";
 
 export const projectPath = (repo: string | null) => (repo ? `/projects/${encodeURIComponent(repo)}` : "/");
 
-export function ScopePicker({ className }: { className?: string }) {
+/** `onPicked` runs after a pick, for the phone drawer to close. */
+export function ScopePicker({ className, onPicked }: { className?: string; onPicked?: () => void }) {
   const scope = useScope();
+  const counts = useQuery("count:by-repo", (api) => api.decisions.openCounts());
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const pick = (repo: string | null) => {
     setScope(repo);
-    // On the projects pages the picker also moves to the picked project; elsewhere the page stays and reloads scoped.
+    // On the projects pages the picker also opens the picked project; a list page follows it in its URL (useProjectInUrl).
     if (pathname === "/" || pathname.startsWith("/projects/")) navigate(projectPath(repo));
+    onPicked?.();
   };
-  return <RepoSelect value={scope} onChange={pick} allLabel="All projects" align="start" className={cn("w-full max-w-none justify-between", scope && "border-accent-ink/50", className)} />;
+  return <RepoSelect value={scope} onChange={pick} counts={counts.data} allLabel="All projects" align="start" className={cn("w-full max-w-none justify-between", scope && "border-accent-ink/50", className)} />;
 }

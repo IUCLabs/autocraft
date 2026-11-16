@@ -87,7 +87,7 @@ export function NextView() {
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div role="tablist" aria-label="Next" className="flex flex-wrap items-center gap-1">
           {TABS.map(([t, label]) => (
-            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={(t === "merge" ? "/next" : `/next/${t}`) + (repo && t !== "steps" ? `?repo=${encodeURIComponent(repo)}` : "")} replace className="chip max-md:h-11">
+            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={(t === "merge" ? "/next" : `/next/${t}`) + (repo ? `?repo=${encodeURIComponent(repo)}` : "")} replace className="chip max-md:h-11">
               {label}
             </Link>
           ))}

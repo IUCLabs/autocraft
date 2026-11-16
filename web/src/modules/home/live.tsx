@@ -2,7 +2,7 @@
 import { Link } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
-import type { MergeWait, NowEntry } from "../../api/types";
+import type { MergeWait } from "../../api/types";
 import { useNow } from "../../lib/useNow";
 import { num } from "../../lib/format";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -13,13 +13,10 @@ import { ErrorLine } from "../admin/parts";
 
 const SHOWN = 8;
 
-/** True when the entry is about the repo: its own repo, its item, or one of its items. */
-const touches = (e: NowEntry, repo: string) => e.repo === repo || e.item?.repo === repo || e.items.some((i) => i.repo === repo);
-
-/** The newest units of work of the project (every repo for All projects), running ones marked; it follows the live feed. */
-export function ProjectLive({ repo }: { repo: string | undefined }) {
+/** The newest units of work of the page's project (every repo for All projects), running ones marked; it follows the live feed. */
+export function ProjectLive({ to }: { to: string }) {
   const { data, error } = useQuery("now", (a) => a.now());
-  const entries = (data?.entries ?? []).filter((e) => !repo || touches(e, repo));
+  const entries = data?.entries ?? [];
   const running = entries.filter((e) => e.state === "running").length;
   // Running entries show their elapsed time, so the list ticks while any runs.
   useNow(running ? 1000 : undefined);
@@ -35,7 +32,7 @@ export function ProjectLive({ repo }: { repo: string | undefined }) {
           {running > 0 && <span className="text-xs font-normal text-ink/55">{running} running</span>}
         </span>
       }
-      to="/now"
+      to={to}
       linkLabel="Full feed"
     >
       <ErrorLine error={error?.message} />
@@ -53,11 +50,11 @@ export function ProjectLive({ repo }: { repo: string | undefined }) {
 
 const WAIT_TONE: Record<MergeWait, Tone> = { ready: "ok", refused: "bad", ci: "neutral", premerge: "neutral", verify: "neutral", "re-review": "neutral", "batch-check": "accent", "batch-ci": "accent", held: "warn" };
 
-/** The PRs that merge next in the project, in merge order, with what each waits on. */
+/** The PRs that merge next in the page's project, in merge order, with what each waits on. */
 export function ProjectMergeQueue({ repo }: { repo: string | undefined }) {
-  const { data, error } = useQuery(`queue-page:merge:project:${repo ?? ""}`, (a) => a.queuePage({ tab: "merge", repos: repo ?? "pipeline", limit: 1 }));
+  const { data, error } = useQuery("queue-page:merge:project", (a) => a.queuePage({ tab: "merge", repos: "pipeline", limit: 1 }));
   const next = data?.nextMerges ?? [];
-  const to = repo ? `/next/merge?repo=${encodeURIComponent(repo)}` : "/next/merge";
+  const to = repo ? `/next?repo=${encodeURIComponent(repo)}` : "/next";
   return (
     <Section title="Merge queue" count={data?.counts.merge} to={to} linkLabel="Whole queue">
       <ErrorLine error={error?.message} />

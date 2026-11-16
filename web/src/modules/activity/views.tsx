@@ -10,6 +10,7 @@ import { TraceFilters } from "../../ui/molecules/TraceFilters";
 import { Page } from "../../ui/organisms/Page";
 import { useScrollAnchor } from "../../lib/useScrollAnchor";
 import { TraceEventBody } from "../item/TraceEventBody";
+import { usePageProject, withProject } from "../../api/scope";
 
 const PAGE = 50;
 const keyOf = (e: ActivityEvent) => `${e.item.repo}#${e.item.number}:${e.id}`;
@@ -27,7 +28,9 @@ export function ActivityView() {
   const [kinds, setKinds] = useState<TraceKind[]>([]);
   const [repo, setRepo] = useState<string | null>(null);
   const [autocraftOnly, setAutocraftOnly] = useState(false);
-  const filterKey = `${[...kinds].sort().join(",")}|${repo ?? ""}|${autocraftOnly ? 1 : 0}`;
+  const project = usePageProject();
+  // The project is in the key too: a remembered page or stamp belongs to one project's stream.
+  const filterKey = `${[...kinds].sort().join(",")}|${repo ?? ""}|${autocraftOnly ? 1 : 0}|${project ?? ""}`;
   const query = { kinds: kinds.length ? kinds : undefined, repo: repo ?? undefined, autocraftOnly, limit: PAGE };
 
   // A `since` that still matches returns the last answer, so a pushed refresh of an idle stream costs one small reply.
@@ -52,7 +55,7 @@ export function ActivityView() {
     setLoadingOlder(true);
     setOlderError(undefined);
     try {
-      const r = await api.activity({ ...query, cursor });
+      const r = await withProject(project, () => api.activity({ ...query, cursor }));
       if ("unchanged" in r) return;
       setOlder({ key: filterKey, events: [...(olderNow?.events ?? []), ...r.events], cursor: r.nextCursor });
     } catch (e) {

@@ -15,7 +15,6 @@ import { initTheme } from "./shell/theme";
 import { modules } from "./registry";
 import { preloadAll, preloadRoute } from "./registry/lazyView";
 import { setRepoOwners } from "./lib/links";
-import { onScopeChange } from "./api/scope";
 
 initTheme();
 // The page's own chunks load beside the sign-in request, not after it.
@@ -32,8 +31,6 @@ const loadApi = async (): Promise<Api> =>
 // The cache holds server views only and is never written locally. Retries are off: a failed view
 // shows its error, and the next change event or focus refetches it.
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-// Every view reads through the project scope, so a new scope refetches them all.
-onScopeChange(() => void queryClient.resetQueries());
 
 function App({ api }: { api: Api }) {
   const source = useMemo(() => (import.meta.env.VITE_MOCK === "1" ? mockSource(api.subscribe) : eventSource()), [api]);

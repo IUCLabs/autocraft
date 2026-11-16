@@ -9,5 +9,5 @@ export const nextModule: FeatureModule = {
   permission: "viewer",
   nav: { label: "Merge queue", icon: GitMergeIcon, to: "/next" },
   commands: [{ id: "go-next", keys: "g n", label: "Go to merge queue", group: "Go to" }],
-  routes: [{ path: "next/:tab?", view: { id: "next", title: "Merge queue", panels: [{ id: "main", title: "Merge queue", component: NextView, defaultSize: 100 }] } }],
+  routes: [{ path: "next/:tab?", scoped: true, view: { id: "next", title: "Merge queue", panels: [{ id: "main", title: "Merge queue", component: NextView, defaultSize: 100 }] } }],
 };

@@ -45,6 +45,8 @@ export interface RouteDef {
   path: string;
   view: ViewDef;
   permission?: Permission;
+  /** A list page the project picker narrows: it keeps the project in its URL (useProjectInUrl). */
+  scoped?: true;
 }
 
 export interface NavEntry {

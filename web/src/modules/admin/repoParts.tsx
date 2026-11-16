@@ -42,7 +42,7 @@ export function useRepoWrite(): Write {
   const queue = useRef(new Map<string, Promise<unknown>>());
   const pending = useRef(new Map<string, number>());
   const edit = useCallback(
-    (fn: (list: TrackedRepo[]) => TrackedRepo[]) => qc.setQueryData<TrackedRepo[]>(["repo-admin"], (list) => (list ? fn(list) : list)),
+    (fn: (list: TrackedRepo[]) => TrackedRepo[]) => qc.setQueriesData<TrackedRepo[]>({ queryKey: ["repo-admin"] }, (list) => (list ? fn(list) : list)),
     [qc],
   );
   const run = useCallback(
@@ -54,7 +54,7 @@ export function useRepoWrite(): Write {
         if (Array.isArray(out)) {
           // Owners first: the views that re-render with the new list build links from them.
           await api.repoOwners().then(setRepoOwners, () => {});
-          qc.setQueryData(["repo-admin"], out);
+          qc.setQueriesData({ queryKey: ["repo-admin"] }, out);
         } else if (isRepo(out)) {
           const fields = opt ? settled(Object.keys(opt.patch(out)).filter((k) => k in out)) : null;
           edit((l) => l.map((x) => (x.name !== out.name ? x : fields ? { ...x, ...Object.fromEntries(fields.map((k) => [k, out[k as keyof TrackedRepo]])) } : out)));

@@ -755,6 +755,12 @@ export interface DecisionList {
   next: string | null;
 }
 
+/** The requester's decisions inbox count, in total and per repo (a batch counts for each repo it names). */
+export interface OpenDecisionCounts {
+  total: number;
+  byRepo: Record<string, number>;
+}
+
 export interface AnswerInput {
   /** An option key, or "handled" (operators; `note` required): closes the question with the note and writes nothing to GitHub. */
   answer: string;

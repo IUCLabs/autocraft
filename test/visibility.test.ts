@@ -261,33 +261,25 @@ describe("repo visibility", () => {
     assert.equal(viewer.needs.total, maint.needs.total);
   });
 
-  test("Home scoped to one repo names only that repo's needs, and 404s on a repo the user cannot see", async () => {
-    type H = { needs: { total: number; oldest: { repo: string }[] } };
-    const boss = await signedIn("boss");
-    const all = await boss.get<H>("/api/home");
-    const open = await boss.get<H>("/api/home?repo=open-app");
-    assert.ok(open.needs.oldest.length > 0);
-    assert.ok(open.needs.oldest.every((n) => n.repo === "open-app"));
-    assert.ok(open.needs.total < all.needs.total);
-    assert.equal(await boss.status("/api/home?repo=vault"), 200);
-    assert.equal(await (await signedIn("outsider")).status("/api/home?repo=vault"), 404);
-    assert.equal(await boss.status("/api/home?repo=no-such-app"), 404);
-  });
-
-  test("the project scope header narrows every list to one repo, and never widens what a user may see", async () => {
+  test("the project scope narrows lists to one repo; pages reached by their own link show every repo; a scope the user cannot see is ignored", async () => {
     const scope = (repo: string) => ({ "x-autocraft-scope": repo });
     const boss = await signedIn("boss");
     const scoped = await boss.get<DecisionList>("/api/decisions", scope("open-app"));
     assert.ok(scoped.decisions.length > 0);
     assert.ok(scoped.decisions.every((d) => d.repo === "open-app"));
     const home = await boss.get<{ needs: { oldest: { repo: string }[] } }>("/api/home", scope("open-app"));
+    assert.ok(home.needs.oldest.length > 0);
     assert.ok(home.needs.oldest.every((n) => n.repo === "open-app"));
-    // The picker's own list and direct links ignore the scope.
-    assert.deepEqual((await boss.get<string[]>("/api/repos", scope("open-app"))).sort(), (await boss.get<string[]>("/api/repos")).sort());
-    assert.equal(await boss.status("/api/items/vault/1", scope("open-app")), 200);
-    // A scope the user cannot see is ignored: the outsider still sees only open-app, never vault.
+    // Another repo's item page and decision open with their decision and reviews; the picker's list and counts name every repo.
+    assert.equal((await boss.get<DecisionOne>(`/api/decisions/${encodeURIComponent("vault#1:scope")}`, scope("open-app"))).repo, "vault");
+    assert.equal((await boss.get<DecisionOne | null>("/api/items/vault/1/decision", scope("open-app")))?.id, "vault#1:scope");
+    assert.ok((await boss.get<ItemPageData>("/api/items/vault/1/page", scope("open-app"))).reviews.latest);
+    assert.deepEqual((await boss.get<string[]>("/api/repos", scope("open-app"))).sort(), ["open-app", "vault"]);
+    assert.ok((await boss.get<{ byRepo: Record<string, number> }>("/api/decisions/open-counts", scope("open-app"))).byRepo.vault! > 0);
+    // A scope the user cannot see is ignored: the outsider gets the open-app list, never vault's.
     const outsider = await signedIn("outsider");
     const out = await outsider.get<DecisionList>("/api/decisions", scope("vault"));
+    assert.ok(out.decisions.some((d) => d.repo === "open-app"));
     assert.ok(!out.decisions.some((d) => d.repo === "vault"));
     assert.equal(await outsider.status("/api/items/vault/1", scope("vault")), 404);
   });

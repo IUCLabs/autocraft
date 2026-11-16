@@ -4,6 +4,7 @@ import type { ChoiceCore, ConversationCard, Decision, DecisionChoices, FindingAc
 import { findingActions } from "../../lib/security";
 import { decisionPath } from "../../lib/links";
 import { setClock } from "../../lib/format";
+import { requestProject } from "../scope";
 import { realData } from "./realStore";
 import { FINDING_HISTORY_11, FIX_ROUNDS_11, FIX_ROUNDS_4, at, barFromStatus, findingStatus, itemPageFor, mockHeader, statusRows } from "./redesignData";
 
@@ -54,7 +55,8 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
     return { decision, choices: { id: `ch-f-${f.repo}-${f.number}-${f.state}`, decisionId: decision.id, pick: { core: cores[0]!.key, reason: decision.recommendedReason || "A fix is the usual next step for a verified finding." }, cores, source: "prepare", at: at(40) } };
   };
   return {
-    async home(repo?: string): Promise<Home> {
+    async home(): Promise<Home> {
+      const repo = requestProject();
       const d = await base.decisions.list({ status: "open", limit: 100, ...(repo ? { repo: [repo] } : {}) });
       // The mock security finding is designcraft's.
       const finding = staff && (!repo || repo === "designcraft");

@@ -1,7 +1,7 @@
-// Projects: the start page. One tile per tracked repo, plus "All projects"; a tile opens that project's home.
-import { useScope } from "../../api/scope";
+// Projects: the start page. One tile per tracked repo, plus "All projects"; a tile picks that project and opens its home.
+import { ALL, isFirstPage, leftFirstPage, setScope, useScope } from "../../api/scope";
 import { projectPath } from "../../shell/ScopePicker";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { MagnifyingGlassIcon, SquaresFourIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
@@ -10,9 +10,8 @@ import { Pending } from "../../ui/atoms/Pending";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import type { ViewProps } from "../../registry/types";
-import { ALL } from "./views";
 
-type Tile = { to: string; name: string; funnel: Funnel | null; done: Done | null; decisions: number | null; trend: number[] };
+type Tile = { to: string; name: string; pick: string | null; funnel: Funnel | null; done: Done | null; decisions: number | null; trend: number[] };
 
 /** Open items at the end of each day since tracking began, as a small line. */
 function Trend({ values }: { values: number[] }) {
@@ -31,7 +30,7 @@ function Fact({ label, value, tone }: { label: string; value: number | null; ton
   return (
     <div className="min-w-0">
       <dd className={cn("num text-lg font-semibold leading-6", tone)}>{value === null ? "–" : num(value)}</dd>
-      <dt className="truncate text-2xs text-ink/55">{label}</dt>
+      <dt className="text-2xs leading-tight text-ink/55">{label}</dt>
     </div>
   );
 }
@@ -41,14 +40,14 @@ function ProjectTile({ t, all }: { t: Tile; all?: boolean }) {
     <li className={cn("relative flex flex-col rounded-md border bg-panel p-4 hover:bg-ink/[0.03]", all ? "border-accent-ink/40" : "border-line")}>
       <div className="flex items-center gap-2">
         {all && <SquaresFourIcon className="shrink-0 text-accent-ink" />}
-        <Link to={t.to} className={cn("min-w-0 truncate font-semibold after:absolute after:inset-0", !all && "code")}>
+        <Link to={t.to} onClick={() => setScope(t.pick)} className={cn("min-w-0 truncate font-semibold after:absolute after:inset-0", !all && "code")}>
           {t.name}
         </Link>
       </div>
       <dl className="mt-3 grid grid-cols-3 gap-2">
         <Fact label="Open" value={t.funnel?.open ?? null} />
         <Fact label="Decisions" value={t.decisions} tone={t.decisions ? "text-warn" : undefined} />
-        <Fact label="Merged by AC" value={t.done?.mergedByPipeline ?? null} tone="text-merged" />
+        <Fact label="Merged by AutoCraft" value={t.done?.mergedByPipeline ?? null} tone="text-merged" />
       </dl>
       <div className="mt-3">
         <Trend values={t.trend} />
@@ -60,24 +59,27 @@ function ProjectTile({ t, all }: { t: Tile; all?: boolean }) {
 export function ProjectsView(_: ViewProps) {
   const progress = useQuery("progress", (api) => api.progress());
   const repos = useQuery("repos", (api) => api.repos());
+  const counts = useQuery("count:by-repo", (api) => api.decisions.openCounts());
   const [q, setQ] = useState("");
   const scope = useScope();
+  // Only the page the app loads with opens the picked project; the logo and the Projects link come back to the tiles.
+  const [opening] = useState(() => (isFirstPage() ? scope : null));
+  useEffect(leftFirstPage, []);
   const tiles = useMemo(() => {
     const by = new Map<string, RepoProgress>((progress.data?.repos ?? []).map((r) => [r.repo, r]));
     const names = [...new Set([...(repos.data ?? []), ...by.keys()])].sort((a, b) => a.localeCompare(b));
     return names.map((name): Tile => {
       const r = by.get(name);
-      return { to: projectPath(name), name, funnel: r?.funnel ?? null, done: r?.done ?? null, decisions: r?.decisionsOpen ?? null, trend: r?.openTrend ?? [] };
+      return { to: projectPath(name), name, pick: name, funnel: r?.funnel ?? null, done: r?.done ?? null, decisions: counts.data ? (counts.data.byRepo[name] ?? 0) : null, trend: r?.openTrend ?? [] };
     });
-  }, [progress.data, repos.data]);
-  // With a project picked, Home is that project's page; the tiles are for picking one.
-  if (scope) return <Navigate to={projectPath(scope)} replace />;
+  }, [progress.data, repos.data, counts.data]);
+  if (opening) return <Navigate to={projectPath(opening)} replace />;
   if (!progress.data || !repos.data) return <Pending error={progress.error ?? repos.error} />;
   const p = progress.data;
   // Sum the repos' trends day by day for the "All projects" tile.
   const days = Math.max(0, ...p.repos.map((r) => r.openTrend.length));
   const allTrend = Array.from({ length: days }, (_, i) => p.repos.reduce((s, r) => s + (r.openTrend[r.openTrend.length - days + i] ?? 0), 0));
-  const all: Tile = { to: projectPath(ALL), name: "All projects", funnel: p.funnel, done: p.done, decisions: p.decisionsOpen, trend: allTrend };
+  const all: Tile = { to: projectPath(ALL), name: "All projects", pick: null, funnel: p.funnel, done: p.done, decisions: counts.data?.total ?? null, trend: allTrend };
   const s = q.trim().toLowerCase();
   const shown = s ? tiles.filter((t) => t.name.toLowerCase().includes(s)) : tiles;
   return (

@@ -14,7 +14,7 @@ const view: ViewDef = {
   panels: [{ id: "body", title: "Needs you", component: Body, defaultSize: 100 }],
 };
 
-const route = (path: string, v: ViewDef = view): RouteDef => ({ path, view: v });
+const route = (path: string, v: ViewDef = view, scoped?: true): RouteDef => ({ path, view: v, scoped });
 
 function useBadge() {
   const c = useSummary().data?.counts;
@@ -26,5 +26,5 @@ export const needsModule: FeatureModule = {
   permission: "viewer",
   nav: { label: "Needs you", icon: HandWavingIcon, to: "/needs", useBadge },
   commands: [{ id: "go-needs", keys: "g d", label: "Go to needs you", group: "Go to" }],
-  routes: [route("needs"), route("needs/decisions/:id?", decisionRedirectView), route("needs/decisions/:repo/:n", decisionRedirectView), route("needs/decisions/:repo/:n/:kind", decisionRedirectView)],
+  routes: [route("needs", view, true), route("needs/decisions/:id?", decisionRedirectView), route("needs/decisions/:repo/:n", decisionRedirectView), route("needs/decisions/:repo/:n/:kind", decisionRedirectView)],
 };
