@@ -154,14 +154,16 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
  * Operator logins are shown to staff only.
  */
 export function queueOrigins(db: DatabaseSync, staff: boolean): (e: CachedEntry) => QueueOrigin {
-  type Pre = { repo: string; number: number; by: string; at: string; instructions: string; from_head: string; head: string | null };
+  type Pre = { id: number; repo: string; number: number; by: string; at: string; instructions: string; from_head: string; head: string | null };
   const pre = new Map<string, Pre>();
-  for (const p of db.prepare("SELECT repo, number, by, at, instructions, from_head, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci', 'queued') ORDER BY id").all() as Pre[]) pre.set(`${p.repo}#${p.number}`, p);
+  for (const p of db.prepare("SELECT id, repo, number, by, at, instructions, from_head, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci', 'queued') ORDER BY id").all() as Pre[]) pre.set(`${p.repo}#${p.number}`, p);
   const answer = db.prepare("SELECT answered_by, answered_at FROM decisions WHERE id = ? AND answer = 'merge'");
+  // A Merge answer carried to a new head is audited as such when its row is made; a queued row's head also moves with our own pushes.
+  const carried = db.prepare("SELECT 1 FROM audit WHERE action = 'preapproval' AND target = :target AND json_extract(details, '$.id') = :id AND json_extract(details, '$.carried') IS NOT NULL");
   const who = (login: string | null | undefined) => (staff ? login || null : null);
   return (e) => {
     const p = pre.get(`${e.repo}#${e.number}`);
-    if (p) return { how: p.instructions ? "preapproved" : p.head && p.head !== p.from_head ? "answer" : "queued", by: who(p.by), at: p.at };
+    if (p) return { how: p.instructions ? "preapproved" : carried.get({ target: `${p.repo}#${p.number}`, id: p.id }) ? "answer" : "queued", by: who(p.by), at: p.at };
     const d = e.decisionId ? (answer.get(e.decisionId) as { answered_by: string | null; answered_at: string | null } | undefined) : undefined;
     if (d) return { how: "answer", by: who(d.answered_by), at: d.answered_at };
     return { how: "review", by: null, at: e.reviewedAt };
@@ -292,8 +294,12 @@ export async function queueAdd(db: DatabaseSync, req: Req): Promise<{ label: str
     else {
       try {
         preapproveMerge(db, { repo: r.repo, number: prs[0]!, by });
-        await markFast(db, by, r.repo, prs[0]!, w);
-        rest = `queued #${prs[0]}, which closes it`;
+        try {
+          await markFast(db, by, r.repo, prs[0]!, w);
+          rest = `queued #${prs[0]}, which closes it`;
+        } catch (e) {
+          rest = `queued #${prs[0]}, which closes it, but did not fast-track it: ${(e as Error).message}`;
+        }
       } catch (e) {
         rest = `#${prs[0]} closes it but was not queued: ${(e as Error).message}`;
       }
