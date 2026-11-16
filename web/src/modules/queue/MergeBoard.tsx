@@ -3,7 +3,7 @@ import { useEffect, useMemo, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRightIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
-import type { HomeDone, NextMerge, QueueRow, QueueState } from "../../api/types";
+import type { FastPosition, HomeDone, NextMerge, QueueRow, QueueState } from "../../api/types";
 import { Badge } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ItemRef } from "../../ui/molecules/ItemRef";
@@ -11,7 +11,7 @@ import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import { itemPath } from "../../lib/links";
 import { ErrorLine } from "../admin/parts";
-import { FastMark } from "./fastTrack";
+import { FastMark, WeightControl } from "./fastTrack";
 import { STATE } from "./mergeParts";
 import { usePage } from "./usePage";
 
@@ -32,7 +32,7 @@ const BLOCKED: QueueState[] = ["refused", "ci-failed", "conflict", "needs-fix-up
 const LANE_OF = new Map<QueueState, LaneId>(LANES.flatMap((l) => l.states.map((s) => [s, l.id] as const)));
 const key = (r: { repo: string; number: number }) => `${r.repo}#${r.number}`;
 
-type Row = QueueRow & { held?: boolean; batch?: string };
+type Row = QueueRow & { held?: boolean; batch?: string; fast?: FastPosition | null };
 type Next = Map<string, { position: number; merge: NextMerge }>;
 
 /** A narrow card's head: the PR reference on one line, the title below it; the whole card opens the item. */
@@ -69,11 +69,16 @@ function Card({ r, next }: { r: Row; next: Next }) {
         }
       />
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/55">
-        <FastMark fast={n?.merge.fast} />
+        <FastMark fast={r.fast ?? n?.merge.fast} />
         <span title="Size">{r.size}</span>
         {r.fixes > 0 && <span>· {r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
         {r.path === "operator" && <span>· approved by operator</span>}
         {r.batch && <span className="font-mono [overflow-wrap:anywhere]">· {r.batch}</span>}
+        {(r.fast ?? n?.merge.fast)?.weight !== undefined && (
+          <span className="ml-auto">
+            <WeightControl repo={r.repo} number={r.number} weight={(r.fast ?? n?.merge.fast)!.weight!} />
+          </span>
+        )}
       </div>
       <div className="mt-1 text-2xs text-ink/60" title={STATE[r.state]?.[2]}>
         {n?.merge.label ?? STATE[r.state]?.[0]}

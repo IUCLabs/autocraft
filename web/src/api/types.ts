@@ -1843,6 +1843,8 @@ export interface FastPosition {
   /** From 1. */
   position: number;
   of: number;
+  /** 1 to 10: heavier items go first; left out where only the order is known. */
+  weight?: number;
 }
 
 /** One row of the All, Review, Fix and Verify tabs: a work row with its fast-track place. */

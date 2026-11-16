@@ -11,7 +11,7 @@ import { Block } from "../../ui/molecules/Block";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { NextStepBlock } from "../../ui/organisms/NextStepBlock";
 import { ErrorLine, Page } from "../admin/parts";
-import { FastTrackAdd } from "../queue/fastTrack";
+import { QueueAdd } from "../queue/fastTrack";
 import { MergeQueue } from "../queue/MergeQueue";
 import { MergeBoard } from "../queue/MergeBoard";
 import { RepoSelect } from "../../ui/molecules/RepoSelect";
@@ -97,7 +97,7 @@ export function NextView() {
             <Link to="/items?state=merged-by-us" className="text-sm text-accent-ink hover:underline max-md:flex max-md:h-11 max-md:items-center">
               Merged by AutoCraft
             </Link>
-            <FastTrackAdd />
+            <QueueAdd />
             <RepoSelect value={repo} onChange={setRepo} />
           </div>
         )}

@@ -6,7 +6,8 @@ import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
 import { cachedQueue, openViews, type CachedEntry } from "../../core/plan-read.ts";
-import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, removeFastTrack } from "../../fasttrack.ts";
+import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, parseWeight, removeFastTrack, setFastTrackWeight } from "../../fasttrack.ts";
+import { preapproveMerge } from "../../preapproval/index.ts";
 import type { Exec } from "../../fixup/git.ts";
 import { ControlError, holdMerge, releaseMerge, removeFromBatch, stopBatch } from "../../merge/controls.ts";
 import { pageBatches } from "../../merge/batch-store.ts";
@@ -191,6 +192,44 @@ export async function fastTrackAdd(db: DatabaseSync, req: Req): Promise<string[]
   await needVisible(db, req, r.repo);
   await guarded(() => addFastTrack(db, req.user.login, `${r.repo}#${r.number}`));
   return fastTrackRefs(db, req);
+}
+
+/** The `weight` of the JSON body, checked; the default when it has none. */
+function weightOf(req: Req): number {
+  const b = req.json;
+  const w = b && typeof b === "object" && !Array.isArray(b) ? (b as { weight?: unknown }).weight : undefined;
+  try {
+    return parseWeight(w);
+  } catch (e) {
+    throw new HttpError(400, (e as Error).message);
+  }
+}
+
+export async function fastTrackWeight(db: DatabaseSync, req: Req): Promise<string[]> {
+  const r = item(req);
+  const w = weightOf(req);
+  await needVisible(db, req, r.repo);
+  await guarded(() => setFastTrackWeight(db, req.user.login, `${r.repo}#${r.number}`, w));
+  return fastTrackRefs(db, req);
+}
+
+/**
+ * "Add to merge queue": a pre-approved merge at the PR's current head (it merges once the review says take, the pre-merge review
+ * is clean and CI is green) and a fast-track mark with the given weight, so the PR's review, checks and merge come first.
+ */
+export async function queueAdd(db: DatabaseSync, req: Req): Promise<{ label: string; fast: string[] }> {
+  const r = item(req);
+  const w = weightOf(req);
+  await needVisible(db, req, r.repo);
+  let done: { label: string };
+  try {
+    done = preapproveMerge(db, { repo: r.repo, number: r.number, by: req.user.login });
+  } catch (e) {
+    throw new HttpError(409, (e as Error).message);
+  }
+  const ref = `${r.repo}#${r.number}`;
+  await guarded(() => (addFastTrack(db, req.user.login, ref, w).added ? null : setFastTrackWeight(db, req.user.login, ref, w)));
+  return { label: done.label, fast: await fastTrackRefs(db, req) };
 }
 
 export async function fastTrackRemove(db: DatabaseSync, req: Req): Promise<string[]> {
