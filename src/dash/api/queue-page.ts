@@ -4,7 +4,7 @@
 import { prBuildView } from "../../prbuild/view.ts";
 import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync } from "node:sqlite";
-import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
+import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueueOrigin, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
 import { cachedQueue, openViews, type CachedEntry } from "../../core/plan-read.ts";
 import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, parseWeight, removeFastTrack, setFastTrackWeight } from "../../fasttrack.ts";
 import { preapproveMerge } from "../../preapproval/index.ts";
@@ -116,7 +116,8 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const internals = canSeeInternals(req);
   const reader = await readerOf(db, req);
   const closes = closingIssues(db);
-  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals), closes: closes.get(`${e.repo}#${e.number}`) ?? [] });
+  const originOf = queueOrigins(db, internals);
+  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals), closes: closes.get(`${e.repo}#${e.number}`) ?? [], added: originOf(e) });
   // Tabs come from the stored next step; the text is veiled afterwards, so a quiet pull request stays in its tab.
   const tabOf = new Map(work.map((w) => [w, tabOfNext(w.next)]));
   const veilNext = (w: QueueWorkRow): QueueWorkRow => (veiledFor(reader, w.repo, w.number) ? { ...w, next: "" } : w);
@@ -145,6 +146,26 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   out.nextMerges = nextMerges(entries, fast, batchOf, scores);
   out.batches = active.map((b) => toBatch(b, b.prs.flatMap((p) => rowOf.get(`${b.repo}#${p.number}`) ?? [])));
   return out;
+}
+
+/**
+ * How each PR came into the merge queue, and who put it there: an active pre-approval (added with Queue items, a Merge answer carried to a
+ * new head, or a pre-approval after a fix-up), else an operator's Merge answer at the reviewed head, else the take review itself.
+ * Operator logins are shown to staff only.
+ */
+export function queueOrigins(db: DatabaseSync, staff: boolean): (e: CachedEntry) => QueueOrigin {
+  type Pre = { repo: string; number: number; by: string; at: string; instructions: string; from_head: string; head: string | null };
+  const pre = new Map<string, Pre>();
+  for (const p of db.prepare("SELECT repo, number, by, at, instructions, from_head, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci', 'queued') ORDER BY id").all() as Pre[]) pre.set(`${p.repo}#${p.number}`, p);
+  const answer = db.prepare("SELECT answered_by, answered_at FROM decisions WHERE id = ? AND answer = 'merge'");
+  const who = (login: string | null | undefined) => (staff ? login || null : null);
+  return (e) => {
+    const p = pre.get(`${e.repo}#${e.number}`);
+    if (p) return { how: p.instructions ? "preapproved" : p.head && p.head !== p.from_head ? "answer" : "queued", by: who(p.by), at: p.at };
+    const d = e.decisionId ? (answer.get(e.decisionId) as { answered_by: string | null; answered_at: string | null } | undefined) : undefined;
+    if (d) return { how: "answer", by: who(d.answered_by), at: d.answered_at };
+    return { how: "review", by: null, at: e.reviewedAt };
+  };
 }
 
 /** The issues each PR closes when it merges (GitHub's closing references, from the mirror), by `repo#number`; PRs without any are left out. */

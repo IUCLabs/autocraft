@@ -9,6 +9,8 @@ import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
 import { operatorCommentText } from "../src/fixup/template.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { OPERATOR, T0, world, type World } from "./world-db.ts";
+import { queueOrigins } from "../src/dash/api/queue-page.ts";
+import type { CachedEntry } from "../src/core/plan-read.ts";
 
 let current: World | null = null;
 const fresh = (): World => (current = world().repo());
@@ -288,6 +290,16 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     w.review(12, { head: "sha12", verdict: "take-fix" });
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 12)?.state, "asked");
+  });
+
+  test("the queue row says who added the PR and how; viewers see no login", () => {
+    const w = fresh().pr(13).pr(14);
+    preapproveMerge(w.db, { repo: "app", number: 13, by: OPERATOR });
+    const entry = (number: number) => ({ repo: "app", number, decisionId: null, reviewedAt: T0 }) as unknown as CachedEntry;
+    const staff = queueOrigins(w.db, true);
+    assert.deepEqual({ ...staff(entry(13)), at: null }, { how: "queued", by: OPERATOR, at: null });
+    assert.deepEqual(queueOrigins(w.db, false)(entry(13)).by, null);
+    assert.deepEqual(staff(entry(14)), { how: "review", by: null, at: T0 });
   });
 });
 

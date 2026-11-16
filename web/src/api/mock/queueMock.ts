@@ -1,7 +1,7 @@
 // Fake Queue page: the work and merge fixtures behind one repo filter, with in-memory fast track, holds and batch controls.
 import type { Api } from "../client";
 import { slotsOfRows } from "./queueSlotMock";
-import type { FastPosition, MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueuePage, QueueTab, QueueWorkRow, User } from "../types";
+import type { FastPosition, MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueueOrigin, QueuePage, QueueRow, QueueTab, QueueWorkRow, User } from "../types";
 import { PIPELINE_REPOS, queueBatchList, queueList } from "./queueFixtures";
 import { FAST_TRACK_SEED, workList } from "./workFixtures";
 
@@ -25,6 +25,15 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
   const allMerge = queueList({ limit: 10000 }).rows;
   const fixtureBatches = queueBatchList({ limit: 100 }).batches;
   let fast = [...FAST_TRACK_SEED];
+  // Items added with Queue items in this session: by the signed-in operator, now.
+  const queued = new Map<string, string>();
+  const originOf = (r: QueueRow): QueueOrigin => {
+    const at = queued.get(key(r));
+    if (at) return { how: "queued", by: "you", at };
+    if (r.path === "operator") return { how: "answer", by: r.number % 2 ? "mira-ops" : "jonas-k", at: r.reviewedAt };
+    if (r.number % 7 === 0) return { how: "queued", by: "mira-ops", at: r.reviewedAt };
+    return { how: "review", by: null, at: r.reviewedAt };
+  };
   // Weights of the fast-tracked items (default 5); `fast` stays sorted heaviest first, then in the order added.
   const weights = new Map<string, number>();
   const weightOf = (ref: string) => weights.get(ref) ?? 5;
@@ -72,7 +81,7 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
       const seen = new Set<string>();
       const entries = base
         .filter((r) => !seen.has(key(r)) && !!seen.add(key(r)))
-        .map((r): QueueMergeRow => ({ ...r, state: inBatch.has(key(r)) ? r.state : r.state === "in-batch" || r.state === "batch-checking" ? "ready" : r.state, fast: pos(r), held: held.has(key(r)) }))
+        .map((r): QueueMergeRow => ({ ...r, state: inBatch.has(key(r)) ? r.state : r.state === "in-batch" || r.state === "batch-checking" ? "ready" : r.state, fast: pos(r), held: held.has(key(r)), added: originOf(r) }))
         .filter((r) => r.state !== "merged" && inScope(r.repo, r.number));
       const count = (t: QueueTab) => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOf(w.next) === t).length);
       const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
@@ -89,7 +98,7 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
       out.mergeRows = free.slice(offset, offset + limit);
       out.total = free.length;
       out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
-      out.batches = batches.map((b) => ({ ...b, prs: b.prs.map((p): QueueMergeRow => ({ ...p, fast: pos(p), held: held.has(key(p)) })) }));
+      out.batches = batches.map((b) => ({ ...b, prs: b.prs.map((p): QueueMergeRow => ({ ...p, fast: pos(p), held: held.has(key(p)), added: originOf(p) })) }));
       const batchOf = new Map(batches.flatMap((b) => b.prs.map((p) => [key(p), { id: b.id, branch: b.branch }] as const)));
       const items = entries.flatMap((e) => {
         const w: [MergeWait, string, number] | undefined = held.has(key(e)) && e.state in WAITS ? ["held", "Merge held by an operator", 9] : WAITS[e.state];
@@ -116,8 +125,12 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
       },
       async add(item, weight) {
         need();
+        // A GitHub link or owner/repo#n becomes repo#n, as the server's parseItemRef reads it.
+        const url = /github\.com\/[\w.-]+\/([\w.-]+)\/(?:pull|issues)\/(\d+)/.exec(item);
+        item = url ? `${url[1]}#${url[2]}` : item.replace(/^[\w.-]+\/(?=[\w.-]+#\d+$)/, "");
         if (!/^[\w.-]+#\d+$/.test(item)) throw new Error("not an item: use a GitHub URL, repo#number or owner/repo#number");
         if (!fast.includes(item)) fast = [...fast, item];
+        queued.set(item, new Date().toISOString());
         weights.set(item, weight);
         resort();
         changed();
