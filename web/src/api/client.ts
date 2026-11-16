@@ -10,6 +10,7 @@ import type {
   OpenDecisionCounts,
   ItemPageData,
   ItemStatusFilter,
+  ItemPeek,
   ItemStatusList,
   SecurityList,
   FindingPageData,
@@ -219,6 +220,8 @@ export interface Api {
   itemPage(repo: RepoName, number: number, since?: string): Promise<ItemPageData | ItemPageUnchanged>;
   /** The Items list with a status per row, one page at a time. */
   itemStatusList(filter: ItemStatusFilter): Promise<ItemStatusList>;
+  /** The item in brief, for the hover card on its number. */
+  itemPeek(repo: RepoName, number: number): Promise<ItemPeek>;
   /** Staff: all findings grouped by what they need. */
   securityList(): Promise<SecurityList>;
   /** Staff: a finding with its status, fix rounds and history. */

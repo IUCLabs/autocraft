@@ -1,5 +1,5 @@
 // The Home and Items-status contract. The dashboard declares the same shapes in web/src/api/types.ts.
-import type { DecisionKind, ItemKind, ItemState, RepoName } from "../../../web/src/api/types.ts";
+import type { DecisionKind, ItemChecks, ItemKind, ItemState, RepoName } from "../../../web/src/api/types.ts";
 import type { ItemPhase, ItemStatus } from "../../core/item-status.ts";
 
 export type { ItemPhase, ItemStatus };
@@ -19,7 +19,7 @@ export interface Home {
   done: HomeDone[];
 }
 
-export interface ItemStatusRow { repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string; status: ItemStatus; updatedAt: string }
+export interface ItemStatusRow { repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string; author: string | null; status: ItemStatus; updatedAt: string; closes?: number[]; checks?: ItemChecks | null }
 export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number; nextCursor: string | null }
 
 /** The SQL expression of an item's phase: its plan's stored status, else the one an item without a plan gets (core/item-status.ts statusFromItem). Needs `i` (items) and `p` (item_plans, left joined). */

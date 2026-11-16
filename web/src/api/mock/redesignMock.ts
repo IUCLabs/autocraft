@@ -21,7 +21,7 @@ const NOTE_11 = "the regression test still passes without the fix";
 
 const PAGE = 20;
 
-export type RedesignApi = Pick<Api, "home" | "itemPage" | "itemStatusList" | "securityList" | "findingPage">;
+export type RedesignApi = Pick<Api, "home" | "itemPage" | "itemStatusList" | "itemPeek" | "securityList" | "findingPage">;
 
 export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "security" | "item">): RedesignApi {
   const staff = me.role !== "viewer";
@@ -98,6 +98,13 @@ export function createRedesignMock(me: User, base: Pick<Api, "decisions" | "secu
         reviews: { latest: null, earlier: [] }, timeline: [], screenshots: [],
         github: { description: it.body, url: `https://github.com/storytold/${repo}/${it.kind === "pr" ? "pull" : "issues"}/${number}`, events: [{ id: "g1", type: "opened", at: it.createdAt, actor: it.author, body: it.body, autocraft: null }], checks: [], commits: [], files: [], syncedAt: new Date(Date.now() - 120_000).toISOString() },
       });
+    },
+    async itemPeek(repo, number) {
+      const row = [...(real?.rows ?? []), ...statusRows()].find((r) => r.repo === repo && r.number === number);
+      if (row) return wait({ repo, number, kind: row.kind, state: row.state, title: row.title, author: row.author, createdAt: null, updatedAt: row.updatedAt, labels: [], status: row.status, closes: row.closes ?? [] });
+      const it = await base.item(repo, number);
+      return wait({ repo, number, kind: it.kind, state: it.state, title: it.title, author: it.author, createdAt: it.createdAt, updatedAt: it.updatedAt, labels: it.labels,
+        status: { phase: it.state === "merged" ? "Merged" : it.state === "closed" ? "Closed" : "Triage", waiting: null, next: null, since: it.updatedAt }, closes: [] });
     },
     async itemStatusList(f) {
       const all: ItemStatusRow[] = [

@@ -2668,9 +2668,31 @@ export interface ItemStatusRow {
   kind: ItemKind;
   state: ItemState;
   title: string;
+  author: string | null;
   status: ItemStatus;
   updatedAt: string;
+  /** Issues this PR closes when it merges. */
+  closes?: number[];
+  /** The merge checks, for a PR in the merge queue (only those have them); null otherwise. */
+  checks?: ItemChecks | null;
 }
+/** An item in brief, for the hover card on its number: what it is and where it stands. */
+export interface ItemPeek {
+  repo: RepoName;
+  number: number;
+  kind: ItemKind;
+  state: ItemState;
+  title: string;
+  author: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  labels: string[];
+  status: ItemStatus;
+  /** PRs: the issues it closes when it merges. */
+  closes: number[];
+}
+/** A PR's merge checks as the merge queue shows them. */
+export type ItemChecks = Pick<QueueRow, "verdict" | "ci" | "mergeable" | "verify" | "size" | "prBuild">;
 export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind; repo?: RepoName[]; /** Only items mentioned in a watched Discord channel. */ discord?: boolean; cursor?: string }
 /** `byPhase` and `total` count every row that matches the filter except `phase`; `nextCursor` is null on the last page. */
 export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number; nextCursor: string | null }

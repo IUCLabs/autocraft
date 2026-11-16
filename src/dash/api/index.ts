@@ -419,6 +419,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/mcp/tokens/revoke", mcp.revoke),
     get("/api/items/:repo/:n", itemCore),
     get("/api/items/:repo/:n/page", itemPage),
+    get("/api/items/:repo/:n/peek", items.peek),
     scoped(get("/api/activity", activity)),
     get("/api/downloads", downloads),
     get("/api/items/:repo/:n/trace", itemTrace),
