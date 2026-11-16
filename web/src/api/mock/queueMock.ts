@@ -25,6 +25,13 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
   const allMerge = queueList({ limit: 10000 }).rows;
   const fixtureBatches = queueBatchList({ limit: 100 }).batches;
   let fast = [...FAST_TRACK_SEED];
+  // Weights of the fast-tracked items (default 5); `fast` stays sorted heaviest first, then in the order added.
+  const weights = new Map<string, number>();
+  const weightOf = (ref: string) => weights.get(ref) ?? 5;
+  const resort = () => {
+    const order = new Map(fast.map((x, i) => [x, i]));
+    fast = [...fast].sort((a, b) => weightOf(b) - weightOf(a) || order.get(a)! - order.get(b)!);
+  };
   // One designcraft PR starts out held, so the Merge tab shows a held row.
   const first = allMerge.find((r) => r.repo === "designcraft" && r.state === "ready");
   const held = new Set<string>(first ? [`${first.repo}#${first.number}`] : []);
@@ -36,7 +43,7 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
   };
   const pos = (r: { repo: string; number: number }): FastPosition | null => {
     const i = fast.indexOf(key(r));
-    return i < 0 ? null : { position: i + 1, of: fast.length };
+    return i < 0 ? null : { position: i + 1, of: fast.length, weight: weightOf(key(r)) };
   };
   const rank = (r: { repo: string; number: number }) => {
     const i = fast.indexOf(key(r));
@@ -98,6 +105,23 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
         if (!fast.includes(item)) fast = [...fast, item];
         changed();
         return [...fast];
+      },
+      async fastTrackWeight(item, weight) {
+        need();
+        if (!fast.includes(item)) throw new Error(`${item} is not fast-tracked`);
+        weights.set(item, weight);
+        resort();
+        changed();
+        return [...fast];
+      },
+      async add(item, weight) {
+        need();
+        if (!/^[\w.-]+#\d+$/.test(item)) throw new Error("not an item: use a GitHub URL, repo#number or owner/repo#number");
+        if (!fast.includes(item)) fast = [...fast, item];
+        weights.set(item, weight);
+        resort();
+        changed();
+        return { label: "Added to the merge queue; it merges once the review says take and CI is green", fast: [...fast] };
       },
       async fastTrackRemove(item) {
         need();

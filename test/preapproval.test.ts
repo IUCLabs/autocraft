@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { afterEach, describe, test } from "node:test";
 import { actionable } from "../src/decisions.ts";
 import { mergeDecisionId } from "../src/core/rules.ts";
-import { advancePreapprovals, cancelPreapproval, preapprovalOf, runPipelineStep } from "../src/preapproval/index.ts";
+import { advancePreapprovals, cancelPreapproval, preapprovalOf, preapproveMerge, runPipelineStep } from "../src/preapproval/index.ts";
+import { addFastTrack, fastScoreOf, fastTrackList, setFastTrackWeight, workScores } from "../src/fasttrack.ts";
 import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
 import { operatorCommentText } from "../src/fixup/template.ts";
 import { scopeToTracked } from "../src/repos.ts";
@@ -260,5 +261,48 @@ describe("pre-approved merge", () => {
     await assert.rejects(cancelPreapproval(w.db, OPERATOR, "app", 19, failing));
     assert.equal(w.rows("SELECT 1 FROM merge_holds WHERE number = 19").length, 0);
     assert.equal(preapprovalOf(w.db, "app", 19)?.state, "queued");
+  });
+});
+
+describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
+  test("a take review at the current head, a clean pre-merge review and green CI write the Merge answer", () => {
+    const w = fresh().pr(11);
+    preapproveMerge(w.db, { repo: "app", number: 11, by: OPERATOR });
+    const p = preapprovalOf(w.db, "app", 11)!;
+    assert.equal(p.state, "review");
+    assert.equal(p.head, "sha11");
+    // A second add while the first runs is refused.
+    assert.throws(() => preapproveMerge(w.db, { repo: "app", number: 11, by: OPERATOR }), /already has a pre-approved merge/);
+    w.review(11, { head: "sha11" });
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 11)?.state, "ci");
+    w.premerge(11, "clean");
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 11)?.state, "queued");
+    assert.deepEqual(answerOf(w, 11, "sha11").map((r) => r.answer), ["merge"]);
+  });
+
+  test("a take-fix review asks the Merge question instead: the add covers no model-written fixes", () => {
+    const w = fresh().pr(12);
+    preapproveMerge(w.db, { repo: "app", number: 12, by: OPERATOR });
+    w.review(12, { head: "sha12", verdict: "take-fix" });
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 12)?.state, "asked");
+  });
+});
+
+describe("fast track weights", () => {
+  test("heavier items go first; equal weights keep the order added", () => {
+    const w = fresh().pr(21).pr(22).pr(23);
+    addFastTrack(w.db, OPERATOR, "app#21");
+    addFastTrack(w.db, OPERATOR, "app#22", 9);
+    addFastTrack(w.db, OPERATOR, "app#23");
+    assert.deepEqual(fastTrackList(w.db).map((f) => [f.number, f.weight]), [[22, 9], [21, 5], [23, 5]]);
+    const s = workScores(w.db, "app");
+    assert.ok(s.get(22)! > s.get(21)! && s.get(21)! > s.get(23)!);
+    setFastTrackWeight(w.db, OPERATOR, "app#23", 10);
+    assert.deepEqual(fastTrackList(w.db).map((f) => f.number), [23, 22, 21]);
+    assert.ok(fastScoreOf(w.db, "app", 23)! > fastScoreOf(w.db, "app", 22)!);
+    assert.throws(() => setFastTrackWeight(w.db, OPERATOR, "app#21", 11), /from 1 to 10/);
   });
 });

@@ -1181,6 +1181,8 @@ CREATE TABLE IF NOT EXISTS fast_track (
   number INTEGER NOT NULL,
   added_by TEXT NOT NULL,
   added_at TEXT NOT NULL,
+  -- 1 to 10: heavier items go first; equal weights keep the order added.
+  weight INTEGER NOT NULL DEFAULT 5,
   UNIQUE (repo, number)
 );
 

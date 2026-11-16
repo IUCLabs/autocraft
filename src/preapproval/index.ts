@@ -195,6 +195,42 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
   return { label: merge ? "Queued the fix-up; the PR merges if its review says take and CI is green" : "Queued the fix-up" };
 }
 
+/**
+ * "Add to merge queue": an operator's Merge answer given ahead, with no fix-up. A row starts in `review` at the current head,
+ * the way a carried answer does, so the PR merges only after a sure take review, a clean pre-merge review and green CI there;
+ * a take-fix review, a defect or a red head asks the Merge? question instead. Throws when it cannot start.
+ */
+export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: number; by: string }): { label: string } {
+  const { repo, number, by } = o;
+  const ref = `${repo}#${number}`;
+  const it = prRow(db, repo, number);
+  if (!it || it.kind !== "pr") throw new Error(`${ref} is not a pull request`);
+  if (it.state !== "OPEN") throw new Error(`${ref} is not open`);
+  const fact = loadPrFact(db, repo, number);
+  const planState = fact ? decidePr(fact).state : null;
+  if (!planState || planState === "out-of-scope" || planState === "integration") throw new Error(`${ref} is outside the pipeline's scope`);
+  if (NOT_REVIEWABLE.includes(planState)) throw new Error(`${ref} cannot be reviewed (${planState}): answer its open question first`);
+  const head = it.head_oid;
+  if (!head) throw new Error(`${ref} has no head commit in the mirror yet`);
+  if (!mergeApprovalOf(db, repo)) throw new Error(`merging is not approved for ${repo}`);
+  const active = () => db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND state IN (${ACTIVE.map(() => "?").join(",")})`).get(repo, number, ...ACTIVE);
+  if (active()) throw new Error(`${ref} already has a pre-approved merge in progress`);
+  const at = iso();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    // Checked again under the write lock: another writer may have started one since the first check.
+    if (active()) throw new Error(`${ref} already has a pre-approved merge in progress`);
+    const id = Number(db.prepare("INSERT INTO preapprovals (repo, number, by, at, instructions, state, from_head, head, updated_at, fix_id) VALUES (?, ?, ?, ?, '', 'review', ?, ?, ?, NULL)").run(repo, number, by, at, head, head, at).lastInsertRowid);
+    audit(db, by, "preapproval", ref, { id, state: "review", head, queued: "merge-queue" });
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  say(db, repo, number, `${by} added the PR to the merge queue at ${short(head)}: it merges once the review there says take, the pre-merge review is clean and CI is green.`);
+  return { label: "Added to the merge queue; it merges once the review says take and CI is green" };
+}
+
 // ---- the state machine ---------------------------------------------------------------------------------------------------
 
 /** Asks a Merge? question at `head` the normal way (Prepare writes its options and recommendation); an answered one is left as it is. */

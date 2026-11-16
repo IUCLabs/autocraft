@@ -1,9 +1,12 @@
-// Fast track and merge hold: the markers, the operator's toggles (Queue rows, decision page, item page).
+// Fast track and merge hold: the markers, the operator's toggles (Queue rows, decision page, item page) and "Add to merge queue".
+import { useState } from "react";
 import { FastForwardIcon, PauseIcon, PlayIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { FastPosition } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
 import { Button } from "../../ui/atoms/Button";
+import { Input } from "../../ui/atoms/Input";
+import { Select } from "../../ui/atoms/Select";
 import { ErrorLine, useWrite } from "../admin/parts";
 
 export const refOf = (repo: string, number: number) => `${repo}#${number}`;
@@ -21,10 +24,11 @@ export function useHeldMerges() {
 /** The marker before an item's ref; its tooltip gives the place among the fast-tracked items. */
 export function FastMark({ fast }: { fast: FastPosition | null | undefined }) {
   if (!fast) return null;
-  const text = `Fast track ${fast.position} of ${fast.of}`;
+  const text = `Fast track ${fast.position} of ${fast.of}${fast.weight === undefined ? "" : `, weight ${fast.weight}`}`;
   return (
-    <span title={text} className="relative z-10 mt-0.5 inline-flex shrink-0 text-accent-ink">
+    <span title={text} className="relative z-10 mt-0.5 inline-flex shrink-0 items-center gap-0.5 text-accent-ink">
       <FastForwardIcon size={14} weight="regular" aria-label={text} />
+      {fast.weight !== undefined && <span className="num text-2xs font-semibold">{fast.weight}</span>}
     </span>
   );
 }
@@ -83,5 +87,56 @@ export function HoldToggle({ repo, number, className }: { repo: string; number: 
       </Button>
       {write.error && <ErrorLine error={write.error} />}
     </>
+  );
+}
+
+/** Fast-track weights, heaviest (first) to lightest. */
+export const WEIGHTS = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
+export const WEIGHT_DEFAULT = 5;
+
+/**
+ * "Add to merge queue": a GitHub link or `repo#n` and a weight. The server pre-approves the merge at the PR's current head (it merges once
+ * the review there says take, the pre-merge review is clean and CI is green) and fast-tracks it with the weight. Operators only.
+ */
+export function QueueAdd() {
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const write = useWrite();
+  const [text, setText] = useState("");
+  const [weight, setWeight] = useState(WEIGHT_DEFAULT);
+  const [done, setDone] = useState<string | null>(null);
+  if (!operator) return null;
+  return (
+    <form
+      className="flex flex-wrap items-center gap-1.5 max-md:w-full"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const item = text.trim();
+        if (!item) return;
+        setDone(null);
+        void write.run("queue-add", async () => setDone((await api.queueControl.add(item, weight)).label)).then((ok) => ok && setText(""));
+      }}
+    >
+      <Input
+        aria-label="Add to merge queue"
+        placeholder="Add to merge queue"
+        title="A GitHub link or repo#n"
+        value={text}
+        onChange={(e) => (setText(e.target.value), setDone(null))}
+        className="w-[240px] max-md:w-auto max-md:flex-1"
+      />
+      <Select aria-label="Weight" title="Weight: heavier PRs go first" value={weight} onChange={(e) => setWeight(Number(e.target.value))}>
+        {WEIGHTS.map((w) => (
+          <option key={w} value={w}>
+            {`Weight ${w}`}
+          </option>
+        ))}
+      </Select>
+      <Button type="submit" className="max-md:h-11" loading={write.busy === "queue-add"} disabled={!text.trim()}>
+        Add
+      </Button>
+      {write.error && <ErrorLine error={write.error} className="basis-full" />}
+      {done && !write.error && <span className="basis-full text-xs text-ok">{done}</span>}
+    </form>
   );
 }
