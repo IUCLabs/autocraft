@@ -3,7 +3,7 @@
 // A pre-approved merge is an operator's Merge answer given ahead of a fix-up. States (see Preapproval in web/src/api/types.ts):
 //   fixup   -> the fix-up step works the operator's instructions (source 'operator' in its fixups rows)
 //   review  -> the fix-up pushed; waiting for the Opus review of the pushed head. A row with no fix-up (a Merge answer carried across a
-//              base merge, or "Add to merge queue") starts here at its head.
+//              base merge, or "Queue items") starts here at its head.
 //   ci      -> that review says take (and is sure, not stale); waiting for CI of the pushed head, then for a clean pre-merge review of it
 //   queued  -> CI is green and the pre-merge review is clean: the PR's Merge? decision at the head is answered Merge by the operator,
 //              exactly as a dashboard answer would be, in the same transaction that moves the row from ci to queued; the merge queue
@@ -197,7 +197,7 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
 }
 
 /**
- * "Add to merge queue": an operator's Merge answer given ahead, with no fix-up. A row starts in `review` at the current head,
+ * "Queue items" (a PR line): an operator's Merge answer given ahead, with no fix-up. A row starts in `review` at the current head,
  * the way a carried answer does, so the PR merges only after a sure take review, a clean pre-merge review and green CI there;
  * a take-fix review, a defect or a red head asks the Merge? question instead. Throws when it cannot start.
  */

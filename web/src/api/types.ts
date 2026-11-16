@@ -1863,10 +1863,22 @@ export interface QueueWorkRow extends WorkRow {
   held: boolean;
 }
 
-/** One row of the Merge tab: a merge queue row with its fast-track place and hold. */
+/**
+ * How a PR came into the merge queue: `review` (a take review; the merge rule or a Merge? question decides), `answer` (an operator
+ * answered Merge?), `queued` (an operator added it with Queue items), `preapproved` (an operator pre-approved the merge with a fix-up).
+ * `by` is the operator, null for `review` and for anyone but staff; `at` is when.
+ */
+export interface QueueOrigin {
+  how: "review" | "answer" | "queued" | "preapproved";
+  by: string | null;
+  at: string | null;
+}
+
+/** One row of the Merge tab: a merge queue row with its fast-track place, hold and how it came in. */
 export interface QueueMergeRow extends QueueRow {
   fast: FastPosition | null;
   held: boolean;
+  added?: QueueOrigin;
 }
 
 /** What a PR waits for before it merges. */

@@ -73,7 +73,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now()): (repo
   const runs = db.prepare(`SELECT COUNT(CASE WHEN s >= :today THEN 1 END) AS n, MAX(s) AS last FROM (
       SELECT MIN(r.started_at) AS s FROM main.agent_run_items i JOIN main.agent_runs r ON r.id = i.run_id
       WHERE i.repo = :repo AND i.number = :number AND r.step = 'opus-review' GROUP BY COALESCE(r.job_id, -r.id))`);
-  // An "Add to merge queue" row at the head it started on (no fix-up, no push since) asks for no review of its own: CI, the cap and the interval hold it as any PR.
+  // A "Queue items" row at the head it started on (no fix-up, no push since) asks for no review of its own: CI, the cap and the interval hold it as any PR.
   const preapproved = db.prepare("SELECT 1 FROM main.preapprovals WHERE repo = ? AND number = ? AND head = ? AND state = 'review' AND (fix_id IS NOT NULL OR head <> from_head)");
   const failure = db.prepare("SELECT value FROM main.settings WHERE key = ?");
   const interval = reviewMinInterval(db) * 60_000;

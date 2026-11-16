@@ -10,6 +10,9 @@ import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
 import { operatorCommentText } from "../src/fixup/template.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { OPERATOR, T0, world, type World } from "./world-db.ts";
+import { queueAdd, queueOrigins } from "../src/dash/api/queue-page.ts";
+import type { Req } from "../src/dash/types.ts";
+import type { CachedEntry } from "../src/core/plan-read.ts";
 
 let current: World | null = null;
 const fresh = (): World => (current = world().repo());
@@ -300,6 +303,32 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     w.db.prepare("UPDATE pr_checks SET overall = 'pending' WHERE number = 13").run();
     preapproveMerge(w.db, { repo: "app", number: 13, by: OPERATOR });
     assert.equal(reviewHolds(w.db)("app", 13, "sha13")?.kind, "ci");
+  });
+
+  test("the queue row says who added the PR and how; viewers see no login", () => {
+    const w = fresh().pr(14).pr(15);
+    preapproveMerge(w.db, { repo: "app", number: 14, by: OPERATOR });
+    const entry = (number: number) => ({ repo: "app", number, decisionId: null, reviewedAt: T0 }) as unknown as CachedEntry;
+    const staff = queueOrigins(w.db, true);
+    assert.deepEqual({ ...staff(entry(14)), at: null }, { how: "queued", by: OPERATOR, at: null });
+    assert.equal(queueOrigins(w.db, false)(entry(14)).by, null);
+    assert.deepEqual(staff(entry(15)), { how: "review", by: null, at: T0 });
+  });
+});
+
+describe("queue items: an issue", () => {
+  test("is fast-tracked without lowering its weight; its one closing PR is queued, several are only listed", async () => {
+    const w = fresh().issue(31).pr(32).issue(33).pr(34).pr(35);
+    w.db.prepare("UPDATE items SET closing_issues = '[31]' WHERE repo = 'app' AND number = 32").run();
+    w.db.prepare("UPDATE items SET closing_issues = '[33]' WHERE repo = 'app' AND number IN (34, 35)").run();
+    addFastTrack(w.db, OPERATOR, "app#31", 9);
+    const req = (item: string) => ({ query: new URLSearchParams(), json: { item, weight: 7 }, user: { login: OPERATOR, role: "operator", canWrite: async () => true } }) as unknown as Req;
+    assert.match((await queueAdd(w.db, req("app#31"))).label, /Fast-tracked the issue; queued #32/);
+    assert.equal(preapprovalOf(w.db, "app", 32)?.state, "review");
+    assert.deepEqual(fastTrackList(w.db).map((f) => [f.number, f.weight]), [[31, 9], [32, 7]]);
+    assert.match((await queueAdd(w.db, req("app#33"))).label, /#34, #35 close it; queue one of them/);
+    assert.equal(preapprovalOf(w.db, "app", 34), null);
+    assert.equal(preapprovalOf(w.db, "app", 35), null);
   });
 });
 

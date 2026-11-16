@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useMemo, type ReactNode } from "react";
 import { CheckCircleIcon, CircleNotchIcon, ClockIcon, MinusCircleIcon, WarningCircleIcon, XCircleIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
-import type { FastPosition, NextMerge, QueueBatch, QueueRow, QueueState } from "../../api/types";
+import type { FastPosition, NextMerge, QueueBatch, QueueOrigin, QueueRow, QueueState } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -34,16 +34,16 @@ const BLOCKED: QueueState[] = ["refused", "ci-failed", "conflict", "needs-fix-up
 const STEP_OF = new Map<QueueState, StepId>(STEPS.flatMap((s) => s.states.map((st) => [st, s.id] as const)));
 const key = (r: { repo: string; number: number }) => `${r.repo}#${r.number}`;
 
-type Row = QueueRow & { held?: boolean; fast?: FastPosition | null; batch?: number };
+type Row = QueueRow & { held?: boolean; fast?: FastPosition | null; batch?: number; added?: QueueOrigin };
 type Next = Map<string, { position: number; merge: NextMerge }>;
 
 const COLUMNS: WorkableColumn[] = [
   { id: "step", label: "Step", width: "190px", hint: "Where the PR stands on its way to merged" },
-  { id: "checks", label: "Checks", width: "236px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
-  { id: "size", label: "Size", width: "40px" },
+  { id: "checks", label: "Checks", width: "236px", mdWidth: "120px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
+  { id: "size", label: "Size", width: "40px", mdWidth: "32px" },
   { id: "author", label: "Author", width: "130px", wide: true },
-  { id: "when", label: "Updated", width: "116px", hint: "Reviewed at this head", wide: true },
-  { id: "actions", label: "", width: "40px", align: "end" },
+  { id: "added", label: "Added", width: "150px", hint: "How the PR came into the queue, who put it there and when", wide: true },
+  { id: "actions", label: "", width: "40px", mdWidth: "28px", align: "end" },
 ];
 
 const CHECK_ICON: Record<Tone, ReactNode> = {
@@ -71,15 +71,40 @@ function Check({ label, tone, value }: { label: string; tone: Tone; value: strin
 const BUILD_TONE: Record<NonNullable<QueueRow["prBuild"]>["state"], Tone> = { queued: "neutral", running: "accent", passed: "ok", failed: "bad", error: "warn", stale: "neutral" };
 const BUILD_LABEL: Record<NonNullable<QueueRow["prBuild"]>["state"], string> = { queued: "queued", running: "running", passed: "passed", failed: "failed", error: "error", stale: "stale" };
 
-/** Review, CI, Verify, mergeability and our own build in one run of icons; each names its state, and the failure, on hover. */
+/**
+ * Review, CI, Verify, mergeability and our own build in one run of icons, two to a line in the table's compact layout; each names its
+ * state, and the failure, on hover.
+ */
 function Checks({ r }: { r: QueueRow }) {
   return (
-    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-1 md:max-[1799px]:grid md:max-[1799px]:grid-cols-[auto_auto] md:max-[1799px]:justify-start">
       <Check label="Review" tone={r.verdict === "take" ? "ok" : "warn"} value={r.verdict} />
       <Check label="CI" tone={CI_TONE[r.ci]} value={r.ci} />
       <Check label="Verify" tone={r.verify ? V_TONE[r.verify.state] ?? "neutral" : "neutral"} value={r.verify ? [V_LABEL[r.verify.state] ?? r.verify.state, r.verify.summary, r.verify.note].filter(Boolean).join(" · ") : "none"} />
       <Check label="Merge" tone={MERGEABLE[r.mergeable][1]} value={MERGEABLE[r.mergeable][0]} />
       {r.prBuild && <Check label="Build" tone={BUILD_TONE[r.prBuild.state]} value={[BUILD_LABEL[r.prBuild.state], r.prBuild.current ? null : "older head", r.prBuild.summary].filter(Boolean).join(" · ")} />}
+    </span>
+  );
+}
+
+const HOW: Record<QueueOrigin["how"], [string, string]> = {
+  review: ["Take review", "Came in with a take review; the merge rule or a Merge? answer lets it merge"],
+  answer: ["Merge answer", "An operator answered Merge?"],
+  queued: ["Queued", "An operator added it with Queue items"],
+  preapproved: ["Pre-approved", "An operator pre-approved the merge with a fix-up"],
+};
+
+/** How the PR came into the queue, by whom and when. */
+function Added({ r }: { r: Row }) {
+  const o = r.added ?? { how: "review", by: null, at: r.reviewedAt };
+  const [label, hint] = HOW[o.how];
+  return (
+    <span className="block text-xs leading-snug" title={hint}>
+      <span className="text-ink/75">
+        {label}
+        {o.by && <span className="text-ink/55"> by {o.by}</span>}
+      </span>
+      {o.at && <TimeAgo iso={o.at} className="num block text-2xs text-ink/45" />}
     </span>
   );
 }
@@ -121,7 +146,7 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
             {r.tier === "whitelisted" && <span className="ml-1 text-2xs text-ok">●</span>}
           </span>
         ),
-        when: <TimeAgo iso={r.reviewedAt} className="num text-xs text-ink/50" />,
+        added: <Added r={r} />,
         actions: <RowMenu repo={r.repo} number={r.number} fast={fast} held={!!r.held} pr inBatch={r.batch !== undefined} />,
       }}
     />
