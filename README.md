@@ -143,7 +143,7 @@ autocraft sync                   # first sync of the tracked repos
 
 Repository names must be unique across owners within an instance. Tracking `owner/name` is refused if that name is already known under another owner. When adding a previously unknown repository outside `storytold`, tracking is also refused if `storytold` has a repository of that name. An already-known bare name refers to its recorded owner. The repository must exist and be readable; when using the GitHub App identity, its installation must cover the repository.
 
-Newly tracked repositories start with their pipeline disabled; only Sync, Embed, and Rank will run. For recurring sync, install and enable the supplied systemd timer (`deploy/systemd/autocraft-sync.timer`) or use the periodic service in the Docker Compose deployment. Running the initial sync does not schedule future runs. `autocraft embed` populates vectors; the first run downloads a 34 MB embedding model.
+Newly tracked repositories start with their pipeline disabled. Sync, Embed, and Rank remain available; operator conversations and explicitly fast-tracked items are exceptions to the pipeline-off restriction. For recurring sync, install and enable the supplied systemd timer (`deploy/systemd/autocraft-sync.timer`) or use the periodic service in the Docker Compose deployment. Running the initial sync does not schedule future runs. `autocraft embed` populates vectors. With the default model and an empty cache, the first embedding operation downloads the approximately 34 MB model plus supporting files.
 
 ### Start the dashboard and add the first operator
 
