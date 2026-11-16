@@ -13,10 +13,12 @@ import { NextStepBlock } from "../../ui/organisms/NextStepBlock";
 import { ErrorLine, Page } from "../admin/parts";
 import { FastTrackAdd } from "../queue/fastTrack";
 import { MergeBoard } from "../queue/MergeBoard";
+import { RecentlyMerged } from "../queue/RecentlyMerged";
 import { RepoSelect } from "../../ui/molecules/RepoSelect";
 
 const TABS = [
   ["merge", "Merge queue"],
+  ["merged", "Recently merged"],
   ["steps", "Steps"],
 ] as const;
 
@@ -82,27 +84,26 @@ export function NextView() {
   const tab = param ? TABS.find(([t]) => t === param)?.[0] : "merge";
   if (!tab) return <Navigate to="/next" replace />;
   return (
-    <Page title={tab === "merge" ? "Merge queue" : "Next steps"} wide={tab === "merge"}>
+    <Page title={tab === "steps" ? "Next steps" : "Merge queue"} wide={tab !== "steps"}>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div role="tablist" aria-label="Next" className="flex flex-wrap items-center gap-1">
           {TABS.map(([t, label]) => (
-            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={t === "merge" ? "/next" : `/next/${t}`} replace className="chip max-md:h-11">
+            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={(t === "merge" ? "/next" : `/next/${t}`) + (repo && t !== "steps" ? `?repo=${encodeURIComponent(repo)}` : "")} replace className="chip max-md:h-11">
               {label}
             </Link>
           ))}
         </div>
-        {tab === "merge" && (
+        {tab !== "steps" && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <Link to="/items?state=merged-by-us" className="text-sm text-accent-ink hover:underline max-md:flex max-md:h-11 max-md:items-center">
-              Merged by AutoCraft
-            </Link>
-            <FastTrackAdd />
+            {tab === "merge" && <FastTrackAdd />}
             <RepoSelect value={repo} onChange={setRepo} />
           </div>
         )}
       </div>
       {tab === "steps" ? (
         <Steps />
+      ) : tab === "merged" ? (
+        <RecentlyMerged repo={repo} />
       ) : (
         <>
           <MergeBoard repo={repo} />

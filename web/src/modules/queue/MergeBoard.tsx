@@ -1,9 +1,9 @@
 // The merge queue, on the Merge queue tab: every PR with a take or take-fix review as one Workable table, grouped by the step it waits on,
-// nearest to merging first; integration batches are groups of their own, then the stopped PRs and the ones merged lately.
+// nearest to merging first; integration batches are groups of their own, then the stopped PRs.
 import { Fragment, useEffect, useMemo, type ReactNode } from "react";
 import { CheckCircleIcon, CircleNotchIcon, ClockIcon, MinusCircleIcon, WarningCircleIcon, XCircleIcon } from "@phosphor-icons/react";
-import { useApi, useQuery } from "../../api/client";
-import type { FastPosition, HomeDone, NextMerge, QueueBatch, QueueRow, QueueState } from "../../api/types";
+import { useApi } from "../../api/client";
+import type { FastPosition, NextMerge, QueueBatch, QueueRow, QueueState } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -43,7 +43,7 @@ const COLUMNS: WorkableColumn[] = [
   { id: "checks", label: "Checks", width: "236px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
   { id: "size", label: "Size", width: "40px" },
   { id: "author", label: "Author", width: "130px", wide: true },
-  { id: "when", label: "Updated", width: "116px", hint: "Reviewed at this head, or merged", wide: true },
+  { id: "when", label: "Updated", width: "116px", hint: "Reviewed at this head", wide: true },
   { id: "actions", label: "", width: "40px", align: "end" },
 ];
 
@@ -151,16 +151,6 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
   );
 }
 
-function MergedRow({ d }: { d: HomeDone }) {
-  return (
-    <WorkableRow
-      item={{ repo: d.repo, number: d.number, kind: "pr", state: "merged", title: d.title }}
-      lead={null}
-      cells={{ step: <Badge tone="merged">Merged</Badge>, when: <TimeAgo iso={d.at} className="num text-xs text-ink/50" /> }}
-    />
-  );
-}
-
 function StopBatch({ b }: { b: QueueBatch }) {
   const api = useApi();
   const write = useWrite();
@@ -198,7 +188,6 @@ function FlowBar({ counts, total }: { counts: { id: string; label: string; n: nu
 /** The merge queue: a bar of the steps' shares, then one table of every PR in it. */
 export function MergeBoard({ repo }: { repo: string | null }) {
   const { pages, error, hasMore, loadingMore, loadMore } = usePage("merge", repo ?? "pipeline", undefined);
-  const home = useQuery("home", (a) => a.home());
   // The table shows the whole queue, so every page is read.
   useEffect(() => {
     if (hasMore && !loadingMore) loadMore();
@@ -226,7 +215,6 @@ export function MergeBoard({ repo }: { repo: string | null }) {
     return { steps, batches, blocked, next, loaded: !!first };
   }, [pages]);
 
-  const merged = (home.data?.done ?? []).filter((d) => d.what === "merged" && d.kind === "pr" && (!repo || d.repo === repo));
   const inBatches = q.batches.reduce((s, b) => s + b.rows.length, 0);
   const counts = [
     ...STEPS.map((s) => ({ id: s.id, label: s.label, n: (q.steps.get(s.id)?.length ?? 0) + (s.id === "batch" ? inBatches : 0), tone: s.dot })),
@@ -236,7 +224,7 @@ export function MergeBoard({ repo }: { repo: string | null }) {
 
   return (
     <>
-      <ErrorLine error={error?.message ?? home.error?.message} className="mt-3" />
+      <ErrorLine error={error?.message} className="mt-3" />
       {q.loaded && (
         <p className="mt-4 text-sm text-ink/60">
           <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on, nearest to merging first. The number before a PR is its place in the merge order.
@@ -245,7 +233,7 @@ export function MergeBoard({ repo }: { repo: string | null }) {
       <FlowBar counts={counts} total={total} />
       {q.loaded && (
         <WorkableTable columns={COLUMNS} label="Merge queue" itemLabel="Pull request" className="mt-5">
-          {total === 0 && merged.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue.</p>}
+          {total === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue.</p>}
           {STEPS.map((s) => {
             const rows = q.steps.get(s.id)!;
             const batchGroups =
@@ -275,13 +263,6 @@ export function MergeBoard({ repo }: { repo: string | null }) {
             <WorkableGroup id="mq-stopped" title="Stopped" count={q.blocked.length} hint="Waits for a person, a fix-up or a new head" dot="bg-bad">
               {q.blocked.map((r) => (
                 <PrRow key={key(r)} r={r} next={q.next} />
-              ))}
-            </WorkableGroup>
-          )}
-          {merged.length > 0 && (
-            <WorkableGroup title="Merged lately" count={merged.length} dot="bg-merged">
-              {merged.map((d) => (
-                <MergedRow key={key(d)} d={d} />
               ))}
             </WorkableGroup>
           )}
