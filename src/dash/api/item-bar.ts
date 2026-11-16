@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ItemBar, ItemBarStep, ItemKind, ItemState, ItemStatus } from "../../../web/src/api/types.ts";
 import { stagesInOrder, stageOfStep, type StageId } from "../../stages/registry.ts";
 import { clip, hiddenSql, hiddenArgs, stepTitle, type Ctx } from "./trace.ts";
+import { COMMENT_UNSENT_DELAYS_MS } from "../../core/rules.ts";
 
 /** A step as people read it: its stage's short name ("Fix-up"), else its title. */
 const nameOf = (step: string): string => stageOfStep(step)?.title ?? stepTitle(step);
@@ -76,6 +77,8 @@ export function deriveSteps(i: {
 type Q = <T>(sql: string, ...args: (string | number)[]) => T[];
 
 const FIX_DONE = /^(pushed|merged)$/;
+/** The unsent comments at the row's head, as column `unsent`. */
+const unsentCount = (table: string, head: string) => `(SELECT COUNT(*) FROM ${table} u WHERE u.repo = x.repo AND u.number = x.number AND u.${head} = x.${head} AND u.state = 'comment-unsent') AS unsent`;
 const FIX_FAILED = /^(failed|refused|rejected|too-large|cannot-push|push-denied|comment-failed)$/;
 
 function evidenceOf(c: Ctx, q: Q, mergedAt: string | null, mergedByUs: boolean): Evidence[] {
@@ -103,13 +106,15 @@ function evidenceOf(c: Ctx, q: Q, mergedAt: string | null, mergedByUs: boolean):
     if (stage && !seen.has(j.id)) out.push({ stage, state: "failed", at: j.ended_at, jobId: j.id, label: nameOf(j.step), reason: reasonOf(j.error), step: j.step });
   }
   const live = out.filter((e) => !(e.state === "failed" && e.step && (cleared.get(e.step) ?? "") > e.at));
-  const rowsOf = (label: string, stage: StageId, rows: { state: string; reason: string | null; at: string }[]) => {
-    const r = rows.find((x) => FIX_DONE.test(x.state) || FIX_FAILED.test(x.state));
+  // A comment that did not reach GitHub fails only when it was the last try (src/core/rules.ts unsentAsk); before that it is posted again.
+  const failed = (x: { state: string; unsent: number }) => FIX_FAILED.test(x.state) || (x.state === "comment-unsent" && x.unsent > COMMENT_UNSENT_DELAYS_MS.length);
+  const rowsOf = (label: string, stage: StageId, rows: { state: string; reason: string | null; at: string; unsent: number }[]) => {
+    const r = rows.find((x) => FIX_DONE.test(x.state) || failed(x));
     if (r) live.push({ stage, state: FIX_DONE.test(r.state) ? "done" : "failed", at: r.at, jobId: null, label, reason: FIX_DONE.test(r.state) ? null : reasonOf(r.reason) });
   };
-  rowsOf("Fix-up", "fixup", q("SELECT state, reason, created_at AS at FROM fixups WHERE repo = ? AND number = ? AND state != 'superseded' ORDER BY created_at DESC LIMIT 1", repo, n));
-  rowsOf("CI fix", "fixup", q("SELECT state, reason, created_at AS at FROM ci_fixes WHERE repo = ? AND number = ? AND state != 'superseded' ORDER BY created_at DESC LIMIT 1", repo, n));
-  rowsOf("Conflict merge", "fixup", q("SELECT state, reason, created_at AS at FROM conflict_merges WHERE repo = ? AND number = ? AND state != 'superseded' ORDER BY created_at DESC LIMIT 1", repo, n));
+  rowsOf("Fix-up", "fixup", q(`SELECT state, reason, created_at AS at, ${unsentCount("fixups", "from_head")} FROM fixups x WHERE repo = ? AND number = ? AND state != 'superseded' ORDER BY created_at DESC LIMIT 1`, repo, n));
+  rowsOf("CI fix", "fixup", q(`SELECT state, reason, created_at AS at, ${unsentCount("ci_fixes", "head")} FROM ci_fixes x WHERE repo = ? AND number = ? AND state != 'superseded' ORDER BY created_at DESC LIMIT 1`, repo, n));
+  rowsOf("Conflict merge", "fixup", q(`SELECT state, reason, created_at AS at, ${unsentCount("conflict_merges", "from_head")} FROM conflict_merges x WHERE repo = ? AND number = ? AND state != 'superseded' ORDER BY created_at DESC LIMIT 1`, repo, n));
   for (const v of q<{ state: string; summary: string | null; at: string }>("SELECT state, summary, COALESCE(finished_at, created_at) AS at FROM verifications WHERE repo = ? AND number = ? AND state != 'stale' ORDER BY created_at DESC LIMIT 1", repo, n)) {
     if (v.state === "passed" || v.state === "ci-enough") live.push({ stage: "verify", state: "done", at: v.at, jobId: null, label: "Verify", reason: null });
     else if (v.state === "failed" || v.state === "error") live.push({ stage: "verify", state: "failed", at: v.at, jobId: null, label: "Verify", reason: reasonOf(v.summary) });

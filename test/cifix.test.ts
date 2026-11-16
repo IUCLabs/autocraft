@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, test } from "node:test";
+import { describe, mock, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
 import { setCommentApproval } from "../src/act/approval.ts";
@@ -17,6 +17,7 @@ import { REPO_PATH } from "../src/sandbox/command.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { setCiApproval } from "../src/merge/ci-approval.ts";
+import { CLIPPY_ARTIFACT } from "../src/prepush/index.ts";
 import type { Querier } from "../src/mirror.ts";
 import { saveOpus } from "../src/review/opus.ts";
 import { validating } from "./gql.ts";
@@ -146,7 +147,7 @@ const FMT_LOG = "fmt\tCheck formatting\t2026-01-01T00:00:00Z Diff in /home/runne
 const BASE = "b".repeat(40);
 const GOOD = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { b(); }\n+fn b() {}\n+fn main() { b(); }\n";
 
-function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string; completedAt?: string; checkRuns?: unknown[]; commentFails?: boolean; closedAfter?: number; decision?: string; lib?: string } = {}): World {
+function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string; completedAt?: string; checkRuns?: unknown[]; commentFails?: boolean; /** The comment fails before its request goes out. */ commentUnsent?: boolean; closedAfter?: number; decision?: string; lib?: string } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
@@ -165,7 +166,7 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
     spent: 0, remaining: 5000,
     async query() {
       return { repository: { pullRequest: {
-        id: "PR7", number: 7, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "gate / test", status: "COMPLETED", conclusion: "FAILURE" }] } } } }] }, state: opts.closedAfter !== undefined && ++reads > opts.closedAfter ? "CLOSED" : "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
+        id: "PR7", number: 7, commits: { nodes: [{ commit: { oid: head, statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "gate / test", status: "COMPLETED", conclusion: "FAILURE" }] } } } }] }, state: opts.closedAfter !== undefined && ++reads > opts.closedAfter ? "CLOSED" : "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
         headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] }, reviewDecision: opts.decision ?? null,
       } } };
     },
@@ -175,6 +176,7 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
       if (args[0] === "api") return { code: 0, stdout: JSON.stringify({ login: "pipeline-bot", id: 42, node_id: "U42" }), stderr: "" };
       if (args[0] === "run") { log.push(`rerun ${args[2]}`); return { code: 0, stdout: "", stderr: "" }; }
       log.push(`comment: ${o.input}`);
+      if (opts.commentUnsent) return { code: 1, stdout: "", stderr: "app identity: no installation token for storytold/app: HTTP 500", sent: false };
       return opts.commentFails ? { code: 1, stdout: "", stderr: "HTTP 403" } : { code: 0, stdout: "", stderr: "" };
     }
     const net = args.findIndex((a) => a.startsWith("https://github.com/"));
@@ -329,3 +331,44 @@ describe("pushes are recorded before they happen", () => {
 
 });
 
+
+test("a stored patch whose comment did not reach GitHub is posted again after the backoff, with no new model or lint run", async () => {
+  const at = Date.parse(T2);
+  mock.timers.enable({ apis: ["Date"], now: at });
+  try {
+    const opts = { canModify: false, commentUnsent: true };
+    const w = world(opts);
+    w.deps.now = () => new Date();
+    const db = fresh(w.head, { canModify: false, comment: true });
+    const out: string[] = [];
+    const run = () => runCifix(db, { repo: "app", dryRun: false }, (l) => out.push(l), w.deps);
+    const states = () => rows(db, "SELECT state FROM ci_fixes ORDER BY rowid").map((r) => r.state);
+    const comments = () => w.log.filter((l) => l.startsWith("comment:")).length;
+    await run();
+    assert.deepEqual(states(), ["linting"], out.join("\n"));
+    const task = Number(rows(db, "SELECT id FROM build_tasks")[0]!.id);
+    db.prepare("UPDATE build_tasks SET state = 'done', ended_at = ? WHERE id = ?").run(new Date().toISOString(), task);
+    const tmp = tempPath(task);
+    writeFileSync(tmp, '{"reason":"build-finished","success":true}\n');
+    storeArtifact(db, task, CLIPPY_ARTIFACT, tmp);
+
+    await run();
+    assert.equal(comments(), 1);
+    assert.deepEqual(states(), ["linting", "comment-unsent"], "the stored patch keeps its row, a try");
+
+    mock.timers.setTime(at + 5 * 60_000);
+    await run();
+    assert.equal(comments(), 1, "not before the backoff ends");
+    assert.deepEqual(states(), ["linting", "comment-unsent"]);
+
+    mock.timers.setTime(at + 11 * 60_000);
+    opts.commentUnsent = false;
+    await run();
+    assert.equal(comments(), 2);
+    assert.deepEqual(states(), ["asked", "comment-unsent"]);
+    assert.equal(w.log.filter((l) => l === "model").length, 1);
+    assert.equal(rows(db, "SELECT id FROM build_tasks").length, 1);
+  } finally {
+    mock.timers.reset();
+  }
+});

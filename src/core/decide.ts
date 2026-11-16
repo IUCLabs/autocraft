@@ -320,11 +320,13 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
   const waitingToReview = (f.reviewHold?.kind === "ci" && !f.reviewHold.red) || f.reviewHold?.kind === "interval";
   const working = actions.some(worksOn) || inBatch || flying;
   // A conflicting PR whose conflict step has nothing to do (asked, held, not approved, done) waits on its author, whatever the queue state says.
-  const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting" && f.conflict.bucket !== "capped";
+  const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && !["merge", "linting", "capped", "ask-retry"].includes(f.conflict.bucket);
+  // A comment that did not reach GitHub is posted again by the pipeline after its backoff: the PR stays ours meanwhile.
+  const retrying = (f.mergeable === "CONFLICTING" && f.conflict?.bucket === "ask-retry") || fx?.bucket === "ask-retry" || cf === "comment-wait";
   const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || conflictStuck
     || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push" || cf === "done"
     || f.mergeHeld || (state === "ci-approval" && !f.repoFacts.ciApproved);
-  const keep = working || (!gaveUp && (waitingToReview || PROGRESS_STATES.has(state)));
+  const keep = working || retrying || (!gaveUp && (waitingToReview || PROGRESS_STATES.has(state)));
   return unassignActions(f.assignment, f.ghState === "OPEN", !keep);
 }
 
@@ -372,7 +374,7 @@ export function decidePr(f: PrFacts): Plan {
   if (f.ghState === "OPEN" && !f.heldBacklog && f.head && !f.draft && f.mergeable !== "CONFLICTING") {
     for (const c of declinedBy(f) || f.lint.some((l) => l.source === "carry") ? [] : f.carry) {
       if (f.pushable && f.repoFacts.pushApproved && c.attempts + 1 <= FIXUP_MAX_ATTEMPTS) extra.push(act("fixup", f.head, { bucket: "fix", source: "carry" }));
-      else if (f.repoFacts.commentApproved && !f.quiet) extra.push(act("fixup", f.head, { bucket: "ask", source: "carry" }));
+      else if (f.repoFacts.commentApproved && !f.quiet && !c.unsent) extra.push(act("fixup", f.head, { bucket: "ask", source: "carry" }));
     }
   }
 
@@ -477,7 +479,9 @@ export function decidePr(f: PrFacts): Plan {
     // A CI fix of our own breakage is reviewed against the head before the push.
     const reviewed = l.source === "carry" || l.source === "operator" || (l.step === "cifix" && (!!f.brokeByUs || !!f.gateRed) && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
     const approved = f.pushable ? f.repoFacts.pushApproved : l.step === "cifix" && f.repoFacts.commentApproved;
-    if (basic && reviewed && approved) actions.push(act("lint", f.head, { bucket: l.step, source: l.source }));
+    // A CI fix patch whose comment did not reach GitHub is posted again once the backoff ends, and not after the last one.
+    const unsentHeld = l.step === "cifix" && !!f.cifix?.unsent;
+    if (basic && reviewed && approved && !unsentHeld) actions.push(act("lint", f.head, { bucket: l.step, source: l.source }));
   }
 
   if (e) {
