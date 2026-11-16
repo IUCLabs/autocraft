@@ -16,6 +16,8 @@ export interface WorkableColumn {
   /** Header tooltip. */
   hint?: string;
   align?: "start" | "end";
+  /** Shown only on wide screens (xl and up) and on a phone, where cells wrap; left out in between so the item keeps its room. */
+  wide?: boolean;
 }
 
 export interface WorkableItem {
@@ -29,25 +31,35 @@ export interface WorkableItem {
 
 const Columns = createContext<WorkableColumn[]>([]);
 
+/** The item column never gets narrower than this; below the table's full width it scrolls sideways. */
+const ITEM_MIN = 280;
+const GAP = 16;
+const PAD = 32;
+
 /** Item column, then the page's columns. */
-const template = (cols: WorkableColumn[]) => ["minmax(0,1fr)", ...cols.map((c) => c.width)].join(" ");
-const grid = "md:grid md:grid-cols-[var(--wk-cols)] md:gap-x-4";
+const template = (cols: WorkableColumn[]) => [`minmax(${ITEM_MIN}px,1fr)`, ...cols.map((c) => c.width)].join(" ");
+/** The width the columns need: the item minimum, every column, the gaps and the row padding. Widths given in px count; others count 0. */
+const minWidth = (cols: WorkableColumn[]) => ITEM_MIN + PAD + cols.reduce((s, c) => s + (parseFloat(c.width) || 0) + GAP, 0);
+const grid = "md:grid md:grid-cols-[var(--wk-cols-md)] xl:grid-cols-[var(--wk-cols)] md:gap-x-4";
+const narrow = (cols: WorkableColumn[]) => cols.filter((c) => !c.wide);
 
 export function WorkableTable({ columns, label, itemLabel = "Item", children, className }: { columns: WorkableColumn[]; label: string; itemLabel?: string; children: ReactNode; className?: string }) {
   return (
     <Columns.Provider value={columns}>
-      <div role="table" aria-label={label} style={{ "--wk-cols": template(columns) } as CSSProperties} className={cn("overflow-hidden rounded-md border border-line text-sm", className)}>
+      <div className={cn("overflow-x-auto rounded-md border border-line", className)}>
+      <div role="table" aria-label={label} style={{ "--wk-cols": template(columns), "--wk-cols-md": template(narrow(columns)), "--wk-min": `${minWidth(columns)}px`, "--wk-min-md": `${minWidth(narrow(columns))}px` } as CSSProperties} className="text-sm md:min-w-[var(--wk-min-md)] xl:min-w-[var(--wk-min)]">
         <div role="row" className={cn(grid, "border-b border-line bg-ink/[0.03] px-4 py-1.5 text-xs font-medium text-ink/55 max-md:hidden")}>
           <span role="columnheader" className="pl-8">
             {itemLabel}
           </span>
           {columns.map((c) => (
-            <span key={c.id} role="columnheader" title={c.hint} className={cn(c.align === "end" && "text-right")}>
+            <span key={c.id} role="columnheader" title={c.hint} className={cn(c.align === "end" && "text-right", c.wide && "max-xl:hidden")}>
               {c.label}
             </span>
           ))}
         </div>
         {children}
+      </div>
       </div>
     </Columns.Provider>
   );
@@ -97,7 +109,7 @@ export function WorkableRow({ item, lead, sub, cells, detail, highlight, dataIte
               </button>
             ) : null}
           </span>
-          {lead !== undefined && <span className="flex w-12 shrink-0 justify-end pt-px">{lead}</span>}
+          {lead !== undefined && <span className="flex w-10 shrink-0 justify-end pt-px">{lead}</span>}
           <div className="min-w-0 flex-1">
             <ItemRef repo={item.repo} number={item.number} kind={item.kind} state={item.state} draft={item.draft} title={item.title} stretch />
             {sub && <div className="mt-0.5 pl-6 text-2xs text-ink/55">{sub}</div>}
@@ -106,7 +118,7 @@ export function WorkableRow({ item, lead, sub, cells, detail, highlight, dataIte
         {columns.map((c) => {
           const v = cells[c.id];
           return (
-            <div key={c.id} role="cell" className={cn("min-w-0 md:pt-0.5", c.align === "end" && "md:flex md:justify-end", v == null && "max-md:hidden", c.align === "end" && "max-md:ml-auto")}>
+            <div key={c.id} role="cell" className={cn("min-w-0 md:pt-0.5", c.align === "end" && "md:flex md:justify-end", c.wide && "md:max-xl:hidden", v == null && "max-md:hidden", c.align === "end" && "max-md:ml-auto")}>
               {v ?? <span className="text-ink/30">–</span>}
             </div>
           );

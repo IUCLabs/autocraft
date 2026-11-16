@@ -39,11 +39,11 @@ type Row = QueueRow & { held?: boolean; fast?: FastPosition | null; batch?: numb
 type Next = Map<string, { position: number; merge: NextMerge }>;
 
 const COLUMNS: WorkableColumn[] = [
-  { id: "step", label: "Step", width: "220px", hint: "Where the PR stands on its way to merged" },
-  { id: "checks", label: "Checks", width: "290px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
+  { id: "step", label: "Step", width: "190px", hint: "Where the PR stands on its way to merged" },
+  { id: "checks", label: "Checks", width: "236px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
   { id: "size", label: "Size", width: "40px" },
-  { id: "author", label: "Author", width: "130px" },
-  { id: "when", label: "Updated", width: "116px", hint: "Reviewed at this head, or merged" },
+  { id: "author", label: "Author", width: "130px", wide: true },
+  { id: "when", label: "Updated", width: "116px", hint: "Reviewed at this head, or merged", wide: true },
   { id: "actions", label: "", width: "40px", align: "end" },
 ];
 
