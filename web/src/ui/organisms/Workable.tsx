@@ -72,7 +72,7 @@ export function WorkableGroup({ title, count, hint, dot, aside, children, id }: 
 }
 
 /**
- * One item. `lead` is a short mark before the icon (a merge position); `sub` is a line under the title; `cells` fill the table's columns
+ * One item. `lead` is a short mark before the icon in a fixed slot (a merge position; null keeps the slot empty so titles line up); `sub` is a line under the title; `cells` fill the table's columns
  * by id; `detail` opens under the row by its caret. The item link covers the row, so controls in cells need `relative z-10`.
  */
 export function WorkableRow({ item, lead, sub, cells, detail, highlight, dataItem }: {
@@ -97,7 +97,7 @@ export function WorkableRow({ item, lead, sub, cells, detail, highlight, dataIte
               </button>
             ) : null}
           </span>
-          {lead && <span className="shrink-0 pt-px">{lead}</span>}
+          {lead !== undefined && <span className="flex w-12 shrink-0 justify-end pt-px">{lead}</span>}
           <div className="min-w-0 flex-1">
             <ItemRef repo={item.repo} number={item.number} kind={item.kind} state={item.state} draft={item.draft} title={item.title} stretch />
             {sub && <div className="mt-0.5 pl-6 text-2xs text-ink/55">{sub}</div>}

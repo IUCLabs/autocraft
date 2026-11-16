@@ -155,6 +155,7 @@ function MergedRow({ d }: { d: HomeDone }) {
   return (
     <WorkableRow
       item={{ repo: d.repo, number: d.number, kind: "pr", state: "merged", title: d.title }}
+      lead={null}
       cells={{ step: <Badge tone="merged">Merged</Badge>, when: <TimeAgo iso={d.at} className="num text-xs text-ink/50" /> }}
     />
   );
