@@ -1,5 +1,6 @@
 // Home: what needs me, is anything broken, is it moving.
-import { ProjectLive, ProjectMergeQueue } from "./live";
+import { ProjectMergeQueue } from "./live";
+import { LiveBoard } from "./LiveBoard";
 import { ALL } from "../../api/scope";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeftIcon, CaretRightIcon, GitMergeIcon, ProhibitIcon, ChatTeardropTextIcon, ShieldWarningIcon, WarningCircleIcon, XCircleIcon, type Icon } from "@phosphor-icons/react";
@@ -70,11 +71,8 @@ export function HomeView(_: ViewProps) {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-[1180px] flex-col gap-7 px-4 pb-10 pt-5 md:px-6">
         <ProjectHeader repo={repo} scoped={scoped} />
+        <LiveBoard to={scoped("/now")} />
         <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-          <ProjectLive to={scoped("/now")} />
-          <ProjectMergeQueue repo={repo} />
-        </div>
-        <div className={cn("grid gap-7", problems.length > 0 && "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]")}>
           <Section title="Needs you" count={needs.total} to={scoped("/needs")} linkLabel="All decisions">
             {needs.total === 0 ? (
               <p className="border-t border-line py-3 text-sm text-ink/55">Nothing is waiting for a person.</p>
@@ -93,6 +91,7 @@ export function HomeView(_: ViewProps) {
               })
             )}
           </Section>
+          <div className="flex min-w-0 flex-col gap-7">
           {problems.length > 0 && (
             <Section title="Problems" count={problems.length}>
               <ul>
@@ -109,6 +108,8 @@ export function HomeView(_: ViewProps) {
               </ul>
             </Section>
           )}
+          <ProjectMergeQueue repo={repo} />
+          </div>
         </div>
 
         <Section title="Pipeline">

@@ -1,8 +1,9 @@
 // The Now page on fake data: a failing sync, a red main, a paused account, and one feed of running and finished work that grows over time.
 import type { Api } from "../client";
-import type { Now, NowEntry, NowFeed } from "../types";
+import type { LiveBoard, Now, NowEntry, NowFeed } from "../types";
 import { NOW } from "./fixtures";
 import { ackedDeadlines, mockSwitch } from "./pipelineMock";
+import { nowMs } from "../../lib/format";
 
 const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
 const item = (repo: string, number: number, title: string, kind: "pr" | "issue" = "pr") => ({ repo, number, kind, state: "open" as const, title });
@@ -62,7 +63,7 @@ const mk = (i: number, iso: string): NowEntry => {
 };
 
 /** With `?arrive` in the address, a new entry comes every 2 s instead of every 12 s. */
-export function createNowMock(changed: () => void): Pick<Api, "now" | "nowFeed"> {
+export function createNowMock(changed: () => void): Pick<Api, "now" | "nowFeed" | "live"> {
   const PAGE = 15;
   const entries: NowEntry[] = [
     REVIEW_JOB,
@@ -91,6 +92,42 @@ export function createNowMock(changed: () => void): Pick<Api, "now" | "nowFeed">
   };
   return {
     now: () => new Promise((r) => setTimeout(() => r(structuredClone({ health: healthNow(), alsoRunning: ["Rank open items", "Embed items"], ...page(null) })), 60)),
+    live: () => new Promise((r) => setTimeout(() => r(liveBoard(nowMs())), 60)),
     nowFeed: (before) => new Promise((r) => setTimeout(() => r(structuredClone(page(before))), 300)),
+  };
+}
+
+/** The Live board's mock: a few jobs with calls and build steps placed around `now`, one queued, two ended lately. */
+function liveBoard(now: number): LiveBoard {
+  const t = (min: number) => new Date(now - min * 60_000).toISOString();
+  const est = (median: number, p90: number, samples = 24) => ({ median: median * 60_000, p90: p90 * 60_000, samples });
+  const it = (repo: string, number: number, title: string, kind: "pr" | "issue" = "pr") => ({ repo, number, kind, state: "open" as const, title });
+  return {
+    lanes: [
+      { key: "job:1", title: "Review pull requests", state: "running", start: t(14), end: null, line: "Reviewing photocraft#9981 (2 of 3)", item: it("photocraft", 9981, "Fix crop handles on rotated layers"), itemCount: 3, repo: "photocraft", detail: "/pipeline/1", estimate: est(18, 31),
+        ops: [
+          { kind: "model", label: "claude-opus", detail: "Opus review on main", start: t(14), end: t(9), estimate: null },
+          { kind: "model", label: "claude-opus", detail: "Opus review on main", start: t(8.5), end: t(3), estimate: null },
+          { kind: "model", label: "claude-opus", detail: "Opus review on main", start: t(2.5), end: null, estimate: est(5, 9) },
+        ] },
+      { key: "job:2", title: "Verify pull requests", state: "running", start: t(11), end: null, line: "Running the tests of wordcraft#2231", item: it("wordcraft", 2231, "Keep the hyperlink run when exporting the last paragraph"), itemCount: 1, repo: "wordcraft", detail: "/pipeline/2", estimate: est(16, 24),
+        ops: [
+          { kind: "setup", label: "npm ci", detail: "Verify pull requests", start: t(11), end: t(8.8), estimate: null },
+          { kind: "build", label: "build", detail: "Verify pull requests", start: t(8.8), end: t(4.1), estimate: null },
+          { kind: "tests", label: "test", detail: "Verify pull requests", start: t(4.1), end: null, estimate: est(6, 9) },
+        ] },
+      { key: "job:3", title: "Fix-up pull requests", state: "running", start: t(26), end: null, line: "Second round on vectorcraft#1388", item: it("vectorcraft", 1388, "Snap guides ignore locked layers"), itemCount: 1, repo: "vectorcraft", detail: "/pipeline/3", estimate: est(19, 25),
+        ops: [
+          { kind: "model", label: "claude-sonnet", detail: "Fix-up on main", start: t(26), end: t(17), estimate: null },
+          { kind: "lint", label: "lint", detail: "Fix-up check", start: t(17), end: t(15), estimate: null, failed: true },
+          { kind: "model", label: "claude-sonnet", detail: "Fix-up on main", start: t(15), end: null, estimate: est(8, 11) },
+        ] },
+      { key: "task:4", title: "Build task, Build pull requests", state: "running", start: t(3), end: null, line: null, item: it("filmcraft", 3149, "Panel resize handle flickers"), itemCount: 1, repo: "filmcraft", detail: "/envs/4", estimate: null,
+        ops: [{ kind: "build", label: "cargo build", detail: "Build pull requests", start: t(3), end: null, estimate: null }] },
+      { key: "job:5", title: "Classify new items", state: "queued", start: t(1), end: null, line: null, item: it("gridcraft", 977, "Range spill: keep neighbouring cells when a formula grows", "issue"), itemCount: 4, repo: "gridcraft", detail: "/pipeline/5", estimate: null, ops: [] },
+      { key: "job:6", title: "Ask Merge? decisions", state: "done", start: t(9), end: t(7), line: "Asked Merge? on 1 PR", item: it("designcraft", 1484, "Add Hungarian spellchecking and nonstandard hyphenation"), itemCount: 1, repo: "designcraft", detail: "/pipeline/6", estimate: null,
+        ops: [{ kind: "model", label: "claude-haiku", detail: "Merge? on main", start: t(9), end: t(7.5), estimate: null }] },
+      { key: "job:7", title: "Merge pull requests", state: "failed", start: t(6), end: t(5), line: "Refused: required check has not finished", item: it("filmcraft", 1161, "Color grading: keep state after copy and paste"), itemCount: 1, repo: "filmcraft", detail: "/pipeline/7", estimate: null, ops: [] },
+    ],
   };
 }

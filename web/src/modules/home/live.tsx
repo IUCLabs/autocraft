@@ -1,52 +1,13 @@
-// The top of a project page: what the pipeline is doing in the project right now, and what merges next.
+// What merges next in the page's project, on Home.
 import { Link } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { MergeWait } from "../../api/types";
-import { useNow } from "../../lib/useNow";
 import { num } from "../../lib/format";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
-import { EntryRow } from "../../ui/molecules/EntryRow";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { Section } from "../../ui/molecules/Section";
 import { ErrorLine } from "../admin/parts";
-
-const SHOWN = 8;
-
-/** The newest units of work of the page's project (every repo for All projects), running ones marked; it follows the live feed. */
-export function ProjectLive({ to }: { to: string }) {
-  const { data, error } = useQuery("now", (a) => a.now());
-  const entries = data?.entries ?? [];
-  const running = entries.filter((e) => e.state === "running").length;
-  // Running entries show their elapsed time, so the list ticks while any runs.
-  useNow(running ? 1000 : undefined);
-  return (
-    <Section
-      title={
-        <span className="inline-flex items-center gap-2">
-          <span className="relative flex size-2" aria-hidden>
-            {running > 0 && <span className="absolute inline-flex size-full animate-ping rounded-full bg-ok opacity-60" />}
-            <span className={running > 0 ? "relative inline-flex size-2 rounded-full bg-ok" : "relative inline-flex size-2 rounded-full bg-ink/30"} />
-          </span>
-          Live
-          {running > 0 && <span className="text-xs font-normal text-ink/55">{running} running</span>}
-        </span>
-      }
-      to={to}
-      linkLabel="Full feed"
-    >
-      <ErrorLine error={error?.message} />
-      {data && entries.length === 0 && <p className="border-t border-line py-3 text-sm text-ink/55">Nothing has happened in this project lately.</p>}
-      {entries.length > 0 && (
-        <ul className="max-h-[360px] overflow-y-auto rounded-md border border-line">
-          {entries.slice(0, SHOWN).map((e) => (
-            <EntryRow key={e.key} entry={e} />
-          ))}
-        </ul>
-      )}
-    </Section>
-  );
-}
 
 const WAIT_TONE: Record<MergeWait, Tone> = { ready: "ok", refused: "bad", ci: "neutral", premerge: "neutral", verify: "neutral", "re-review": "neutral", "batch-check": "accent", "batch-ci": "accent", held: "warn" };
 

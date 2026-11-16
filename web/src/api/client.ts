@@ -11,6 +11,7 @@ import type {
   ItemPageData,
   ItemStatusFilter,
   ItemPeek,
+  LiveBoard,
   ItemStatusList,
   SecurityList,
   FindingPageData,
@@ -193,6 +194,8 @@ export interface Api {
   };
   /** Health problems, everything in progress and the last things that happened, for the home page. */
   now(): Promise<Now>;
+  /** Running and queued work and what ended lately, on one time axis with estimates (the Live board on Home). */
+  live(): Promise<LiveBoard>;
   /** The next page of "Just happened", older than `before` (a `nextCursor`). */
   nowFeed(before: string): Promise<NowFeed>;
   item(repo: RepoName, number: number): Promise<Item>;

@@ -24,7 +24,7 @@ type Feed = { entries: NowEntry[]; also: string[]; nextCursor: string | null };
 const PER_KIND = 5;
 const HOUR_MS = 3_600_000;
 /** Jobs that never work on items; they show only in the "Also running" line. */
-const QUIET_STEPS = new Set(["rank", "embed", "checks", "main-ci", "labels-ensure", "review-carry", "verify-collect", "fixissue-collect"]);
+export const QUIET_STEPS = new Set(["rank", "embed", "checks", "main-ci", "labels-ensure", "review-carry", "verify-collect", "fixissue-collect"]);
 /** Writes that are bookkeeping, not something an operator follows. */
 const HOUSEKEEPING = new Set(["assign", "unassign", "labels-apply", "label-create", "ci-run-approve", "ci-rerun", "fork-create", "fixissue-claim", "fixissue-unclaim"]);
 /** One group of same-action writes by the same actor; a gap longer than this starts a new run of them. */

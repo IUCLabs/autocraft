@@ -2,6 +2,7 @@
 // server has already checked the session, and on POSTs the Origin, the CSRF
 // header and the per-session limits; these handlers check roles and GitHub
 // permissions themselves. Item and comment text is returned as data only.
+import { live } from "./live.ts";
 import { isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import { prBuildView } from "../../prbuild/view.ts";
 import { checksOf } from "../../patchcheck/index.ts";
@@ -589,6 +590,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/needs/fixes/:repo", needsFixes),
     get("/api/flow", flow),
     scoped(get("/api/now", now)),
+    scoped(get("/api/live", live)),
     scoped(get("/api/now/feed", nowFeed)),
     heavy(get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors))),
     get("/api/security/findings", securityPage.securityFindings),

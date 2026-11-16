@@ -2315,6 +2315,44 @@ export type NowEntry = {
   children: NowEntry[];
 };
 export type NowFeed = { entries: NowEntry[]; nextCursor: string | null };
+/** How long the same kind of work took before: median, the 90th percentile ("late") and how many runs that is, in milliseconds. */
+export interface LiveEstimate { median: number; p90: number; samples: number }
+/** What a stretch of a lane's time went to: a model call, or one step of a build task (setup, build, tests, lint, other). */
+export type LiveOpKind = "model" | "setup" | "build" | "tests" | "lint" | "other";
+export interface LiveOp {
+  kind: LiveOpKind;
+  label: string;
+  /** The model and account, or the build step's command name. */
+  detail: string | null;
+  start: string;
+  /** Null while it runs. */
+  end: string | null;
+  /** For a running op: how long the same work took before. */
+  estimate: LiveEstimate | null;
+  failed?: boolean;
+}
+/** One unit of the pipeline's work on the Live board: a job (with its model calls and build tasks) or a build task or call of its own. */
+export interface LiveLane {
+  key: string;
+  title: string;
+  state: "running" | "queued" | "done" | "failed";
+  /** Started (or queued, while queued). */
+  start: string;
+  end: string | null;
+  /** The latest progress line while running, or the outcome once ended. */
+  line: string | null;
+  item: (ItemRef & ItemShown) | null;
+  itemCount: number;
+  repo: string | null;
+  /** The job, call or task page. */
+  detail: string;
+  /** How long this step took before, for a running lane. */
+  estimate: LiveEstimate | null;
+  ops: LiveOp[];
+}
+/** `GET /api/live`: running and queued work and what ended in the last minutes, for the Live timeline on Home. */
+export interface LiveBoard { lanes: LiveLane[] }
+
 export type Now = { health: NowHealth; /** Titles of housekeeping jobs that are running, shown as one line. */ alsoRunning: string[] } & NowFeed;
 
 // ---- security deep scan (operators and maintainers only; viewers get 404) ----------------------------------
