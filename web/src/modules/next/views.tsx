@@ -1,4 +1,4 @@
-// Merge queue (the default tab): the merge queue as a board, with the detailed tables below. Steps: what each pipeline step takes next, in the planner's order, and what waits on something outside.
+// Merge queue (the default tab): every PR in the merge queue as one table, by the step it waits on. Steps: what each pipeline step takes next, in the planner's order, and what waits on something outside.
 import { useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
@@ -12,7 +12,6 @@ import { ItemRef } from "../../ui/molecules/ItemRef";
 import { NextStepBlock } from "../../ui/organisms/NextStepBlock";
 import { ErrorLine, Page } from "../admin/parts";
 import { FastTrackAdd } from "../queue/fastTrack";
-import { MergeQueue } from "../queue/MergeQueue";
 import { MergeBoard } from "../queue/MergeBoard";
 import { RepoSelect } from "../../ui/molecules/RepoSelect";
 
@@ -107,8 +106,6 @@ export function NextView() {
       ) : (
         <>
           <MergeBoard repo={repo} />
-          <h2 className="mt-8 text-sm font-semibold">Details</h2>
-          <MergeQueue repos={repo ?? "pipeline"} />
         </>
       )}
     </Page>

@@ -1,127 +1,178 @@
-// Merge queue board, on the Merge queue tab: every PR with a take or take-fix review, laid out by the step it waits on before it merges.
-import { useEffect, useMemo, type ReactNode } from "react";
-import { Link } from "react-router-dom";
-import { ArrowRightIcon } from "@phosphor-icons/react";
-import { useQuery } from "../../api/client";
-import type { HomeDone, NextMerge, QueueRow, QueueState } from "../../api/types";
-import { Badge } from "../../ui/atoms/Badge";
+// The merge queue, on the Merge queue tab: every PR with a take or take-fix review as one Workable table, grouped by the step it waits on,
+// nearest to merging first; integration batches are groups of their own, then the stopped PRs and the ones merged lately.
+import { Fragment, useEffect, useMemo, type ReactNode } from "react";
+import { CheckCircleIcon, CircleNotchIcon, ClockIcon, MinusCircleIcon, WarningCircleIcon, XCircleIcon } from "@phosphor-icons/react";
+import { useApi, useQuery } from "../../api/client";
+import type { FastPosition, HomeDone, NextMerge, QueueBatch, QueueRow, QueueState } from "../../api/types";
+import { useUser } from "../../shell/UserContext";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
-import { ItemRef } from "../../ui/molecules/ItemRef";
+import { PrBuildLine } from "../../ui/molecules/PrBuildLine";
+import { WorkableGroup, WorkableRow, WorkableTable, type WorkableColumn } from "../../ui/organisms/Workable";
 import { cn } from "../../ui/cn";
-import { num } from "../../lib/format";
-import { itemPath } from "../../lib/links";
-import { ErrorLine } from "../admin/parts";
+import { num, when } from "../../lib/format";
+import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { FastMark } from "./fastTrack";
-import { STATE } from "./mergeParts";
+import { useIsLinked } from "./highlight";
+import { BatchFacts, CI_TONE, DecisionLink, MERGEABLE, STATE, StateChip, TIER, V_LABEL, V_TONE, VerifyCell, Why } from "./mergeParts";
+import { RowMenu } from "./RowMenu";
 import { usePage } from "./usePage";
 
-type LaneId = "verify" | "ci" | "premerge" | "ready" | "batch";
+type StepId = "ready" | "batch" | "premerge" | "ci" | "verify";
 
-/** The steps a PR passes on its way to merged, in order. */
-const LANES: { id: LaneId; label: string; hint: string; states: QueueState[] }[] = [
-  { id: "verify", label: "Verify", hint: "Build and tests run at the reviewed head", states: ["waiting-verify"] },
-  { id: "ci", label: "CI", hint: "Upstream CI at the head, a red default branch, or CI runs waiting for approval", states: ["waiting-ci", "waiting-main-ci", "ci-approval"] },
-  { id: "premerge", label: "Pre-merge review", hint: "Opus reviews the head commit once more before it merges", states: ["waiting-premerge"] },
-  { id: "ready", label: "Ready", hint: "Covered by the merge rule or approved by an operator; merges on the next run", states: ["ready", "decision-answered-merge"] },
-  { id: "batch", label: "In a batch", hint: "Lands with an integration batch once its checks are green", states: ["batch-checking", "in-batch"] },
+/** The steps before a merge, nearest to merging first. */
+const STEPS: { id: StepId; label: string; hint: string; dot: string; states: QueueState[] }[] = [
+  { id: "ready", label: "Ready", hint: "Covered by the merge rule or approved by an operator; merges on the next run", dot: "bg-ok", states: ["ready", "decision-answered-merge"] },
+  { id: "batch", label: "In a batch", hint: "Lands with its integration batch once the batch's checks are green", dot: "bg-accent", states: ["batch-checking", "in-batch"] },
+  { id: "premerge", label: "Pre-merge review", hint: "Opus reviews the head commit once more before it merges", dot: "bg-c3", states: ["waiting-premerge"] },
+  { id: "ci", label: "CI", hint: "Upstream CI at the head, a red default branch, or CI runs waiting for approval", dot: "bg-c2", states: ["waiting-ci", "waiting-main-ci", "ci-approval"] },
+  { id: "verify", label: "Verify", hint: "Build and tests run at the reviewed head", dot: "bg-c1", states: ["waiting-verify"] },
 ];
 
 /** States that stop a PR until something changes: a person, a fix-up or a new head. */
 const BLOCKED: QueueState[] = ["refused", "ci-failed", "conflict", "needs-fix-up", "verify-failed", "verify-error", "needs-decision", "batch-failed", "changes-requested"];
 
-const LANE_OF = new Map<QueueState, LaneId>(LANES.flatMap((l) => l.states.map((s) => [s, l.id] as const)));
+const STEP_OF = new Map<QueueState, StepId>(STEPS.flatMap((s) => s.states.map((st) => [st, s.id] as const)));
 const key = (r: { repo: string; number: number }) => `${r.repo}#${r.number}`;
 
-type Row = QueueRow & { held?: boolean; batch?: string };
+type Row = QueueRow & { held?: boolean; fast?: FastPosition | null; batch?: number };
 type Next = Map<string, { position: number; merge: NextMerge }>;
 
-/** A narrow card's head: the PR reference on one line, the title below it; the whole card opens the item. */
-function CardHead({ repo, number, title, lead }: { repo: string; number: number; title: string; lead?: ReactNode }) {
+const COLUMNS: WorkableColumn[] = [
+  { id: "step", label: "Step", width: "220px", hint: "Where the PR stands on its way to merged" },
+  { id: "checks", label: "Checks", width: "290px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
+  { id: "size", label: "Size", width: "40px" },
+  { id: "author", label: "Author", width: "130px" },
+  { id: "when", label: "Updated", width: "116px", hint: "Reviewed at this head, or merged" },
+  { id: "actions", label: "", width: "40px", align: "end" },
+];
+
+const CHECK_ICON: Record<Tone, ReactNode> = {
+  ok: <CheckCircleIcon weight="fill" className="text-ok" />,
+  bad: <XCircleIcon weight="fill" className="text-bad" />,
+  warn: <WarningCircleIcon weight="fill" className="text-warn" />,
+  accent: <CircleNotchIcon weight="bold" className="text-accent-ink" />,
+  neutral: <MinusCircleIcon className="text-ink/35" />,
+  merged: <CheckCircleIcon weight="fill" className="text-merged" />,
+};
+
+function Check({ label, tone, value }: { label: string; tone: Tone; value: string }) {
+  return (
+    <span title={`${label}: ${value}`} className="inline-flex items-center gap-1 text-2xs text-ink/65">
+      <span className="text-sm leading-none" aria-hidden>
+        {tone === "neutral" && value.startsWith("pending") ? <ClockIcon className="text-ink/45" /> : CHECK_ICON[tone]}
+      </span>
+      <span className="sr-only">{`${label}: `}</span>
+      {label}
+      <span className="sr-only">{value}</span>
+    </span>
+  );
+}
+
+/** Review, CI, Verify and mergeability in one run of icons; each names its state on hover. */
+function Checks({ r }: { r: QueueRow }) {
+  return (
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <Check label="Review" tone={r.verdict === "take" ? "ok" : "warn"} value={r.verdict} />
+      <Check label="CI" tone={CI_TONE[r.ci]} value={r.ci} />
+      <Check label="Verify" tone={r.verify ? V_TONE[r.verify.state] ?? "neutral" : "neutral"} value={r.verify ? V_LABEL[r.verify.state] ?? r.verify.state : "none"} />
+      <Check label="Merge" tone={MERGEABLE[r.mergeable][1]} value={MERGEABLE[r.mergeable][0]} />
+    </span>
+  );
+}
+
+/** What opens under a PR: the review, why it waits, the decision, the Verify summary and our own build. */
+function Detail({ r }: { r: Row }) {
+  return (
+    <div className="flex flex-col gap-1.5 text-xs text-ink/70">
+      <p>
+        {r.fixes > 0 && <span className="mr-1.5 text-ink/50">{r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
+        {r.reason}
+      </p>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs">
+        <DecisionLink row={r} />
+        {r.label && <span className="text-ink/50">label {r.label}</span>}
+        <span className="text-ink/50">{TIER[r.tier]} author</span>
+        <span className="code text-ink/45" title={`reviewed ${when(r.reviewedAt)}`}>
+          at {r.head.slice(0, 7)}
+        </span>
+      </div>
+      {r.verify && <VerifyCell row={r} />}
+      <PrBuildLine b={r.prBuild} />
+    </div>
+  );
+}
+
+function PrRow({ r, next }: { r: Row; next: Next }) {
+  const n = next.get(key(r));
+  const fast = r.fast ?? n?.merge.fast ?? null;
+  const linked = useIsLinked(r.repo, r.number);
+  const wait = n?.merge.label;
+  return (
+    <WorkableRow
+      item={{ repo: r.repo, number: r.number, kind: "pr", state: "open", title: r.title }}
+      dataItem={`${r.repo}:${r.number}`}
+      highlight={linked}
+      lead={
+        <span className="flex items-center gap-1">
+          {n && (
+            <span title={`Merges ${n.position === 1 ? "next" : `as number ${n.position}`}`} className="num rounded bg-accent/15 px-1 text-2xs font-semibold text-accent-ink">
+              {n.position}
+            </span>
+          )}
+          <FastMark fast={fast} />
+        </span>
+      }
+      sub={<Why row={r} />}
+      cells={{
+        step: (
+          <span className="flex flex-col items-start gap-0.5">
+            <span className="flex flex-wrap items-center gap-1">
+              <StateChip row={r} />
+              {r.held && <Badge tone="warn">Held</Badge>}
+            </span>
+            {wait && wait !== STATE[r.state][0] && <span className="text-2xs text-ink/50">{wait}</span>}
+            {r.path === "operator" && <span className="text-2xs text-ink/50">approved by operator</span>}
+          </span>
+        ),
+        checks: <Checks r={r} />,
+        size: <span className="num text-xs text-ink/70">{r.size}</span>,
+        author: (
+          <span className="block truncate text-xs text-ink/70" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
+            {r.author || "unknown"}
+            {r.tier === "whitelisted" && <span className="ml-1 text-2xs text-ok">●</span>}
+          </span>
+        ),
+        when: <TimeAgo iso={r.reviewedAt} className="num text-xs text-ink/50" />,
+        actions: <RowMenu repo={r.repo} number={r.number} fast={fast} held={!!r.held} pr inBatch={r.batch !== undefined} />,
+      }}
+      detail={<Detail r={r} />}
+    />
+  );
+}
+
+function MergedRow({ d }: { d: HomeDone }) {
+  return (
+    <WorkableRow
+      item={{ repo: d.repo, number: d.number, kind: "pr", state: "merged", title: d.title }}
+      cells={{ step: <Badge tone="merged">Merged</Badge>, when: <TimeAgo iso={d.at} className="num text-xs text-ink/50" /> }}
+    />
+  );
+}
+
+function StopBatch({ b }: { b: QueueBatch }) {
+  const api = useApi();
+  const write = useWrite();
+  if (useUser().role !== "operator") return null;
   return (
     <>
-      <div className="flex items-center gap-1.5">
-        {lead}
-        <Link to={itemPath(repo, number)} className="code min-w-0 truncate text-2xs text-ink/55 after:absolute after:inset-0">
-          {repo}#{number}
-        </Link>
-      </div>
-      <div className="mt-0.5 line-clamp-3 text-sm leading-snug" title={title}>
-        {title}
-      </div>
+      <ErrorLine error={write.error} className="text-2xs" />
+      <ConfirmButton idle="secondary" label="Stop batch" confirmLabel="Confirm stop batch" loading={write.busy === "stop"} onConfirm={() => void write.run("stop", () => api.queueControl.stopBatch(b.id))} />
     </>
   );
 }
 
-function Card({ r, next }: { r: Row; next: Next }) {
-  const n = next.get(key(r));
-  return (
-    <li className="relative min-w-0 rounded border border-line bg-panel px-3 py-2 hover:bg-ink/[0.03]">
-      <CardHead
-        repo={r.repo}
-        number={r.number}
-        title={r.title}
-        lead={
-          n && (
-            <span title={`Merges ${n.position === 1 ? "next" : `as number ${n.position}`}`} className="num shrink-0 rounded bg-accent/15 px-1 text-2xs font-semibold text-accent-ink">
-              {n.position}
-            </span>
-          )
-        }
-      />
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/55">
-        <FastMark fast={n?.merge.fast} />
-        <span title="Size">{r.size}</span>
-        {r.fixes > 0 && <span>· {r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
-        {r.path === "operator" && <span>· approved by operator</span>}
-        {r.batch && <span className="font-mono [overflow-wrap:anywhere]">· {r.batch}</span>}
-      </div>
-      <div className="mt-1 text-2xs text-ink/60" title={STATE[r.state]?.[2]}>
-        {n?.merge.label ?? STATE[r.state]?.[0]}
-      </div>
-    </li>
-  );
-}
-
-function Lane({ label, hint, rows, next }: { label: string; hint: string; rows: Row[]; next: Next }) {
-  return (
-    <section className="flex min-w-0 flex-col">
-      <header className="flex items-center gap-2 pb-2" title={hint}>
-        <h2 className="text-sm font-semibold">{label}</h2>
-        <span className="num rounded-full bg-ink/[0.07] px-1.5 text-2xs text-ink/70">{num(rows.length)}</span>
-        <ArrowRightIcon className="ml-auto text-ink/30 max-xl:hidden" aria-hidden />
-      </header>
-      <ul className="flex min-h-16 flex-col gap-2 rounded-md bg-ink/[0.025] p-2">
-        {rows.length === 0 && <li className="px-1 py-3 text-center text-2xs text-ink/40">Empty</li>}
-        {rows.map((r) => (
-          <Card key={key(r)} r={r} next={next} />
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function MergedLane({ done, repo }: { done: HomeDone[] | undefined; repo: string | null }) {
-  const merged = (done ?? []).filter((d) => d.what === "merged" && d.kind === "pr" && (!repo || d.repo === repo));
-  return (
-    <section className="flex min-w-0 flex-col">
-      <header className="flex items-center gap-2 pb-2" title="Recently merged pull requests">
-        <h2 className="text-sm font-semibold">Merged</h2>
-        <span className="num rounded-full bg-merged/15 px-1.5 text-2xs text-merged">{num(merged.length)}</span>
-      </header>
-      <ul className="flex min-h-16 flex-col gap-2 rounded-md bg-merged/[0.05] p-2">
-        {merged.length === 0 && <li className="px-1 py-3 text-center text-2xs text-ink/40">Nothing merged lately</li>}
-        {merged.map((d) => (
-          <li key={key(d)} className="relative rounded border border-line bg-panel px-3 py-2 hover:bg-ink/[0.03]">
-            <CardHead repo={d.repo} number={d.number} title={d.title} />
-            <TimeAgo iso={d.at} className="num mt-1 block text-2xs text-ink/50" />
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/** The share of the queue at each step, as one bar. */
+/** The share of the queue at each step, as one bar; a step's label jumps to its group. */
 function FlowBar({ counts, total }: { counts: { id: string; label: string; n: number; tone: string }[]; total: number }) {
   if (total === 0) return null;
   return (
@@ -133,98 +184,108 @@ function FlowBar({ counts, total }: { counts: { id: string; label: string; n: nu
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink/60">
         {counts.map((c) => (
-          <span key={c.id} className="inline-flex items-center gap-1.5">
+          <a key={c.id} href={`#mq-${c.id}`} className={cn("inline-flex items-center gap-1.5 hover:text-ink max-md:h-11", c.n === 0 && "opacity-50")}>
             <span className={cn("size-2 rounded-full", c.tone)} aria-hidden />
             {c.label} <span className="num text-ink/80">{num(c.n)}</span>
-          </span>
+          </a>
         ))}
       </div>
     </div>
   );
 }
 
-const LANE_TONE: Record<LaneId | "blocked", string> = { verify: "bg-c1", ci: "bg-c2", premerge: "bg-c3", ready: "bg-ok", batch: "bg-accent", blocked: "bg-bad" };
-
-function Blocked({ rows }: { rows: Row[] }) {
-  if (rows.length === 0) return null;
-  return (
-    <section className="mt-6 rounded-md border border-line">
-      <header className="flex items-center gap-2 border-b border-line px-4 py-2">
-        <h2 className="text-sm font-semibold">Stopped</h2>
-        <span className="num rounded-full bg-bad/15 px-1.5 text-2xs text-bad">{num(rows.length)}</span>
-        <span className="text-xs text-ink/50">wait for a person, a fix-up or a new head</span>
-      </header>
-      <ul>
-        {rows.map((r) => {
-          const [label, tone, hint] = r.held ? ["Merge held by an operator", "warn" as const, "An operator holds the merge"] : STATE[r.state];
-          return (
-            <li key={key(r)} className="relative flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-line px-4 py-2 last:border-0 hover:bg-ink/[0.03]">
-              <ItemRef repo={r.repo} number={r.number} kind="pr" state="open" title={r.title} stretch className="min-w-[12rem] flex-1" />
-              <span title={hint}>
-                <Badge tone={tone}>{label}</Badge>
-              </span>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
-
-/** The merge queue as a board: lanes by the step each PR waits on, a bar of their shares, and the stopped PRs. */
+/** The merge queue: a bar of the steps' shares, then one table of every PR in it. */
 export function MergeBoard({ repo }: { repo: string | null }) {
   const { pages, error, hasMore, loadingMore, loadMore } = usePage("merge", repo ?? "pipeline", undefined);
   const home = useQuery("home", (a) => a.home());
-  // The board shows the whole queue, so every page is read.
+  // The table shows the whole queue, so every page is read.
   useEffect(() => {
     if (hasMore && !loadingMore) loadMore();
   }, [hasMore, loadingMore, loadMore]);
 
-  const board = useMemo(() => {
+  const q = useMemo(() => {
     const first = pages?.[0];
     const rows = new Map<string, Row>();
-    for (const b of first?.batches ?? []) for (const r of b.prs) rows.set(key(r), { ...r, batch: b.branch });
-    for (const r of pages?.flatMap((p) => p.mergeRows) ?? []) if (!rows.has(key(r))) rows.set(key(r), r);
+    for (const r of pages?.flatMap((p) => p.mergeRows) ?? []) rows.set(key(r), r);
+    const batches = (first?.batches ?? []).map((b) => ({ b, rows: b.prs.map((r): Row => ({ ...rows.get(key(r)), ...r, batch: b.id })) }));
+    for (const { rows: rs } of batches) for (const r of rs) rows.delete(key(r));
     const next: Next = new Map((first?.nextMerges ?? []).map((merge, i) => [key(merge), { position: i + 1, merge }]));
-    const lanes = new Map<LaneId, Row[]>(LANES.map((l) => [l.id, []]));
+    const steps = new Map<StepId, Row[]>(STEPS.map((s) => [s.id, []]));
     const blocked: Row[] = [];
     for (const r of rows.values()) {
       if (r.held || BLOCKED.includes(r.state)) blocked.push(r);
       else {
-        const lane = LANE_OF.get(r.state);
-        if (lane) lanes.get(lane)!.push(r);
+        const s = STEP_OF.get(r.state);
+        if (s) steps.get(s)!.push(r);
       }
     }
     // PRs in "Next merges" first, in merge order.
     const pos = (r: Row) => next.get(key(r))?.position ?? Infinity;
-    for (const l of lanes.values()) l.sort((a, b) => pos(a) - pos(b));
-    return { lanes, blocked, next, loaded: !!first };
+    for (const l of steps.values()) l.sort((a, b) => pos(a) - pos(b));
+    return { steps, batches, blocked, next, loaded: !!first };
   }, [pages]);
 
+  const merged = (home.data?.done ?? []).filter((d) => d.what === "merged" && d.kind === "pr" && (!repo || d.repo === repo));
+  const inBatches = q.batches.reduce((s, b) => s + b.rows.length, 0);
   const counts = [
-    ...LANES.map((l) => ({ id: l.id, label: l.label, n: board.lanes.get(l.id)!.length, tone: LANE_TONE[l.id] })),
-    { id: "blocked", label: "Stopped", n: board.blocked.length, tone: LANE_TONE.blocked },
+    ...STEPS.map((s) => ({ id: s.id, label: s.label, n: (q.steps.get(s.id)?.length ?? 0) + (s.id === "batch" ? inBatches : 0), tone: s.dot })),
+    { id: "stopped", label: "Stopped", n: q.blocked.length, tone: "bg-bad" },
   ];
   const total = counts.reduce((s, c) => s + c.n, 0);
 
   return (
     <>
       <ErrorLine error={error?.message ?? home.error?.message} className="mt-3" />
-      {board.loaded && (
+      {q.loaded && (
         <p className="mt-4 text-sm text-ink/60">
-          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on. A PR moves left to right until it merges.
+          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on, nearest to merging first. The number before a PR is its place in the merge order.
         </p>
       )}
       <FlowBar counts={counts} total={total} />
-      {board.loaded && (
-        <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          {LANES.map((l) => (
-            <Lane key={l.id} label={l.label} hint={l.hint} rows={board.lanes.get(l.id)!} next={board.next} />
-          ))}
-          <MergedLane done={home.data?.done} repo={repo} />
-        </div>
+      {q.loaded && (
+        <WorkableTable columns={COLUMNS} label="Merge queue" itemLabel="Pull request" className="mt-5">
+          {total === 0 && merged.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue.</p>}
+          {STEPS.map((s) => {
+            const rows = q.steps.get(s.id)!;
+            const batchGroups =
+              s.id === "batch"
+                ? q.batches.map(({ b, rows: rs }, i) => (
+                    <WorkableGroup key={`batch-${b.id}`} id={i === 0 && rows.length === 0 ? `mq-${s.id}` : undefined} title={s.label} count={rs.length} dot={s.dot} aside={<StopBatch b={b} />} hint={<span className="inline-flex flex-wrap items-center gap-x-2.5 gap-y-1"><BatchFacts b={b} /></span>}>
+                      {rs.map((r) => (
+                        <PrRow key={key(r)} r={r} next={q.next} />
+                      ))}
+                    </WorkableGroup>
+                  ))
+                : null;
+            return (
+              <Fragment key={s.id}>
+                {rows.length > 0 && (
+                  <WorkableGroup id={`mq-${s.id}`} title={s.label} count={rows.length} hint={s.hint} dot={s.dot}>
+                    {rows.map((r) => (
+                      <PrRow key={key(r)} r={r} next={q.next} />
+                    ))}
+                  </WorkableGroup>
+                )}
+                {batchGroups}
+              </Fragment>
+            );
+          })}
+          {q.blocked.length > 0 && (
+            <WorkableGroup id="mq-stopped" title="Stopped" count={q.blocked.length} hint="Waits for a person, a fix-up or a new head" dot="bg-bad">
+              {q.blocked.map((r) => (
+                <PrRow key={key(r)} r={r} next={q.next} />
+              ))}
+            </WorkableGroup>
+          )}
+          {merged.length > 0 && (
+            <WorkableGroup title="Merged lately" count={merged.length} dot="bg-merged">
+              {merged.map((d) => (
+                <MergedRow key={key(d)} d={d} />
+              ))}
+            </WorkableGroup>
+          )}
+        </WorkableTable>
       )}
-      <Blocked rows={board.blocked} />
     </>
   );
 }
