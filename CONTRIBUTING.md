@@ -20,8 +20,10 @@ Key directories:
 pnpm test        # Run the test suite
 pnpm check       # TypeScript and generated-document checks
 pnpm docs        # Regenerate marked documentation blocks
-pnpm -C web dev  # Start the frontend development server
+pnpm -C web dev  # Frontend development server with mock data; no backend integration
 ```
+
+To test backend integration, build the frontend without `VITE_MOCK=1` and follow the [dashboard setup](README.md#start-the-dashboard-and-add-the-first-operator). The [operations guide](docs/operations.md) explains how the backend serves the frontend build.
 
 The documentation generator updates marked blocks in the README and `docs/pipeline.md`; it does not validate the surrounding prose.
 
