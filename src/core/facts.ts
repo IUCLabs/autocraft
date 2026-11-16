@@ -183,6 +183,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const since = (db.prepare("SELECT value FROM settings WHERE key = ?").get(SINCE_KEY) as { value: string } | undefined)?.value ?? "9999";
   const operator = operatorWork(db, opts.repo);
   const carries = db.prepare(`SELECT k.decision_id, k.attempts FROM dupe_carries k WHERE k.repo = ? AND k.number = ? AND k.state = 'queued' ORDER BY k.number`);
+  const carryUnsent = db.prepare("SELECT created_at FROM fixups WHERE repo = ? AND number = ? AND source = 'carry' AND carry_decision = ? AND state = 'comment-unsent'");
   const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
   const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'comment-failed', 'push-denied', 'linting')");
   const fixupUnsent = db.prepare("SELECT created_at FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state = 'comment-unsent'");
@@ -323,7 +324,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
         const hasPoints = (carryPoints.all(k.decision_id) as { detail: string | null }[]).some((x) => {
           try { const c = (JSON.parse(x.detail ?? "null") as { carry?: unknown } | null)?.carry; return Array.isArray(c) && c.some((p) => typeof p === "string"); } catch { return false; }
         });
-        if (hasPoints) base.carry.push({ attempts: k.attempts });
+        const u = unsentAsk((carryUnsent.all(r.repo, r.number, k.decision_id) as { created_at: string }[]).map((x) => x.created_at), now);
+        if (hasPoints) base.carry.push({ attempts: k.attempts, ...(u !== null && u !== "final" ? { unsent: u } : {}) });
       }
     }
     if (r.state === "OPEN" && head && !base.draft) { const hold = holdOf(r.repo, r.number, head); if (hold) base.reviewHold = hold; }

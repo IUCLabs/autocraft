@@ -235,7 +235,7 @@ export type PrFacts = {
   /** Fix-up of a take-fix review at the current head: its usable fixes, the tries used and the final rows recorded at the head (fixups.state, no source). */
   fixup: { fixes: number; attempts: number; recorded: string[]; /** Ask comments at the head that never reached GitHub: the next one is due at `until` (ms), or the asks are final. */ unsent?: UnsentAsk } | null;
   /** Queued carry-over jobs of the duplicate groups (one per group decision) whose closed PRs left points to carry: tries used. */
-  carry: { attempts: number }[];
+  carry: { attempts: number; /** Its ask comment did not reach GitHub: the next is due at `until` (ms). */ unsent?: { until: number } }[];
   /**
    * An operator's fix-up (src/preapproval): `fix` is the queued one for the current head with the tries the PR's operator fix-ups used;
    * `hold` is true while a pre-approved merge waits for its fix-up, review or CI (or an operator fix-up request is still worked), so nothing merges or asks Merge? meanwhile.

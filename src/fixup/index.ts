@@ -23,6 +23,7 @@ import { audit } from "../dash/audit.ts";
 import { withNote } from "../github/note.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
+import { unsentAsk } from "../core/rules.ts";
 import { ghAskComment, ghComment, ghEditComment, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -221,7 +222,17 @@ class Recorder {
     const at = this.at();
     if (c.carry) {
       // A carry-over keeps its own record; the PR's take-fix tries and stage are not touched.
-      // A comment that never reached GitHub counts as a try: the carry-over stays queued until its tries are used.
+      if (state === "comment-unsent") {
+        // Not a try: nothing reached GitHub. Its fixups row times the backoff (src/core/facts.ts); past the last one the carry-over is held.
+        const ats = (this.db.prepare("SELECT created_at FROM fixups WHERE repo = ? AND number = ? AND source = 'carry' AND carry_decision = ? AND state = 'comment-unsent'")
+          .all(c.repo, c.number, c.carry.decisionId) as { created_at: string }[]).map((x) => x.created_at);
+        this.db.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, files, attempt, created_at, source, carry_decision) VALUES (?, ?, ?, 'comment-unsent', ?, '[]', ?, ?, 'carry', ?)")
+          .run(c.repo, c.number, c.head, reason, c.attempt, at, c.carry.decisionId);
+        const final = unsentAsk([...ats, at], Date.parse(at)) === "final";
+        this.db.prepare("UPDATE dupe_carries SET state = ?, outcome = ?, updated_at = ? WHERE decision_id = ? AND number = ?")
+          .run(final ? "held" : "queued", `${state}: ${reason}`, at, c.carry.decisionId, c.number);
+        return;
+      }
       const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large" || state === "push-denied" || state === "comment-failed";
       const tried = !ended;
       const next = ended || c.attempt >= MAX_ATTEMPTS ? (state === "pushed" || state === "asked" ? "done" : "held") : "queued";
