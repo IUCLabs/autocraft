@@ -2,7 +2,8 @@
 //
 // A pre-approved merge is an operator's Merge answer given ahead of a fix-up. States (see Preapproval in web/src/api/types.ts):
 //   fixup   -> the fix-up step works the operator's instructions (source 'operator' in its fixups rows)
-//   review  -> the fix-up pushed; waiting for the Opus review of the pushed head
+//   review  -> the fix-up pushed; waiting for the Opus review of the pushed head. A row with no fix-up (a Merge answer carried across a
+//              base merge, or "Add to merge queue") starts here at its head.
 //   ci      -> that review says take (and is sure, not stale); waiting for CI of the pushed head, then for a clean pre-merge review of it
 //   queued  -> CI is green and the pre-merge review is clean: the PR's Merge? decision at the head is answered Merge by the operator,
 //              exactly as a dashboard answer would be, in the same transaction that moves the row from ci to queued; the merge queue
@@ -233,6 +234,17 @@ export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: num
 
 // ---- the state machine ---------------------------------------------------------------------------------------------------
 
+/**
+ * What the thread calls the row's head: the fix-up's push; for a row without a fix-up, the base merge it carried to or, for one added to
+ * the merge queue and not merged since, the PR's own head.
+ */
+function headName(p: Row): string {
+  return p.fix_id !== null ? "the pushed head" : p.head !== p.from_head ? "the merged head" : "the PR's head";
+}
+
+/** The fact line naming the review a stop or hand-over rests on. */
+const reviewFact = (p: Row, what: string) => `review of ${p.fix_id !== null ? "the fix-up" : headName(p)}: ${what}`;
+
 /** Asks a Merge? question at `head` the normal way (Prepare writes its options and recommendation); an answered one is left as it is. */
 function askMerge(db: DatabaseSync, p: Row, head: string, why: string, facts: string[]): void {
   const id = mergeDecisionId(p.repo, p.number, head);
@@ -240,7 +252,7 @@ function askMerge(db: DatabaseSync, p: Row, head: string, why: string, facts: st
   const at = iso();
   ask(db, [{
     id, kind: "merge", repo: p.repo, number: p.number, question: "Merge this PR?",
-    context: `${p.by} approved a merge after a fix-up, but it stopped: ${why}.`,
+    context: p.fix_id !== null ? `${p.by} approved a merge after a fix-up, but it stopped: ${why}.` : `${p.by} approved the merge ahead of its review and CI, but it stopped: ${why}.`,
     facts: [...facts.slice(0, 4), `${HEAD_FACT}${head}`], options: Object.values(MERGE_OPTIONS).map((x) => ({ ...x })), asked_by: ACTOR, asked_at: at,
   }]);
   withdrawOtherHeadQuestions(db, p.repo, p.number, head, at);
@@ -269,7 +281,7 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
     }
     if (db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('failed', 'error')").get(p.repo, p.number, head)) {
       db.exec("ROLLBACK");
-      return { stop: "verification failed at the pushed head" };
+      return { stop: `verification failed at ${headName(p)}` };
     }
     const d0 = getDecision(db, id);
     if (d0 && d0.answer !== null && d0.answer !== "merge") {
@@ -288,8 +300,13 @@ function handOver(db: DatabaseSync, p: Row, head: string): Hand {
     if (!getDecision(db, id)) {
       ask(db, [{
         id, kind: "merge", repo: p.repo, number: p.number, question: "Merge this PR?",
-        context: `${p.by} approved this merge ahead of a fix-up; the fix-up was pushed, its review says take, CI is green and its pre-merge review is clean.`,
-        facts: [`fix-up pushed by the pipeline from ${short(p.from_head)} to ${short(head)}`, `${HEAD_FACT}${head}`],
+        context: p.fix_id !== null
+          ? `${p.by} approved this merge ahead of a fix-up; the fix-up was pushed, its review says take, CI is green and its pre-merge review is clean.`
+          : `${p.by} approved this merge ahead of its review and CI; the review says take, CI is green and the pre-merge review is clean.`,
+        facts: [
+          ...(p.fix_id !== null ? [`fix-up pushed by the pipeline from ${short(p.from_head)} to ${short(head)}`] : head !== p.from_head ? [`base merge pushed by the pipeline from ${short(p.from_head)} to ${short(head)}`] : []),
+          `${HEAD_FACT}${head}`,
+        ],
         options: Object.values(MERGE_OPTIONS).map((x) => ({ ...x })), asked_by: ACTOR, asked_at: at,
       }], true);
     }
@@ -366,7 +383,7 @@ function advance(db: DatabaseSync, p: Row): void {
   const cur = it.head_oid;
   const mergedByQueue = !!p.head && !!db.prepare("SELECT 1 FROM merges WHERE repo = ? AND number = ? AND head_oid = ? AND outcome = 'merged'").get(p.repo, p.number, p.head);
   if (p.state === "queued" && (it.state === "MERGED" || mergedByQueue)) return void move(db, p, "merged", { line: "The pre-approved merge went through: the PR is merged." });
-  if (it.state === "MERGED") return cancel("the PR was merged before the fix-up finished");
+  if (it.state === "MERGED") return cancel(p.fix_id !== null ? "the PR was merged before the fix-up finished" : "the PR was merged before the pre-approved merge reached the merge queue");
   if (it.state !== "OPEN") return cancel("the PR was closed");
 
   // The fix-up and the review that follows run on the maker's authority; the queued state re-checks the Merge answer below.
@@ -392,7 +409,7 @@ function advance(db: DatabaseSync, p: Row): void {
     return;
   }
 
-  // Every later state: the head is the fix-up's push. Until a review exists at it, the mirror may still show the head the push started from, for a short time.
+  // Every later state: the head is the fix-up's push (or, with no fix-up, the row's starting head). Until a review exists at it, the mirror may still show the head the push started from, for a short time.
   const head = p.head!;
   if (cur !== null && cur !== head) {
     // The mirror row shows the old head until a sync that started after the push has finished (synced_at is the sync's start; the row's state entry follows the push); a review at the pushed head also shows the mirror saw it.
@@ -414,15 +431,15 @@ function advance(db: DatabaseSync, p: Row): void {
       // No review is coming for a PR the planner does not review (an open scope question, a draft, a hold).
       const f = cur === head ? loadPrFact(db, p.repo, p.number) : null;
       const state = f ? decidePr(f).state : null;
-      if (state && NOT_REVIEWABLE.includes(state)) return stop("asked", `the pushed head cannot be reviewed (${state})`, head);
+      if (state && NOT_REVIEWABLE.includes(state)) return stop("asked", `${headName(p)} cannot be reviewed (${state})`, head);
       // The gate lifts every hold for a pre-approved head except a review that failed for good, which only a new request or push ends.
       const hold = cur === head ? reviewHold(db, p.repo, p.number, head) : null;
-      if (hold?.kind === "failed" && hold.until === undefined) return stop("asked", `the review of the pushed head waits on ${hold.wait}`, head);
+      if (hold?.kind === "failed" && hold.until === undefined) return stop("asked", `the review of ${headName(p)} waits on ${hold.wait}`, head);
       return;
     }
-    if (r.kind === "take") return void move(db, p, "ci", { line: "The review of the fix-up says take; waiting for CI." });
+    if (r.kind === "take") return void move(db, p, "ci", { line: `The review of ${p.fix_id !== null ? "the fix-up" : headName(p)} says take; waiting for CI.` });
     // A Merge answer carried across a base merge covers no fix-up: a person decides on the fixes.
-    if (r.kind === "takefix" && p.fix_id === null) return stop("asked", "the review of the merged head asks for fixes", head, [`review of the merged head: take-fix${r.why ? `: ${r.why}` : ""}`]);
+    if (r.kind === "takefix" && p.fix_id === null) return stop("asked", `the review of ${headName(p)} asks for fixes`, head, [reviewFact(p, `take-fix${r.why ? `: ${r.why}` : ""}`)]);
     if (r.kind === "takefix") {
       // The planner's fix-up of the review's fixes runs next. Its push is our own (ownPush), so the row stays and the new head is reviewed; when no fix-up can run, a person decides.
       const f = cur === head ? loadPrFact(db, p.repo, p.number) : null;
@@ -430,7 +447,7 @@ function advance(db: DatabaseSync, p: Row): void {
       if (fx && ((fx.bucket === "fix" && !fx.done) || fx.bucket === "hold")) return;
       return stop("asked", `the review of the fix-up says take-fix and its fix-up cannot run${fx ? ` (${fx.bucket})` : ""}`, head, [`review of the fix-up: take-fix${r.why ? `: ${r.why}` : ""}`, "Recommended: Fix up first, then merge"]);
     }
-    return stop("asked", r.why, head, [`review of the fix-up: ${r.why}`]);
+    return stop("asked", r.why, head, [reviewFact(p, r.why)]);
   }
 
   if (!mergeApprovalOf(db, p.repo)) return p.state === "queued" ? cancel("merging is no longer approved for the repo") : stop("asked", "merging is no longer approved for the repo", head);
@@ -438,10 +455,10 @@ function advance(db: DatabaseSync, p: Row): void {
   if (p.state === "ci") {
     // A re-review since the move to ci counts: the hand-over needs a sure take at this head now.
     const r = reviewAt(db, p, head);
-    if (r.kind === "none" || r.kind === "stale") return void move(db, p, "review", { line: "The review of the pushed head is out of date; Opus reviews it again." });
-    if (r.kind === "takefix" && p.fix_id === null) return stop("asked", "the review of the merged head asks for fixes", head, [`review of the merged head: take-fix${r.why ? `: ${r.why}` : ""}`]);
+    if (r.kind === "none" || r.kind === "stale") return void move(db, p, "review", { line: `The review of ${headName(p)} is out of date; Opus reviews it again.` });
+    if (r.kind === "takefix" && p.fix_id === null) return stop("asked", `the review of ${headName(p)} asks for fixes`, head, [reviewFact(p, `take-fix${r.why ? `: ${r.why}` : ""}`)]);
     if (r.kind === "takefix") return void move(db, p, "review", { line: "The review of the pushed head now asks for fixes; the pipeline's fix-up comes first." });
-    if (r.kind === "bad") return stop("asked", r.why, head, [`review of the fix-up: ${r.why}`]);
+    if (r.kind === "bad") return stop("asked", r.why, head, [reviewFact(p, r.why)]);
     const c = db.prepare("SELECT overall, mergeable FROM pr_checks WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head) as { overall: string; mergeable: string | null } | undefined;
     if (!c || c.overall === "pending") return;
     if (c.overall === "failure") {
@@ -449,7 +466,7 @@ function advance(db: DatabaseSync, p: Row): void {
       const f = loadPrFact(db, p.repo, p.number);
       const bucket = f ? cifixBucket(f) : null;
       if (bucket !== null && ["work", "formatting", "linting", "collect", "rerun", "rerun-wait"].includes(bucket) && stepRuns(f!, "cifix")) return;
-      return stop("asked", "CI failed at the pushed head and the CI fix did not repair it", head, ["review of the fix-up: take", "CI failed at the pushed head"]);
+      return stop("asked", `CI failed at ${headName(p)} and the CI fix did not repair it`, head, [reviewFact(p, "take"), `CI failed at ${headName(p)}`]);
     }
     if (c.overall === "none" && !repoHasNoCi(db, p.repo)) return;
     if (c.mergeable === "CONFLICTING") {
@@ -461,7 +478,7 @@ function advance(db: DatabaseSync, p: Row): void {
     // The pre-merge review of this head must be clean; the planner runs it (src/core/decide.ts) and retries a failed one.
     const pm = premergeAt(db, p.repo, p.number, head);
     if (!pm || (pm.findings === null && pm.tries < PREMERGE_MAX_TRIES)) return;
-    if (pm.findings === null) return stop("asked", "the pre-merge review of the pushed head failed", head);
+    if (pm.findings === null) return stop("asked", `the pre-merge review of ${headName(p)} failed`, head);
     const defects = findingsOf(pm).filter((x) => x.severity === "defect").length;
     if (defects) return stop("asked", `the pre-merge review found ${defects} defect${defects === 1 ? "" : "s"}`, head);
     if (pm.unsure === 1) return stop("asked", "the pre-merge review is unsure", head);

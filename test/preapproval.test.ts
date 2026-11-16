@@ -288,6 +288,10 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     w.review(12, { head: "sha12", verdict: "take-fix" });
     settle(w);
     assert.equal(preapprovalOf(w.db, "app", 12)?.state, "asked");
+    // The question talks about the PR's head, not a fix-up it never had.
+    const [q] = w.rows("SELECT context, facts FROM decisions WHERE id = ?", mergeDecisionId("app", 12, "sha12")) as { context: string; facts: string }[];
+    assert.doesNotMatch(`${q.context} ${q.facts}`, /fix-up/);
+    assert.match(q.facts, /review of the PR's head: take-fix/);
   });
 });
 
