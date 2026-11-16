@@ -36,8 +36,8 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 // registers (a page the reader's role cannot open) is left out.
 // The main list is laid out here by path, so a module only declares its own entry. A path no module
 // registers (a page the reader's role cannot open) is left out. Reports and Settings follow as collapsible sections.
-const MAIN = ["/", "/needs", "/items", "/next", "/security"];
-const PHONE_TABS = ["/", "/needs", "/items", "/next"];
+const MAIN = ["/", "/next", "/needs", "/items", "/security"];
+const PHONE_TABS = ["/", "/next", "/needs", "/items"];
 
 export function AppShell() {
   useStalePickCleared();
