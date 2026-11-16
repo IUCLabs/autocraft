@@ -687,7 +687,7 @@ export type RepostResult = { status: "unchanged" | "dry-run" | "edited" | "faile
  * head the ask was made on. Does nothing when the text equals the one last recorded for that comment.
  */
 export async function repostAsk(db: DatabaseSync, repo: string, number: number, apply: boolean, run: Exec = exec): Promise<RepostResult> {
-  const state = db.prepare("SELECT state, from_head FROM fixups WHERE repo = ? AND number = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(repo, number) as { state: string; from_head: string } | undefined;
+  const state = db.prepare("SELECT state, from_head FROM fixups WHERE repo = ? AND number = ? AND source IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 1").get(repo, number) as { state: string; from_head: string } | undefined;
   if (state?.state !== "asked") throw new Error(`${repo}#${number} is not in the asked state`);
   const rows = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('fixup-comment', 'fixup-comment-edit') ORDER BY rowid DESC").all(`${repo}#${number}`) as { action: string; details: string }[];
   const ds = rows.map((r) => ({ action: r.action, d: JSON.parse(r.details) as { state?: string; url?: string; text?: string; comment?: string } })).filter((r) => r.d.state === "done");

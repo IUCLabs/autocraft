@@ -30,6 +30,13 @@ test("red CI that holds the review with no take review at the head asks the cont
   assert.equal(skipped.waitKind, "person");
 });
 
+test("a CI fix whose comment failed, or did not reach GitHub after the last retry, waits on a person", () => {
+  for (const c of [cifix({ states: ["comment-failed"] }), cifix({ states: ["comment-unsent", "comment-unsent", "comment-unsent"], unsent: "final" })]) {
+    const p = decidePr(prFacts({ ci: "failure", cifix: c }));
+    assert.deepEqual([p.actions.filter((a) => a.kind !== "unassign"), p.wait, p.waitKind], [[], "a person: the CI fix comment failed", "person"]);
+  }
+});
+
 test("a failed or errored verification asks Merge? with the failure, and the answer stands", () => {
   for (const state of ["failed", "error"]) {
     const p = decidePr(prFacts({ verification: { state, kind: "tests", summary: "2 tests fail", note: null } }));

@@ -279,6 +279,7 @@ const stuckWait = (f: PrFacts): Wait | null => {
   const cf = cifixBucket(f);
   if (cf === "comment-wait") return unsentWait("the CI fix comment", unsentUntil(f.cifix?.unsent));
   if (cf === "done" && f.cifix?.states.includes("asked")) return contributor("the contributor to fix CI");
+  if (cf === "done" && (f.cifix?.states.includes("comment-failed") || f.cifix?.unsent === "final")) return person("a person: the CI fix comment failed");
   if (cf === "failed" || cf === "capped") return f.brokeByUs ? person("a person to fix CI our push broke") : f.repoFacts.commentApproved ? contributor("the contributor to fix CI") : approval;
   return cf === "cannot-push" ? approval : null;
 };

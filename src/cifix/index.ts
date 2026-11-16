@@ -28,7 +28,7 @@ import { outsideShown, shownSize, viewFile } from "../fixup/excerpt.ts";
 import { buildScriptsAt, editable, validatePatch } from "../fixup/patch.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { patchGiveaway, QUIET_PATCH_REFUSAL } from "../security/rules.ts";
-import { unsentAsk } from "../core/rules.ts";
+import { COMMENT_UNSENT_DELAYS_MS } from "../core/rules.ts";
 import { readGate } from "../merge/changes-requested.ts";
 import { ensureAuthorWrites } from "../fixup/author-permission.ts";
 import { longLivedOf, pushable } from "../fixup/pushable.ts";
@@ -210,14 +210,13 @@ class Recorder {
   dropUnlisted(repo: string, listed: CifixCandidate[]): void {
     const keep = new Set(listed.map((c) => c.lint!.rowid));
     const rows = this.db.prepare("SELECT rowid AS id, number, head, lint_task FROM ci_fixes WHERE repo = ? AND state = 'linting'").all(repo) as { id: number; number: number; head: string; lint_task: number | null }[];
-    const unsent = this.db.prepare("SELECT created_at FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'comment-unsent'");
-    const now = Date.parse(this.at());
+    const unsent = this.db.prepare("SELECT COUNT(*) AS n FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'comment-unsent'");
     for (const r of rows) {
       const t = r.lint_task != null ? getTask(this.db, r.lint_task) : null;
       if (t && !TERMINAL.includes(t.state)) continue;
-      // The patch whose comment did not reach GitHub is kept through the backoff: the plan lists it again when the backoff ends.
-      const u = unsentAsk((unsent.all(repo, r.number, r.head) as { created_at: string }[]).map((x) => x.created_at), now);
-      if (u !== null && u !== "final") continue;
+      // A patch whose comment did not reach GitHub is kept until its retries are used: the plan lists it again when its backoff ends.
+      const n = (unsent.get(repo, r.number, r.head) as { n: number }).n;
+      if (n > 0 && n <= COMMENT_UNSENT_DELAYS_MS.length) continue;
       if (!keep.has(r.id)) this.db.prepare("UPDATE ci_fixes SET state = 'superseded', reason = 'the plan no longer lists the push of the stored patch', patch = NULL WHERE rowid = ?").run(r.id);
     }
   }
@@ -508,8 +507,8 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       if (cm.code !== 0) {
         // Not sent: nothing reached GitHub, so the step tries again after a backoff. Otherwise GitHub may have posted it.
         const reason = `the comment ${cm.sent === false ? "was not sent" : "failed"}: ${scrubReason(oneLine(cm.stderr), d.root)}`;
-        // A patch that needed no lint task has no stored row yet: it is kept, so the retry posts it without new model work.
-        if (cm.sent === false && kind === "code" && !c.lint) rec.linting(c, v.patch, v.files, null, "pending", 1, null);
+        // A patch that needed no lint task is stored in place of any earlier round's, so the retry posts it without new model work.
+        if (cm.sent === false && kind === "code" && folded === null) rec.linting(c, v.patch, v.files, null, "pending", c.lint ? c.lint.round + 1 : 1, null);
         rec.set(c, kind, cm.sent === false ? "comment-unsent" : "comment-failed", reason, { files: v.files });
         summary.failed.push({ ref, reason });
         log(`  ${ref}: ${reason}`);
