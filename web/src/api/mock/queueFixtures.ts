@@ -75,7 +75,14 @@ const ROWS: QueueRow[] = (() => {
       });
     }
   }
-  return out.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
+  out.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
+  // In each repo the second PR also closes the first one's issue, so an issue with two closing PRs shows up.
+  for (const repo of new Set(out.map((r) => r.repo))) {
+    const [one, two] = out.filter((r) => r.repo === repo);
+    const issue = one?.closes?.[0];
+    if (two && issue !== undefined && !two.closes?.includes(issue)) two.closes = [...(two.closes ?? []), issue];
+  }
+  return out;
 })();
 
 export const PIPELINE_REPOS = ["designcraft"];

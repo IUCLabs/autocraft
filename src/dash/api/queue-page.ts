@@ -4,7 +4,7 @@
 import { prBuildView } from "../../prbuild/view.ts";
 import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync } from "node:sqlite";
-import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
+import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueueOrigin, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
 import { cachedQueue, openViews, type CachedEntry } from "../../core/plan-read.ts";
 import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, parseWeight, removeFastTrack, setFastTrackWeight } from "../../fasttrack.ts";
 import { preapproveMerge } from "../../preapproval/index.ts";
@@ -116,7 +116,8 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const internals = canSeeInternals(req);
   const reader = await readerOf(db, req);
   const closes = closingIssues(db);
-  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals), closes: closes.get(`${e.repo}#${e.number}`) ?? [] });
+  const originOf = queueOrigins(db, internals);
+  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals), closes: closes.get(`${e.repo}#${e.number}`) ?? [], added: originOf(e) });
   // Tabs come from the stored next step; the text is veiled afterwards, so a quiet pull request stays in its tab.
   const tabOf = new Map(work.map((w) => [w, tabOfNext(w.next)]));
   const veilNext = (w: QueueWorkRow): QueueWorkRow => (veiledFor(reader, w.repo, w.number) ? { ...w, next: "" } : w);
@@ -145,6 +146,26 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   out.nextMerges = nextMerges(entries, fast, batchOf, scores);
   out.batches = active.map((b) => toBatch(b, b.prs.flatMap((p) => rowOf.get(`${b.repo}#${p.number}`) ?? [])));
   return out;
+}
+
+/**
+ * How each PR came into the merge queue, and who put it there: an active pre-approval (added with Queue items, a Merge answer carried to a
+ * new head, or a pre-approval after a fix-up), else an operator's Merge answer at the reviewed head, else the take review itself.
+ * Operator logins are shown to staff only.
+ */
+export function queueOrigins(db: DatabaseSync, staff: boolean): (e: CachedEntry) => QueueOrigin {
+  type Pre = { repo: string; number: number; by: string; at: string; instructions: string; from_head: string; head: string | null };
+  const pre = new Map<string, Pre>();
+  for (const p of db.prepare("SELECT repo, number, by, at, instructions, from_head, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci', 'queued') ORDER BY id").all() as Pre[]) pre.set(`${p.repo}#${p.number}`, p);
+  const answer = db.prepare("SELECT answered_by, answered_at FROM decisions WHERE id = ? AND answer = 'merge'");
+  const who = (login: string | null | undefined) => (staff ? login || null : null);
+  return (e) => {
+    const p = pre.get(`${e.repo}#${e.number}`);
+    if (p) return { how: p.instructions ? "preapproved" : p.head && p.head !== p.from_head ? "answer" : "queued", by: who(p.by), at: p.at };
+    const d = e.decisionId ? (answer.get(e.decisionId) as { answered_by: string | null; answered_at: string | null } | undefined) : undefined;
+    if (d) return { how: "answer", by: who(d.answered_by), at: d.answered_at };
+    return { how: "review", by: null, at: e.reviewedAt };
+  };
 }
 
 /** The issues each PR closes when it merges (GitHub's closing references, from the mirror), by `repo#number`; PRs without any are left out. */
@@ -229,24 +250,63 @@ export async function fastTrackWeight(db: DatabaseSync, req: Req): Promise<strin
   return fastTrackRefs(db, req);
 }
 
+/** Fast-tracks an item with weight `w`; one already fast-tracked keeps a heavier weight it has, so this only ever moves it up. */
+async function markFast(db: DatabaseSync, by: string, repo: string, number: number, w: number): Promise<void> {
+  const ref = `${repo}#${number}`;
+  const had = (db.prepare("SELECT weight FROM main.fast_track WHERE repo = ? AND number = ?").get(repo, number) as { weight: number } | undefined)?.weight;
+  await guarded(() => (had === undefined ? addFastTrack(db, by, ref, w) : w > had ? setFastTrackWeight(db, by, ref, w) : null));
+}
+
+/** The open PRs of `repo` that close issue `issue` when they merge (GitHub's closing references, from the mirror). */
+function openPrsClosing(db: DatabaseSync, repo: string, issue: number): number[] {
+  const rows = db.prepare("SELECT number, closing_issues FROM main.items INDEXED BY items_closing WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND closing_issues IS NOT NULL AND closing_issues <> '[]'").all(repo) as { number: number; closing_issues: string }[];
+  return rows
+    .filter((p) => {
+      try {
+        return (JSON.parse(p.closing_issues) as unknown[]).includes(issue);
+      } catch {
+        return false;
+      }
+    })
+    .map((p) => p.number)
+    .sort((a, b) => a - b);
+}
+
 /**
- * "Add to merge queue": a pre-approved merge at the PR's current head (it merges once the review says take, the pre-merge review
- * is clean and CI is green) and a fast-track mark with the given weight, so the PR's review, checks and merge come first.
+ * "Queue items", one line. A PR is pre-approved at its current head (it merges once the review says take, the pre-merge review is clean
+ * and CI is green) and fast-tracked with the weight, so its review, checks and merge come first. An issue is fast-tracked, so Fix works it
+ * first; when exactly one open PR closes it, that PR is queued as above. Several closing PRs are only listed: a person picks one.
  */
 export async function queueAdd(db: DatabaseSync, req: Req): Promise<{ label: string; fast: string[] }> {
   const r = item(req);
   const w = weightOf(req);
   await needVisible(db, req, r.repo);
+  const by = req.user.login;
+  const kind = (db.prepare("SELECT kind FROM main.items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { kind: string } | undefined)?.kind;
+  if (kind === "issue") {
+    await markFast(db, by, r.repo, r.number, w);
+    const prs = openPrsClosing(db, r.repo, r.number);
+    let rest: string;
+    if (!prs.length) rest = "no open PR closes it yet";
+    else if (prs.length > 1) rest = `${prs.map((n) => `#${n}`).join(", ")} close it; queue one of them`;
+    else {
+      try {
+        preapproveMerge(db, { repo: r.repo, number: prs[0]!, by });
+        await markFast(db, by, r.repo, prs[0]!, w);
+        rest = `queued #${prs[0]}, which closes it`;
+      } catch (e) {
+        rest = `#${prs[0]} closes it but was not queued: ${(e as Error).message}`;
+      }
+    }
+    return { label: `Fast-tracked the issue; ${rest}`, fast: await fastTrackRefs(db, req) };
+  }
   let done: { label: string };
   try {
-    done = preapproveMerge(db, { repo: r.repo, number: r.number, by: req.user.login });
+    done = preapproveMerge(db, { repo: r.repo, number: r.number, by });
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }
-  const ref = `${r.repo}#${r.number}`;
-  // An item already fast-tracked keeps a heavier weight it has; the add only ever moves it up.
-  const had = (db.prepare("SELECT weight FROM main.fast_track WHERE repo = ? AND number = ?").get(r.repo, r.number) as { weight: number } | undefined)?.weight;
-  await guarded(() => (had === undefined ? addFastTrack(db, req.user.login, ref, w) : w > had ? setFastTrackWeight(db, req.user.login, ref, w) : null));
+  await markFast(db, by, r.repo, r.number, w);
   return { label: done.label, fast: await fastTrackRefs(db, req) };
 }
 
