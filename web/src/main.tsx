@@ -47,7 +47,7 @@ function App({ api }: { api: Api }) {
       <QueryClientProvider client={queryClient}>
         <LiveProvider source={source}>
           <UserContext.Provider value={user}>
-            <Tooltip.Provider delayDuration={300}>
+            <Tooltip.Provider delayDuration={0} skipDelayDuration={0}>
               <BrowserRouter>
                 <AppShell />
               </BrowserRouter>
