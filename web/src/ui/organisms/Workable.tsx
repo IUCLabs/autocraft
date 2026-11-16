@@ -44,6 +44,10 @@ export interface WorkableItem {
   title: string | null | undefined;
   /** Issues in the same repo this PR closes when it merges. */
   closes?: number[];
+  /** Where the title links; the item page when absent (a decision row opens its decision). */
+  to?: string;
+  /** Stands in for the GitHub `#number` link, for rows that are not a GitHub item (a security finding). */
+  id?: ReactNode;
 }
 
 export type WorkableLayout = "full" | "mid" | "compact" | "phone";
@@ -206,7 +210,7 @@ export function WorkableRow({ item, mark, sub, cells, highlight, dataItem }: {
         <div role="cell" className="flex min-w-0 items-start gap-1.5">
           <ItemIcon kind={item.kind} state={item.state} draft={item.draft} />
           <span className="min-w-0">
-            <GithubId repo={item.repo} number={item.number} kind={item.kind} />
+            {item.id ?? <GithubId repo={item.repo} number={item.number} kind={item.kind} />}
             {!phone && (
               <span className="block truncate text-2xs text-ink/45" title={item.repo}>
                 {item.repo}
@@ -223,7 +227,7 @@ export function WorkableRow({ item, mark, sub, cells, highlight, dataItem }: {
         <div role="cell" className={cn("min-w-0", phone && "order-first basis-full")}>
           <div className="flex items-start gap-1.5">
             {mark}
-            <Link to={itemPath(item.repo, item.number)} className="min-w-0 break-words hover:underline [overflow-wrap:anywhere]">
+            <Link to={item.to ?? itemPath(item.repo, item.number)} className="min-w-0 break-words hover:underline [overflow-wrap:anywhere]">
               {item.title || `${item.repo}#${item.number}`}
             </Link>
           </div>

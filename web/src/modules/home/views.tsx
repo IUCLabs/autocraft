@@ -8,8 +8,8 @@ import { useQuery } from "../../api/client";
 import type { HomeDone, HomeNeed, ItemPhase, NeedKind } from "../../api/types";
 import { Pending } from "../../ui/atoms/Pending";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
-import { ItemRef } from "../../ui/molecules/ItemRef";
 import { Section } from "../../ui/molecules/Section";
+import { WorkableGroup, WorkableRow, WorkableTable, type WorkableColumn } from "../../ui/organisms/Workable";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import { itemPath } from "../../lib/links";
@@ -26,28 +26,25 @@ const PHASE_LABEL: Partial<Record<ItemPhase, string>> = { "Waiting for a person"
 const DONE_LABEL: Record<HomeDone["what"], string> = { merged: "Merged", closed: "Closed", "review posted": "Review posted" };
 const DONE_ICON: Record<HomeDone["what"], Icon> = { merged: GitMergeIcon, closed: ProhibitIcon, "review posted": ChatTeardropTextIcon };
 
+const NEED_COLUMNS: WorkableColumn[] = [
+  { id: "rec", label: "Recommended", width: "280px", mdWidth: "200px", hint: "The answer the pipeline recommends" },
+  { id: "asked", label: "Asked", width: "110px", mdWidth: "96px", align: "end" },
+];
+
+/** One open question: its item (a security finding by its number), what the pipeline recommends and when it was asked; the title opens the question. */
 function NeedRow({ n, canOpen }: { n: HomeNeed; canOpen: boolean }) {
-  const Ico = NEED_ICON[n.kind];
-  const rec = n.recommendation && canOpen;
+  const finding = n.kind === "security" || n.number === null;
   return (
-    <li className="relative flex items-start gap-3 border-t border-line py-2.5 hover:bg-ink/[0.025] max-md:py-3">
-      <Ico className="mt-[3px] shrink-0 text-ink/45" />
-      <div className="min-w-0 flex-1">
-        {n.kind !== "security" && n.number !== null ? (
-          <ItemRef repo={n.repo} number={n.number} kind={n.itemKind} state="open" title={n.title} href={n.to} stretch github={false} />
-        ) : (
-          <Link to={n.to} className="text-sm after:absolute after:inset-0 hover:underline">
-            <span className="code text-ink/60">{n.repo} finding {n.number}</span> {n.title}
-          </Link>
-        )}
-        <div className="mt-0.5 text-xs text-ink/55">
-          {NEED_LABEL[n.kind]}
-          {rec && <> · recommended: <span className="text-ink/80">{n.recommendation}</span></>}
-        </div>
-      </div>
-      <TimeAgo iso={n.askedAt} className="num mt-0.5 shrink-0 text-xs text-ink/50" />
-      <CaretRightIcon className="mt-1 shrink-0 text-ink/30 md:hidden" />
-    </li>
+    <WorkableRow
+      item={{
+        repo: n.repo, number: n.number ?? 0, kind: finding ? null : n.itemKind, state: "open", title: n.title, to: n.to,
+        id: finding ? <span className="code text-ink/60">finding {n.number ?? ""}</span> : undefined,
+      }}
+      cells={{
+        rec: n.recommendation && canOpen ? <span className="text-xs text-ink/80">{n.recommendation}</span> : undefined,
+        asked: <TimeAgo iso={n.askedAt} className="num text-xs text-ink/50" />,
+      }}
+    />
   );
 }
 
@@ -70,47 +67,55 @@ export function HomeView(_: ViewProps) {
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto flex max-w-[1180px] flex-col gap-7 px-4 pb-10 pt-5 md:px-6">
-        <ProjectHeader repo={repo} scoped={scoped} />
+        <ProjectHeader repo={repo} />
         <LiveBoard to={scoped("/now")} />
-        <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-          <Section title="Needs you" count={needs.total} to={scoped("/needs")} linkLabel="All decisions">
-            {needs.total === 0 ? (
-              <p className="border-t border-line py-3 text-sm text-ink/55">Nothing is waiting for a person.</p>
-            ) : (
-              kinds.map((k) => {
-                const rows = needs.oldest.filter((n) => n.kind === k);
-                return (
-                  <div key={k}>
-                    <Link to={scoped(NEED_TO[k] ?? `/needs?kind=${k}`)} className="flex min-h-9 items-center gap-2 border-t border-line text-xs text-ink/60 hover:text-ink max-md:min-h-11">
-                      {NEED_LABEL[k]} <span className="num font-medium text-ink">{needs.byKind[k]}</span>
-                      <CaretRightIcon className="ml-auto text-ink/30" />
-                    </Link>
-                    {rows.length > 0 && <ul>{rows.map((n) => <NeedRow key={n.id} n={n} canOpen={user.role !== "viewer"} />)}</ul>}
+        {problems.length > 0 && (
+          <Section title="Problems" count={problems.length}>
+            <ul>
+              {problems.map((p) => (
+                <li key={`${p.kind}${p.to}${p.title}`} className="relative flex items-start gap-3 border-t border-line py-2.5 hover:bg-ink/[0.025] max-md:py-3">
+                  {p.kind === "stopped" ? <XCircleIcon weight="fill" className="mt-[3px] shrink-0 text-bad" /> : <WarningCircleIcon weight="fill" className="mt-[3px] shrink-0 text-warn" />}
+                  <div className="min-w-0 flex-1">
+                    <Link to={p.to} className="text-sm font-medium after:absolute after:inset-0 hover:underline">{p.title}</Link>
+                    <div className="mt-0.5 text-xs text-ink/60">{p.detail}</div>
                   </div>
-                );
-              })
-            )}
+                  <CaretRightIcon className="mt-1 shrink-0 text-ink/30" />
+                </li>
+              ))}
+            </ul>
           </Section>
-          <div className="flex min-w-0 flex-col gap-7">
-          {problems.length > 0 && (
-            <Section title="Problems" count={problems.length}>
-              <ul>
-                {problems.map((p) => (
-                  <li key={`${p.kind}${p.to}${p.title}`} className="relative flex items-start gap-3 border-t border-line py-2.5 hover:bg-ink/[0.025] max-md:py-3">
-                    {p.kind === "stopped" ? <XCircleIcon weight="fill" className="mt-[3px] shrink-0 text-bad" /> : <WarningCircleIcon weight="fill" className="mt-[3px] shrink-0 text-warn" />}
-                    <div className="min-w-0 flex-1">
-                      <Link to={p.to} className="text-sm font-medium after:absolute after:inset-0 hover:underline">{p.title}</Link>
-                      <div className="mt-0.5 text-xs text-ink/60">{p.detail}</div>
-                    </div>
-                    <CaretRightIcon className="mt-1 shrink-0 text-ink/30" />
-                  </li>
-                ))}
-              </ul>
-            </Section>
+        )}
+        <Section title="Needs you" count={needs.total} to={scoped("/needs")} linkLabel="All decisions">
+          {needs.total === 0 ? (
+            <p className="border-t border-line py-3 text-sm text-ink/55">Nothing is waiting for a person.</p>
+          ) : (
+            <WorkableTable columns={NEED_COLUMNS} label="Needs you">
+              {kinds.map((k) => {
+                const Ico = NEED_ICON[k];
+                return (
+                  <WorkableGroup
+                    key={k}
+                    title={
+                      <span className="inline-flex items-center gap-1.5">
+                        <Ico className="text-ink/50" aria-hidden />
+                        {NEED_LABEL[k]}
+                      </span>
+                    }
+                    count={needs.byKind[k]}
+                    aside={
+                      <Link to={scoped(NEED_TO[k] ?? `/needs?kind=${k}`)} className="text-xs text-accent-ink hover:underline max-md:inline-flex max-md:h-11 max-md:items-center">
+                        Open all
+                      </Link>
+                    }
+                  >
+                    {needs.oldest.filter((n) => n.kind === k).map((n) => <NeedRow key={n.id} n={n} canOpen={user.role !== "viewer"} />)}
+                  </WorkableGroup>
+                );
+              })}
+            </WorkableTable>
           )}
-          <ProjectMergeQueue repo={repo} />
-          </div>
-        </div>
+        </Section>
+        <ProjectMergeQueue repo={repo} />
 
         <Section title="Pipeline">
           <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-4 lg:grid-cols-8">
@@ -173,18 +178,13 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 }
 
 /** The project page's title row: which project, the way back to the overview, and the pages it filters. */
-function ProjectHeader({ repo, scoped }: { repo: string | undefined; scoped: (to: string) => string }) {
+function ProjectHeader({ repo }: { repo: string | undefined }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
       <Link to="/" className="inline-flex items-center gap-1 text-sm text-ink/60 hover:text-ink max-md:h-11">
         <ArrowLeftIcon size={14} /> Projects
       </Link>
       <h1 className="text-xl font-semibold">{repo ?? "All projects"}</h1>
-      <nav className="ml-auto flex flex-wrap items-center gap-1" aria-label="Project pages">
-        <Link to={scoped("/items")} className="chip max-md:h-11">Items</Link>
-        <Link to={scoped("/needs")} className="chip max-md:h-11">Decisions</Link>
-        <Link to={scoped("/next")} className="chip max-md:h-11">Merge queue</Link>
-      </nav>
     </div>
   );
 }
