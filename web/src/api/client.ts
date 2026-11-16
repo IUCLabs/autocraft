@@ -447,6 +447,10 @@ export interface Api {
   queueControl: {
     fastTrackAdd(item: string): Promise<string[]>;
     fastTrackRemove(item: string): Promise<string[]>;
+    /** Sets the weight (1 to 10) of a fast-tracked item: heavier items go first. */
+    fastTrackWeight(item: string, weight: number): Promise<string[]>;
+    /** "Add to merge queue": pre-approves the merge at the PR's current head and fast-tracks it with `weight`. */
+    add(item: string, weight: number): Promise<{ label: string; fast: string[] }>;
     hold(item: string): Promise<void>;
     release(item: string): Promise<void>;
     batchRemove(item: string): Promise<void>;

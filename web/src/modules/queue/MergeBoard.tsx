@@ -11,7 +11,7 @@ import { WorkableGroup, WorkableRow, WorkableTable, type WorkableColumn } from "
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
-import { FastMark } from "./fastTrack";
+import { FastMark, WeightControl } from "./fastTrack";
 import { useIsLinked } from "./highlight";
 import { BatchFacts, CI_TONE, DecisionLink, MERGEABLE, STATE, StateChip, TIER, V_LABEL, V_TONE, Why } from "./mergeParts";
 import { RowMenu } from "./RowMenu";
@@ -43,6 +43,7 @@ const COLUMNS: WorkableColumn[] = [
   { id: "size", label: "Size", width: "40px" },
   { id: "author", label: "Author", width: "130px", wide: true },
   { id: "when", label: "Updated", width: "116px", hint: "Reviewed at this head", wide: true },
+  { id: "weight", label: "Weight", width: "100px", hint: "Fast-track weight, 1 to 10: heavier PRs go first" },
   { id: "actions", label: "", width: "40px", align: "end" },
 ];
 
@@ -100,7 +101,7 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
       item={{ repo: r.repo, number: r.number, kind: "pr", state: "open", title: r.title, closes: r.closes }}
       dataItem={`${r.repo}:${r.number}`}
       highlight={linked}
-      mark={<FastMark fast={fast} />}
+      mark={<FastMark fast={fast && { ...fast, weight: undefined }} />}
       sub={r.decisionId || r.refusedReason || r.note || r.outsideRule.length ? sub : undefined}
       cells={{
         step: (
@@ -122,6 +123,7 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
           </span>
         ),
         when: <TimeAgo iso={r.reviewedAt} className="num text-xs text-ink/50" />,
+        weight: fast?.weight !== undefined ? <WeightControl repo={r.repo} number={r.number} weight={fast.weight} /> : undefined,
         actions: <RowMenu repo={r.repo} number={r.number} fast={fast} held={!!r.held} pr inBatch={r.batch !== undefined} />,
       }}
     />
