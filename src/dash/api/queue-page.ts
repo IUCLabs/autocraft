@@ -114,7 +114,8 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const entries = allEntries.filter((e) => e.state !== "merged" && visibleSet.has(e.repo) && inScope(e.repo, e.number));
   const internals = canSeeInternals(req);
   const reader = await readerOf(db, req);
-  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals) });
+  const closes = closingIssues(db);
+  const asRow = (e: CachedEntry): QueueMergeRow => ({ ...toRow(e, reader), fast: fastOf(e.repo, e.number), held: e.held, prBuild: prBuildView(db, e.repo, e.number, e.head, internals), closes: closes.get(`${e.repo}#${e.number}`) ?? [] });
   // Tabs come from the stored next step; the text is veiled afterwards, so a quiet pull request stays in its tab.
   const tabOf = new Map(work.map((w) => [w, tabOfNext(w.next)]));
   const veilNext = (w: QueueWorkRow): QueueWorkRow => (veiledFor(reader, w.repo, w.number) ? { ...w, next: "" } : w);
@@ -142,6 +143,21 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
   out.nextMerges = nextMerges(entries, fast, batchOf, scores);
   out.batches = active.map((b) => toBatch(b, b.prs.flatMap((p) => rowOf.get(`${b.repo}#${p.number}`) ?? [])));
+  return out;
+}
+
+/** The issues each PR closes when it merges (GitHub's closing references, from the mirror), by `repo#number`; PRs without any are left out. */
+function closingIssues(db: DatabaseSync): Map<string, number[]> {
+  const rows = db.prepare("SELECT repo, number, closing_issues FROM main.items INDEXED BY items_closing WHERE kind = 'pr' AND closing_issues IS NOT NULL AND closing_issues <> '[]'").all() as { repo: string; number: number; closing_issues: string }[];
+  const out = new Map<string, number[]>();
+  for (const r of rows) {
+    try {
+      const ns = (JSON.parse(r.closing_issues) as unknown[]).filter((x): x is number => typeof x === "number");
+      if (ns.length) out.set(`${r.repo}#${r.number}`, ns);
+    } catch {
+      // A malformed list is left out.
+    }
+  }
   return out;
 }
 

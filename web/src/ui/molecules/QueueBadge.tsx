@@ -3,7 +3,7 @@ import type { QueueSlot } from "../../api/types";
 import { cn } from "../cn";
 
 /** The Next page's tab for the stage: the merge queue for merges, the step lists for every other stage. */
-export const queueItemPath = (slot: QueueSlot): string => (slot.tab === "merge" ? "/next/merge" : "/next");
+export const queueItemPath = (slot: QueueSlot): string => (slot.tab === "merge" ? "/next/merge" : "/next/steps");
 
 /** "Review #3": the item's place in line for its next stage. A button, so it also works inside a row that is a link. */
 export function QueueBadge({ slot, className }: { slot: QueueSlot | null | undefined; className?: string }) {

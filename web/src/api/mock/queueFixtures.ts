@@ -71,6 +71,7 @@ const ROWS: QueueRow[] = (() => {
         reviewedAt: new Date(NOW - (k + 1) * 3_600_000 * 5).toISOString(),
         verify: verifyFor(state, i),
         prBuild: prBuildFor(state, i),
+        closes: k % 3 === 0 ? [] : k % 5 === 0 ? [number - 40, number - 13] : [number - 17],
       });
     }
   }

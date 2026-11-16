@@ -1474,6 +1474,8 @@ export interface QueueRow {
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
   /** For a conflicting PR: what Fix-up does about it, e.g. "conflict: merging main". */
   conflictNote?: string | null;
+  /** Issues in the same repo the PR closes when it merges (GitHub's closing references); empty or absent when none are known. */
+  closes?: number[];
   /** Our own build of the PR head; absent when the switch is off or there is none. */
   prBuild?: ItemPrBuild | null;
 }

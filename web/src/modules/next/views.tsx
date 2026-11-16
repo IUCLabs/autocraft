@@ -1,6 +1,6 @@
-// Next: what each pipeline step takes next, in the planner's order, and what waits on something outside. The Merge queue tab holds the merge queue.
+// Merge queue (the default tab): every PR in the merge queue as one table, by the step it waits on. Steps: what each pipeline step takes next, in the planner's order, and what waits on something outside.
 import { useState } from "react";
-import { Link, Navigate, useParams } from "react-router-dom";
+import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { NextPage, NextWaiting } from "../../api/types";
@@ -11,12 +11,14 @@ import { Block } from "../../ui/molecules/Block";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { NextStepBlock } from "../../ui/organisms/NextStepBlock";
 import { ErrorLine, Page } from "../admin/parts";
-import { FastTrackAdd } from "../queue/fastTrack";
-import { MergeQueue } from "../queue/MergeQueue";
+import { MergeBoard } from "../queue/MergeBoard";
+import { RecentlyMerged } from "../queue/RecentlyMerged";
+import { RepoSelect } from "../../ui/molecules/RepoSelect";
 
 const TABS = [
-  ["steps", "Steps"],
   ["merge", "Merge queue"],
+  ["merged", "Recently merged"],
+  ["steps", "Steps"],
 ] as const;
 
 function WaitingGroup({ wait, items }: { wait: string; items: NextWaiting[] }) {
@@ -75,28 +77,36 @@ function Steps() {
 
 export function NextView() {
   const { tab: param } = useParams();
-  const tab = param ? TABS.find(([t]) => t === param)?.[0] : "steps";
+  const [params, setParams] = useSearchParams();
+  const repo = params.get("repo");
+  const setRepo = (r: string | null) => setParams((p) => (r ? p.set("repo", r) : p.delete("repo"), p), { replace: true });
+  const tab = param ? TABS.find(([t]) => t === param)?.[0] : "merge";
   if (!tab) return <Navigate to="/next" replace />;
   return (
-    <Page title="Next">
+    <Page title={tab === "steps" ? "Next steps" : "Merge queue"} wide={tab !== "steps"}>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div role="tablist" aria-label="Next" className="flex flex-wrap items-center gap-1">
           {TABS.map(([t, label]) => (
-            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={t === "steps" ? "/next" : `/next/${t}`} replace className="chip max-md:h-11">
+            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={(t === "merge" ? "/next" : `/next/${t}`) + (repo && t !== "steps" ? `?repo=${encodeURIComponent(repo)}` : "")} replace className="chip max-md:h-11">
               {label}
             </Link>
           ))}
         </div>
-        {tab === "merge" && (
+        {tab !== "steps" && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <Link to="/items?state=merged-by-us" className="text-sm text-accent-ink hover:underline max-md:flex max-md:h-11 max-md:items-center">
-              Merged by AutoCraft
-            </Link>
-            <FastTrackAdd />
+            <RepoSelect value={repo} onChange={setRepo} />
           </div>
         )}
       </div>
-      {tab === "steps" ? <Steps /> : <MergeQueue />}
+      {tab === "steps" ? (
+        <Steps />
+      ) : tab === "merged" ? (
+        <RecentlyMerged repo={repo} />
+      ) : (
+        <>
+          <MergeBoard repo={repo} />
+        </>
+      )}
     </Page>
   );
 }
