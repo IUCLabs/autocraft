@@ -1,20 +1,19 @@
-// Merge queue board: every PR with a take or take-fix review, laid out by the step it waits on before it merges.
+// Merge queue board, on the Merge queue tab: every PR with a take or take-fix review, laid out by the step it waits on before it merges.
 import { useEffect, useMemo, type ReactNode } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { ArrowRightIcon, CaretRightIcon } from "@phosphor-icons/react";
+import { Link } from "react-router-dom";
+import { ArrowRightIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { HomeDone, NextMerge, QueueRow, QueueState } from "../../api/types";
 import { Badge } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ItemRef } from "../../ui/molecules/ItemRef";
-import { RepoSelect } from "../../ui/molecules/RepoSelect";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import { itemPath } from "../../lib/links";
 import { ErrorLine } from "../admin/parts";
-import { FastMark } from "../queue/fastTrack";
-import { STATE } from "../queue/mergeParts";
-import { usePage } from "../queue/usePage";
+import { FastMark } from "./fastTrack";
+import { STATE } from "./mergeParts";
+import { usePage } from "./usePage";
 
 type LaneId = "verify" | "ci" | "premerge" | "ready" | "batch";
 
@@ -172,9 +171,8 @@ function Blocked({ rows }: { rows: Row[] }) {
   );
 }
 
-export function MergeBoardView() {
-  const [params, setParams] = useSearchParams();
-  const repo = params.get("repo");
+/** The merge queue as a board: lanes by the step each PR waits on, a bar of their shares, and the stopped PRs. */
+export function MergeBoard({ repo }: { repo: string | null }) {
   const { pages, error, hasMore, loadingMore, loadMore } = usePage("merge", repo ?? "pipeline", undefined);
   const home = useQuery("home", (a) => a.home());
   // The board shows the whole queue, so every page is read.
@@ -208,20 +206,15 @@ export function MergeBoardView() {
     { id: "blocked", label: "Stopped", n: board.blocked.length, tone: LANE_TONE.blocked },
   ];
   const total = counts.reduce((s, c) => s + c.n, 0);
-  const setRepo = (r: string | null) => setParams((p) => (r ? p.set("repo", r) : p.delete("repo"), p), { replace: true });
 
   return (
-    <WidePage title="Merge queue" sub={board.loaded ? `${num(total)} PR${total === 1 ? "" : "s"} approved for merging` : undefined}>
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <p className="max-w-[60ch] text-sm text-ink/60">Every PR with a take review, by the step it waits on. A PR moves left to right until it merges.</p>
-        <div className="flex items-center gap-3">
-          <Link to="/next/merge" className="inline-flex items-center gap-1 text-sm text-accent-ink hover:underline max-md:h-11">
-            Details <CaretRightIcon size={12} />
-          </Link>
-          <RepoSelect value={repo} onChange={setRepo} />
-        </div>
-      </div>
+    <>
       <ErrorLine error={error?.message ?? home.error?.message} className="mt-3" />
+      {board.loaded && (
+        <p className="mt-4 text-sm text-ink/60">
+          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on. A PR moves left to right until it merges.
+        </p>
+      )}
       <FlowBar counts={counts} total={total} />
       {board.loaded && (
         <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
@@ -232,21 +225,6 @@ export function MergeBoardView() {
         </div>
       )}
       <Blocked rows={board.blocked} />
-    </WidePage>
-  );
-}
-
-/** Like Page, but wider: six lanes side by side need the room. */
-function WidePage({ title, sub, children }: { title: string; sub?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[1680px] px-4 pb-12 pt-5 md:px-6">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-          <h1 className="text-xl font-semibold">{title}</h1>
-          {sub && <span className="text-sm text-ink/55">{sub}</span>}
-        </div>
-        {children}
-      </div>
-    </div>
+    </>
   );
 }

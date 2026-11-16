@@ -28,7 +28,6 @@ import { activityModule } from "../modules/activity";
 import { batchModule } from "../modules/batch";
 import { securityModule } from "../modules/security";
 import { homeModule } from "../modules/home";
-import { mergeBoardModule } from "../modules/mergeboard";
 import { hubModule } from "../modules/hub";
 
-export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, mergeBoardModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, downloadsModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, nightlyModule, stuckModule, batchModule, securityModule];
+export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, downloadsModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, nightlyModule, stuckModule, batchModule, securityModule];

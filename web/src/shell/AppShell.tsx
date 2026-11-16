@@ -74,9 +74,9 @@ export function AppShell() {
       <Route path="decisions/*" element={<RedirectTo from="/decisions" to="/needs/decisions" />} />
       <Route path="decisions" element={<RedirectTo to="/needs" />} />
       <Route path="queue/merge" element={<RedirectTo to="/next/merge" />} />
-      <Route path="queue/*" element={<RedirectTo to="/next" />} />
+      <Route path="queue/*" element={<RedirectTo to="/next/steps" />} />
       <Route path="queue" element={<RedirectTo to="/next" />} />
-      <Route path="work" element={<RedirectTo to="/next" />} />
+      <Route path="work" element={<RedirectTo to="/next/steps" />} />
       <Route path="merge-queue" element={<RedirectTo to="/next/merge" />} />
       <Route path="github-activity" element={<RedirectTo to="/activity" search="?kinds=write" />} />
       <Route path="*" element={<NoRoute hidden={hiddenPaths} />} />

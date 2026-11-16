@@ -5,7 +5,7 @@ import type { AgentRun, Flow, FlowBranch, FlowLink, FlowNode, FlowWait } from ".
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 
-const PAGE: Record<FlowLink["page"], string> = { items: "/items", decisions: "/needs", queue: "/next/merge", work: "/next" };
+const PAGE: Record<FlowLink["page"], string> = { items: "/items", decisions: "/needs", queue: "/next/merge", work: "/next/steps" };
 export function hrefOf(l: FlowLink): string {
   const q = new URLSearchParams(l.params).toString();
   return q ? `${PAGE[l.page]}?${q}` : PAGE[l.page];
