@@ -39,11 +39,11 @@ type Next = Map<string, { position: number; merge: NextMerge }>;
 
 const COLUMNS: WorkableColumn[] = [
   { id: "step", label: "Step", width: "190px", hint: "Where the PR stands on its way to merged" },
-  { id: "checks", label: "Checks", width: "236px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
-  { id: "size", label: "Size", width: "40px" },
+  { id: "checks", label: "Checks", width: "236px", mdWidth: "120px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
+  { id: "size", label: "Size", width: "40px", mdWidth: "32px" },
   { id: "author", label: "Author", width: "130px", wide: true },
   { id: "added", label: "Added", width: "150px", hint: "How the PR came into the queue, who put it there and when", wide: true },
-  { id: "actions", label: "", width: "40px", align: "end" },
+  { id: "actions", label: "", width: "40px", mdWidth: "28px", align: "end" },
 ];
 
 const CHECK_ICON: Record<Tone, ReactNode> = {
@@ -71,10 +71,13 @@ function Check({ label, tone, value }: { label: string; tone: Tone; value: strin
 const BUILD_TONE: Record<NonNullable<QueueRow["prBuild"]>["state"], Tone> = { queued: "neutral", running: "accent", passed: "ok", failed: "bad", error: "warn", stale: "neutral" };
 const BUILD_LABEL: Record<NonNullable<QueueRow["prBuild"]>["state"], string> = { queued: "queued", running: "running", passed: "passed", failed: "failed", error: "error", stale: "stale" };
 
-/** Review, CI, Verify, mergeability and our own build in one run of icons; each names its state, and the failure, on hover. */
+/**
+ * Review, CI, Verify, mergeability and our own build in one run of icons, two to a line in the table's compact layout; each names its
+ * state, and the failure, on hover.
+ */
 function Checks({ r }: { r: QueueRow }) {
   return (
-    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+    <span className="flex flex-wrap items-center gap-x-3 gap-y-1 md:max-[1799px]:grid md:max-[1799px]:grid-cols-[auto_auto] md:max-[1799px]:justify-start">
       <Check label="Review" tone={r.verdict === "take" ? "ok" : "warn"} value={r.verdict} />
       <Check label="CI" tone={CI_TONE[r.ci]} value={r.ci} />
       <Check label="Verify" tone={r.verify ? V_TONE[r.verify.state] ?? "neutral" : "neutral"} value={r.verify ? [V_LABEL[r.verify.state] ?? r.verify.state, r.verify.summary, r.verify.note].filter(Boolean).join(" · ") : "none"} />

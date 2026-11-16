@@ -73,7 +73,7 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
             </Select>
           </label>
           <Button type="submit" className="ml-auto max-md:h-11" loading={busy} disabled={!items.length}>
-            Queue {items.length > 1 ? `${items.length} items` : "item"}
+            Queue items
           </Button>
         </div>
         {results.length > 0 && (
