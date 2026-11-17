@@ -6,7 +6,7 @@ import type { SearchHit, SimilarHit } from "../api/types";
 import { Kbd } from "../ui/atoms/Kbd";
 import { ItemRef } from "../ui/molecules/ItemRef";
 import { cn } from "../ui/cn";
-import { itemPath } from "../lib/links";
+import { githubUrlToRef, itemPath } from "../lib/links";
 
 const SEMANTIC_KEY = "autocraft:search-semantic";
 const isRefQuery = (q: string) => /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
@@ -72,7 +72,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           id={fullscreen ? undefined : "global-search"}
           autoFocus={autoFocus}
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => setQ(githubUrlToRef(e.target.value))}
           onFocus={() => setFocus(true)}
           onBlur={() => setTimeout(() => setFocus(false), 120)}
           onKeyDown={(e) => {

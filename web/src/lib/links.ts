@@ -24,6 +24,15 @@ export const itemPath = (repo: string, number: number): string => `/items/${enco
 /** `/batches/<id>`: the detail page of an integration batch. */
 export const batchPath = (id: number): string => `/batches/${id}`;
 
+/**
+ * `photocraft#15343` for a GitHub issue or PR link such as `https://github.com/storytold/photocraft/pull/15343/files#r1`,
+ * so a pasted link searches like a typed ref. Anything else comes back unchanged.
+ */
+export function githubUrlToRef(text: string): string {
+  const m = /^\s*(?:https?:\/\/)?(?:www\.)?github\.com\/[^/\s]+\/([^/\s]+)\/(?:pull|issues)\/(\d+)(?:[/?#]\S*)?\s*$/i.exec(text);
+  return m ? `${m[1]}#${m[2]}` : text;
+}
+
 /** `owner/designcraft` and `designcraft` name the same repo. */
 export const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf("/") + 1);
 
