@@ -444,8 +444,8 @@ export function selectSyncRepos(listed: string[], tracked: string[], opts: { onl
 const SEARCH_OVERLAP_MS = 10 * 60 * 1000;
 const CATCHUP_EVERY_MS = 60 * 60 * 1000;
 const CATCHUP_SPAN_MS = 6 * 60 * 60 * 1000;
-// Each tracked repo's open items are listed and reconciled with the mirror once a day.
-const RECONCILE_EVERY_MS = 24 * 60 * 60 * 1000;
+// Each tracked repo's open items are listed and reconciled with the mirror once a day (by the runner: reconcileNext).
+export const RECONCILE_EVERY_MS = 24 * 60 * 60 * 1000;
 const SEARCH_PAGE = 20;
 const SEARCH_CAP = 1000;
 // Rate-limit points a full re-sync leaves for the minute sync.
@@ -847,13 +847,28 @@ export async function reconcileRepo(db: DatabaseSync, client: Querier, name: str
   return { open: listed.size, updated, gone };
 }
 
-// The tracked repo whose last reconcile is oldest, when it is over a day old (never: first).
-function reconcileDue(db: DatabaseSync, tracked: string[], now: Date): string | null {
-  const at = new Map((db.prepare("SELECT name, reconciled_at FROM repos").all() as { name: string; reconciled_at: string | null }[]).map((r) => [r.name, r.reconciled_at ?? ""]));
+// Of the tracked repos the sync has read in full, the one whose last reconcile is oldest, when it is over a day old (never: first).
+export function reconcileDue(db: DatabaseSync, tracked: string[], now: Date): string | null {
+  const at = new Map((db.prepare("SELECT name, reconciled_at FROM repos WHERE synced_at IS NOT NULL AND high_water IS NOT NULL").all() as { name: string; reconciled_at: string | null }[]).map((r) => [r.name, r.reconciled_at ?? ""]));
   const oldest = [...tracked].filter((n) => at.has(n)).sort((a, b) => at.get(a)!.localeCompare(at.get(b)!))[0];
   if (oldest === undefined) return null;
   const last = at.get(oldest)!;
   return !last || now.getTime() - new Date(last).getTime() >= RECONCILE_EVERY_MS ? oldest : null;
+}
+
+/** Reconciles the repo that is due, if any, and returns its name. A failure is recorded and still moves `reconciled_at`, so a failing repo does not keep first place. */
+export async function reconcileNext(db: DatabaseSync, client: Querier, now: Date = new Date(), log: (line: string) => void = console.log): Promise<string | null> {
+  const due = reconcileDue(db, trackedNames(db), now);
+  if (!due) return null;
+  try {
+    const c = await reconcileRepo(db, client, due, now);
+    clearRepoFailure(db, due);
+    log(`reconcile ${due}: ${c.open} open, ${c.updated} re-read, ${c.gone} gone`);
+  } catch (e) {
+    await failRepo(db, client, due, e);
+    db.prepare("UPDATE main.repos SET reconciled_at = ? WHERE name = ?").run(iso(now), due);
+  }
+  return due;
 }
 
 // Runs one sync. `org_high_water` is the newest updatedAt stored, so the next search starts ten
@@ -891,18 +906,6 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       const mark = db.prepare("UPDATE main.repos SET synced_at = ? WHERE name = ? AND high_water IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sync_repo_errors e WHERE e.repo = repos.name)");
       for (const n of tracked) mark.run(started, n);
       console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}${r.fallbacks ? `, ${r.fallbacks} listed per repo` : ""}`);
-      const due = reconcileDue(db, tracked, now);
-      if (due) {
-        try {
-          const c = await reconcileRepo(db, client, due, now);
-          clearRepoFailure(db, due);
-          console.log(`reconcile ${due}: ${c.open} open, ${c.updated} re-read, ${c.gone} gone`);
-        } catch (e) {
-          await failRepo(db, client, due, e);
-          // The oldest reconcile is picked next run; a repo that fails must not keep that place.
-          db.prepare("UPDATE main.repos SET reconciled_at = ? WHERE name = ?").run(iso(now), due);
-        }
-      }
       const at = getSetting(db, "repos_refreshed_at");
       if (!at || now.getTime() - new Date(at).getTime() >= META_REFRESH_MS) await refreshRepoList(db, client);
     } else {

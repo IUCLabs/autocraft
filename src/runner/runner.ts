@@ -41,6 +41,8 @@ export const HEARTBEAT_KEY = "runner_heartbeat";
 export const FLOW_EVERY_MS = 20_000;
 /** How often queued webhook items are read again from GitHub. */
 export const WEBHOOK_DRAIN_MS = 5_000;
+/** How often the runner checks for a repo due for its daily reconcile. */
+export const RECONCILE_CHECK_MS = 5 * 60_000;
 const CLI = new URL("../cli.ts", import.meta.url).pathname;
 
 /** Job processes at once. A job that calls Claude also waits for a free account slot (see startJobs). */
@@ -100,6 +102,9 @@ export class Runner {
   private webhookAt = 0;
   private webhooking: Promise<void> | null = null;
   private webhookClient: import("../mirror.ts").Client | null = null;
+  private reconcileAt = 0;
+  private reconciling: Promise<void> | null = null;
+  private reconcileClient: import("../mirror.ts").Client | null = null;
   private planning: Promise<void> | null = null;
   private detected: Detected | null = null;
   private flowing: Promise<void> | null = null;
@@ -167,6 +172,7 @@ export class Runner {
       this.o.log(`build tasks: ${(e as Error).message}`);
     }
     this.webhookTick();
+    this.reconcileTick();
     this.usageTick();
     this.workerUpdateTick();
     await this.autopilot();
@@ -183,26 +189,47 @@ export class Runner {
     this.webhookAt = Date.now();
     if (!this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
     this.webhooking = (async () => {
-      const { lockHeld, lockPath, fullLockPath, Client } = await import("../mirror.ts");
+      const { lockHeld, lockPath, fullLockPath, Client, SYNC_RESERVE } = await import("../mirror.ts");
       if (lockHeld(lockPath()) || lockHeld(fullLockPath())) return;
-      // One client for the runner's life, seeded from the last sync's reading, so the reserve holds from the first read.
-      if (!this.webhookClient) this.webhookClient = new Client(1000);
-      const c = this.webhookClient;
-      const get = (k: string): string | undefined => (this.db.prepare("SELECT value FROM main.settings WHERE key = ?").get(k) as { value: string } | undefined)?.value;
-      const seen = Number(get("sync_rate_remaining"));
-      const reset = Date.parse(get("sync_rate_reset_at") ?? "");
-      // Below the reserve nothing is read until the limit resets; the sync's reading is newer than ours when it is the later one.
-      if (Number.isFinite(seen) && Number.isFinite(reset) && reset > Date.now()) {
-        c.remaining = c.remaining === null ? seen : Math.min(c.remaining, seen);
-        c.resetAt = new Date(reset);
-      } else if (c.resetAt && c.resetAt.getTime() <= Date.now()) {
-        c.remaining = null;
-        c.resetAt = null;
-      }
+      const c = this.webhookClient = this.seedRate(this.webhookClient ?? new Client(SYNC_RESERVE));
       const { drainSyncRequests } = await import("../github/webhooks.ts");
       const n = await drainSyncRequests(this.db, c, { limit: 10, log: this.o.log });
       if (n) this.o.log(`webhooks: read ${n} items again`);
     })().catch((e) => this.o.log(`webhooks: ${(e as Error).message}`)).finally(() => (this.webhooking = null));
+  }
+
+  /**
+   * Seeds a client the runner keeps for its life with the last sync's rate reading, so the reserve holds from its first read.
+   * Below the reserve nothing is read until the limit resets; the sync's reading is newer than ours when it is the later one.
+   */
+  private seedRate(c: import("../mirror.ts").Client): import("../mirror.ts").Client {
+    const get = (k: string): string | undefined => (this.db.prepare("SELECT value FROM main.settings WHERE key = ?").get(k) as { value: string } | undefined)?.value;
+    const seen = Number(get("sync_rate_remaining"));
+    const reset = Date.parse(get("sync_rate_reset_at") ?? "");
+    if (Number.isFinite(seen) && Number.isFinite(reset) && reset > Date.now()) {
+      c.remaining = c.remaining === null ? seen : Math.min(c.remaining, seen);
+      c.resetAt = new Date(reset);
+    } else if (c.resetAt && c.resetAt.getTime() <= Date.now()) {
+      c.remaining = null;
+      c.resetAt = null;
+    }
+    return c;
+  }
+
+  /**
+   * The daily reconcile of one tracked repo (mirror.ts reconcileNext), off the tick, one at a time. Its reads give way to
+   * the minute sync and a full re-sync: before each one it waits while either holds its lock, and it keeps the sync's reserve.
+   * Sync is not pipeline work, so this runs with the pipeline off too.
+   */
+  private reconcileTick(): void {
+    if (this.reconciling || Date.now() - this.reconcileAt < RECONCILE_CHECK_MS) return;
+    this.reconcileAt = Date.now();
+    this.reconciling = (async () => {
+      const { lockHeld, lockPath, fullLockPath, lowPriority, reconcileNext, Client, SYNC_RESERVE } = await import("../mirror.ts");
+      const c = this.reconcileClient = this.seedRate(this.reconcileClient ?? new Client(SYNC_RESERVE));
+      const busy = (): boolean => lockHeld(lockPath()) || lockHeld(fullLockPath());
+      await reconcileNext(this.db, lowPriority(c, { busy, minRemaining: SYNC_RESERVE }), new Date(), this.o.log);
+    })().catch((e) => this.o.log(`reconcile: ${(e as Error).message}`)).finally(() => (this.reconciling = null));
   }
 
   /**

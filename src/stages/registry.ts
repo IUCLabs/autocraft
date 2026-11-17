@@ -58,7 +58,7 @@ export const STAGES: StageDef[] = [
     models: [{ model: "local", use: "Embeds each item's title and body" }],
     promptIds: [], promptStage: "Synced",
     waits: [
-      { name: "Sync", why: "Poll of GitHub", howLong: "1 minute; the search catch-up runs hourly, the reconcile daily", showsAs: "Syncs list", kind: "external" },
+      { name: "Sync", why: "Poll of GitHub", howLong: "1 minute; the search catch-up runs hourly", showsAs: "Syncs list", kind: "external" },
       { name: "Webhook re-read", why: "A GitHub App webhook names an item that changed; the runner reads that item again from GitHub", howLong: "Drained every 5 seconds while requests are queued; the poll stays the backup", showsAs: "Item page, On GitHub: updated time", kind: "external" },
       { name: "Main CI poll", why: "GitHub's check state of each default branch head; read by the sync run, with the pipeline on or off", howLong: "2 minutes", showsAs: "Main CI page and the top bar", kind: "external" },
       { name: "Release poll", why: "GitHub release download counts and star counts of the tracked repos, read by the sync run; the increases feed the Downloads report", howLong: "15 minutes", showsAs: "Downloads page", kind: "external" },

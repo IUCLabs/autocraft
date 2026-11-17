@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
 import { computeChecks, serveChecks } from "../src/health-checks.ts";
-import { GithubError, runSync } from "../src/mirror.ts";
+import { GithubError, reconcileNext, runSync } from "../src/mirror.ts";
 import { loadOwners } from "../src/owners.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -32,6 +32,7 @@ test("a repo that no longer resolves is skipped and recorded; failures and recov
   };
   const r = await runSync(db, client, { only: [], all: false, full: false, perRepo: false }, new Date("2026-11-02T10:05:00Z"));
   assert.equal(r.mode, "search");
+  assert.equal(await reconcileNext(db, client, new Date("2026-11-02T10:05:00Z"), () => {}), "a");
   const err = db.prepare("SELECT repo, kind, moved_to FROM sync_repo_errors").all();
   assert.deepEqual(err.map((e) => ({ ...e })), [{ repo: "a", kind: "not-found", moved_to: "elsewhere/a-9" }]);
   // The failing repo gives up its place at the front of the daily reconcile, so repo b is next.
