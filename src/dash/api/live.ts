@@ -1,6 +1,7 @@
-// The Live board on Home: every running and queued unit of the pipeline's work on one time axis, with the model calls and build steps
-// inside it and how long the same work took before. Jobs that ended in the last minutes stay on it, faded. Repos the reader cannot see
-// are left out as on the Now page (src/dash/api/now.ts).
+// The Live board on Home: every running and queued unit of the pipeline's work (jobs, model calls and build tasks of their own, open
+// integration batches) on one time axis, with the model calls and build steps inside it and how long the same work took before. Jobs that
+// ended in the last minutes stay on it, faded. Repos the reader cannot see are left out as on the Now page (src/dash/api/now.ts); account
+// labels are for staff only.
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef, ItemShown, LiveBoard, LiveEstimate, LiveLane, LiveOp, LiveOpKind } from "../../../web/src/api/types.ts";
 import { PRIVATE_STEPS_SQL } from "../../build/tasks.ts";
@@ -68,7 +69,7 @@ export async function live(db: DatabaseSync, req: Req): Promise<LiveBoard> {
   const hiddenRuns = filtered(hidden) ? ` AND ${touchesHidden(hidden).sql}` : "";
   type Call = { id: number; job_id: number | null; step: string; model: string; provider: string; label: string | null; started_at: string; ended_at: string | null; state: string; progress: string | null };
   const callOp = (c: Call): LiveOp => ({
-    kind: "model", label: c.provider === "jev" ? "Jev" : c.model, detail: c.provider === "jev" ? stepTitle(c.step) : `${stepTitle(c.step)} on ${c.label ?? "an unknown account"}`,
+    kind: "model", label: c.provider === "jev" ? "Jev" : c.model, detail: c.provider !== "jev" && staff ? `${stepTitle(c.step)} on ${c.label ?? "an unknown account"}` : stepTitle(c.step),
     start: c.started_at, end: c.ended_at, estimate: c.state === "running" ? callEstimate(c.step, c.model) : null, ...(c.state === "failed" ? { failed: true } : {}),
   });
   type Task = { id: number; job_id: number | null; step: string; repo: string; number: number | null; state: string; queued_at: string; started_at: string | null; ended_at: string | null; results: string; summary: string | null; current: string | null };
@@ -97,11 +98,14 @@ export async function live(db: DatabaseSync, req: Req): Promise<LiveBoard> {
   type Job = { id: number; step: string; state: string; requested_at: string; started_at: string | null; ended_at: string | null; progress: string | null; summary: string | null; error: string | null; repo: string | null };
   const cols = "id, step, state, requested_at, started_at, ended_at, progress, summary, error, repo";
   const since = iso(nowMs - RECENT_MS);
+  // Housekeeping steps show only when they fail; left out before any LIMIT, so they never take a slot.
+  const quiet = [...QUIET_STEPS];
+  const loud = ` AND (state = 'failed' OR step NOT IN (${quiet.map(() => "?").join(", ")}))`;
   const jobs = [
-    ...all<Job>(db, `SELECT ${cols} FROM jobs WHERE state = 'running'${notHidden("repo", hidden, true)} ORDER BY id`, ...hideArgs(hidden)),
-    ...all<Job>(db, `SELECT ${cols} FROM jobs WHERE state = 'queued'${notHidden("repo", hidden, true)} ORDER BY id LIMIT ?`, ...hideArgs(hidden), QUEUED_MAX),
-    ...all<Job>(db, `SELECT ${cols} FROM jobs WHERE state IN ('done', 'failed') AND ended_at > ? AND started_at IS NOT NULL${notHidden("repo", hidden, true)} ORDER BY ended_at DESC LIMIT ?`, since, ...hideArgs(hidden), RECENT_MAX * 3),
-  ].filter((j) => !QUIET_STEPS.has(j.step) || j.state === "failed");
+    ...all<Job>(db, `SELECT ${cols} FROM jobs WHERE state = 'running'${loud}${notHidden("repo", hidden, true)} ORDER BY id`, ...quiet, ...hideArgs(hidden)),
+    ...all<Job>(db, `SELECT ${cols} FROM jobs WHERE state = 'queued'${loud}${notHidden("repo", hidden, true)} ORDER BY id LIMIT ?`, ...quiet, ...hideArgs(hidden), QUEUED_MAX),
+    ...all<Job>(db, `SELECT ${cols} FROM jobs WHERE state IN ('done', 'failed') AND ended_at > ? AND started_at IS NOT NULL${loud}${notHidden("repo", hidden, true)} ORDER BY ended_at DESC LIMIT ?`, since, ...quiet, ...hideArgs(hidden), RECENT_MAX * 3),
+  ];
 
   const lanes: LiveLane[] = [];
   let recent = 0;
@@ -128,9 +132,24 @@ export async function live(db: DatabaseSync, req: Req): Promise<LiveBoard> {
       FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE r.state = 'running' AND r.job_id IS NULL${hiddenRuns} ORDER BY r.id`, ...hideArgs(hidden))) {
     const it = all<{ repo: string; number: number }>(db, "SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT 1", c.id)[0];
     const op = callOp(c);
-    lanes.push({ key: `run:${c.id}`, title: stepTitle(c.step), state: "running", start: c.started_at, end: null, line: c.progress, item: it ? item(it.repo, it.number) : null, itemCount: it ? 1 : 0, repo: it?.repo ?? null, detail: `/agents/${c.id}`, estimate: op.estimate, ops: [op] });
+    lanes.push({ key: `run:${c.id}`, title: stepTitle(c.step), state: "running", start: c.started_at, end: null, line: blankIfHidden(c.progress, hidden) || null, item: it ? item(it.repo, it.number) : null, itemCount: it ? 1 : 0, repo: it?.repo ?? null, detail: `/agents/${c.id}`, estimate: op.estimate, ops: [op] });
+  }
+  // Open integration batches, with the build task of their combined tree; that task gets no lane of its own.
+  type Batch = { id: number; repo: string; state: string; created_at: string; summary: string | null; task_id: number | null; pr_number: number | null };
+  const batches = all<Batch>(db, `SELECT id, repo, state, created_at, summary, task_id, pr_number FROM merge_batches WHERE state IN ('checking', 'open')${notHidden("repo", hidden)} ORDER BY id`, ...hideArgs(hidden));
+  const batchTasks = new Set(batches.map((b) => b.task_id).filter((id): id is number => id !== null));
+  for (const b of batches) {
+    const prs = all<{ number: number }>(db, "SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", b.id);
+    const tasks = b.task_id === null ? [] : all<Task>(db, `SELECT ${taskCols} FROM build_tasks t WHERE t.id = ?${privateTasks}`, b.task_id);
+    const ops = tasks.flatMap(taskOps);
+    lanes.push({
+      key: `batch:${b.id}`, title: "Integration batch", state: "running", start: b.created_at, end: null,
+      line: blankIfHidden(b.summary, hidden) || (b.state === "checking" ? "Checking the combined tree" : b.pr_number !== null ? `Batch pull request #${b.pr_number} is open` : null),
+      item: prs[0] ? item(b.repo, prs[0].number) : null, itemCount: prs.length, repo: b.repo, detail: `/batches/${b.id}`, estimate: null, ops,
+    });
   }
   for (const t of all<Task>(db, `SELECT ${taskCols} FROM build_tasks t WHERE t.state IN ('queued', 'claimed', 'running') AND t.job_id IS NULL${notHidden("t.repo", hidden)}${privateTasks} ORDER BY t.id`, ...hideArgs(hidden))) {
+    if (batchTasks.has(t.id)) continue;
     const ops = taskOps(t);
     lanes.push({
       key: `task:${t.id}`, title: `Build task, ${stepTitle(t.step)}`, state: t.state === "queued" ? "queued" : "running", start: t.started_at ?? t.queued_at, end: null, line: t.summary,

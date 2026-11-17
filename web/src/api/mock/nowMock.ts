@@ -124,6 +124,11 @@ function liveBoard(now: number): LiveBoard {
         ] },
       { key: "task:4", title: "Build task, Build pull requests", state: "running", start: t(3), end: null, line: null, item: it("filmcraft", 3149, "Panel resize handle flickers"), itemCount: 1, repo: "filmcraft", detail: "/envs/4", estimate: null,
         ops: [{ kind: "build", label: "cargo build", detail: "Build pull requests", start: t(3), end: null, estimate: null }] },
+      { key: "batch:14", title: "Integration batch", state: "running", start: t(22), end: null, line: "Checking the combined tree", item: it("pdfcraft", 877, "Export fails on pages with spot colors"), itemCount: 2, repo: "pdfcraft", detail: "/batches/14", estimate: null,
+        ops: [
+          { kind: "setup", label: "cargo fetch", detail: "Check integration batch", start: t(21), end: t(19), estimate: null },
+          { kind: "tests", label: "cargo test", detail: "Check integration batch", start: t(19), end: null, estimate: est(24, 30) },
+        ] },
       { key: "job:5", title: "Classify new items", state: "queued", start: t(1), end: null, line: null, item: it("gridcraft", 977, "Range spill: keep neighbouring cells when a formula grows", "issue"), itemCount: 4, repo: "gridcraft", detail: "/pipeline/5", estimate: null, ops: [] },
       { key: "job:6", title: "Ask Merge? decisions", state: "done", start: t(9), end: t(7), line: "Asked Merge? on 1 PR", item: it("designcraft", 1484, "Add Hungarian spellchecking and nonstandard hyphenation"), itemCount: 1, repo: "designcraft", detail: "/pipeline/6", estimate: null,
         ops: [{ kind: "model", label: "claude-haiku", detail: "Merge? on main", start: t(9), end: t(7.5), estimate: null }] },

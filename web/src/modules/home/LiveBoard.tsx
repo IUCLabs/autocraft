@@ -1,6 +1,8 @@
 // The Live board at the top of Home: every running and queued unit of the pipeline's work on one time axis. A lane is a job (or a call or
 // build task of its own); its thin bar is the job, the tall bars are its model calls and build steps. Solid: done, pulsing: running now,
-// dashed: the expected rest (median of earlier runs), red line: 90% of earlier runs were done by then.
+// dashed: the expected rest (median of earlier runs), red line: 90% of earlier runs were done by then. Under the lanes, the latest few
+// finished events of the feed (merges, GitHub writes, answered questions).
+import { useEffect, useMemo, useReducer, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "../../api/client";
 import type { LiveEstimate, LiveLane, LiveOp, LiveOpKind } from "../../api/types";
@@ -10,6 +12,7 @@ import { useNow } from "../../lib/useNow";
 import { cn } from "../../ui/cn";
 import { ItemIcon } from "../../ui/atoms/ItemIcon";
 import { TipLines, Tooltip } from "../../ui/atoms/Tooltip";
+import { EntryRow } from "../../ui/molecules/EntryRow";
 import { ItemPeek } from "../../ui/molecules/ItemPeek";
 import { Section } from "../../ui/molecules/Section";
 import { ErrorLine } from "../admin/parts";
@@ -138,12 +141,73 @@ function LaneInfo({ lane, now }: { lane: LiveLane; now: number }) {
   );
 }
 
-/** The Live board: lanes of running, queued and lately ended work over the last hour and what is expected next. */
+/** Ended lanes the server no longer sends that stay on the board at most; past this the oldest go. */
+const GONE_MAX = 12;
+
+/**
+ * The lanes in the order they first arrived, so a lane never changes place when its job starts or ends. A lane the server stops sending
+ * (an ended job that touched no item, or one past the board's time window) stays in its place as ended until the reader comes back to the
+ * tab or the page loads again.
+ */
+function useSteadyLanes(lanes: LiveLane[] | undefined): LiveLane[] {
+  const kept = useRef(new Map<string, LiveLane>());
+  const latest = useRef(new Set<string>());
+  const [pruned, prune] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const back = () => {
+      if (document.visibilityState !== "visible") return;
+      for (const k of kept.current.keys()) if (!latest.current.has(k)) kept.current.delete(k);
+      prune();
+    };
+    document.addEventListener("visibilitychange", back);
+    return () => document.removeEventListener("visibilitychange", back);
+  }, []);
+  return useMemo(() => {
+    const map = kept.current;
+    if (lanes) {
+      const seen = new Set(lanes.map((l) => l.key));
+      latest.current = seen;
+      const at = new Date(nowMs()).toISOString();
+      for (const [k, l] of map) {
+        if (seen.has(k) || (l.state !== "running" && l.state !== "queued")) continue;
+        map.set(k, { ...l, state: "done", start: l.state === "queued" ? at : l.start, end: at, estimate: null, ops: l.ops.map((o) => (o.end ? o : { ...o, end: at, estimate: null })) });
+      }
+      // Map.set keeps an existing key's place; new lanes go to the end.
+      for (const l of lanes) map.set(l.key, l);
+      const gone = [...map.keys()].filter((k) => !seen.has(k));
+      for (const k of gone.slice(0, Math.max(0, gone.length - GONE_MAX))) map.delete(k);
+    }
+    return [...map.values()];
+    // `pruned` re-reads the map after a prune.
+  }, [lanes, pruned]);
+}
+
+const FEED_SHOWN = 5;
+
+/** The latest finished events of the feed; what runs is on the lanes above. */
+function LatestEvents() {
+  const { data, error } = useQuery("now", (a) => a.now());
+  const done = (data?.entries ?? []).filter((e) => e.state !== "running" && e.state !== "queued").slice(0, FEED_SHOWN);
+  return (
+    <>
+      <ErrorLine error={error?.message} />
+      {done.length > 0 && (
+        <ul className="mt-3 rounded-md border border-line">
+          {done.map((e) => (
+            <EntryRow key={e.key} entry={e} />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/** The Live board: lanes of running, queued and lately ended work over the last hour and what is expected next, then the latest events. */
 export function LiveBoard({ to }: { to: string }) {
-  const { data, error } = useQuery("live", (a) => a.live(), { pollMs: 5000 });
+  const { data, error } = useQuery("live", (a) => a.live());
   useNow(1000);
   const now = nowMs();
-  const lanes = data?.lanes ?? [];
+  const lanes = useSteadyLanes(data?.lanes);
   const running = lanes.filter((l) => l.state === "running");
   // Axis: the last hour (less when nothing is that old), up to the latest expected end.
   const starts = lanes.filter((l) => l.state !== "queued").map((l) => Date.parse(l.start));
@@ -182,9 +246,6 @@ export function LiveBoard({ to }: { to: string }) {
                 {KIND[k].label}
               </span>
             ))}
-            <Tooltip content="Dashed: the expected rest (median of earlier runs). Red line: 90% of earlier runs were done by then.">
-              <span tabIndex={0} className="ml-auto cursor-help underline decoration-dotted underline-offset-2">How to read it</span>
-            </Tooltip>
           </div>
           <div className="grid md:grid-cols-[minmax(15rem,22rem)_1fr]">
             <div className="border-b border-line max-md:hidden" />
@@ -211,6 +272,7 @@ export function LiveBoard({ to }: { to: string }) {
           </div>
         </div>
       )}
+      <LatestEvents />
     </Section>
   );
 }

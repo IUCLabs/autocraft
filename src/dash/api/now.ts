@@ -225,7 +225,7 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, before: str
        FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE r.state = 'running'${hiddenRuns} ORDER BY r.id`, ...hideArgs(hidden))) {
       const its = all<{ repo: string; number: number }>(db, "SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT ?", r.id, PER_KIND);
       placeChild(r.job_id, base({
-        key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : `${r.model} on ${r.label ?? "an unknown account"}`, progress: r.progress,
+        key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : staff ? `${r.model} on ${r.label ?? "an unknown account"}` : r.model, progress: blankIfHidden(r.progress, hidden) || null,
         item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.map((i) => item(i.repo, i.number)), itemCount: Math.max(r.item_count, its.length), event: its[0] ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
       }));
     }

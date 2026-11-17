@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { connect } from "../src/db.ts";
 import { buildKind, live } from "../src/dash/api/live.ts";
+import { now } from "../src/dash/api/now.ts";
+import { insertRun } from "../src/agents/runs.ts";
 import type { Req } from "../src/dash/types.ts";
 
 const req = { query: new URLSearchParams(), user: { role: "operator", login: "o", canRead: async () => true } } as unknown as Req;
@@ -35,4 +37,27 @@ test("the live board shows a running job with its call and build steps, an estim
 
 test("build steps are sorted into kinds by name", () => {
   assert.deepEqual(["npm ci", "cargo build", "cargo test", "clippy", "tsc", "deploy"].map(buildKind), ["setup", "build", "tests", "lint", "lint", "other"]);
+});
+
+test("viewers see no account label and no progress line that names a repo hidden from them, on the Live board and the Now feed", async () => {
+  const db = connect(":memory:");
+  db.exec("INSERT INTO repos (name, visibility) VALUES ('app', 'public'), ('secret', 'private'); INSERT OR IGNORE INTO tracked_repos (name) VALUES ('app'), ('secret')");
+  db.prepare("INSERT INTO claude_accounts (id, label) VALUES ('acc', 'Team account B')").run();
+  const job = Number(db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, started_at, progress) VALUES ('review', '{}', 'pipeline', ?, 'running', ?, 'Reviewing app#7')").run(ago(5), ago(5)).lastInsertRowid);
+  db.prepare("INSERT INTO job_items (job_id, repo, number, at) VALUES (?, 'app', 7, ?)").run(job, ago(5));
+  const run = (jobId: number | null, progress: string) => {
+    const id = insertRun(db, { jobId, step: "review", stage: 1, promptId: "p", promptVersion: "1", provider: "claude", model: "opus", accountId: "acc", items: [{ repo: "app", number: 7 }], prompt: "p" });
+    db.prepare("UPDATE agent_runs SET state = 'running', started_at = ?, progress = ? WHERE id = ?").run(ago(4), progress, id);
+  };
+  run(job, "Reading app/src/main.rs");
+  run(null, "Comparing with secret#3");
+  const as = (role: "viewer" | "operator") => ({ query: new URLSearchParams(), user: { role, login: "u", canRead: async (r: string) => r !== "secret" } }) as unknown as Req;
+
+  const board = (await live(db, as("viewer"))).lanes;
+  assert.deepEqual(board.flatMap((l) => l.ops.map((o) => o.detail)), ["Review", "Review"]);
+  assert.equal(board.find((l) => l.key.startsWith("run:"))?.line, null);
+  const feed = (await now(db, as("viewer"))).entries.flatMap((e) => [e, ...e.children]).filter((e) => e.kind === "call");
+  assert.deepEqual(feed.map((e) => [e.what, e.progress]), [["opus", null], ["opus", "Reading app/src/main.rs"]]);
+  // Operators see the account.
+  assert.match((await live(db, as("operator"))).lanes[0]!.ops[0]!.detail ?? "", /on Team account B$/);
 });

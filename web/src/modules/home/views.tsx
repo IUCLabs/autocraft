@@ -37,7 +37,7 @@ function NeedRow({ n, canOpen }: { n: HomeNeed; canOpen: boolean }) {
   return (
     <WorkableRow
       item={{
-        repo: n.repo, number: n.number ?? 0, kind: finding ? null : n.itemKind, state: "open", title: n.title, to: n.to,
+        repo: n.repo, number: n.number ?? 0, kind: finding ? "finding" : n.itemKind, state: "open", title: n.title, to: n.to,
         id: finding ? <span className="code text-ink/60">finding {n.number ?? ""}</span> : undefined,
       }}
       cells={{

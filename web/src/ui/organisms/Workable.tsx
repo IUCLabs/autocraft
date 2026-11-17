@@ -9,7 +9,7 @@
 import { createContext, useContext, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { ItemKind, ItemState } from "../../api/types";
-import { ItemIcon } from "../atoms/ItemIcon";
+import { ItemIcon, type IconKind } from "../atoms/ItemIcon";
 import { Tooltip } from "../atoms/Tooltip";
 import { ItemPeek } from "../molecules/ItemPeek";
 import { githubItemUrl, itemPath } from "../../lib/links";
@@ -38,7 +38,8 @@ export interface WorkableColumn {
 export interface WorkableItem {
   repo: string;
   number: number;
-  kind?: ItemKind | null;
+  /** "finding": a security finding, which has no GitHub page; give it an `id`. */
+  kind?: IconKind | null;
   state?: ItemState | null;
   draft?: boolean;
   title: string | null | undefined;
@@ -102,6 +103,18 @@ function useWidth() {
 
 const ALIGN = { start: "", center: "justify-center text-center", end: "justify-end text-right" };
 
+/** Extra width a wider layout needs over its threshold before the table switches up to it: more than a classic scrollbar, so a layout
+ * whose height adds or removes the page's scrollbar does not switch back and forth. */
+const HYSTERESIS = 24;
+const RANK: Record<Exclude<WorkableLayout, "phone">, number> = { full: 0, mid: 1, compact: 2 };
+
+function layoutFor(width: number | null, cols: WorkableColumn[], closes: boolean, prev: WorkableLayout): WorkableLayout {
+  if (width === null) return "full";
+  const from = prev === "phone" ? 0 : RANK[prev];
+  for (const l of ["full", "mid"] as const) if (width >= need(cols, closes, l) + (RANK[l] < from ? HYSTERESIS : 0)) return l;
+  return "compact";
+}
+
 /** `closes` adds the closed issues after the id. */
 export function WorkableTable({ columns, label, closes = false, titleLabel = "Title", children, className }: {
   columns: WorkableColumn[];
@@ -113,7 +126,9 @@ export function WorkableTable({ columns, label, closes = false, titleLabel = "Ti
 }) {
   const phone = useIsPhone();
   const [ref, width] = useWidth();
-  const layout: WorkableLayout = phone ? "phone" : width === null || width >= need(columns, closes, "full") ? "full" : width >= need(columns, closes, "mid") ? "mid" : "compact";
+  const last = useRef<WorkableLayout>("full");
+  const layout: WorkableLayout = phone ? "phone" : layoutFor(width, columns, closes, last.current);
+  last.current = layout;
   const shape = shapeOf(columns, closes, layout);
   return (
     <Shape.Provider value={shape}>
@@ -210,7 +225,7 @@ export function WorkableRow({ item, mark, sub, cells, highlight, dataItem }: {
         <div role="cell" className="flex min-w-0 items-start gap-1.5">
           <ItemIcon kind={item.kind} state={item.state} draft={item.draft} />
           <span className="min-w-0">
-            {item.id ?? <GithubId repo={item.repo} number={item.number} kind={item.kind} />}
+            {item.id ?? <GithubId repo={item.repo} number={item.number} kind={item.kind === "finding" ? null : item.kind} />}
             {!phone && (
               <span className="block truncate text-2xs text-ink/45" title={item.repo}>
                 {item.repo}

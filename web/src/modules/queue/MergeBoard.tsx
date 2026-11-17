@@ -88,9 +88,14 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
       sub={r.decisionId || r.refusedReason || r.note || r.outsideRule.length ? sub : undefined}
       cells={{
         step: (
-          <span className="flex flex-wrap items-center gap-1">
-            <StateChip row={r} details={[wait !== STATE[r.state][0] && wait, r.path === "operator" && "Approved by an operator", r.held && "Held: it stays out of merges until released"]} />
-            {r.held && <Badge tone="warn">Held</Badge>}
+          <span className="flex flex-col items-start gap-0.5">
+            <span className="flex flex-wrap items-center gap-1">
+              <StateChip row={r} />
+              {r.held && <Badge tone="warn">Held</Badge>}
+            </span>
+            {r.conflictNote && <span className="text-2xs text-ink/55">{r.conflictNote}</span>}
+            {wait && wait !== STATE[r.state][0] && <span className="text-2xs text-ink/50">{wait}</span>}
+            {r.path === "operator" && <span className="text-2xs text-ink/50">Approved by an operator</span>}
           </span>
         ),
         ...checkCells(r),
