@@ -175,6 +175,7 @@ export function createHttpApi(): Api {
       },
     },
     now: () => get("/api/now"),
+    live: () => get("/api/live"),
     nowFeed: (before) => get(`/api/now/feed${qs({ before })}`),
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     itemTrace: (repo, number, q = {}) =>
@@ -186,6 +187,7 @@ export function createHttpApi(): Api {
     progress: () => get("/api/progress"),
     home: () => get("/api/home"),
     itemPage: (repo, number, since) => get(`/api/items/${encodeURIComponent(repo)}/${number}/page${qs({ since })}`),
+    itemPeek: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/peek`),
     itemStatusList: (f) => get(`/api/items/status${qs({ q: f.q, phase: f.phase, kind: f.kind, repo: f.repo?.join(","), discord: f.discord ? "1" : undefined, cursor: f.cursor })}`),
     securityList: () => get("/api/security/findings"),
     findingPage: (repo, number) => get(`/api/security/findings/${encodeURIComponent(repo)}/${number}/page`),

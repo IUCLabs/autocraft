@@ -1,11 +1,10 @@
 // The merge queue, on the Merge queue tab: every PR with a take or take-fix review as one Workable table, grouped by the step it waits on,
 // in the order a PR passes them; integration batches are groups of their own, then the stopped PRs.
-import { Fragment, useEffect, useMemo, type ReactNode } from "react";
-import { CheckCircleIcon, CircleNotchIcon, ClockIcon, MinusCircleIcon, WarningCircleIcon, XCircleIcon } from "@phosphor-icons/react";
+import { Fragment, useEffect, useMemo } from "react";
 import { useApi } from "../../api/client";
 import type { FastPosition, NextMerge, QueueBatch, QueueOrigin, QueueRow, QueueState } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
-import { Badge, type Tone } from "../../ui/atoms/Badge";
+import { Badge } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { WorkableGroup, WorkableRow, WorkableTable, type WorkableColumn } from "../../ui/organisms/Workable";
 import { cn } from "../../ui/cn";
@@ -13,7 +12,8 @@ import { num } from "../../lib/format";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { FastMark } from "./fastTrack";
 import { useIsLinked } from "./highlight";
-import { BatchFacts, CI_TONE, DecisionLink, MERGEABLE, STATE, StateChip, TIER, V_LABEL, V_TONE, Why } from "./mergeParts";
+import { BatchFacts, DecisionLink, STATE, StateChip, TIER, Why } from "./mergeParts";
+import { CHECK_COLUMNS, checkCells, Size, SIZE_COLUMN } from "./checks";
 import { RowMenu } from "./RowMenu";
 import { usePage } from "./usePage";
 
@@ -38,54 +38,13 @@ type Row = QueueRow & { held?: boolean; fast?: FastPosition | null; batch?: numb
 type Next = Map<string, { position: number; merge: NextMerge }>;
 
 const COLUMNS: WorkableColumn[] = [
-  { id: "step", label: "Step", width: "190px", hint: "Where the PR stands on its way to merged" },
-  { id: "checks", label: "Checks", width: "236px", mdWidth: "120px", hint: "Review verdict, upstream CI, Verify at the reviewed head, mergeability" },
-  { id: "size", label: "Size", width: "40px", mdWidth: "32px" },
+  { id: "step", label: "Step", width: "200px", mdWidth: "196px", hint: "Where the PR stands on its way to merged" },
+  ...CHECK_COLUMNS,
+  SIZE_COLUMN,
   { id: "author", label: "Author", width: "130px", wide: true },
   { id: "added", label: "Added", width: "150px", hint: "How the PR came into the queue, who put it there and when", wide: true },
-  { id: "actions", label: "", width: "40px", mdWidth: "28px", align: "end" },
+  { id: "actions", label: "", width: "32px", mdWidth: "28px", align: "end" },
 ];
-
-const CHECK_ICON: Record<Tone, ReactNode> = {
-  ok: <CheckCircleIcon weight="fill" className="text-ok" />,
-  bad: <XCircleIcon weight="fill" className="text-bad" />,
-  warn: <WarningCircleIcon weight="fill" className="text-warn" />,
-  accent: <CircleNotchIcon weight="bold" className="text-accent-ink" />,
-  neutral: <MinusCircleIcon className="text-ink/35" />,
-  merged: <CheckCircleIcon weight="fill" className="text-merged" />,
-};
-
-function Check({ label, tone, value }: { label: string; tone: Tone; value: string }) {
-  return (
-    <span title={`${label}: ${value}`} className="inline-flex items-center gap-1 text-2xs text-ink/65">
-      <span className="text-sm leading-none" aria-hidden>
-        {tone === "neutral" && value.startsWith("pending") ? <ClockIcon className="text-ink/45" /> : CHECK_ICON[tone]}
-      </span>
-      <span className="sr-only">{`${label}: `}</span>
-      {label}
-      <span className="sr-only">{value}</span>
-    </span>
-  );
-}
-
-const BUILD_TONE: Record<NonNullable<QueueRow["prBuild"]>["state"], Tone> = { queued: "neutral", running: "accent", passed: "ok", failed: "bad", error: "warn", stale: "neutral" };
-const BUILD_LABEL: Record<NonNullable<QueueRow["prBuild"]>["state"], string> = { queued: "queued", running: "running", passed: "passed", failed: "failed", error: "error", stale: "stale" };
-
-/**
- * Review, CI, Verify, mergeability and our own build in one run of icons, two to a line in the table's compact layout; each names its
- * state, and the failure, on hover.
- */
-function Checks({ r }: { r: QueueRow }) {
-  return (
-    <span className="flex flex-wrap items-center gap-x-3 gap-y-1 md:max-[1799px]:grid md:max-[1799px]:grid-cols-[auto_auto] md:max-[1799px]:justify-start">
-      <Check label="Review" tone={r.verdict === "take" ? "ok" : "warn"} value={r.verdict} />
-      <Check label="CI" tone={CI_TONE[r.ci]} value={r.ci} />
-      <Check label="Verify" tone={r.verify ? V_TONE[r.verify.state] ?? "neutral" : "neutral"} value={r.verify ? [V_LABEL[r.verify.state] ?? r.verify.state, r.verify.summary, r.verify.note].filter(Boolean).join(" · ") : "none"} />
-      <Check label="Merge" tone={MERGEABLE[r.mergeable][1]} value={MERGEABLE[r.mergeable][0]} />
-      {r.prBuild && <Check label="Build" tone={BUILD_TONE[r.prBuild.state]} value={[BUILD_LABEL[r.prBuild.state], r.prBuild.current ? null : "older head", r.prBuild.summary].filter(Boolean).join(" · ")} />}
-    </span>
-  );
-}
 
 const HOW: Record<QueueOrigin["how"], [string, string]> = {
   review: ["Take review", "Came in with a take review; the merge rule or a Merge? answer lets it merge"],
@@ -134,12 +93,13 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
               <StateChip row={r} />
               {r.held && <Badge tone="warn">Held</Badge>}
             </span>
+            {r.conflictNote && <span className="text-2xs text-ink/55">{r.conflictNote}</span>}
             {wait && wait !== STATE[r.state][0] && <span className="text-2xs text-ink/50">{wait}</span>}
-            {r.path === "operator" && <span className="text-2xs text-ink/50">approved by operator</span>}
+            {r.path === "operator" && <span className="text-2xs text-ink/50">Approved by an operator</span>}
           </span>
         ),
-        checks: <Checks r={r} />,
-        size: <span className="num text-xs text-ink/70">{r.size}</span>,
+        ...checkCells(r),
+        size: <Size size={r.size} />,
         author: (
           <span className="block truncate text-xs text-ink/70" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
             {r.author || "unknown"}

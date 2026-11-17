@@ -1,31 +1,51 @@
-// Items: every issue and PR with one status line, filtered by phase.
+// Items: every issue and PR as Workable rows (the merge queue's table) with its status, filtered by phase.
 import { UnlessProject } from "../../shell/ScopePicker";
 import { ChatsCircleIcon, MagnifyingGlassIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
 import { Link } from "react-router-dom";
 import { usePagedQuery } from "../../api/client";
-import type { ItemPhase, ItemStatusFilter, ItemStatusRow } from "../../api/types";
+import type { ItemPhase, ItemStatus, ItemStatusFilter, ItemStatusRow } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { Chip } from "../../ui/atoms/Chip";
 import { Pending } from "../../ui/atoms/Pending";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
-import { ItemRef } from "../../ui/molecules/ItemRef";
 import { RepoSelect } from "../../ui/molecules/RepoSelect";
-import { StatusLine } from "../../ui/molecules/StatusLine";
+import { PhaseBadge } from "../../ui/molecules/StatusLine";
+import { WorkableRow, WorkableTable, type WorkableColumn } from "../../ui/organisms/Workable";
+import { CHECK_COLUMNS, checkCells, Size, SIZE_COLUMN } from "../queue/checks";
 import { Page } from "../../ui/organisms/Page";
 import { useUrlState } from "../admin/parts";
 import type { ViewProps } from "../../registry/types";
 
 const PHASES: ItemPhase[] = ["Triage", "Waiting for a person", "Review", "Fixing", "Verifying", "In queue", "Merged", "Closed", "Held", "Out of scope", "Pipeline off"];
 
+const COLUMNS: WorkableColumn[] = [
+  { id: "status", label: "Status", width: "190px", mdWidth: "160px", hint: "Where the item stands; what it waits for and what comes next is under the title" },
+  ...CHECK_COLUMNS,
+  SIZE_COLUMN,
+  { id: "author", label: "Author", width: "140px", wide: true },
+  { id: "updated", label: "Updated", width: "96px", mdWidth: "80px", align: "end" },
+];
+
+/** What it waits for and what happens next, the line under the title. */
+function Waits({ s }: { s: ItemStatus }) {
+  const parts = [s.waiting && `waiting for ${s.waiting}`, s.next && `next: ${s.next}`].filter(Boolean);
+  return parts.length ? <>{parts.join(" · ")}</> : null;
+}
+
 function Row({ r }: { r: ItemStatusRow }) {
   return (
-    <li className="relative border-t border-line py-2.5 hover:bg-ink/[0.025] max-md:py-3">
-      <ItemRef repo={r.repo} number={r.number} kind={r.kind} state={r.state} title={r.title} stretch />
-      <div className="mt-1 flex items-start gap-2 pl-6">
-        <StatusLine status={r.status} compact className="min-w-0 flex-1 text-xs" />
-        <TimeAgo iso={r.updatedAt} className="num shrink-0 text-xs text-ink/45" />
-      </div>
-    </li>
+    <WorkableRow
+      item={{ repo: r.repo, number: r.number, kind: r.kind, state: r.state, title: r.title, closes: r.closes }}
+      dataItem={`${r.repo}:${r.number}`}
+      sub={r.status.waiting || r.status.next ? <Waits s={r.status} /> : undefined}
+      cells={{
+        status: <PhaseBadge phase={r.status.phase} />,
+        ...checkCells(r.checks),
+        size: r.checks ? <Size size={r.checks.size} /> : undefined,
+        author: r.author ? <span className="block truncate text-xs text-ink/70">{r.author}</span> : undefined,
+        updated: r.updatedAt ? <TimeAgo iso={r.updatedAt} className="num text-xs text-ink/45" /> : undefined,
+      }}
+    />
   );
 }
 
@@ -42,7 +62,7 @@ export function StatusItemsView(_: ViewProps) {
   const rows = pages?.flatMap((p) => p.rows);
   const kinds: [string, string | undefined][] = [["All", undefined], ["Pull requests", "pr"], ["Issues", "issue"]];
   return (
-    <Page title="Items">
+    <Page title="Items" wide>
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11 max-md:basis-full md:max-w-[420px]">
           <MagnifyingGlassIcon className="shrink-0 text-ink/45" />
@@ -67,10 +87,10 @@ export function StatusItemsView(_: ViewProps) {
       </div>
       {!rows ? <Pending error={error} /> : rows.length === 0 ? <p className="py-8 text-sm text-ink/55">No items match.</p> : (
         <>
-          <ul>
+          <WorkableTable columns={COLUMNS} label="Items" closes className="mt-3">
             {rows.map((r) => <Row key={`${r.kind}${r.repo}${r.number}`} r={r} />)}
-          </ul>
-          <div className="flex items-center gap-3 border-t border-line py-3 text-xs text-ink/55">
+          </WorkableTable>
+          <div className="flex items-center gap-3 py-3 text-xs text-ink/55">
             <span className="num">{rows.length} of {data && (phase ? data.byPhase[phase] : data.total)}</span>
             {hasMore && <Button variant="secondary" loading={loadingMore} onClick={loadMore} className="max-md:h-11">Load more</Button>}
           </div>

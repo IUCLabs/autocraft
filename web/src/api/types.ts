@@ -2315,6 +2315,44 @@ export type NowEntry = {
   children: NowEntry[];
 };
 export type NowFeed = { entries: NowEntry[]; nextCursor: string | null };
+/** How long the same kind of work took before: median, the 90th percentile ("late") and how many runs that is, in milliseconds. */
+export interface LiveEstimate { median: number; p90: number; samples: number }
+/** What a stretch of a lane's time went to: a model call, or one step of a build task (setup, build, tests, lint, other). */
+export type LiveOpKind = "model" | "setup" | "build" | "tests" | "lint" | "other";
+export interface LiveOp {
+  kind: LiveOpKind;
+  label: string;
+  /** The model and account, or the build step's command name. */
+  detail: string | null;
+  start: string;
+  /** Null while it runs. */
+  end: string | null;
+  /** For a running op: how long the same work took before. */
+  estimate: LiveEstimate | null;
+  failed?: boolean;
+}
+/** One unit of the pipeline's work on the Live board: a job (with its model calls and build tasks) or a build task or call of its own. */
+export interface LiveLane {
+  key: string;
+  title: string;
+  state: "running" | "queued" | "done" | "failed";
+  /** Started (or queued, while queued). */
+  start: string;
+  end: string | null;
+  /** The latest progress line while running, or the outcome once ended. */
+  line: string | null;
+  item: (ItemRef & ItemShown) | null;
+  itemCount: number;
+  repo: string | null;
+  /** The job, call or task page. */
+  detail: string;
+  /** How long this step took before, for a running lane. */
+  estimate: LiveEstimate | null;
+  ops: LiveOp[];
+}
+/** `GET /api/live`: running and queued work and what ended in the last minutes, for the Live timeline on Home. */
+export interface LiveBoard { lanes: LiveLane[] }
+
 export type Now = { health: NowHealth; /** Titles of housekeeping jobs that are running, shown as one line. */ alsoRunning: string[] } & NowFeed;
 
 // ---- security deep scan (operators and maintainers only; viewers get 404) ----------------------------------
@@ -2668,9 +2706,31 @@ export interface ItemStatusRow {
   kind: ItemKind;
   state: ItemState;
   title: string;
+  author: string | null;
   status: ItemStatus;
   updatedAt: string;
+  /** Issues this PR closes when it merges. */
+  closes?: number[];
+  /** The merge checks, for a PR in the merge queue (only those have them); null otherwise. */
+  checks?: ItemChecks | null;
 }
+/** An item in brief, for the hover card on its number: what it is and where it stands. */
+export interface ItemPeek {
+  repo: RepoName;
+  number: number;
+  kind: ItemKind;
+  state: ItemState;
+  title: string;
+  author: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  labels: string[];
+  status: ItemStatus;
+  /** PRs: the issues it closes when it merges. */
+  closes: number[];
+}
+/** A PR's merge checks as the merge queue shows them. */
+export type ItemChecks = Pick<QueueRow, "verdict" | "ci" | "mergeable" | "verify" | "size" | "prBuild">;
 export interface ItemStatusFilter { q?: string; phase?: ItemPhase; kind?: ItemKind; repo?: RepoName[]; /** Only items mentioned in a watched Discord channel. */ discord?: boolean; cursor?: string }
 /** `byPhase` and `total` count every row that matches the filter except `phase`; `nextCursor` is null on the last page. */
 export interface ItemStatusList { rows: ItemStatusRow[]; byPhase: Record<ItemPhase, number>; total: number; nextCursor: string | null }

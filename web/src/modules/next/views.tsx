@@ -85,7 +85,7 @@ export function NextView() {
   const tab = param ? TABS.find(([t]) => t === param)?.[0] : "merge";
   if (!tab) return <Navigate to="/next" replace />;
   return (
-    <Page title={tab === "steps" ? "Next steps" : "Merge queue"} wide={tab !== "steps"}>
+    <Page title={tab === "steps" ? "Next steps" : "Merge queue"} wide>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div role="tablist" aria-label="Next" className="flex flex-wrap items-center gap-1">
           {TABS.map(([t, label]) => (

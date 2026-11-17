@@ -264,7 +264,7 @@ export function findingPageOf(f: FindingView, now: string): FindingPageData {
 export function convertReal(x: RealExport): RealPages {
   const ok = x.items.filter((i) => i.item && !i.item.error);
   const pages = ok.map(pageOf);
-  const rows = pages.map((p, i): ItemStatusRow => ({ repo: p.repo, number: p.number, kind: p.kind, state: p.state, title: p.title, status: p.status, updatedAt: ok[i]!.item.updatedAt }));
+  const rows = pages.map((p, i): ItemStatusRow => ({ repo: p.repo, number: p.number, kind: p.kind, state: p.state, title: p.title, author: p.author ?? null, status: p.status, updatedAt: ok[i]!.item.updatedAt }));
   const findings = new Map(x.findings.filter((f) => f.finding && !("error" in f.finding)).map((f) => [`${f.repo}#${f.number}`, findingPageOf(f.finding, x.exportedAt)]));
   // Open questions: the decision (only when it has an id; answered items export an empty object), its choices and the conversation.
   const decisionOf = new Map<string, RealDecision>();

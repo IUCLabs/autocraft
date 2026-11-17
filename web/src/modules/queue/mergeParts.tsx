@@ -2,6 +2,7 @@
 import { Link } from "react-router-dom";
 import type { BatchState, QueueBatch, QueueRow, QueueState, Tier } from "../../api/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
+import { Tooltip } from "../../ui/atoms/Tooltip";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { when } from "../../lib/format";
@@ -78,14 +79,16 @@ export function BatchFacts({ b }: { b: QueueBatch }) {
   );
 }
 
+/** The PR's state as a chip, with why it is there in the chip's tip. */
 export function StateChip({ row }: { row: QueueRow }) {
   const [text, tone, hint] = STATE[row.state];
-  const title = row.state === "refused" && row.refusedReason ? row.refusedReason : row.state === "declined" && row.answer ? `The operator answered ${row.answer}` : hint;
+  const why = row.state === "refused" && row.refusedReason ? row.refusedReason : row.state === "declined" && row.answer ? `The operator answered ${row.answer}` : hint;
   return (
-    <span title={title} className="relative z-10">
-      <Badge tone={tone}>{text}</Badge>
-      {row.conflictNote && <span className="ml-1.5 text-2xs text-ink/55">{row.conflictNote}</span>}
-    </span>
+    <Tooltip title={text} content={why} align="start">
+      <span tabIndex={0} className="inline-flex rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent/60">
+        <Badge tone={tone}>{text}</Badge>
+      </span>
+    </Tooltip>
   );
 }
 

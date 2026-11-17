@@ -10,6 +10,8 @@ import type {
   OpenDecisionCounts,
   ItemPageData,
   ItemStatusFilter,
+  ItemPeek,
+  LiveBoard,
   ItemStatusList,
   SecurityList,
   FindingPageData,
@@ -192,6 +194,8 @@ export interface Api {
   };
   /** Health problems, everything in progress and the last things that happened, for the home page. */
   now(): Promise<Now>;
+  /** Running and queued work and what ended lately, on one time axis with estimates (the Live board on Home). */
+  live(): Promise<LiveBoard>;
   /** The next page of "Just happened", older than `before` (a `nextCursor`). */
   nowFeed(before: string): Promise<NowFeed>;
   item(repo: RepoName, number: number): Promise<Item>;
@@ -219,6 +223,8 @@ export interface Api {
   itemPage(repo: RepoName, number: number, since?: string): Promise<ItemPageData | ItemPageUnchanged>;
   /** The Items list with a status per row, one page at a time. */
   itemStatusList(filter: ItemStatusFilter): Promise<ItemStatusList>;
+  /** The item in brief, for the hover card on its number. */
+  itemPeek(repo: RepoName, number: number): Promise<ItemPeek>;
   /** Staff: all findings grouped by what they need. */
   securityList(): Promise<SecurityList>;
   /** Staff: a finding with its status, fix rounds and history. */

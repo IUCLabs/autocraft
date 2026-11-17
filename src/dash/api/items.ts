@@ -3,7 +3,7 @@
 import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
-  ItemList, ItemListRow, ItemSort, SearchHit, SettledStatus, Snippet, Stage,
+  ItemChecks, ItemPeek, ItemList, ItemListRow, ItemSort, SearchHit, SettledStatus, Snippet, Stage,
 } from "../../../web/src/api/types.ts";
 import { quietFixPrs, quietSqlFor } from "../../security/quiet.ts";
 import { fromRow, unflagged, latestRun, settledTable, type SettledRow } from "../../classify/settled.ts";
@@ -13,8 +13,12 @@ import type { Req } from "../types.ts";
 import { itemState } from "./decisions.ts";
 import { flowMembers } from "./flow.ts";
 import { queueSlots } from "../../rank/position.ts";
-import { excludeHidden, hiddenRepos, visibleRepos } from "./visible.ts";
-import { readerOf, statusFor } from "./reader.ts";
+import { excludeHidden, hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { readerOf, statusFor, type Reader } from "./reader.ts";
+import { toRow } from "./queue.ts";
+import { prBuildView } from "../../prbuild/view.ts";
+import type { PlanView } from "../../core/plan-cache.ts";
+import type { CachedEntry } from "../../core/plan-read.ts";
 import { statusFromItem } from "../../core/item-status.ts";
 import { ITEM_PHASES, PHASE_SQL, type ItemPhase, type ItemStatus, type ItemStatusList, type ItemStatusRow } from "./home-types.ts";
 
@@ -381,7 +385,22 @@ export async function quickSearch(db: DatabaseSync, req: Req): Promise<SearchHit
 
 // ---- the Items status list ----------------------------------------------------
 
-type StatusRowRaw = { repo: string; number: number; kind: string; state: string; title: string | null; updated_at: string | null; merged_at: string | null; closed_at: string | null; view: string | null };
+type StatusRowRaw = { repo: string; number: number; kind: string; state: string; title: string | null; author: string | null; updated_at: string | null; merged_at: string | null; closed_at: string | null; view: string | null; plan_state: string | null; reasons: string | null; closing_issues: string | null };
+
+/** The issue numbers in an item's stored closing list; a malformed list counts as none. */
+function closesOf(json: string | null): number[] {
+  if (!json) return [];
+  try { return (JSON.parse(json) as unknown[]).filter((x): x is number => typeof x === "number"); } catch { return []; }
+}
+
+/** The merge queue's checks for a PR the plan holds a queue view for, with the same veiling as the queue (toRow); null otherwise. */
+function checksOf(db: DatabaseSync, r: StatusRowRaw, view: PlanView | undefined, reader: Reader, internals: boolean): ItemChecks | null {
+  if (!view?.queue || !r.plan_state) return null;
+  let outsideRule: string[] = [];
+  try { outsideRule = JSON.parse(r.reasons ?? "[]") as string[]; } catch { /* none */ }
+  const q = toRow({ ...view.queue, repo: r.repo, number: r.number, title: r.title ?? "", state: r.plan_state as CachedEntry["state"], outsideRule, note: null, gh: view.gh ?? "OPEN" }, reader);
+  return { verdict: q.verdict, ci: q.ci, mergeable: q.mergeable, verify: q.verify, size: q.size, prBuild: prBuildView(db, r.repo, r.number, q.head, internals) };
+}
 
 const DISCORD_SQL = "EXISTS (SELECT 1 FROM main.discord_mentions d WHERE d.repo = i.repo AND d.number = i.number)";
 
@@ -395,6 +414,7 @@ export async function statusList(db: DatabaseSync, req: Req): Promise<ItemStatus
   only.set("state", "all");
   const reader = await readerOf(db, req);
   const b = build(db, { ...req, query: only }, reader.hidden);
+  const internals = canSeeInternals(req);
   const limit = Math.min(100, Math.max(1, Number(req.query.get("limit")) || 50));
   const from = (cols: string) => (b.text ? `WITH ${HIT_IDS} SELECT ${cols} FROM hits h JOIN items i ON i.rowid = h.rid` : `SELECT ${cols} FROM items i`) +
     " LEFT JOIN main.item_plans p ON p.repo = i.repo AND p.number = i.number";
@@ -422,20 +442,45 @@ export async function statusList(db: DatabaseSync, req: Req): Promise<ItemStatus
     params.cr = m[2]!;
     params.cn = Number(m[3]);
   }
-  const got = db.prepare(from("i.repo, i.number, i.kind, i.state, i.title, i.updated_at, i.merged_at, i.closed_at, p.view") + whereSql(where) +
+  const got = db.prepare(from("i.repo, i.number, i.kind, i.state, i.title, i.author, i.updated_at, i.merged_at, i.closed_at, p.view, p.state AS plan_state, p.reasons, i.closing_issues") + whereSql(where) +
     " ORDER BY COALESCE(i.updated_at, '') DESC, i.repo, i.number DESC LIMIT :limit").all(params) as StatusRowRaw[];
   const page = got.slice(0, limit);
   const last = page[page.length - 1];
   return {
     total, byPhase,
     rows: page.map((r): ItemStatusRow => {
-      let status: ItemStatus | undefined;
-      try { status = r.view ? (JSON.parse(r.view) as { status?: ItemStatus }).status : undefined; } catch { /* a malformed view counts as none */ }
+      let view: PlanView | undefined;
+      try { view = r.view ? (JSON.parse(r.view) as PlanView) : undefined; } catch { /* a malformed view counts as none */ }
+      const status = view?.status;
       return {
-        repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state), title: r.title ?? "",
+        repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state), title: r.title ?? "", author: r.author ?? null,
         status: status ? statusFor(reader, r.repo, r.number, status) : statusFromItem(r, r.updated_at ?? ""), updatedAt: r.updated_at ?? "",
+        closes: r.kind === "pr" ? closesOf(r.closing_issues) : [], checks: r.kind === "pr" ? checksOf(db, r, view, reader, internals) : null,
       };
     }),
     nextCursor: got.length > limit && last ? `${last.updated_at ?? ""}|${last.repo}|${last.number}` : null,
+  };
+}
+
+/** `GET /api/items/:repo/:n/peek`: the item in brief for the hover card on its number; the status text is veiled as in the lists. */
+export async function peek(db: DatabaseSync, req: Req): Promise<ItemPeek> {
+  const repo = req.params.repo!;
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
+  await needVisible(db, req, repo);
+  const r = db.prepare(`SELECT i.repo, i.number, i.kind, i.state, i.title, i.author, i.labels, i.created_at, i.updated_at, i.merged_at, i.closed_at, i.closing_issues, p.view
+    FROM items i LEFT JOIN main.item_plans p ON p.repo = i.repo AND p.number = i.number WHERE i.repo = ? AND i.number = ?`).get(repo, n) as
+    (Omit<StatusRowRaw, "plan_state" | "reasons"> & { labels: string | null; created_at: string | null }) | undefined;
+  if (!r) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
+  const reader = await readerOf(db, req);
+  let status: ItemStatus | undefined;
+  try { status = r.view ? (JSON.parse(r.view) as PlanView).status : undefined; } catch { /* a malformed view counts as none */ }
+  let labels: string[] = [];
+  try { labels = (JSON.parse(r.labels ?? "[]") as unknown[]).filter((x): x is string => typeof x === "string"); } catch { /* none */ }
+  return {
+    repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state), title: r.title ?? "", author: r.author ?? null,
+    createdAt: r.created_at, updatedAt: r.updated_at, labels,
+    status: status ? statusFor(reader, r.repo, r.number, status) : statusFromItem(r, r.updated_at ?? ""),
+    closes: r.kind === "pr" ? closesOf(r.closing_issues) : [],
   };
 }
