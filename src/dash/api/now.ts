@@ -128,7 +128,7 @@ const lines = (ws: Write[]): { summary: string; items: Item[]; more: number }[] 
   });
 };
 
-function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, before: string | null, nowMs: number): Feed {
+function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: boolean, before: string | null, nowMs: number): Feed {
   const shown = shownLookup(db);
   const item = (repo: string, number: number): Item => ({ repo, number, ...shown(repo, number) });
   const cut = (col: string): string => (before ? ` AND ${col} < ?` : "");
@@ -225,7 +225,7 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, before: str
        FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE r.state = 'running'${hiddenRuns} ORDER BY r.id`, ...hideArgs(hidden))) {
       const its = all<{ repo: string; number: number }>(db, "SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT ?", r.id, PER_KIND);
       placeChild(r.job_id, base({
-        key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : staff ? `${r.model} on ${r.label ?? "an unknown account"}` : r.model, progress: blankIfHidden(r.progress, hidden) || null,
+        key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : operator ? `${r.model} on ${r.label ?? "an unknown account"}` : r.model, progress: blankIfHidden(r.progress, hidden) || null,
         item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.map((i) => item(i.repo, i.number)), itemCount: Math.max(r.item_count, its.length), event: its[0] ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
       }));
     }
@@ -344,13 +344,13 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, before: str
 /** One page of the feed older than `before`, for infinite scroll. */
 export async function nowFeed(db: DatabaseSync, req: Req): Promise<NowFeed> {
   const before = req.query.get("before");
-  const { entries, nextCursor } = feed(db, await hiddenRepos(db, req), canSeeInternals(req), before && !Number.isNaN(Date.parse(before)) ? before : null, Date.now());
+  const { entries, nextCursor } = feed(db, await hiddenRepos(db, req), canSeeInternals(req), req.user.role === "operator", before && !Number.isNaN(Date.parse(before)) ? before : null, Date.now());
   return { entries, nextCursor };
 }
 
 export async function now(db: DatabaseSync, req: Req): Promise<Now> {
   const hidden = await hiddenRepos(db, req);
   const nowMs = Date.now();
-  const f = feed(db, hidden, canSeeInternals(req), null, nowMs);
+  const f = feed(db, hidden, canSeeInternals(req), req.user.role === "operator", null, nowMs);
   return { health: await healthOf(db, hidden, canSeeInternals(req), nowMs), alsoRunning: f.also, entries: f.entries, nextCursor: f.nextCursor };
 }

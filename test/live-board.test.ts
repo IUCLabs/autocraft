@@ -51,7 +51,7 @@ test("viewers see no account label and no progress line that names a repo hidden
   };
   run(job, "Reading app/src/main.rs");
   run(null, "Comparing with secret#3");
-  const as = (role: "viewer" | "operator") => ({ query: new URLSearchParams(), user: { role, login: "u", canRead: async (r: string) => r !== "secret" } }) as unknown as Req;
+  const as = (role: "viewer" | "maintainer" | "operator") => ({ query: new URLSearchParams(), user: { role, login: "u", canRead: async (r: string) => r !== "secret" } }) as unknown as Req;
 
   const board = (await live(db, as("viewer"))).lanes;
   assert.deepEqual(board.flatMap((l) => l.ops.map((o) => o.detail)), ["Review", "Review"]);
@@ -60,4 +60,5 @@ test("viewers see no account label and no progress line that names a repo hidden
   assert.deepEqual(feed.map((e) => [e.what, e.progress]), [["opus", null], ["opus", "Reading app/src/main.rs"]]);
   // Operators see the account.
   assert.match((await live(db, as("operator"))).lanes[0]!.ops[0]!.detail ?? "", /on Team account B$/);
+  assert.doesNotMatch((await live(db, as("maintainer"))).lanes[0]!.ops[0]!.detail ?? "", / on /);
 });

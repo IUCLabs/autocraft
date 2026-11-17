@@ -1,7 +1,7 @@
 // The Live board on Home: every running and queued unit of the pipeline's work (jobs, model calls and build tasks of their own, open
 // integration batches) on one time axis, with the model calls and build steps inside it and how long the same work took before. Jobs that
 // ended in the last minutes stay on it, faded. Repos the reader cannot see are left out as on the Now page (src/dash/api/now.ts); account
-// labels are for staff only.
+// labels are for operators only.
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef, ItemShown, LiveBoard, LiveEstimate, LiveLane, LiveOp, LiveOpKind } from "../../../web/src/api/types.ts";
 import { PRIVATE_STEPS_SQL } from "../../build/tasks.ts";
@@ -69,7 +69,7 @@ export async function live(db: DatabaseSync, req: Req): Promise<LiveBoard> {
   const hiddenRuns = filtered(hidden) ? ` AND ${touchesHidden(hidden).sql}` : "";
   type Call = { id: number; job_id: number | null; step: string; model: string; provider: string; label: string | null; started_at: string; ended_at: string | null; state: string; progress: string | null };
   const callOp = (c: Call): LiveOp => ({
-    kind: "model", label: c.provider === "jev" ? "Jev" : c.model, detail: c.provider !== "jev" && staff ? `${stepTitle(c.step)} on ${c.label ?? "an unknown account"}` : stepTitle(c.step),
+    kind: "model", label: c.provider === "jev" ? "Jev" : c.model, detail: c.provider !== "jev" && req.user.role === "operator" ? `${stepTitle(c.step)} on ${c.label ?? "an unknown account"}` : stepTitle(c.step),
     start: c.started_at, end: c.ended_at, estimate: c.state === "running" ? callEstimate(c.step, c.model) : null, ...(c.state === "failed" ? { failed: true } : {}),
   });
   type Task = { id: number; job_id: number | null; step: string; repo: string; number: number | null; state: string; queued_at: string; started_at: string | null; ended_at: string | null; results: string; summary: string | null; current: string | null };
