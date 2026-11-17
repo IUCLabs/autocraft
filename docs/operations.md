@@ -22,6 +22,14 @@ Once a day per tracked repo (`repos.reconciled_at`; each run takes the repo with
 
 Each run stores `sync_points_last_run` (a full run: `sync_full_points_last_run`) and `sync_rate_remaining` in `settings`.
 
+#### Tracked repos
+
+`autocraft repos track <name>` tracks a storytold repo; `autocraft repos track <owner/name>` tracks one of another owner. The name keeps the casing given, and sync compares names case-sensitively, so use the casing GitHub shows.
+
+- Repo names are unique across owners. Tracking `owner/name` is refused when the name is known under another owner, or when it is new and storytold has a repo of that name. A known bare name means its recorded owner.
+- The repo must exist and be readable. With the GitHub App identity, the app's installation must cover it.
+- Sync refreshes the repo list from storytold first, so the GitHub App must be installed on storytold too. An app installed only on the other owner lets tracking succeed and sync fail.
+
 #### Webhooks
 
 The poll stays the backup and serves repos without the GitHub App. With webhooks on, a change reaches the dashboard in seconds instead of up to a minute. Setup, in the app's GitHub settings under General (an app manager does this):
