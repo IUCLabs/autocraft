@@ -26,9 +26,3 @@ pnpm -C web dev  # Frontend development server with mock data; no backend integr
 To test backend integration, build the frontend without `VITE_MOCK=1` and follow the [dashboard setup](README.md#start-the-dashboard-and-add-the-first-operator). The [operations guide](docs/operations.md) explains how the backend serves the frontend build.
 
 The documentation generator updates marked blocks in the README and `docs/pipeline.md`; it does not validate the surrounding prose.
-
-## Pull Requests
-
-Recent PRs describe the visible changes and the underlying implementation. Examples include [project-scoped navigation](https://github.com/storytold/autocraft/pull/9) and [project pages](https://github.com/storytold/autocraft/pull/7).
-
-Dependent work has also been submitted as stacked pull requests. [PR #8](https://github.com/storytold/autocraft/pull/8) provides a good example of identifying dependencies on previous PRs (e.g., #6) and specifying which commits contain additional work.
