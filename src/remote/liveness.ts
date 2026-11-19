@@ -2,6 +2,7 @@
 // restarting no heartbeat can arrive, and a lease must not be counted as lost for that. The dashboard stamps the
 // `remote_liveness` row every ALIVE_EVERY_MS; job processes, which expire leases (calls.ts expireLeases), read it.
 import type { DatabaseSync } from "node:sqlite";
+import { isBusy } from "../db.ts";
 
 export const ALIVE_EVERY_MS = 5_000;
 /** A stamp older than this means the dashboard is not serving: down, stalled or restarting. */
@@ -46,7 +47,7 @@ export function dashboardAlive(db: DatabaseSync, nowMs: number): { alive: boolea
 /** Starts the stamp timer in the dashboard process; returns the function that stops it. */
 export function startLiveness(db: DatabaseSync): () => void {
   const tick = (): void => {
-    try { stampAlive(db); } catch (e) { console.log(`liveness stamp not written: ${(e as Error).message}`); }
+    try { stampAlive(db); } catch (e) { if (!isBusy(e)) console.log(`liveness stamp not written: ${(e as Error).message}`); }
   };
   tick();
   const t = setInterval(tick, ALIVE_EVERY_MS);

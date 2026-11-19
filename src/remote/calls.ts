@@ -1,7 +1,7 @@
 // Remote calls of the user-local inference mode. The calling process (askClaude, src/classify/run.ts) inserts a call
 // and polls its row; a maintainer's helper claims it with an agent token that may run tasks, fetches the bundle and
 // sends heartbeats and the reply with the lease secret (routes in src/dash/server/index.ts, wire format in protocol.ts).
-// Nothing here runs on a timer: leases are checked by the calling process on each poll and by every claim.
+// Leases are checked by the calling process on each poll and by every claim; the dashboard deletes old rows once a minute (pruneRemote).
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { allocation, callQueue, queueOrder, stepOf, throwIfHalted, WaitLimitError, type Waiter } from "../agents/call.ts";
@@ -16,13 +16,13 @@ import { fillHarness, rootArgs, validRoot } from "../prompts/harness.ts";
 import { rootAgents } from "../sandbox/agents.ts";
 import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
-import { cooloffOf, noteDrop, noteFailure, noteSuccess } from "./cooloff.ts";
+import { cooloffOf, noteDrop, noteFailure, noteSuccess, pruneCooloffs } from "./cooloff.ts";
 import { dashboardAlive } from "./liveness.ts";
 import { acceptedModels, familyOf, isEffort, isTier, meetsEffort, minEfforts, TIERS } from "./mode.ts";
 import { CLAIM_ID_TTL_S, PREPARE_MAX_S, PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { claimRepos } from "./my-repos.ts";
 import { userReserve } from "./reserve.ts";
-import { CALLER_STALE_MS, IDLE_FRESH_MS } from "./room.ts";
+import { CALLER_STALE_MS, IDLE_FRESH_MS, SEEN_EVERY_MS } from "./room.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
 import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 import { endChecks, serveChecks } from "./check-relay.ts";
@@ -83,10 +83,13 @@ export type NewCall = {
 export function enqueueCall(db: DatabaseSync, c: NewCall, nowMs: number = Date.now()): number {
   const s = stepOf(c.promptId), q = callQueue(c.promptId);
   const sticky = c.parentId === undefined ? null : (db.prepare("SELECT user_login FROM main.remote_calls WHERE id = ?").get(c.parentId) as { user_login: string | null } | undefined)?.user_login ?? null;
-  return Number(db.prepare(`INSERT INTO main.remote_calls (job_id, step, stage, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class, level, since, seen_at, queued_since, max_attempts, timeout_ms, parent_id, sticky_login, reference_repo)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  const authors = judges(c.promptId) ? JSON.stringify(authorsOf(db, c.items)) : "[]";
+  const id = Number(db.prepare(`INSERT INTO main.remote_calls (job_id, step, stage, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class, level, since, seen_at, queued_since, max_attempts, timeout_ms, parent_id, sticky_login, reference_repo, authors)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(s.jobId, s.step, s.stage, c.promptId, c.promptVersion, c.tier, c.effort, c.askedModel, JSON.stringify(c.bundle), JSON.stringify(c.items), q.repo, q.cls, c.level, nowMs, nowMs, nowMs,
-      Math.max(1, c.maxAttempts), c.bundle.timeoutSeconds * 1000, c.parentId ?? null, sticky, c.referenceRepo ?? null).lastInsertRowid);
+      Math.max(1, c.maxAttempts), c.bundle.timeoutSeconds * 1000, c.parentId ?? null, sticky, c.referenceRepo ?? null, authors).lastInsertRowid);
+  dropQueueCache(db);
+  return id;
 }
 
 /** Ends a call that is in one of `states` as failed; true when it did. A leased call's agent run fails with it. */
@@ -106,10 +109,9 @@ export function withdrawJobCalls(db: DatabaseSync, reason: string, jobId?: numbe
   return ids.filter((r) => withdrawCall(db, Number(r.id), reason)).length;
 }
 
-/** Keeps the secret hash of a lease that just ended or went back to the queue, so its routes answer 410 (leaseState); kept as long as ended calls. */
+/** Keeps the secret hash of a lease that just ended or went back to the queue, so its routes answer 410 (leaseState); kept as long as ended calls (pruneRemote). */
 function bury(db: DatabaseSync, id: number, hash: string | null, nowMs: number): void {
   if (hash === null) return;
-  db.prepare("DELETE FROM main.remote_lease_tombstones WHERE at < ?").run(nowMs - KEEP_MS);
   db.prepare("INSERT OR IGNORE INTO main.remote_lease_tombstones (secret_hash, call_id, at) VALUES (?, ?, ?)").run(hash, id, nowMs);
 }
 
@@ -125,6 +127,7 @@ function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "m
       released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
     WHERE id = ? AND state = 'leased' AND attempt = ? AND leased_at IS ?`).run(fail ? "failed" : "queued", fail ? 0 : 1, fail ? null : nowMs, fail ? nowMs : null, reason, skip, skip, nowMs, r.id, r.attempt, r.leased_at);
   if (Number(up.changes) !== 1) return false;
+  dropQueueCache(db);
   bury(db, r.id, r.lease_secret_hash, nowMs);
   if (r.run_id !== null) finishRun(db, r.run_id, { state: "failed", error: reason, summary: opts.summary ?? "lease ended" });
   return true;
@@ -135,6 +138,7 @@ function unlease(db: DatabaseSync, r: { id: number; runId: number | null; hash: 
   const up = db.prepare(`UPDATE main.remote_calls SET state = 'queued', lease_secret_hash = NULL, token_id = NULL, claim_id = NULL, started_at = NULL, queued_since = ?, error = ?, progress = NULL, released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
     WHERE id = ? AND state = 'leased' AND lease_secret_hash IS ?`).run(nowMs, why, releasedBy, releasedBy, nowMs, r.id, r.hash);
   if (Number(up.changes) !== 1) return;
+  dropQueueCache(db);
   bury(db, r.id, r.hash, nowMs);
   if (r.runId !== null) finishRun(db, r.runId, { state: "failed", error: why, summary: "returned to the queue" });
 }
@@ -144,8 +148,8 @@ function unlease(db: DatabaseSync, r: { id: number; runId: number | null; hash: 
  * lease still preparing PREPARE_MAX_S after the claim, or one running past its time limit plus LEASE_MARGIN_MS goes back to
  * the queue (attempt + 1, up to the prompt's attempts); a call whose caller stopped polling fails. Leases end only while the
  * dashboard serves, and for lack of heartbeats only when it served for the whole idle window (liveness.ts): helpers reach
- * the server only through it. The lost lease counts toward its login's cool-off. Run by each claim (every call, and old
- * rows are pruned) and by the caller's poll (`id`: that call only).
+ * the server only through it. The lost lease counts toward its login's cool-off. Run by each claim (every call) and by the
+ * caller's poll (`id`: that call only); old rows go with pruneRemote.
  */
 export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: number): void {
   const one = id === undefined ? "" : " AND id = ?";
@@ -164,10 +168,22 @@ export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: 
   }
   const gone = db.prepare(`SELECT id FROM main.remote_calls WHERE state IN ('queued', 'leased') AND seen_at < ?${one}`).all(nowMs - CALLER_GONE_MS, ...(id === undefined ? [] : [id])) as { id: number }[];
   for (const r of gone) withdrawCall(db, Number(r.id), "the caller stopped waiting", undefined, nowMs);
-  if (id === undefined) {
-    db.prepare("DELETE FROM main.remote_calls WHERE state IN ('done', 'failed') AND COALESCE(ended_at, since) < ?").run(nowMs - KEEP_MS);
-    db.prepare("DELETE FROM main.remote_checks WHERE state = 'done' AND COALESCE(ended_at, requested_at) < ?").run(nowMs - KEEP_MS);
-  }
+}
+
+/**
+ * Deletes ended calls, finished check relays and lease tombstones older than KEEP_MS, lease drops and cool-offs that no
+ * longer count (cooloff.ts), and the last status of deleted tokens. The dashboard runs it once a minute.
+ */
+export function pruneRemote(db: DatabaseSync, nowMs: number = Date.now()): void {
+  const old = nowMs - KEEP_MS;
+  // Each condition is a range of the (state, ended_at) indexes; a row without ended_at goes by when it began.
+  db.prepare("DELETE FROM main.remote_calls WHERE state IN ('done', 'failed') AND ended_at < ?").run(old);
+  db.prepare("DELETE FROM main.remote_calls WHERE state IN ('done', 'failed') AND ended_at IS NULL AND since < ?").run(old);
+  db.prepare("DELETE FROM main.remote_checks WHERE state = 'done' AND ended_at < ?").run(old);
+  db.prepare("DELETE FROM main.remote_checks WHERE state = 'done' AND ended_at IS NULL AND requested_at < ?").run(old);
+  db.prepare("DELETE FROM main.remote_lease_tombstones WHERE at < ?").run(old);
+  pruneCooloffs(db, nowMs);
+  db.prepare("DELETE FROM main.remote_helpers WHERE NOT EXISTS (SELECT 1 FROM main.mcp_tokens t WHERE t.id = remote_helpers.token_id)").run();
 }
 
 /** The call a lease secret belongs to while its lease is live (expired leases are ended first), or null. For the per-lease routes: bundle, heartbeat, submit, the task MCP servers and the tarball. */
@@ -209,53 +225,77 @@ export type Caller = { tokenId: number; login: string; role: Role };
 
 const sameLogin = (a: string | null, b: string): boolean => a !== null && a.toLowerCase() === b.toLowerCase();
 
-/** Whether `login` authored any of the items, or authored or co-authored (a Co-authored-by trailer, as GitHub lists the commit's authors) a commit of one. */
-export function authorOf(db: DatabaseSync, refs: ItemRef[], login: string): boolean {
-  const item = db.prepare("SELECT 1 FROM main.items WHERE repo = ? AND number = ? AND author = ? COLLATE NOCASE");
-  const commit = db.prepare(`SELECT 1 FROM main.pr_commits WHERE repo = ? AND number = ?
-    AND (author = ? COLLATE NOCASE OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(co_authors) THEN co_authors ELSE '[]' END) WHERE value = ? COLLATE NOCASE)) LIMIT 1`);
-  return refs.some((r) => item.get(r.repo, r.number, login) !== undefined || commit.get(r.repo, r.number, login, login) !== undefined);
+/** The lowercase logins that authored any of the items, or authored or co-authored (a Co-authored-by trailer, as GitHub lists the commit's authors) a commit of one. */
+export function authorsOf(db: DatabaseSync, refs: readonly ItemRef[]): string[] {
+  if (!refs.length) return [];
+  const item = db.prepare("SELECT author FROM main.items WHERE repo = ? AND number = ? AND author IS NOT NULL");
+  const commits = db.prepare("SELECT author, co_authors FROM main.pr_commits WHERE repo = ? AND number = ?");
+  const out = new Set<string>();
+  for (const r of refs) {
+    const a = item.get(r.repo, r.number) as { author: string } | undefined;
+    if (a) out.add(a.author.toLowerCase());
+    for (const c of commits.all(r.repo, r.number) as { author: string | null; co_authors: string | null }[]) {
+      if (c.author) out.add(c.author.toLowerCase());
+      let co: unknown = [];
+      try { co = c.co_authors ? JSON.parse(c.co_authors) : []; } catch { /* not JSON: no co-authors */ }
+      if (Array.isArray(co)) for (const x of co) if (typeof x === "string") out.add(x.toLowerCase());
+    }
+  }
+  return [...out];
 }
 
-type CallScope = Pick<Row, "prompt_id" | "items" | "repo" | "tier">;
-const reposOf = (r: CallScope, refs: ItemRef[]): string[] => [...new Set([...refs.map((x) => x.repo), ...(r.repo ? [r.repo] : [])])];
+/** A queued call as claims read it: the items parsed, the repos it names and its authors. */
+type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "parent_id" | "sticky_login" | "seen_at"> & {
+  refs: ItemRef[]; repos: string[]; authors: ReadonlySet<string>; releasedBy: string | null; releasedAt: number | null;
+};
+
 /** The role rules: maintainers and operators; discord.* calls and calls that name no repo go to operators only. */
-const roleFits = (role: string, r: CallScope, repos: string[]): boolean =>
-  (role === "operator" || role === "maintainer") && !((r.prompt_id.startsWith("discord.") || !repos.length) && role !== "operator");
+const roleFits = (role: string, c: Pick<Cand, "prompt_id" | "repos">): boolean =>
+  (role === "operator" || role === "maintainer") && !((c.prompt_id.startsWith("discord.") || !c.repos.length) && role !== "operator");
+
+type IdleHelper = { login: string; role: string; tiers: ReadonlySet<string>; only: ReadonlySet<string> | null };
 
 /**
- * Whether a login other than `login` could take the call now: its helper's last claim found nothing within IDLE_FRESH_MS, that
- * claim covered the call's tier and repos, the login fits the role rules, its cached write permission covers every repo and
- * it authored no item of the call. A state check made at each claim; nothing waits on it.
+ * Whether a login other than the caller could take a call now: its helper's last claim found nothing within IDLE_FRESH_MS,
+ * that claim covered the call's tier and repos, the login fits the role rules, its cached write permission covers every repo
+ * and it authored no item of the call. A state check made at each claim; nothing waits on it. The idle helpers and their
+ * permissions are read once per claim, on the first call that needs them.
  */
-function otherHelperIdle(db: DatabaseSync, login: string, r: CallScope, refs: ItemRef[], repos: string[], nowMs: number): boolean {
-  const idle = db.prepare(`SELECT t.login, a.role, t.idle_tiers, t.idle_repos FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login
-    WHERE t.can_run = 1 AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
-    { login: string; role: string; idle_tiers: string | null; idle_repos: string | null }[];
-  const perm = db.prepare("SELECT permission, checked_at FROM main.repo_permissions WHERE login = ? AND repo = ?");
-  const canWrite = (who: string, repo: string): boolean => {
-    const p = perm.get(who, repo) as { permission: string; checked_at: string } | undefined;
-    return p !== undefined && WRITE_PERMISSIONS.has(p.permission) && nowMs - Date.parse(p.checked_at) < PERM_READ_TTL;
+function idleOthers(db: DatabaseSync, login: string, nowMs: number): (c: Cand) => boolean {
+  let idle: IdleHelper[] | null = null;
+  // The cached write permissions of the idle logins, read in one query with the idle helpers.
+  const writable = new Set<string>();
+  const canWrite = (who: string, repo: string): boolean => writable.has(`${who.toLowerCase()}\n${repo}`);
+  // The idle helpers that could take a call of this tier, prompt kind and repos, apart from authorship: calls share them.
+  const takers = new Map<string, string[]>();
+  return (c) => {
+    if (!idle) {
+      idle = (db.prepare(`SELECT t.login, a.role, t.idle_tiers, t.idle_repos FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login
+          WHERE t.can_run = 1 AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
+        { login: string; role: string; idle_tiers: string | null; idle_repos: string | null }[])
+        .map((o) => ({ login: o.login, role: o.role, tiers: new Set(o.idle_tiers ? JSON.parse(o.idle_tiers) as string[] : []), only: o.idle_repos ? new Set(JSON.parse(o.idle_repos) as string[]) : null }));
+      for (const p of db.prepare("SELECT login, repo, permission, checked_at FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(idle.map((o) => o.login))) as { login: string; repo: string; permission: string; checked_at: string }[])
+        if (WRITE_PERMISSIONS.has(p.permission) && nowMs - Date.parse(p.checked_at) < PERM_READ_TTL) writable.add(`${p.login.toLowerCase()}\n${p.repo}`);
+    }
+    const key = `${c.tier}\n${c.prompt_id.startsWith("discord.")}\n${c.repos.join("\n")}`;
+    let logins = takers.get(key);
+    if (!logins) {
+      logins = idle.filter((o) => o.tiers.has(c.tier) && (!o.only || c.repos.every((x) => o.only!.has(x))) && roleFits(o.role, c) && c.repos.every((x) => canWrite(o.login, x))).map((o) => o.login.toLowerCase());
+      takers.set(key, logins);
+    }
+    return logins.some((l) => !c.authors.has(l));
   };
-  return idle.some((o) => {
-    const tiers = o.idle_tiers ? JSON.parse(o.idle_tiers) as string[] : [];
-    const only = o.idle_repos ? new Set(JSON.parse(o.idle_repos) as string[]) : null;
-    return tiers.includes(r.tier) && (!only || repos.every((x) => only.has(x))) && roleFits(o.role, r, repos)
-      && repos.every((x) => canWrite(o.login, x)) && !authorOf(db, refs, o.login);
-  });
 }
 
 /**
  * Who may take a call: a maintainer or operator with write permission on every repo of the call (which covers reading a
  * private one); discord.* calls and calls that name no repo go to operators only. An author or co-author of an item a judging
- * prompt judges is passed over only while another helper that could take the call is asking for work (otherHelperIdle).
+ * prompt judges is passed over only while another helper that could take the call is asking for work (idleOthers).
  */
-async function eligible(db: DatabaseSync, caller: Caller, r: CallScope, canWrite: (repo: string) => Promise<boolean>, nowMs: number): Promise<boolean> {
-  const refs = JSON.parse(r.items) as ItemRef[];
-  const repos = reposOf(r, refs);
-  if (!roleFits(caller.role, r, repos)) return false;
-  for (const repo of repos) if (!(await canWrite(repo))) return false;
-  return !(judges(r.prompt_id) && authorOf(db, refs, caller.login) && otherHelperIdle(db, caller.login, r, refs, repos, nowMs));
+async function eligible(caller: Caller, c: Cand, canWrite: (repo: string) => Promise<boolean>, othersIdle: (c: Cand) => boolean): Promise<boolean> {
+  if (!roleFits(caller.role, c)) return false;
+  for (const repo of c.repos) if (!(await canWrite(repo))) return false;
+  return !(judges(c.prompt_id) && c.authors.has(caller.login.toLowerCase()) && othersIdle(c));
 }
 
 const HARNESSES: HarnessId[] = ["claude", "codex"];
@@ -325,16 +365,60 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
   }
 }
 
-type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "items" | "parent_id" | "sticky_login">;
+/** How long claims reuse the queued calls in queue order (queueOrder) before reading them again. */
+export const QUEUE_CACHE_MS = 2_000;
+type QueueCache = { at: number; sig: string; followUps: Cand[]; ordered: Cand[] };
+const queueCaches = new WeakMap<DatabaseSync, QueueCache>();
+/** The parsed items, repos and authors of each queued call by id: they never change, so a rebuild reads them only for new calls. */
+type Parsed = Pick<Cand, "refs" | "repos" | "authors">;
+const parsedCalls = new WeakMap<DatabaseSync, Map<number, Parsed>>();
+/** Drops the cached queue order: a call was queued or leased by this process. Other processes' changes show in the signature (count and newest id of the queued calls) or within QUEUE_CACHE_MS. */
+const dropQueueCache = (db: DatabaseSync): void => void queueCaches.delete(db);
+
+/** Every queued call, read once per QUEUE_CACHE_MS: follow-ups by age, the rest in queue order. Callers filter it and must not change it. */
+function queuedCalls(db: DatabaseSync, nowMs: number): QueueCache {
+  const q = db.prepare("SELECT COUNT(*) AS n, MAX(id) AS m FROM main.remote_calls WHERE state = 'queued'").get() as { n: number; m: number | null };
+  const sig = `${q.n}:${q.m}`;
+  const hit = queueCaches.get(db);
+  if (hit && hit.sig === sig && nowMs >= hit.at && nowMs - hit.at < QUEUE_CACHE_MS) return hit;
+  const known = parsedCalls.get(db) ?? new Map<number, Parsed>(), seen = new Map<number, Parsed>();
+  const extra = db.prepare("SELECT items, authors FROM main.remote_calls WHERE id = ?");
+  const rows = (db.prepare(`SELECT id, class AS cls, level, step, repo, since, seen_at, prompt_id, tier, parent_id, sticky_login, released_by, released_at FROM main.remote_calls INDEXED BY remote_calls_queued WHERE state = 'queued'`).all() as
+    (Waiter & Pick<Row, "prompt_id" | "tier" | "parent_id" | "sticky_login" | "seen_at"> & { released_by: string | null; released_at: number | null })[])
+    .map((r): Cand => {
+      const id = Number(r.id);
+      let p = known.get(id);
+      if (!p) {
+        const x = extra.get(id) as { items: string; authors: string | null };
+        const refs = JSON.parse(x.items) as ItemRef[];
+        // Calls queued before authors were stored on the row are read now.
+        const authors = x.authors !== null ? JSON.parse(x.authors) as string[] : judges(r.prompt_id) ? authorsOf(db, refs) : [];
+        p = { refs, repos: [...new Set([...refs.map((i) => i.repo), ...(r.repo ? [r.repo] : [])])], authors: new Set(authors) };
+      }
+      seen.set(id, p);
+      return {
+        id, cls: r.cls, level: r.level, step: r.step, repo: r.repo, since: r.since, seen_at: r.seen_at, prompt_id: r.prompt_id, tier: r.tier, parent_id: r.parent_id, sticky_login: r.sticky_login,
+        ...p, releasedBy: r.released_by?.toLowerCase() ?? null, releasedAt: r.released_at,
+      };
+    });
+  parsedCalls.set(db, seen);
+  const c: QueueCache = {
+    at: nowMs, sig,
+    followUps: rows.filter((r) => r.parent_id !== null).sort((a, b) => a.since - b.since || a.id - b.id),
+    ordered: queueOrder(db, nowMs, rows.filter((r) => r.parent_id === null)),
+  };
+  queueCaches.set(db, c);
+  return c;
+}
 
 /** The queued calls a claim could take in the order it takes them, before eligibility: follow-up turns of the sessions its helper holds first, then the model queue's order, filtered by tiers and repos (claimRepos: every repo a call names must be in the set). */
 function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, repos: ReadonlySet<string> | null, sessionIds: readonly number[], nowMs: number): Cand[] {
-  const rows = (db.prepare(`SELECT id, class AS cls, level, step, repo, since, prompt_id, tier, items, parent_id, sticky_login FROM main.remote_calls
-      WHERE state = 'queued' AND seen_at >= ? AND NOT COALESCE(released_by = ? COLLATE NOCASE AND released_at >= ?, 0)`).all(nowMs - CALLER_STALE_MS, caller.login, nowMs - RELEASE_SKIP_MS) as Cand[])
-    .filter((r) => tiers.has(r.tier) && (!repos || (JSON.parse(r.items) as ItemRef[]).every((x) => repos.has(x.repo)) && (!r.repo || repos.has(r.repo))));
+  const q = queuedCalls(db, nowMs);
+  const login = caller.login.toLowerCase();
+  const fits = (r: Cand): boolean => r.seen_at >= nowMs - CALLER_STALE_MS && !(r.releasedBy === login && r.releasedAt !== null && r.releasedAt >= nowMs - RELEASE_SKIP_MS)
+    && tiers.has(r.tier) && (!repos || r.repos.every((x) => repos.has(x)));
   const sessions = new Set(sessionIds);
-  const followUps = rows.filter((r) => r.parent_id !== null && sessions.has(r.parent_id) && sameLogin(r.sticky_login, caller.login)).sort((a, b) => a.since - b.since || a.id - b.id);
-  return [...followUps, ...queueOrder(db, nowMs, rows.filter((r) => r.parent_id === null))];
+  return [...q.followUps.filter((r) => sessions.has(r.parent_id!) && sameLogin(r.sticky_login, caller.login) && fits(r)), ...q.ordered.filter(fits)];
 }
 
 /** Memoises the caller's write permission per repo; a failed lookup counts as no permission. */
@@ -354,9 +438,9 @@ export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { t
   const accepted = acceptedModels(db);
   // A tier counts when the model the helper would use for it is of an accepted family; without a model, when the tier accepts any.
   const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0 && (opts.models?.[t] === undefined || familyOf(opts.models[t]!, accepted[t]) !== null)));
-  const can = memoWrite(canWrite);
+  const can = memoWrite(canWrite), others = idleOthers(db, caller.login, nowMs);
   let n = 0;
-  for (const r of claimOrder(db, caller, tiers, claimRepos(db, caller.login, undefined), [], nowMs)) if (await eligible(db, caller, r, can, nowMs)) n++;
+  for (const r of claimOrder(db, caller, tiers, claimRepos(db, caller.login, undefined), [], nowMs)) if (await eligible(caller, r, can, others)) n++;
   return n;
 }
 
@@ -381,7 +465,8 @@ const claimReplies = new Map<string, { at: number; reply: Promise<ClaimReply> }>
  * gets the first one's reply.
  */
 export function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
-  for (const [k, v] of claimReplies) if (v.at < nowMs - CLAIM_ID_TTL_S * 1000) claimReplies.delete(k);
+  // Entries are in claim order, so the expired ones come first.
+  for (const [k, v] of claimReplies) { if (v.at >= nowMs - CLAIM_ID_TTL_S * 1000) break; claimReplies.delete(k); }
   const key = `${caller.tokenId}:${claim.requestId}`;
   const seen = claimReplies.get(key);
   if (seen) return seen.reply;
@@ -403,16 +488,17 @@ async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite
   const accepted = acceptedModels(db), floors = minEfforts(db);
   const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
   if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
-  const can = memoWrite(canWrite);
+  const can = memoWrite(canWrite), others = idleOthers(db, caller.login, nowMs);
   const repos = claimRepos(db, caller.login, claim.repos);
   for (const r of claimOrder(db, caller, tiers, repos, claim.sessions ?? [], nowMs)) {
-    if (!(await eligible(db, caller, r, can, nowMs))) continue;
+    if (!(await eligible(caller, r, can, others))) continue;
     const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now());
     if (!lease) continue;
+    dropQueueCache(db);
     db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
     return { lease, reserve: userReserve(db, caller.login) };
   }
-  // An idle helper, with what it takes (the user's picks narrowed by the helper's list): an author's claim gives way to it (otherHelperIdle).
+  // An idle helper, with what it takes (the user's picks narrowed by the helper's list): an author's claim gives way to it (idleOthers).
   db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(nowMs, JSON.stringify([...tiers]), repos ? JSON.stringify([...repos]) : null, caller.tokenId);
   return { lease: null, retryAfter: CLAIM_RETRY_S, reserve: userReserve(db, caller.login) };
 }
@@ -562,10 +648,14 @@ export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress
 
 async function pollCall(db: DatabaseSync, id: number, opts: { onProgress?: (line: string) => void; maxWaitMs?: number; log?: (line: string) => void; check?: Pick<CheckTool, "run"> }): Promise<Outcome> {
   const log = opts.log ?? console.log;
-  let lastProgress: string | null = null, lastLog = 0;
+  let lastProgress: string | null = null, lastLog = 0, lastSeen = 0;
   for (;;) {
     const nowMs = Date.now();
-    db.prepare("UPDATE main.remote_calls SET seen_at = ? WHERE id = ?").run(nowMs, id);
+    // The caller's liveness stamp; claims and the room count a call while it is fresher than CALLER_STALE_MS.
+    if (nowMs - lastSeen >= SEEN_EVERY_MS) {
+      db.prepare("UPDATE main.remote_calls SET seen_at = ? WHERE id = ?").run(nowMs, id);
+      lastSeen = nowMs;
+    }
     expireLeases(db, nowMs, id);
     const r = rowOf(db, id);
     if (!r) return { state: "failed", error: "the call is gone", tokens: null, runId: null };

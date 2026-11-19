@@ -215,7 +215,7 @@ After a reboot Docker starts the services again; the pipeline state is in the da
 
 Any TLS reverse proxy on the VPS forwards the public origin to `127.0.0.1:3005`. It must:
 
-- pass `Host` and set `X-Forwarded-For` (with `AUTOCRAFT_TRUST_PROXY=1` the dashboard reads the last entry);
+- pass `Host` and set `X-Forwarded-For` (`AUTOCRAFT_TRUST_PROXY` is the number of proxies that append to it; with `1` the dashboard reads the last entry);
 - not buffer or time out `GET /api/live` early (an event stream that stays open);
 - accept request bodies of at least 1 MB (`POST /webhooks/github` allows 1 MB);
 - route nothing to 8981.

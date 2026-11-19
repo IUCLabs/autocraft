@@ -36,6 +36,7 @@ import { cachedWrite, createSession, deleteSession, loadSession, makeUser, PERM_
 import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg, type Reply as McpReply } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import * as remote from "../../remote/calls.ts";
+import { isBusy } from "../../db.ts";
 import { inferenceMode } from "../../remote/mode.ts";
 import { HELPERS_PATH, parseStatus, storeStatus } from "../../remote/helpers.ts";
 import { ROUTES, type ClaimReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
@@ -77,9 +78,15 @@ export const APP_CSP = [
   "base-uri 'none'", "frame-ancestors 'none'",
 ].join("; ");
 
+/** Seconds a helper waits before retrying a request that found the database busy. */
+const BUSY_RETRY_S = 5;
+
 export type AppOptions = {
   config: Config;
   db: DatabaseSync;
+  // The connection of the helper routes and the remote maintenance: a short busy timeout, so a locked database answers 503 at
+  // once instead of holding the event loop for the 30-second timeout of `db`. Default: `db`.
+  remoteDb?: DatabaseSync;
   provider?: Provider;
   routes?: Route[];          // default: the JSON API
   images?: ImageProxy;       // default: fetches with global fetch and the bot's gh token
@@ -175,6 +182,7 @@ function cookie(name: string, value: string, maxAgeSec: number): string {
 
 export function createApp(opts: AppOptions & { routes: Route[] }) {
   const { config, db } = opts;
+  const rdb = opts.remoteDb ?? db;
   const provider = opts.provider ?? providerFor(config, () => githubIdentity(db));
   // The org setup link signs in with the OAuth App even when dashboard sign-in uses the GitHub App.
   const setupProvider = opts.provider ?? (config.devAuth ? provider : oauthProviderFor(config));
@@ -208,8 +216,12 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The Inbox MCP server (POST /mcp): calls per login and failed authentications per client address, and feedback posts per login as on the dashboard.
   const mcpLimitToken = new RateLimiter(120, 60_000);
   const mcpLimitIp = new RateLimiter(300, 60_000);
-  // Claims of one login: a helper with several slots claims every few seconds at most.
-  const remoteLimitToken = new RateLimiter(240, 60_000);
+  // Per helper token, sized for a helper with 16 slots and its fast-lane slot: each idle slot claims every CLAIM_RETRY_S
+  // and again at once after a call ends, with retries on errors; status reports come on every change.
+  const remoteClaimLimit = new RateLimiter(600, 60_000);
+  const remoteStatusLimit = new RateLimiter(120, 60_000);
+  // Bundle, heartbeat, release and submit of one lease: a heartbeat every 30 seconds and retries.
+  const remoteLeaseLimit = new RateLimiter(120, 60_000);
   // Tool calls of one remote call (item, reference and check tools together).
   const remoteToolLimit = new RateLimiter(300, 60_000);
   const remoteArchiveLimit = new RateLimiter(20, 60_000); // tarball fetches per lease
@@ -221,13 +233,26 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
 
+  // The client address for the per-address limits. Each of the `trustProxy` proxies in front of the server appends the
+  // address it was reached from to X-Forwarded-For, so the client is that many entries from the end; entries further left
+  // came from the client and are not trusted. A proxy that replaces the header with a CDN's client header counts as one.
   function clientIp(req: IncomingMessage): string {
-    if (config.trustProxy) {
+    if (config.trustProxy > 0) {
       const xff = String(req.headers["x-forwarded-for"] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-      if (xff.length) return xff[xff.length - 1]!;
+      if (xff.length) return xff[Math.max(0, xff.length - config.trustProxy)]!;
     }
     return req.socket.remoteAddress ?? "?";
   }
+
+  // Ended remote calls, finished check relays and the status of deleted tokens, once a minute; a busy database skips a round.
+  const maintenance = setInterval(() => {
+    try {
+      remote.pruneRemote(rdb);
+    } catch (e) {
+      if (!isBusy(e)) console.log(`remote maintenance failed: ${(e as Error).message}`);
+    }
+  }, 60_000);
+  maintenance.unref();
 
   function secure(headers: Record<string, string | string[]>, csp: string): Record<string, string | string[]> {
     headers["content-security-policy"] = csp;
@@ -575,6 +600,12 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     } catch (e) {
       const api = (req.url ?? "").startsWith("/api/");
       if (e instanceof HttpError) return send(res, nonce, api ? apiError(e.status, e.message) : errorPage(nonce, e.status, "Request refused", e.message));
+      // The database stayed locked past the connection's busy timeout (the helper routes wait only briefly): try again shortly.
+      if (isBusy(e)) {
+        if (res.headersSent) return void res.destroy();
+        res.writeHead(503, secure({ "cache-control": "no-store", "content-type": "application/json; charset=utf-8", "retry-after": String(BUSY_RETRY_S) }, "default-src 'none'"));
+        return void res.end(JSON.stringify({ error: "the database is busy; try again shortly" }));
+      }
       console.error(`${req.method} ${(req.url ?? "").split("?")[0]}: ${(e as Error).stack ?? e}`);
       if (!res.headersSent) send(res, nonce, api ? apiError(500, "server error; it is logged") : errorPage(nonce, 500, "Something went wrong", "The error is logged on the server."));
       else res.destroy();
@@ -678,13 +709,14 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const method = path === ROUTES.bundle || path === ROUTES.tarball ? "GET" : "POST";
     if (req.method !== method) return reply(405, { error: `use ${method}` }, { allow: method });
     const tooMany = (): void => reply(429, { error: "too many requests; wait a minute" }, { "retry-after": "60" });
+    const db = rdb;
     try {
       if (path === ROUTES.claim) {
         const caller = loadToken(db, bearer);
         if (!caller && !mcpLimitIp.allow(clientIp(req))) return tooMany();
         if (!caller) return reply(401, { error: "a valid AutoCraft agent token is required (Authorization: Bearer <token>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
         if (!caller.canRun) return reply(403, { error: "this token cannot run tasks; make one with Can run tasks on the Connect page" });
-        if (!remoteLimitToken.allow(caller.login.toLowerCase())) return tooMany();
+        if (!remoteClaimLimit.allow(String(caller.tokenId))) return tooMany();
         const claim = remote.parseClaim(await readJson(req));
         // In the server mode no call is queued for helpers: nothing to take for a while.
         if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login) } satisfies ClaimReply);
@@ -699,17 +731,19 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         if (!caller && !mcpLimitIp.allow(clientIp(req))) return tooMany();
         if (!caller) return reply(401, { error: "a valid AutoCraft agent token is required (Authorization: Bearer <token>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
         if (!caller.canRun) return reply(403, { error: "this token cannot run tasks; make one with Can run tasks on the Connect page" });
-        if (!remoteLimitToken.allow(caller.login.toLowerCase())) return tooMany();
+        if (!remoteStatusLimit.allow(String(caller.tokenId))) return tooMany();
         storeStatus(db, caller.tokenId, caller.login, parseStatus(await readJson(req)));
         return reply(200, { ok: true, reserve: userReserve(db, caller.login) } satisfies StatusReply);
       }
       const tool = path.startsWith(`${ROUTES.tool}/`) ? /^([a-z][a-z0-9_-]{0,40})\/([a-z][a-z0-9_]{0,60})$/.exec(path.slice(ROUTES.tool.length + 1)) : null;
       if (![ROUTES.bundle, ROUTES.heartbeat, ROUTES.submit, ROUTES.release, ROUTES.tarball].includes(path as never) && !tool) return reply(404, { error: "not found" });
       // An unknown secret counts against the address; a known one whose lease ended or went back to the queue is answered 410.
-      if (!remote.leaseState(db, bearer)) {
+      const state = remote.leaseState(db, bearer);
+      if (!state) {
         if (!mcpLimitIp.allow(clientIp(req))) return tooMany();
         return reply(401, { error: "a lease secret is required (Authorization: Bearer <secret>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
       }
+      if (path !== ROUTES.tarball && !tool && !remoteLeaseLimit.allow(String(state.id))) return tooMany();
       const gone = (): void => reply(410, { error: "the lease is gone (expired, withdrawn or already submitted)" });
       if (path === ROUTES.bundle) {
         const b = remote.bundleOf(db, bearer);
@@ -763,6 +797,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       res.end(body === null ? "" : JSON.stringify(body));
     };
     const rpcError = (code: number, message: string) => ({ jsonrpc: "2.0", id: null, error: { code, message } });
+    const db = rdb;
     if (req.method !== "POST") return reply(405, rpcError(-32000, "POST one JSON-RPC message; this server has no event stream"), { allow: "POST" });
     if (!sameOrigin(req)) return reply(403, rpcError(-32000, "cross-origin request refused"));
     const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
@@ -900,15 +935,16 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return sendFile(res, "text/html; charset=utf-8", "no-store", APP_CSP, index);
   }
 
-  return { handle, routes: opts.routes, provider, live, close: () => live.close() };
+  return { handle, routes: opts.routes, provider, live, close: () => { clearInterval(maintenance); live.close(); } };
 }
 
 export async function startServer(opts: AppOptions): Promise<{ server: Server; url: string; app: ReturnType<typeof createApp>; close(): Promise<void> }> {
   const feedbackLimiter = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
   const app = createApp({ ...opts, feedbackLimiter, routes: opts.routes ?? (await defaultRoutes(feedbackLimiter, opts.githubUserId)) });
   const server = createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, (req, res) => void app.handle(req, res));
-  // Job processes expire user-local leases only while this process stamps that it serves (src/remote/liveness.ts).
-  const stopLiveness = startLiveness(opts.db);
+  // Job processes expire user-local leases only while this process stamps that it serves (src/remote/liveness.ts). The
+  // stamp uses the helper routes' short busy timeout: a busy database skips a tick rather than stalling the event loop.
+  const stopLiveness = startLiveness(opts.remoteDb ?? opts.db);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(opts.config.port, opts.config.host, resolve);

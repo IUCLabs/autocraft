@@ -4,6 +4,9 @@ import { scopeToTracked } from "../repos.ts";
 import { ConfigError, loadConfig } from "./server/config.ts";
 import { startServer } from "./server/index.ts";
 
+/** How long a helper route waits for SQLite's write lock before it answers 503. */
+const REMOTE_BUSY_MS = 2_000;
+
 async function serve(): Promise<void> {
   let config;
   try {
@@ -16,9 +19,12 @@ async function serve(): Promise<void> {
   const db = connect(config.dbPath);
   scopeToTracked(db);
   sweepRunningCards(db);
-  const { url, close } = await startServer({ config, db });
+  // The helper routes' own connection: they wait at most REMOTE_BUSY_MS for a write lock and then answer 503.
+  const remoteDb = connect(config.dbPath, { busyTimeoutMs: REMOTE_BUSY_MS });
+  const { url, close } = await startServer({ config, db, remoteDb });
   console.log(`dashboard listening on ${url}${config.devAuth ? " (development sign-in)" : ""}`);
   const stop = () => void close().then(() => {
+    remoteDb.close();
     db.close();
     process.exit(0);
   });

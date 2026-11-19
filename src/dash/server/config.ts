@@ -52,7 +52,7 @@ export type Config = {
   devAuth: boolean;
   devPermsFile: string | null;
   devTokenTtlMs: number | null;    // fake provider's access-token lifetime
-  trustProxy: boolean;
+  trustProxy: number;              // proxies in front of the server that append to X-Forwarded-For; 0: use the socket address
   imageCacheDir: string | null;    // the image proxy's disk cache; null: none
   secrets: Secrets;
   secretsFile: string | null;      // where registration writes the app's secrets
@@ -248,13 +248,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new ConfigError("AUTOCRAFT_BASE_URL is not set");
   }
   const webDistEnv = envVar("WEB_DIST", env);
+  const trustRaw = envVar("TRUST_PROXY", env) || "0";
+  if (!/^[0-9]$/.test(trustRaw)) throw new ConfigError("AUTOCRAFT_TRUST_PROXY must be the number of trusted proxies in front of the server, 0 to 9");
   return {
     host, port, baseUrl, devAuth, secrets, secretsFile,
     dbPath: envVar("DB", env) ?? dbPath(),
     webDist: webDistEnv ? resolve(webDistEnv) : DEFAULT_WEB_DIST,
     devPermsFile: devAuth ? (envVar("DEV_PERMS", env) ?? null) : null,
     devTokenTtlMs: devAuth && envVar("DEV_TOKEN_TTL", env) ? Number(envVar("DEV_TOKEN_TTL", env)) * 1000 || null : null,
-    trustProxy: envVar("TRUST_PROXY", env) === "1",
+    trustProxy: Number(trustRaw),
     imageCacheDir: envVar("IMG_CACHE", env) === "" ? null : defaultImageCacheDir(env),
   };
 }

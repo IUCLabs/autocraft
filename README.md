@@ -101,7 +101,7 @@ To sign in through a GitHub App instead, register it from the dashboard's GitHub
 | `AUTOCRAFT_SECRETS_FILE` | The secrets file above |
 | `AUTOCRAFT_GITHUB_APP_NAME` | App name suggested on the registration form, default `AutoCraft` |
 | `AUTOCRAFT_WEB_DIST` | Built frontend, default `web/dist` |
-| `AUTOCRAFT_TRUST_PROXY` | `1` behind a proxy that sets `X-Forwarded-For` |
+| `AUTOCRAFT_TRUST_PROXY` | The number of proxies in front that set `X-Forwarded-For` (`1` behind one proxy) |
 
 The server speaks plain HTTP; put a reverse proxy with HTTPS in front. More variables are in [docs/operations.md](docs/operations.md).
 

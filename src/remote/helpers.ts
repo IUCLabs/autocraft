@@ -67,13 +67,12 @@ export function parseStatus(raw: unknown): HelperStatus {
   };
 }
 
-/** Keeps a helper's status as the last one of its token; rows of deleted tokens go. */
+/** Keeps a helper's status as the last one of its token. Rows of deleted tokens go with the dashboard's minute maintenance (pruneRemote). */
 export function storeStatus(db: DatabaseSync, tokenId: number, login: string, s: HelperStatus, nowMs: number = Date.now()): void {
   db.prepare(`INSERT INTO main.remote_helpers (token_id, login, readiness, until, reason, harness, models, reserve, usage, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (token_id) DO UPDATE SET login = excluded.login, readiness = excluded.readiness, until = excluded.until, reason = excluded.reason, harness = excluded.harness,
       models = excluded.models, reserve = excluded.reserve, usage = excluded.usage, reported_at = excluded.reported_at`)
     .run(tokenId, login, s.readiness, s.until ?? null, s.reason ?? null, s.harness, JSON.stringify(s.models), JSON.stringify(s.reserve), s.usage ? JSON.stringify(s.usage) : null, nowMs);
-  db.prepare("DELETE FROM main.remote_helpers WHERE token_id NOT IN (SELECT id FROM main.mcp_tokens)").run();
 }
 
 /** The login's helpers: every live token that may run tasks, with its last status. */

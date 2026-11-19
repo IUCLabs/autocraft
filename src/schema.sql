@@ -263,6 +263,7 @@ CREATE TABLE IF NOT EXISTS remote_lease_tombstones (
   call_id INTEGER NOT NULL,
   at INTEGER NOT NULL                 -- ms since epoch
 );
+CREATE INDEX IF NOT EXISTS remote_lease_tombstones_at ON remote_lease_tombstones(at);
 -- The dashboard's liveness stamp (src/remote/liveness.ts), one row: written every 5 seconds; `since` is when the current
 -- unbroken run of stamps began. Leases expire only while the dashboard was alive for the whole idle window.
 CREATE TABLE IF NOT EXISTS remote_liveness (
@@ -795,9 +796,12 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   error TEXT,
   ended_at INTEGER,
   reference_repo TEXT,                -- the repo whose reference documentation the call's reference tools search
-  root TEXT                           -- the lease's path root: the claim's directory the sandbox paths are placed below (macOS helpers), or NULL for the fixed paths
+  root TEXT,                          -- the lease's path root: the claim's directory the sandbox paths are placed below (macOS helpers), or NULL for the fixed paths
+  authors TEXT                        -- JSON: lowercase logins that authored or co-authored an item of the call, read when it was queued (author preference)
 );
 CREATE INDEX IF NOT EXISTS remote_calls_state ON remote_calls(state, tier);
+CREATE INDEX IF NOT EXISTS remote_calls_ended ON remote_calls(state, ended_at);
+CREATE INDEX IF NOT EXISTS remote_calls_seen ON remote_calls(state, seen_at);
 CREATE INDEX IF NOT EXISTS remote_calls_job ON remote_calls(job_id) WHERE job_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS remote_calls_secret ON remote_calls(lease_secret_hash) WHERE lease_secret_hash IS NOT NULL;
 
@@ -814,6 +818,7 @@ CREATE TABLE IF NOT EXISTS remote_checks (
   ended_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS remote_checks_call ON remote_checks(call_id, state);
+CREATE INDEX IF NOT EXISTS remote_checks_ended ON remote_checks(state, ended_at);
 
 -- Reference passages served to remote calls (src/remote/tools.ts): each lease gets a limited number, and every one is recorded.
 CREATE TABLE IF NOT EXISTS remote_passages (

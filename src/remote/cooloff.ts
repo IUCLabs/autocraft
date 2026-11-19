@@ -30,9 +30,8 @@ function coolOff(db: DatabaseSync, login: string, until: number, reason: string)
 /** Records a lost lease of `tokenId`, held by `login`; the DROP_LIMIT-th drop of the login within the window starts the cool-off. */
 export function noteDrop(db: DatabaseSync, tokenId: number, login: string, nowMs: number): void {
   if (db.prepare("SELECT 1 FROM main.remote_lease_drops WHERE token_id = ? AND at > ?").get(tokenId, nowMs - DROP_DEDUPE_MS)) return;
-  db.prepare("DELETE FROM main.remote_lease_drops WHERE at < ?").run(nowMs - DROP_WINDOW_MS);
   db.prepare("INSERT INTO main.remote_lease_drops (token_id, login, at) VALUES (?, ?, ?)").run(tokenId, login, nowMs);
-  const n = Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_lease_drops WHERE login = ?").get(login) as { n: number }).n);
+  const n = Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_lease_drops WHERE login = ? AND at >= ?").get(login, nowMs - DROP_WINDOW_MS) as { n: number }).n);
   if (n >= DROP_LIMIT) coolOff(db, login, nowMs + COOLOFF_MS, DROP_REASON);
 }
 
@@ -55,6 +54,12 @@ export function noteSuccess(db: DatabaseSync, login: string): void {
 export function cooloffOf(db: DatabaseSync, login: string, nowMs: number): { until: number; reason: string } | null {
   const r = db.prepare("SELECT until, reason FROM main.remote_cooloffs WHERE login = ?").get(login) as { until: number | null; reason: string | null } | undefined;
   return r?.until != null && Number(r.until) > nowMs ? { until: Number(r.until), reason: r.reason ?? DROP_REASON } : null;
+}
+
+/** Deletes drops older than the window and cool-off rows that neither hold a login nor count failures (calls.ts pruneRemote). */
+export function pruneCooloffs(db: DatabaseSync, nowMs: number): void {
+  db.prepare("DELETE FROM main.remote_lease_drops WHERE at < ?").run(nowMs - DROP_WINDOW_MS);
+  db.prepare("DELETE FROM main.remote_cooloffs WHERE COALESCE(until, 0) <= ? AND (failures = 0 OR failures_since < ?)").run(nowMs, nowMs - FAILURE_WINDOW_MS);
 }
 
 /** Ends the login's cool-off and forgets its drops and failures; false when it was not cooling off. */
