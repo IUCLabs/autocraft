@@ -7,25 +7,28 @@ import type { HarnessId } from "../remote/protocol.ts";
 /** Marks a span: a control character never appears in the JSON that carries item data, so data cannot hold a marker. */
 const MARK = "\u0001";
 
-/** Codex reads with its shell: the sandbox keeps commands read-only. */
-const SHELL = "read-only shell commands (rg, sed, cat)";
+/**
+ * Codex runs with its shell turned off: its sandbox would let commands read the login, so it reads through the helper's
+ * read-only file tools on the same paths (worker/autocraft-task.mjs, `files` MCP server).
+ */
+const FILES = "the file tools mcp__files__read_file, mcp__files__grep and mcp__files__glob";
 
 /** Each phrase of the Claude prompts that names a Claude tool, with what the other harnesses read instead. */
 const PHRASES: { id: string; claude: string; codex: string }[] = [
-  { id: "use", claude: "use Read, Grep and Glob", codex: `use ${SHELL}` },
-  { id: "Use", claude: "Use Grep, Glob and Read", codex: `Use ${SHELL}` },
-  { id: "list", claude: "(Grep, Glob, Read)", codex: "(rg, sed, cat)" },
-  { id: "with-read", claude: "with Read and Grep", codex: `with ${SHELL}` },
-  { id: "with-grep", claude: "with Grep and Glob", codex: "with rg" },
-  { id: "read-it", claude: "Read it with Read", codex: "Read it with sed or cat" },
+  { id: "use", claude: "use Read, Grep and Glob", codex: `use ${FILES}` },
+  { id: "Use", claude: "Use Grep, Glob and Read", codex: `Use ${FILES}` },
+  { id: "list", claude: "(Grep, Glob, Read)", codex: "(mcp__files__grep, mcp__files__glob, mcp__files__read_file)" },
+  { id: "with-read", claude: "with Read and Grep", codex: "with mcp__files__read_file and mcp__files__grep" },
+  { id: "with-grep", claude: "with Grep and Glob", codex: "with mcp__files__grep and mcp__files__glob" },
+  { id: "read-it", claude: "Read it with Read", codex: "Read it with mcp__files__read_file" },
   { id: "image", claude: "open each one with Read", codex: "open each one with the view_image tool" },
-  { id: "list-files", claude: "list files with Glob", codex: "list files with rg --files" },
-  { id: "list-them", claude: "list them with Glob", codex: "list them with ls" },
+  { id: "list-files", claude: "list files with Glob", codex: "list files with mcp__files__glob" },
+  { id: "list-them", claude: "list them with Glob", codex: "list them with mcp__files__glob" },
   // The explorer subagent exists only in Claude Code; the main call searches the workspace itself.
-  { id: "explorer", claude: " For a broad search across them, use the Agent tool with subagent_type workspace-search: it is cheaper than reading many files yourself and reports file paths.", codex: " For a broad search across them, run rg over the whole directory with a narrow pattern and read only the files it names." },
+  { id: "explorer", claude: " For a broad search across them, use the Agent tool with subagent_type workspace-search: it is cheaper than reading many files yourself and reports file paths.", codex: " For a broad search across them, use mcp__files__grep with a narrow pattern and path, and read only the files it names." },
 ];
 
-/** MCP tool names as each harness shows them to the model. */
+/** MCP tool names as each harness shows them to the model (Codex: codex-rs/codex-mcp/src/tools.rs). */
 const MCP_NAME: Record<HarnessId, (server: string, tool: string) => string> = {
   claude: (server, tool) => `mcp__${server}__${tool}`,
   codex: (server, tool) => `mcp__${server}__${tool}`,
