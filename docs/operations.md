@@ -200,7 +200,7 @@ The harness never runs outside a sandbox that shows it only the call's own files
 
 ### Who gets which call
 
-A call goes to a maintainer or operator whose cached GitHub permission is `write` or better on every repo the call names. That also covers reading a private repo. In addition:
+A call goes to a maintainer or operator whose cached GitHub permission is `write` or better on every repo the call names. The permission is read through the GitHub App's installation (the collaborator permission endpoint, cached 60 s per login and repo), so it needs no dashboard session; without an installed app for the repo's owner it comes from the login's live session. That also covers reading a private repo. In addition:
 
 - Calls that name no repo, and `discord.*` calls, go to operators only.
 - My repos. Each user may pick repos on the Connect page (`PUT /api/me/settings` with `{repos: [...]}`, tracked repo names, audit `my-repos`; empty means every repo). The picker lists the repos with the pipeline on where the user has write permission. Their helpers then take only calls whose repos are all picked, and a helper's own `repos` list can narrow the picks but not widen them; calls that name no repo are not filtered. The per-repo Pipeline switch stays the operators' control: a picked repo with the pipeline off has no calls.
