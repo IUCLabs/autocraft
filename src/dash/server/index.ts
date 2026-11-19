@@ -213,7 +213,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const webhookLimitIp = new RateLimiter(5000, 60_000);  // flood guard only; the periodic sync still runs. Before the body is read or the signature checked
   // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
   const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
-  // list_repos and list_fixups aggregate the mirror like the dashboard's expensive GETs: a burst, then 30 a minute, per login.
+  // list_repos, list_fixups and list_merge_queue aggregate the mirror like the dashboard's expensive GETs: a burst, then 30 a minute, per login.
   const mcpExpensive = new TokenBucket(20, 0.5);
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
