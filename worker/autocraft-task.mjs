@@ -1642,8 +1642,19 @@ async function api(server, route, bearer, body) {
 export const USAGE_STALE_MS = 5 * 60_000;
 /** A reading this young is used again instead of asking the provider (claims come every 15 s). */
 const USAGE_REUSE_MS = 60_000;
-/** While held, the helper reads its usage again this often. */
-export const HOLD_RETRY_MS = 60_000;
+/** While held, the helper reads its usage again about this often (jittered, and not the reuse interval, so slots do not wake together). */
+export const HOLD_RETRY_MS = 45_000;
+/** @param {() => number} [rand] @returns {number} HOLD_RETRY_MS within plus or minus 20% */
+export const holdRetryDelay = (rand = Math.random) => Math.round(HOLD_RETRY_MS * (0.8 + 0.4 * rand()));
+/** An error reading is shared with other processes for this long before the provider is asked again (a provider's own wait overrides it). */
+const USAGE_ERROR_RETRY_MS = 30_000;
+/** The last good reading keeps counting this long when a new read fails or is refused, while every window keeps the reserve plus LAST_GOOD_MARGIN free. */
+export const LAST_GOOD_MS = 15 * 60_000;
+export const LAST_GOOD_MARGIN = 10;
+/** The longest call timeout readiness assumes when it checks the login's expiry (a lease names its own). */
+const READY_CALL_TIMEOUT_S = 900;
+/** The longest a process waits for another process's usage read. */
+const USAGE_LOCK_WAIT_MS = 20_000;
 export const STATUS_EVERY_MS = 5 * 60_000;
 /** The longest a provider's refusal parks the helper: its reset time is text the helper cannot check. */
 export const PARK_CAP_MS = 7 * 24 * 3600_000;
@@ -1659,7 +1670,7 @@ const WINDOW_KINDS = /** @type {const} */ (["five_hour", "weekly"]);
 const RESERVE_OF = /** @type {const} */ ({ five_hour: "fiveHour", weekly: "weekly" });
 
 /** @typedef {{ kind: string, usedPercent: number, resetsAt: number | null }} QuotaWindow  `kind` is five_hour, weekly, or the provider's name of a window the helper does not know; times in ms */
-/** @typedef {{ at: number, windows: QuotaWindow[], blocked?: string } | { at: number, error: string }} QuotaReading */
+/** `lastGood`: the reading is an earlier good one standing in for a read that failed (the failure's text); it keeps its own `at`. @typedef {{ at: number, windows: QuotaWindow[], blocked?: string, lastGood?: string } | { at: number, error: string }} QuotaReading */
 /** @typedef {{ ok: true } | { ok: false, until: number | null, reason: string }} QuotaVerdict */
 /** @typedef {{ until: number | null, at: number }} Pause  until: the reset it was taken at; null: until `resume` */
 /** @typedef {{ until: number | null, at: number, reason: string }} Park  until null: the provider named no trusted time; a passing reading taken after `at` ends it */
@@ -1683,7 +1694,14 @@ const windowName = (kind) => (kind === "five_hour" ? "5-hour" : kind === "weekly
 export function quotaVerdict(reading, reserve, now = Date.now()) {
   if (!reading) return { ok: false, until: null, reason: "no usage reading" };
   if ("error" in reading) return { ok: false, until: null, reason: `usage unknown: ${reading.error}` };
-  if (!(now - reading.at <= USAGE_STALE_MS)) return { ok: false, until: null, reason: `the usage reading is ${Math.round((now - reading.at) / 60_000)} min old` };
+  if (reading.lastGood !== undefined) {
+    if (!(now - reading.at <= LAST_GOOD_MS)) return { ok: false, until: null, reason: `usage unknown: ${reading.lastGood}; the last good reading is ${Math.round((now - reading.at) / 60_000)} min old` };
+    const thin = reading.windows.find((w) => {
+      const r = reserve[RESERVE_OF[/** @type {"five_hour" | "weekly"} */ (w.kind)]];
+      return typeof r !== "number" || !(100 - w.usedPercent >= r + LAST_GOOD_MARGIN);
+    });
+    if (thin) return { ok: false, until: null, reason: `usage unknown: ${reading.lastGood}; the last good reading is too close to the reserve to rely on (${windowName(thin.kind)} window ${Math.round(thin.usedPercent)}% used)` };
+  } else if (!(now - reading.at <= USAGE_STALE_MS)) return { ok: false, until: null, reason: `the usage reading is ${Math.round((now - reading.at) / 60_000)} min old` };
   if (!reading.windows.length) return { ok: false, until: null, reason: "usage unknown: the reading has no plan window" };
   /** @type {QuotaWindow[]} */
   const binding = [];
@@ -1867,27 +1885,100 @@ async function codexQuota(bin, home, models) {
 }
 
 const usageFile = () => join(cacheDir(), "usage.json");
+const usageLockFile = () => join(cacheDir(), "usage.lock");
+
+/** The last good reading standing in for a failed one, or the failure itself. @param {QuotaReading} failed @param {QuotaReading | undefined} good @param {number} now @returns {QuotaReading} */
+function withLastGood(failed, good, now) {
+  if (!("error" in failed) || !good || "error" in good || now - good.at > LAST_GOOD_MS || now < good.at) return failed;
+  return { ...good, lastGood: failed.error };
+}
+
+/** @typedef {{ harness: string, models: string[], reading: QuotaReading, good?: QuotaReading, retryAt?: number }} UsageCache */
+
+/** The usage cache when it belongs to this harness and these models. @param {Adapter} adapter @param {string[]} models @returns {UsageCache | null} */
+function usageCache(adapter, models) {
+  /** @type {UsageCache | null} */
+  const c = readJson(usageFile());
+  return c && c.harness === adapter.id && JSON.stringify(c.models) === JSON.stringify(models) && c.reading ? c : null;
+}
+
+/** What the cache answers without asking the provider, or null when a new read is due. @param {UsageCache | null} c @param {number} now @returns {QuotaReading | null} */
+function usageFromCache(c, now) {
+  if (!c) return null;
+  if (c.retryAt && now < c.retryAt) return withLastGood({ at: now, error: `${"error" in c.reading ? c.reading.error : "the provider asked to wait"}; asking again after ${clock(c.retryAt)}` }, c.good, now);
+  const age = now - c.reading.at;
+  if (age < 0) return null;
+  if ("error" in c.reading) return age < USAGE_ERROR_RETRY_MS ? withLastGood(c.reading, c.good, now) : null;
+  return age < USAGE_REUSE_MS ? c.reading : null;
+}
+
+/** Takes the machine-wide lock for a usage read; null while a live process holds it. @returns {(() => void) | null} */
+function takeUsageLock() {
+  privateDir(cacheDir());
+  const file = usageLockFile();
+  for (let i = 0; i < 2; i++) {
+    try {
+      writeFileSync(file, String(process.pid), { flag: "wx", mode: 0o600 });
+      return () => rmSync(file, { force: true });
+    } catch {
+      const pid = Number.parseInt((() => { try { return readFileSync(file, "utf8"); } catch { return ""; } })(), 10);
+      let young = false;
+      try { young = Date.now() - statSync(file).mtimeMs < 60_000; } catch { /* gone */ }
+      if (pid > 0 && alive(pid) && young) return null;
+      rmSync(file, { force: true });
+    }
+  }
+  return null;
+}
+
+/** @type {Map<string, Promise<QuotaReading>>} */
+const usageFlights = new Map();
 
 /**
- * The harness's plan usage: a reading of the last USAGE_REUSE_MS (shared by every helper process), or a new one; nothing
- * while the provider asked to wait.
+ * The harness's plan usage, one read at a time per machine: slots of this process share one promise, other processes a
+ * lock file and the cached reading. A reading of the last USAGE_REUSE_MS is reused; a failed or refused read is shared
+ * only for USAGE_ERROR_RETRY_MS (or the provider's own wait), and the last good reading stands in for it for LAST_GOOD_MS.
  * @param {Config} cfg @param {Adapter} adapter @param {string} bin @param {string[]} models @returns {Promise<QuotaReading>}
  */
-async function readQuota(cfg, adapter, bin, models) {
-  const now = Date.now();
-  /** @type {{ harness: string, models: string[], reading: QuotaReading, retryAt?: number } | null} */
-  const cached = readJson(usageFile());
-  const same = cached?.harness === adapter.id && JSON.stringify(cached.models) === JSON.stringify(models);
-  if (same && cached.retryAt && now < cached.retryAt) return { at: now, error: `${"error" in cached.reading ? cached.reading.error : "the provider asked to wait"}; asking again after ${clock(cached.retryAt)}` };
-  if (same && now - cached.reading.at < USAGE_REUSE_MS && now >= cached.reading.at) return cached.reading;
-  /** @type {{ reading: QuotaReading, retryAt?: number }} */
-  let r;
-  if (adapter.id === "claude") {
-    const token = adapter.token(cfg);
-    r = token ? await claudeQuota(token, models) : { reading: { at: now, error: "no Claude login" } };
-  } else r = await codexQuota(bin, codexHome(), models);
-  writePrivate(usageFile(), { harness: adapter.id, models, reading: r.reading, ...(r.retryAt && { retryAt: r.retryAt }) });
-  return r.reading;
+export function readQuota(cfg, adapter, bin, models) {
+  const key = `${adapter.id}:${models.join(",")}`;
+  let p = usageFlights.get(key);
+  if (!p) {
+    p = readQuotaShared(cfg, adapter, bin, models).finally(() => usageFlights.delete(key));
+    usageFlights.set(key, p);
+  }
+  return p;
+}
+
+/** @param {Config} cfg @param {Adapter} adapter @param {string} bin @param {string[]} models @returns {Promise<QuotaReading>} */
+async function readQuotaShared(cfg, adapter, bin, models) {
+  const hit = usageFromCache(usageCache(adapter, models), Date.now());
+  if (hit) return hit;
+  let unlock = takeUsageLock();
+  for (const started = Date.now(); !unlock && Date.now() - started < USAGE_LOCK_WAIT_MS; unlock = takeUsageLock()) {
+    await new Promise((r) => setTimeout(r, 500));
+    const again = usageFromCache(usageCache(adapter, models), Date.now());
+    if (again) return again;
+  }
+  if (!unlock) return { at: Date.now(), error: "another helper process is reading the usage" };
+  try {
+    const now = Date.now();
+    const prev = usageCache(adapter, models);
+    const raced = usageFromCache(prev, now);
+    if (raced) return raced;
+    const good = prev && !("error" in prev.reading) ? prev.reading : prev?.good;
+    /** @type {{ reading: QuotaReading, retryAt?: number }} */
+    let r;
+    if (adapter.id === "claude") {
+      const token = adapter.token(cfg);
+      r = token ? await claudeQuota(token, models) : { reading: { at: now, error: "no Claude login" } };
+    } else r = await codexQuota(bin, codexHome(), models);
+    const keep = "error" in r.reading ? good : r.reading;
+    writePrivate(usageFile(), { harness: adapter.id, models, reading: r.reading, ...(keep && { good: keep }), ...(r.retryAt && { retryAt: r.retryAt }) });
+    return withLastGood(r.reading, good, Date.now());
+  } finally {
+    unlock();
+  }
 }
 
 /** The wire form of a reading: the most-used window of each kind. @param {QuotaReading | null} r @returns {UsageReading | undefined} */
@@ -1973,12 +2064,13 @@ async function checkReady(cfg, opt = {}) {
     else if (old) st = { ...base, readiness: "harness-missing", until: null, reason: old };
     else if (!Object.keys(models).length) st = { ...base, readiness: "harness-missing", until: null, reason: `no model is set for any tier ("tiers" in ${join(configDir(), "config.json")})` };
     else if (canary) st = { ...base, readiness: "sandbox-failed", until: null, reason: canary.split("\n")[0] ?? canary };
+    else if (adapter.tokenFor && "problem" in adapter.tokenFor(cfg, READY_CALL_TIMEOUT_S) && /** @type {{ problem: string }} */ (adapter.tokenFor(cfg, READY_CALL_TIMEOUT_S)).problem === CLAUDE_LOGIN_EXPIRES) st = { ...base, readiness: "harness-missing", until: null, reason: "the Claude login expires soon; run claude to refresh it" };
     else {
       const control = readControl();
       const cooloff = prev.cooloff && now < prev.cooloff.until && !(control.pause && (control.pause.until === null || now < control.pause.until)) ? prev.cooloff : null;
       // A pause needs no reading; without one the provider is asked only when the answer matters.
       const reading = control.pause && (control.pause.until === null || now < control.pause.until) ? null : await readQuota(cfg, adapter, d.bin, [...new Set(Object.values(models))]);
-      const q = quotaReadiness({ pause: control.pause, park: control.park, verdict: quotaVerdict(reading, reserve, Date.now()), readingAt: reading && !("error" in reading) ? reading.at : null });
+      const q = quotaReadiness({ pause: control.pause, park: control.park, verdict: quotaVerdict(reading, reserve, Date.now()), readingAt: reading && !("error" in reading) && reading.lastGood === undefined ? reading.at : null });
       if (q.dropPause || q.dropPark) {
         const c = readControl();
         if (q.dropPause) delete c.pause;
@@ -2769,7 +2861,7 @@ async function cmdWork(argv) {
         // An external wait on this machine: the usage is read again every minute, and the status kept fresh.
         const line = heldLine(r.held);
         if (line !== heldSaid) { console.log(`not claiming: ${line}`); heldSaid = line; idleSaid = ""; }
-        await pause(HOLD_RETRY_MS);
+        await pause(holdRetryDelay());
         continue;
       }
       if (heldSaid) { console.log("ready again"); heldSaid = ""; }
