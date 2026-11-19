@@ -211,6 +211,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const remoteLimitToken = new RateLimiter(240, 60_000);
   // Tool calls of one remote call (item, reference and check tools together).
   const remoteToolLimit = new RateLimiter(300, 60_000);
+  const remoteArchiveLimit = new RateLimiter(20, 60_000); // tarball fetches per lease
   const webhookLimitIp = new RateLimiter(5000, 60_000);  // flood guard only; the periodic sync still runs. Before the body is read or the signature checked
   // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
   const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
@@ -718,7 +719,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (path === ROUTES.submit) return reply(200, remote.submitCall(db, bearer, await readJson(req, SUBMIT_BODY_LIMIT)));
       const lease = taskLease(db, bearer);
       if (!lease) return gone();
-      if (path === ROUTES.tarball) return sendArchive(res, lease, url.searchParams.get("repo") ?? "", url.searchParams.get("sha") ?? "");
+      if (path === ROUTES.tarball) {
+        if (!remoteArchiveLimit.allow(String(lease.id))) return tooMany();
+        return await sendArchive(res, lease, url.searchParams.get("repo") ?? "", url.searchParams.get("sha") ?? "");
+      }
       const [, server, name] = tool!;
       if (!TASK_TOOLS[server!] || !lease.servers.includes(server!)) return reply(403, { error: `this call has no ${server} tools` });
       if (!remoteToolLimit.allow(String(lease.id))) return tooMany();
@@ -783,19 +787,18 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return w.send(out);
   }
 
-  /** Streams `git archive` of one tarball mount of the lease's bundle. */
-  function sendArchive(res: ServerResponse, lease: TaskLease, repo: string, sha: string): void {
-    const git = archiveOf(lease, repo, sha);
-    if (!git) {
+  /** Streams the tar archive of one tarball mount of the lease's bundle. */
+  async function sendArchive(res: ServerResponse, lease: TaskLease, repo: string, sha: string): Promise<void> {
+    const tar = await archiveOf(lease, repo, sha);
+    if (!tar) {
       res.writeHead(404, secure({ "cache-control": "no-store", "content-type": "application/json; charset=utf-8" }, "default-src 'none'"));
       return void res.end(JSON.stringify({ error: "the call has no such tarball" }));
     }
     res.writeHead(200, secure({ "cache-control": "no-store", "content-type": "application/x-tar" }, "default-src 'none'"));
-    // The response ends only after git exits 0: a failed archive cuts the stream, so the helper sees an error rather than a short tree.
-    git.stdout!.pipe(res, { end: false });
-    git.on("close", (code) => { if (code === 0) res.end(); else res.destroy(); });
-    git.on("error", () => res.destroy());
-    res.on("close", () => { if (git.exitCode === null) git.kill(); });
+    // The stream ends normally only when the archive is complete: a failed archive cuts the response, so the helper sees an error rather than a short tree.
+    tar.on("error", () => res.destroy());
+    res.on("close", () => tar.destroy());
+    tar.pipe(res);
   }
 
   /** GET or HEAD of the helper script. */

@@ -21,6 +21,7 @@ import { writeSnapshot } from "../src/itemtools/snapshot.ts";
 import { awaitCall, claimCall, enqueueCall, submitCall, type Caller } from "../src/remote/calls.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
 import { PROTOCOL_VERSION, ROUTES, type TaskBundle, type ToolReply } from "../src/remote/protocol.ts";
+import { buildReferenceIndex } from "../src/reference-search.ts";
 import { PASSAGES_PER_LEASE, referenceOptions } from "../src/remote/tools.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -54,6 +55,7 @@ describe("per-lease tools of remote calls", () => {
     const ref = join(dir, "reference", "photocraft");
     mkdirSync(ref, { recursive: true });
     writeFileSync(join(ref, "layers.md"), `# Layers\n\n${Array.from({ length: 10 }, (_, i) => `Layer note ${i}. ${"filler ".repeat(100)}`).join("\n\n")}`);
+    await buildReferenceIndex("photocraft", { embedder: fake });
     addLogin(db, "cli", "bob", "maintainer", null);
     const caller: Caller = { tokenId: createToken(db, "bob", "helper", false, true).row.id, login: "bob", role: "maintainer" };
     const items = [{ repo: "photocraft", number: 7 }];
@@ -65,7 +67,7 @@ describe("per-lease tools of remote calls", () => {
       ended: enqueueCall(db, { ...common, bundle: bundle(["items"]) }),
     };
     for (let i = 0; i < 4; i++) {
-      const r = await claimCall(db, caller, { requestId: "test-claim-0001", protocol: PROTOCOL_VERSION, helperVersion: "1.0.0", harness: "claude", harnessVersion: "2", tiers: { top: "opus" } }, async () => true);
+      const r = await claimCall(db, caller, { requestId: "test-claim-0001", protocol: PROTOCOL_VERSION, helperVersion: "1.1.0", harness: "claude", harnessVersion: "2", tiers: { top: "opus" } }, async () => true);
       const name = Object.entries(ids).find(([, id]) => id === r.lease?.id)![0];
       leases.set(name, r.lease!);
     }
