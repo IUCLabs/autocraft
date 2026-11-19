@@ -251,6 +251,7 @@ test("macOS runs: the canary verdict, the command line, Codex's paths in the slo
   assert.equal(c.cmd, "/usr/bin/sandbox-exec");
   assert.equal(c.cwd, `${root}/work`);
   assert.equal(c.env.HOME, `${root}/tmp/home`);
+  assert.equal(c.env.CLAUDE_CODE_TMPDIR, `${root}/tmp/t`);
   const args = helper.codexArgs({ model: "m", effort: "low", system: null, server: "s", servers: [], files: "f", keepSession: false, toolTimeoutSec: 60, paths: { work: `${root}/work`, home: `${root}/tmp/home`, codexHome: "/Users/ann/.config/autocraft-task/codex-home" } });
   const line = args.join(" ");
   assert.ok(line.includes(`-C ${root}/work`) && line.includes('filesystem={"/Users/ann/.config/autocraft-task/codex-home"="deny"}') && !line.includes('{"/codex-home"') && !line.includes("/home/sandbox"));

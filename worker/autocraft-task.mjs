@@ -203,7 +203,7 @@ const CLAUDE_CONFIG_DIR_MACOS = "on macOS Claude Code keeps its login in the Key
  */
 function claudeCredential(cfg) {
   if (cfg.claudeAuth === "keychain") {
-    const k = keychainCredential();
+    const k = keychainCredential(keychainItemOf(cfg));
     return k ? { claudeAiOauth: { accessToken: k.token, expiresAt: k.expiresAt ?? Number.MAX_SAFE_INTEGER } } : null;
   }
   return cfg.claudeConfigDir && process.platform !== "darwin" ? readClaudeCredentials(cfg.claudeConfigDir) : null;
@@ -1318,9 +1318,14 @@ export function macCommand(s) {
   const tmp = `${s.root}/tmp`;
   return {
     cmd: SANDBOX_EXEC, args: ["-f", s.profile, "-D", `ROOT=${s.root}`, "-D", `TMP=${tmp}`, ...s.argv], cwd: `${s.root}/work`,
-    env: { HOME: `${tmp}/home`, TMPDIR: `${tmp}/t/`, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", ...s.env },
+    // Claude Code keeps its own temp dir at /tmp/claude-<uid> unless CLAUDE_CODE_TMPDIR is set; on a Mac that has run Claude Code that
+    // dir already exists outside the profile, and the mkdir fails.
+    env: { HOME: `${tmp}/home`, TMPDIR: `${tmp}/t/`, CLAUDE_CODE_TMPDIR: `${tmp}/t`, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", ...s.env },
   };
 }
+
+/** The Keychain item the config recorded, or (configs from before it was recorded) the one the current environment names. @param {Config} cfg */
+const keychainItemOf = (cfg) => cfg.claudeKeychain ?? claudeKeychainItem();
 
 /**
  * The Keychain item of Claude Code's login on macOS, as Claude Code names it: service "Claude Code-credentials" (with the
@@ -1342,9 +1347,10 @@ export function claudeKeychainItem(env = process.env) {
  * when it expires. The helper never refreshes it: a refresh rotates the login and would sign Claude Code out.
  * @returns {{ token: string, expiresAt: number | null } | null}
  */
-function keychainCredential() {
+/** @param {{ service: string, account: string }} [item]  the item recorded at `harness claude --keychain` time */
+function keychainCredential(item = claudeKeychainItem()) {
   if (process.platform !== "darwin") return null;
-  const { service, account } = claudeKeychainItem();
+  const { service, account } = item;
   const r = spawnSync("/usr/bin/security", ["find-generic-password", "-a", account, "-w", "-s", service], { encoding: "utf8", timeout: 20_000 });
   if (r.status !== 0) return null;
   try {
@@ -1442,6 +1448,7 @@ const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter };
  * @property {string} [claudeToken]  a `claude setup-token` token
  * @property {string} [claudeConfigDir]  a Claude config directory whose login the helper uses instead (read only, never mounted; Linux: on macOS Claude Code keeps its login in the Keychain)
  * @property {"keychain"} [claudeAuth]  macOS: the helper uses the access token of the user's own Claude Code login in the Keychain instead
+ * @property {{ service: string, account: string }} [claudeKeychain]  the Keychain item chosen at `harness claude --keychain` time
  * @property {string} [claudeBin]
  * @property {string} [codexBin]
  * @property {Partial<Record<Tier, string>>} [tiers]  model per tier; defaults are the adapter's
@@ -2048,13 +2055,14 @@ async function cmdHarness(argv) {
   const id = argv[0];
   if (id === "codex") return codexLogin(argv.slice(1));
   if (id !== "claude") throw new Error("usage: autocraft-task harness claude [--keychain]  (a `claude setup-token` token on stdin)\n       autocraft-task harness claude --config-dir [<dir>]\n       autocraft-task harness codex [--device-auth]");
-  const { claudeToken: _t, claudeConfigDir: _d, claudeAuth: _a, ...rest } = loadConfig();
+  const { claudeToken: _t, claudeConfigDir: _d, claudeAuth: _a, claudeKeychain: _k, ...rest } = loadConfig();
   if (argv.includes("--keychain")) {
     // macOS: the access token of the user's own Claude Code login, read from the Keychain before each call.
     if (process.platform !== "darwin") throw new Error("--keychain reads Claude Code's login from the macOS Keychain; elsewhere use --config-dir or a setup-token");
     const item = claudeKeychainItem();
     if (!keychainCredential()) throw new Error(`no Claude Code login in the Keychain item "${item.service}" (account ${item.account}): sign in to Claude Code first`);
-    saveConfig({ ...rest, harness: "claude", claudeAuth: "keychain" });
+    // The item is recorded now: a later shell with another CLAUDE_CONFIG_DIR must not switch to a different login.
+    saveConfig({ ...rest, harness: "claude", claudeAuth: "keychain", claudeKeychain: item });
     console.log(`the helper reads the Claude login from the Keychain item "${item.service}" before each call; it never refreshes it, so use Claude Code now and then, or store a setup-token instead`);
     return;
   }
@@ -2310,7 +2318,7 @@ async function cmdDoctor() {
     check(r.status === 0, r.status === 0 ? `${adapter.id} runs inside the sandbox` : `${adapter.id} does not run inside the sandbox: ${redact((r.stderr || "").trim()).slice(0, 200)}`);
   }
   if (adapter.id === "claude" && cfg.claudeAuth === "keychain") {
-    const k = keychainCredential(), item = claudeKeychainItem();
+    const item = keychainItemOf(cfg), k = keychainCredential(item);
     const left = k?.expiresAt ? Math.round((k.expiresAt - Date.now()) / 60_000) : null;
     check(!!k && (left === null || left > 0), k ? `claude login from the Keychain (${item.service}), access token ${left === null ? "without an expiry" : left > 0 ? `valid for ${left} min` : "expired: use Claude Code once to refresh it"}` : `no Claude login in the Keychain item "${item.service}" (account ${item.account}): sign in to Claude Code, or store a setup-token`);
   } else if (adapter.id === "claude" && cfg.claudeConfigDir && mac) check(false, CLAUDE_CONFIG_DIR_MACOS);
