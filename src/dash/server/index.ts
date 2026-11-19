@@ -36,7 +36,9 @@ import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import * as remote from "../../remote/calls.ts";
 import { inferenceMode } from "../../remote/mode.ts";
-import { ROUTES, type ToolReply } from "../../remote/protocol.ts";
+import { HELPERS_PATH, parseStatus, storeStatus } from "../../remote/helpers.ts";
+import { ROUTES, type ClaimReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
+import { userReserve } from "../../remote/reserve.ts";
 import { archiveOf, callTaskTool, TASK_TOOLS, taskLease, type TaskLease, type ToolResult } from "../../remote/tools.ts";
 import { handleDelivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH } from "../../github/webhooks.ts";
 import { esc, HttpError, parseCookies, plainPage, previewTags, RateLimiter, safeReturnTo } from "./util.ts";
@@ -531,7 +533,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return send(res, nonce, r, set);
       }
       if (url.pathname === "/mcp") return await handleMcpHttp(req, res);
-      if (url.pathname.startsWith("/api/remote/")) return await handleRemoteHttp(req, res, url);
+      // The helper routes; the Connect page's list of helpers is a session route like the rest of the API.
+      if (url.pathname.startsWith("/api/remote/") && url.pathname !== HELPERS_PATH) return await handleRemoteHttp(req, res, url);
       if (url.pathname.startsWith(`${ROUTES.mcp}/`)) return await handleTaskMcp(req, res, url);
       // Public: the helper script, which a maintainer downloads before having any credential.
       if (url.pathname === ROUTES.helper) return await sendHelper(req, res);
@@ -654,10 +657,19 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         if (!remoteLimitToken.allow(caller.login.toLowerCase())) return tooMany();
         const claim = remote.parseClaim(await readJson(req));
         // In the server mode no call is queued for helpers: nothing to take for a while.
-        if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300 });
+        if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login) } satisfies ClaimReply);
         // A claim hands out work on the repo: the write permission it checks is at most a minute old.
         const user = userForLogin(db, box, provider, caller.login, caller.role, true);
         return reply(200, await remote.claimCall(db, caller, claim, (repo) => user.canWrite(repo)));
+      }
+      if (path === ROUTES.status) {
+        const caller = loadToken(db, bearer);
+        if (!caller && !mcpLimitIp.allow(clientIp(req))) return tooMany();
+        if (!caller) return reply(401, { error: "a valid AutoCraft agent token is required (Authorization: Bearer <token>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
+        if (!caller.canRun) return reply(403, { error: "this token cannot run tasks; make one with Can run tasks on the Connect page" });
+        if (!remoteLimitToken.allow(caller.login.toLowerCase())) return tooMany();
+        storeStatus(db, caller.tokenId, caller.login, parseStatus(await readJson(req)));
+        return reply(200, { ok: true, reserve: userReserve(db, caller.login) } satisfies StatusReply);
       }
       const tool = path.startsWith(`${ROUTES.tool}/`) ? /^([a-z][a-z0-9_-]{0,40})\/([a-z][a-z0-9_]{0,60})$/.exec(path.slice(ROUTES.tool.length + 1)) : null;
       if (![ROUTES.bundle, ROUTES.heartbeat, ROUTES.submit, ROUTES.release, ROUTES.tarball].includes(path as never) && !tool) return reply(404, { error: "not found" });

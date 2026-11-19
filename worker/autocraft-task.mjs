@@ -20,6 +20,10 @@
 //   autocraft-task try <bundle.json>       runs a bundle from a file without a server (testing)
 //   autocraft-task mcp <server> <lease>    stdio-to-HTTP proxy for one of the lease's MCP servers
 //   autocraft-task tool <server> <tool> [<json>] [<lease>]  one tool call without MCP; prints the result
+//   autocraft-task status                  whether the helper takes calls now, with the plan usage behind it
+//   autocraft-task pause-until-reset       takes no call until the plan window resets (or `resume`)
+//   autocraft-task resume                  ends a pause, and a hold after the provider refused a run
+//   autocraft-task config reserve <5h> <weekly>  raises the usage reserve the server sets (percent kept free)
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -33,16 +37,17 @@ import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.0.0";
+export const HELPER_VERSION = "1.1.0";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
 
 /** Must equal the server's; the server refuses a claim from a helper of another version. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const ROUTES = {
   claim: "/api/remote/claim",
+  status: "/api/remote/status",
   bundle: "/api/remote/bundle",
   heartbeat: "/api/remote/heartbeat",
   submit: "/api/remote/submit",
@@ -66,7 +71,22 @@ export const ROUTES = {
  * @property {number[]} [sessions]
  * @property {string} [root]
  */
-/** @typedef {{ lease: null, retryAfter: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string } }} ClaimReply */
+/** @typedef {{ fiveHour: number, weekly: number }} Reserve  percent of each plan window kept free */
+/** @typedef {{ lease: null, retryAfter: number, reserve: Reserve } | { lease: { id: number, secret: string, title: string, requiredHelper: string }, reserve: Reserve }} ClaimReply */
+/** @typedef {"ready" | "quota-held" | "paused" | "sandbox-failed" | "version-refused" | "harness-missing"} Readiness */
+/** @typedef {{ usedPercent: number, resetsAt: string | null }} UsageWindow */
+/** @typedef {{ fiveHour: UsageWindow | null, weekly: UsageWindow | null, at: string }} UsageReading */
+/**
+ * @typedef {object} HelperStatus
+ * @property {Readiness} readiness
+ * @property {string} [until]
+ * @property {string} [reason]
+ * @property {HarnessId} harness
+ * @property {Partial<Record<Tier, string>>} models
+ * @property {Reserve} reserve
+ * @property {UsageReading} [usage]
+ */
+/** @typedef {{ ok: true, reserve: Reserve }} StatusReply */
 /**
  * @typedef {{ kind: "git", path: string, owner: string, repo: string, sha: string, ref?: string }
  *   | { kind: "tarball", path: string, repo: string, sha: string }
@@ -1453,6 +1473,7 @@ const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter };
  * @property {string} [codexBin]
  * @property {Partial<Record<Tier, string>>} [tiers]  model per tier; defaults are the adapter's
  * @property {string[]} [repos]
+ * @property {Reserve} [reserve]  the local usage reserve: it only raises the server's, window by window
  */
 
 const configDir = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "autocraft-task");
@@ -1592,6 +1613,463 @@ async function api(server, route, bearer, body) {
   const text = await res.text();
   if (!res.ok) throw new Error(`${route}: HTTP ${res.status} ${redact(text).slice(0, 300)}`);
   return text ? JSON.parse(text) : {};
+}
+
+// ---------------------------------------------------------------------------
+// Plan usage and readiness. Before every claim the helper reads its harness's plan usage and claims only while every
+// window keeps more than the reserve free (the user's, from the server, raised by the local `config reserve`). Anything
+// it cannot read for sure holds: no reading, a failed or unparseable one, one older than USAGE_STALE_MS, or a window kind
+// this helper does not know. A user's pause outranks recovered headroom; a run the provider refused for its limit parks
+// the helper until the reset the provider named. The helper reports its readiness to the server (ROUTES.status) on every
+// change and at least every STATUS_EVERY_MS, and keeps it in a 0600 status file.
+
+export const USAGE_STALE_MS = 5 * 60_000;
+/** A reading this young is used again instead of asking the provider (claims come every 15 s). */
+const USAGE_REUSE_MS = 60_000;
+/** While held, the helper reads its usage again this often. */
+export const HOLD_RETRY_MS = 60_000;
+export const STATUS_EVERY_MS = 5 * 60_000;
+/** The longest a provider's refusal parks the helper: its reset time is text the helper cannot check. */
+export const PARK_CAP_MS = 7 * 24 * 3600_000;
+/** A refusal that names no reset parks for this long; the hold comes back if the usage still says so. */
+const PARK_FALLBACK_MS = 15 * 60_000;
+/** Added to a parsed reset so the first claim after it is not early. */
+const PARK_GRACE_MS = 60_000;
+/** A server that refused the helper's version is asked again after this long. */
+const REFUSED_RETRY_MS = 10 * 60_000;
+export const DEFAULT_RESERVE = { fiveHour: 20, weekly: 20 };
+/** The window kinds the helper knows; any other kind in a reading holds. */
+const WINDOW_KINDS = /** @type {const} */ (["five_hour", "weekly"]);
+const RESERVE_OF = /** @type {const} */ ({ five_hour: "fiveHour", weekly: "weekly" });
+
+/** @typedef {{ kind: string, usedPercent: number, resetsAt: number | null }} QuotaWindow  `kind` is five_hour, weekly, or the provider's name of a window the helper does not know; times in ms */
+/** @typedef {{ at: number, windows: QuotaWindow[], blocked?: string } | { at: number, error: string }} QuotaReading */
+/** @typedef {{ ok: true } | { ok: false, until: number | null, reason: string }} QuotaVerdict */
+/** @typedef {{ until: number | null, at: number }} Pause  until: the reset it was taken at; null: until `resume` */
+/** @typedef {{ until: number | null, at: number, reason: string }} Park  until null: the provider named no trusted time; a passing reading taken after `at` ends it */
+
+/** The reserve the helper enforces: per window the larger of the server's (the default before it has sent one) and the local one. @param {Reserve | undefined} server @param {Reserve | undefined} local @returns {Reserve} */
+export function effectiveReserve(server, local) {
+  const s = server ?? DEFAULT_RESERVE;
+  return { fiveHour: Math.max(s.fiveHour, local?.fiveHour ?? 0), weekly: Math.max(s.weekly, local?.weekly ?? 0) };
+}
+
+/** @param {number | null} t */
+const clock = (t) => (t === null ? "" : new Date(t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+/** @param {string} kind */
+const windowName = (kind) => (kind === "five_hour" ? "5-hour" : kind === "weekly" ? "weekly" : kind);
+
+/**
+ * Whether a reading lets the helper claim under `reserve`: every window's remaining percent (100 - used) above its reserve.
+ * A hold names the windows that bind and lasts until the latest of their resets (null when one has none).
+ * @param {QuotaReading | null} reading @param {Reserve} reserve @param {number} [now] @returns {QuotaVerdict}
+ */
+export function quotaVerdict(reading, reserve, now = Date.now()) {
+  if (!reading) return { ok: false, until: null, reason: "no usage reading" };
+  if ("error" in reading) return { ok: false, until: null, reason: `usage unknown: ${reading.error}` };
+  if (!(now - reading.at <= USAGE_STALE_MS)) return { ok: false, until: null, reason: `the usage reading is ${Math.round((now - reading.at) / 60_000)} min old` };
+  if (!reading.windows.length) return { ok: false, until: null, reason: "usage unknown: the reading has no plan window" };
+  /** @type {QuotaWindow[]} */
+  const binding = [];
+  for (const w of reading.windows) {
+    const known = /** @type {readonly string[]} */ (WINDOW_KINDS).includes(w.kind);
+    if (!known) return { ok: false, until: null, reason: `usage unknown: a plan window of a kind this helper does not know (${w.kind})` };
+    if (typeof w.usedPercent !== "number" || !Number.isFinite(w.usedPercent)) return { ok: false, until: null, reason: `usage unknown: the ${windowName(w.kind)} window has no percentage` };
+    if (100 - w.usedPercent <= reserve[RESERVE_OF[/** @type {"five_hour" | "weekly"} */ (w.kind)]]) binding.push(w);
+  }
+  const latest = (/** @type {QuotaWindow[]} */ ws) => (ws.some((w) => w.resetsAt === null) ? null : Math.max(...ws.map((w) => /** @type {number} */ (w.resetsAt))));
+  if (reading.blocked) return { ok: false, until: latest(reading.windows.filter((w) => w.usedPercent >= 100).length ? reading.windows.filter((w) => w.usedPercent >= 100) : reading.windows), reason: reading.blocked };
+  if (!binding.length) return { ok: true };
+  const what = binding.map((w) => `${windowName(w.kind)} window ${Math.round(w.usedPercent)}% used (reserve ${reserve[RESERVE_OF[/** @type {"five_hour" | "weekly"} */ (w.kind)]]}% free)`).join(", ");
+  return { ok: false, until: latest(binding), reason: what };
+}
+
+/**
+ * The helper's quota readiness from its pause, its park and the usage verdict: a pause first, then a park, then the usage.
+ * `dropPark`: the park is over (its time passed, or a passing reading came after it).
+ * @param {{ pause?: Pause | null, park?: Park | null, verdict: QuotaVerdict, readingAt: number | null, now?: number }} o
+ * @returns {{ readiness: "ready" | "quota-held" | "paused", until: number | null, reason?: string, dropPause?: boolean, dropPark?: boolean }}
+ */
+export function quotaReadiness({ pause, park, verdict, readingAt, now = Date.now() }) {
+  let dropPause = false, dropPark = false;
+  if (pause && pause.until !== null && now >= pause.until) { dropPause = true; pause = null; }
+  if (park && (park.until !== null ? now >= park.until : verdict.ok && readingAt !== null && readingAt > park.at)) { dropPark = true; park = null; }
+  const drops = { ...(dropPause && { dropPause }), ...(dropPark && { dropPark }) };
+  if (pause) return { readiness: "paused", until: pause.until, reason: pause.until === null ? "by the user, until `autocraft-task resume`" : "by the user, until the plan window resets", ...drops };
+  if (park) return { readiness: "quota-held", until: park.until, reason: park.reason, ...drops };
+  if (!verdict.ok) return { readiness: "quota-held", until: verdict.until, reason: verdict.reason, ...drops };
+  return { readiness: "ready", until: null, ...drops };
+}
+
+/** @param {unknown} v @returns {number | null} */
+const timeOf = (v) => {
+  if (typeof v === "number" && Number.isFinite(v)) return v < 1e11 ? v * 1000 : v;
+  if (typeof v !== "string") return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
+};
+
+/** Whether a model scope (a display name such as "Opus", or a model id) is one of the models this helper runs. @param {any} model @param {string[]} models */
+function runsModel(model, models) {
+  const names = [model?.id, typeof model?.display_name === "string" ? model.display_name.split(/\s+/)[0] : null].filter((x) => typeof x === "string" && x).map((x) => x.toLowerCase());
+  if (!names.length) return true;
+  return models.some((m) => names.some((n) => m.toLowerCase().includes(n) || n.includes(m.toLowerCase())));
+}
+
+/**
+ * Claude Code's plan usage (GET https://api.anthropic.com/api/oauth/usage, as Claude Code 2.1 reads it for /usage) as
+ * windows. `limits` lists them with a kind and a group: session (the 5-hour window), weekly_all, and weekly_scoped for one
+ * model (`scope.model`), which counts only when the helper runs that model. A reply without `limits` gives the named
+ * windows five_hour, seven_day and the per-model seven_day_opus / seven_day_sonnet (utilization in percent).
+ * @param {any} body @param {string[]} models the models the helper runs @param {number} [now] @returns {QuotaReading}
+ */
+export function parseClaudeUsage(body, models, now = Date.now()) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { at: now, error: "unreadable usage reply" };
+  /** @type {QuotaWindow[]} */
+  const windows = [];
+  if (Array.isArray(body.limits)) {
+    for (const l of body.limits) {
+      if (!l || typeof l !== "object" || typeof l.kind !== "string") return { at: now, error: "unreadable usage reply: a limit without a kind" };
+      const w = { usedPercent: l.percent, resetsAt: timeOf(l.resets_at) };
+      if (l.kind === "weekly_scoped" && l.scope?.model && !runsModel(l.scope.model, models)) continue;
+      const kind = l.kind === "session" ? "five_hour" : l.kind === "weekly_all" || l.kind === "weekly_scoped" ? "weekly"
+        : l.group === "session" ? "five_hour" : l.group === "weekly" ? "weekly" : l.kind;
+      windows.push({ kind, ...w });
+    }
+  } else {
+    for (const [key, kind, model] of [["five_hour", "five_hour", null], ["seven_day", "weekly", null], ["seven_day_opus", "weekly", "opus"], ["seven_day_sonnet", "weekly", "sonnet"]]) {
+      const w = body[/** @type {string} */ (key)];
+      if (!w || typeof w !== "object") continue;
+      if (model && !runsModel({ display_name: model }, models)) continue;
+      windows.push({ kind: /** @type {string} */ (kind), usedPercent: w.utilization, resetsAt: timeOf(w.resets_at) });
+    }
+  }
+  return { at: now, windows };
+}
+
+/**
+ * The Codex app-server's `account/rateLimits/read` reply (codex-rs app-server-protocol v2 GetAccountRateLimitsResponse) as
+ * windows: the default bucket (`rateLimits`) and the buckets of `rateLimitsByLimitId` whose normal model is one the helper
+ * runs, each with a primary and a secondary window. A window of 300 minutes is the 5-hour one, 10080 the weekly one; any
+ * other length is a kind the helper does not know. `ordinaryUsageAllowed: false` or a bucket's `rateLimitReachedType` blocks.
+ * @param {any} res @param {string[]} models @param {number} [now] @returns {QuotaReading}
+ */
+export function parseCodexRateLimits(res, models, now = Date.now()) {
+  if (!res || typeof res !== "object" || !res.rateLimits || typeof res.rateLimits !== "object") return { at: now, error: "unreadable rate-limit reply" };
+  const buckets = [res.rateLimits];
+  if (res.rateLimitsByLimitId && typeof res.rateLimitsByLimitId === "object") {
+    for (const b of Object.values(res.rateLimitsByLimitId)) if (b && typeof b === "object" && typeof b.normalModelSlug === "string" && models.includes(b.normalModelSlug)) buckets.push(b);
+  }
+  /** @type {QuotaWindow[]} */
+  const windows = [];
+  let blocked;
+  for (const b of buckets) {
+    for (const w of [b.primary, b.secondary]) {
+      if (!w) continue;
+      if (typeof w !== "object") return { at: now, error: "unreadable rate-limit window" };
+      const mins = w.windowDurationMins;
+      windows.push({ kind: mins === 300 ? "five_hour" : mins === 10080 ? "weekly" : `${mins ?? "unknown"}-minute`, usedPercent: w.usedPercent, resetsAt: timeOf(w.resetsAt) });
+    }
+    if (typeof b.rateLimitReachedType === "string") blocked = `the provider reports its limit reached (${b.rateLimitReachedType})`;
+  }
+  if (res.ordinaryUsageAllowed === false) blocked = "the provider reports that the plan's usage is used up";
+  return { at: now, windows, ...(blocked && { blocked }) };
+}
+
+/** Reads Claude Code's plan usage with the harness credential: no model call. @param {string} token @param {string[]} models @returns {Promise<{ reading: QuotaReading, retryAt?: number }>} */
+async function claudeQuota(token, models) {
+  const now = Date.now();
+  let res;
+  try {
+    res = await fetch("https://api.anthropic.com/api/oauth/usage", {
+      headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "Content-Type": "application/json", "User-Agent": `autocraft-task/${HELPER_VERSION}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (e) {
+    return { reading: { at: now, error: `the usage endpoint did not answer (${msg(e)})` } };
+  }
+  if (res.status === 429) {
+    const after = Number(res.headers.get("retry-after"));
+    return { reading: { at: now, error: "the usage endpoint asked the helper to wait" }, retryAt: now + Math.min(Number.isFinite(after) && after > 0 ? after * 1000 : 5 * 60_000, 3600_000) };
+  }
+  if (res.status === 401 || res.status === 403) {
+    const cfg = loadConfig();
+    const hint = cfg.claudeToken && !cfg.claudeConfigDir && cfg.claudeAuth !== "keychain" ? "; a `claude setup-token` token may not read plan usage: use `harness claude --config-dir` (Linux) or `--keychain` (macOS)" : "; run claude once to refresh its login";
+    return { reading: { at: now, error: `this Claude login may not read plan usage (HTTP ${res.status})${hint}` }, retryAt: now + 5 * 60_000 };
+  }
+  if (!res.ok) return { reading: { at: now, error: `the usage endpoint answered HTTP ${res.status}` } };
+  let body;
+  try { body = await res.json(); } catch { return { reading: { at: now, error: "unreadable usage reply" } }; }
+  return { reading: parseClaudeUsage(body, models, now) };
+}
+
+/**
+ * Asks the Codex app-server (`codex app-server`, JSON-RPC lines on stdio) for `account/rateLimits/read`, with the helper's
+ * own CODEX_HOME. It may refresh the login, so it holds the Codex lock that calls hold; while a call runs there is no reading.
+ * @param {string} bin @param {string} home @param {string[]} models @returns {Promise<{ reading: QuotaReading }>}
+ */
+async function codexQuota(bin, home, models) {
+  const now = Date.now();
+  const unlock = takeHarnessLock("codex");
+  if (!unlock) return { reading: { at: now, error: "a Codex call is running on this helper" } };
+  try {
+    for (const f of CODEX_HOME_INSTRUCTIONS) rmSync(join(home, f), { force: true });
+    const result = await new Promise((done) => {
+      const p = spawn(bin, ["-c", 'cli_auth_credentials_store="file"', "app-server"], { env: { PATH: process.env.PATH ?? "/usr/bin", HOME: homedir(), CODEX_HOME: home, LANG: "C.UTF-8" }, stdio: ["pipe", "pipe", "ignore"] });
+      let buf = "", settled = false;
+      /** @param {any} v */
+      const finish = (v) => { if (settled) return; settled = true; clearTimeout(timer); p.stdin.end(); p.kill("SIGTERM"); done(v); };
+      const timer = setTimeout(() => finish({ error: "the Codex app-server did not answer in 20 s" }), 20_000);
+      /** @param {unknown} m */
+      const send = (m) => p.stdin.write(`${JSON.stringify(m)}\n`);
+      p.stdin.on("error", () => {});
+      p.on("error", (e) => finish({ error: `the Codex app-server did not start (${e.message})` }));
+      p.on("close", () => finish({ error: "the Codex app-server stopped before answering" }));
+      p.stdout.on("data", (d) => {
+        buf += d;
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const l of lines) {
+          let m;
+          try { m = JSON.parse(l); } catch { continue; }
+          if (m?.id === 1) {
+            if (m.error) return finish({ error: `the Codex app-server refused to start a session (${String(m.error.message ?? "").slice(0, 200)})` });
+            send({ method: "initialized" });
+            send({ id: 2, method: "account/rateLimits/read", params: { excludeResetCreditDetails: true } });
+          } else if (m?.id === 2) {
+            return finish(m.error ? { error: `account/rateLimits/read failed (${String(m.error.message ?? "").slice(0, 200)})` } : { result: m.result });
+          }
+        }
+      });
+      send({ id: 1, method: "initialize", params: { clientInfo: { name: "autocraft-task", title: null, version: HELPER_VERSION } } });
+    });
+    const r = /** @type {{ error?: string, result?: unknown }} */ (result);
+    return { reading: r.error ? { at: now, error: r.error } : parseCodexRateLimits(r.result, models, now) };
+  } finally {
+    unlock();
+  }
+}
+
+const usageFile = () => join(cacheDir(), "usage.json");
+
+/**
+ * The harness's plan usage: a reading of the last USAGE_REUSE_MS (shared by every helper process), or a new one; nothing
+ * while the provider asked to wait.
+ * @param {Config} cfg @param {Adapter} adapter @param {string} bin @param {string[]} models @returns {Promise<QuotaReading>}
+ */
+async function readQuota(cfg, adapter, bin, models) {
+  const now = Date.now();
+  /** @type {{ harness: string, models: string[], reading: QuotaReading, retryAt?: number } | null} */
+  const cached = readJson(usageFile());
+  const same = cached?.harness === adapter.id && JSON.stringify(cached.models) === JSON.stringify(models);
+  if (same && cached.retryAt && now < cached.retryAt) return { at: now, error: `${"error" in cached.reading ? cached.reading.error : "the provider asked to wait"}; asking again after ${clock(cached.retryAt)}` };
+  if (same && now - cached.reading.at < USAGE_REUSE_MS && now >= cached.reading.at) return cached.reading;
+  /** @type {{ reading: QuotaReading, retryAt?: number }} */
+  let r;
+  if (adapter.id === "claude") {
+    const token = adapter.token(cfg);
+    r = token ? await claudeQuota(token, models) : { reading: { at: now, error: "no Claude login" } };
+  } else r = await codexQuota(bin, codexHome(), models);
+  writePrivate(usageFile(), { harness: adapter.id, models, reading: r.reading, ...(r.retryAt && { retryAt: r.retryAt }) });
+  return r.reading;
+}
+
+/** The wire form of a reading: the most-used window of each kind. @param {QuotaReading | null} r @returns {UsageReading | undefined} */
+export function usageOfReading(r) {
+  if (!r || "error" in r) return undefined;
+  /** @param {string} kind @returns {UsageWindow | null} */
+  const top = (kind) => {
+    const ws = r.windows.filter((w) => w.kind === kind && Number.isFinite(w.usedPercent)).sort((a, b) => b.usedPercent - a.usedPercent);
+    return ws[0] ? { usedPercent: Math.min(100, Math.max(0, ws[0].usedPercent)), resetsAt: ws[0].resetsAt === null ? null : new Date(ws[0].resetsAt).toISOString() } : null;
+  };
+  return { fiveHour: top("five_hour"), weekly: top("weekly"), at: new Date(r.at).toISOString() };
+}
+
+// Control (config dir, the user's): the pause and the park. Status (cache): the last readiness, what the server last said.
+const controlFile = () => join(configDir(), "control.json");
+/** @returns {{ pause?: Pause, park?: Park }} */
+const readControl = () => readJson(controlFile()) ?? {};
+/** @param {{ pause?: Pause, park?: Park }} c */
+const writeControl = (c) => writePrivate(controlFile(), c);
+const helperStatusFile = () => join(cacheDir(), "status.json");
+
+/**
+ * The status file: the last readiness and its reading, the server's reserve, and when the server last got a status.
+ * @typedef {object} StatusFile
+ * @property {Readiness} [readiness]
+ * @property {number | null} [until]
+ * @property {string} [reason]
+ * @property {UsageReading} [usage]
+ * @property {Reserve} [reserve]  the effective reserve
+ * @property {Reserve} [serverReserve]
+ * @property {{ version: string, at: number, reason: string }} [refused]  the server refused this helper version
+ * @property {number} [at]
+ * @property {number} [sentAt]
+ * @property {string} [sentKey]
+ * @property {HelperStatus} [sent]
+ */
+/** @returns {StatusFile} */
+const readHelperStatus = () => readJson(helperStatusFile()) ?? {};
+/** @param {(s: StatusFile) => StatusFile} f */
+const updateHelperStatus = (f) => writePrivate(helperStatusFile(), f(readHelperStatus()));
+
+/**
+ * @typedef {object} Ready
+ * @property {Readiness} readiness
+ * @property {number | null} until
+ * @property {string} [reason]
+ * @property {Reserve} reserve
+ * @property {QuotaReading | null} reading
+ * @property {Adapter} [adapter]
+ * @property {{ bin: string, version: string }} [detected]
+ * @property {Partial<Record<Tier, string>>} models
+ */
+
+/**
+ * Works out whether the helper may claim now, keeps it in the status file and reports it to the server when it changed or
+ * the last report is STATUS_EVERY_MS old.
+ * @param {Config} cfg @param {{ send?: boolean }} [opt] @returns {Promise<Ready>}
+ */
+async function checkReady(cfg, opt = {}) {
+  const now = Date.now();
+  const prev = readHelperStatus();
+  const reserve = effectiveReserve(prev.serverReserve, cfg.reserve);
+  /** @type {Ready} */
+  let st;
+  /** @type {Adapter | undefined} */
+  let adapter;
+  try { adapter = adapterOf(cfg); } catch { /* reported below */ }
+  const models = adapter ? { ...adapter.defaultTiers, ...cfg.tiers } : { ...cfg.tiers };
+  const base = { reserve, reading: null, models, ...(adapter && { adapter }) };
+  const problem = platformProblem();
+  if (prev.refused?.version === HELPER_VERSION && now - prev.refused.at < REFUSED_RETRY_MS) st = { ...base, readiness: "version-refused", until: null, reason: prev.refused.reason };
+  else if (!adapter) st = { ...base, readiness: "harness-missing", until: null, reason: `no adapter for harness ${cfg.harness}` };
+  else if (problem) st = { ...base, readiness: "sandbox-failed", until: null, reason: problem };
+  else {
+    const d = adapter.detect(cfg);
+    const old = d.version ? adapter.unaudited?.(d.version) : null;
+    let canary = null;
+    try { requireCanary(); } catch (e) { canary = msg(e); }
+    if (!d.bin || !d.version) st = { ...base, readiness: "harness-missing", until: null, reason: `${adapter.id} not found or not runnable` };
+    else if (!d.loggedIn) st = { ...base, readiness: "harness-missing", until: null, reason: `no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\`` };
+    else if (old) st = { ...base, readiness: "harness-missing", until: null, reason: old };
+    else if (!Object.keys(models).length) st = { ...base, readiness: "harness-missing", until: null, reason: `no model is set for any tier ("tiers" in ${join(configDir(), "config.json")})` };
+    else if (canary) st = { ...base, readiness: "sandbox-failed", until: null, reason: canary.split("\n")[0] ?? canary };
+    else {
+      const control = readControl();
+      // A pause needs no reading; without one the provider is asked only when the answer matters.
+      const reading = control.pause && (control.pause.until === null || now < control.pause.until) ? null : await readQuota(cfg, adapter, d.bin, [...new Set(Object.values(models))]);
+      const q = quotaReadiness({ pause: control.pause, park: control.park, verdict: quotaVerdict(reading, reserve, Date.now()), readingAt: reading && !("error" in reading) ? reading.at : null });
+      if (q.dropPause || q.dropPark) {
+        const c = readControl();
+        if (q.dropPause) delete c.pause;
+        if (q.dropPark) delete c.park;
+        writeControl(c);
+      }
+      st = { ...base, readiness: q.readiness, until: q.until, ...(q.reason && { reason: q.reason }), reading, detected: { bin: d.bin, version: d.version } };
+    }
+  }
+  const usage = usageOfReading(st.reading) ?? prev.usage;
+  updateHelperStatus((s) => ({ ...s, readiness: st.readiness, until: st.until, reason: st.reason, reserve, at: now, ...(usage ? { usage } : {}) }));
+  if (opt.send !== false) await sendStatus(cfg, adapter?.id ?? "claude", st, usage);
+  return st;
+}
+
+/**
+ * Reports a status to the server when it differs from the last one sent, or the last report is STATUS_EVERY_MS old; keeps
+ * the user's reserve from the reply. A failed report is tried again with the next check.
+ * @param {Config} cfg @param {HarnessId} harness @param {{ readiness: Readiness, until: number | null, reason?: string, reserve: Reserve, models: Partial<Record<Tier, string>> }} st @param {UsageReading | undefined} usage
+ */
+async function sendStatus(cfg, harness, st, usage) {
+  if (!cfg.server || !cfg.agentToken) return;
+  /** @type {HelperStatus} */
+  const body = { readiness: st.readiness, ...(st.until !== null && { until: new Date(st.until).toISOString() }), ...(st.reason && { reason: redact(st.reason).slice(0, 300) }), harness, models: st.models, reserve: st.reserve, ...(usage && { usage }) };
+  const key = JSON.stringify({ ...body, usage: undefined });
+  const prev = readHelperStatus();
+  if (prev.sentKey === key && prev.sentAt !== undefined && Date.now() - prev.sentAt < STATUS_EVERY_MS) return;
+  try {
+    /** @type {StatusReply} */
+    const r = await api(cfg.server, ROUTES.status, cfg.agentToken, body);
+    updateHelperStatus((s) => ({ ...s, sentAt: Date.now(), sentKey: key, sent: body, ...(r?.reserve && { serverReserve: r.reserve }) }));
+  } catch { /* the next check sends it again */ }
+}
+
+/** During a long run: the last status again once it is STATUS_EVERY_MS old, so the server knows the helper is alive. */
+async function keepStatusFresh() {
+  const cfg = loadConfig(), s = readHelperStatus();
+  if (!cfg.server || !cfg.agentToken || !s.sent || (s.sentAt !== undefined && Date.now() - s.sentAt < STATUS_EVERY_MS)) return;
+  try {
+    await api(cfg.server, ROUTES.status, cfg.agentToken, s.sent);
+    updateHelperStatus((x) => ({ ...x, sentAt: Date.now() }));
+  } catch { /* next heartbeat */ }
+}
+
+/** One line for a readiness that is not `ready`. @param {{ readiness: Readiness, until: number | null, reason?: string }} st */
+const heldLine = (st) => `${st.readiness}${st.reason ? `: ${st.reason}` : ""}${st.until !== null ? `; until ${clock(st.until)}` : ""}`;
+
+const LIMIT_RE = /you(?:'|’)ve hit your (?:[a-z0-9-]+ )?limit|usage limit reached/i;
+const UNIT_MS = /** @type {const} */ ({ d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000 });
+
+/** The offset of time zone `zone` from UTC at `ms`, in ms; null for an unknown zone. @param {number} ms @param {string} zone */
+function zoneOffset(ms, zone) {
+  let parts;
+  try { parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(new Date(ms)); } catch { return null; }
+  const n = (/** @type {string} */ t) => Number(parts.find((p) => p.type === t)?.value);
+  return Date.UTC(n("year"), n("month") - 1, n("day"), n("hour"), n("minute"), n("second")) - Math.floor(ms / 1000) * 1000;
+}
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/**
+ * A provider's refusal for its usage limit in a failed run's error text, with the reset it names: an epoch
+ * ("usage limit reached|1767225600"), a duration ("resets in 4h42m", "try again in 2 days 3 hours"), or a clock time with a
+ * time zone ("resets 3pm (Europe/Berlin)", "resets Nov 21, 3:30pm (UTC)"), capped at PARK_CAP_MS. A clock time without a
+ * zone is not trusted (`until` null); no stated time parks for PARK_FALLBACK_MS. Null when the text is no such refusal.
+ * @param {string} text @param {number} [now] @returns {{ until: number | null, line: string } | null}
+ */
+export function parseRefusal(text, now = Date.now()) {
+  const m = LIMIT_RE.exec(text);
+  if (!m) return null;
+  const line = (text.slice(m.index).split("\n")[0] ?? "").trim().slice(0, 200);
+  const cap = (/** @type {number} */ t) => Math.min(t, now + PARK_CAP_MS);
+  const epoch = /\|(\d{10,13})\b/.exec(text);
+  if (epoch) {
+    const t = timeOf(Number(epoch[1]));
+    if (t !== null && t > now) return { until: cap(t + PARK_GRACE_MS), line };
+  }
+  const dur = /(?:resets?|try again)\s+in\s+((?:\d+\s*(?:days?|hours?|hrs?|minutes?|mins?|seconds?|secs?|d|h|m|s)[\s,]*(?:and\s+)?)+)/i.exec(text);
+  if (dur) {
+    let ms = 0;
+    for (const p of (dur[1] ?? "").matchAll(/(\d+)\s*(days?|hours?|hrs?|minutes?|mins?|seconds?|secs?|d|h|m|s)/gi)) ms += Number(p[1]) * UNIT_MS[/** @type {"d" | "h" | "m" | "s"} */ ((p[2] ?? "s")[0]?.toLowerCase() ?? "s")];
+    if (ms > 0) return { until: cap(now + ms + PARK_GRACE_MS), line };
+  }
+  const at = /(?:resets?|try again at)\s+(?:at\s+|on\s+)?(?:([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:(\d{4}),?\s+)?(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?(?:\s*\(([^)]+)\))?/i.exec(text)
+    ?? /(?:resets?|try again at)\s+(?:at\s+)?()()()(\d{1,2}):(\d{2})()(?:\s*\(([^)]+)\))?/i.exec(text);
+  if (at) {
+    const zone = at[7];
+    if (!zone || zoneOffset(now, zone) === null) return { until: null, line };
+    let hour = Number(at[4]) % (at[6] ? 12 : 24);
+    if (at[6]?.toLowerCase() === "p") hour += 12;
+    const minute = Number(at[5] || 0);
+    const off = /** @type {number} */ (zoneOffset(now, zone));
+    const wall = new Date(now + off);
+    const month = at[1] ? MONTHS.indexOf(at[1].toLowerCase()) : wall.getUTCMonth();
+    if (month < 0) return { until: null, line };
+    const day = at[2] ? Number(at[2]) : wall.getUTCDate();
+    const year = at[3] ? Number(at[3]) : wall.getUTCFullYear();
+    /** @param {number} addDays */
+    const local = (addDays) => {
+      const guess = Date.UTC(year, month, day + addDays, hour, minute);
+      const o = zoneOffset(guess, zone) ?? 0;
+      return guess - (zoneOffset(guess - o, zone) ?? o);
+    };
+    let t = local(0);
+    if (t <= now && !at[1]) t = local(1);
+    else if (t <= now && !at[3]) t = Date.UTC(year + 1, month, day, hour, minute) - off;
+    if (t > now) return { until: cap(t + PARK_GRACE_MS), line };
+    return { until: null, line };
+  }
+  return { until: now + PARK_FALLBACK_MS, line };
 }
 
 // ---------------------------------------------------------------------------
@@ -1745,33 +2223,50 @@ function needLogin(cfg) {
 // Claiming and running.
 
 /**
- * Claims one call. On macOS the claim names the path root of slot `slot` (a free one when not given), which the lease keeps,
- * and offers only that slot's sessions.
- * @param {Config} cfg @param {number} [slot] @returns {Promise<ClaimReply>}
+ * Claims one call when the helper is ready (checkReady); otherwise claims nothing and says why (`held`). On macOS the claim
+ * names the path root of slot `slot` (a free one when not given), which the lease keeps, and offers only that slot's sessions.
+ * A lease that comes back with a higher reserve than the one checked, which the usage no longer allows, is released.
+ * @param {Config} cfg @param {number} [slot] @returns {Promise<ClaimReply | { held: Ready }>}
  */
 async function claimOnce(cfg, slot) {
   const { server, agentToken } = needLogin(cfg);
-  const adapter = adapterOf(cfg);
-  const d = adapter.detect(cfg);
-  if (!d.bin || !d.version) throw new Error(`${adapter.id} not found or not runnable`);
-  if (!d.loggedIn) throw new Error(`no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
-  const old = adapter.unaudited?.(d.version);
-  if (old) throw new Error(old);
-  const tiers = { ...adapter.defaultTiers, ...cfg.tiers };
-  if (!Object.keys(tiers).length) throw new Error(`no model is set for any tier: add "tiers" (top, mid, small) with ${adapter.id} model ids to ${join(configDir(), "config.json")}`);
-  requireCanary();
+  const ready = await checkReady(cfg);
+  if (ready.readiness !== "ready" || !ready.adapter || !ready.detected) return { held: ready };
+  const adapter = ready.adapter, d = ready.detected, tiers = ready.models;
   const mac = process.platform === "darwin";
   const n = mac ? slot ?? pickSlot(slotBase()) : undefined;
   const root = n === undefined ? undefined : slotRoot(slotBase(), n);
   /** @type {Claim} */
   const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }) };
   /** @type {ClaimReply} */
-  const reply = await api(server, ROUTES.claim, agentToken, claim);
+  let reply;
+  try {
+    reply = await api(server, ROUTES.claim, agentToken, claim);
+  } catch (e) {
+    // Another protocol version, or a helper older than the server accepts: nothing runs until the helper is updated.
+    if (e instanceof Error && e.message.startsWith(`${ROUTES.claim}: HTTP 409`)) {
+      updateHelperStatus((s) => ({ ...s, refused: { version: HELPER_VERSION, at: Date.now(), reason: msg(e).slice(0, 300) } }));
+      await checkReady(cfg);
+    }
+    throw e;
+  }
+  const raised = reply.reserve && JSON.stringify(effectiveReserve(reply.reserve, cfg.reserve)) !== JSON.stringify(ready.reserve);
+  if (reply.reserve) updateHelperStatus((s) => ({ ...s, serverReserve: reply.reserve }));
   if (reply.lease) {
     /** @type {LeaseRecord} */
     const rec = { secret: reply.lease.secret, title: reply.lease.title, requiredHelper: reply.lease.requiredHelper, server, claimedAt: Date.now(), ...(root && { slot: n, root }) };
     writePrivate(leaseFile(reply.lease.id), rec);
-  }
+    if (raised) {
+      const again = await checkReady(cfg);
+      if (again.readiness !== "ready") {
+        /** @type {Release} */
+        const body = { reason: `the user's usage reserve rose: ${heldLine(again)}`.slice(0, 300) };
+        try { await api(server, ROUTES.release, reply.lease.secret, body); } catch { /* the lease expires on its own */ }
+        dropLease(reply.lease.id);
+        return { held: again };
+      }
+    }
+  } else if (raised) await checkReady(cfg);
   return reply;
 }
 
@@ -1864,7 +2359,17 @@ async function runLease(cfg, id, opt = {}) {
     if (r.gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
     if (r.timedOut) return fail(`timed out after ${b.timeoutSeconds} s`, reply.usage);
     if (r.stopped) return giveBack("stopped on the helper");
-    if (!reply.ok) return fail(`${reply.error ?? "no result"} (exit ${r.code}) ${r.stderr.trim().slice(-300)}`.trim(), reply.usage);
+    if (!reply.ok) {
+      // The provider's usage limit: the call goes back without using an attempt, and the helper parks until the reset.
+      const refusal = parseRefusal(`${reply.error ?? ""}\n${r.stderr}`);
+      if (refusal) {
+        const c = readControl();
+        writeControl({ ...c, park: { until: refusal.until, at: Date.now(), reason: `the provider refused a run: ${refusal.line}` } });
+        try { await checkReady(cfg); } catch { /* reported with the next check */ }
+        return giveBack(`the provider refused the run for its usage limit: ${refusal.line}`);
+      }
+      return fail(`${reply.error ?? "no result"} (exit ${r.code}) ${r.stderr.trim().slice(-300)}`.trim(), reply.usage);
+    }
     const usage = reply.usage ?? { inputTokens: 0, outputTokens: 0 };
     const s = await submit({ ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), ...(tools.length > 0 && { tools }), durationMs: Date.now() - started });
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
@@ -1986,6 +2491,7 @@ function harness(c, b, lease, signal, adapter, root) {
     const beat = lease ? setInterval(async () => {
       try { await api(lease.server, ROUTES.heartbeat, lease.secret, /** @type {Heartbeat} */ (progress ? { progress } : {})); }
       catch (e) { if (e instanceof Gone) { gone = true; kill(); } }
+      await keepStatusFresh();
     }, HEARTBEAT_MS) : undefined;
     const timer = setTimeout(() => { timedOut = true; kill(); }, b.timeoutSeconds * 1000);
     const onAbort = () => { stopped = true; kill(); };
@@ -2106,6 +2612,7 @@ async function cmdClaim() {
   const problem = platformProblem();
   if (problem) throw new Error(problem);
   const r = await claimOnce(loadConfig());
+  if ("held" in r) { console.log(`not claiming: ${heldLine(r.held)}`); return null; }
   if (!r.lease) { console.log(`no task queued; claim again in ${r.retryAfter} s`); return null; }
   console.log(`lease ${r.lease.id}: ${r.lease.title}`);
   return r.lease.id;
@@ -2132,6 +2639,7 @@ async function cmdRun(argv) {
     if (pos[0]) id = leaseId(pos[0]);
     else {
       const r = await claimOnce(cfg, held?.n);
+      if ("held" in r) { console.log(`not claiming: ${heldLine(r.held)}`); return 0; }
       if (!r.lease) { console.log(`no task queued; try again in ${r.retryAfter} s`); return 0; }
       id = r.lease.id;
     }
@@ -2213,7 +2721,7 @@ async function cmdWork(argv) {
   requireCanary();
   const ac = new AbortController();
   process.on("SIGINT", () => { if (ac.signal.aborted) process.exit(130); console.log("stopping: running calls are stopped and reported; press Ctrl-C again to quit at once"); ac.abort(); });
-  let idleSaid = false;
+  let idleSaid = false, heldSaid = "";
   /** @param {number} ms */
   const pause = (ms) => sleep(ms, undefined, { signal: ac.signal }).catch(() => {});
   const loop = async () => {
@@ -2226,6 +2734,14 @@ async function cmdWork(argv) {
     while (!ac.signal.aborted) {
       let r;
       try { r = await claimOnce(loadConfig(), slot); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue; }
+      if ("held" in r) {
+        // An external wait on this machine: the usage is read again every minute, and the status kept fresh.
+        const line = heldLine(r.held);
+        if (line !== heldSaid) { console.log(`not claiming: ${line}`); heldSaid = line; idleSaid = false; }
+        await pause(HOLD_RETRY_MS);
+        continue;
+      }
+      if (heldSaid) { console.log("ready again"); heldSaid = ""; }
       if (!r.lease) {
         if (!idleSaid) { console.log(`no task queued; claiming again in ${r.retryAfter} s`); idleSaid = true; }
         await pause(Math.max(1, r.retryAfter) * 1000);
@@ -2242,6 +2758,58 @@ async function cmdWork(argv) {
   };
   await Promise.all(Array.from({ length: n }, loop));
   return 0;
+}
+
+/** Prints whether the helper takes calls now, with the usage, reserve and pause behind it. */
+async function cmdStatus() {
+  const cfg = loadConfig();
+  const st = await checkReady(cfg);
+  const s = readHelperStatus(), c = readControl();
+  console.log(st.readiness === "ready" ? "ready: claims calls" : heldLine(st));
+  const u = s.usage;
+  /** @param {string} name @param {UsageWindow | null | undefined} w */
+  const win = (name, w) => (w ? `${name} ${Math.round(w.usedPercent)}% used${w.resetsAt ? `, resets ${clock(Date.parse(w.resetsAt))}` : ""}` : `${name} not reported`);
+  if (u) console.log(`usage: ${win("5-hour", u.fiveHour)}; ${win("weekly", u.weekly)} (read ${clock(Date.parse(u.at))})`);
+  const server = s.serverReserve;
+  console.log(`reserve kept free: 5-hour ${st.reserve.fiveHour}%, weekly ${st.reserve.weekly}% (server ${server ? `${server.fiveHour}%/${server.weekly}%` : "not heard yet, default 20%/20%"}${cfg.reserve ? `, local ${cfg.reserve.fiveHour}%/${cfg.reserve.weekly}%` : ""})`);
+  if (c.pause) console.log(`paused ${c.pause.until === null ? "until `autocraft-task resume`" : `until ${clock(c.pause.until)}`}`);
+  if (c.park) console.log(`held after a refusal ${c.park.until === null ? "until a usage reading shows headroom" : `until ${clock(c.park.until)}`}: ${c.park.reason}`);
+  console.log(`status file: ${helperStatusFile()}`);
+  return st.readiness === "ready" ? 0 : 3;
+}
+
+/** Pauses the helper until the reset of the window that holds it (the 5-hour window when none does), or until `resume` when no reset is known. */
+async function cmdPause() {
+  const cfg = loadConfig();
+  const st = await checkReady(cfg, { send: false });
+  const r = st.reading;
+  const fiveHour = r && !("error" in r) ? r.windows.filter((w) => w.kind === "five_hour" && w.resetsAt !== null).map((w) => /** @type {number} */ (w.resetsAt)).sort((a, b) => b - a)[0] : undefined;
+  const until = st.readiness === "quota-held" && st.until !== null ? st.until : st.readiness === "paused" ? (readControl().pause?.until ?? null) : fiveHour ?? null;
+  writeControl({ ...readControl(), pause: { until, at: Date.now() } });
+  await checkReady(cfg);
+  console.log(until === null ? "paused until `autocraft-task resume` (no reset time is known)" : `paused until ${clock(until)}, or \`autocraft-task resume\``);
+}
+
+/** Ends a pause, and a hold after a provider's refusal; the usage still decides. */
+async function cmdResume() {
+  const { pause: _p, park: _k, ...rest } = readControl();
+  writeControl(rest);
+  const st = await checkReady(loadConfig());
+  console.log(st.readiness === "ready" ? "resumed: ready" : `resumed; ${heldLine(st)}`);
+}
+
+/** @param {string[]} argv */
+async function cmdConfig(argv) {
+  if (argv[0] !== "reserve") throw new Error("usage: autocraft-task config reserve <5h> <weekly> | off");
+  const { reserve: _r, ...rest } = loadConfig();
+  if (argv[1] === "off") { saveConfig(rest); console.log("the server's reserve applies"); return; }
+  const n = argv.slice(1, 3).map((v) => (/^\d{1,3}$/.test(v ?? "") ? Number(v) : NaN));
+  if (n.length !== 2 || !n.every((v) => v >= 0 && v <= 100)) throw new Error("usage: autocraft-task config reserve <5h> <weekly>  (percent of each window kept free, 0 to 100), or off");
+  const local = { fiveHour: /** @type {number} */ (n[0]), weekly: /** @type {number} */ (n[1]) };
+  saveConfig({ ...rest, reserve: local });
+  const server = readHelperStatus().serverReserve;
+  const eff = effectiveReserve(server, local);
+  console.log(`reserve kept free: 5-hour ${eff.fiveHour}%, weekly ${eff.weekly}%${eff.fiveHour > local.fiveHour || eff.weekly > local.weekly ? ` (the server's ${server ? `${server.fiveHour}%/${server.weekly}%` : "default 20%/20%"} is higher where the local value is lower: a local reserve only raises it)` : ""}`);
 }
 
 /**
@@ -2463,6 +3031,13 @@ const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls unde
   mcp <server-name> <lease>   stdio-to-HTTP proxy for one of the lease's MCP servers
   tool <server-name> <tool> [<json>] [<lease>]
                               one tool call without MCP; prints the result
+  status                      whether the helper claims now, with the plan usage, reserve and pause behind it
+  pause-until-reset           claim nothing until the plan window resets, even when usage recovers
+  resume                      end a pause, and a hold after the provider refused a run for its limit
+  config reserve <5h> <weekly>  keep more of each plan window free than the server's reserve (percent); \`off\` drops it
+
+The helper claims only while every plan window keeps more than the reserve free (set per user on the
+dashboard, default 20%), and holds whenever it cannot read the usage.
 
 Config: ${"$XDG_CONFIG_HOME"}/autocraft-task/config.json (mode 0600); "tiers" maps top/mid/small to models
 (Claude defaults to opus, sonnet and haiku; Codex has no defaults).`;
@@ -2482,6 +3057,10 @@ export async function main(argv) {
       case "try": return await cmdTry(rest);
       case "mcp": return await cmdMcp(rest);
       case "tool": return await cmdTool(rest);
+      case "status": return await cmdStatus();
+      case "pause-until-reset": await cmdPause(); return 0;
+      case "resume": await cmdResume(); return 0;
+      case "config": await cmdConfig(rest); return 0;
       case "version": case "--version": console.log(HELPER_VERSION); return 0;
       default: console.log(USAGE); return cmd === undefined || cmd === "help" || cmd === "--help" ? 0 : 64;
     }

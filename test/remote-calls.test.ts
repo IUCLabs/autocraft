@@ -13,7 +13,11 @@ import { connect } from "../src/db.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
 import type { User } from "../src/dash/types.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
-import { bundleOf, claimCall, heartbeat, submitCall, type Caller } from "../src/remote/calls.ts";
+import { bundleOf, claimCall, CLAIM_RETRY_S, heartbeat, submitCall, type Caller } from "../src/remote/calls.ts";
+import * as userSettings from "../src/dash/api/user-settings.ts";
+import type { Req } from "../src/dash/types.ts";
+import { listHelpers, parseStatus, storeStatus } from "../src/remote/helpers.ts";
+import { remoteRoom } from "../src/remote/room.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
 import { PROTOCOL_VERSION, type Claim } from "../src/remote/protocol.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -33,7 +37,7 @@ describe("user-local remote calls", () => {
     db.prepare("INSERT INTO access (login, role) VALUES (?, 'maintainer')").run(login);
     callers[login] = { tokenId: createToken(db, login, "helper", false, true).row.id, login, role: "maintainer" };
   }
-  const claim: Claim = { protocol: PROTOCOL_VERSION, helperVersion: "1.0.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } };
+  const claim: Claim = { protocol: PROTOCOL_VERSION, helperVersion: "1.1.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } };
   const canWrite = async () => true;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const leaseFor = async (login: string) => {
@@ -142,5 +146,27 @@ describe("user-local remote calls", () => {
     assert.match((await call(env("bob"), "my_work")).text, /review\.opus/);
     done(lease.secret, "ok");
     await ask;
+  });
+
+  test("a user sets their own usage reserve, the claim reply carries it, and only a helper that reported ready is room", async () => {
+    const req = (login: string, role: string, json?: unknown) => ({ user: { login, role }, json }) as unknown as Req;
+    assert.deepEqual(userSettings.settings(db, req("bob", "maintainer")), { reserve: { fiveHour: 20, weekly: 20 } }, "the default");
+    userSettings.setSettings(db, req("bob", "maintainer", { reserve: { fiveHour: 35, weekly: 10 } }));
+    assert.deepEqual(userSettings.settings(db, req("bob", "maintainer")), { reserve: { fiveHour: 35, weekly: 10 } });
+    assert.deepEqual(userSettings.settings(db, req("carol", "maintainer")).reserve, { fiveHour: 20, weekly: 20 }, "another user's is their own");
+    assert.throws(() => userSettings.setSettings(db, req("bob", "maintainer", { reserve: { fiveHour: 95, weekly: 10 } })), /0 to 90/);
+    assert.throws(() => userSettings.setSettings(db, req("eve", "viewer", { reserve: { fiveHour: 30, weekly: 30 } })), /viewers/);
+    assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'usage-reserve' AND login = 'bob'").get());
+    assert.deepEqual(await claimCall(db, callers.bob!, claim, canWrite), { lease: null, retryAfter: CLAIM_RETRY_S, reserve: { fiveHour: 35, weekly: 10 } });
+    assert.equal(remoteRoom(db, 0), 0, "an idle helper that never reported ready");
+    const status = { harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 35, weekly: 10 }, usage: { fiveHour: { usedPercent: 70, resetsAt: null }, weekly: null, at: new Date().toISOString() } };
+    storeStatus(db, callers.bob!.tokenId, "bob", parseStatus({ ...status, readiness: "ready" }));
+    assert.equal(remoteRoom(db, 0), 1);
+    storeStatus(db, callers.bob!.tokenId, "bob", parseStatus({ ...status, readiness: "quota-held", until: "2026-11-20T01:30:00.000Z", reason: "5-hour window 70% used" }));
+    assert.equal(remoteRoom(db, 0), 0, "held by its plan usage");
+    const [h] = listHelpers(db, "bob");
+    assert.equal(h?.readiness, "quota-held");
+    assert.equal(h?.fresh, true);
+    assert.equal(h?.usage?.fiveHour?.usedPercent, 70);
   });
 });

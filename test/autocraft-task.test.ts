@@ -14,6 +14,8 @@ void [
   same<protocol.ClaimReply, H.ClaimReply>((b) => b), same<H.ClaimReply, protocol.ClaimReply>((b) => b),
   same<protocol.TaskBundle, H.TaskBundle>((b) => b), same<H.TaskBundle, protocol.TaskBundle>((b) => b),
   same<protocol.Submit, H.Submit>((b) => b), same<H.Submit, protocol.Submit>((b) => b),
+  same<protocol.HelperStatus, H.HelperStatus>((b) => b), same<H.HelperStatus, protocol.HelperStatus>((b) => b),
+  same<protocol.StatusReply, H.StatusReply>((b) => b), same<H.StatusReply, protocol.StatusReply>((b) => b),
 ];
 
 test("the helper speaks the server's protocol version and routes", () => {
@@ -258,4 +260,68 @@ test("macOS runs: the canary verdict, the command line, Codex's paths in the slo
   assert.deepEqual(helper.claudeKeychainItem({ USER: "ann" }), { service: "Claude Code-credentials", account: "ann" });
   assert.match(helper.claudeKeychainItem({ USER: "a b", CLAUDE_CONFIG_DIR: "/Users/ann/.claude-work" }).service, /^Claude Code-credentials-[0-9a-f]{8}$/);
   assert.equal(helper.claudeKeychainItem({ USER: "a b" }).account, "claude-code-user");
+});
+
+// Claude Code's /api/oauth/usage reply, trimmed (2.1.323, a Max plan): the named windows and the `limits` list.
+const CLAUDE_USAGE = {
+  five_hour: { utilization: 4.0, resets_at: "2026-11-20T01:30:00.342009+00:00" }, seven_day: { utilization: 24.0, resets_at: "2026-11-20T00:00:00.342030+00:00" },
+  seven_day_opus: null, seven_day_sonnet: null, extra_usage: { is_enabled: false },
+  limits: [
+    { kind: "session", group: "session", percent: 4, severity: "normal", resets_at: "2026-11-20T01:30:00.342009+00:00", scope: null, is_active: false },
+    { kind: "weekly_all", group: "weekly", percent: 24, severity: "normal", resets_at: "2026-11-20T00:00:00.342030+00:00", scope: null, is_active: true },
+    { kind: "weekly_scoped", group: "weekly", percent: 97, severity: "normal", resets_at: "2026-11-20T00:00:00+00:00", scope: { model: { id: null, display_name: "Fable" }, surface: null }, is_active: false },
+  ],
+};
+
+test("readiness from plan usage: claims only above the reserve in every window, holds on anything unknown or stale, and a local reserve only raises", () => {
+  const now = Date.parse("2026-11-19T20:00:00Z");
+  const r20 = { fiveHour: 20, weekly: 20 };
+  const claude = helper.parseClaudeUsage(CLAUDE_USAGE, ["opus", "sonnet", "haiku"], now);
+  assert.deepEqual(helper.quotaVerdict(claude, r20, now), { ok: true }, "the Fable-only weekly window does not bind an Opus helper");
+  const fable = helper.quotaVerdict(helper.parseClaudeUsage(CLAUDE_USAGE, ["fable"], now), r20, now);
+  assert.equal(fable.ok, false);
+  assert.match(!fable.ok ? fable.reason : "", /weekly window 97% used/);
+  assert.equal(!fable.ok && fable.until, Date.parse("2026-11-20T00:00:00Z"));
+  assert.deepEqual(helper.usageOfReading(claude), { fiveHour: { usedPercent: 4, resetsAt: "2026-11-20T01:30:00.342Z" }, weekly: { usedPercent: 24, resetsAt: "2026-11-20T00:00:00.342Z" }, at: new Date(now).toISOString() });
+  const held = (r: H.QuotaVerdict) => (r.ok ? "" : r.reason);
+  assert.match(held(helper.quotaVerdict(claude, { fiveHour: 20, weekly: 76 }, now)), /weekly window 24% used/, "remaining 76 is not above a reserve of 76");
+  assert.match(held(helper.quotaVerdict(null, r20, now)), /no usage reading/);
+  assert.match(held(helper.quotaVerdict({ at: now, error: "HTTP 403" }, r20, now)), /usage unknown: HTTP 403/);
+  assert.match(held(helper.quotaVerdict(claude, r20, now + 6 * 60_000)), /min old/, "stale");
+  assert.match(held(helper.quotaVerdict(helper.parseClaudeUsage({ limits: [{ kind: "monthly", group: "monthly", percent: 1, resets_at: null }] }, ["opus"], now), r20, now)), /does not know \(monthly\)/);
+  assert.match(held(helper.quotaVerdict(helper.parseClaudeUsage({ five_hour: null }, ["opus"], now), r20, now)), /no plan window/);
+  // Codex: the worst window binds; a 300-minute window is the 5-hour one, 10080 the weekly one.
+  const codex = { ordinaryUsageAllowed: true, rateLimits: { limitId: "codex", primary: { usedPercent: 50, windowDurationMins: 300, resetsAt: 1795651200 }, secondary: { usedPercent: 85, windowDurationMins: 10080, resetsAt: 1796000000 } },
+    rateLimitsByLimitId: { other: { limitId: "other", normalModelSlug: "gpt-x", primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1795651200 } } } };
+  const cv = helper.quotaVerdict(helper.parseCodexRateLimits(codex, ["gpt-6.2-astra"], now), r20, now);
+  assert.match(held(cv), /^weekly window 85% used/, "a bucket of a model the helper does not run is left out");
+  assert.equal(!cv.ok && cv.until, 1796000000 * 1000);
+  assert.match(held(helper.quotaVerdict(helper.parseCodexRateLimits({ ...codex, ordinaryUsageAllowed: false }, [], now), { fiveHour: 0, weekly: 0 }, now)), /used up/);
+  assert.match(held(helper.quotaVerdict(helper.parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 1, windowDurationMins: 60 } } }, [], now), r20, now)), /60-minute/);
+  // The local reserve only raises the server's; before the server answers, the default holds.
+  assert.deepEqual(helper.effectiveReserve({ fiveHour: 30, weekly: 10 }, { fiveHour: 5, weekly: 40 }), { fiveHour: 30, weekly: 40 });
+  assert.deepEqual(helper.effectiveReserve(undefined, { fiveHour: 0, weekly: 0 }), { fiveHour: 20, weekly: 20 });
+  // A pause outranks recovered headroom; a park without a trusted time ends with a passing reading taken after it.
+  const ok = { ok: true } as const;
+  assert.equal(helper.quotaReadiness({ pause: { until: now + 60_000, at: now }, verdict: ok, readingAt: now, now }).readiness, "paused");
+  assert.deepEqual(helper.quotaReadiness({ pause: { until: now - 1, at: now - 9 }, verdict: ok, readingAt: now, now }), { readiness: "ready", until: null, dropPause: true });
+  const park = { until: null, at: now, reason: "refused" };
+  assert.equal(helper.quotaReadiness({ park, verdict: ok, readingAt: now - 1, now }).readiness, "quota-held", "a reading from before the refusal");
+  assert.deepEqual(helper.quotaReadiness({ park, verdict: ok, readingAt: now + 1, now }), { readiness: "ready", until: null, dropPark: true });
+  assert.equal(helper.quotaReadiness({ park: { ...park, until: now + 1000 }, verdict: ok, readingAt: now + 1, now }).until, now + 1000, "a parsed reset holds until it passes");
+});
+
+test("a provider's refusal for its usage limit parks until the reset it names, capped; a clock time without a zone is not trusted", () => {
+  const now = Date.parse("2026-11-19T12:00:00Z");
+  const grace = 60_000;
+  assert.equal(helper.parseRefusal("model error You've hit your 5-hour limit · resets 3pm (Europe/Berlin)", now)?.until, Date.parse("2026-11-19T14:00:00Z") + grace);
+  assert.equal(helper.parseRefusal("You\u2019ve hit your weekly limit \u00b7 resets Nov 21, 9:30am (UTC)", now)?.until, Date.parse("2026-11-21T09:30:00Z") + grace);
+  assert.equal(helper.parseRefusal("You've hit your limit · resets 11am (UTC)", now)?.until, Date.parse("2026-11-20T11:00:00Z") + grace, "a time already past today is tomorrow's");
+  assert.equal(helper.parseRefusal("model error You've hit your usage limit. Upgrade to Pro or try again in 4 days 2 hours 3 minutes.", now)?.until, now + ((4 * 24 + 2) * 60 + 3) * 60_000 + grace);
+  assert.equal(helper.parseRefusal("usage limit reached; resets in 4h42m28s", now)?.until, now + (4 * 3600 + 42 * 60 + 28) * 1000 + grace);
+  assert.equal(helper.parseRefusal("Claude AI usage limit reached|1795660000", now)?.until, 1795660000 * 1000 + grace);
+  assert.equal(helper.parseRefusal("You've hit your usage limit · resets in 999h", now)?.until, now + helper.PARK_CAP_MS);
+  assert.equal(helper.parseRefusal("You've hit your usage limit. Try again at 3:45 PM.", now)?.until, null);
+  assert.equal(helper.parseRefusal("You've hit your usage limit.", now)?.until, now + 15 * 60_000);
+  assert.equal(helper.parseRefusal("model error max turns reached", now), null);
 });

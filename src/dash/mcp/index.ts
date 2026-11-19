@@ -13,6 +13,7 @@ import { frame } from "../../itemtools/server/tools.ts";
 import * as dec from "../api/decisions.ts";
 import { visibleTo } from "../api/visible.ts";
 import { callStatus, claimableCalls } from "../../remote/calls.ts";
+import { listHelpers } from "../../remote/helpers.ts";
 import { isTier, TIERS } from "../../remote/mode.ts";
 import type { HarnessId, Tier } from "../../remote/protocol.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
@@ -413,6 +414,9 @@ async function nextTask(env: McpEnv, raw: unknown): Promise<ToolResult> {
     models = m as Partial<Record<Tier, string>>;
   }
   const user = env.user(false);
+  // A helper that reported it takes no calls (plan usage, a pause, a setup problem) would only print that again.
+  const own = listHelpers(env.db, user.login).find((h) => h.tokenId === run.tokenId);
+  if (own?.fresh && own.readiness && own.readiness !== "ready") return { text: `Your user's helper takes no calls now: ${own.readiness}${own.reason ? ` (${own.reason})` : ""}${own.until ? `, until ${own.until}` : ""}. Try again after that; \`autocraft-task status\` shows the details.` };
   const queued = await claimableCalls(env.db, { tokenId: run.tokenId, login: user.login, role: user.role }, { tiers: o.tiers as Tier[] | undefined, ...(models && { models }) }, run.canWrite);
   if (!queued) return { text: "No call is queued that your user may take. Try again later." };
   return { text: `${queued} call${queued === 1 ? " is" : "s are"} queued that your user may take.\nRun \`autocraft-task run --detach\` (it claims one and prints its lease id), then \`autocraft-task wait <lease>\` until it reports the call ended, then call next_task again. Do not read or change the helper's bundle or reply files.` };
@@ -440,7 +444,12 @@ function myWork(env: McpEnv, raw: unknown): ToolResult {
       promptId: r.prompt_id, items: (JSON.parse(r.items) as { repo: string; number: number }[]).slice(0, 6).map((i) => `${i.repo}#${i.number}`), state: r.state, startedAt: r.started_at,
       tokens: { input: r.input_tokens, output: r.output_tokens, cacheRead: r.cache_read_tokens, cacheWrite: r.cache_write_tokens }, costUsd: r.cost_usd,
     }));
-  return show(`${rows.length} call${rows.length === 1 ? "" : "s"} run for your user today (UTC).`, "my work", rows);
+  // The user's helpers with their last status: whether each takes calls now, and why not.
+  const helpers = listHelpers(env.db, login).map((h) => ({
+    label: h.label, readiness: h.readiness, fresh: h.fresh, ...(h.until && { until: h.until }), ...(h.reason && { reason: h.reason }), lastSeen: h.lastSeen, harness: h.harness, models: h.models, reserve: h.reserve,
+    usedPercent: h.usage ? { fiveHour: h.usage.fiveHour?.usedPercent ?? null, weekly: h.usage.weekly?.usedPercent ?? null, at: h.usage.at } : null,
+  }));
+  return show(`${rows.length} call${rows.length === 1 ? "" : "s"} run for your user today (UTC); ${helpers.length} helper${helpers.length === 1 ? "" : "s"}.`, "my work", { calls: rows, helpers });
 }
 
 async function callTool(env: McpEnv, name: unknown, raw: unknown): Promise<ToolResult> {
@@ -489,7 +498,7 @@ export const RUN_TOOLS = [
   },
   {
     name: "my_work",
-    description: "Today's model calls that ran on your user's machine: prompt, items, state, tokens and cost.",
+    description: "Today's model calls that ran on your user's machine (prompt, items, state, tokens and cost), and your user's helpers: readiness, last seen, harness, models, reserve and plan usage.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
     annotations: { readOnlyHint: true },
   },

@@ -243,6 +243,25 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   idle_tiers TEXT, idle_repos TEXT    -- JSON: the tiers and repos (null: any) that empty claim asked for
 );
 CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
+-- The last status of each helper (an agent token that may run tasks) in the user-local inference mode (src/remote/helpers.ts):
+-- readiness (src/remote/protocol.ts Readiness), until and reason as the helper sent them, JSON of its models, reserve and usage.
+CREATE TABLE IF NOT EXISTS remote_helpers (
+  token_id INTEGER PRIMARY KEY,
+  login TEXT NOT NULL COLLATE NOCASE,
+  readiness TEXT NOT NULL,
+  until TEXT, reason TEXT,
+  harness TEXT NOT NULL,
+  models TEXT NOT NULL, reserve TEXT NOT NULL, usage TEXT,
+  reported_at INTEGER NOT NULL        -- ms since epoch
+);
+-- Each user's own settings, one row per key (src/remote/reserve.ts: reserve_five_hour, reserve_weekly).
+CREATE TABLE IF NOT EXISTS user_settings (
+  login TEXT NOT NULL COLLATE NOCASE,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (login, key)
+);
 -- The GitHub App's user token of each login, written at every sign-in while the GitHub identity is the app.
 -- Separate from sessions: later steps act for a login when it has no live session.
 CREATE TABLE IF NOT EXISTS user_tokens (

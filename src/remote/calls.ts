@@ -18,6 +18,7 @@ import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { acceptedModels, familyOf, isTier, TIERS } from "./mode.ts";
 import { PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
+import { userReserve } from "./reserve.ts";
 import { CALLER_STALE_MS, IDLE_FRESH_MS } from "./room.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
 import { PERM_READ_TTL } from "../dash/server/sessions.ts";
@@ -35,7 +36,7 @@ export const CALLER_GONE_MS = 5 * 60_000;
 /** Seconds a helper waits before claiming again when nothing could be taken. */
 export const CLAIM_RETRY_S = 15;
 /** The oldest helper version that may run a lease. */
-export const REQUIRED_HELPER = "1.0.0";
+export const REQUIRED_HELPER = "1.1.0";
 /** A call this login released is not offered to it again for this long (its helper could not run it). */
 export const RELEASE_SKIP_MS = 10 * 60_000;
 /**
@@ -323,7 +324,7 @@ export function callStatus(db: DatabaseSync, id: number, login: string): { id: n
 
 /**
  * Gives the caller the first queued call it may take (claimOrder), filtered by eligibility. `canWrite` reads the caller's live
- * write permission on a repo.
+ * write permission on a repo. The reply carries the user's reserve either way.
  */
 export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
   if (olderVersion(claim.helperVersion, REQUIRED_HELPER)) throw new HttpError(409, `helper ${claim.helperVersion} is older than ${REQUIRED_HELPER}, the oldest this server accepts; download the current helper from ${ROUTES.helper}`);
@@ -337,11 +338,11 @@ export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, 
     const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now());
     if (!lease) continue;
     db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
-    return { lease };
+    return { lease, reserve: userReserve(db, caller.login) };
   }
   // An idle helper, with what it takes: an author's claim gives way to it (otherHelperIdle).
   db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(nowMs, JSON.stringify([...tiers]), claim.repos ? JSON.stringify(claim.repos) : null, caller.tokenId);
-  return { lease: null, retryAfter: CLAIM_RETRY_S };
+  return { lease: null, retryAfter: CLAIM_RETRY_S, reserve: userReserve(db, caller.login) };
 }
 
 // ---- lease routes ------------------------------------------------------------------

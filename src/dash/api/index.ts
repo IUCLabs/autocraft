@@ -28,6 +28,8 @@ import * as build from "./build.ts";
 import * as dec from "./decisions.ts";
 import * as conv from "./conversations.ts";
 import * as mcp from "./mcp.ts";
+import * as userSettings from "./user-settings.ts";
+import { HELPERS_PATH } from "../../remote/helpers.ts";
 import * as areas from "./areas.ts";
 import * as security from "./security.ts";
 import * as securityPage from "./security-page.ts";
@@ -421,6 +423,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/mcp/tokens", mcp.tokens),
     post("/api/mcp/tokens", mcp.create),
     post("/api/mcp/tokens/revoke", mcp.revoke),
+    get("/api/me/settings", userSettings.settings),
+    { method: "PUT", pattern: "/api/me/settings", handler: ok(userSettings.setSettings) },
+    get(HELPERS_PATH, userSettings.helpers),
     get("/api/items/:repo/:n", itemCore),
     get("/api/items/:repo/:n/page", itemPage),
     get("/api/items/:repo/:n/peek", items.peek),

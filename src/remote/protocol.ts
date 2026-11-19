@@ -4,7 +4,7 @@
 // No Node imports: the helper keeps its own copy of these shapes and the dashboard build may import this file.
 
 /** Bumped on any change to these shapes; the server refuses a claim from a helper of another version. */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** API routes on the dashboard origin. Agent-token routes take `Authorization: Bearer <agent token>`; lease routes take `Authorization: Bearer <lease secret>`. */
 export const ROUTES = {
@@ -12,6 +12,8 @@ export const ROUTES = {
   claim: "/api/remote/claim",
   /** Lease secret. Reply `TaskBundle`. */
   bundle: "/api/remote/bundle",
+  /** Agent token. Body `HelperStatus`, reply `StatusReply`: the helper's readiness, sent on every change and at least every STATUS_EVERY_S while it runs. */
+  status: "/api/remote/status",
   /** Lease secret. Body `Heartbeat`, reply `{ ok: true }`, or 410 when the lease is gone (expired, cancelled, re-queued). */
   heartbeat: "/api/remote/heartbeat",
   /** Lease secret. Body `Submit`, reply `SubmitReply`. */
@@ -52,9 +54,67 @@ export type Claim = {
   root?: string;
 };
 
+/**
+ * The plan usage a helper keeps in reserve, per window: it claims only while the remaining percent (100 - used) of every
+ * window is above it. Set per user on the dashboard (0 to 90, default 20); a helper's local setting may only raise it.
+ */
+export type Reserve = { fiveHour: number; weekly: number };
+
 export type ClaimReply =
-  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number }
-  | { lease: { id: number; secret: string; /** One line: prompt id and the item, e.g. "review.opus on designcraft#1502". */ title: string; requiredHelper: string } };
+  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number; reserve: Reserve }
+  | { lease: { id: number; secret: string; /** One line: prompt id and the item, e.g. "review.opus on designcraft#1502". */ title: string; requiredHelper: string }; reserve: Reserve };
+
+/**
+ * Whether a helper takes calls now. `ready`: it claims. `quota-held`: a plan window is at or below the reserve, its usage
+ * could not be read, or the provider refused a run for its limit. `paused`: its user paused it until a reset. The rest need
+ * the user: the sandbox check failed, the server refused the helper's version, or the harness or its login is missing.
+ */
+export type Readiness = "ready" | "quota-held" | "paused" | "sandbox-failed" | "version-refused" | "harness-missing";
+export const READINESS: readonly Readiness[] = ["ready", "quota-held", "paused", "sandbox-failed", "version-refused", "harness-missing"];
+/** The longest time between two status reports of a running helper. */
+export const STATUS_EVERY_S = 300;
+
+/** One plan window as the helper last read it: percent used (0-100) and when it resets (ISO time, null when unknown). */
+export type UsageWindow = { usedPercent: number; resetsAt: string | null };
+/** The plan usage behind a status; `at` is when it was read. A window is null when the provider reported none. */
+export type UsageReading = { fiveHour: UsageWindow | null; weekly: UsageWindow | null; at: string };
+
+export type HelperStatus = {
+  readiness: Readiness;
+  /** When a hold or pause ends (ISO time); absent when it ends only when usage is read again or the user acts. */
+  until?: string;
+  /** One line on why the helper is not ready. */
+  reason?: string;
+  harness: HarnessId;
+  /** The model the helper runs for each tier. */
+  models: Partial<Record<Tier, string>>;
+  /** The reserve the helper enforces: the user's, raised by its local setting. */
+  reserve: Reserve;
+  usage?: UsageReading;
+};
+/** The user's reserve, so a helper knows it before its first claim. */
+export type StatusReply = { ok: true; reserve: Reserve };
+
+/** One of the user's helpers (agent tokens that may run tasks), for the Connect page and my_work: GET /api/remote/helpers replies `{ helpers: HelperInfo[] }`. */
+export type HelperInfo = {
+  tokenId: number;
+  label: string | null;
+  /** Null when the helper has never reported a status. */
+  readiness: Readiness | null;
+  until: string | null;
+  reason: string | null;
+  /** Whether the last status is recent enough to count (STATUS_EVERY_S and some slack); a stale `ready` helper gets no calls. */
+  fresh: boolean;
+  /** The last status report or claim (ISO time), null when the token was never used by a helper. */
+  lastSeen: string | null;
+  harness: HarnessId | null;
+  models: Partial<Record<Tier, string>>;
+  reserve: Reserve | null;
+  usage: UsageReading | null;
+};
+
+/** GET and PUT /api/me/settings (session routes): the signed-in user's own settings. */
+export type UserSettings = { reserve: Reserve };
 
 /** A directory the harness reads, at a fixed path inside the sandbox. */
 export type Mount =

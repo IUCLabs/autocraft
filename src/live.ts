@@ -128,6 +128,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
     { table: "jobs", ops: ["UPDATE"], when: "old.state IS NOT new.state OR old.started_at IS NOT new.started_at OR old.ended_at IS NOT new.ended_at" },
     { table: "agent_runs", ops: ["UPDATE"], when: "old.state IS NOT new.state OR old.ended_at IS NOT new.ended_at OR old.cost_usd IS NOT new.cost_usd OR old.summary IS NOT new.summary" },
   ],
+  // The user-local helpers' readiness and their leases starting and ending, for the Connect page; not planner input.
+  "remote-helpers": [{ table: "remote_helpers" }, { table: "remote_calls", ops: ["UPDATE"], when: "old.state IS NOT new.state AND (new.state = 'leased' OR old.state = 'leased')" }],
   // Rows of the audit table that record a write on GitHub.
   github: [{ table: "audit", ops: ["INSERT", "UPDATE"], when: `new.action IN (${Object.keys(GITHUB_ACTIONS).map((a) => `'${a}'`).join(", ")})` }],
 };
