@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as helper from "../worker/autocraft-task.mjs";
@@ -145,4 +145,77 @@ test("the file tools read only inside the mounts: no path outside them, no symli
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the macOS profile denies by default, names the secrets before the narrow allows, and writes only the temp directory and the given stores", () => {
+  const home = "/Users/ann";
+  const p = helper.macProfile({ deny: helper.macDenied(home), dirs: [`${home}/.claude/local/node_modules/@anthropic-ai/claude-code`, "/opt/homebrew/Cellar/node/24.1.0"], writes: [`${home}/.cache/autocraft-task/sessions/store-x`] });
+  const lines = p.split("\n");
+  assert.deepEqual(lines.slice(0, 2), ["(version 1)", "(deny default)"]);
+  const at = (s: string) => { const i = p.indexOf(s); assert.ok(i >= 0, s); return i; };
+  // Seatbelt applies the last matching rule: the secrets come before the allows, which re-open only paths below them.
+  const deny = at("(deny file-read* file-write*");
+  for (const s of [`(subpath "${home}/.ssh")`, `(subpath "${home}/.aws")`, `(subpath "${home}/Library/Keychains")`, `(regex #"^/Users/ann/\\.claude")`, `(subpath "${home}/.codex")`]) assert.ok(at(s) > deny && at(s) < at('(param "ROOT")'), s);
+  assert.ok(at(`(subpath "${home}/.claude/local/node_modules/@anthropic-ai/claude-code")`) > deny);
+  assert.match(p, /\(allow file-read\* file-test-existence \(subpath \(param "ROOT"\)\)\)/);
+  const writable = lines.filter((l) => /\(allow [^)]*file-write\*/.test(l) || /^\(allow file-read\* file-write\* file-test-existence$/.test(l));
+  assert.equal(writable.length, 2);
+  assert.ok(p.includes('(allow file-read* file-write* file-test-existence (subpath (param "TMP")))') && p.includes(`(subpath "${home}/.cache/autocraft-task/sessions/store-x")`));
+  assert.ok(!p.includes(`(subpath "${home}")`) && !p.includes("(allow file-read*)") && !p.includes('(subpath "/System/Volumes/Data")'));
+  assert.ok(p.includes('(allow network-outbound (remote ip "*:*"))') && !p.includes("network-inbound"));
+  assert.match(helper.macProfile({ deny: [], files: ['/Applications/A "b"/claude'] }), /\(literal "\/Applications\/A \\"b\\"\/claude"\)/);
+  assert.throws(() => helper.macProfile({ deny: [], dirs: ["/x\ny"] }), /unsafe path/);
+  assert.throws(() => helper.macProfile({ deny: [], dirs: ["relative"] }), /unsafe path/);
+});
+
+test("a slot holds the call's trees as copies, keeps an unchanged tree, and drops what the next call does not use", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "slot-"));
+  try {
+    const tree = (name: string, files: Record<string, string>) => { const d = join(dir, "cache", name); for (const [f, c] of Object.entries(files)) { mkdirSync(join(d, f, ".."), { recursive: true }); writeFileSync(join(d, f), c); } return d; };
+    const app = tree("app", { "src/lib.rs": "fn a() {}" }), fw = tree("fw", { "README.md": "fw" }), docs = tree("docs", { "AGENTS.txt": "rules" });
+    const root = join(dir, "slot-0");
+    const plan = helper.slotPlan(root, [{ host: app, path: "/repo" }, { host: fw, path: "/repos/framework" }], [`${root}/repo`, `${root}/repos`, `${root}/repo-docs`]);
+    assert.deepEqual(plan.mounts.map((m) => m.path), [`${root}/repo`, `${root}/repos/framework`]);
+    assert.deepEqual(plan.dirs.sort(), [`${root}/repo-docs`, `${root}/repos`]);
+    await helper.fillSlot(root, plan, [{ name: "mcp.json", content: "{}" }, { name: "agents.json", content: "{}" }]);
+    assert.equal(readFileSync(join(root, "repo/src/lib.rs"), "utf8"), "fn a() {}");
+    assert.equal(readFileSync(join(root, "repos/framework/README.md"), "utf8"), "fw");
+    assert.ok(existsSync(join(root, "repo-docs")) && existsSync(join(root, "work")) && existsSync(join(root, "tmp/home")));
+    assert.equal(statSync(join(root, "mcp.json")).mode & 0o777, 0o600);
+    assert.ok(!existsSync(join(root, "slot-0.json")) && existsSync(`${root}.json`), "the record is kept beside the slot, not in it");
+    writeFileSync(join(root, "repo/kept"), "same tree, not copied again");
+    writeFileSync(join(root, "tmp/home/x"), "per call");
+    await helper.fillSlot(root, helper.slotPlan(root, [{ host: app, path: "/repo" }, { host: docs, path: "/repo-docs" }], [`${root}/repo`, `${root}/repo-docs`]), []);
+    assert.ok(existsSync(join(root, "repo/kept")));
+    assert.ok(!existsSync(join(root, "repos")) && !existsSync(join(root, "mcp.json")) && !existsSync(join(root, "agents.json")) && !existsSync(join(root, "tmp/home/x")));
+    assert.equal(readFileSync(join(root, "repo-docs/AGENTS.txt"), "utf8"), "rules");
+    await helper.fillSlot(root, helper.slotPlan(root, [{ host: fw, path: "/repo" }], [`${root}/repo`, `${root}/repo-docs`]), []);
+    assert.ok(!existsSync(join(root, "repo/kept")) && existsSync(join(root, "repo/README.md")));
+    assert.deepEqual(readdirSync(join(root, "repo-docs")), [], "an empty directory of the plan holds no earlier copy");
+    assert.throws(() => helper.slotPlan(root, [{ host: app, path: "/tmp" }]), /unsafe mount path/);
+    assert.throws(() => helper.slotPlan(root, [], [`${root}/work`]), /unsafe mount path/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("macOS runs: the canary verdict, the command line, Codex's paths in the slot and Claude Code's Keychain item", () => {
+  const pass = { readSlot: { ok: true }, writeTmp: { ok: true }, readPlanted: { ok: false, code: "EPERM" }, listHome: { ok: false, code: "EPERM" }, listSsh: { ok: false, code: "EPERM" }, listKeychains: { ok: false, code: "EPERM" }, writeHome: { ok: false, code: "EPERM" }, writeSlot: { ok: false, code: "EPERM" } };
+  assert.equal(helper.canaryVerdict(JSON.stringify(pass)).ok, true);
+  const leak = helper.canaryVerdict(JSON.stringify({ ...pass, readPlanted: { ok: true } }));
+  assert.equal(leak.ok, false);
+  assert.ok(leak.lines.some((l) => l.startsWith("FAIL readPlanted")));
+  assert.equal(helper.canaryVerdict("").ok, false);
+  const root = "/private/var/folders/ab/cd/C/autocraft-task/slot-0";
+  const c = helper.macCommand({ profile: "/tmp/p.sb", root, argv: ["/bin/claude", "-p"], env: { CLAUDE_CODE_OAUTH_TOKEN: "tok" } });
+  assert.deepEqual(c.args, ["-f", "/tmp/p.sb", "-D", `ROOT=${root}`, "-D", `TMP=${root}/tmp`, "/bin/claude", "-p"]);
+  assert.equal(c.cmd, "/usr/bin/sandbox-exec");
+  assert.equal(c.cwd, `${root}/work`);
+  assert.equal(c.env.HOME, `${root}/tmp/home`);
+  const args = helper.codexArgs({ model: "m", effort: "low", system: null, server: "s", servers: [], files: "f", keepSession: false, toolTimeoutSec: 60, paths: { work: `${root}/work`, home: `${root}/tmp/home`, codexHome: "/Users/ann/.config/autocraft-task/codex-home" } });
+  const line = args.join(" ");
+  assert.ok(line.includes(`-C ${root}/work`) && line.includes('filesystem={"/Users/ann/.config/autocraft-task/codex-home"="deny"}') && !line.includes('{"/codex-home"') && !line.includes("/home/sandbox"));
+  assert.deepEqual(helper.claudeKeychainItem({ USER: "ann" }), { service: "Claude Code-credentials", account: "ann" });
+  assert.match(helper.claudeKeychainItem({ USER: "a b", CLAUDE_CONFIG_DIR: "/Users/ann/.claude-work" }).service, /^Claude Code-credentials-[0-9a-f]{8}$/);
+  assert.equal(helper.claudeKeychainItem({ USER: "a b" }).account, "claude-code-user");
 });

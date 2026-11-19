@@ -6,24 +6,25 @@
 // writes and builds stay on the server.
 //
 // One file, only `node:` imports, Node 22 or later. The dashboard serves it at /worker/autocraft-task.mjs.
-// Linux and WSL only: the harness runs inside bubblewrap.
+// The harness runs inside bubblewrap on Linux and WSL, inside sandbox-exec on macOS.
 //
 //   autocraft-task login <server-url>      agent token on stdin
-//   autocraft-task harness claude          a `claude setup-token` token on stdin
+//   autocraft-task harness claude [--keychain]  a `claude setup-token` token on stdin, or (macOS) Claude Code's own login
 //   autocraft-task harness codex [--device-auth]  logs Codex in to the helper's own CODEX_HOME
 //   autocraft-task claim                   claims one call; prints its lease id
 //   autocraft-task run [--detach] [<lease>]  runs a claimed lease (claims one when none is given)
 //   autocraft-task wait <lease>            waits for a detached run (at most 9 minutes)
 //   autocraft-task work [--parallel N]     claims, runs and submits in a loop
 //   autocraft-task doctor                  checks platform, sandbox, harness, login and server
+//   autocraft-task try <bundle.json>       runs a bundle from a file without a server (testing)
 //   autocraft-task mcp <server> <lease>    stdio-to-HTTP proxy for one of the lease's MCP servers
 //   autocraft-task tool <server> <tool> [<json>] [<lease>]  one tool call without MCP; prints the result
 
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync, closeSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
@@ -62,6 +63,7 @@ export const ROUTES = {
  * @property {Partial<Record<Tier, string>>} tiers
  * @property {string[]} [repos]
  * @property {number[]} [sessions]
+ * @property {string} [root]
  */
 /** @typedef {{ lease: null, retryAfter: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string } }} ClaimReply */
 /**
@@ -112,6 +114,7 @@ export const ROUTES = {
  * @property {{ url: string, token: string }} [files]  the helper's file tools for this run, for an adapter with `fileTools`
  * @property {string} [sessionDir]  writable host directory for the harness's session store
  * @property {string} [resumeId]    harness session id to continue
+ * @property {{ root: string, profile: string, install: { argv: string[] } }} [mac]  macOS: the slot (mounts, MCP config and agents file are in it) and the sandbox-exec profile
  */
 /**
  * @typedef {object} Reply
@@ -135,7 +138,8 @@ export const ROUTES = {
  * @property {(line: string) => string | null} progress  a progress line from one output line, or null
  * @property {(cfg: Config) => string | undefined} token  the stored harness credential
  * @property {Partial<Record<Tier, string>>} defaultTiers  empty when the user must name every tier's model
- * @property {(bin: string) => { cmd: string, args: string[], env: Record<string, string> }} versionInSandbox  the harness's version command inside the sandbox (doctor)
+ * @property {(bin: string) => { cmd: string, args: string[], env: Record<string, string> }} versionInSandbox  the harness's version command inside the sandbox (doctor, Linux)
+ * @property {(bin: string) => { argv: string[], files: string[], dirs: string[] }} install  macOS: what runs the harness and what of its install the profile lets it read
  * @property {(bin: string, token: string) => string | null} [preflight]  prepares the harness's files before every call; why it must not run, or null
  * @property {boolean} [exclusive]  one call at a time per helper (the harness refreshes a shared login)
  * @property {boolean} [fileTools]  the run gets the helper's read-only file tools (its own read tool can't be confined)
@@ -383,7 +387,7 @@ const claudeResume = (args, sessionId) => [...withoutResume(args), "--resume", s
 /** @type {Adapter} */
 const claudeAdapter = {
   id: "claude",
-  token: (cfg) => cfg.claudeToken,
+  token: (cfg) => (cfg.claudeAuth === "keychain" ? keychainCredential()?.token : cfg.claudeToken),
   defaultTiers: { top: "opus", mid: "sonnet", small: "haiku" },
   detect(cfg) {
     const bin = resolveClaudeBin(cfg);
@@ -399,6 +403,8 @@ const claudeAdapter = {
     if (!hint) throw new Error("the bundle has no claude arguments");
     let args = withoutResume(withModel(hint.args, t.model));
     if (t.resumeId) args = claudeResume(args, t.resumeId);
+    // macOS: the session store is the whole config directory (a resume finds its session there); otherwise one under tmp/.
+    if (t.mac) return macCommand({ profile: t.mac.profile, root: t.mac.root, argv: [...t.mac.install.argv, ...args], env: { CLAUDE_CONFIG_DIR: t.sessionDir ?? `${t.mac.root}/tmp/home/.claude`, DISABLE_AUTOUPDATER: "1", CLAUDE_CODE_OAUTH_TOKEN: t.token } });
     const agentsFile = hint.agents !== undefined ? join(t.taskDir, "agents.json") : undefined;
     if (agentsFile) writeFileSync(agentsFile, hint.agents ?? "", { mode: 0o600 });
     return claudeSandbox({ claudeBin: t.bin, oauthToken: t.token, claudeArgs: args, mounts: t.mounts, agentsFile, mcpFile: t.mcpFile || undefined, sessionDir: t.sessionDir });
@@ -407,6 +413,7 @@ const claudeAdapter = {
   resume: (args, sessionId) => claudeResume(args, sessionId),
   progress: claudeProgress,
   versionInSandbox: (bin) => claudeSandbox({ claudeBin: bin, claudeArgs: ["--version"], mounts: [] }),
+  install: (bin) => macInstall(bin, nodeOnPath()),
 };
 
 // ---------------------------------------------------------------------------
@@ -424,9 +431,9 @@ const GLOB_MAX = 500;
 const LINE_MAX = 300;
 
 const FILE_TOOLS = [
-  { name: "read_file", description: "Reads a text file: numbered lines, at most 2000 from `offset` (1-based).", inputSchema: { type: "object", properties: { path: { type: "string", description: "Absolute path, e.g. /repo/src/main.rs" }, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: READ_LINES } }, required: ["path"] } },
-  { name: "grep", description: "Searches files under a directory for an extended regular expression; prints path:line:text, at most 200 lines.", inputSchema: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string", description: "Directory or file; default /repo" }, glob: { type: "string", description: "Only file names matching this, e.g. *.rs" }, ignore_case: { type: "boolean" } }, required: ["pattern"] } },
-  { name: "glob", description: "Lists files whose path below `path` matches a glob (** any depth, * and ? within a name), at most 500.", inputSchema: { type: "object", properties: { pattern: { type: "string", description: "e.g. **/*.rs" }, path: { type: "string", description: "Directory; default /repo" } }, required: ["pattern"] } },
+  { name: "read_file", description: "Reads a text file: numbered lines, at most 2000 from `offset` (1-based).", inputSchema: { type: "object", properties: { path: { type: "string", description: "Absolute path of a file in a directory the prompt names" }, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: READ_LINES } }, required: ["path"] } },
+  { name: "grep", description: "Searches files under a directory for an extended regular expression; prints path:line:text, at most 200 lines.", inputSchema: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string", description: "Directory or file; default the repository" }, glob: { type: "string", description: "Only file names matching this, e.g. *.rs" }, ignore_case: { type: "boolean" } }, required: ["pattern"] } },
+  { name: "glob", description: "Lists files whose path below `path` matches a glob (** any depth, * and ? within a name), at most 500.", inputSchema: { type: "object", properties: { pattern: { type: "string", description: "e.g. **/*.rs" }, path: { type: "string", description: "Directory; default the repository" } }, required: ["pattern"] } },
 ].map((t) => ({ ...t, annotations: { readOnlyHint: true, openWorldHint: false } }));
 
 /**
@@ -481,6 +488,9 @@ function walkFiles(dir, max) {
   return out;
 }
 
+/** The item's checkout, where a search without a path looks: /repo, or <root>/repo on macOS. @param {{ path: string }[]} mounts */
+const defaultPath = (mounts) => mounts.map((m) => m.path).filter((p) => p === "/repo" || p.endsWith("/repo")).sort((a, b) => a.length - b.length)[0] ?? "/repo";
+
 /** The sandbox path of a host path below a mount. @param {{ path: string }} mount @param {string} root @param {string} host */
 const sandboxPathOf = (mount, root, host) => (host === root ? mount.path : `${mount.path}${host.slice(root.length)}`);
 
@@ -507,7 +517,7 @@ export function runFileTool(mounts, name, a) {
   }
   if (name === "glob") {
     if (typeof a.pattern !== "string" || !a.pattern) throw new Error("pattern is required");
-    const { real, root, mount } = hostPath(mounts, a.path ?? "/repo");
+    const { real, root, mount } = hostPath(mounts, a.path ?? defaultPath(mounts));
     const re = globRegex(a.pattern);
     const base = sandboxPathOf(mount, root, real);
     const hits = walkFiles(real, 50_000).filter((r) => re.test(r));
@@ -515,7 +525,7 @@ export function runFileTool(mounts, name, a) {
   }
   if (name === "grep") {
     if (typeof a.pattern !== "string" || !a.pattern) throw new Error("pattern is required");
-    const { real, root, mount } = hostPath(mounts, a.path ?? "/repo");
+    const { real, root, mount } = hostPath(mounts, a.path ?? defaultPath(mounts));
     const args = ["-rnIE", "--exclude-dir=.git", ...(a.ignore_case === true ? ["-i"] : []), ...(typeof a.glob === "string" && a.glob ? [`--include=${a.glob}`] : []), "-e", a.pattern, "--", real];
     const r = spawnSync("grep", args, { encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 * 1024, env: { PATH: "/usr/bin:/bin", LC_ALL: "C.UTF-8" } });
     if (r.error) throw new Error(`grep failed: ${r.error.message.includes("ETIMEDOUT") ? "timed out" : r.error.message}`);
@@ -643,9 +653,12 @@ const toml = (v) => JSON.stringify(v).replace(/\u007f/g, "\\u007F");
  * `codex` arguments for one call: exec (or exec resume) reading the prompt on stdin, the model and effort, no shell,
  * the call's MCP servers on our dashboard and the helper's file tools (tokens from the environment), and none of the
  * user's config or instructions.
- * @param {{ model: string, effort: string, system: string | null, server: string, servers: string[], files: string, keepSession: boolean, resumeId?: string, toolTimeoutSec: number }} o
+ * `paths`: where the run's working directory, home and Codex home are (macOS: in the slot and the helper's Codex home);
+ * the bwrap paths by default.
+ * @param {{ model: string, effort: string, system: string | null, server: string, servers: string[], files: string, keepSession: boolean, resumeId?: string, toolTimeoutSec: number, paths?: { work: string, home: string, codexHome: string } }} o
  */
 export function codexArgs(o) {
+  const paths = o.paths ?? { work: WORK_PATH, home: SANDBOX_HOME, codexHome: CODEX_HOME_PATH };
   if (o.resumeId !== undefined && !THREAD_ID.test(o.resumeId)) throw new Error(`not a Codex thread id: ${o.resumeId}`);
   const http = (/** @type {string} */ name, /** @type {string} */ url, /** @type {string} */ env, /** @type {number} */ timeout) =>
     `${name}={url=${toml(url)}, bearer_token_env_var="${env}", default_tools_approval_mode="approve", startup_timeout_sec=30, tool_timeout_sec=${timeout}}`;
@@ -653,15 +666,15 @@ export function codexArgs(o) {
     if (!NAME.test(n) || n.includes(".") || n === FILE_TOOLS_SERVER) throw new Error(`bad MCP server name ${n}`);
     return http(n, `${o.server}${ROUTES.mcp}/${n}`, LEASE_ENV, Math.max(60, Math.round(o.toolTimeoutSec)));
   });
-  return ["exec", "--json", "--color", "never", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "-C", WORK_PATH,
+  return ["exec", "--json", "--color", "never", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "-C", paths.work,
     // A call whose session may get a follow-up keeps its rollout in CODEX_HOME; any other leaves nothing behind.
     ...(o.keepSession || o.resumeId ? [] : ["--ephemeral"]),
     "-c", `model=${toml(o.model)}`, "-c", `model_reasoning_effort=${toml(o.effort)}`,
     "-c", "project_doc_max_bytes=0", "-c", 'web_search="disabled"', "-c", "agents={enabled=false}", "-c", 'cli_auth_credentials_store="file"',
     "-c", `features={${CODEX_FEATURES_OFF.map((f) => `${f}=false`).join(", ")}}`,
-    "-c", `shell_environment_policy={inherit="none", set={PATH="/usr/bin", HOME="${SANDBOX_HOME}", LANG="C.UTF-8"}}`,
+    "-c", `shell_environment_policy={inherit="none", set={PATH="/usr/bin", HOME=${toml(paths.home)}, LANG="C.UTF-8"}}`,
     "-c", `default_permissions="${CODEX_PROFILE}"`,
-    "-c", `permissions={${CODEX_PROFILE}={extends=":read-only", filesystem={"${CODEX_HOME_PATH}"="deny"}}}`,
+    "-c", `permissions={${CODEX_PROFILE}={extends=":read-only", filesystem={${toml(paths.codexHome)}="deny"}}}`,
     "-c", `mcp_servers={${[http(FILE_TOOLS_SERVER, o.files, FILES_ENV, 60), ...mcp].join(", ")}}`,
     ...(o.system ? ["-c", `developer_instructions=${toml(o.system)}`] : []),
     ...(o.resumeId ? ["resume", o.resumeId] : []),
@@ -750,17 +763,16 @@ export function codexProgress(raw) {
 function resolveCodexBin(cfg) {
   const given = process.env.AUTOCRAFT_TASK_CODEX_BIN || cfg.codexBin;
   const candidates = given ? [given] : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((d) => join(d, "codex"));
-  const triple = process.arch === "arm64" ? "aarch64-unknown-linux-musl" : "x86_64-unknown-linux-musl";
-  const pkgArch = process.arch === "arm64" ? "arm64" : "x64";
+  const mac = process.platform === "darwin";
+  const triple = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${mac ? "apple-darwin" : "unknown-linux-musl"}`;
+  const pkgArch = `${mac ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}`;
   for (const c of candidates) {
     let p;
     try { accessSync(c, constants.X_OK); p = realpathSync(c); } catch { continue; }
-    let head = "";
-    try { const fd = openSync(p, "r"); const b = Buffer.alloc(2); readSync(fd, b, 0, 2, 0); closeSync(fd); head = b.toString("latin1"); } catch { /* unreadable */ }
-    if (head !== "#!") return p;
+    if (!isScript(p)) return p;
     // npm: <pkg>/bin/codex.js runs <platform pkg>/vendor/<triple>/bin/codex, or <pkg>/vendor/<triple>/bin/codex.
     const pkg = dirname(dirname(p));
-    for (const v of [join(pkg, "node_modules", "@openai", `codex-linux-${pkgArch}`, "vendor"), join(dirname(pkg), `codex-linux-${pkgArch}`, "vendor"), join(pkg, "vendor")]) {
+    for (const v of [join(pkg, "node_modules", "@openai", `codex-${pkgArch}`, "vendor"), join(dirname(pkg), `codex-${pkgArch}`, "vendor"), join(pkg, "vendor")]) {
       const bin = join(v, triple, "bin", "codex");
       try { accessSync(bin, constants.X_OK); return realpathSync(bin); } catch { /* next */ }
     }
@@ -794,7 +806,11 @@ const codexAdapter = {
   },
   command(t) {
     if (!t.files) throw new Error("the file tools are not running");
-    const args = codexArgs({ model: t.model, effort: t.bundle.effort, system: t.bundle.system, server: t.lease.server, servers: t.bundle.mcpServers, files: t.files.url, keepSession: t.bundle.keepSession, ...(t.resumeId && { resumeId: t.resumeId }), toolTimeoutSec: t.bundle.timeoutSeconds });
+    // macOS: Codex runs under the helper's profile only. Its shell is off, so it starts no command and never nests its own
+    // seatbelt inside ours; its permission profile still denies its home to the tools that read through it (view_image).
+    const paths = t.mac ? { work: `${t.mac.root}/work`, home: `${t.mac.root}/tmp/home`, codexHome: t.token } : undefined;
+    const args = codexArgs({ model: t.model, effort: t.bundle.effort, system: t.bundle.system, server: t.lease.server, servers: t.bundle.mcpServers, files: t.files.url, keepSession: t.bundle.keepSession, ...(t.resumeId && { resumeId: t.resumeId }), toolTimeoutSec: t.bundle.timeoutSeconds, ...(paths && { paths }) });
+    if (t.mac) return macCommand({ profile: t.mac.profile, root: t.mac.root, argv: [...t.mac.install.argv, ...args], env: { CODEX_HOME: t.token, [FILES_ENV]: t.files.token, ...(t.bundle.mcpServers.length && { [LEASE_ENV]: t.lease.secret }) } });
     return codexSandbox({ codexBin: t.bin, codexHome: t.token, codexArgs: args, mounts: t.mounts, env: { [FILES_ENV]: t.files.token, ...(t.bundle.mcpServers.length && { [LEASE_ENV]: t.lease.secret }) } });
   },
   parse: parseCodexOutput,
@@ -805,7 +821,391 @@ const codexAdapter = {
   },
   progress: codexProgress,
   versionInSandbox: (bin) => codexSandbox({ codexBin: bin, codexHome: codexHome(), codexArgs: ["--version"], mounts: [] }),
+  install: (bin) => ({ argv: [bin], files: [bin], dirs: [dirname(bin)] }),
 };
+
+// ---------------------------------------------------------------------------
+// macOS: sandbox-exec. Seatbelt confines paths but cannot remap them, so the sandbox paths live below one directory per
+// parallel slot, the path root the claim names (protocol.ts Claim.root): the server words the bundle's text and claude
+// arguments for it and reads the reply's paths back without it. The root is in the per-user cache directory
+// (`getconf DARWIN_USER_CACHE_DIR`, /private/var/folders/...), which holds no account name, so the prompts the server
+// stores and shows name none; and it is the same for every call of the slot, so prompt prefixes cache. A slot holds
+//   repo/ repos/<name>/ repo-docs/   clonefile copies (`cp -c`) of the cached trees, kept while the next call needs the same tree
+//   mcp.json agents.json             the call's MCP config and explorer definition
+//   work/                            the harness's empty working directory
+//   tmp/                             the only writable place besides the session store: HOME, the temp config, TMPDIR
+// Copies, not symlinks into the tree cache: with copies the profile lets the harness read the slot and never the cache,
+// which holds other calls' trees, private ones included; Claude Code checks its Read rules against a symlink's resolved
+// path, which lies outside every --add-dir; and ripgrep (its Grep) does not follow the symlinks it meets under /repos. A
+// symlink inside a tree is copied as a symlink, and Seatbelt checks the resolved path, so it reads nothing the profile denies.
+// A follow-up turn runs in the slot that holds its session (the claim offers only that slot's sessions): the session's
+// earlier turns name that slot's paths.
+//
+// The profile denies by default and allows the slot, the harness install, system libraries and frameworks, and the platform
+// services a process needs to start and reach the network. Its rules follow Codex's seatbelt policies (github.com/openai/codex,
+// codex-rs/sandboxing/src/seatbelt_base_policy.sbpl, seatbelt_network_policy.sbpl, seatbelt_read_only_platform_defaults.sbpl),
+// which descend from Chrome's. Seatbelt applies the last rule that matches, so the named secrets (~/.ssh, ~/.aws, the
+// Keychains, ~/.claude*, ~/.codex, the helper's own config and cache) are denied before the narrow allows; only those may
+// re-open a path below them (a harness installed in ~/.claude/local, the helper's Codex home and session stores).
+
+export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
+const MAC_MAX_SLOTS = 16;
+
+/** Platform files every process reads: libraries, frameworks, zoneinfo, certificates and configuration in /etc. */
+const MAC_SYSTEM = ["/usr/lib", "/usr/share", "/usr/libexec", "/usr/bin", "/usr/sbin", "/bin", "/sbin", "/System/Library", "/System/Cryptexes", "/System/Volumes/Preboot/Cryptexes", "/System/iOSSupport", "/Library/Apple", "/Library/Preferences", "/Library/Filesystems/NetFSPlugins", "/private/etc", "/private/var/db"];
+/** Software installed for all users (Homebrew, MacPorts, Nix): a Node-based harness and the libraries it links. Not Homebrew's etc or var, which may hold user data. */
+const MAC_SOFTWARE = [...["/opt/homebrew", "/usr/local"].flatMap((p) => ["Cellar", "Caskroom", "opt", "lib", "libexec", "bin"].map((d) => `${p}/${d}`)), "/opt/local/lib", "/opt/local/libexec", "/opt/local/bin", "/nix/store"];
+/** Code the loader maps. */
+const MAC_EXEC = ["/usr/lib", "/System/Library", "/System/Cryptexes", "/System/Volumes/Preboot/Cryptexes", "/System/iOSSupport", "/Library/Apple"];
+/** Mach services: directory and user lookups, logging, power, TLS trust, network configuration and DNS. */
+const MAC_SERVICES = ["com.apple.system.opendirectoryd.libinfo", "com.apple.system.opendirectoryd.membership", "com.apple.system.DirectoryService.libinfo_v1", "com.apple.bsd.dirhelper", "com.apple.secinitd",
+  "com.apple.logd", "com.apple.logd.events", "com.apple.system.logger", "com.apple.diagnosticd", "com.apple.analyticsd", "com.apple.system.notification_center", "com.apple.PowerManagement.control",
+  // TLS certificate checks of harnesses that use the system's trust store; the Keychain files themselves are denied.
+  "com.apple.SecurityServer", "com.apple.trustd", "com.apple.trustd.agent", "com.apple.ocspd", "com.apple.networkd",
+  "com.apple.SystemConfiguration.DNSConfiguration", "com.apple.SystemConfiguration.configd"];
+
+/** An SBPL string literal. @param {string} s */
+function sbStr(s) {
+  if (!s.startsWith("/") || /[\u0000-\u001f\u007f]/.test(s)) throw new Error(`unsafe path for the sandbox profile: ${JSON.stringify(s)}`);
+  return `"${s.replace(/[\\"]/g, "\\$&")}"`;
+}
+/** A path filter: `subpath` for a directory, a regex for a name prefix (`~/.claude*`: the directory and ~/.claude.json). @param {string} p */
+function sbPath(p) {
+  if (!p.endsWith("*")) return `(subpath ${sbStr(p)})`;
+  const base = p.slice(0, -1);
+  sbStr(base);
+  if (/["\\]/.test(base)) throw new Error(`unsafe path for the sandbox profile: ${JSON.stringify(p)}`);
+  return `(regex #"^${base.replace(/[.^$|?*+()[\]{}]/g, "\\$&")}")`;
+}
+
+/** The secrets the profile names as denied (everything else in the home is denied by default). @param {string} home */
+export const macDenied = (home) => [`${home}/.ssh`, `${home}/.aws`, `${home}/.gnupg`, `${home}/.netrc`, `${home}/Library/Keychains`, `${home}/.claude*`, `${home}/.codex`, `${home}/.config`, configDir(), cacheDir()];
+
+/**
+ * The sandbox-exec profile of one run. The slot (`ROOT`, read-only) and its temp directory (`TMP`, writable) come as
+ * parameters (`-D ROOT=... -D TMP=...`); the other paths are written in.
+ * @param {{ deny: string[], files?: string[], dirs?: string[], writes?: string[] }} p
+ *   deny: paths (a trailing `*` for a name prefix) never readable or writable; files: single files to read and run (a native
+ *   harness binary); dirs: directories to read and map code from (a harness package and the Node it runs on); writes:
+ *   directories to read and write (the session store, the helper's Codex home)
+ */
+export function macProfile(p) {
+  const list = (/** @type {string} */ rule, /** @type {string[]} */ filters) => (filters.length ? [`(${rule}\n  ${filters.join("\n  ")})`] : []);
+  const files = p.files ?? [], dirs = p.dirs ?? [], writes = p.writes ?? [];
+  return [
+    "(version 1)",
+    "(deny default)",
+    "(allow process-exec)",
+    "(allow process-fork)",
+    "(allow signal (target same-sandbox))",
+    "(allow process-info* (target same-sandbox))",
+    "(allow sysctl-read)",
+    '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
+    "(allow ipc-posix-sem)",
+    '(allow ipc-posix-shm-read* (ipc-posix-name "apple.shm.notification_center"))',
+    ...list("allow mach-lookup", MAC_SERVICES.map((s) => `(global-name ${JSON.stringify(s)})`)),
+    '(allow system-mac-syscall (mac-policy-name "vnguard"))',
+    '(allow system-mac-syscall (require-all (mac-policy-name "Sandbox") (mac-syscall-number 67)))',
+    "; devices",
+    '(allow file-read* file-write-data file-ioctl (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper"))',
+    '(allow file-read* (literal "/dev/random") (literal "/dev/urandom") (literal "/dev/autofs_nowait"))',
+    '(allow file-read-data file-write-data file-test-existence (subpath "/dev/fd"))',
+    '(allow file-read-metadata (literal "/dev"))',
+    "; resolving the root, the standard symlinks and the parents of firmlinks",
+    '(allow file-read* file-test-existence (literal "/"))',
+    '(allow file-read-metadata file-test-existence (literal "/etc") (literal "/tmp") (literal "/var") (literal "/private") (literal "/System") (literal "/System/Volumes") (literal "/System/Volumes/Data") (literal "/Users") (subpath "/private/var"))',
+    "; system files and software installed for all users",
+    ...list("allow file-read* file-test-existence", [...MAC_SYSTEM, ...MAC_SOFTWARE].map((d) => `(subpath ${sbStr(d)})`)),
+    ...list("allow file-map-executable", [...MAC_EXEC, ...MAC_SOFTWARE].map((d) => `(subpath ${sbStr(d)})`)),
+    "; network: outbound only, DNS through mDNSResponder",
+    '(allow network-outbound (remote ip "*:*"))',
+    '(allow network-outbound (literal "/private/var/run/mDNSResponder") (literal "/private/var/run/syslog"))',
+    "(allow system-socket (require-all (socket-domain AF_SYSTEM) (socket-protocol 2)))",
+    "; secrets: denied before the allows below, the only rules that may re-open a path under them",
+    ...list("deny file-read* file-write*", p.deny.map(sbPath)),
+    "; the call: its slot read-only, the slot's temp directory writable",
+    '(allow file-read* file-test-existence (subpath (param "ROOT")))',
+    '(allow file-read* file-write* file-test-existence (subpath (param "TMP")))',
+    // A harness may unpack native addons into its temp directory and load them.
+    '(allow file-map-executable (subpath (param "TMP")))',
+    "; the harness install, the session store and the helper's Codex home",
+    ...list("allow file-read* file-test-existence file-map-executable", [...files.map((f) => `(literal ${sbStr(f)})`), ...dirs.map((d) => `(subpath ${sbStr(d)})`)]),
+    ...list("allow file-read* file-write* file-test-existence", writes.map((d) => `(subpath ${sbStr(d)})`)),
+    ...list("allow file-read-metadata file-test-existence", [...files, ...dirs, ...writes].map((x) => `(path-ancestors ${sbStr(x)})`)),
+    "",
+  ].join("\n");
+}
+
+/** Whether a file starts with `#!` (a script such as the npm `claude` or `codex` launcher). @param {string} p */
+function isScript(p) {
+  try { const fd = openSync(p, "r"); const b = Buffer.alloc(2); readSync(fd, b, 0, 2, 0); closeSync(fd); return b.toString("latin1") === "#!"; } catch { return false; }
+}
+
+/** The package directory of a file inside an npm package: the nearest parent with a package.json. @param {string} file */
+function packageDir(file) {
+  for (let d = dirname(file), i = 0; i < 8 && d !== dirname(d); d = dirname(d), i++) if (existsSync(join(d, "package.json"))) return d;
+  return dirname(file);
+}
+
+/**
+ * What runs a harness on macOS and what the profile lets it read: a native binary runs as itself; a Node script (an npm
+ * install of claude) runs on the Node found on PATH, with its package and that Node's install readable.
+ * @param {string} bin resolved harness binary @param {string | null} [node] resolved node binary
+ * @returns {{ argv: string[], files: string[], dirs: string[] }}
+ */
+export function macInstall(bin, node = null) {
+  if (!isScript(bin)) return { argv: [bin], files: [bin], dirs: [] };
+  if (!node) throw new Error(`${bin} is a Node script and node was not found on PATH`);
+  return { argv: [node, bin], files: [], dirs: [packageDir(bin), dirname(dirname(node))] };
+}
+
+/** The resolved `node` on PATH, or null. */
+function nodeOnPath() {
+  for (const d of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+    try { accessSync(join(d, "node"), constants.X_OK); return realpathSync(join(d, "node")); } catch { /* next */ }
+  }
+  return null;
+}
+
+/** The directory the slots live in: the per-user cache directory, resolved (/private/var/folders/<..>/C/autocraft-task). */
+function slotBase() {
+  const r = spawnSync("/usr/bin/getconf", ["DARWIN_USER_CACHE_DIR"], { encoding: "utf8", timeout: 10_000 });
+  const d = r.status === 0 ? r.stdout.trim() : "";
+  if (!d) throw new Error("getconf DARWIN_USER_CACHE_DIR gave no directory");
+  return privateDir(join(realpathSync(d), "autocraft-task"));
+}
+/** @param {string} base @param {number} n */
+export const slotRoot = (base, n) => `${base}/slot-${n}`;
+
+/** Takes slot `n`'s lock (a file naming a live process); the release function, or null when another run holds it. @param {string} base @param {number} n */
+function takeSlot(base, n) {
+  const file = `${slotRoot(base, n)}.lock`;
+  for (let i = 0; i < 2; i++) {
+    try {
+      writeFileSync(file, String(process.pid), { flag: "wx", mode: 0o600 });
+      return () => rmSync(file, { force: true });
+    } catch {
+      const pid = Number.parseInt((() => { try { return readFileSync(file, "utf8"); } catch { return ""; } })(), 10);
+      if (pid > 0 && alive(pid)) return null;
+      rmSync(file, { force: true });
+    }
+  }
+  return null;
+}
+
+/** The lowest free slot, held until `release`. @param {string} base @returns {{ n: number, release: () => void }} */
+function holdSlot(base) {
+  for (let n = 0; n < MAC_MAX_SLOTS; n++) { const release = takeSlot(base, n); if (release) return { n, release }; }
+  throw new Error(`all ${MAC_MAX_SLOTS} slots are busy`);
+}
+
+/** A slot for a lease that another process runs later (`claim`, `run --detach`): free now and named by no claimed lease. @param {string} base */
+function pickSlot(base) {
+  const dir = join(configDir(), "leases");
+  const named = new Set(existsSync(dir) ? readdirSync(dir).map((f) => readJson(join(dir, f))?.slot).filter((n) => Number.isInteger(n)) : []);
+  for (let n = 0; n < MAC_MAX_SLOTS; n++) {
+    if (named.has(n)) continue;
+    const release = takeSlot(base, n);
+    if (release) { release(); return n; }
+  }
+  throw new Error(`all ${MAC_MAX_SLOTS} slots are busy or hold claimed leases`);
+}
+
+/** The values a flag takes in an argument list. @param {string[]} args @param {string} flag */
+const argValues = (args, flag) => args.flatMap((a, i) => (args[i - 1] === flag ? [a] : []));
+
+/**
+ * Where a call's files go in a slot: each prepared mount at its fixed sandbox path below the root, an empty directory for
+ * each rooted --add-dir without a mount and for the parents of nested mounts (`<root>/repos`), and the mounts as the
+ * harness and the file tools see them.
+ * @param {string} root @param {{ host: string, path: string }[]} mounts prepared mounts at fixed sandbox paths @param {string[]} [addDirs] rooted --add-dir values
+ */
+export function slotPlan(root, mounts, addDirs = []) {
+  const copies = mounts.map((m) => ({ src: m.host, dst: `${root}${checkMountPath(m.path)}` }));
+  const empty = addDirs.filter((d) => d.startsWith(`${root}/`)).map((d) => `${root}${checkMountPath(d.slice(root.length))}`);
+  const parents = copies.map((c) => dirname(c.dst)).filter((d) => d !== root);
+  const dirs = [...new Set([...empty, ...parents])].filter((d) => !copies.some((c) => c.dst === d));
+  return { copies, dirs, mounts: copies.map((c) => ({ host: c.dst, path: c.dst })) };
+}
+
+/** Entries of a slot no call replaces. */
+const SLOT_FIXED = new Set(["work", "tmp"]);
+
+/** Copies a tree with clonefile where the filesystem has it (APFS), as a plain copy elsewhere. @param {string} src @param {string} dst */
+async function cloneTree(src, dst) {
+  const tmp = `${dst}.tmp-${process.pid}`;
+  rmSync(tmp, { recursive: true, force: true });
+  let r = await run("cp", process.platform === "darwin" ? ["-c", "-R", src, tmp] : ["-R", "--reflink=auto", src, tmp]);
+  if (r.code !== 0 && process.platform === "darwin") { rmSync(tmp, { recursive: true, force: true }); r = await run("cp", ["-R", src, tmp]); }
+  if (r.code !== 0) { rmSync(tmp, { recursive: true, force: true }); throw new Error(`copying ${src}: ${r.stderr.trim().slice(0, 200)}`); }
+  renameSync(tmp, dst);
+}
+
+/**
+ * Fills a slot for one call: removes what the call does not use, copies each tree that differs from what the slot holds
+ * (recorded beside the slot, not in it), makes the empty directories, writes the call's files and empties tmp/.
+ * @param {string} root @param {ReturnType<typeof slotPlan>} plan @param {{ name: string, content: string }[]} files written at the slot's top level, mode 0600
+ */
+export async function fillSlot(root, plan, files) {
+  const recordFile = `${root}.json`;
+  /** @type {Record<string, string>} */
+  const record = readJson(recordFile) ?? {};
+  privateDir(root);
+  const wanted = new Set([...plan.copies.map((c) => c.dst), ...plan.dirs, ...files.map((f) => `${root}/${f.name}`)]);
+  /** @param {string} p */
+  const drop = (p) => {
+    rmSync(p, { recursive: true, force: true });
+    for (const k of Object.keys(record)) if (k === p || k.startsWith(`${p}/`)) delete record[k];
+  };
+  /** Removes what the call does not use below `dir`; an empty directory of the plan keeps only the copies inside it. @param {string} dir */
+  const prune = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (dir === root && SLOT_FIXED.has(e.name)) continue;
+      if (plan.dirs.includes(p)) { if (record[p] !== undefined || !e.isDirectory()) drop(p); else prune(p); }
+      else if (wanted.has(p)) continue;
+      else if (e.isDirectory() && [...wanted].some((w) => w.startsWith(`${p}/`))) prune(p);
+      else drop(p);
+    }
+  };
+  prune(root);
+  for (const c of plan.copies) {
+    if (record[c.dst] === c.src && existsSync(c.dst)) continue;
+    rmSync(c.dst, { recursive: true, force: true });
+    delete record[c.dst];
+    mkdirSync(dirname(c.dst), { recursive: true });
+    await cloneTree(c.src, c.dst);
+    record[c.dst] = c.src;
+  }
+  for (const d of plan.dirs) mkdirSync(d, { recursive: true });
+  for (const f of files) {
+    if (!/^[a-z][a-z0-9.-]*$/.test(f.name)) throw new Error(`bad slot file name ${f.name}`);
+    writeFileSync(`${root}/${f.name}`, f.content, { mode: 0o600 });
+  }
+  mkdirSync(`${root}/work`, { recursive: true });
+  rmSync(`${root}/tmp`, { recursive: true, force: true });
+  for (const d of ["tmp/home", "tmp/t"]) mkdirSync(`${root}/${d}`, { recursive: true, mode: 0o700 });
+  writePrivate(recordFile, record);
+}
+
+/**
+ * The sandbox-exec command of one run: the profile file, the slot and its temp directory as parameters, the harness, its
+ * working directory in the slot. `env` is the process's whole environment.
+ * @param {{ profile: string, root: string, argv: string[], env: Record<string, string> }} s
+ */
+export function macCommand(s) {
+  const tmp = `${s.root}/tmp`;
+  return {
+    cmd: SANDBOX_EXEC, args: ["-f", s.profile, "-D", `ROOT=${s.root}`, "-D", `TMP=${tmp}`, ...s.argv], cwd: `${s.root}/work`,
+    env: { HOME: `${tmp}/home`, TMPDIR: `${tmp}/t/`, PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", ...s.env },
+  };
+}
+
+/**
+ * The Keychain item of Claude Code's login on macOS, as Claude Code names it: service "Claude Code-credentials" (with the
+ * first 8 hex digits of the SHA-256 of CLAUDE_CONFIG_DIR appended when that is set), account the user name.
+ * @param {Record<string, string | undefined>} [env]
+ */
+export function claudeKeychainItem(env = process.env) {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  let user = env.USER;
+  if (!user) try { user = userInfo().username; } catch { user = ""; }
+  return {
+    service: `Claude Code-credentials${dir ? `-${createHash("sha256").update(dir.normalize("NFC")).digest("hex").slice(0, 8)}` : ""}`,
+    account: user && /^[a-zA-Z0-9._-]+$/.test(user) ? user : "claude-code-user",
+  };
+}
+
+/**
+ * The access token of the user's own Claude Code login, read from the Keychain outside the sandbox with `security`, and
+ * when it expires. The helper never refreshes it: a refresh rotates the login and would sign Claude Code out.
+ * @returns {{ token: string, expiresAt: number | null } | null}
+ */
+function keychainCredential() {
+  if (process.platform !== "darwin") return null;
+  const { service, account } = claudeKeychainItem();
+  const r = spawnSync("/usr/bin/security", ["find-generic-password", "-a", account, "-w", "-s", service], { encoding: "utf8", timeout: 20_000 });
+  if (r.status !== 0) return null;
+  try {
+    const o = JSON.parse(r.stdout.trim())?.claudeAiOauth;
+    return typeof o?.accessToken === "string" && o.accessToken ? { token: o.accessToken, expiresAt: typeof o.expiresAt === "number" ? o.expiresAt : null } : null;
+  } catch { return null; }
+}
+
+/**
+ * The canary, run by Node inside the profile: it must read the slot and write its temp directory, and must not read a file
+ * the helper planted in the home, list the home, ~/.ssh or the Keychains, or write the home or the slot. Prints one JSON line.
+ */
+const CANARY = `const fs = require("node:fs");
+const [slotFile, tmp, planted, home, ssh, keychains, root] = process.argv.slice(1);
+const t = (f) => { try { f(); return { ok: true }; } catch (e) { return { ok: false, code: e.code || String(e) }; } };
+console.log(JSON.stringify({
+  readSlot: t(() => fs.readFileSync(slotFile)), writeTmp: t(() => fs.writeFileSync(tmp + "/w", "x")),
+  readPlanted: t(() => fs.readFileSync(planted)), listHome: t(() => fs.readdirSync(home)), listSsh: t(() => fs.readdirSync(ssh)),
+  listKeychains: t(() => fs.readdirSync(keychains)), writeHome: t(() => fs.writeFileSync(planted + ".w", "x")), writeSlot: t(() => fs.writeFileSync(root + "/w", "x")),
+}));`;
+
+/** What each canary probe must give. */
+const CANARY_WANT = { readSlot: true, writeTmp: true, readPlanted: false, listHome: false, listSsh: false, listKeychains: false, writeHome: false, writeSlot: false };
+
+/**
+ * Reads the canary's output: ok only when every probe gave what it must, with one line per probe.
+ * @param {string} stdout @returns {{ ok: boolean, lines: string[] }}
+ */
+export function canaryVerdict(stdout) {
+  let r;
+  try { r = JSON.parse(stdout.trim().split("\n").at(-1) ?? ""); } catch { return { ok: false, lines: ["the canary printed no result"] }; }
+  const lines = [], bad = [];
+  for (const [k, want] of Object.entries(CANARY_WANT)) {
+    const got = r?.[k]?.ok === true;
+    lines.push(`${got === want ? "ok  " : "FAIL"} ${k}: ${got ? "allowed" : `denied (${r?.[k]?.code ?? "?"})`}${got === want ? "" : `, must be ${want ? "allowed" : "denied"}`}`);
+    if (got !== want) bad.push(k);
+  }
+  return { ok: bad.length === 0, lines };
+}
+
+/** A sandbox run outside any slot (canary, doctor): its own root beside the slots, emptied first. @param {string} name */
+function scratchSlot(name) {
+  const root = `${slotBase()}/${name}`;
+  rmSync(root, { recursive: true, force: true });
+  for (const d of ["work", "tmp/home", "tmp/t"]) mkdirSync(`${root}/${d}`, { recursive: true, mode: 0o700 });
+  return root;
+}
+
+/**
+ * Runs the canary inside the profile the harness runs in, with Node as the harness. Throws nothing.
+ * @returns {{ ok: boolean, lines: string[] }}
+ */
+function macCanary() {
+  let planted = "";
+  try {
+    const home = realpathSync(homedir());
+    const root = scratchSlot("canary");
+    writeFileSync(`${root}/slot.txt`, "slot");
+    planted = join(home, `.autocraft-task-canary-${randomBytes(6).toString("hex")}`);
+    writeFileSync(planted, "planted", { mode: 0o600 });
+    const node = realpathSync(process.execPath);
+    const profile = `${root}.sb`;
+    writeFileSync(profile, macProfile({ deny: macDenied(home), files: [node], dirs: [dirname(dirname(node))] }), { mode: 0o600 });
+    const c = macCommand({ profile, root, argv: [node, "-e", CANARY, `${root}/slot.txt`, `${root}/tmp`, planted, home, join(home, ".ssh"), join(home, "Library", "Keychains"), root], env: {} });
+    const r = spawnSync(c.cmd, c.args, { cwd: c.cwd, env: c.env, encoding: "utf8", timeout: 30_000 });
+    if (r.status !== 0) return { ok: false, lines: [`the canary did not run (exit ${r.status}): ${(r.stderr || String(r.error ?? "")).trim().slice(0, 300)}`] };
+    return canaryVerdict(r.stdout);
+  } catch (e) {
+    return { ok: false, lines: [`the canary could not be set up: ${msg(e)}`] };
+  } finally {
+    if (planted) { rmSync(planted, { force: true }); rmSync(`${planted}.w`, { force: true }); }
+  }
+}
+
+/** @type {{ ok: boolean, lines: string[] } | null} */
+let canaryResult = null;
+/** Throws unless the canary passed in this process (run once, before the first claim). */
+function requireCanary() {
+  if (process.platform !== "darwin") return;
+  canaryResult ??= macCanary();
+  if (!canaryResult.ok) throw new Error(`the macOS sandbox canary failed, so no call is claimed:\n  ${canaryResult.lines.join("\n  ")}`);
+}
 
 /** @type {Record<HarnessId, Adapter>} */
 const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter };
@@ -819,6 +1219,7 @@ const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter };
  * @property {string} [agentToken]
  * @property {HarnessId} [harness]
  * @property {string} [claudeToken]
+ * @property {"setup-token" | "keychain"} [claudeAuth]  where the Claude credential comes from: the stored setup-token (default), or on macOS the access token of the user's own Claude Code login in the Keychain
  * @property {string} [claudeBin]
  * @property {string} [codexBin]
  * @property {Partial<Record<Tier, string>>} [tiers]  model per tier; defaults are the adapter's
@@ -858,7 +1259,7 @@ const loadConfig = () => readJson(join(configDir(), "config.json")) ?? {};
 /** @param {Config} c */
 const saveConfig = (c) => writePrivate(join(configDir(), "config.json"), c);
 
-/** @typedef {{ secret: string, title: string, requiredHelper: string, server: string, claimedAt: number }} LeaseRecord */
+/** `slot` and `root`: the macOS slot the claim named. @typedef {{ secret: string, title: string, requiredHelper: string, server: string, claimedAt: number, slot?: number, root?: string }} LeaseRecord */
 /** @param {number | string} id */
 const leaseFile = (id) => join(configDir(), "leases", `${Number(id)}.json`);
 /** @param {number | string} id @returns {LeaseRecord | null} */
@@ -889,17 +1290,18 @@ const secretsInUse = new Set();
 /** @param {unknown} e */
 const msg = (e) => redact(e instanceof Error ? e.message : String(e));
 
-// Session stores: sessions/<callId>.json names the store directory and the harness session id; stores live in sessions/store-*.
+// Session stores: sessions/<callId>.json names the store directory, the harness session id and, on macOS, the slot whose
+// paths the session read; stores live in sessions/store-*.
 const sessionsDir = () => join(cacheDir(), "sessions");
-/** @param {number} callId @returns {{ sessionId: string, dir: string, at: number } | null} */
+/** @param {number} callId @returns {{ sessionId: string, dir: string, at: number, slot?: number } | null} */
 function readSession(callId) {
   const s = readJson(join(sessionsDir(), `${callId}.json`));
   return s && Date.now() - s.at < SESSION_TTL_MS && existsSync(s.dir) ? s : null;
 }
-/** Call ids whose session store this helper still holds. */
-function heldSessions() {
+/** Call ids whose session store this helper still holds; on macOS only those of slot `slot`. @param {number} [slot] */
+function heldSessions(slot) {
   if (!existsSync(sessionsDir())) return [];
-  return readdirSync(sessionsDir()).flatMap((f) => { const m = /^(\d+)\.json$/.exec(f); return m && readSession(Number(m[1])) ? [Number(m[1])] : []; });
+  return readdirSync(sessionsDir()).flatMap((f) => { const m = /^(\d+)\.json$/.exec(f); const s = m ? readSession(Number(m[1])) : null; return s && s.slot === slot ? [Number(m?.[1])] : []; });
 }
 
 /** Removes expired session stores, old cached trees and task directories a crash left behind. */
@@ -1086,7 +1488,8 @@ async function prepareMounts(server, secret, b, taskDir) {
 
 /** Why model calls can't run here, or null. */
 function platformProblem() {
-  if (process.platform !== "linux") return "autocraft-task runs model calls only on Linux and WSL for now: it confines the harness with bubblewrap. The macOS sandbox is not built yet.";
+  if (process.platform === "darwin") return existsSync(SANDBOX_EXEC) ? null : `sandbox-exec is missing (${SANDBOX_EXEC})`;
+  if (process.platform !== "linux") return "autocraft-task runs model calls only on Linux, WSL and macOS: it confines the harness with bubblewrap or sandbox-exec.";
   if (!existsSync(BWRAP)) return `bubblewrap is missing (${BWRAP}); install the bubblewrap package.`;
   return null;
 }
@@ -1107,8 +1510,12 @@ function needLogin(cfg) {
 // ---------------------------------------------------------------------------
 // Claiming and running.
 
-/** @param {Config} cfg @returns {Promise<ClaimReply>} */
-async function claimOnce(cfg) {
+/**
+ * Claims one call. On macOS the claim names the path root of slot `slot` (a free one when not given), which the lease keeps,
+ * and offers only that slot's sessions.
+ * @param {Config} cfg @param {number} [slot] @returns {Promise<ClaimReply>}
+ */
+async function claimOnce(cfg, slot) {
   const { server, agentToken } = needLogin(cfg);
   const adapter = adapterOf(cfg);
   const d = adapter.detect(cfg);
@@ -1116,22 +1523,29 @@ async function claimOnce(cfg) {
   if (!d.loggedIn) throw new Error(`no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
   const tiers = { ...adapter.defaultTiers, ...cfg.tiers };
   if (!Object.keys(tiers).length) throw new Error(`no model is set for any tier: add "tiers" (top, mid, small) with ${adapter.id} model ids to ${join(configDir(), "config.json")}`);
+  requireCanary();
+  const mac = process.platform === "darwin";
+  const n = mac ? slot ?? pickSlot(slotBase()) : undefined;
+  const root = n === undefined ? undefined : slotRoot(slotBase(), n);
   /** @type {Claim} */
-  const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions() };
+  const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }) };
   /** @type {ClaimReply} */
   const reply = await api(server, ROUTES.claim, agentToken, claim);
   if (reply.lease) {
     /** @type {LeaseRecord} */
-    const rec = { secret: reply.lease.secret, title: reply.lease.title, requiredHelper: reply.lease.requiredHelper, server, claimedAt: Date.now() };
+    const rec = { secret: reply.lease.secret, title: reply.lease.title, requiredHelper: reply.lease.requiredHelper, server, claimedAt: Date.now(), ...(root && { slot: n, root }) };
     writePrivate(leaseFile(reply.lease.id), rec);
   }
   return reply;
 }
 
+/** How long a Keychain access token must outlive a call's time limit. */
+const KEYCHAIN_MARGIN_MS = 10 * 60_000;
+
 /**
  * Runs one claimed lease to its end: bundle, mounts, sandboxed harness with heartbeats, submit.
- * Returns the status line; never throws.
- * @param {Config} cfg @param {number} id @param {{ signal?: AbortSignal }} [opt]
+ * Returns the status line; never throws. `slotHeld`: the caller holds the lease's slot (macOS).
+ * @param {Config} cfg @param {number} id @param {{ signal?: AbortSignal, slotHeld?: boolean }} [opt]
  * @returns {Promise<RunStatus>}
  */
 async function runLease(cfg, id, opt = {}) {
@@ -1168,13 +1582,23 @@ async function runLease(cfg, id, opt = {}) {
   if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`, true);
   const problem = platformProblem();
   if (problem) return giveBack(problem, true);
-  let taskDir = "", unlock = () => {}, files = /** @type {{ url: string, token: string, close: () => void } | null} */ (null);
+  let releaseSlot = () => {};
+  if (process.platform === "darwin") {
+    if (lease.root === undefined || lease.slot === undefined) return giveBack("the lease was claimed without a slot");
+    if (!opt.slotHeld) {
+      const r = takeSlot(slotBase(), lease.slot);
+      if (!r) return giveBack(`slot ${lease.slot} is busy with another run`);
+      releaseSlot = r;
+    }
+  }
+  let taskDir = "", unlock = () => {}, token = "";
   try {
     try { prune(); } catch { /* best effort */ }
     const adapter = adapterOf(cfg);
     const d = adapter.detect(cfg);
-    const token = adapter.token(cfg);
+    token = adapter.token(cfg) ?? "";
     if (!d.bin || !token) return giveBack(`${adapter.id} binary or token missing on the helper`, true);
+    secretsInUse.add(token);
     if (adapter.exclusive) {
       const release = takeHarnessLock(adapter.id);
       if (!release) return giveBack(`another ${adapter.id} call is running on this helper, and they share one login`);
@@ -1187,36 +1611,19 @@ async function runLease(cfg, id, opt = {}) {
     if (typeof b?.callId !== "number" || typeof b.stdin !== "string" || !Array.isArray(b.mounts) || !Array.isArray(b.mcpServers)) return fail("unreadable bundle");
     const model = { ...adapter.defaultTiers, ...cfg.tiers }[b.tier];
     if (!model) return giveBack(`no ${adapter.id} model is set for the ${b.tier} tier ("tiers" in the config)`);
+    if (adapter.id === "claude" && cfg.claudeAuth === "keychain") {
+      const cred = keychainCredential();
+      if (!cred) return giveBack("the Claude login was not found in the Keychain: sign in to Claude Code, or store a setup-token with `autocraft-task harness claude`", true);
+      const left = cred.expiresAt === null ? Infinity : cred.expiresAt - Date.now();
+      if (left < b.timeoutSeconds * 1000 + KEYCHAIN_MARGIN_MS) return giveBack(`the Claude login's access token expires in ${Math.max(0, Math.round(left / 60_000))} min, before this call could end: use Claude Code once so it refreshes the token, or store a setup-token`);
+    }
     privateDir(join(cacheDir(), "tasks"));
     taskDir = mkdtempSync(join(cacheDir(), "tasks", `${b.callId}-`));
-    let mounts;
-    try { mounts = await prepareMounts(lease.server, lease.secret, b, taskDir); } catch (e) {
-      if (e instanceof Gone) throw e;
-      return giveBack(`setting up the files failed: ${msg(e)}`);
-    }
-    let mcpFile = "";
-    if (b.mcpServers.length) {
-      for (const n of b.mcpServers) if (!NAME.test(n)) return fail(`bad MCP server name ${n}`);
-      mcpFile = join(taskDir, "mcp.json");
-      writeFileSync(mcpFile, JSON.stringify(mcpConfig(lease.server, b.mcpServers, lease.secret)), { mode: 0o600 });
-    }
-    // Session store: a follow-up continues its parent's; a call whose arguments keep the session gets a new one.
-    let sessionDir, resumeId;
-    if (b.resume) {
-      const parent = readSession(b.resume.parentCallId);
-      if (!parent) return fail(`the session of call ${b.resume.parentCallId} is no longer held by this helper`);
-      sessionDir = parent.dir; resumeId = parent.sessionId;
-    } else if (b.keepSession) {
-      privateDir(sessionsDir());
-      sessionDir = mkdtempSync(join(sessionsDir(), "store-"));
-    }
-    if (adapter.fileTools) files = await serveFileTools(mounts);
-    const c = adapter.command({ bundle: b, model, bin: d.bin, token, mounts, taskDir, mcpFile, sessionDir, resumeId, lease: { server: lease.server, secret: lease.secret }, ...(files && { files: { url: files.url, token: files.token } }) });
-    const r = await harness(c, b, lease, opt.signal, adapter);
+    const out = await execute(b, { adapter, bin: d.bin, token, model, taskDir, lease, root: lease.root ?? "", ...(lease.slot !== undefined && { slot: lease.slot }), ...(opt.signal && { signal: opt.signal }) });
+    if ("giveBack" in out) return giveBack(out.giveBack);
+    if ("fail" in out) return fail(out.fail);
+    const { r, reply } = out;
     if (r.gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
-    const reply = adapter.parse(r.stdout, model);
-    if (sessionDir && reply.sessionId) writePrivate(join(sessionsDir(), `${b.callId}.json`), { sessionId: reply.sessionId, dir: sessionDir, at: Date.now() });
-    else if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
     if (r.timedOut) return fail(`timed out after ${b.timeoutSeconds} s`, reply.usage);
     if (r.stopped) return giveBack("stopped on the helper");
     if (!reply.ok) return fail(`${reply.error ?? "no result"} (exit ${r.code}) ${r.stderr.trim().slice(-300)}`.trim(), reply.usage);
@@ -1228,36 +1635,96 @@ async function runLease(cfg, id, opt = {}) {
     if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
     return fail(msg(e));
   } finally {
-    files?.close();
     unlock();
+    releaseSlot();
     if (taskDir) rmSync(taskDir, { recursive: true, force: true });
     secretsInUse.delete(lease.secret);
+    if (token) secretsInUse.delete(token);
   }
 }
 
 /**
- * Runs the sandboxed harness: stdin in, heartbeats every 30 s with the last progress line, stopped at the
- * bundle's timeout, on a 410 heartbeat or when `signal` aborts.
- * @param {{ cmd: string, args: string[], env: Record<string, string> }} c @param {TaskBundle} b @param {LeaseRecord} lease @param {AbortSignal | undefined} signal @param {Adapter} adapter
+ * Runs one bundle in the sandbox: its files (in the slot on macOS), the session store, the file tools and the harness.
+ * Private trees and MCP servers need the lease; `try` runs without one.
+ * @param {TaskBundle} b
+ * @param {{ adapter: Adapter, bin: string, token: string, model: string, taskDir: string, lease: LeaseRecord | null, root: string, slot?: number, signal?: AbortSignal }} x
+ * @returns {Promise<{ giveBack: string } | { fail: string } | { r: Awaited<ReturnType<typeof harness>>, reply: Reply }>}
  */
-function harness(c, b, lease, signal, adapter) {
+async function execute(b, x) {
+  const { adapter } = x;
+  const server = x.lease?.server ?? "", secret = x.lease?.secret ?? "";
+  let mounts;
+  try { mounts = await prepareMounts(server, secret, b, x.taskDir); } catch (e) {
+    if (e instanceof Gone) throw e;
+    return { giveBack: `setting up the files failed: ${msg(e)}` };
+  }
+  for (const n of b.mcpServers) if (!NAME.test(n)) return { fail: `bad MCP server name ${n}` };
+  const mcp = b.mcpServers.length ? JSON.stringify(mcpConfig(server, b.mcpServers, secret)) : "";
+  // Session store: a follow-up continues its parent's; a call whose arguments keep the session gets a new one.
+  let sessionDir, resumeId;
+  if (b.resume) {
+    const parent = readSession(b.resume.parentCallId);
+    if (!parent || parent.slot !== x.slot) return { fail: `the session of call ${b.resume.parentCallId} is no longer held by this helper${parent ? " in this slot" : ""}` };
+    sessionDir = parent.dir; resumeId = parent.sessionId;
+  } else if (b.keepSession) {
+    privateDir(sessionsDir());
+    sessionDir = mkdtempSync(join(sessionsDir(), "store-"));
+  }
+  let mcpFile = "";
+  /** @type {AdapterTask["mac"]} */
+  let mac;
+  if (x.root) {
+    const hint = b.hints.claude;
+    const plan = slotPlan(x.root, mounts, argValues(hint?.args ?? [], "--add-dir"));
+    await fillSlot(x.root, plan, [...(mcp ? [{ name: "mcp.json", content: mcp }] : []), ...(adapter.id === "claude" && hint?.agents !== undefined ? [{ name: "agents.json", content: hint.agents }] : [])]);
+    mounts = plan.mounts;
+    if (mcp) mcpFile = `${x.root}/mcp.json`;
+    const install = adapter.install(x.bin);
+    const writes = [...(sessionDir ? [realpathSync(sessionDir)] : []), ...(adapter.id === "codex" ? [realpathSync(x.token)] : [])];
+    const profile = join(x.taskDir, "profile.sb");
+    writeFileSync(profile, macProfile({ deny: macDenied(realpathSync(homedir())), files: install.files, dirs: install.dirs, writes }), { mode: 0o600 });
+    mac = { root: x.root, profile, install };
+  } else if (mcp) {
+    mcpFile = join(x.taskDir, "mcp.json");
+    writeFileSync(mcpFile, mcp, { mode: 0o600 });
+  }
+  let files = /** @type {{ url: string, token: string, close: () => void } | null} */ (null);
+  try {
+    if (adapter.fileTools) files = await serveFileTools(mounts);
+    const c = adapter.command({ bundle: b, model: x.model, bin: x.bin, token: x.token, mounts, taskDir: x.taskDir, mcpFile, sessionDir, resumeId, lease: { server, secret }, ...(files && { files: { url: files.url, token: files.token } }), ...(mac && { mac }) });
+    const r = await harness(c, b, x.lease, x.signal, adapter, x.root);
+    const reply = adapter.parse(r.stdout, x.model);
+    if (!r.gone && sessionDir && reply.sessionId) writePrivate(join(sessionsDir(), `${b.callId}.json`), { sessionId: reply.sessionId, dir: sessionDir, at: Date.now(), ...(x.slot !== undefined && { slot: x.slot }) });
+    else if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
+    return { r, reply };
+  } finally {
+    files?.close();
+  }
+}
+
+/**
+ * Runs the sandboxed harness: stdin in, heartbeats every 30 s with the last progress line (with a lease), stopped at the
+ * bundle's timeout, on a 410 heartbeat or when `signal` aborts. Progress lines name paths without the slot's root.
+ * @param {{ cmd: string, args: string[], env: Record<string, string>, cwd?: string }} c @param {TaskBundle} b @param {LeaseRecord | null} lease @param {AbortSignal | undefined} signal @param {Adapter} adapter @param {string} root
+ */
+function harness(c, b, lease, signal, adapter, root) {
   return new Promise((resolve) => {
-    const p = spawn(c.cmd, c.args, { env: c.env, stdio: ["pipe", "pipe", "pipe"] });
+    const p = spawn(c.cmd, c.args, { env: c.env, stdio: ["pipe", "pipe", "pipe"], ...(c.cwd && { cwd: c.cwd }) });
     let stdout = "", stderr = "", partial = "", progress = "", gone = false, timedOut = false, stopped = false, settled = false;
     const kill = () => { p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 5000).unref(); };
     p.stdout.on("data", (d) => {
       stdout += d;
       const lines = (partial + d).split("\n");
       partial = lines.pop() ?? "";
-      for (const l of lines) { const x = adapter.progress(l); if (x) progress = x; }
+      for (const l of lines) { const x = adapter.progress(root ? l.split(root).join("") : l); if (x) progress = x; }
     });
     p.stderr.on("data", (d) => { if (stderr.length < 16_000) stderr += d; });
     p.stdin.on("error", () => {});
     p.stdin.end(b.stdin);
-    const beat = setInterval(async () => {
+    const beat = lease ? setInterval(async () => {
       try { await api(lease.server, ROUTES.heartbeat, lease.secret, /** @type {Heartbeat} */ (progress ? { progress } : {})); }
       catch (e) { if (e instanceof Gone) { gone = true; kill(); } }
-    }, HEARTBEAT_MS);
+    }, HEARTBEAT_MS) : undefined;
     const timer = setTimeout(() => { timedOut = true; kill(); }, b.timeoutSeconds * 1000);
     const onAbort = () => { stopped = true; kill(); };
     signal?.addEventListener("abort", onAbort);
@@ -1325,10 +1792,19 @@ async function cmdLogin(argv) {
 async function cmdHarness(argv) {
   const id = argv[0];
   if (id === "codex") return codexLogin(argv.slice(1));
-  if (id !== "claude") throw new Error("usage: autocraft-task harness claude  (a `claude setup-token` token on stdin)\n       autocraft-task harness codex [--device-auth]");
+  if (id !== "claude") throw new Error("usage: autocraft-task harness claude [--keychain]  (a `claude setup-token` token on stdin)\n       autocraft-task harness codex [--device-auth]");
+  if (argv.includes("--keychain")) {
+    // macOS: the access token of the user's own Claude Code login, read from the Keychain before each call.
+    if (process.platform !== "darwin") throw new Error("--keychain reads Claude Code's login from the macOS Keychain; elsewhere store a setup-token");
+    const item = claudeKeychainItem();
+    if (!keychainCredential()) throw new Error(`no Claude Code login in the Keychain item "${item.service}" (account ${item.account}): sign in to Claude Code first`);
+    saveConfig({ ...loadConfig(), harness: "claude", claudeAuth: "keychain" });
+    console.log(`the helper reads the Claude login from the Keychain item "${item.service}" before each call; it never refreshes it, so use Claude Code now and then, or store a setup-token instead`);
+    return;
+  }
   const token = await readSecret("Claude token (from `claude setup-token`): ");
   if (!token || /\s/.test(token)) throw new Error("no token on stdin");
-  saveConfig({ ...loadConfig(), harness: "claude", claudeToken: token });
+  saveConfig({ ...loadConfig(), harness: "claude", claudeToken: token, claudeAuth: "setup-token" });
   const d = claudeAdapter.detect(loadConfig());
   console.log(d.bin ? `stored the Claude token; claude ${d.version ?? "(version unknown)"} at ${d.bin}` : "stored the Claude token; claude was not found on PATH");
 }
@@ -1372,13 +1848,25 @@ async function cmdRun(argv) {
   const problem = platformProblem();
   if (problem) throw new Error(problem);
   const cfg = loadConfig();
+  requireCanary();
   let id;
-  if (pos[0]) id = leaseId(pos[0]);
-  else {
-    const r = await claimOnce(cfg);
-    if (!r.lease) { console.log(`no task queued; try again in ${r.retryAfter} s`); return 0; }
-    id = r.lease.id;
+  // macOS: a run in this process holds its slot from the claim to the end; a detached run's child takes it.
+  const held = !pos[0] && !detach && process.platform === "darwin" ? holdSlot(slotBase()) : null;
+  try {
+    if (pos[0]) id = leaseId(pos[0]);
+    else {
+      const r = await claimOnce(cfg, held?.n);
+      if (!r.lease) { console.log(`no task queued; try again in ${r.retryAfter} s`); return 0; }
+      id = r.lease.id;
+    }
+    return await runOrDetach(cfg, id, detach, held !== null);
+  } finally {
+    held?.release();
   }
+}
+
+/** @param {Config} cfg @param {number} id @param {boolean} detach @param {boolean} slotHeld */
+async function runOrDetach(cfg, id, detach, slotHeld) {
   const lease = readLease(id);
   if (!lease) throw new Error(`no lease ${id} was claimed on this machine`);
   if (detach) {
@@ -1395,7 +1883,7 @@ async function cmdRun(argv) {
   const ac = new AbortController();
   process.once("SIGINT", () => ac.abort());
   process.once("SIGTERM", () => ac.abort());
-  const s = await runLease(cfg, id, { signal: ac.signal });
+  const s = await runLease(cfg, id, { signal: ac.signal, slotHeld });
   console.log(s.line);
   return s.state === "submitted" ? 0 : 1;
 }
@@ -1446,15 +1934,22 @@ async function cmdWork(argv) {
   if (exclusive.exclusive && n > 1) throw new Error(`${exclusive.id} runs one call at a time: its login refreshes in place and must not be shared by parallel calls`);
   const problem = platformProblem();
   if (problem) throw new Error(problem);
+  requireCanary();
   const ac = new AbortController();
   process.on("SIGINT", () => { if (ac.signal.aborted) process.exit(130); console.log("stopping: running calls are stopped and reported; press Ctrl-C again to quit at once"); ac.abort(); });
   let idleSaid = false;
   /** @param {number} ms */
   const pause = (ms) => sleep(ms, undefined, { signal: ac.signal }).catch(() => {});
   const loop = async () => {
+    // macOS: each loop holds one slot for its lifetime, so its claims name that slot's root and sessions.
+    const held = process.platform === "darwin" ? holdSlot(slotBase()) : null;
+    try { await claimLoop(held?.n); } finally { held?.release(); }
+  };
+  /** @param {number | undefined} slot */
+  const claimLoop = async (slot) => {
     while (!ac.signal.aborted) {
       let r;
-      try { r = await claimOnce(loadConfig()); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue; }
+      try { r = await claimOnce(loadConfig(), slot); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue; }
       if (!r.lease) {
         if (!idleSaid) { console.log(`no task queued; claiming again in ${r.retryAfter} s`); idleSaid = true; }
         await pause(Math.max(1, r.retryAfter) * 1000);
@@ -1462,7 +1957,7 @@ async function cmdWork(argv) {
       }
       idleSaid = false;
       console.log(`lease ${r.lease.id}: ${r.lease.title}`);
-      const s = await runLease(loadConfig(), r.lease.id, { signal: ac.signal });
+      const s = await runLease(loadConfig(), r.lease.id, { signal: ac.signal, slotHeld: slot !== undefined });
       console.log(s.line);
       if (s.stop) { console.log("stopping: this helper can take no call until that is fixed"); ac.abort(); }
       // A released call goes back to the queue; claiming at once would likely hand it straight back.
@@ -1473,6 +1968,48 @@ async function cmdWork(argv) {
   return 0;
 }
 
+/**
+ * Runs a bundle from a file in the sandbox without a server and prints the reply: for testing the sandbox and a harness.
+ * Its mounts must be git or files mounts and it may name no MCP servers. On macOS it runs in slot `--slot` (0), and the
+ * bundle's paths must already be below that slot's root (scripts/remote-bundle.ts --root).
+ * @param {string[]} argv
+ */
+async function cmdTry(argv) {
+  const i = argv.indexOf("--slot");
+  const file = argv.find((a, k) => !a.startsWith("--") && argv[k - 1] !== "--slot");
+  if (!file) throw new Error("usage: autocraft-task try <bundle.json> [--slot N]");
+  const problem = platformProblem();
+  if (problem) throw new Error(problem);
+  requireCanary();
+  /** @type {TaskBundle} */
+  const b = JSON.parse(readFileSync(file, "utf8"));
+  if (b.mcpServers?.length) throw new Error("try runs without a server: the bundle may name no MCP servers");
+  const cfg = loadConfig();
+  const adapter = adapterOf(cfg);
+  const d = adapter.detect(cfg);
+  const token = adapter.token(cfg);
+  if (!d.bin || !token) throw new Error(`${adapter.id} binary or login missing`);
+  const model = { ...adapter.defaultTiers, ...cfg.tiers }[b.tier];
+  if (!model) throw new Error(`no ${adapter.id} model is set for the ${b.tier} tier`);
+  const mac = process.platform === "darwin";
+  const held = mac ? (() => { const n = i >= 0 ? Number(argv[i + 1]) : 0; const r = Number.isInteger(n) ? takeSlot(slotBase(), n) : null; if (!r) throw new Error(`slot ${argv[i + 1] ?? 0} is busy or not a slot number`); return { n, release: r }; })() : null;
+  const root = held ? slotRoot(slotBase(), held.n) : "";
+  if (root && !JSON.stringify(b.hints).includes(root)) console.error(`warning: the bundle's arguments do not name ${root}; build it with --root ${root}`);
+  privateDir(join(cacheDir(), "tasks"));
+  const taskDir = mkdtempSync(join(cacheDir(), "tasks", "try-"));
+  secretsInUse.add(token);
+  try {
+    const out = await execute({ ...b, callId: 0, resume: undefined }, { adapter, bin: d.bin, token, model, taskDir, lease: null, root, ...(held && { slot: held.n }) });
+    if ("giveBack" in out || "fail" in out) { console.log(JSON.stringify(out)); return 1; }
+    console.log(redact(JSON.stringify({ exit: out.r.code, timedOut: out.r.timedOut, ...out.reply, stderr: out.r.stderr.trim().slice(-2000) }, null, 2)));
+    return out.reply.ok ? 0 : 1;
+  } finally {
+    held?.release();
+    rmSync(taskDir, { recursive: true, force: true });
+    secretsInUse.delete(token);
+  }
+}
+
 async function cmdDoctor() {
   let bad = 0;
   /** @param {boolean} ok @param {string} line */
@@ -1480,21 +2017,32 @@ async function cmdDoctor() {
   const major = Number(process.versions.node.split(".")[0]);
   check(major >= 22, `node ${process.versions.node}${major >= 22 ? "" : " (22 or later needed)"}`);
   const problem = platformProblem();
-  check(!problem, problem ?? `platform ${process.platform}, bubblewrap at ${BWRAP}`);
+  const mac = process.platform === "darwin";
+  check(!problem, problem ?? (mac ? `platform darwin, sandbox-exec at ${SANDBOX_EXEC}` : `platform ${process.platform}, bubblewrap at ${BWRAP}`));
   if (problem) return 1;
-  const ns = spawnSync(BWRAP, ["--unshare-all", "--share-net", "--die-with-parent", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin", "--proc", "/proc", "--dev", "/dev", "/usr/bin/true"], { encoding: "utf8", timeout: 20_000 });
-  check(ns.status === 0, ns.status === 0 ? "a sandbox starts" : `a sandbox does not start: ${(ns.stderr || "").trim().slice(0, 200)}`);
+  if (mac) {
+    canaryResult = macCanary();
+    check(canaryResult.ok, canaryResult.ok ? `the sandbox canary passed; slot 0 is ${slotRoot(slotBase(), 0)}` : "the sandbox canary failed: no call will be claimed");
+    for (const l of canaryResult.lines) console.log(`       ${l}`);
+  } else {
+    const ns = spawnSync(BWRAP, ["--unshare-all", "--share-net", "--die-with-parent", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin", "--proc", "/proc", "--dev", "/dev", "/usr/bin/true"], { encoding: "utf8", timeout: 20_000 });
+    check(ns.status === 0, ns.status === 0 ? "a sandbox starts" : `a sandbox does not start: ${(ns.stderr || "").trim().slice(0, 200)}`);
+  }
   for (const tool of ["git", "tar"]) { const r = spawnSync(tool, ["--version"], { encoding: "utf8" }); check(r.status === 0, r.status === 0 ? `${tool} found` : `${tool} not found`); }
   const cfg = loadConfig();
   const adapter = adapterOf(cfg);
   const d = adapter.detect(cfg);
   check(!!d.bin && !!d.version, d.bin ? `${adapter.id} ${d.version ?? "(no version)"} at ${d.bin}` : `${adapter.id} not found on PATH`);
   if (d.bin) {
-    const c = adapter.versionInSandbox(d.bin);
-    const r = spawnSync(c.cmd, c.args, { env: c.env, encoding: "utf8", timeout: 30_000 });
+    const c = mac ? macVersion(adapter, d.bin) : adapter.versionInSandbox(d.bin);
+    const r = spawnSync(c.cmd, c.args, { env: c.env, encoding: "utf8", timeout: 30_000, ...("cwd" in c && { cwd: c.cwd }) });
     check(r.status === 0, r.status === 0 ? `${adapter.id} runs inside the sandbox` : `${adapter.id} does not run inside the sandbox: ${redact((r.stderr || "").trim()).slice(0, 200)}`);
   }
-  check(d.loggedIn, d.loggedIn ? `${adapter.id} login stored` : `no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
+  if (adapter.id === "claude" && cfg.claudeAuth === "keychain") {
+    const k = keychainCredential(), item = claudeKeychainItem();
+    const left = k?.expiresAt ? Math.round((k.expiresAt - Date.now()) / 60_000) : null;
+    check(!!k && (left === null || left > 0), k ? `claude login from the Keychain (${item.service}), access token ${left === null ? "without an expiry" : left > 0 ? `valid for ${left} min` : "expired: use Claude Code once to refresh it"}` : `no Claude login in the Keychain item "${item.service}" (account ${item.account}): sign in to Claude Code, or store a setup-token`);
+  } else check(d.loggedIn, d.loggedIn ? `${adapter.id} login stored` : `no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
   if (adapter.id === "codex" && d.bin && d.loggedIn) {
     const r = spawnSync(d.bin, ["login", "status"], { encoding: "utf8", timeout: 30_000, env: { PATH: process.env.PATH ?? "/usr/bin", HOME: homedir(), CODEX_HOME: codexHome() } });
     check(r.status === 0, r.status === 0 ? `codex: ${(r.stderr || r.stdout).trim().split("\n")[0]}` : "codex login status: not logged in; run `autocraft-task harness codex`");
@@ -1509,6 +2057,19 @@ async function cmdDoctor() {
   const tiers = Object.entries({ ...adapter.defaultTiers, ...cfg.tiers });
   check(tiers.length > 0, tiers.length ? `tiers: ${tiers.map(([t, m]) => `${t}=${m}`).join(", ")}` : `no tiers set: add "tiers" with ${adapter.id} model ids to the config`);
   return bad ? 1 : 0;
+}
+
+/**
+ * The harness's version command inside the macOS profile, in a scratch slot.
+ * @param {Adapter} adapter @param {string} bin
+ */
+function macVersion(adapter, bin) {
+  const root = scratchSlot("doctor");
+  const install = adapter.install(bin);
+  const profile = `${root}.sb`;
+  const codex = adapter.id === "codex" && existsSync(codexHome());
+  writeFileSync(profile, macProfile({ deny: macDenied(realpathSync(homedir())), files: install.files, dirs: install.dirs, ...(codex && { writes: [realpathSync(codexHome())] }) }), { mode: 0o600 });
+  return macCommand({ profile, root, argv: [...install.argv, "--version"], env: adapter.id === "codex" ? { CODEX_HOME: codexHome() } : { CLAUDE_CONFIG_DIR: `${root}/tmp/home/.claude`, DISABLE_AUTOUPDATER: "1" } });
 }
 
 /**
@@ -1603,13 +2164,15 @@ async function cmdTool(argv) {
 const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls under your own harness subscription.
 
   login <server-url>          store the agent token (read from stdin)
-  harness claude              store a \`claude setup-token\` token (read from stdin)
+  harness claude [--keychain] store a \`claude setup-token\` token (read from stdin); on macOS
+                              --keychain uses your Claude Code login from the Keychain instead
   harness codex [--device-auth]  log Codex in to the helper's own CODEX_HOME (not your ~/.codex)
   claim                       claim one call; prints its lease id
   run [--detach] [<lease>]    run a claimed lease, or claim and run one
   wait <lease>                wait for a detached run (returns after at most 9 minutes)
   work [--parallel N]         claim, run and submit in a loop
-  doctor                      check platform, sandbox, harness, login and server
+  doctor                      check platform, sandbox (on macOS with a canary), harness, login and server
+  try <bundle.json> [--slot N]  run a bundle from a file without a server and print the reply (testing)
   mcp <server-name> <lease>   stdio-to-HTTP proxy for one of the lease's MCP servers
   tool <server-name> <tool> [<json>] [<lease>]
                               one tool call without MCP; prints the result
@@ -1629,6 +2192,7 @@ export async function main(argv) {
       case "wait": return await cmdWait(rest);
       case "work": return await cmdWork(rest);
       case "doctor": return await cmdDoctor();
+      case "try": return await cmdTry(rest);
       case "mcp": return await cmdMcp(rest);
       case "tool": return await cmdTool(rest);
       case "version": case "--version": console.log(HELPER_VERSION); return 0;

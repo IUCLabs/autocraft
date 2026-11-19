@@ -7,6 +7,9 @@ import { fillHarness } from "../src/prompts/harness.ts";
 import { CLAUDE_PROMPTS, EXAMPLES, REFERENCE_NOTE, REFERENCE_TOOLS_NOTE, claudeArgs, claudeParts, joinParts, withoutRepoDir, type ClaudePromptId } from "../src/prompts/index.ts";
 import { forHarness } from "../src/remote/calls.ts";
 import { agentsDefinition, MCP_PATH } from "../src/sandbox/agents.ts";
+import type { TaskBundle } from "../src/remote/protocol.ts";
+
+const BUNDLE: Omit<TaskBundle, "callId"> = { promptId: "review.opus", promptVersion: "1", tier: "top", effort: "high", timeoutSeconds: 60, maxTurns: 20, stdin: "", system: null, mounts: [], mcpServers: [], keepSession: false, hints: {} };
 
 /** Every way a call of each prompt is rendered: without a checkout, and sandboxed with the reference and docs flags. */
 function cases(): { name: string; id: ClaudePromptId; input: never; sandboxed: boolean; reference: boolean }[] {
@@ -46,7 +49,7 @@ test("a helper's path root moves only the marked sandbox paths and the path argu
   for (const c of cases()) {
     const input = (c.input as unknown as Record<string, unknown>[]).map((x) => ("title" in x ? { ...x, title: planted } : x)) as never;
     const remote = claudeParts(c.id, input, c.sandboxed, true);
-    const bundle = { stdin: remote.stdin, system: remote.system, hints: {} };
+    const bundle = { ...BUNDLE, stdin: remote.stdin, system: remote.system };
     const plain = forHarness(bundle, "claude"), rooted = forHarness(bundle, "claude", root);
     assert.deepEqual(forHarness(bundle, "claude", ""), plain, c.name);
     // Taking the root back out gives the root-less text: the root was only inserted, and only before a fixed path.
@@ -60,7 +63,7 @@ test("a helper's path root moves only the marked sandbox paths and the path argu
 
   const args = claudeArgs("review.opus", "opus", true, { config: MCP_PATH, servers: ["items"] }, null, false, true, true);
   const agents = JSON.stringify(agentsDefinition(["items"]));
-  const b = { stdin: "", system: null, hints: { claude: { args, agents } } };
+  const b = { ...BUNDLE, hints: { claude: { args, agents } } };
   assert.deepEqual(forHarness(b, "claude"), b);
   const h = forHarness(b, "claude", root).hints.claude!;
   const value = (flag: string) => h.args.flatMap((a, i) => (h.args[i - 1] === flag ? [a] : []));
