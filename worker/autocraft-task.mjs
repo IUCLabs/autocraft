@@ -1960,7 +1960,7 @@ async function checkReady(cfg, opt = {}) {
   const models = adapter ? { ...adapter.defaultTiers, ...cfg.tiers } : { ...cfg.tiers };
   const base = { reserve, reading: null, models, ...(adapter && { adapter }) };
   const problem = platformProblem();
-  if (prev.refused?.version === HELPER_VERSION && now - prev.refused.at < REFUSED_RETRY_MS) st = { ...base, readiness: "version-refused", until: null, reason: prev.refused.reason };
+  if (prev.refused?.version === HELPER_VERSION && now - prev.refused.at < REFUSED_RETRY_MS) st = { ...base, readiness: "version-refused", until: null, reason: `${prev.refused.reason}; update with: ${UPDATE_COMMAND}` };
   else if (!adapter) st = { ...base, readiness: "harness-missing", until: null, reason: `no adapter for harness ${cfg.harness}` };
   else if (problem) st = { ...base, readiness: "sandbox-failed", until: null, reason: problem };
   else {
@@ -1997,6 +1997,49 @@ async function checkReady(cfg, opt = {}) {
 }
 
 /**
+ * The helper's last failure: a server request that failed after its retries, or a failed call's reason. It stays until a
+ * later success of the same kind clears it, and goes to the server with each status report.
+ * @type {{ text: string, at: string, source: "server" | "call" } | null}
+ */
+let lastError = null;
+
+/** @param {string} text @param {"server" | "call"} source */
+function noteError(text, source) {
+  const first = source === "server" && lastError?.source !== "server";
+  lastError = { text: redact(text).replace(/\s+/g, " ").trim().slice(0, 300), at: new Date().toISOString(), source };
+  if (first) console.error(`autocraft-task: the server is not answering: ${lastError.text}`);
+}
+
+/** @param {"server" | "call"} source */
+function clearError(source) {
+  if (lastError?.source !== source) return;
+  lastError = null;
+  if (source === "server") console.error("autocraft-task: the server answers again");
+}
+
+/** The error as the status body carries it. */
+const errorField = () => (lastError ? { lastError: { text: lastError.text, at: lastError.at } } : {});
+
+/** Pauses between the tries of a status report. */
+const STATUS_RETRY_MS = [2000, 6000, 18_000];
+
+/**
+ * A periodic server request that is tried again on a network error, 429 or 5xx, a few times with a growing pause.
+ * @param {string} server @param {string} route @param {string} bearer @param {unknown} body
+ */
+async function apiRetrying(server, route, bearer, body) {
+  for (let i = 0; ; i++) {
+    try { return await api(server, route, bearer, body); }
+    catch (e) {
+      const status = e instanceof Error ? /: HTTP (\d+)/.exec(e.message)?.[1] : undefined;
+      const transient = !(e instanceof Gone) && (status === undefined || status === "429" || status.startsWith("5"));
+      if (!transient || i >= STATUS_RETRY_MS.length) throw e;
+      await sleep(STATUS_RETRY_MS[i] ?? 0);
+    }
+  }
+}
+
+/**
  * Reports a status to the server when it differs from the last one sent, or the last report is STATUS_EVERY_MS old; keeps
  * the user's reserve from the reply. A failed report is tried again with the next check.
  * @param {Config} cfg @param {HarnessId} harness @param {{ readiness: Readiness, until: number | null, reason?: string, reserve: Reserve, models: Partial<Record<Tier, string>> }} st @param {UsageReading | undefined} usage
@@ -2004,15 +2047,16 @@ async function checkReady(cfg, opt = {}) {
 async function sendStatus(cfg, harness, st, usage) {
   if (!cfg.server || !cfg.agentToken) return;
   /** @type {HelperStatus} */
-  const body = { readiness: st.readiness, ...(st.until !== null && { until: new Date(st.until).toISOString() }), ...(st.reason && { reason: redact(st.reason).slice(0, 300) }), harness, models: st.models, reserve: st.reserve, ...(usage && { usage }), slots: capacity.slots, busy: capacity.busy };
+  const body = { readiness: st.readiness, ...(st.until !== null && { until: new Date(st.until).toISOString() }), ...(st.reason && { reason: redact(st.reason).slice(0, 300) }), harness, models: st.models, reserve: st.reserve, ...(usage && { usage }), slots: capacity.slots, busy: capacity.busy, ...errorField() };
   const key = JSON.stringify({ ...body, usage: undefined });
   const prev = readHelperStatus();
   if (prev.sentKey === key && prev.sentAt !== undefined && Date.now() - prev.sentAt < STATUS_EVERY_MS) return;
   try {
     /** @type {StatusReply} */
-    const r = await api(cfg.server, ROUTES.status, cfg.agentToken, body);
+    const r = await apiRetrying(cfg.server, ROUTES.status, cfg.agentToken, body);
     updateHelperStatus((s) => ({ ...s, sentAt: Date.now(), sentKey: key, sent: body, ...(r?.reserve && { serverReserve: r.reserve }) }));
-  } catch { /* the next check sends it again */ }
+    clearError("server");
+  } catch (e) { noteError(msg(e), "server"); /* the next check sends it again */ }
 }
 
 /** During a long run: the last status again once it is STATUS_EVERY_MS old, so the server knows the helper is alive. */
@@ -2020,9 +2064,11 @@ async function keepStatusFresh() {
   const cfg = loadConfig(), s = readHelperStatus();
   if (!cfg.server || !cfg.agentToken || !s.sent || (s.sentAt !== undefined && Date.now() - s.sentAt < STATUS_EVERY_MS)) return;
   try {
-    await api(cfg.server, ROUTES.status, cfg.agentToken, s.sent);
+    const { lastError: _e, ...sent } = s.sent;
+    await apiRetrying(cfg.server, ROUTES.status, cfg.agentToken, { ...sent, slots: capacity.slots, busy: capacity.busy, ...errorField() });
     updateHelperStatus((x) => ({ ...x, sentAt: Date.now() }));
-  } catch { /* next heartbeat */ }
+    clearError("server");
+  } catch (e) { noteError(msg(e), "server"); /* next heartbeat */ }
 }
 
 /** One line for a readiness that is not `ready`. @param {{ readiness: Readiness, until: number | null, reason?: string }} st */
@@ -2326,6 +2372,7 @@ async function runLease(cfg, id, opt = {}) {
   /** @param {string} error @param {Usage} [usage] */
   const fail = async (error, usage) => {
     try { await submit({ ok: false, error: redact(error).slice(0, 2000), ...(usage && { usage }), durationMs: Date.now() - started }); } catch (e) { if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`); }
+    noteError(`${lease.title}: ${error}`, "call");
     return end("failed", `failed: ${lease.title}: ${error}`);
   };
   /**
@@ -2404,6 +2451,7 @@ async function runLease(cfg, id, opt = {}) {
     const usage = reply.usage ?? { inputTokens: 0, outputTokens: 0 };
     const s = await submit({ ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), ...(tools.length > 0 && { tools }), durationMs: Date.now() - started });
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
+    clearError("call");
     return end("submitted", `submitted: ${lease.title}, ${kTokens(tokensOf(usage))} tokens`);
   } catch (e) {
     if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
@@ -2520,8 +2568,8 @@ function harness(c, b, lease, signal, adapter, root) {
     p.stdin.on("error", () => {});
     p.stdin.end(b.stdin);
     const beat = lease ? setInterval(async () => {
-      try { await api(lease.server, ROUTES.heartbeat, lease.secret, /** @type {Heartbeat} */ (progress ? { progress } : {})); }
-      catch (e) { if (e instanceof Gone) { gone = true; kill(); } }
+      try { await api(lease.server, ROUTES.heartbeat, lease.secret, /** @type {Heartbeat} */ (progress ? { progress } : {})); clearError("server"); }
+      catch (e) { if (e instanceof Gone) { gone = true; kill(); } else noteError(msg(e), "server"); }
       await keepStatusFresh();
     }, HEARTBEAT_MS) : undefined;
     const timer = setTimeout(() => { timedOut = true; kill(); }, b.timeoutSeconds * 1000);
@@ -3063,6 +3111,7 @@ const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls unde
   mcp <server-name> <lease>   stdio-to-HTTP proxy for one of the lease's MCP servers
   tool <server-name> <tool> [<json>] [<lease>]
                               one tool call without MCP; prints the result
+  update                      replace this file with the current helper from the server you logged in to
   status                      whether the helper claims now, with the plan usage, reserve and pause behind it
   pause-until-reset           claim nothing until the plan window resets, even when usage recovers
   resume                      end a pause, and a hold after the provider refused a run for its limit
@@ -3073,6 +3122,30 @@ dashboard, default 20%), and holds whenever it cannot read the usage.
 
 Config: ${"$XDG_CONFIG_HOME"}/autocraft-task/config.json (mode 0600); "tiers" maps top/mid/small to models
 (Claude defaults to opus, sonnet and haiku; Codex has no defaults).`;
+
+/** The command that replaces this helper; version refusals print it. */
+const UPDATE_COMMAND = `node ${fileURLToPath(import.meta.url)} update`;
+
+/** Downloads the current helper from the server of the login, checks that it parses, and replaces this file in one rename. */
+async function cmdUpdate() {
+  const cfg = loadConfig();
+  if (!cfg.server) throw new Error("not logged in: run `autocraft-task login <server-url>` first");
+  const res = await fetch(`${cfg.server}${ROUTES.helper}`, { signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) throw new Error(`${cfg.server}${ROUTES.helper}: HTTP ${res.status}`);
+  const text = await res.text();
+  const version = /export const HELPER_VERSION = "([^"]+)"/.exec(text)?.[1];
+  if (!version) throw new Error("the download is not an autocraft-task helper");
+  const target = realpathSync(fileURLToPath(import.meta.url));
+  const tmp = join(dirname(target), `.autocraft-task-update-${process.pid}.mjs`);
+  try {
+    writeFileSync(tmp, text, { mode: 0o700 });
+    const c = spawnSync(process.execPath, ["--check", tmp], { encoding: "utf8" });
+    if (c.status !== 0) throw new Error(`the download does not parse: ${(c.stderr || "").split("\n").find((l) => l.trim()) ?? "node --check failed"}`);
+    chmodSync(tmp, statSync(target).mode & 0o777);
+    renameSync(tmp, target);
+  } finally { rmSync(tmp, { force: true }); }
+  console.log(version === HELPER_VERSION ? `autocraft-task ${version} is already the current version (file replaced)` : `autocraft-task updated from ${HELPER_VERSION} to ${version}`);
+}
 
 /** @param {string[]} argv */
 export async function main(argv) {
@@ -3093,6 +3166,7 @@ export async function main(argv) {
       case "pause-until-reset": await cmdPause(); return 0;
       case "resume": await cmdResume(); return 0;
       case "config": await cmdConfig(rest); return 0;
+      case "update": await cmdUpdate(); return 0;
       case "version": case "--version": console.log(HELPER_VERSION); return 0;
       default: console.log(USAGE); return cmd === undefined || cmd === "help" || cmd === "--help" ? 0 : 64;
     }

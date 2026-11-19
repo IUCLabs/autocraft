@@ -253,8 +253,8 @@ The helper reports its readiness to `POST /api/remote/status` on every change an
 | `paused` | The user ran `pause-until-reset`. |
 | `cooled-off` | The server gives the login no calls after repeated lost leases or failed replies. |
 | `sandbox-failed` | The sandbox check or canary failed. |
-| `version-refused` | The server refused the helper's version, or the harness version is not audited (Codex). |
-| `harness-missing` | The harness or its login is missing. |
+| `version-refused` | The server refused the helper's version. |
+| `harness-missing` | The harness or its login is missing, no model is set for any tier, or the harness version is not audited (Codex). |
 
 The planner counts as room only helpers whose last status is `ready` and at most 6 minutes old and whose last claim found nothing within 45 seconds. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
 

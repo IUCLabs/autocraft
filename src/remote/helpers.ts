@@ -69,19 +69,20 @@ export function parseStatus(raw: unknown): HelperStatus {
 
 /** Keeps a helper's status as the last one of its token; rows of deleted tokens go. */
 export function storeStatus(db: DatabaseSync, tokenId: number, login: string, s: HelperStatus, nowMs: number = Date.now()): void {
-  db.prepare(`INSERT INTO main.remote_helpers (token_id, login, readiness, until, reason, harness, models, reserve, usage, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  db.prepare(`INSERT INTO main.remote_helpers (token_id, login, readiness, until, reason, harness, models, reserve, usage, reported_at, slots, busy, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (token_id) DO UPDATE SET login = excluded.login, readiness = excluded.readiness, until = excluded.until, reason = excluded.reason, harness = excluded.harness,
-      models = excluded.models, reserve = excluded.reserve, usage = excluded.usage, reported_at = excluded.reported_at`)
-    .run(tokenId, login, s.readiness, s.until ?? null, s.reason ?? null, s.harness, JSON.stringify(s.models), JSON.stringify(s.reserve), s.usage ? JSON.stringify(s.usage) : null, nowMs);
+      models = excluded.models, reserve = excluded.reserve, usage = excluded.usage, reported_at = excluded.reported_at,
+      slots = excluded.slots, busy = excluded.busy, last_error = excluded.last_error`)
+    .run(tokenId, login, s.readiness, s.until ?? null, s.reason ?? null, s.harness, JSON.stringify(s.models), JSON.stringify(s.reserve), s.usage ? JSON.stringify(s.usage) : null, nowMs, s.slots, s.busy, s.lastError ? JSON.stringify(s.lastError) : null);
   db.prepare("DELETE FROM main.remote_helpers WHERE token_id NOT IN (SELECT id FROM main.mcp_tokens)").run();
 }
 
 /** The login's helpers: every live token that may run tasks, with its last status. */
 export function listHelpers(db: DatabaseSync, login: string, nowMs: number = Date.now()): HelperInfo[] {
-  const rows = db.prepare(`SELECT t.id, t.label, t.last_used_at, h.readiness, h.until, h.reason, h.harness, h.models, h.reserve, h.usage, h.reported_at
+  const rows = db.prepare(`SELECT t.id, t.label, t.last_used_at, h.readiness, h.until, h.reason, h.harness, h.models, h.reserve, h.usage, h.reported_at, h.slots, h.busy, h.last_error
       FROM main.mcp_tokens t LEFT JOIN main.remote_helpers h ON h.token_id = t.id
     WHERE t.login = ? AND t.can_run = 1 AND t.expires_at > ? ORDER BY t.created_at DESC, t.id DESC`).all(login, new Date(nowMs).toISOString()) as
-    { id: number; label: string | null; last_used_at: string | null; readiness: Readiness | null; until: string | null; reason: string | null; harness: HarnessId | null; models: string | null; reserve: string | null; usage: string | null; reported_at: number | null }[];
+    { id: number; label: string | null; last_used_at: string | null; readiness: Readiness | null; until: string | null; reason: string | null; harness: HarnessId | null; models: string | null; reserve: string | null; usage: string | null; reported_at: number | null; slots: number | null; busy: number | null; last_error: string | null }[];
   const cooloff = cooloffOf(db, login, nowMs);
   return rows.map((r) => {
     const reported = r.reported_at === null ? null : Number(r.reported_at);
@@ -90,7 +91,8 @@ export function listHelpers(db: DatabaseSync, login: string, nowMs: number = Dat
     // The server's own cool-off of the login shows even before the helper has reported it.
     const cooled = cooloff !== null && r.readiness !== "cooled-off";
     return {
-      tokenId: Number(r.id), label: r.label, slots: null, busy: null, lastError: null,
+      tokenId: Number(r.id), label: r.label, slots: r.slots === null ? null : Number(r.slots), busy: r.busy === null ? null : Number(r.busy),
+      lastError: r.last_error ? JSON.parse(r.last_error) as { text: string; at: string } : null,
       ...(cooled ? { readiness: "cooled-off" as const, until: new Date(cooloff.until).toISOString(), reason: cooloff.reason } : { readiness: r.readiness, until: r.until, reason: r.reason }),
       fresh: reported !== null && nowMs - reported <= STATUS_FRESH_MS,
       lastSeen: Number.isFinite(seen) ? new Date(seen).toISOString() : null,
