@@ -74,7 +74,7 @@ describe("user-local remote calls", () => {
     assert.equal(r?.usage.input, 90);
     assert.deepEqual(r?.usage.extra?.map((e) => [e.model, e.usage.input]), [["haiku", 10]]);
     const run = db.prepare("SELECT state, user_login, harness, reported_model, account_id, cost_usd FROM agent_runs WHERE id = (SELECT run_id FROM remote_calls WHERE id = ?)").get(lease.id) as Record<string, unknown>;
-    assert.deepEqual({ ...run }, { state: "done", user_login: "bob", harness: "claude", reported_model: "opus", account_id: null, cost_usd: 0.25 });
+    assert.deepEqual({ ...run }, { state: "done", user_login: "bob", harness: "claude", reported_model: "claude-opus-4-5", account_id: null, cost_usd: 0.25 });
   });
 
   test("with no other helper asking for work, the PR's author gets the review", async () => {
