@@ -180,7 +180,6 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["mcp_tokens", "idle_claim_at", "INTEGER"],
   ["mcp_tokens", "idle_tiers", "TEXT"],
   ["mcp_tokens", "idle_repos", "TEXT"],
-  ["mcp_tokens", "cooloff_until", "INTEGER"],
   // GitHub's type of an item's author (User, Bot, ...); Bot authors are exempt from the outside-author limits.
   ["items", "author_type", "TEXT"],
   // GitHub's numeric id of the author's account; a login string can pass to another account, the id cannot.
@@ -225,6 +224,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["remote_calls", "released_by", "TEXT COLLATE NOCASE"],
   ["remote_calls", "released_at", "INTEGER"],
   ["remote_calls", "root", "TEXT"],
+  ["remote_calls", "started_at", "INTEGER"],
+  ["remote_calls", "claim_id", "TEXT"],
+  ["remote_lease_drops", "login", "TEXT COLLATE NOCASE"],
   ["dupe_comparisons", "sizes", "TEXT"],
   ["build_envs", "confidential", "INTEGER NOT NULL DEFAULT 0"],
   ["build_envs", "confidential_since", "TEXT"],
@@ -260,7 +262,7 @@ const ADDED_INDEXES = [
 ];
 
 // Columns removed after their first release.
-const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
+const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"], ["mcp_tokens", "cooloff_until"]];
 
 /** Appends the stored review rows that the history does not hold yet. */
 export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims, blocked_by, trigger, job_id)

@@ -40,6 +40,7 @@ import { inferenceMode } from "../../remote/mode.ts";
 import { HELPERS_PATH, parseStatus, storeStatus } from "../../remote/helpers.ts";
 import { ROUTES, type ClaimReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
 import { userReserve } from "../../remote/reserve.ts";
+import { startLiveness } from "../../remote/liveness.ts";
 import { archiveOf, callTaskTool, TASK_TOOLS, taskLease, type TaskLease, type ToolResult } from "../../remote/tools.ts";
 import { handleDelivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH } from "../../github/webhooks.ts";
 import { esc, HttpError, parseCookies, plainPage, previewTags, RateLimiter, safeReturnTo } from "./util.ts";
@@ -704,7 +705,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       const tool = path.startsWith(`${ROUTES.tool}/`) ? /^([a-z][a-z0-9_-]{0,40})\/([a-z][a-z0-9_]{0,60})$/.exec(path.slice(ROUTES.tool.length + 1)) : null;
       if (![ROUTES.bundle, ROUTES.heartbeat, ROUTES.submit, ROUTES.release, ROUTES.tarball].includes(path as never) && !tool) return reply(404, { error: "not found" });
-      // An unknown secret counts against the address; a known one whose lease ended is answered 410.
+      // An unknown secret counts against the address; a known one whose lease ended or went back to the queue is answered 410.
       if (!remote.leaseState(db, bearer)) {
         if (!mcpLimitIp.allow(clientIp(req))) return tooMany();
         return reply(401, { error: "a lease secret is required (Authorization: Bearer <secret>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
@@ -716,7 +717,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       if (path === ROUTES.heartbeat) return remote.heartbeat(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
       if (path === ROUTES.release) return remote.releaseCall(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
-      if (path === ROUTES.submit) return reply(200, remote.submitCall(db, bearer, await readJson(req, SUBMIT_BODY_LIMIT)));
+      if (path === ROUTES.submit) {
+        const out = remote.submitCall(db, bearer, await readJson(req, SUBMIT_BODY_LIMIT));
+        return out ? reply(200, out) : gone();
+      }
       const lease = taskLease(db, bearer);
       if (!lease) return gone();
       if (path === ROUTES.tarball) {
@@ -903,6 +907,8 @@ export async function startServer(opts: AppOptions): Promise<{ server: Server; u
   const feedbackLimiter = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
   const app = createApp({ ...opts, feedbackLimiter, routes: opts.routes ?? (await defaultRoutes(feedbackLimiter, opts.githubUserId)) });
   const server = createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, (req, res) => void app.handle(req, res));
+  // Job processes expire user-local leases only while this process stamps that it serves (src/remote/liveness.ts).
+  const stopLiveness = startLiveness(opts.db);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(opts.config.port, opts.config.host, resolve);
@@ -913,6 +919,7 @@ export async function startServer(opts: AppOptions): Promise<{ server: Server; u
     server, app,
     url: `http://${host}:${addr.port}`,
     close: () => new Promise<void>((resolve) => {
+      stopLiveness();
       app.close();
       server.closeAllConnections();
       server.close(() => resolve());

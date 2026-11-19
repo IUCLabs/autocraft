@@ -16,9 +16,10 @@ import { fillHarness, rootArgs, validRoot } from "../prompts/harness.ts";
 import { rootAgents } from "../sandbox/agents.ts";
 import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
-import { COOLOFF_REASON, cooloffUntil, noteDrop } from "./cooloff.ts";
+import { cooloffOf, noteDrop, noteFailure, noteSuccess } from "./cooloff.ts";
+import { dashboardAlive } from "./liveness.ts";
 import { acceptedModels, familyOf, isEffort, isTier, meetsEffort, minEfforts, TIERS } from "./mode.ts";
-import { PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
+import { CLAIM_ID_TTL_S, PREPARE_MAX_S, PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { claimRepos } from "./my-repos.ts";
 import { userReserve } from "./reserve.ts";
 import { CALLER_STALE_MS, IDLE_FRESH_MS } from "./room.ts";
@@ -27,9 +28,9 @@ import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 import { endChecks, serveChecks } from "./check-relay.ts";
 import type { CheckTool } from "../checktool/index.ts";
 
-/** A lease with no heartbeat for this long goes back to the queue. */
+/** A lease with no heartbeat for this long, while the dashboard was serving (liveness.ts), goes back to the queue. */
 export const LEASE_IDLE_MS = 2 * 60_000;
-/** A lease also ends this long after the bundle's own time limit. */
+/** A lease also ends this long after the bundle's own time limit, counted from its first `running` heartbeat. */
 export const LEASE_MARGIN_MS = 2 * 60_000;
 /** How long a follow-up turn waits for the helper that holds its session before the caller falls back to a fresh call. */
 export const STICKY_MS = LEASE_IDLE_MS;
@@ -61,11 +62,12 @@ type Row = {
   id: number; job_id: number | null; step: string; stage: number; run_id: number | null; prompt_id: string; prompt_version: string;
   tier: Tier; effort: string; asked_model: string; bundle: string; state: "queued" | "leased" | "done" | "failed"; items: string; repo: string | null;
   cls: number; level: number; since: number; seen_at: number; queued_since: number | null; queued_ms: number;
-  user_login: string | null; harness: string | null; model: string | null; leased_at: number | null; heartbeat_at: number | null;
+  user_login: string | null; harness: string | null; model: string | null; leased_at: number | null; heartbeat_at: number | null; started_at: number | null;
+  token_id: number | null; lease_secret_hash: string | null;
   attempt: number; max_attempts: number; timeout_ms: number; parent_id: number | null; sticky_login: string | null; progress: string | null;
   reply: string | null; usage: string | null; turns: number | null; session_id: string | null; error: string | null; root: string | null;
 };
-const COLS = "id, job_id, step, stage, run_id, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class AS cls, level, since, seen_at, queued_since, queued_ms, user_login, harness, model, leased_at, heartbeat_at, attempt, max_attempts, timeout_ms, parent_id, sticky_login, progress, reply, usage, turns, session_id, error, root";
+const COLS = "id, job_id, step, stage, run_id, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class AS cls, level, since, seen_at, queued_since, queued_ms, user_login, harness, model, leased_at, heartbeat_at, started_at, token_id, lease_secret_hash, attempt, max_attempts, timeout_ms, parent_id, sticky_login, progress, reply, usage, turns, session_id, error, root";
 const rowOf = (db: DatabaseSync, id: number): Row | undefined => db.prepare(`SELECT ${COLS} FROM main.remote_calls WHERE id = ?`).get(id) as Row | undefined;
 
 export type NewCall = {
@@ -104,36 +106,61 @@ export function withdrawJobCalls(db: DatabaseSync, reason: string, jobId?: numbe
   return ids.filter((r) => withdrawCall(db, Number(r.id), reason)).length;
 }
 
-/** A lost lease goes back to the queue with the next attempt, or fails once the prompt's attempts are used up. */
-function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "max_attempts" | "leased_at">, reason: string, nowMs: number): boolean {
-  const fail = r.attempt >= r.max_attempts;
-  // Compare and set: only the lease that was read ends, so two processes that saw it expire end it once.
-  const up = db.prepare(`UPDATE main.remote_calls SET state = ?, attempt = attempt + ?, lease_secret_hash = NULL, token_id = NULL, queued_since = ?, ended_at = ?, error = ?, progress = NULL
-    WHERE id = ? AND state = 'leased' AND attempt = ? AND leased_at IS ?`).run(fail ? "failed" : "queued", fail ? 0 : 1, fail ? null : nowMs, fail ? nowMs : null, reason, r.id, r.attempt, r.leased_at);
-  if (Number(up.changes) === 1 && r.run_id !== null) finishRun(db, r.run_id, { state: "failed", error: reason, summary: "lease ended" });
-  return Number(up.changes) === 1;
-}
-
-/** Puts a leased call back in the queue without using an attempt (released by its helper, or its token lost the right to run it). */
-function unlease(db: DatabaseSync, id: number, runId: number | null, why: string, nowMs: number, releasedBy: string | null = null): void {
-  const up = db.prepare(`UPDATE main.remote_calls SET state = 'queued', lease_secret_hash = NULL, token_id = NULL, queued_since = ?, error = ?, progress = NULL, released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
-    WHERE id = ? AND state = 'leased'`).run(nowMs, why, releasedBy, releasedBy, nowMs, id);
-  if (Number(up.changes) === 1 && runId !== null) finishRun(db, runId, { state: "failed", error: why, summary: "returned to the queue" });
+/** Keeps the secret hash of a lease that just ended or went back to the queue, so its routes answer 410 (leaseState); kept as long as ended calls. */
+function bury(db: DatabaseSync, id: number, hash: string | null, nowMs: number): void {
+  if (hash === null) return;
+  db.prepare("DELETE FROM main.remote_lease_tombstones WHERE at < ?").run(nowMs - KEEP_MS);
+  db.prepare("INSERT OR IGNORE INTO main.remote_lease_tombstones (secret_hash, call_id, at) VALUES (?, ?, ?)").run(hash, id, nowMs);
 }
 
 /**
- * The failure backoff of remote calls (registered in src/stages/registry.ts): a lease with no heartbeat for LEASE_IDLE_MS, or past
- * its time limit plus LEASE_MARGIN_MS, goes back to the queue (attempt + 1, up to the prompt's attempts); a call whose caller
- * stopped polling fails. The lost lease also counts toward its token's flap cool-off. Run by each claim (every call, and old rows are pruned) and by the caller's poll (`id`: that call only).
+ * A lost or failed lease goes back to the queue with the next attempt, or fails once the prompt's attempts are used up.
+ * `skipLogin`: the login whose helper failed the call is not offered it again for RELEASE_SKIP_MS.
+ */
+function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "max_attempts" | "leased_at" | "lease_secret_hash">, reason: string, nowMs: number, opts: { skipLogin?: string; summary?: string } = {}): boolean {
+  const fail = r.attempt >= r.max_attempts;
+  const skip = opts.skipLogin ?? null;
+  // Compare and set: only the lease that was read ends, so two processes that saw it expire end it once.
+  const up = db.prepare(`UPDATE main.remote_calls SET state = ?, attempt = attempt + ?, lease_secret_hash = NULL, token_id = NULL, claim_id = NULL, started_at = NULL, queued_since = ?, ended_at = ?, error = ?, progress = NULL,
+      released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
+    WHERE id = ? AND state = 'leased' AND attempt = ? AND leased_at IS ?`).run(fail ? "failed" : "queued", fail ? 0 : 1, fail ? null : nowMs, fail ? nowMs : null, reason, skip, skip, nowMs, r.id, r.attempt, r.leased_at);
+  if (Number(up.changes) !== 1) return false;
+  bury(db, r.id, r.lease_secret_hash, nowMs);
+  if (r.run_id !== null) finishRun(db, r.run_id, { state: "failed", error: reason, summary: opts.summary ?? "lease ended" });
+  return true;
+}
+
+/** Puts a leased call back in the queue without using an attempt (released by its helper, or its token lost the right to run it). */
+function unlease(db: DatabaseSync, r: { id: number; runId: number | null; hash: string | null }, why: string, nowMs: number, releasedBy: string | null = null): void {
+  const up = db.prepare(`UPDATE main.remote_calls SET state = 'queued', lease_secret_hash = NULL, token_id = NULL, claim_id = NULL, started_at = NULL, queued_since = ?, error = ?, progress = NULL, released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
+    WHERE id = ? AND state = 'leased' AND lease_secret_hash IS ?`).run(nowMs, why, releasedBy, releasedBy, nowMs, r.id, r.hash);
+  if (Number(up.changes) !== 1) return;
+  bury(db, r.id, r.hash, nowMs);
+  if (r.runId !== null) finishRun(db, r.runId, { state: "failed", error: why, summary: "returned to the queue" });
+}
+
+/**
+ * The failure backoff of remote calls (registered in src/stages/registry.ts): a lease with no heartbeat for LEASE_IDLE_MS, a
+ * lease still preparing PREPARE_MAX_S after the claim, or one running past its time limit plus LEASE_MARGIN_MS goes back to
+ * the queue (attempt + 1, up to the prompt's attempts); a call whose caller stopped polling fails. Leases end only while the
+ * dashboard serves, and for lack of heartbeats only when it served for the whole idle window (liveness.ts): helpers reach
+ * the server only through it. The lost lease counts toward its login's cool-off. Run by each claim (every call, and old
+ * rows are pruned) and by the caller's poll (`id`: that call only).
  */
 export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: number): void {
   const one = id === undefined ? "" : " AND id = ?";
-  const lost = db.prepare(`SELECT id, run_id, attempt, max_attempts, heartbeat_at, leased_at, timeout_ms, token_id FROM main.remote_calls
-    WHERE state = 'leased' AND (heartbeat_at < ? OR leased_at + timeout_ms + ? < ?)${one}`).all(nowMs - LEASE_IDLE_MS, LEASE_MARGIN_MS, nowMs, ...(id === undefined ? [] : [id])) as (Row & { timeout_ms: number; token_id: number | null })[];
-  for (const r of lost) {
-    const why = Number(r.heartbeat_at) < nowMs - LEASE_IDLE_MS ? `lease expired: no heartbeat for ${LEASE_IDLE_MS / 60_000} min` : "lease expired: past the call's time limit";
-    // A lost lease counts toward its token's cool-off (cooloff.ts), not as a call failure: the attempt counting stays as it is.
-    if (requeue(db, r, why, nowMs) && r.token_id !== null) noteDrop(db, Number(r.token_id), nowMs);
+  const live = dashboardAlive(db, nowMs);
+  if (live.alive) {
+    const idle = live.since <= nowMs - LEASE_IDLE_MS ? 1 : 0;
+    const lost = db.prepare(`SELECT id, run_id, attempt, max_attempts, heartbeat_at, leased_at, started_at, timeout_ms, token_id, user_login, lease_secret_hash FROM main.remote_calls
+      WHERE state = 'leased' AND ((? AND heartbeat_at < ?) OR (started_at IS NULL AND leased_at + ? < ?) OR (started_at IS NOT NULL AND started_at + timeout_ms + ? < ?))${one}`)
+      .all(idle, nowMs - LEASE_IDLE_MS, PREPARE_MAX_S * 1000, nowMs, LEASE_MARGIN_MS, nowMs, ...(id === undefined ? [] : [id])) as Row[];
+    for (const r of lost) {
+      const why = idle && Number(r.heartbeat_at) < nowMs - LEASE_IDLE_MS ? `lease expired: no heartbeat for ${LEASE_IDLE_MS / 60_000} min`
+        : r.started_at === null ? `lease expired: still preparing ${PREPARE_MAX_S / 60} min after the claim` : "lease expired: past the call's time limit";
+      // A lost lease counts toward its login's cool-off (cooloff.ts), and uses an attempt like a failed call.
+      if (requeue(db, r, why, nowMs) && r.token_id !== null && r.user_login !== null) noteDrop(db, Number(r.token_id), r.user_login, nowMs);
+    }
   }
   const gone = db.prepare(`SELECT id FROM main.remote_calls WHERE state IN ('queued', 'leased') AND seen_at < ?${one}`).all(nowMs - CALLER_GONE_MS, ...(id === undefined ? [] : [id])) as { id: number }[];
   for (const r of gone) withdrawCall(db, Number(r.id), "the caller stopped waiting", undefined, nowMs);
@@ -157,17 +184,23 @@ export function liveLease(db: DatabaseSync, secret: string | undefined, nowMs: n
     WHERE c.id = ? AND c.lease_secret_hash = ? AND c.state = 'leased'`).get(new Date(nowMs).toISOString(), found.id, hash) as
     { id: number; job_id: number | null; run_id: number | null; user_login: string; prompt_id: string; items: string; repo: string | null; root: string | null; ok: string | null } | undefined;
   if (r && r.ok === null) {
-    unlease(db, Number(r.id), r.run_id, "returned to the queue: the token that claimed it may no longer run tasks", nowMs);
+    unlease(db, { id: Number(r.id), runId: r.run_id, hash }, "returned to the queue: the token that claimed it may no longer run tasks", nowMs);
     return null;
   }
   return r ? { id: Number(r.id), jobId: r.job_id, runId: r.run_id, login: r.user_login, promptId: r.prompt_id, items: JSON.parse(r.items) as ItemRef[], repo: r.repo, root: r.root } : null;
 }
 
-/** The state of the call a lease secret was issued for, live or not (for task status); null for an unknown secret. */
-export function leaseState(db: DatabaseSync, secret: string | undefined): { id: number; state: Row["state"]; error: string | null } | null {
+/**
+ * The call a lease secret was issued for, whether its lease is live or has ended (submitted, failed, expired, released or
+ * requeued: the tombstones), or null for a secret never issued. The lease routes answer 410 for an ended lease and 401 only for null.
+ */
+export function leaseState(db: DatabaseSync, secret: string | undefined): { id: number; live: boolean } | null {
   if (!secret || secret.length > 200 || !secret.startsWith(LEASE_PREFIX)) return null;
-  const r = db.prepare("SELECT id, state, error FROM main.remote_calls WHERE lease_secret_hash = ?").get(sha256hex(secret)) as { id: number; state: Row["state"]; error: string | null } | undefined;
-  return r ? { id: Number(r.id), state: r.state, error: r.error } : null;
+  const hash = sha256hex(secret);
+  const r = db.prepare("SELECT id, state FROM main.remote_calls WHERE lease_secret_hash = ?").get(hash) as { id: number; state: Row["state"] } | undefined;
+  if (r) return { id: Number(r.id), live: r.state === "leased" };
+  const t = db.prepare("SELECT call_id FROM main.remote_lease_tombstones WHERE secret_hash = ?").get(hash) as { call_id: number } | undefined;
+  return t ? { id: Number(t.call_id), live: false } : null;
 }
 
 // ---- claims ------------------------------------------------------------------------
@@ -272,9 +305,9 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
   const secret = `${LEASE_PREFIX}${randomToken(32)}`;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, root = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?,
+    const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, root = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?, started_at = NULL, claim_id = ?,
         queued_ms = queued_ms + CASE WHEN queued_since IS NULL THEN 0 ELSE MAX(0, ? - queued_since) END, queued_since = NULL, progress = NULL, error = NULL
-      WHERE id = ? AND state = 'queued' RETURNING ${COLS}`).get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, claim.root ?? null, sha256hex(secret), nowMs, nowMs, nowMs, id) as Row | undefined;
+      WHERE id = ? AND state = 'queued' RETURNING ${COLS}`).get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, claim.root ?? null, sha256hex(secret), nowMs, nowMs, claim.requestId, nowMs, id) as Row | undefined;
     if (!r) {
       db.exec("COMMIT");
       return null;
@@ -317,7 +350,7 @@ const memoWrite = (canWrite: (repo: string) => Promise<boolean>): ((repo: string
 /** How many queued calls the caller could claim now (same filters and eligibility as claimCall, nothing is leased), for a session's next_task. Follow-ups of a helper's own sessions are not counted. */
 export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { tiers?: readonly Tier[]; models?: Partial<Record<Tier, string>> }, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<number> {
   expireLeases(db, nowMs);
-  if (cooloffUntil(db, caller.tokenId, nowMs) !== null) return 0;
+  if (cooloffOf(db, caller.login, nowMs) !== null) return 0;
   const accepted = acceptedModels(db);
   // A tier counts when the model the helper would use for it is of an accepted family; without a model, when the tier accepts any.
   const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0 && (opts.models?.[t] === undefined || familyOf(opts.models[t]!, accepted[t]) !== null)));
@@ -335,14 +368,38 @@ export function callStatus(db: DatabaseSync, id: number, login: string): { id: n
 }
 
 /**
- * Gives the caller the first queued call it may take (claimOrder), filtered by eligibility. `canWrite` reads the caller's live
- * write permission on a repo. The reply carries the user's reserve either way.
+ * Claim replies by agent token and request id, for CLAIM_ID_TTL_S: a repeated claim (its reply was lost) gets the same reply,
+ * the same lease with the same secret included. Kept in the memory of the dashboard process, the only one that serves
+ * claims, so the secret is never stored; the promise is kept from the start, so a repeat that arrives while the first is
+ * still being answered waits for it.
  */
-export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
+const claimReplies = new Map<string, { at: number; reply: Promise<ClaimReply> }>();
+
+/**
+ * Gives the caller the first queued call it may take (claimOrder), filtered by eligibility. `canWrite` reads the caller's live
+ * write permission on a repo. The reply carries the user's reserve either way. A claim repeated with the same request id
+ * gets the first one's reply.
+ */
+export function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
+  for (const [k, v] of claimReplies) if (v.at < nowMs - CLAIM_ID_TTL_S * 1000) claimReplies.delete(k);
+  const key = `${caller.tokenId}:${claim.requestId}`;
+  const seen = claimReplies.get(key);
+  if (seen) return seen.reply;
+  const reply = claimNew(db, caller, claim, canWrite, nowMs);
+  claimReplies.set(key, { at: nowMs, reply });
+  reply.catch(() => { if (claimReplies.get(key)?.reply === reply) claimReplies.delete(key); });
+  return reply;
+}
+
+async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number): Promise<ClaimReply> {
   if (olderVersion(claim.helperVersion, REQUIRED_HELPER)) throw new HttpError(409, `helper ${claim.helperVersion} is older than ${REQUIRED_HELPER}, the oldest this server accepts; download the current helper from ${ROUTES.helper}`);
+  // A repeat the dashboard no longer remembers (it restarted in between): the lease the first claim took cannot be given
+  // out again, as only its secret's hash is stored, so it goes back to the queue unused and this claim is answered afresh.
+  const orphan = db.prepare("SELECT id, run_id, lease_secret_hash FROM main.remote_calls WHERE token_id = ? AND claim_id = ? AND state = 'leased'").get(caller.tokenId, claim.requestId) as { id: number; run_id: number | null; lease_secret_hash: string | null } | undefined;
+  if (orphan) unlease(db, { id: Number(orphan.id), runId: orphan.run_id, hash: orphan.lease_secret_hash }, "returned to the queue: the claim that leased it was repeated after a server restart", nowMs);
   expireLeases(db, nowMs);
-  const until = cooloffUntil(db, caller.tokenId, nowMs);
-  if (until !== null) return { lease: null, retryAfter: Math.ceil((until - nowMs) / 1000), reason: COOLOFF_REASON, until, reserve: userReserve(db, caller.login) };
+  const cooled = cooloffOf(db, caller.login, nowMs);
+  if (cooled) return { lease: null, retryAfter: Math.ceil((cooled.until - nowMs) / 1000), reason: cooled.reason, until: cooled.until, reserve: userReserve(db, caller.login) };
   const accepted = acceptedModels(db), floors = minEfforts(db);
   const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
   if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
@@ -392,13 +449,14 @@ export function bundleOf(db: DatabaseSync, secret: string | undefined): TaskBund
 /** A plain one-line progress text from the helper: control characters removed, scrubbed, cut. */
 const progressLine = (v: unknown): string | null => (typeof v === "string" && v.trim() ? scrub(v.replace(/[\u0000-\u001f\u007f]+/g, " ").trim()).slice(0, PROGRESS_MAX) : null);
 
-/** Records a heartbeat; false when the lease is gone (the route answers 410). */
+/** Records a heartbeat; the first `running` one starts the call's time limit. False when the lease is gone (the route answers 410). */
 export function heartbeat(db: DatabaseSync, secret: string | undefined, raw: unknown, nowMs: number = Date.now()): boolean {
   const l = liveLease(db, secret, nowMs);
   if (!l) return false;
-  const p = (raw as Heartbeat | undefined)?.progress;
-  const line = progressLine(typeof p === "string" ? unrooted(p, l.root) : p);
-  db.prepare("UPDATE main.remote_calls SET heartbeat_at = ?, progress = COALESCE(?, progress) WHERE id = ?").run(nowMs, line, l.id);
+  const h = raw as Partial<Heartbeat> | undefined;
+  const line = progressLine(typeof h?.progress === "string" ? unrooted(h.progress, l.root) : h?.progress);
+  db.prepare("UPDATE main.remote_calls SET heartbeat_at = ?, progress = COALESCE(?, progress), started_at = CASE WHEN ? AND started_at IS NULL THEN ? ELSE started_at END WHERE id = ?")
+    .run(nowMs, line, h?.phase === "running" ? 1 : 0, nowMs, l.id);
   if (line && l.runId !== null) setRunProgress(db, l.runId, line);
   return true;
 }
@@ -416,10 +474,18 @@ const storedTokens = (v: unknown): { input: number; output: number; cacheRead: n
   return { input: count(u.input), output: count(u.output), cacheRead: count(u.cacheRead), cacheWrite: count(u.cacheWrite) };
 };
 
-/** Takes a helper's result. A reply from another model than the claim declared for the tier is refused and the call goes back to the queue. */
-export function submitCall(db: DatabaseSync, secret: string | undefined, raw: unknown, nowMs: number = Date.now()): SubmitReply {
+/**
+ * Takes a helper's result; null when the lease is gone (the route answers 410). A repeat of an accepted reply (the first
+ * answer was lost) is accepted again. A reply from another model than the claim declared for the tier, and a failed reply
+ * (`ok: false`), send the call back to the queue with its next attempt, not offered to that login for a while, and count
+ * toward the login's cool-off; the call fails once its attempts are used up.
+ */
+export function submitCall(db: DatabaseSync, secret: string | undefined, raw: unknown, nowMs: number = Date.now()): SubmitReply | null {
   const l = liveLease(db, secret, nowMs);
-  if (!l) return { accepted: false, reason: "the lease is gone (expired, withdrawn or already submitted)" };
+  if (!l) {
+    const done = secret?.startsWith(LEASE_PREFIX) && db.prepare("SELECT 1 FROM main.remote_calls WHERE lease_secret_hash = ? AND state = 'done'").get(sha256hex(secret));
+    return done ? { accepted: true } : null;
+  }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HttpError(400, "the body must be a Submit object");
   const s = raw as Submit;
   const usage = usageOf((s as { usage?: unknown }).usage);
@@ -431,7 +497,7 @@ export function submitCall(db: DatabaseSync, secret: string | undefined, raw: un
     const families = acceptedModels(db)[r.tier];
     const family = familyOf(r.model ?? "", families);
     if (family === null || familyOf(s.model, families) !== family) {
-      requeue(db, r, `the harness reported model ${s.model.slice(0, 100)}, not the ${family ?? r.model} family claimed for the tier`, nowMs);
+      if (requeue(db, r, `the harness reported model ${s.model.slice(0, 100)}, not the ${family ?? r.model} family claimed for the tier`, nowMs, { skipLogin: l.login, summary: "refused" })) noteFailure(db, l.login, nowMs);
       return { accepted: false, reason: `the claim declared ${r.model} for this tier` };
     }
     const byModel: Record<string, ReturnType<typeof usageOf>> = {};
@@ -442,6 +508,7 @@ export function submitCall(db: DatabaseSync, secret: string | undefined, raw: un
     const costUsd = typeof s.costUsd === "number" && Number.isFinite(s.costUsd) && s.costUsd >= 0 ? s.costUsd : null;
     db.prepare("UPDATE main.remote_calls SET state = 'done', reply = ?, usage = ?, turns = ?, session_id = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased'")
       .run(unrooted(s.text, r.root), JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }), ...(costUsd !== null && { costUsd }) }), turns, sessionId, duration, nowMs, l.id);
+    noteSuccess(db, l.login);
     // The claim named the model the helper meant to run (often an alias); the reply names the one that ran.
     if (r.run_id !== null) {
       db.prepare("UPDATE main.agent_runs SET reported_model = ? WHERE id = ?").run(s.model.slice(0, 100), r.run_id);
@@ -450,17 +517,21 @@ export function submitCall(db: DatabaseSync, secret: string | undefined, raw: un
     return { accepted: true };
   }
   if (s.ok !== false || typeof s.error !== "string") throw new HttpError(400, "ok must be true with text and model, or false with error");
-  db.prepare("UPDATE main.remote_calls SET state = 'failed', error = ?, usage = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased'")
-    .run(scrubError(`helper: ${unrooted(s.error, l.root)}`), usage ? JSON.stringify(usage) : null, duration, nowMs, l.id);
+  const r = rowOf(db, l.id)!;
+  if (requeue(db, r, scrubError(`helper: ${unrooted(s.error, l.root)}`), nowMs, { skipLogin: l.login, summary: "helper failed" })) {
+    noteFailure(db, l.login, nowMs);
+    // The last attempt's tokens stay with the failed call.
+    db.prepare("UPDATE main.remote_calls SET usage = ?, duration_ms = ? WHERE id = ? AND state = 'failed'").run(usage ? JSON.stringify(usage) : null, duration, l.id);
+  }
   return { accepted: true };
 }
 
-/** The helper gives the lease back (too old, or its platform or harness login is missing): the call returns to the queue without using an attempt. False when the lease is gone. */
+/** The helper gives the lease back (it could not prepare or start the run): the call returns to the queue without using an attempt and is not offered to that login for a while. False when the lease is gone. */
 export function releaseCall(db: DatabaseSync, secret: string | undefined, raw: unknown, nowMs: number = Date.now()): boolean {
   const l = liveLease(db, secret, nowMs);
   if (!l) return false;
   const reason = progressLine((raw as Release | undefined)?.reason) ?? "released by the helper";
-  unlease(db, l.id, l.runId, `released by the helper: ${reason}`, nowMs, l.login);
+  unlease(db, { id: l.id, runId: l.runId, hash: sha256hex(secret!) }, `released by the helper: ${reason}`, nowMs, l.login);
   return true;
 }
 

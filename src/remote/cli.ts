@@ -1,4 +1,4 @@
-// `autocraft inference [server|user-local]`: shows or sets the inference mode (src/remote/mode.ts). `autocraft remote cooloff clear`: ends a helper's lease cool-off (src/remote/cooloff.ts).
+// `autocraft inference [server|user-local]`: shows or sets the inference mode (src/remote/mode.ts). `autocraft remote cooloff clear <login>`: ends the cool-off of a login's helpers (src/remote/cooloff.ts).
 // `autocraft remote token <login>`: makes a running agent token for a maintainer or operator and prints only the token, so it
 // can be piped into `autocraft-task login` on the same host without anyone seeing it.
 import { connect } from "../db.ts";
@@ -25,15 +25,14 @@ export const commands = {
     },
   },
   remote: {
-    summary: "remote cooloff clear <token-id|login>: lets a helper claim calls again after its lease cool-off; remote token <login> [--label <text>]: a running agent token on stdout, for piping into autocraft-task login",
+    summary: "remote cooloff clear <login>: lets the login's helpers claim calls again after a cool-off; remote token <login> [--label <text>]: a running agent token on stdout, for piping into autocraft-task login",
     run(args: string[]): void {
       if (args[0] === "token") return makeToken(args.slice(1));
       if (args[0] !== "cooloff" || args[1] !== "clear" || !args[2] || args.length > 3) {
-        console.error("usage: autocraft remote cooloff clear <token-id|login>");
+        console.error("usage: autocraft remote cooloff clear <login>");
         process.exit(1);
       }
-      const n = clearCooloff(connect(), args[2], "cli");
-      console.log(n ? `cleared the cool-off of ${n} token${n === 1 ? "" : "s"}` : `no token of ${args[2]} is cooling off`);
+      console.log(clearCooloff(connect(), args[2], "cli") ? `cleared the cool-off of ${args[2]}` : `${args[2]} is not cooling off`);
     },
   },
 };
