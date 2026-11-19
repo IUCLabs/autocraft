@@ -3,8 +3,9 @@
 // `remote_liveness` row every ALIVE_EVERY_MS; job processes, which expire leases (calls.ts expireLeases), read it.
 import type { DatabaseSync } from "node:sqlite";
 import { isBusy } from "../db.ts";
+import { scaled } from "./time-scale.ts";
 
-export const ALIVE_EVERY_MS = 5_000;
+export const ALIVE_EVERY_MS = scaled(5_000);
 /** A stamp older than this means the dashboard is not serving: down, stalled or restarting. */
 export const ALIVE_STALE_MS = 3 * ALIVE_EVERY_MS;
 

@@ -36,10 +36,14 @@ export const MIX = [
 
 export class Rig {
   /**
-   * @param {{ name: string, dir: string, users: number, parallel: number, timeFactor: number, dbFrom?: string, faults?: object, repos?: number, helpersFile?: string }} o
+   * @param {{ name: string, dir: string, users: number, parallel: number, timeFactor: number, timeScale?: number, dbFrom?: string, faults?: object, repos?: number, helpersFile?: string }} o
    */
   constructor(o) {
-    this.o = { repos: 4, ...o };
+    this.o = { repos: 4, timeScale: 1, ...o };
+    // The scale reaches the dashboard and the helpers through their environment, and this process (the driver) through its own:
+    // src/remote/time-scale.ts reads it when first imported.
+    this.ts = this.o.timeScale;
+    if (this.ts < 1) process.env.AUTOCRAFT_REMOTE_TIME_SCALE = String(this.ts); else delete process.env.AUTOCRAFT_REMOTE_TIME_SCALE;
     this.dir = mkdir(join(o.dir, o.name));
     this.t0 = Date.now();
     this.helpers = [];
@@ -48,6 +52,10 @@ export class Rig {
     this.events = []; // timeline lines for the report
     this.dashLog = createWriteStream(join(this.dir, "dashboard.log"), { flags: "a" });
   }
+  /** Real milliseconds for a duration given at production scale. */
+  sc(ms) { return Math.max(1, Math.round(ms * this.ts)); }
+  /** The env entry for a child process. */
+  scaleEnv() { return this.ts < 1 ? { AUTOCRAFT_REMOTE_TIME_SCALE: String(this.ts) } : {}; }
   note(line) { const l = `[${((Date.now() - this.t0) / 1000).toFixed(0).padStart(5)} s] ${line}`; this.events.push(l); console.log(l); }
 
   async init() {
@@ -72,8 +80,8 @@ export class Rig {
     await this.startDashboard();
     await this.setupDb();
     await this.proxy.start();
-    this.permTimer = setInterval(() => this.refreshPermissions(), 15_000);
-    this.sampleTimer = setInterval(() => this.sample(), 15_000);
+    this.permTimer = setInterval(() => this.refreshPermissions(), this.sc(15_000));
+    this.sampleTimer = setInterval(() => this.sample(), this.sc(15_000));
     this.samples = [];
     this.note(`scratch instance up: dashboard :${this.dashPort}, proxy :${this.proxyPort}, control :${this.controlPort}, data ${this.dir}`);
   }
@@ -84,7 +92,7 @@ export class Rig {
     const home = mkdir(join(this.dir, "dashhome"));
     const env = {
       PATH: process.env.PATH, HOME: home, XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_CONFIG_HOME: join(home, "config"),
-      AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: `127.0.0.1:${this.dashPort}`, AUTOCRAFT_DB: this.dbPath, AUTOCRAFT_DEV_PERMS: join(this.dir, "perms.json"),
+      AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: `127.0.0.1:${this.dashPort}`, AUTOCRAFT_DB: this.dbPath, AUTOCRAFT_DEV_PERMS: join(this.dir, "perms.json"), ...this.scaleEnv(),
     };
     writeFileSync(join(this.dir, "perms.json"), "{}");
     this.dash = spawn(process.execPath, [join(ROOT, "src/cli.ts"), "dash", "serve"], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -151,7 +159,7 @@ export class Rig {
     mkdir(join(cfg, "autocraft-task"));
     writeFileSync(join(cfg, "autocraft-task", "config.json"), JSON.stringify({ server: `http://127.0.0.1:${this.proxyPort}`, agentToken: u.token, harness: "claude", claudeToken: "rig-fake-token" }), { mode: 0o600 });
     const env = {
-      PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache, AUTOCRAFT_TASK_CLAUDE_BIN: harness,
+      PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache, AUTOCRAFT_TASK_CLAUDE_BIN: harness, ...this.scaleEnv(),
       NODE_OPTIONS: `--import=${join(here, "preload.mjs")}`,
     };
     const h = { i, login: u.login, tokenId: u.tokenId, dir: hd, failing, parallel, env, proc: null, log: join(hd, "helper.log"), stopped: false, restarts: 0 };
@@ -221,7 +229,7 @@ export class Rig {
         this.cache.calls.expireLeases(this.db, now);
         await this.collectDone();
       } catch (e) { this.note(`job emulator: ${e.message}`); }
-    }, 3000);
+    }, Math.max(250, this.sc(3000)));
   }
   /** Queues a follow-up for every finished call that kept its session. */
   async collectDone() {
@@ -265,7 +273,7 @@ export class Rig {
         const why = down ? "helper not running (shown as offline)" : (cool.get(h.login.toLowerCase()) ?? 0) > now ? "cooled off" : s && s.readiness !== "ready" ? `${s.readiness}: ${s.reason ?? ""}` : s?.last_error ? "last error shown" : null;
         h.idleFor = !holds && queued > 0 && !down ? (h.idleFor ?? now) : null;
         // Idle for over 90 s with calls waiting, ready, no reason shown: nobody can tell why it does nothing.
-        if (h.idleFor && now - h.idleFor > 90_000 && !why) idle.push(h.i + 1);
+        if (h.idleFor && now - h.idleFor > this.sc(90_000) && !why) idle.push(h.i + 1);
       }
       this.samples.push({ t: now, queued, idleNoReason: idle });
     } catch { /* sampling is best effort */ }

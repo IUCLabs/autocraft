@@ -36,6 +36,7 @@ import { cachedWrite, createSession, deleteSession, loadSession, makeUser, PERM_
 import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg, type Reply as McpReply } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import * as remote from "../../remote/calls.ts";
+import { scaled, TIME_SCALE } from "../../remote/time-scale.ts";
 import { isBusy } from "../../db.ts";
 import { inferenceMode } from "../../remote/mode.ts";
 import { HELPERS_PATH, parseStatus, storeStatus } from "../../remote/helpers.ts";
@@ -251,7 +252,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     } catch (e) {
       if (!isBusy(e)) console.log(`remote maintenance failed: ${(e as Error).message}`);
     }
-  }, 60_000);
+  }, scaled(60_000));
   maintenance.unref();
 
   function secure(headers: Record<string, string | string[]>, csp: string): Record<string, string | string[]> {
@@ -945,6 +946,7 @@ export async function startServer(opts: AppOptions): Promise<{ server: Server; u
   const server = createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, (req, res) => void app.handle(req, res));
   // Job processes expire user-local leases only while this process stamps that it serves (src/remote/liveness.ts). The
   // stamp uses the helper routes' short busy timeout: a busy database skips a tick rather than stalling the event loop.
+  if (TIME_SCALE !== 1) console.log(`WARNING: AUTOCRAFT_REMOTE_TIME_SCALE=${TIME_SCALE}: user-local time windows are shortened (test only)`);
   const stopLiveness = startLiveness(opts.remoteDb ?? opts.db);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

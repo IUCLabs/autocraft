@@ -9,17 +9,18 @@ import type { DatabaseSync } from "node:sqlite";
 import { claimClass } from "./claim-class.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
 import { userMaxCalls } from "./max-calls.ts";
+import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S, type Tier } from "./protocol.ts";
 
 /** How long an empty claim counts as an idle helper: two claim intervals and some slack. */
-export const IDLE_FRESH_MS = 45_000;
+export const IDLE_FRESH_MS = scaled(45_000);
 /** How often a waiting caller stamps its call's `seen_at` (it polls more often, but writes only this often). */
-export const SEEN_EVERY_MS = 30_000;
+export const SEEN_EVERY_MS = scaled(30_000);
 /** A queued call whose caller has not stamped it for this long has lost its caller and is not counted or claimed: two stamps and some slack. */
-export const CALLER_STALE_MS = 2 * SEEN_EVERY_MS + 15_000;
+export const CALLER_STALE_MS = 2 * SEEN_EVERY_MS + scaled(15_000);
 
 /** A lease whose last heartbeat is at most this old shows its helper is running (three heartbeats). */
-const LIVE_LEASE_MS = 3 * HEARTBEAT_S * 1000;
+const LIVE_LEASE_MS = 3 * scaled(HEARTBEAT_S * 1000);
 
 /**
  * Room for calls of class `cls`. A helper's fast-lane slot takes only small-tier and gating calls, and the planner does not

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Runs the robustness scenarios (section 4 of the plan) against a scratch instance and prints the acceptance report.
-//   node scripts/loadtest/run.mjs <smoke|1|2|3|4|5|6|all> [--dir <work dir>] [--db <db to copy>] [--time-factor F]
+//   node scripts/loadtest/run.mjs <smoke|1|2|3|4|5|6|all> [--dir <work dir>] [--db <db to copy>] [--time-factor F] [--time-scale S]
 //                                 [--users N] [--parallel K] [--calls M] [--max-minutes N] [--sequential]
 // `all` runs 1 to 5 side by side, then 6 alone (its latency numbers need the machine to itself). See README.md.
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -14,6 +14,12 @@ const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i
 const flag = (n) => argv.includes(`--${n}`);
 const which = argv.find((a) => !a.startsWith("--") && !argv[argv.indexOf(a) - 1]?.startsWith("--")) ?? "smoke";
 
+// Every user-local time window (leases, heartbeats, cool-offs) and every scenario timing is multiplied by the scale
+// (AUTOCRAFT_REMOTE_TIME_SCALE, test only); 1 runs the production windows.
+const TIME_SCALE = Number(opt("time-scale", 0.1));
+if (!(TIME_SCALE >= 0.01 && TIME_SCALE <= 1)) { console.error("--time-scale must be a number from 0.01 to 1"); process.exit(64); }
+const S = (ms) => Math.max(1, Math.round(ms * TIME_SCALE));
+
 const FAULTS = { rate502: 0.10, rateReset: 0.05, rate429: 0.02, retryAfter: 2, latMin: 0, latMax: 3000 };
 
 /** Each scenario: defaults for the rig, what to do while the queue drains, and which acceptance lines apply. */
@@ -21,32 +27,32 @@ const SCENARIOS = {
   smoke: { title: "2 helpers, 20 calls, faults on", users: 2, parallel: 2, calls: 20, timeFactor: 0.05, faults: FAULTS, accept: ["noLoss", "idle"], maxMin: 8 },
   1: { title: "10% 502, 5% resets, 2% 429, 0-3 s latency", users: 6, parallel: 2, calls: 60, timeFactor: 0.1, faults: FAULTS, accept: ["noLoss", "idle"], maxMin: 12 },
   2: { title: "dashboard restarted mid-call, then stopped for 5 minutes", users: 6, parallel: 2, calls: 50, timeFactor: 0.5, accept: ["noLoss", "noCooloff", "idle"], maxMin: 16,
-    async during(rig) { await sleep(60_000); await rig.restartDashboard(); await sleep(60_000); await rig.dashboardOutage(300); } },
+    async during(rig) { await sleep(S(60_000)); await rig.restartDashboard(); await sleep(S(60_000)); await rig.dashboardOutage(300 * TIME_SCALE); } },
   3: { title: "a helper frozen with SIGSTOP for 3 minutes", users: 4, parallel: 2, calls: 40, timeFactor: 0.5, accept: ["noLoss", "noDouble", "idle"], maxMin: 12,
-    async during(rig) { await sleep(40_000); rig.helpers[0].frozen = true; await rig.freezeHelper(0, 180); rig.helpers[0].frozen = false; } },
+    async during(rig) { await sleep(S(40_000)); rig.helpers[0].frozen = true; await rig.freezeHelper(0, 180 * TIME_SCALE); rig.helpers[0].frozen = false; } },
   4: { title: "a helper killed with SIGKILL mid-call and restarted", users: 4, parallel: 2, calls: 40, timeFactor: 0.5, accept: ["noLoss", "idle"], maxMin: 12,
-    async during(rig) { await sleep(45_000); rig.killHelper(0); await sleep(20_000); rig.restartHelper(0); } },
+    async during(rig) { await sleep(S(45_000)); rig.killHelper(0); await sleep(S(20_000)); rig.restartHelper(0); } },
   5: { title: "a helper whose harness always fails", users: 5, parallel: 2, calls: 60, timeFactor: 0.1, failing: [4], accept: ["oneCooloff", "idle"], maxMin: 10 },
   6: { title: "50 helpers x 4 slots against 500 mixed calls", users: 50, parallel: 4, calls: 500, timeFactor: 1, accept: ["noLoss", "latency", "idle"], maxMin: 25 },
 };
 
 async function run(key) {
   const sp = SCENARIOS[key];
-  const spec = { ...sp, name: `scenario-${key}`, users: Number(opt("users", sp.users)), parallel: Number(opt("parallel", sp.parallel)), calls: Number(opt("calls", sp.calls)), timeFactor: Number(opt("time-factor", sp.timeFactor)), maxMin: Number(opt("max-minutes", sp.maxMin)) };
+  const spec = { ...sp, name: `scenario-${key}`, users: Number(opt("users", sp.users)), parallel: Number(opt("parallel", sp.parallel)), calls: Number(opt("calls", sp.calls)), timeFactor: Number(opt("time-factor", sp.timeFactor)) * TIME_SCALE, maxMin: Number(opt("max-minutes", sp.maxMin * Math.max(TIME_SCALE, 0.3))) };
   const dir = opt("dir", join(tmpdir(), `autocraft-loadtest-${Date.now()}`));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const rig = new Rig({ name: spec.name, dir, users: spec.users, parallel: spec.parallel, timeFactor: spec.timeFactor, dbFrom: opt("db"), faults: sp.faults });
+  const rig = new Rig({ name: spec.name, dir, users: spec.users, parallel: spec.parallel, timeFactor: spec.timeFactor, timeScale: TIME_SCALE, dbFrom: opt("db"), faults: sp.faults });
   try {
     await rig.init();
     for (let i = 0; i < spec.users; i++) rig.startHelper(i, { failing: (sp.failing ?? []).includes(i) });
     rig.note(`${spec.users} helpers started, ${spec.parallel} slots each`);
-    await sleep(Math.min(20_000, 4000 + spec.users * 300));
+    await sleep(Math.min(S(20_000) + 3000, 4000 + spec.users * 300));
     await rig.enqueueMix(spec.calls);
-    rig.note(`${spec.calls} calls queued (time factor ${spec.timeFactor})`);
+    rig.note(`${spec.calls} calls queued (harness delay factor ${spec.timeFactor}, time scale ${TIME_SCALE})`);
     const during = sp.during ? sp.during(rig).catch((e) => rig.note(`scenario step failed: ${e.message}`)) : Promise.resolve();
     const drained = await rig.waitDrained(spec.maxMin * 60_000);
     await during;
-    if (sp.failing) await sleep(5000);
+    if (sp.failing) await sleep(S(5000));
     rig.note(drained ? "queue drained" : `not drained after ${spec.maxMin} min: ${rig.openCalls()} calls still open`);
     await rig.collectDone();
     rig.sample();

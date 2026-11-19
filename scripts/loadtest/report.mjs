@@ -61,12 +61,13 @@ export function evaluate(rig, spec, m) {
     add("no request over 5 s", u.over5s === 0, `${u.over5s} over 5 s`);
     add("no SQLite busy errors", m.busyErrors === 0, `${m.busyErrors} in the dashboard log`);
     const g = m.waits.gating, gp = pct(g, 95);
-    add("gating calls wait under 60 s at p95", gp !== null && gp < 60_000, `p95 ${s(gp)} over ${g.length} calls (lint checks and follow-ups)`);
+    const lim = Math.max(5000, rig.sc(60_000));
+    add(`gating calls wait under ${s(lim)} at p95`, gp !== null && gp < lim, `p95 ${s(gp)} over ${g.length} calls (lint checks and follow-ups)`);
   }
   if (num.includes("idle")) add("every idle helper shows a reason", m.idleNoReason.length === 0, m.idleNoReason.length ? `helpers idle without a reason: ${m.idleNoReason.join(", ")}` : "none idle without a reason");
   add("every call finished", m.open === 0 && m.failed === 0 || num.includes("oneCooloff"), `${m.done} done, ${m.failed} failed, ${m.open} still open of ${m.calls}`);
   const lines = [];
-  lines.push(`== ${spec.name}: ${spec.title}`);
+  lines.push(`== ${spec.name}: ${spec.title} (time scale ${rig.ts}; durations are real seconds, a production second is ${rig.ts} s here)`);
   lines.push(`calls ${m.calls}: ${m.done} done, ${m.failed} failed, ${m.open} open; requeued (attempt > 1): ${m.requeues}; started more than once: ${m.duplicateRuns.length}; answered more than once: ${m.answeredAgain.length}`);
   lines.push(`cool-offs: ${m.cooloffs.length}${m.cooloffs.length ? ` (helpers ${m.cooloffHelpers.join(", ")})` : ""}; lost replies: ${m.lost.length}`);
   const u = m.proxy.upstream;

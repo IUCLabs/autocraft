@@ -2,23 +2,24 @@
 // keep failing calls (`ok: false` replies in a row) gets no calls for a while, so a broken helper stops holding and failing
 // calls other helpers could run. Revoking a token does not end it; an operator does (`autocraft remote cooloff clear`).
 import type { DatabaseSync } from "node:sqlite";
+import { scaled } from "./time-scale.ts";
 import { audit } from "../dash/audit.ts";
 
 /** Lease drops of one login within DROP_WINDOW_MS that start a cool-off. */
 export const DROP_LIMIT = 3;
-export const DROP_WINDOW_MS = 2 * 3600_000;
+export const DROP_WINDOW_MS = scaled(2 * 3600_000);
 /** A token's drops count at most once in this long: one outage or one stuck machine is one drop. */
-export const DROP_DEDUPE_MS = 10 * 60_000;
+export const DROP_DEDUPE_MS = scaled(10 * 60_000);
 /** How long lost leases cool a login off. */
-export const COOLOFF_MS = 6 * 3600_000;
+export const COOLOFF_MS = scaled(6 * 3600_000);
 /** Failed replies in a row, within FAILURE_WINDOW_MS of the first, that start a cool-off. */
 export const FAILURE_LIMIT = 5;
-export const FAILURE_WINDOW_MS = 30 * 60_000;
+export const FAILURE_WINDOW_MS = scaled(30 * 60_000);
 /** How long failed replies cool a login off. */
-export const FAILURE_COOLOFF_MS = 3600_000;
+export const FAILURE_COOLOFF_MS = scaled(3600_000);
 
-export const DROP_REASON = `its leases were lost ${DROP_LIMIT} times within ${DROP_WINDOW_MS / 3600_000} hours (no heartbeat, or past the call's time limit)`;
-export const FAILURE_REASON = `its helpers failed ${FAILURE_LIMIT} calls in a row within ${FAILURE_WINDOW_MS / 60_000} minutes`;
+export const DROP_REASON = `its leases were lost ${DROP_LIMIT} times within 2 hours (no heartbeat, or past the call's time limit)`;
+export const FAILURE_REASON = `its helpers failed ${FAILURE_LIMIT} calls in a row within 30 minutes`;
 
 function coolOff(db: DatabaseSync, login: string, until: number, reason: string): void {
   db.prepare(`INSERT INTO main.remote_cooloffs (login, until, reason, failures, failures_since) VALUES (?, ?, ?, 0, NULL)

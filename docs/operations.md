@@ -261,6 +261,10 @@ Ended calls are kept 24 hours for task status and follow-ups; the dashboard dele
 
 While it lasts, the login's claims return no lease, a reason and the end time, and its helpers report `cooled-off` (audit `remote-cooloff`). Revoking or replacing a token does not end it. An operator clears it with `autocraft remote cooloff clear <login>` (audit `remote-cooloff-clear`).
 
+### Test time scale
+
+`AUTOCRAFT_REMOTE_TIME_SCALE` (a number from 0.01 to 1; unset means 1) is for the load rig (`scripts/loadtest`) only. When set below 1, the dashboard, the job processes and the helpers multiply every user-local time window by it: lease and heartbeat windows, the sticky follow-up wait, caller and status freshness, the liveness stamp, cool-off and drop windows, claim retry intervals, the helper's heartbeat, retry, outage and failure-backoff times. Protocol constants keep their production values; the scale applies where they are used. Every process of one instance (dashboard, job processes, helpers) must run with the same value. The dashboard logs a warning at start when the variable is set and refuses to start when it is outside 0.01 to 1. Never set it in production.
+
 ### Usage reserve and readiness
 
 Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}` (any of `reserve`, `repos` and `maxCalls`; the reply adds `repoChoices`), whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.

@@ -5,13 +5,14 @@ import type { DatabaseSync } from "node:sqlite";
 import { HttpError } from "../dash/server/util.ts";
 import { cooloffOf } from "./cooloff.ts";
 import { isTier } from "./mode.ts";
+import { scaled } from "./time-scale.ts";
 import { READINESS, STATUS_EVERY_S, type HarnessId, type HelperInfo, type HelperStatus, type Readiness, type Reserve, type Tier, type UsageReading, type UsageWindow } from "./protocol.ts";
 
 /** The session route listing the signed-in user's helpers (GET, reply `{ helpers: HelperInfo[] }`). */
 export const HELPERS_PATH = "/api/remote/helpers";
 
 /** A status this old no longer counts: one report interval and a minute of slack. */
-export const STATUS_FRESH_MS = (STATUS_EVERY_S + 60) * 1000;
+export const STATUS_FRESH_MS = scaled((STATUS_EVERY_S + 60) * 1000);
 
 const HARNESSES: HarnessId[] = ["claude", "codex"];
 const REASON_MAX = 300;
