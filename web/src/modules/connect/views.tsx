@@ -184,7 +184,7 @@ const readinessBadge = (h: RemoteHelper): { text: string; tone: Tone } => {
 const used = (n: number | null | undefined) => (n == null ? "–" : `${Math.round(n)}%`);
 
 function Helpers() {
-  const { data } = useQuery("remote-helpers", (a) => a.remote.helpers(), { pollMs: 30_000 });
+  const { data } = useQuery("remote-helpers", (a) => a.remote.helpers());
   if (!data?.helpers.length) return null;
   return (
     <Block className="mt-4" flush title="My helpers">
@@ -248,7 +248,10 @@ function MySettings() {
         onChange={(e) => {
           const next = { ...vals, [key]: e.target.value };
           setVals(next);
-          save(next);
+        }}
+        onBlur={() => save(vals)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save(vals);
         }}
         aria-label={label}
         className="w-20"
