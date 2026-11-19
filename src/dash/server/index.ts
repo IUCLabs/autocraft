@@ -29,8 +29,9 @@ import { OrgSetup } from "./github-setup.ts";
 import { Vault } from "../../github/vault.ts";
 import { githubIdentity } from "../../github/identity.ts";
 import { saveUserTokens } from "./user-tokens.ts";
-import { FakeProvider, GitHubProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
+import { FakeProvider, WRITE_PERMISSIONS, GitHubProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { retryWaiting } from "../../github/user-lane.ts";
+import { appPermission } from "../../remote/permission.ts";
 import { cachedWrite, createSession, deleteSession, loadSession, makeUser, PERM_READ_TTL, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg, type Reply as McpReply } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
@@ -635,7 +636,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return reply(200, out);
   }
 
-  // A claim hands out work on the repo: the write permission it checks is at most a minute old. While GitHub cannot be
+  // A claim hands out work on the repo: the write permission it checks is at most a minute old, read through the GitHub App
+  // when it is installed for the repo's owner (no dashboard session needed), else from the login's session. While GitHub cannot be
   // asked, a write permission confirmed within PERM_READ_TTL still counts, so a GitHub failure does not stall the helpers;
   // past that the call is passed over and `errors` says why.
   function claimPermission(login: string, role: Role): { canWrite: (repo: string) => Promise<boolean>; errors: Map<string, string> } {
@@ -644,6 +646,13 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return {
       errors,
       canWrite: async (repo) => {
+        const app = await appPermission(db, login, repo);
+        if (app.kind === "ok") return WRITE_PERMISSIONS.has(app.permission);
+        if (app.kind === "error") {
+          if (cachedWrite(db, login, repo, PERM_READ_TTL)) return true;
+          errors.set(repo, app.why);
+          return false;
+        }
         if (await user.canWrite(repo)) return true;
         const why = user.permissionError?.(repo);
         if (!why) return false;
