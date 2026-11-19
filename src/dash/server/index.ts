@@ -34,6 +34,9 @@ import { retryWaiting } from "../../github/user-lane.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, writes as mcpWrites, type Msg as McpMsg } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
+import * as remote from "../../remote/calls.ts";
+import { inferenceMode } from "../../remote/mode.ts";
+import { ROUTES } from "../../remote/protocol.ts";
 import { handleDelivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH } from "../../github/webhooks.ts";
 import { esc, HttpError, parseCookies, plainPage, previewTags, RateLimiter, safeReturnTo } from "./util.ts";
 
@@ -42,6 +45,8 @@ export const SESSION_COOKIE = "__Host-craft_session";
 const AUTHORIZE_PREFIX = "authorize:";
 const STATE_COOKIE = "__Host-craft_oauth";
 const BODY_LIMIT = 64 * 1024;
+/** A helper's submit carries the whole reply (a patch can be large). */
+const SUBMIT_BODY_LIMIT = 8 * 1024 * 1024;
 const PUBLIC_FILES = new Set(["/artcraft-mark.svg", "/artcraft-mark.png"]);
 const FILE_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", svg: "image/svg+xml",
@@ -135,8 +140,8 @@ async function readBody(req: IncomingMessage): Promise<URLSearchParams> {
   return new URLSearchParams(raw.toString("utf8"));
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
-  const raw = await readRaw(req);
+async function readJson(req: IncomingMessage, limit: number = BODY_LIMIT): Promise<unknown> {
+  const raw = await readRaw(req, limit);
   if (raw.length === 0) return undefined;
   if (contentType(req) !== "application/json") throw new HttpError(415, "Send the body as application/json");
   try {
@@ -195,6 +200,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The Inbox MCP server (POST /mcp): calls per login and failed authentications per client address, and feedback posts per login as on the dashboard.
   const mcpLimitToken = new RateLimiter(120, 60_000);
   const mcpLimitIp = new RateLimiter(300, 60_000);
+  // Claims of one login: a helper with several slots claims every few seconds at most.
+  const remoteLimitToken = new RateLimiter(240, 60_000);
   const webhookLimitIp = new RateLimiter(5000, 60_000);  // flood guard only; the periodic sync still runs. Before the body is read or the signature checked
   // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
   const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
@@ -518,6 +525,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return send(res, nonce, r, set);
       }
       if (url.pathname === "/mcp") return await handleMcpHttp(req, res);
+      if (url.pathname.startsWith("/api/remote/")) return await handleRemoteHttp(req, res, url);
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(req, res);
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
@@ -612,6 +620,52 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     // A notification or a response from the client: accepted, nothing to say.
     if (!out) return reply(202, null);
     return reply(200, out);
+  }
+
+  // The routes of the user-local helper (src/remote/protocol.ts ROUTES): claim with an agent token that may run tasks, the
+  // others with the lease secret of one call. Never the session cookie; a browser request from another site is refused.
+  async function handleRemoteHttp(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const reply = (status: number, body: unknown, headers: Record<string, string> = {}): void => {
+      res.writeHead(status, secure({ "cache-control": "no-store", "content-type": "application/json; charset=utf-8", ...headers }, "default-src 'none'"));
+      res.end(JSON.stringify(body));
+    };
+    if (!sameOrigin(req)) return reply(403, { error: "cross-origin request refused" });
+    const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
+    const path = url.pathname;
+    const method = path === ROUTES.bundle ? "GET" : "POST";
+    if (req.method !== method) return reply(405, { error: `use ${method}` }, { allow: method });
+    const tooMany = (): void => reply(429, { error: "too many requests; wait a minute" }, { "retry-after": "60" });
+    try {
+      if (path === ROUTES.claim) {
+        const caller = loadToken(db, bearer);
+        if (!caller && !mcpLimitIp.allow(clientIp(req))) return tooMany();
+        if (!caller) return reply(401, { error: "a valid AutoCraft agent token is required (Authorization: Bearer <token>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
+        if (!caller.canRun) return reply(403, { error: "this token cannot run tasks; make one with Can run tasks on the Connect page" });
+        if (!remoteLimitToken.allow(caller.login.toLowerCase())) return tooMany();
+        const claim = remote.parseClaim(await readJson(req));
+        // In the server mode no call is queued for helpers: nothing to take for a while.
+        if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300 });
+        const user = userForLogin(db, box, provider, caller.login, caller.role, false);
+        return reply(200, await remote.claimCall(db, caller, claim, (repo) => user.canWrite(repo)));
+      }
+      if (path !== ROUTES.bundle && path !== ROUTES.heartbeat && path !== ROUTES.submit && path !== ROUTES.release) return reply(404, { error: "not found" });
+      // An unknown secret counts against the address; a known one whose lease ended is answered 410.
+      if (!remote.leaseState(db, bearer)) {
+        if (!mcpLimitIp.allow(clientIp(req))) return tooMany();
+        return reply(401, { error: "a lease secret is required (Authorization: Bearer <secret>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
+      }
+      const gone = (): void => reply(410, { error: "the lease is gone (expired, withdrawn or already submitted)" });
+      if (path === ROUTES.bundle) {
+        const b = remote.bundleOf(db, bearer);
+        return b ? reply(200, b) : gone();
+      }
+      if (path === ROUTES.heartbeat) return remote.heartbeat(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
+      if (path === ROUTES.release) return remote.releaseCall(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
+      return reply(200, remote.submitCall(db, bearer, await readJson(req, SUBMIT_BODY_LIMIT)));
+    } catch (e) {
+      if (e instanceof HttpError) return reply(e.status, { error: e.message });
+      throw e;
+    }
   }
 
   async function sendImage(req: IncomingMessage, res: ServerResponse, url: URL, session: Session): Promise<void> {

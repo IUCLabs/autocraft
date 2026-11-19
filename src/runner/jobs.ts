@@ -10,6 +10,7 @@ import { releaseJob } from "./leases.ts";
 import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
 import { shownLookup } from "../dash/api/shown.ts";
 import { blankIfHidden } from "../dash/api/visible.ts";
+import { withdrawJobCalls } from "../remote/calls.ts";
 
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
 /** Error text of jobs ended by a runner stop or restart; the autopilot does not count them as failures. */
@@ -235,6 +236,7 @@ export function endJob(db: DatabaseSync, id: number, code: number | null, signal
   }
   failRunning(db, "The job ended during this call.", id);
   db.prepare("DELETE FROM model_waits WHERE job_id = ?").run(id);
+  withdrawJobCalls(db, "The job ended during this call.", id);
   releaseJob(db, id);
   db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = ?, progress = CASE WHEN ? = 'done' THEN NULL ELSE progress END WHERE id = ?")
     .run(state, now(), state === "failed" ? error : null, state, id);

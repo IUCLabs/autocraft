@@ -58,6 +58,7 @@ import { settledOf, unflagged } from "../../classify/settled.ts";
 import { isQuiet } from "../../security/quiet.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
+import * as inference from "./inference.ts";
 import { fixes as needsFixes, needs } from "./needs.ts";
 import { home } from "./home.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
@@ -482,6 +483,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "PUT", pattern: "/api/sandbox/workspace", operator: true, handler: ok(adm.setWorkspaceInfo) },
     get("/api/merge/single", adm.singleMerge),
     { method: "PUT", pattern: "/api/merge/single", operator: true, handler: ok(adm.setSingleMerge) },
+    { method: "GET", pattern: "/api/settings/inference", operator: true, handler: ok(inference.get) },
+    { method: "PUT", pattern: "/api/settings/inference", operator: true, handler: ok(inference.put) },
     post("/api/repos/comment-approve", (db, req) => adm.commentApproval(db, req, true)),
     post("/api/repos/comment-revoke", (db, req) => adm.commentApproval(db, req, false)),
     post("/api/repos/push-approve", (db, req) => adm.pushApproval(db, req, true)),

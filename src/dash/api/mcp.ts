@@ -1,7 +1,8 @@
 // The signed-in user's own agent tokens for the Inbox MCP server (src/dash/mcp/). Maintainers and operators make
 // them (a viewer writes nothing, this included). A token acts with its login's current role, read on every call, so
 // a token whose login became a viewer only reads; anyone may list and revoke their own. Only an operator, or a maintainer while `maintainer_writes` is on, makes an
-// answering token (`answer: true`): its agent may also answer decisions and undo answers, and it lasts 7 days.
+// answering token (`answer: true`): its agent may also answer decisions and undo answers, and it lasts 7 days. A running token
+// (`run: true`) lets the user's helper claim model calls in the user-local inference mode (src/remote/).
 import { maintainerWritesOn } from "../../settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { McpTokenCreated, McpTokens } from "../../../web/src/api/types.ts";
@@ -25,9 +26,11 @@ export function create(db: DatabaseSync, req: Req): McpTokenCreated {
   const b = body(req);
   if (b.answer !== undefined && typeof b.answer !== "boolean") throw new HttpError(400, "answer must be true or false");
   if (b.answer === true && !answering.enabled) throw new HttpError(403, "answering from an agent is not available yet");
+  if (b.run !== undefined && typeof b.run !== "boolean") throw new HttpError(400, "run must be true or false");
   if (b.answer === true && req.user.role !== "operator" && !(req.user.role === "maintainer" && maintainerWritesOn(db))) throw new HttpError(403, "only operators, and maintainers where they may settle decisions, make tokens that answer decisions");
-  const { token, row } = createToken(db, req.user.login, b.label, b.answer === true);
-  audit(db, req.user.login, "mcp-token-create", req.user.login, { id: row.id, label: row.label ?? undefined, ...(row.canAnswer ? { canAnswer: true } : {}) });
+  // A running token's helper claims model calls of the user-local mode; maintainers and operators (the only ones who get here) may make one.
+  const { token, row } = createToken(db, req.user.login, b.label, b.answer === true, b.run === true);
+  audit(db, req.user.login, "mcp-token-create", req.user.login, { id: row.id, label: row.label ?? undefined, ...(row.canAnswer ? { canAnswer: true } : {}), ...(row.canRun ? { canRun: true } : {}) });
   return { ...tokens(db, req), token, id: row.id };
 }
 

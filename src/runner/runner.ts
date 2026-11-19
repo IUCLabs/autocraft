@@ -28,6 +28,7 @@ import { jobBlock } from "./concurrency.ts";
 import { queueRoom } from "../agents/call.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
 import { envVar } from "../env.ts";
+import { jobRemoteWait, withdrawJobCalls } from "../remote/calls.ts";
 
 export const logsDir = (): string => envVar("RUNNER_LOGS") ?? join(homedir(), ".cache/autocraft-logs/jobs");
 
@@ -139,6 +140,7 @@ export class Runner {
     const orphans = failRunning(this.db, "The runner stopped during this call.");
     if (orphans) this.o.log(`${orphans} agent runs left running by an earlier runner, marked failed`);
     this.db.prepare("DELETE FROM model_waits").run();
+    withdrawJobCalls(this.db, "The runner stopped during this call.");
     this.db.prepare("DELETE FROM work_leases").run();
     const rows = this.db.prepare("SELECT id, pid, cancel_requested_at FROM jobs WHERE state = 'running'").all() as { id: number; pid: number | null; cancel_requested_at: string | null }[];
     for (const r of rows) {
@@ -339,10 +341,12 @@ export class Runner {
   private cancels(): void {
     for (const [id, r] of this.running) {
       const row = this.db.prepare("SELECT cancel_requested_at FROM jobs WHERE id = ?").get(id) as { cancel_requested_at: string | null } | undefined;
-      const late = Date.now() - r.startedAt >= r.deadlineMin * 60_000;
+      // Time a user-local model call waits for a helper counts like waiting for an account slot: not toward the deadline, and not as a time without progress.
+      const remote = jobRemoteWait(this.db, id);
+      const late = Date.now() - r.startedAt - remote.waitedMs >= r.deadlineMin * 60_000;
       const cancel = !!row?.cancel_requested_at || this.stopping;
       // Progress is a new line in the job's log (the job's own output: progress lines, check-tool notes, results); reading its mtime costs one stat.
-      let lastLine = r.startedAt;
+      let lastLine = Math.max(r.startedAt, remote.queued ? Date.now() : remote.lastLeaseAt ?? 0);
       try { lastLine = Math.max(lastLine, statSync(r.logPath).mtimeMs); } catch { /* no log yet */ }
       const idle = r.flaggedAt === null && Date.now() - lastLine >= r.noProgressMin * 60_000;
       // Past its deadline a job is first asked to stop: the failure is recorded, which the job reads at its item boundaries (ctx.cancelled)

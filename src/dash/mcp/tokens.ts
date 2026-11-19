@@ -17,14 +17,14 @@ export const MCP_TOKEN_PREFIX = "acmcp_";
 const LABEL_MAX = 60;
 const TOUCH_EVERY = 60_000;
 
-export type McpTokenRow = { id: number; label: string | null; canAnswer: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
+export type McpTokenRow = { id: number; label: string | null; canAnswer: boolean; /** The token's helper may claim model calls in the user-local inference mode (src/remote/). */ canRun: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
 /** `canAnswer`: the token was made to answer; the answer tools also need `role` to be operator at the time of the call. */
-export type McpCaller = { tokenId: number; login: string; role: Role; canAnswer: boolean };
+export type McpCaller = { tokenId: number; login: string; role: Role; canAnswer: boolean; canRun: boolean };
 
-type Raw = { id: number; label: string | null; can_answer: number; created_at: string; last_used_at: string | null; expires_at: string };
-const COLS = "id, label, can_answer, created_at, last_used_at, expires_at";
+type Raw = { id: number; label: string | null; can_answer: number; can_run: number; created_at: string; last_used_at: string | null; expires_at: string };
+const COLS = "id, label, can_answer, can_run, created_at, last_used_at, expires_at";
 const toRow = (r: Raw): McpTokenRow =>
-  ({ id: Number(r.id), label: r.label, canAnswer: r.can_answer === 1, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at });
+  ({ id: Number(r.id), label: r.label, canAnswer: r.can_answer === 1, canRun: r.can_run === 1, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at });
 
 /** The login's live tokens, newest first. */
 export function listTokens(db: DatabaseSync, login: string): McpTokenRow[] {
@@ -32,16 +32,16 @@ export function listTokens(db: DatabaseSync, login: string): McpTokenRow[] {
     .all(login, new Date().toISOString()) as Raw[]).map(toRow);
 }
 
-/** A new token for `login`; the plain value is returned once and never stored. The caller checks who may make an answering token. */
-export function createToken(db: DatabaseSync, login: string, rawLabel: unknown, canAnswer = false): { token: string; row: McpTokenRow } {
+/** A new token for `login`; the plain value is returned once and never stored. The caller checks who may make an answering or running token. */
+export function createToken(db: DatabaseSync, login: string, rawLabel: unknown, canAnswer = false, canRun = false): { token: string; row: McpTokenRow } {
   if (rawLabel !== undefined && rawLabel !== null && typeof rawLabel !== "string") throw new HttpError(400, "label must be a string");
   const label = (rawLabel ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, LABEL_MAX) || null;
   if (listTokens(db, login).length >= MCP_TOKENS_PER_LOGIN) throw new HttpError(409, `you have ${MCP_TOKENS_PER_LOGIN} tokens; revoke one first`);
   const token = `${MCP_TOKEN_PREFIX}${randomToken(32)}`;
   const now = new Date();
   const ttl = canAnswer ? MCP_ANSWER_TOKEN_TTL : MCP_TOKEN_TTL;
-  const r = db.prepare(`INSERT INTO mcp_tokens (login, token_hash, label, can_answer, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING ${COLS}`)
-    .get(login, sha256hex(token), label, canAnswer ? 1 : 0, now.toISOString(), new Date(now.getTime() + ttl).toISOString()) as Raw;
+  const r = db.prepare(`INSERT INTO mcp_tokens (login, token_hash, label, can_answer, can_run, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`)
+    .get(login, sha256hex(token), label, canAnswer ? 1 : 0, canRun ? 1 : 0, now.toISOString(), new Date(now.getTime() + ttl).toISOString()) as Raw;
   return { token, row: toRow(r) };
 }
 
@@ -76,12 +76,12 @@ export function revokeAnyToken(db: DatabaseSync, id: number): string | null {
 export function loadToken(db: DatabaseSync, token: string | undefined): McpCaller | null {
   if (!token || token.length > 200 || !token.startsWith(MCP_TOKEN_PREFIX)) return null;
   const now = new Date();
-  const row = db.prepare(`SELECT t.id, t.login, t.last_used_at, t.can_answer, a.role FROM mcp_tokens t JOIN access a ON a.login = t.login
+  const row = db.prepare(`SELECT t.id, t.login, t.last_used_at, t.can_answer, t.can_run, a.role FROM mcp_tokens t JOIN access a ON a.login = t.login
     WHERE t.token_hash = ? AND t.expires_at > ?`).get(sha256hex(token), now.toISOString()) as
-    { id: number; login: string; last_used_at: string | null; can_answer: number; role: Role } | undefined;
+    { id: number; login: string; last_used_at: string | null; can_answer: number; can_run: number; role: Role } | undefined;
   if (!row) return null;
   if (!row.last_used_at || now.getTime() - Date.parse(row.last_used_at) > TOUCH_EVERY) db.prepare("UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?").run(now.toISOString(), row.id);
-  return { tokenId: Number(row.id), login: row.login, role: row.role, canAnswer: row.can_answer === 1 };
+  return { tokenId: Number(row.id), login: row.login, role: row.role, canAnswer: row.can_answer === 1, canRun: row.can_run === 1 };
 }
 
 export function pruneTokens(db: DatabaseSync): void {

@@ -16,6 +16,8 @@ export const ROUTES = {
   heartbeat: "/api/remote/heartbeat",
   /** Lease secret. Body `Submit`, reply `SubmitReply`. */
   submit: "/api/remote/submit",
+  /** Lease secret. Body `Release`, reply `{ ok: true }`: the call goes back to the queue without using an attempt (the helper is too old, or its platform or harness login is missing). */
+  release: "/api/remote/release",
   /** Lease secret. A private repo's checkout or a workspace entry as a tar stream: `?repo=<name>&sha=<sha>`. */
   tarball: "/api/remote/tarball",
   /** Lease secret. Streamable HTTP MCP servers with only this call's tools, one per server name: `/mcp/task/<name>` (items, check, reference). */
@@ -33,7 +35,7 @@ export type Claim = {
   helperVersion: string;
   harness: HarnessId;
   harnessVersion: string;
-  /** Tiers this helper takes, each with the model its harness runs for it. */
+  /** Tiers this helper takes, each with the model its harness runs for it: an alias (opus, sonnet, haiku) or a full model id. The server accepts a tier only when the model belongs to a family accepted for it, and matches models by family. */
   tiers: Partial<Record<Tier, string>>;
   /** Only calls on these repos; absent means any the user may take. */
   repos?: string[];
@@ -52,7 +54,7 @@ export type Mount =
   /** A private repo or anything else from the server: GET ROUTES.tarball. */
   | { kind: "tarball"; path: string; repo: string; sha: string }
   /** Small files sent inline (repo docs, screenshots as base64, logs). */
-  | { kind: "files"; path: string; files: { name: string; base64: string }[] };
+  | { kind: "files"; path: string; /** `name` is a relative path below `path`, possibly with subdirectories; never absolute, never with `..`. */ files: { name: string; base64: string }[] };
 
 export type TaskBundle = {
   callId: number;
@@ -71,7 +73,9 @@ export type TaskBundle = {
   mounts: Mount[];
   /** MCP servers the call may use, each served at `${ROUTES.mcp}/<name>` with this lease's secret; the names give the tool names (`mcp__<name>__*`). */
   mcpServers: string[];
-  /** A follow-up turn: resume this helper's session of the parent call instead of starting one. */
+  /** Whether the helper keeps the harness session after the call: a follow-up turn (lint fix, check reminder, resume) may continue it. */
+  keepSession: boolean;
+  /** A follow-up turn: resume this helper's session of the parent call instead of starting one. The helper resumes with the session id it recorded; the hints never carry `--resume`. */
   resume?: { parentCallId: number };
   /** Exact arguments for adapters that can use them; an adapter without hints builds its own from the fields above. */
   hints: {
@@ -85,7 +89,9 @@ export type Heartbeat = { /** The harness's last progress line, shown on the run
 export type Usage = { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number };
 
 export type Submit =
-  | { ok: true; text: string; model: string; usage: Usage; turns?: number; /** The harness session id, kept by the helper for follow-ups. */ sessionId?: string; durationMs: number }
+  | { ok: true; text: string; /** The full model id the harness reported (e.g. from the CLI's result); matched by family against the claim's model for the tier. */ model: string; usage: Usage; /** Per model id, subagents (the explorer) included; `usage` is the whole call when this is absent. */ modelUsage?: Record<string, Usage>; turns?: number; /** The harness session id, kept by the helper for follow-ups. */ sessionId?: string; durationMs: number }
   | { ok: false; error: string; usage?: Usage; durationMs: number };
 
 export type SubmitReply = { accepted: boolean; reason?: string };
+
+export type Release = { /** Why the helper gives the lease back, shown on the call. */ reason: string };

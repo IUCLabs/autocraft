@@ -237,7 +237,9 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   token_hash TEXT NOT NULL UNIQUE,    -- sha256 of the token
   label TEXT,
   can_answer INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL
+  created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL,
+  can_run INTEGER NOT NULL DEFAULT 0, -- the token's helper may claim model calls in the user-local inference mode
+  idle_claim_at INTEGER               -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
 );
 CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
 -- The GitHub App's user token of each login, written at every sign-in while the GitHub identity is the app.
@@ -675,7 +677,10 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   summary TEXT,
   error TEXT,
   progress TEXT,                      -- running: the latest line of what the call is doing
-  cost_usd REAL                       -- the call's cost in USD (Jev: input tokens times the flat price); null for rows from before this column
+  cost_usd REAL,                      -- the call's cost in USD (Jev: input tokens times the flat price); null for rows from before this column
+  user_login TEXT,                    -- user-local mode: the maintainer whose helper ran the call
+  harness TEXT,                       -- user-local mode: claude | codex
+  reported_model TEXT                 -- user-local mode: the model the harness reported
 );
 CREATE INDEX IF NOT EXISTS agent_runs_running ON agent_runs(account_id) WHERE state = 'running';
 CREATE INDEX IF NOT EXISTS agent_runs_state ON agent_runs(state, id);
@@ -699,6 +704,48 @@ CREATE TABLE IF NOT EXISTS model_waits (
   level INTEGER NOT NULL DEFAULT 2    -- urgency band of the call's first item, 4 (P0) to 0 (P4); orders waiters of a repo within a class
 );
 CREATE INDEX IF NOT EXISTS model_waits_seen ON model_waits(seen_at);
+
+-- Model calls of the user-local inference mode (src/remote/calls.ts): the calling process inserts a call and polls it
+-- until a maintainer's helper has claimed, run and submitted it. Times are ms since epoch.
+CREATE TABLE IF NOT EXISTS remote_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER,
+  step TEXT NOT NULL,
+  stage INTEGER NOT NULL,
+  run_id INTEGER,                     -- the agent run of the current or last lease
+  prompt_id TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  tier TEXT NOT NULL,                 -- top | mid | small
+  effort TEXT NOT NULL,
+  asked_model TEXT NOT NULL,          -- the registry's model name the stage asked for (opus, sonnet, haiku)
+  bundle TEXT NOT NULL,               -- JSON TaskBundle (src/remote/protocol.ts) without callId
+  state TEXT NOT NULL,                -- queued | leased | done | failed
+  items TEXT NOT NULL DEFAULT '[]',   -- JSON [{repo, number}]: eligibility and the lease title
+  repo TEXT,                          -- the job's repo: queue fairness and eligibility
+  class INTEGER NOT NULL DEFAULT 0,   -- queue class, as model_waits
+  level INTEGER NOT NULL DEFAULT 2,   -- urgency band, as model_waits
+  since INTEGER NOT NULL,             -- when the call was made
+  seen_at INTEGER NOT NULL,           -- the calling process's last poll; a call not polled for a while has lost its caller
+  queued_since INTEGER,               -- while queued: when it entered the queue
+  queued_ms INTEGER NOT NULL DEFAULT 0, -- time spent queued before the current lease
+  user_login TEXT COLLATE NOCASE,     -- the lease holder
+  harness TEXT, harness_version TEXT,
+  model TEXT,                         -- the model the claim declared for the tier; a submit must report the same
+  lease_secret_hash TEXT,             -- sha256 of the lease secret
+  leased_at INTEGER, heartbeat_at INTEGER,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  max_attempts INTEGER NOT NULL,      -- the prompt's attempts limit
+  timeout_ms INTEGER NOT NULL,        -- the bundle's wall-clock limit
+  parent_id INTEGER,                  -- a follow-up turn: the call whose harness session it continues
+  sticky_login TEXT COLLATE NOCASE,   -- a follow-up turn: only this user's helper holds the session
+  progress TEXT,                      -- the helper's last progress line
+  reply TEXT, usage TEXT, turns INTEGER, session_id TEXT, duration_ms INTEGER,
+  error TEXT,
+  ended_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS remote_calls_state ON remote_calls(state, tier);
+CREATE INDEX IF NOT EXISTS remote_calls_job ON remote_calls(job_id) WHERE job_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS remote_calls_secret ON remote_calls(lease_secret_hash) WHERE lease_secret_hash IS NOT NULL;
 
 -- Who is working a PR, issue or finding right now: bookkeeping for src/runner/leases.ts. A lease whose job is not
 -- running is free; runner start and a job's end delete its rows.

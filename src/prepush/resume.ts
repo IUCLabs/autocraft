@@ -1,6 +1,7 @@
 // A patch the lint sends back to the model continues the model's own session while the prompt cache is warm.
 // The session store of a sandboxed patch call is kept with the stored patch row until the row's lint outcome is known or the window passes.
 import { rmSync, utimesSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -13,6 +14,7 @@ export const LONGEST_CALL_MS = Math.max(...Object.values(CLAUDE_PROMPTS).map((p)
 
 /** Marks a store as in use, so the age-based prune of session stores leaves it alone. */
 export function touchStore(dir: string): void {
+  if (!isAbsolute(dir)) return;
   try { const t = new Date(); utimesSync(dir, t, t); } catch { /* gone already */ }
 }
 
@@ -59,7 +61,8 @@ export function sessionAsk(stored: string | null | undefined, key: string, findi
   return { resume: { session: s, message: resumeMessage(findings) } };
 }
 
-const remove = (dir: string): void => rmSync(dir, { recursive: true, force: true });
+/** Removes a session store; a session of the user-local mode (src/classify/run.ts REMOTE_ACCOUNT) has none on this host, and its `dir` is no path. */
+const remove = (dir: string): void => { if (isAbsolute(dir)) rmSync(dir, { recursive: true, force: true }); };
 
 /** Removes the stores of `stored` that are not among `keep` (the stores a later ask went on with). */
 export function dropSessions(stored: string | null | undefined, keep: Kept = {}): void {

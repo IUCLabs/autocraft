@@ -6,6 +6,8 @@ import { accountHasRoom, chooseAccount, freeSlots, RUN_SLOT_MS, type Choice } fr
 import { insertRun, onRunEnd, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 import { levelBand } from "../rank/level.ts";
+import { inferenceMode } from "../remote/mode.ts";
+import { remoteRoom } from "../remote/room.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
 export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
@@ -15,6 +17,13 @@ export const setCallContext = (c: CallContext | null): void => void (context = c
 export const currentJobId = (): number | null => context?.jobId ?? null;
 /** The job and step this process runs, or null outside a job. */
 export const currentJob = (): { id: number; step: string } | null => (context ? { id: context.jobId, step: context.step } : null);
+/** Throws CancelledError or StoppedError when the job was cancelled or the pipeline switched off: a waiting call gives up. */
+export function throwIfHalted(what: string): void {
+  if (context?.cancelled()) throw new CancelledError(`cancelled while ${what}`);
+  if (context?.stopping?.()) throw new StoppedError("the pipeline was switched off");
+}
+/** Queue fields of a call made now: the job's repo and the queue class of the call's prompt. */
+export const callQueue = (promptId: string): { repo: string | null; cls: 0 | 1 | 2; jobId: number | null } => ({ repo: context?.repo ?? null, cls: currentClass(promptId), jobId: context?.jobId ?? null });
 
 /** Step names for calls made outside a job (the classify and decide commands). */
 const PROMPT_STEP: Record<string, { step: string; stage: number }> = {
@@ -66,7 +75,7 @@ function sleepOrWake(ms: number): Promise<void> {
   });
 }
 
-type Waiter = { id: number; cls: number; level: number; step: string; repo: string | null; since: number };
+export type Waiter = { id: number; cls: number; level: number; step: string; repo: string | null; since: number };
 
 const runningBy = (db: DatabaseSync, nowMs: number, col: "j.repo" | "r.step"): Map<string, number> =>
   new Map((db.prepare(`SELECT ${col} AS k, COUNT(*) AS n FROM agent_runs r LEFT JOIN jobs j ON j.id = r.job_id WHERE r.state = 'running' AND r.provider = 'claude' AND r.started_at >= ? AND ${col} IS NOT NULL GROUP BY ${col}`)
@@ -76,15 +85,20 @@ const runningBy = (db: DatabaseSync, nowMs: number, col: "j.repo" | "r.step"): M
 export const LEVEL_AGING_MS = 30 * 60_000;
 export const agedLevel = (level: number, sinceMs: number, nowMs: number): number => level + Math.min(4, Math.floor(Math.max(0, nowMs - sinceMs) / LEVEL_AGING_MS));
 
-/** Fresh, eligible waiters in claim order: class, then fewest running calls of the waiter's repo (one repo cannot take every slot), then the item's priority level raised by the time waited (P0 first), then fewest running calls of its step, then oldest. */
-function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
-  const rows = db.prepare("SELECT id, class AS cls, level, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[];
+/** Calls in claim order: class, then fewest running calls of the call's repo (one repo cannot take every slot), then the item's priority level raised by the time waited (P0 first), then fewest running calls of its step, then oldest. Sorts `rows` in place. */
+export function queueOrder<T extends Waiter>(db: DatabaseSync, nowMs: number, rows: T[]): T[] {
   const repoN = runningBy(db, nowMs, "j.repo"), stepN = runningBy(db, nowMs, "r.step");
   return rows.sort((x, y) => y.cls - x.cls || (repoN.get(x.repo ?? "") ?? 0) - (repoN.get(y.repo ?? "") ?? 0) || agedLevel(y.level, y.since, nowMs) - agedLevel(x.level, x.since, nowMs) || (stepN.get(x.step) ?? 0) - (stepN.get(y.step) ?? 0) || x.since - y.since || x.id - y.id);
 }
 
-/** How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter of the current call's class. */
+/** Fresh, eligible waiters in claim order (queueOrder). */
+function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
+  return queueOrder(db, nowMs, db.prepare("SELECT id, class AS cls, level, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[]);
+}
+
+/** How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter of the current call's class. In the user-local mode: idle helpers, minus the queued remote calls at or above the class. */
 export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass()): number {
+  if (inferenceMode(db) === "user-local") return remoteRoom(db, cls);
   const ahead = (db.prepare("SELECT COUNT(*) AS n FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ? AND class >= ?").get(Date.now() - allocation.staleMs, cls) as { n: number }).n;
   return Math.max(0, freeSlots(db) - Number(ahead));
 }

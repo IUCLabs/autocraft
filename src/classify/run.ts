@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
 import { accountConfigDir, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
-import { touchStore, type SessionAsk } from "../prepush/resume.ts";
+import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
 import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
 import { fixTurnMessage, mergeFixFields, needsFixTurn, type Lint, type LintProblem } from "../replylint.ts";
@@ -21,7 +21,11 @@ import { startBridge, CHECK_SERVER, type Bridge } from "../checktool/bridge.ts";
 import type { CheckTool } from "../checktool/index.ts";
 import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
-import { MCP_PATH } from "../sandbox/agents.ts";
+import { agentsDefinition, MCP_PATH } from "../sandbox/agents.ts";
+import { levelBand } from "../rank/level.ts";
+import { inferenceMode, tierOfModel } from "../remote/mode.ts";
+import { awaitCall, enqueueCall, type Outcome } from "../remote/calls.ts";
+import { bundleMounts, checkoutCommit, REFERENCE_SERVER } from "../remote/bundle.ts";
 import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS } from "../sandbox/index.ts";
 import { childEnv } from "../agents/status.ts";
 import { cliErrorText, credentialsNearExpiry, isAuthFailure, markTokenRejected, readToken, tokenEnv, usesToken } from "../agents/token.ts";
@@ -363,6 +367,50 @@ export function needsClippy(tool: Pick<CheckTool, "ran">, reply: string): boolea
   return /^\+\+\+ (?:b\/)?\S+\.rs\s*$/m.test(reply) && !tool.ran.has("clippy");
 }
 
+/**
+ * Backstop: nothing that looks like a token or key leaves a model call. The stored copy is scrubbed. A reply that carries
+ * code is parsed as written, since rewriting it would push the rewrite; one that holds a credential of a fixed shape is
+ * refused as unreadable, so neither the credential nor a placeholder is ever pushed.
+ */
+function screenReply(id: ClaudePromptId, raw: string): { text: string; stored: string; refused: boolean } {
+  const stored = scrub(raw);
+  const code = CLAUDE_PROMPTS[id].codeReply === true;
+  return { text: code ? raw : stored, stored, refused: code && hasFixedCredential(raw) };
+}
+
+type Turned = Reply & { sessionId?: string };
+
+/**
+ * Lints the reply and, when the problems need it and the call kept its session (`canFix`), sends one fix turn on that
+ * session (`fixTurn`: its reply, null when it ran and failed, "skipped" when it could not start) and merges its fields.
+ */
+async function lintTail(reply: Reply, lint: Lint, canFix: boolean, fixTurn: (message: string) => Promise<Turned | null | "skipped">): Promise<LintedReply> {
+  let problems: LintProblem[] | null = null;
+  try { problems = await lint(reply.text, "first"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
+  if (problems === null) return reply;
+  if (!problems.length) return { ...reply, problems };
+  // The first lint may put off its slow checks to the fix reply's lint; every exit that uses the first reply runs them on it.
+  const firstProblems = problems;
+  const full = async (): Promise<LintProblem[]> => {
+    try { return (await lint(reply.text, "fix")) ?? firstProblems; } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); return firstProblems; }
+  };
+  if (!canFix) return { ...reply, problems: await full() };
+  // Problems only in text nobody sees are recorded; a model turn for them would cost more than they matter.
+  if (!needsFixTurn(problems)) return { ...reply, problems: await full() };
+  const fix = await fixTurn(fixTurnMessage(problems));
+  if (fix === "skipped") return { ...reply, problems: await full() };
+  if (!fix) return { ...reply, problems: await full(), fixTurn: true };
+  const total = add(reply.usage, fix.usage);
+  // The fix reply holds only the corrected fields; they are put into the first reply, which stays as it was otherwise.
+  const merged = mergeFixFields(reply.text, fix.text, problems);
+  if (merged === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
+  let after: LintProblem[] | null = null;
+  try { after = await lint(merged, "fix"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
+  // A merged reply the lint cannot read is not used; the first reply stands.
+  if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
+  return { text: merged, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
+}
+
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<LintedReply | null> {
   const ses = opts.session;
   if (ses?.resume) {
@@ -379,6 +427,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
 }
 
 async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions): Promise<LintedReply | null | undefined> {
+  if (inferenceMode(db) === "user-local") return askRemote(id, model, input, db, opts);
   const ses = opts.session;
   const sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
   const reference = sandboxed && CLAUDE_PROMPTS[id].sandbox?.reference ? opts.reference : undefined;
@@ -495,15 +544,11 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
           return null;
         }
         const turns = sandboxed ? j.num_turns : undefined;
-        // Backstop: nothing that looks like a token or key leaves the sandbox call. The stored copy is scrubbed. A reply that
-        // carries code is parsed as written, since rewriting it would push the rewrite; one that holds a credential of a
-        // fixed shape is refused as unreadable, so neither the credential nor a placeholder is ever pushed.
-        const stored = scrub(j.result);
-        if (CLAUDE_PROMPTS[id].codeReply && hasFixedCredential(j.result)) {
+        const { text, stored, refused } = screenReply(id, j.result);
+        if (refused) {
           finish({ state: "failed", tokens, costUsd, error: "the reply holds a credential; refused", summary: "unreadable output", output: stored });
           return null;
         }
-        const text = CLAUDE_PROMPTS[id].codeReply ? j.result : stored;
         const sessionId = typeof j.session_id === "string" ? j.session_id : (Array.isArray(parsed) ? parsed.find((e) => typeof (e as { session_id?: unknown }).session_id === "string") as { session_id?: string } | undefined : undefined)?.session_id;
         finish({ state: "done", tokens, costUsd, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(stored, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: stored });
         return { text, usage, ...(turns !== undefined && { turns }), ...(sessionId && { sessionId }) };
@@ -536,55 +581,32 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       kept = true;
     }
     if (!opts.lint) return reply;
-    let problems: LintProblem[] | null = null;
-    try { problems = await opts.lint(reply.text, "first"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
-    if (problems === null) return reply;
-    if (!problems.length) return { ...reply, problems };
-    // The first lint may put off its slow checks to the fix reply's lint; every exit that uses the first reply runs them on it.
-    const lint = opts.lint;
-    const firstProblems = problems;
-    const full = async (): Promise<LintProblem[]> => {
-      try { return (await lint(reply.text, "fix")) ?? firstProblems; } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); return firstProblems; }
-    };
-    if (!sessions || !sessionId) return { ...reply, problems: await full() };
-    // Problems only in text nobody sees are recorded; a model turn for them would cost more than they matter.
-    if (!needsFixTurn(problems)) return { ...reply, problems: await full() };
-    // The fix turn can run as long as the call's own limit; with less token life than that (plus the sandbox's margin) it is skipped, because the sandbox never refreshes the token.
-    if (spec && credentialsNearExpiry(db, run.accountId, run.configDir, Date.now(), timeoutMs + TOKEN_MARGIN_MS)) {
-      console.log("fix turn skipped: token near expiry");
-      return { ...reply, problems: await full() };
-    }
-
-    // One fix turn on the same session and account; its own agent run, so its tokens and outcome show on the Agents page.
-    const message = fixTurnMessage(problems);
-    let fixRun: number;
-    try {
-      const started = tryStartFollowUp(db, run.accountId, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: message });
-      if (started === null) {
-        console.log("fix turn skipped: the account has no free slot or headroom");
-        return { ...reply, problems: await full() };
+    return await lintTail(reply, opts.lint, !!(sessions && sessionId), async (message) => {
+      // The fix turn can run as long as the call's own limit; with less token life than that (plus the sandbox's margin) it is skipped, because the sandbox never refreshes the token.
+      if (spec && credentialsNearExpiry(db, run.accountId, run.configDir, Date.now(), timeoutMs + TOKEN_MARGIN_MS)) {
+        console.log("fix turn skipped: token near expiry");
+        return "skipped";
       }
-      fixRun = started;
-    } catch (e) {
-      console.log(`fix turn not started: ${(e as Error).message}`);
-      return { ...reply, problems: await full() };
-    }
-    let fix: (Reply & { sessionId?: string }) | null = null;
-    try {
-      fix = await turn(fixRun, message, sessionId, true);
-    } catch (e) {
-      finishRun(db, fixRun, { state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
-    }
-    if (!fix) return { ...reply, problems: await full(), fixTurn: true };
-    const total = add(reply.usage, fix.usage);
-    // The fix reply holds only the corrected fields; they are put into the first reply, which stays as it was otherwise.
-    const merged = mergeFixFields(reply.text, fix.text, problems);
-    if (merged === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
-    let after: LintProblem[] | null = null;
-    try { after = await opts.lint(merged, "fix"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
-    // A merged reply the lint cannot read is not used; the first reply stands.
-    if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
-    return { text: merged, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
+      // One fix turn on the same session and account; its own agent run, so its tokens and outcome show on the Agents page.
+      let fixRun: number;
+      try {
+        const started = tryStartFollowUp(db, run.accountId, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: message });
+        if (started === null) {
+          console.log("fix turn skipped: the account has no free slot or headroom");
+          return "skipped";
+        }
+        fixRun = started;
+      } catch (e) {
+        console.log(`fix turn not started: ${(e as Error).message}`);
+        return "skipped";
+      }
+      try {
+        return await turn(fixRun, message, sessionId, true);
+      } catch (e) {
+        finishRun(db, fixRun, { state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
+        return null;
+      }
+    });
   } catch (e) {
     end({ state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
     throw e;
@@ -595,6 +617,117 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     opts.check?.close();
     // The config of a bridged call holds that call's token.
     if (bridgeConfig) rmSync(bridgeConfig, { force: true });
+  }
+}
+
+/** The account of a kept session of the user-local mode: the session lives with the helper of the call that `dir` names. */
+export const REMOTE_ACCOUNT = "user-local";
+const remoteSessionDir = (callId: number): string => `remote-call:${callId}`;
+const remoteParent = (k: KeptSession): number | null => {
+  const m = k.account === REMOTE_ACCOUNT ? /^remote-call:(\d+)$/.exec(k.dir) : null;
+  return m ? Number(m[1]) : null;
+};
+
+/** Tokens of a remote reply in the shape of a local result: the asked model's in the main fields, other models (the explorer) as extras. The helper reports no cost. */
+function remoteUsage(o: Extract<Outcome, { state: "done" }>, model: string): ReturnType<typeof resultUsage> {
+  const modelUsage = o.byModel ? Object.fromEntries(Object.entries(o.byModel).map(([m, u]) => [m, { inputTokens: u.input, outputTokens: u.output, cacheReadInputTokens: u.cacheRead, cacheCreationInputTokens: u.cacheWrite }])) : undefined;
+  const r = resultUsage({ usage: { input_tokens: o.usage.input, output_tokens: o.usage.output, cache_read_input_tokens: o.usage.cacheRead, cache_creation_input_tokens: o.usage.cacheWrite }, ...(modelUsage && { modelUsage }) }, model);
+  return { ...r, usage: { ...r.usage, cost: null, ...(r.usage.extra && { extra: r.usage.extra.map((e) => ({ model: e.model, usage: { ...e.usage, cost: null } })) }) } };
+}
+
+/**
+ * askOnce in the user-local mode: each turn is a remote call (src/remote/calls.ts) that a maintainer's helper runs. The
+ * bundle carries what the sandboxed call would get here: the checkouts as mounts, the repo docs inline, and MCP servers
+ * served per lease (items when a snapshot exists, the check tool, reference documentation instead of a /reference mount).
+ * Follow-up turns (check reminder, lint fix, a resume of a kept session) go to the helper that holds the session; when it
+ * does not take one in time, the turn is skipped or, for a resume, the caller asks anew. No account is used.
+ */
+async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions): Promise<LintedReply | null | undefined> {
+  const p = CLAUDE_PROMPTS[id];
+  const ses = opts.session;
+  const at = opts.checkout !== undefined && p.sandbox !== undefined ? checkoutCommit(opts.checkout) : null;
+  const sandboxed = at !== null;
+  const docs = sandboxed && p.sandbox?.docs ? await docsOf(db, opts.checkout!) : undefined;
+  if (docs) input = input.map((x) => ({ ...x, repo_docs: true })) as ClaudeInput[K];
+  const parts = claudeParts(id, input, sandboxed);
+  const items = refsOf(input);
+  const resume = ses?.resume;
+  const parent = resume ? remoteParent(resume.session) : null;
+  if (resume && (!sandboxed || parent === null || resume.session.checkout !== opts.checkout)) return undefined;
+  const checkTool = sandboxed && opts.check !== undefined && p.sandbox?.check === true ? opts.check : undefined;
+  try {
+    const workspace = sandboxed && p.sandbox?.workspace === true;
+    const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
+    const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;
+    const reference = sandboxed && p.sandbox?.reference === true && opts.reference !== undefined;
+    const servers = [...Object.keys(it?.mcpServers ?? {}), ...(checkTool ? [CHECK_SERVER] : []), ...(reference ? [REFERENCE_SERVER] : [])].sort();
+    const persist = sandboxed && ((opts.lint !== undefined && p.lint === true) || checkTool !== undefined || ses !== undefined);
+    const args = claudeArgs(id, model, sandboxed, servers.length ? { config: MCP_PATH, servers } : undefined, parts.system, false, persist, docs !== undefined);
+    const agents = workspace ? JSON.stringify(agentsDefinition(Object.keys(it?.mcpServers ?? {}).sort())) : undefined;
+    const mounts = at ? bundleMounts(db, at, items, shared, docs) : [];
+    const timeoutSeconds = p.limits.timeoutSeconds + (checkTool ? CHECK_MAX_WALL_MS / 1000 : 0);
+    const tier = tierOfModel(model);
+    const level = levelBand(db, items[0]?.repo, items[0]?.number);
+
+    /** One remote turn: the first message, or with `after` a follow-up on the session of that call. */
+    const turn = async (stdin: string, after: number | null, lean = false): Promise<{ reply: Turned; callId: number } | "failed" | "unclaimed"> => {
+      const callId = enqueueCall(db, {
+        promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, askedModel: model, items, level, maxAttempts: p.limits.attempts, ...(after !== null && { parentId: after }),
+        bundle: {
+          promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, timeoutSeconds, maxTurns: sandboxed ? (lean ? 1 : p.sandbox!.maxTurns) : null,
+          stdin, system: parts.system, mounts, mcpServers: servers, keepSession: persist, ...(after !== null && { resume: { parentCallId: after } }),
+          hints: { claude: { args: lean ? noToolArgs(args) : args, ...(agents && { agents }) } },
+        },
+      });
+      const o = await awaitCall(db, callId, { ...(opts.onProgress && { onProgress: opts.onProgress }), ...(opts.maxWaitMs !== undefined && { maxWaitMs: opts.maxWaitMs }) });
+      if (o.state === "unclaimed") return "unclaimed";
+      if (o.state === "failed") {
+        if (o.runId !== null) finishRun(db, o.runId, { state: "failed", ...(o.tokens && { tokens: o.tokens }), error: scrubError(o.error), summary: "failed" });
+        return "failed";
+      }
+      const { usage, all: tokens } = remoteUsage(o, model);
+      const { text, stored, refused } = screenReply(id, o.text);
+      if (refused) {
+        if (o.runId !== null) finishRun(db, o.runId, { state: "failed", tokens, error: "the reply holds a credential; refused", summary: "unreadable output", output: stored });
+        return "failed";
+      }
+      const turns = sandboxed && o.turns !== null ? o.turns : undefined;
+      if (o.runId !== null) finishRun(db, o.runId, { state: "done", tokens, costUsd: null, summary: (after !== null ? "fix turn answered" : turns === undefined ? replySummary(stored, items.length) : `answered in ${turns} turns`) + (after === null && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: stored });
+      return { reply: { text, usage, ...(turns !== undefined && { turns }), ...(o.sessionId && { sessionId: o.sessionId }) }, callId };
+    };
+
+    const first = await turn(resume ? resume.message : parts.stdin, parent);
+    // A resume nobody took: the caller asks anew, as when a local session cannot be resumed.
+    if (first === "unclaimed") return undefined;
+    if (first === "failed") return null;
+    let { sessionId, ...reply } = first.reply;
+    let last = first.callId;
+    // The prompt tells the model to run clippy on its final diff, and a model may skip it: one follow-up message on the same session asks for it.
+    if (checkTool && persist && sessionId && needsClippy(checkTool, reply.text)) {
+      const again = await turn(CHECK_REMINDER, last);
+      if (typeof again === "object") {
+        reply = { text: again.reply.text, usage: add(reply.usage, again.reply.usage), ...(reply.turns !== undefined && { turns: reply.turns }) };
+        sessionId = again.reply.sessionId ?? sessionId;
+        last = again.callId;
+      } else if (again === "unclaimed") console.log("check reminder skipped: the helper holding the session did not take it");
+    }
+    const keep = (): void => { if (ses && persist && sessionId) ses.kept = { id: sessionId, dir: remoteSessionDir(last), account: REMOTE_ACCOUNT, checkout: opts.checkout! }; };
+    keep();
+    if (!opts.lint) return reply;
+    return await lintTail(reply, opts.lint, persist && sessionId !== undefined, async (message) => {
+      const fix = await turn(message, last, true);
+      if (fix === "unclaimed") {
+        console.log("fix turn skipped: the helper holding the session did not take it");
+        return "skipped";
+      }
+      if (fix === "failed") return null;
+      last = fix.callId;
+      keep();
+      return fix.reply;
+    });
+  } finally {
+    // Check tasks still open when the call ends are cancelled.
+    opts.check?.close();
   }
 }
 

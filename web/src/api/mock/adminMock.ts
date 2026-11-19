@@ -197,8 +197,8 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
 
   let sessions = buildSessions();
   let agentTokens: AccessToken[] = [
-    { id: 11, login: ACCESS[0]!.login, label: "laptop", canAnswer: true, createdAt: new Date(NOW - 2 * 86_400_000).toISOString(), lastUsedAt: new Date(NOW - 3_600_000).toISOString(), expiresAt: new Date(NOW + 5 * 86_400_000).toISOString() },
-    { id: 12, login: ACCESS[1]!.login, label: null, canAnswer: false, createdAt: new Date(NOW - 20 * 86_400_000).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + 70 * 86_400_000).toISOString() },
+    { id: 11, login: ACCESS[0]!.login, label: "laptop", canAnswer: true, canRun: false, createdAt: new Date(NOW - 2 * 86_400_000).toISOString(), lastUsedAt: new Date(NOW - 3_600_000).toISOString(), expiresAt: new Date(NOW + 5 * 86_400_000).toISOString() },
+    { id: 12, login: ACCESS[1]!.login, label: null, canAnswer: false, canRun: false, createdAt: new Date(NOW - 20 * 86_400_000).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + 70 * 86_400_000).toISOString() },
   ];
   const auditLog = buildAudit();
   let rule: WhitelistRule = { minMerged: 5, minRate: 0.6 };

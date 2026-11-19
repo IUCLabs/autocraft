@@ -8,7 +8,7 @@ const DAY = 86_400_000;
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp"> {
   let next = 3;
   let tokens: McpToken[] = [
-    { id: 2, label: "laptop", canAnswer: false, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
+    { id: 2, label: "laptop", canAnswer: false, canRun: false, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
   ];
   const list = () => ({ tokens: structuredClone(tokens), max: 5, path: "/mcp", answering: false });
   const wait = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 60));
@@ -20,7 +20,7 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp"> {
         if (answer) throw new Error("answering from an agent is not available yet");
         if (tokens.length >= 5) throw new Error("you have 5 tokens; revoke one first");
         const id = next++;
-        tokens = [{ id, label: label.trim() || null, canAnswer: answer, createdAt: new Date(NOW).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + (answer ? 7 : 90) * DAY).toISOString() }, ...tokens];
+        tokens = [{ id, label: label.trim() || null, canAnswer: answer, canRun: false, createdAt: new Date(NOW).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + (answer ? 7 : 90) * DAY).toISOString() }, ...tokens];
         changed();
         return wait({ ...list(), id, token: `acmcp_mock${id}${"x".repeat(36)}` });
       },
