@@ -235,10 +235,12 @@ function MySettings() {
   const [vals, setVals] = useState<{ fiveHour: string; weekly: string } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [picks, setPicks] = useState<string[]>([]);
+  const [maxCalls, setMaxCalls] = useState("");
   useEffect(() => {
     if (!data) return;
     setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
     setPicks(data.repos);
+    setMaxCalls(data.maxCalls === null ? "" : String(data.maxCalls));
   }, [data]);
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
   const savePicks = (next: string[]) => {
@@ -266,6 +268,17 @@ function MySettings() {
     const body = { reserve: { fiveHour: Number(next.fiveHour), weekly: Number(next.weekly) } };
     if (body.reserve.fiveHour === data.reserve.fiveHour && body.reserve.weekly === data.reserve.weekly) return;
     void write.run("settings", () => api.me.settings.put(body));
+  };
+  const validMax = (v: string) => v.trim() === "" || (/^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= 64);
+  const saveMax = (v: string) => {
+    if (!validMax(v)) {
+      setProblem("Enter a whole number from 1 to 64, or leave it empty for no limit.");
+      return;
+    }
+    setProblem(null);
+    const next = v.trim() === "" ? null : Number(v);
+    if (next === data.maxCalls) return;
+    void write.run("max-calls", () => api.me.settings.put({ maxCalls: next }));
   };
   const field = (key: "fiveHour" | "weekly", label: string) => (
     <label className="flex items-center gap-2 text-sm">
@@ -297,6 +310,26 @@ function MySettings() {
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-6">
         {field("fiveHour", "Keep free: 5-hour window")}
         {field("weekly", "Keep free: weekly")}
+        <label className="flex items-center gap-2 text-sm">
+          <span className="w-44 shrink-0 text-ink/80">Max calls at once</span>
+          <Input
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={64}
+            step={1}
+            placeholder="None"
+            value={maxCalls}
+            invalid={!validMax(maxCalls)}
+            onChange={(e) => setMaxCalls(e.target.value)}
+            onBlur={() => saveMax(maxCalls)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveMax(maxCalls);
+            }}
+            aria-label="Max calls at once"
+            className="w-20"
+          />
+        </label>
       </div>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-2">
         <span className="w-44 shrink-0 pt-1.5 text-sm text-ink/80">My repos</span>

@@ -142,7 +142,7 @@ let appRemoved = false;
 
 export const AUDIT_ACTIONS = [
   "answer", "undo", "dispute", "dispute-resolve", "answer-sweep", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "mcp-token-create", "mcp-token-revoke", "usage-reserve", "my-repos", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
+  "session-revoke", "mcp-token-create", "mcp-token-revoke", "usage-reserve", "my-repos", "max-calls", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
   "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-register-failed", "github-app-remove", "github-identity", "github-app-link-create", "github-app-link-revoke", "github-app-link-use", "github-app-manager", "repo-track", "repo-untrack",
 ];
 
@@ -501,7 +501,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
       },
       audit(f) {
         if (me.role === "viewer") throw new Error("only operators and maintainers read the audit log");
-        const hidden = operator ? [] : ["access-add", "access-remove", "access-role", "session-revoke", "mcp-token-create", "mcp-token-revoke", "usage-reserve", "my-repos", "sign-in", "sign-in-refused", "account-change"];
+        const hidden = operator ? [] : ["access-add", "access-remove", "access-role", "session-revoke", "mcp-token-create", "mcp-token-revoke", "usage-reserve", "my-repos", "max-calls", "sign-in", "sign-in-refused", "account-change"];
         const l = f.login?.trim().toLowerCase();
         const rows = auditLog.filter((e) => !hidden.includes(e.action) && (!l || e.login.toLowerCase() === l || e.target?.toLowerCase() === l) && (!f.action || e.action === f.action));
         const from = f.offset ?? 0;

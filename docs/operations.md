@@ -174,7 +174,7 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
 
 | Command | What it does |
 |---|---|
-| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16; Codex runs one call at a time because its login refreshes in place. Ctrl-C stops running calls and reports them; a second Ctrl-C quits at once. |
+| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16, plus the fast lane for short calls and follow-ups (see [Who gets which call](#who-gets-which-call)); Codex runs one call at a time because its login refreshes in place. Ctrl-C stops running calls and reports them; a second Ctrl-C quits at once. |
 | `claim` | Claims one call and prints its lease id. |
 | `run [--detach] [<lease>]` | Runs a claimed lease, or claims one and runs it. `--detach` starts the run in the background and prints the lease id. |
 | `wait <lease>` | Waits for a detached run and prints its result. Returns after at most 9 minutes with exit code 3 while the run still goes; run it again. |
@@ -206,9 +206,18 @@ A call goes to a maintainer or operator whose cached GitHub permission is `write
 - My repos. Each user may pick repos on the Connect page (`PUT /api/me/settings` with `{repos: [...]}`, tracked repo names, audit `my-repos`; empty means every repo). The picker lists the repos with the pipeline on where the user has write permission. Their helpers then take only calls whose repos are all picked, and a helper's own `repos` list can narrow the picks but not widen them; calls that name no repo are not filtered. The per-repo Pipeline switch stays the operators' control: a picked repo with the pipeline off has no calls.
 - Security calls (`security.verify`, `security.fixcheck`) follow the same rules as other calls: write permission on the repo, and the author preference below.
 - Author preference. For prompts that judge an item (reviews, the pre- and post-merge reviews, fix-up and fix-issue checks, decision prepares, conversation turns, verify compare, classify, duplicate compares and the two security prompts), an author or co-author of an item of the call (a `Co-authored-by` trailer counts) is passed over while another eligible helper has asked for work in the last 45 seconds and could take it (tier, repos, role, write permission and not an author). With no such helper, the author takes the call.
-- A follow-up turn of a session goes first to the helper that holds the session. If that helper does not take it within 2 minutes, the call is withdrawn and the caller starts a fresh one.
+- A follow-up turn of a session is offered only to the login that holds the session, first to the helper that names the session in its claim. It waits while that login runs a lease with a heartbeat in the last 90 seconds, up to 15 minutes; with no such lease it waits 2 minutes. Then the call is withdrawn and the caller starts a fresh one (or skips the turn).
+- Max calls at once. Each user may set the most calls all their helpers hold leases on together (Connect page, My settings; `PUT /api/me/settings` with `{maxCalls: 1-64}` or `{maxCalls: null}` for no limit, audit `max-calls`). At the limit a claim returns no lease and the reason. A follow-up of the user's own sessions still gets a lease one past the limit, so a session can finish.
 - A call the login released is not offered to it again for 10 minutes.
-- A claim from a helper older than 1.1.0 or of another protocol version (2) is refused with 409.
+- A claim from a helper older than 1.1.0 or of another protocol version (3) is refused with 409.
+
+**Claim order.** A claim takes the first call it may take in this order:
+
+1. Follow-up turns of the sessions the helper names in its claim, oldest first.
+2. Gating calls: lint checks (`lint.*` prompts) and, for their own helper, the fix turns, check reminders and resumes above.
+3. The rest by step class (security, then fix-up, review and decide steps, then the others), fewest running calls of the repo, the item's priority raised by time waited, fewest running calls of the step, oldest. A small-tier call ranks one class higher for every 2 minutes it has waited, up to the top step class, so a long Opus backlog cannot hold it.
+
+**Fast lane.** Beside its `--parallel N` slots the helper runs one more slot, whose claims say `fastLane: true`. A fast-lane claim gets only follow-ups of the helper's sessions, gating calls and small-tier calls, so these never wait for a long run to end. The helper reports `slots` as N + 1. Codex, which runs one call at a time, has no fast lane; on macOS the fast lane holds a slot of its own, so `--parallel 16` has none.
 
 ### Leases
 
@@ -237,7 +246,7 @@ While it lasts, the login's claims return no lease, a reason and the end time, a
 
 ### Usage reserve and readiness
 
-Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}` (either or both of `reserve` and `repos`; the reply adds `repoChoices`), whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.
+Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}` (any of `reserve`, `repos` and `maxCalls`; the reply adds `repoChoices`), whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.
 
 - Before each claim the helper reads its harness's plan usage and claims only while every 5-hour and weekly window keeps more than the reserve free. Claude: Claude Code's `GET /api/oauth/usage` with the helper's Claude login, no model call. Codex: `account/rateLimits/read` from `codex app-server` with the helper's own `CODEX_HOME`.
 - A local `config reserve` can only raise the server's reserve.
@@ -256,7 +265,7 @@ The helper reports its readiness to `POST /api/remote/status` on every change an
 | `version-refused` | The server refused the helper's version, or the harness version is not audited (Codex). |
 | `harness-missing` | The harness or its login is missing. |
 
-The planner counts as room only helpers whose last status is `ready` and at most 6 minutes old and whose last claim found nothing within 45 seconds. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
+The helper's status also carries its `slots` and how many are `busy`. The planner's room is the free slots of the helpers whose last status is `ready` and at most 6 minutes old and that are active (their last claim found nothing within 45 seconds, or a lease of theirs heartbeat within 90 seconds): each such helper's reported slots less the leases its token holds, for each user at most what their Max calls at once leaves. The queued calls that rank at or above the caller's class in the claim order take room first. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
 
 ### Per-call tools
 

@@ -1,0 +1,32 @@
+// Each user's "Max calls at once" for their user-local helpers, stored in `user_settings` under `max_calls`: the most calls
+// all their helpers hold leases on together (claimCall). No row means no limit.
+import type { DatabaseSync } from "node:sqlite";
+import { audit } from "../dash/audit.ts";
+
+const KEY = "max_calls";
+/** The highest limit a user may set: four helpers at the helper's 16 parallel slots. */
+export const MAX_CALLS_MAX = 64;
+
+/** The user's limit, or null for none. */
+export function userMaxCalls(db: DatabaseSync, login: string): number | null {
+  const row = db.prepare("SELECT value FROM main.user_settings WHERE login = ? AND key = ?").get(login, KEY) as { value: string } | undefined;
+  const n = row ? Number(row.value) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= MAX_CALLS_MAX ? n : null;
+}
+
+/** A limit from a request body, checked: a whole number from 1 to MAX_CALLS_MAX, or null for none; throws with the reason for a bad one. */
+export function parseMaxCalls(raw: unknown): number | null {
+  if (raw === null) return null;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1 || raw > MAX_CALLS_MAX) throw new Error(`maxCalls must be a whole number from 1 to ${MAX_CALLS_MAX}, or null for no limit`);
+  return raw;
+}
+
+/** Stores the user's limit (null removes it); a change is audited. */
+export function setUserMaxCalls(db: DatabaseSync, login: string, max: number | null): number | null {
+  const was = userMaxCalls(db, login);
+  if (max === null) db.prepare("DELETE FROM main.user_settings WHERE login = ? AND key = ?").run(login, KEY);
+  else db.prepare("INSERT INTO main.user_settings (login, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (login, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+    .run(login, KEY, String(max), new Date().toISOString());
+  if (was !== max) audit(db, login, "max-calls", login, { maxCalls: max, was });
+  return max;
+}
