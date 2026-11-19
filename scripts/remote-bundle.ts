@@ -1,7 +1,13 @@
-// Prints the task bundle of one prompt as the server hands it to a helper, for `autocraft-task try`, which runs it in the
-// sandbox without a server: node scripts/remote-bundle.ts <prompt id> [--root <slot root>] [--harness claude|codex] [--repo <dir>]
-// The prompt's example input is the item; the checkout at /repo is the given directory (default: a two-file sample) as
-// an inline files mount. `--root` is the slot root `autocraft-task doctor` prints on macOS.
+// Builds the task bundle of one prompt for testing a helper. The prompt's example input is the item; the checkout at /repo
+// is the given directory (default: a two-file sample) as an inline files mount.
+//   node scripts/remote-bundle.ts <prompt id> [--root <slot root>] [--harness claude|codex] [--repo <dir>]
+//     prints the bundle as the server hands it to a helper, for `autocraft-task try` (no server); `--root` is the slot
+//     root `autocraft-task doctor` prints on macOS
+//   AUTOCRAFT_DB=<scratch db> node scripts/remote-bundle.ts --setup <login> --item-repo <repo>
+//     makes <login> an operator, switches the inference mode to user-local and prints a token that may run tasks
+//   AUTOCRAFT_DB=<scratch db> node scripts/remote-bundle.ts <prompt id> --enqueue --item-repo <repo> [--repo <dir>]
+//     queues the call on <repo>#1 for a helper of the local dashboard (which needs write permission on <repo>, e.g. from
+//     AUTOCRAFT_DEV_PERMS), waits for it and prints the outcome
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { CLAUDE_PROMPTS, EXAMPLES, claudeArgs, claudeParts, type ClaudePromptId } from "../src/prompts/index.ts";
@@ -12,6 +18,20 @@ import { agentsDefinition } from "../src/sandbox/agents.ts";
 
 const argv = process.argv.slice(2);
 const opt = (name: string): string | undefined => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+const writes = argv.includes("--setup") || argv.includes("--enqueue");
+if (writes && !process.env.AUTOCRAFT_DB) {
+  console.error("--setup and --enqueue write to the database AUTOCRAFT_DB names: set it to a scratch database");
+  process.exit(64);
+}
+const db = writes ? (await import("../src/db.ts")).connect() : null;
+const setup = opt("--setup");
+if (db && setup) {
+  db.prepare("INSERT OR IGNORE INTO main.access (login, role, added_by, added_at) VALUES (?, 'operator', 'remote-bundle', ?)").run(setup, new Date().toISOString());
+  (await import("../src/remote/mode.ts")).setInferenceMode(db, "user-local", "remote-bundle");
+  const { token } = (await import("../src/dash/mcp/tokens.ts")).createToken(db, setup, "remote-bundle", false, true);
+  console.log(token);
+  process.exit(0);
+}
 const id = argv[0] as ClaudePromptId;
 const p = CLAUDE_PROMPTS[id];
 if (!p) {
@@ -48,4 +68,9 @@ const bundle: Omit<TaskBundle, "callId"> = {
   stdin: parts.stdin, system: parts.system, mounts, mcpServers: [], keepSession: false,
   hints: { claude: { args: claudeArgs(id, model, sandboxed, undefined, parts.system), ...(sandboxed && p.sandbox?.workspace && { agents: JSON.stringify(agentsDefinition([])) }) } },
 };
-console.log(JSON.stringify({ ...forHarness(bundle, harness, opt("--root") ?? ""), callId: 0 }, null, 1));
+if (db) {
+  const { awaitCall, enqueueCall } = await import("../src/remote/calls.ts");
+  const call = enqueueCall(db, { promptId: id, promptVersion: "try", tier: bundle.tier, effort: p.effort, askedModel: model, bundle, items: [{ repo: opt("--item-repo") ?? "sample", number: 1 }], level: 2, maxAttempts: 1 });
+  console.error(`queued call ${call}; waiting for a helper`);
+  console.log(JSON.stringify(await awaitCall(db, call, { onProgress: (l) => console.error(`progress: ${l}`) }), null, 1));
+} else console.log(JSON.stringify({ ...forHarness(bundle, harness, opt("--root") ?? ""), callId: 0 }, null, 1));
