@@ -203,6 +203,7 @@ The harness never runs outside a sandbox that shows it only the call's own files
 A call goes to a maintainer or operator whose cached GitHub permission is `write` or better on every repo the call names. That also covers reading a private repo. In addition:
 
 - Calls that name no repo, and `discord.*` calls, go to operators only.
+- My repos. Each user may pick repos on the Connect page (`PUT /api/me/settings` with `{repos: [...]}`, tracked repo names, audit `my-repos`; empty means every repo). The picker lists the repos with the pipeline on where the user has write permission. Their helpers then take only calls whose repos are all picked, and a helper's own `repos` list can narrow the picks but not widen them; calls that name no repo are not filtered. The per-repo Pipeline switch stays the operators' control: a picked repo with the pipeline off has no calls.
 - Security calls (`security.verify`, `security.fixcheck`) follow the same rules as other calls: write permission on the repo, and the author preference below.
 - Author preference. For prompts that judge an item (reviews, the pre- and post-merge reviews, fix-up and fix-issue checks, decision prepares, conversation turns, verify compare, classify, duplicate compares and the two security prompts), an author or co-author of an item of the call (a `Co-authored-by` trailer counts) is passed over while another eligible helper has asked for work in the last 45 seconds and could take it (tier, repos, role, write permission and not an author). With no such helper, the author takes the call.
 - A follow-up turn of a session goes first to the helper that holds the session. If that helper does not take it within 2 minutes, the call is withdrawn and the caller starts a fresh one.
@@ -227,7 +228,7 @@ Ended calls are kept 24 hours for task status and follow-ups, then deleted.
 
 ### Usage reserve and readiness
 
-Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}`, whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.
+Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}` (either or both of `reserve` and `repos`; the reply adds `repoChoices`), whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.
 
 - Before each claim the helper reads its harness's plan usage and claims only while every 5-hour and weekly window keeps more than the reserve free. Claude: Claude Code's `GET /api/oauth/usage` with the helper's Claude login, no model call. Codex: `account/rateLimits/read` from `codex app-server` with the helper's own `CODEX_HOME`.
 - A local `config reserve` can only raise the server's reserve.

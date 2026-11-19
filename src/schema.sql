@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS remote_helpers (
   models TEXT NOT NULL, reserve TEXT NOT NULL, usage TEXT,
   reported_at INTEGER NOT NULL        -- ms since epoch
 );
--- Each user's own settings, one row per key (src/remote/reserve.ts: reserve_five_hour, reserve_weekly).
+-- Each user's own settings, one row per key (src/remote/reserve.ts: reserve_five_hour, reserve_weekly; src/remote/my-repos.ts: repos).
 CREATE TABLE IF NOT EXISTS user_settings (
   login TEXT NOT NULL COLLATE NOCASE,
   key TEXT NOT NULL,

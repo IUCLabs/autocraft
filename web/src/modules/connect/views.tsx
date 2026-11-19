@@ -5,6 +5,7 @@ import type { HelperReadiness, McpToken, RemoteHelper, UsageWindow } from "../..
 import type { ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
+import { Chip } from "../../ui/atoms/Chip";
 import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
@@ -233,10 +234,28 @@ function MySettings() {
   const { data, error } = useQuery("my-settings", (a) => a.me.settings.get());
   const [vals, setVals] = useState<{ fiveHour: string; weekly: string } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [picks, setPicks] = useState<string[]>([]);
   useEffect(() => {
-    if (data) setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
+    if (!data) return;
+    setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
+    setPicks(data.repos);
   }, [data]);
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
+  const savePicks = (next: string[]) => {
+    const was = picks;
+    setPicks(next);
+    void write.run("repos", async () => {
+      try {
+        setPicks((await api.me.settings.put({ repos: next })).repos);
+      } catch (e) {
+        setPicks(was);
+        throw e;
+      }
+    });
+  };
+  const choices = new Set(data.repoChoices);
+  // Picks that are no longer available (pipeline off, or no write permission) stay listed so they can be removed.
+  const shown = [...new Set([...data.repoChoices, ...picks])].sort();
   const valid = (v: string) => /^\d+$/.test(v) && Number(v) <= 90;
   const save = (next: { fiveHour: string; weekly: string }) => {
     if (!valid(next.fiveHour) || !valid(next.weekly)) {
@@ -278,6 +297,28 @@ function MySettings() {
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-6">
         {field("fiveHour", "Keep free: 5-hour window")}
         {field("weekly", "Keep free: weekly")}
+      </div>
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-2">
+        <span className="w-44 shrink-0 pt-1.5 text-sm text-ink/80">My repos</span>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="My repos">
+          <Chip active={!picks.length} onClick={() => picks.length && savePicks([])}>
+            All
+          </Chip>
+          {shown.map((r) => {
+            const on = picks.includes(r);
+            return (
+              <Chip
+                key={r}
+                active={on}
+                className={choices.has(r) ? undefined : "line-through opacity-60"}
+                title={choices.has(r) ? undefined : "Pipeline off or no write permission"}
+                onClick={() => savePicks(on ? picks.filter((x) => x !== r) : [...picks, r].sort())}
+              >
+                {r}
+              </Chip>
+            );
+          })}
+        </div>
       </div>
       <ErrorLine error={problem ?? write.error} className="mt-2" />
     </Block>
