@@ -10,7 +10,7 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
   let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, maxCalls: null, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "photocraft", "wordcraft"] };
   const at = (ms: number) => new Date(NOW + ms).toISOString();
   const helpers: RemoteHelper[] = [
-    { tokenId: 2, label: "laptop", slots: 4, busy: 2, lastError: null, readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-40_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
+    { tokenId: 2, label: "laptop", slots: 5, busy: 2, lastError: null, readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-40_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
       usage: { fiveHour: { usedPercent: 42, resetsAt: at(3 * 3600_000) }, weekly: { usedPercent: 18, resetsAt: at(4 * DAY) }, at: at(-40_000) } },
     { tokenId: 3, label: "workstation", slots: 2, busy: 0, lastError: { text: "/api/remote/heartbeat: HTTP 502 bad gateway", at: at(-9 * 60_000) }, readiness: "quota-held", until: at(95 * 60_000), reason: "5-hour window 83% used (reserve 20% free)", fresh: true, lastSeen: at(-4 * 60_000), harness: "codex", models: { top: "astra", mid: "astra-mini", small: "astra-mini" }, reserve: { fiveHour: 20, weekly: 10 },
       usage: { fiveHour: { usedPercent: 83, resetsAt: at(95 * 60_000) }, weekly: { usedPercent: 61, resetsAt: at(2 * DAY) }, at: at(-4 * 60_000) } },

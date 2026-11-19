@@ -76,7 +76,7 @@ export const CLAIM_ID_TTL_S = 300;
 export type Reserve = { fiveHour: number; weekly: number };
 
 export type ClaimReply =
-  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number; reserve: Reserve; /** Present while the token gets no calls: why (repeated lost leases), and when it may claim again (ms since epoch). `retryAfter` then runs to `until`. */ reason?: string; until?: number }
+  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number; reserve: Reserve; /** Present while the token gets no calls: why (repeated lost leases, the user's limit of calls at once), and with a cool-off when it may claim again (ms since epoch). `retryAfter` then runs to `until`. */ reason?: string; until?: number }
   | { lease: { id: number; secret: string; /** One line: prompt id and the item, e.g. "review.opus on designcraft#1502". */ title: string; requiredHelper: string }; reserve: Reserve };
 
 /**
@@ -142,7 +142,7 @@ export type HelperInfo = {
 
 /**
  * GET and PUT /api/me/settings (session routes): the signed-in user's own settings. `repos`: the repos their helpers take calls
- * from, empty for every repo. A PUT sends either field or both.
+ * from, empty for every repo. A PUT sends any of the fields.
  */
 export type UserSettings = { reserve: Reserve; repos: string[]; /** The most calls the user's helpers run at once, all helpers together; null for no limit. */ maxCalls: number | null };
 /** The settings with `repoChoices`: the tracked repos with the pipeline on where the user has write permission, sorted. */

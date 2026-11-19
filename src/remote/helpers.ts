@@ -1,6 +1,6 @@
 // The readiness of the user-local helpers: each helper sends its status (POST ROUTES.status) on every change and at least
-// every STATUS_EVERY_S while it runs; the last one is kept per agent token. The planner's room counts only helpers whose
-// last status is `ready` and fresh (room.ts); the Connect page and my_work list the user's own.
+// every STATUS_EVERY_S while it runs; the last one is kept per agent token, with its slots and busy count. The planner's room
+// counts only helpers whose last status is `ready` and fresh, by their free slots (room.ts); the Connect page and my_work list the user's own.
 import type { DatabaseSync } from "node:sqlite";
 import { HttpError } from "../dash/server/util.ts";
 import { cooloffOf } from "./cooloff.ts";

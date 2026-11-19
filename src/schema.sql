@@ -282,10 +282,11 @@ CREATE TABLE IF NOT EXISTS remote_helpers (
   harness TEXT NOT NULL,
   models TEXT NOT NULL, reserve TEXT NOT NULL, usage TEXT,
   reported_at INTEGER NOT NULL,       -- ms since epoch
-  slots INTEGER, busy INTEGER,        -- calls the helper runs at once, and how many it runs now
+  slots INTEGER, busy INTEGER,        -- calls the helper runs at once (its --parallel slots and the fast lane), and how many run now
   last_error TEXT                     -- JSON { text, at }: the helper's last failure that no success has cleared
 );
--- Each user's own settings, one row per key (src/remote/reserve.ts: reserve_five_hour, reserve_weekly; src/remote/my-repos.ts: repos).
+-- Each user's own settings, one row per key (src/remote/reserve.ts: reserve_five_hour, reserve_weekly; src/remote/my-repos.ts: repos;
+-- src/remote/max-calls.ts: max_calls).
 CREATE TABLE IF NOT EXISTS user_settings (
   login TEXT NOT NULL COLLATE NOCASE,
   key TEXT NOT NULL,

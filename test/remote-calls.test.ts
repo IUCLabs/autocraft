@@ -13,7 +13,7 @@ import { connect } from "../src/db.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
 import type { User } from "../src/dash/types.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
-import { bundleOf, claimableCalls, claimCall, CLAIM_RETRY_S, expireLeases, heartbeat, leaseState, withdrawCall, submitCall, type Caller } from "../src/remote/calls.ts";
+import { bundleOf, claimableCalls, claimCall, CLAIM_RETRY_S, enqueueCall, expireLeases, heartbeat, leaseState, withdrawCall, submitCall, type Caller } from "../src/remote/calls.ts";
 import { stampAlive } from "../src/remote/liveness.ts";
 import { clearCooloff } from "../src/remote/cooloff.ts";
 import * as userSettings from "../src/dash/api/user-settings.ts";
@@ -290,5 +290,37 @@ describe("user-local remote calls", () => {
     assert.equal(second.id, first.id);
     done(second.secret, "second try");
     assert.equal((await ask)?.text, "second try");
+  });
+
+  test("gating calls go first, the fast lane takes only gating and small calls, and Max calls at once stops new leases but lets a session finish", async () => {
+    db.prepare("UPDATE remote_calls SET state = 'failed' WHERE state IN ('queued', 'leased')").run();
+    const q = (promptId: string, tier: "top" | "small", opts: { ageMs?: number; parentId?: number } = {}) => {
+      const id = enqueueCall(db, { promptId, promptVersion: "1", tier, effort: "medium", askedModel: tier === "top" ? "opus" : "haiku", items: [{ repo: "photocraft", number: 1287 }], level: 0, maxAttempts: 1, ...(opts.parentId !== undefined && { parentId: opts.parentId }),
+        bundle: { promptId, promptVersion: "1", tier, effort: "medium", timeoutSeconds: 60, maxTurns: null, stdin: "x", system: null, mounts: [], mcpServers: [], keepSession: true, hints: {} } });
+      if (opts.ageMs) db.prepare("UPDATE remote_calls SET since = since - ? WHERE id = ?").run(opts.ageMs, id);
+      return id;
+    };
+    const both = (extra: Partial<Claim> = {}): Claim => ({ ...claim(), tiers: { top: "opus", small: "haiku" }, ...extra });
+    const opus = q("review.opus", "top", { ageMs: 10 * 60_000 });
+    const lint = q("lint.reference.haiku", "small");
+    const small = q("classify.haiku", "small");
+    assert.equal((await claimCall(db, callers.bob!, both(), canWrite)).lease?.id, lint, "the lint check before the older Opus review");
+    assert.equal((await claimCall(db, callers.bob!, both({ fastLane: true }), canWrite)).lease?.id, small, "the fast lane takes the small call, not the review");
+    assert.deepEqual(await claimCall(db, callers.bob!, both({ fastLane: true }), canWrite), { lease: null, retryAfter: CLAIM_RETRY_S, reserve: { fiveHour: 35, weekly: 10 } }, "nothing else fits the fast lane");
+
+    await assert.rejects(userSettings.setSettings(db, req("bob", "maintainer", { maxCalls: 0 })), /1 to 64/);
+    await userSettings.setSettings(db, req("bob", "maintainer", { maxCalls: 2 }));
+    assert.equal((await userSettings.settings(db, req("bob", "maintainer"))).maxCalls, 2);
+    assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'max-calls' AND login = 'bob'").get());
+    const refused = await claimCall(db, callers.bob!, both(), canWrite);
+    assert.equal(refused.lease, null);
+    assert.match(("reason" in refused && refused.reason) || "", /limit of calls at once/, "two leases held: the review waits");
+    const fix = q("review.opus", "top", { parentId: lint });
+    assert.equal((await claimCall(db, callers.bob!, both({ sessions: [lint] }), canWrite)).lease?.id, fix, "a follow-up of bob's own session, one past the limit");
+    q("review.opus", "top", { parentId: lint });
+    assert.equal((await claimCall(db, callers.bob!, both({ sessions: [lint] }), canWrite)).lease, null, "but not two past it");
+    await userSettings.setSettings(db, req("bob", "maintainer", { maxCalls: null }));
+    assert.equal((await claimCall(db, callers.bob!, both(), canWrite)).lease?.id, opus, "no limit: the review");
+    db.prepare("UPDATE remote_calls SET state = 'failed' WHERE state IN ('queued', 'leased')").run();
   });
 });
