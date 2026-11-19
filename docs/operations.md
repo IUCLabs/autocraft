@@ -116,7 +116,7 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `PUT /api/accounts/<id>` `{label?, enabled?, maxConcurrent?}` | operator; audited as `account-change` |
 | `POST /api/accounts/<id>/token`, `/token/code` `{code}`, `/token/cancel`, `/token/remove` (long-lived token of an account; the value is never returned) | operator; audited as `account-token-start`, `-code`, `-cancel`, `-set`, `-remove` |
 | `GET /api/mcp/tokens` (the caller's own agent tokens, never their values); `POST /api/mcp/tokens/revoke` `{id}` | anyone signed in, own tokens only; revoke audited as `mcp-token-revoke` |
-| `POST /api/mcp/tokens` `{label?, answer?}` (a new agent token, its value returned this once; at most 5 per login; `answer: true` makes an answering token that lasts 7 days, operators only) | maintainers and operators; audited as `mcp-token-create`; viewers get 403 |
+| `POST /api/mcp/tokens` `{label?, answer?, run?}` (a new agent token, its value returned this once; at most 5 per login; `answer: true` makes an answering token that lasts 7 days, operators only; `run: true` makes a token for a user-local helper, see [User-local inference](#user-local-inference)) | maintainers and operators; audited as `mcp-token-create`; viewers get 403 |
 | `POST /api/signout` | anyone signed in |
 | `GET /api/similar/<repo>/<n>?limit=` (nearest items across the tracked repos, with score; default 10, at most 50), `/api/search?q=&mode=semantic` (search by meaning, same hits plus a score) | anyone signed in; 503 until `autocraft embed` has run |
 
@@ -129,9 +129,154 @@ Feedback (picks and text) is display-only. The pipeline reads answers with `auto
 - **Tokens.** A maintainer or operator makes an agent token on the Connect agent page (`/connect`, opened from the user menu), which shows it once with the `claude mcp add --transport http ... --header "Authorization: Bearer <token>"` command and a JSON config for other clients. Tokens are `acmcp_` plus 32 random bytes, stored as a SHA-256 hash in `mcp_tokens`, valid for 90 days, at most 5 per login, and revocable by their owner. An operator can tick **Can answer decisions** to make an answering token (`can_answer`), which lasts 7 days, the longest an operator's dashboard session lasts. A token counts only while its login is on the access list, and its role is read from the list on every call; removing a login deletes its tokens, ending a session of a login (Access page) deletes that login's tokens, and a role change away from operator deletes its answering tokens. Operators list and revoke any login's tokens on the Access page (`POST /api/access/tokens/revoke` `{id}`, audited as `mcp-token-revoke`; token audit rows are operator-only). A token has no GitHub token of its own: without a live dashboard session of its login, only recently cached permissions count.
 - **Transport.** One JSON-RPC message per POST, answered with one JSON body (no event stream: `GET` is 405; notifications get 202; batches get 400). The token goes in `Authorization: Bearer`; the session cookie is never accepted here, and a request whose `Origin` or `Sec-Fetch-Site` names another site is refused. Limits: 120 calls a minute per login, and 300 failed authentications a minute per client address.
 - **Tools.** `list_repos` (visible tracked repos with open decisions by kind and fix-ups waiting), `list_inbox` (open decisions, oldest first; `repo`, `kind`, `limit` up to 25, `cursor`), `get_inbox_item` (one decision: question, option keys, summary and recommendation, item text, facts, risks, related items, picks and comments), `send_feedback` (`id`, `option?`, `text?`), and `list_fixups` (open PRs at their current head that the planner holds in the fix-up `hold` bucket with no push of ours under way, with the review's fix list and why the step stopped; viewers get the state only, as on the item page). While answering is available (`answering.enabled`), an answering token of a login that is an operator at the time of the call is also offered `answer_decision` (`id`, `option`, `note?`, `textsHash?` for a duplicate group, `exceptions?` for a batch) and `undo_answer` (`id`); for it, `get_inbox_item` adds `undoable`, the comment the answer would post, and each option's duplicate-group texts with their `textsHash`. Answering is the user's own action and has to execute as that GitHub user, which needs GitHub App user tokens that AutoCraft does not have yet. Until then no token can be made with `answer: true`, the Connect page hides the switch, the answer tools are not listed and the instructions do not mention them; a call to either refuses with a message that the user must sign in again with GitHub App sign-in. The switch is `answering.enabled` in `src/dash/mcp/index.ts`, and the checks below stay ready. Any other token is not offered them and gets an error if it calls them. `list_repos` and `list_fixups` share a per-login budget of a burst of 20 then 30 a minute. Every result frames GitHub text, and the pipeline's text about it (option labels and what an answer writes included), as untrusted, as the item tools do.
-- **Task tools.** A token with **Can run tasks** (`can_run`) is also offered `next_task`, `task_status` and `my_work` while the inference mode is `user-local`; in the server mode they are not listed and the instructions do not mention them. `next_task` (`harness?`, `tiers?`) counts the queued calls the token's login may claim, with the same filters as a claim (accepted tiers, write permission on every repo, no judging of the login's own items) and without leasing any; it returns the loop for the agent to run (`autocraft-task run --detach`, then `autocraft-task wait <lease>`, repeat), never a lease secret. `task_status` (`lease`: the id the helper printed) gives the state and error of a call the login holds or held; another login's call answers 404. `my_work` lists today's (UTC) model calls that ran for the login with prompt, items, state, tokens and cost. The instructions tell the agent never to read or change the helper's bundle or reply files.
-- **Usage reserve and readiness.** Each maintainer and operator sets their own reserve on the Connect page (`GET`/`PUT /api/me/settings` `{reserve: {fiveHour, weekly}}`, whole percents 0 to 90, default 20; a viewer gets 403; a change is audited as `usage-reserve`). Every claim reply and status reply carries it. Before each claim the helper reads its harness's plan usage (Claude: Claude Code's `GET /api/oauth/usage` with the helper's Claude login, no model call; Codex: `account/rateLimits/read` from `codex app-server` with the helper's own CODEX_HOME) and claims only while every 5-hour and weekly window keeps more than the reserve free; a local `autocraft-task config reserve <5h> <weekly>` only raises it. A missing, failed, unparseable or stale (over 5 minutes) reading, or a window kind the helper does not know, holds; a `claude setup-token` token may not be allowed to read usage, and then the helper holds too. While held it reads again every minute. `autocraft-task pause-until-reset` holds until the window's reset whatever the usage, `resume` ends it, `status` prints it all. A run the provider refuses for its limit goes back to the queue without using an attempt, and the helper holds until the reset the provider named (at most 7 days; a clock time without a time zone holds until a later reading shows headroom). The helper reports its readiness (`ready`, `quota-held`, `paused`, `cooled-off`, `sandbox-failed`, `version-refused`, `harness-missing`) to `POST /api/remote/status` on every change and at least every 5 minutes, and keeps it in a 0600 status file in its cache directory. The planner counts as room only helpers whose last status is `ready` and at most 6 minutes old; `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status, and `next_task` says when the user's helper is held. The `remote-helpers` live topic follows statuses and leases.
 - **Same rules as the dashboard.** The tools call the dashboard's own handlers as the token's user: repo visibility, the decision checks and audit rows are the same. `send_feedback` is the Feedback box (audit `via: "mcp"`; the stored pick or comment carries `via` too, and the item thread marks it "via agent"), so it is display-only until an operator answers or uses the pick; viewers get an error, and maintainers get 60 posts an hour per login, counted together with the dashboard's own feedback. A token has no GitHub token of its own: permission checks use the login's newest live dashboard session, and without one only a recent cached permission counts (a private repo is then hidden and a pick shows as `none`). An answer through `answer_decision` is the operator's answer, made through the same handler as the dashboard's: it needs write, maintain or admin on every repo the decision covers (checked live with the operator's dashboard session, so without a live session it is refused), the duplicate-group texts check and batch exceptions apply, it is audited as `answer` with `source: "dashboard"` and `via: "mcp"`, and the pipeline acts on it like any operator answer. `undo_answer` is the dashboard's Undo (audit `undo` with `via: "mcp"`). Nothing here approves a repo, changes settings or writes to GitHub itself. A fix-up's result lands on GitHub as the contributor's own commit or suggestion, and the pipeline reviews the new head as usual.
+
+## User-local inference
+
+In the `user-local` inference mode, model calls do not run on this host. Each call is queued, and a maintainer's or operator's helper (`autocraft-task`) claims it, runs the harness on that person's machine under their own Claude Code or Codex subscription, and submits the reply. The planner, gates, Jev calls, embeddings, GitHub writes and builds stay on the server. The code is `src/remote/` (wire format in `protocol.ts`) and `worker/autocraft-task.mjs` (the helper, served by the dashboard at `/worker/autocraft-task.mjs`).
+
+### Switching the mode
+
+| How | What |
+|---|---|
+| Dashboard | **Inference** page (Settings): the mode, the accepted model families per tier and the lowest effort per tier |
+| CLI | `autocraft inference` shows the mode; `autocraft inference user-local` or `autocraft inference server` sets it (audit `inference`) |
+| API | `GET`/`PUT /api/settings/inference`, body `{mode?, models?, minEffort?}`; operators only |
+
+- **Mode.** In `server` mode a claim returns no lease and asks the helper to retry in 300 seconds. The Accounts page is hidden while the mode is `user-local`.
+- **Accepted models.** `models` maps a tier (`top`, `mid`, `small`) to 1 to 10 lowercase model families. Defaults: `top` accepts `opus` and `astra` (Codex's top family; change it if your Codex catalogue differs), `mid` accepts `sonnet`, `small` accepts `haiku`. A helper declares a model per tier; the server accepts the tier only when the model belongs to an accepted family, and refuses a reply from a model of another family (the call goes back to the queue). Changes are audited as `remote-models`.
+- **Effort floor.** `minEffort` maps a tier to `low`, `medium`, `high`, `xhigh` or `max`, or to `null` to remove it. A helper declares the highest effort it passes to its harness for each tier and gets a tier's calls only when that meets the floor. Codex stops at `xhigh`, so there `xhigh` meets a `max` floor. A helper that declares no effort (an older one) meets no floor.
+
+### Setting up a helper
+
+Each helper needs an agent token with **Can run tasks** (Connect page; `POST /api/mcp/tokens` with `run: true`; maintainers and operators only). The Connect page lists the same steps with the server's address filled in.
+
+Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` or `codex`), and a sandbox tool: bubblewrap (`/usr/bin/bwrap`) on Linux and WSL, `sandbox-exec` on macOS. Other systems are refused.
+
+1. Install the helper:
+   ```sh
+   mkdir -p ~/.local/bin && curl -fsSL <dashboard URL>/worker/autocraft-task.mjs -o ~/.local/bin/autocraft-task && chmod +x ~/.local/bin/autocraft-task
+   ```
+2. Log in with the agent token on stdin: `autocraft-task login <dashboard URL>`. The URL must be `https` (`http` only for localhost).
+3. Choose how the harness signs in:
+
+   | Command | Harness login |
+   |---|---|
+   | `autocraft-task harness claude --config-dir [<dir>]` | The login of a Claude config directory (default `$CLAUDE_CONFIG_DIR` or `~/.claude`), read before each call. Linux only. |
+   | `autocraft-task harness claude --keychain` | Claude Code's own login from the macOS Keychain, read before each call and never refreshed by the helper: use Claude Code now and then, or store a setup-token. macOS only. |
+   | `claude setup-token`, then `autocraft-task harness claude` (token on stdin) | A long-lived token. It may not be allowed to read plan usage; the helper then holds (see [Usage reserve](#usage-reserve-and-readiness)). |
+   | `autocraft-task harness codex [--device-auth]` | Logs Codex in to the helper's own `CODEX_HOME`, a login separate from `~/.codex`, so refreshes never invalidate your own session. `--device-auth` is for a machine without a browser. |
+
+4. Models. Claude defaults to `opus`, `sonnet` and `haiku` for the three tiers. Codex has no defaults: add `"tiers": {"top": "...", "mid": "...", "small": "..."}` to `$XDG_CONFIG_HOME/autocraft-task/config.json` (mode 0600; default `~/.config/autocraft-task/config.json`). The config also takes `repos` (claim only calls on these repos), `claudeBin` and `codexBin`.
+5. Run `autocraft-task doctor`, then `autocraft-task work`.
+
+### Commands
+
+| Command | What it does |
+|---|---|
+| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16; Codex runs one call at a time because its login refreshes in place. Ctrl-C stops running calls and reports them; a second Ctrl-C quits at once. |
+| `claim` | Claims one call and prints its lease id. |
+| `run [--detach] [<lease>]` | Runs a claimed lease, or claims one and runs it. `--detach` starts the run in the background and prints the lease id. |
+| `wait <lease>` | Waits for a detached run and prints its result. Returns after at most 9 minutes with exit code 3 while the run still goes; run it again. |
+| `doctor` | Checks Node, platform, sandbox (on macOS with the canary), `git` and `tar`, the harness binary, version and login, a harness start inside the sandbox, the server and the tiers. Exit code 1 when a check fails. |
+| `status` | Prints whether the helper claims now, with plan usage, reserve, pause and hold. Exit code 0 only when `ready`. |
+| `pause-until-reset` | Claims nothing until the plan window resets, whatever the usage. `resume` ends it. |
+| `resume` | Ends a pause and a hold after a provider refusal. The usage reading still decides. |
+| `config reserve <5h> <weekly>` | Keeps more of each window free than the server's reserve (percent, 0 to 100). `config reserve off` drops it. |
+| `tool <server> <tool> [<json>] [<lease>]` | One tool call of a lease's server without MCP; prints the result, exit code 1 for an error result. |
+| `mcp <server> <lease>` | Stdio-to-HTTP proxy for one of the lease's MCP servers. |
+| `try <bundle.json> [--slot N]` | Runs a bundle from a file without a server and prints the reply (testing). |
+
+Helper state lives in `$XDG_CONFIG_HOME/autocraft-task` (config, lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-task` (task directories, run logs, status file). Heartbeats go out every 30 seconds.
+
+### Sandbox
+
+The harness never runs outside a sandbox that shows it only the call's own files.
+
+- **Linux and WSL.** bubblewrap with every namespace unshared and the network shared, an empty home, the harness binary and every mount read-only, and a temporary work directory. The credential reaches the harness through its environment only, never through arguments.
+- **macOS.** `sandbox-exec` with a per-slot profile: the harness reads its slot and the files of its install, writes its temporary directory and nothing else. `sandbox-exec` cannot remap paths, so each slot (up to 16, one per parallel call) has its own root, which the claim reports to the server.
+- **Canary (macOS).** Before the first claim, and in `doctor`, the helper runs a Node probe inside the profile. It must read its slot and write its temporary directory, and must fail to read a file planted in the home, list the home, `~/.ssh` and the Keychains, and write the home or the slot. A failed canary makes the helper `sandbox-failed`, and it claims nothing.
+- **Instruction files.** `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `.claude` directories are removed from every checkout before a run.
+
+### Who gets which call
+
+A call goes to a maintainer or operator whose cached GitHub permission is `write` or better on every repo the call names. That also covers reading a private repo. In addition:
+
+- Calls that name no repo, and `discord.*` calls, go to operators only.
+- Security calls (`security.verify`, `security.fixcheck`) follow the same rules as other calls: write permission on the repo, and the author preference below.
+- Author preference. For prompts that judge an item (reviews, the pre- and post-merge reviews, fix-up and fix-issue checks, decision prepares, conversation turns, verify compare, classify, duplicate compares and the two security prompts), an author or co-author of an item of the call (a `Co-authored-by` trailer counts) is passed over while another eligible helper has asked for work in the last 45 seconds and could take it (tier, repos, role, write permission and not an author). With no such helper, the author takes the call.
+- A follow-up turn of a session goes first to the helper that holds the session. If that helper does not take it within 2 minutes, the call is withdrawn and the caller starts a fresh one.
+- A call the login released is not offered to it again for 10 minutes.
+- A claim from a helper older than 1.1.0 or of another protocol version (2) is refused with 409.
+
+### Leases
+
+| Event | Rule |
+|---|---|
+| Claim | The caller's call is leased to the helper; the agent run records the user, harness and the model the helper declared for the tier. The reply carries a lease id and a lease secret. |
+| Heartbeat | The helper sends one every 30 seconds with its latest progress line. The server answers 410 when the lease is gone. |
+| Expiry | A lease with no heartbeat for 2 minutes, or still running 2 minutes after the call's time limit, ends. The call goes back to the queue with its next attempt, or fails when the prompt's attempts are used up. |
+| Release | A helper that cannot run a call (version, platform, missing login, quota refusal) gives the lease back with a reason. The call returns to the queue without using an attempt. |
+| Submit | A reply from another model family than claimed is refused and the call is queued again. A failed reply (`ok: false`) fails the call with `helper: <error>`. |
+| Caller gone | A queued or leased call whose job stopped polling for 5 minutes fails. |
+| Waiting | The runner leaves at most 12 hours of queue time out of a job's deadline and no-progress stop; a call still queued after that is withdrawn ("no helper took the call in time") and the job stops. |
+
+Ended calls are kept 24 hours for task status and follow-ups, then deleted.
+
+**Cool-off.** A token whose leases end by expiry 3 times within 2 hours gets no calls for 6 hours (audit `remote-cooloff`). Its claims return no lease, a reason and the end time; the helper reports `cooled-off`. Lost leases do not count as call failures. An operator clears it with `autocraft remote cooloff clear <token-id|login>` (audit `remote-cooloff-clear`).
+
+### Usage reserve and readiness
+
+Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}`, whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.
+
+- Before each claim the helper reads its harness's plan usage and claims only while every 5-hour and weekly window keeps more than the reserve free. Claude: Claude Code's `GET /api/oauth/usage` with the helper's Claude login, no model call. Codex: `account/rateLimits/read` from `codex app-server` with the helper's own `CODEX_HOME`.
+- A local `config reserve` can only raise the server's reserve.
+- A missing, failed, unparseable or stale (over 5 minutes) reading, or a window kind the helper does not know, holds the helper. A held helper reads again every minute.
+- A run the provider refuses for its limit goes back to the queue without using an attempt. The helper holds until the reset the provider named (at most 7 days). A clock time without a time zone holds until a later reading shows headroom.
+
+The helper reports its readiness to `POST /api/remote/status` on every change and at least every 5 minutes, and keeps it in a 0600 status file in its cache directory.
+
+| Readiness | Meaning |
+|---|---|
+| `ready` | The helper claims. |
+| `quota-held` | A window is at or below the reserve, its usage could not be read, or the provider refused a run. |
+| `paused` | The user ran `pause-until-reset`. |
+| `cooled-off` | The server gives the token no calls after repeated lost leases. |
+| `sandbox-failed` | The sandbox check or canary failed. |
+| `version-refused` | The server refused the helper's version, or the harness version is not audited (Codex). |
+| `harness-missing` | The harness or its login is missing. |
+
+The planner counts as room only helpers whose last status is `ready` and at most 6 minutes old and whose last claim found nothing within 45 seconds. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
+
+### Per-call tools
+
+A call's bundle lists the servers it may use: `items` (search and read the synced items), `reference` (the repo's reference documentation, where one exists) and `build` (the `check` build tool). Each is served only while the call's lease is live and only to a call whose bundle lists it.
+
+- **HTTP routes.** `POST /api/remote/tool/<server>/<tool>` with the lease secret as bearer token and the tool's arguments as JSON body. The reply is an MCP `tools/call` result. A long call (`check`) sends whitespace before the JSON while it runs.
+- **MCP.** `POST /mcp/task/<server>` is a Streamable HTTP MCP server with only that server's tools. Claude gets it through the bundle's MCP config. Codex gets it through its configuration. An agent can use `autocraft-task mcp` or `autocraft-task tool` instead.
+- **Reference cap.** One lease may read 60 reference passages in all (`reference_search` and `reference_around` together); past that, results are cut with a note.
+- **Check relay.** `check` runs in the job process that waits for the call, which keeps the call's count, time limit and run set. The dashboard queues the request and polls for the result; a request still waiting when the lease ends is refused.
+- **Checkouts.** Public repos are fetched by the helper from GitHub at the call's commit. Private repos and workspace entries come from `GET /api/remote/tarball?repo=&sha=` with the lease secret.
+
+### Task tools for an agent
+
+A token with **Can run tasks** is also offered `next_task`, `task_status` and `my_work` on the inbox MCP server (`POST /mcp`) while the mode is `user-local`; in `server` mode they are not listed. `next_task` (`harness?`, `tiers?`) counts the queued calls the token's login may claim, with the same filters as a claim (accepted tiers, write permission on every repo, no judging of the login's own items), without leasing any. It returns the loop for the agent to run (`autocraft-task run --detach`, then `autocraft-task wait <lease>`, repeat) and never a lease secret. `task_status` (`lease`: the id the helper printed) gives the state and error of a call the login holds or held; another login's call answers 404. `my_work` lists today's (UTC) model calls that ran for the login with prompt, items, state, tokens and cost. The instructions tell the agent never to read or change the helper's bundle or reply files. `next_task` says when the user's helper is held.
+
+### What is recorded
+
+Each call is one agent run, shown on the Agents page and the item timeline. A user-local run records the user, the harness, the model the helper reported (a full id, which may differ from the alias claimed), tokens (input, output, cache read and write, per model when subagents ran), the harness's cost at list price when it reports one, turns, and every tool use (name, arguments, result size, timing). No Claude account is recorded. Progress lines from the helper show on running calls.
+
+### Health check
+
+The `remote-calls` check (see [Health checks](#health-checks)) warns when a model call has waited over 10 minutes and no helper has claimed any call in that time.
+
+### Codex versions and guards
+
+Codex's own sandbox does not keep its shell tool away from its login on Linux, so the helper turns the shell off, with browser, computer use, apps, plugins, hooks, image generation, subagents and web search, and gives the model the helper's read-only file tools instead. It binds a separate `CODEX_HOME`, runs one call at a time, removes `AGENTS.md`, `AGENTS.override.md`, `.env` and `config.toml` from that home before each run, and passes no user config.
+
+- **Version allowlist.** Only Codex versions listed in `CODEX_AUDITED` in the helper (now `0.170.x`) run calls. Any other version is refused: `doctor` fails, the helper reports `version-refused` and releases calls it claimed.
+- **Stream guard.** The run stops at the first tool item in Codex's JSON stream that is not an MCP call to the call's own servers or the helper's file tools.
+- **Rollout check.** After the run, the thread's rollout file must hold no tool call except those MCP tools and `view_image`. A missing rollout fails the call. When either guard trips, the reply is not submitted.
 
 ## Pipeline runner
 
@@ -472,7 +617,7 @@ The dashboard computes the checks below from the database on each request; nothi
 | `runner` | `runner_heartbeat` is missing or older than 2 minutes (fail) |
 | `worker:<env id>` (`workers` in the endpoint) | an enabled build environment has not reported (`last_seen_at`) for 5 minutes, or never (fail) |
 | `build-queue` | a build task has been queued for over 10 minutes: fail when no enabled environment has reported in 5 minutes, else warn (a security task while no confidential environment is ready counts under `confidential-env` instead) |
-| `remote-calls` | the inference mode is `user-local`, a remote model call has been queued for over 10 minutes, and no helper has claimed any call in that time (fail) |
+| `remote-calls` | the inference mode is `user-local`, a remote model call has been queued for over 10 minutes, and no helper has claimed any call in that time (warn) |
 | `confidential-env` | a security fix or a security build task waits and no confidential build environment is ready (warn) |
 | `sync` | no successful `sync_runs` row ended in the last 10 minutes, or the last 3 runs failed (fail) |
 | `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn; fail when more than half of the tracked repos have an error, for example after a token lost access). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |

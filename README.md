@@ -190,6 +190,15 @@ A Docker Compose deployment is available in `deploy/compose/compose.yaml`. This 
 
 Details, including the worker and build environments: [docs/operations.md](docs/operations.md).
 
+## Model calls on maintainers' machines
+
+An instance runs its model calls in one of two modes, which an operator switches on the Inference page or with `autocraft inference`:
+
+- `server` (default): calls run on this host with the Claude accounts registered on the Accounts page.
+- `user-local`: calls are queued, and maintainers' and operators' own Claude Code or Codex subscriptions run them through a small helper (`autocraft-task`) on their machines, in a sandbox.
+
+The planner, gates, Jev calls, embeddings, GitHub writes and builds always stay on the server. A helper only receives a call's prompt, read-only checkouts and per-call tools, and sends back a reply. See [User-local inference](docs/operations.md#user-local-inference) for setup, eligibility and limits.
+
 ## Development
 
 ```sh
