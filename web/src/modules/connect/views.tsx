@@ -24,7 +24,8 @@ const claudeCommand = (url: string, token: string) => `claude mcp add --transpor
 const setupSteps = (origin: string): { title: string; text: string }[] => [
   { title: "1. Install the helper", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft-task.mjs -o ~/.local/bin/autocraft-task && chmod +x ~/.local/bin/autocraft-task` },
   { title: "2. Log in (token on stdin)", text: `autocraft-task login ${origin}` },
-  { title: "3. Set up the harness (token on stdin)", text: "claude setup-token\nautocraft-task harness claude" },
+  { title: "3. Harness: your Claude Code login (Linux)", text: "autocraft-task harness claude --config-dir" },
+  { title: "3. Or: a long-lived token (on stdin)", text: "claude setup-token\nautocraft-task harness claude" },
   { title: "4. Work, from a terminal or an agent", text: "autocraft-task work\n\n# or, from an agent\nautocraft-task run --detach\nautocraft-task wait <id>" },
 ];
 const jsonConfig = (url: string, token: string) => JSON.stringify({ mcpServers: { "autocraft-inbox": { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2);
