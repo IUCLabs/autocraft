@@ -590,7 +590,7 @@ export async function ghRerunFailed(w: Writer, exec: Exec, g: Guarded<"cifix">, 
     ["run", "rerun", String(runId), "--failed", "--repo", `${slugOf(g.repo)}`]);
 }
 
-/** Reruns the failed jobs of one Actions run on a default-branch head. It belongs to no item: the audit target names the repo and the commit. */
+/** Reruns the failed jobs of one Actions run on a head that belongs to no item (a default-branch head, or an integration batch tip): the audit target names the repo and the commit. */
 export async function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { repo: string; head: string; runId: number }, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo);
   exec = laneExec(w, g, exec);
