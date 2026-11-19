@@ -214,17 +214,26 @@ A call goes to a maintainer or operator whose cached GitHub permission is `write
 
 | Event | Rule |
 |---|---|
-| Claim | The caller's call is leased to the helper; the agent run records the user, harness and the model the helper declared for the tier. The reply carries a lease id and a lease secret. |
-| Heartbeat | The helper sends one every 30 seconds with its latest progress line. The server answers 410 when the lease is gone. |
-| Expiry | A lease with no heartbeat for 2 minutes, or still running 2 minutes after the call's time limit, ends. The call goes back to the queue with its next attempt, or fails when the prompt's attempts are used up. |
-| Release | A helper that cannot run a call (version, platform, missing login, quota refusal) gives the lease back with a reason. The call returns to the queue without using an attempt. |
-| Submit | A reply from another model family than claimed is refused and the call is queued again. A failed reply (`ok: false`) fails the call with `helper: <error>`. |
+| Claim | The caller's call is leased to the helper; the agent run records the user, harness and the model the helper declared for the tier. The reply carries a lease id and a lease secret. A claim repeated with the same `requestId` within 5 minutes gets the same reply, the same lease and secret included; the replies are kept in the dashboard process's memory only. After a dashboard restart a repeated claim returns the lease it took to the queue without using an attempt, and is answered afresh. |
+| Heartbeat | The helper sends one every 30 seconds from the claim on, with its phase (`preparing` or `running`) and latest progress line. The first `running` heartbeat starts the call's time limit. |
+| Expiry | A lease ends when it has had no heartbeat for 2 minutes, is still preparing 15 minutes after the claim, or is still running 2 minutes after the call's time limit. The call goes back to the queue with its next attempt, or fails when the prompt's attempts are used up. |
+| Dashboard outage | Helpers reach the server only through the dashboard, which stamps every 5 seconds that it serves. A lease ends only while the stamp is fresh (at most 15 seconds old), and for lack of heartbeats only when the dashboard served for the whole 2 minutes. When the dashboard comes back after a gap, every lease's heartbeat, claim and run start move forward by the gap. |
+| Release | A helper that cannot prepare or start a call (version, platform, missing login, bundle or checkout errors, quota refusal) gives the lease back with a reason. The call returns to the queue without using an attempt and is not offered to that login for 10 minutes. |
+| Submit | A failed reply (`ok: false`, error `helper: <error>`) or a reply from another model family than claimed sends the call back to the queue with its next attempt, not offered to that login for 10 minutes; it fails when the prompt's attempts are used up. A submit repeated after an accepted one is accepted again. |
+| Ended lease | Every lease route answers 410 for a secret whose lease was submitted, failed, expired, released or sent back to the queue (the secret hashes are kept 24 hours), and 401 only for a secret never issued; a 410 does not count toward the failed-authentication limit. |
 | Caller gone | A queued or leased call whose job stopped polling for 5 minutes fails. |
 | Waiting | The runner leaves at most 12 hours of queue time out of a job's deadline and no-progress stop; a call still queued after that is withdrawn ("no helper took the call in time") and the job stops. |
 
 Ended calls are kept 24 hours for task status and follow-ups, then deleted.
 
-**Cool-off.** A token whose leases end by expiry 3 times within 2 hours gets no calls for 6 hours (audit `remote-cooloff`). Its claims return no lease, a reason and the end time; the helper reports `cooled-off`. Lost leases do not count as call failures. An operator clears it with `autocraft remote cooloff clear <token-id|login>` (audit `remote-cooloff-clear`).
+**Cool-off.** Cool-off applies to a login, across all its helpers and tokens:
+
+| Cause | Cool-off |
+|---|---|
+| Leases of the login end by expiry 3 times within 2 hours (each token counts at most once in 10 minutes) | 6 hours |
+| The login's helpers send 5 failed replies in a row within 30 minutes (an accepted reply ends the run) | 1 hour |
+
+While it lasts, the login's claims return no lease, a reason and the end time, and its helpers report `cooled-off` (audit `remote-cooloff`). Revoking or replacing a token does not end it. An operator clears it with `autocraft remote cooloff clear <login>` (audit `remote-cooloff-clear`).
 
 ### Usage reserve and readiness
 
@@ -242,7 +251,7 @@ The helper reports its readiness to `POST /api/remote/status` on every change an
 | `ready` | The helper claims. |
 | `quota-held` | A window is at or below the reserve, its usage could not be read, or the provider refused a run. |
 | `paused` | The user ran `pause-until-reset`. |
-| `cooled-off` | The server gives the token no calls after repeated lost leases. |
+| `cooled-off` | The server gives the login no calls after repeated lost leases or failed replies. |
 | `sandbox-failed` | The sandbox check or canary failed. |
 | `version-refused` | The server refused the helper's version, or the harness version is not audited (Codex). |
 | `harness-missing` | The harness or its login is missing. |

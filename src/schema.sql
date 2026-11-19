@@ -240,14 +240,36 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL,
   can_run INTEGER NOT NULL DEFAULT 0, -- the token's helper may claim model calls in the user-local inference mode
   idle_claim_at INTEGER,              -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
-  idle_tiers TEXT, idle_repos TEXT,   -- JSON: the tiers and repos (null: any) that empty claim asked for
-  cooloff_until INTEGER               -- ms since epoch: the token gets no calls until then, after repeated lost leases (src/remote/cooloff.ts)
+  idle_tiers TEXT, idle_repos TEXT    -- JSON: the tiers and repos (null: any) that empty claim asked for
 );
--- Each lease of a token that ended without a release or a reply (lost heartbeat, past its time limit), newest 2 hours kept.
+-- Leases that ended without a release or a reply (lost heartbeat, past a time limit), at most one per token in 10 minutes,
+-- newest 2 hours kept; counted per login toward its cool-off (src/remote/cooloff.ts).
 CREATE TABLE IF NOT EXISTS remote_lease_drops (
-  token_id INTEGER NOT NULL, at INTEGER NOT NULL
+  token_id INTEGER NOT NULL, at INTEGER NOT NULL,
+  login TEXT COLLATE NOCASE
 );
 CREATE INDEX IF NOT EXISTS remote_lease_drops_token ON remote_lease_drops(token_id, at);
+-- The cool-off of a login's helpers in the user-local inference mode (src/remote/cooloff.ts): no calls until `until`.
+CREATE TABLE IF NOT EXISTS remote_cooloffs (
+  login TEXT PRIMARY KEY COLLATE NOCASE,
+  until INTEGER,                      -- ms since epoch; null or past when not cooling off
+  reason TEXT,                        -- why, as the claim reply and the Connect page show it
+  failures INTEGER NOT NULL DEFAULT 0, -- failed replies (ok: false) in a row
+  failures_since INTEGER              -- the first of them
+);
+-- The secret hashes of leases that ended or went back to the queue, so their routes answer 410 rather than 401 (kept 24 hours).
+CREATE TABLE IF NOT EXISTS remote_lease_tombstones (
+  secret_hash TEXT PRIMARY KEY,
+  call_id INTEGER NOT NULL,
+  at INTEGER NOT NULL                 -- ms since epoch
+);
+-- The dashboard's liveness stamp (src/remote/liveness.ts), one row: written every 5 seconds; `since` is when the current
+-- unbroken run of stamps began. Leases expire only while the dashboard was alive for the whole idle window.
+CREATE TABLE IF NOT EXISTS remote_liveness (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  alive_at INTEGER NOT NULL,
+  since INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
 -- The last status of each helper (an agent token that may run tasks) in the user-local inference mode (src/remote/helpers.ts):
 -- readiness (src/remote/protocol.ts Readiness), until and reason as the helper sent them, JSON of its models, reserve and usage.
@@ -760,6 +782,8 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   lease_secret_hash TEXT,             -- sha256 of the lease secret
   token_id INTEGER,                   -- the agent token that claimed the lease; the lease ends when it may no longer run tasks
   leased_at INTEGER, heartbeat_at INTEGER,
+  started_at INTEGER,                 -- the lease's first `running` heartbeat: the call's time limit counts from here
+  claim_id TEXT,                      -- the claim's request id (protocol Claim.requestId) that leased it
   attempt INTEGER NOT NULL DEFAULT 1,
   max_attempts INTEGER NOT NULL,      -- the prompt's attempts limit
   timeout_ms INTEGER NOT NULL,        -- the bundle's wall-clock limit

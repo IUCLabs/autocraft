@@ -65,7 +65,7 @@ describe("per-lease tools of remote calls", () => {
       ended: enqueueCall(db, { ...common, bundle: bundle(["items"]) }),
     };
     for (let i = 0; i < 4; i++) {
-      const r = await claimCall(db, caller, { requestId: "test-claim-0001", protocol: PROTOCOL_VERSION, helperVersion: "1.0.0", harness: "claude", harnessVersion: "2", tiers: { top: "opus" } }, async () => true);
+      const r = await claimCall(db, caller, { requestId: `test-claim-000${i}`, protocol: PROTOCOL_VERSION, helperVersion: "1.1.0", harness: "claude", harnessVersion: "2", tiers: { top: "opus" } }, async () => true);
       const name = Object.entries(ids).find(([, id]) => id === r.lease?.id)![0];
       leases.set(name, r.lease!);
     }
