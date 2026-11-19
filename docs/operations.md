@@ -177,6 +177,7 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
 | `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16; Codex runs one call at a time because its login refreshes in place. Ctrl-C, SIGTERM and SIGHUP stop running calls and give them back; a second signal quits at once. See [Helper process](#helper-process). |
 | `service install [--parallel N]` | Writes and starts a systemd user unit (Linux, `~/.config/systemd/user/autocraft-task.service`) or a launchd agent (macOS, `~/Library/LaunchAgents/autocraft-task.plist`) that runs `work` with these arguments and restarts it whenever it ends (systemd `Restart=always`, launchd `KeepAlive`). It keeps `PATH`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR` from the shell it ran in. The log: `journalctl --user -u autocraft-task -f` (Linux), `$XDG_CACHE_HOME/autocraft-task/service.log` (macOS). On Linux, `loginctl enable-linger` keeps it running while the user is logged out. No root. |
 | `service uninstall` / `service status` | Stops and removes the service; prints its state and where its log is. |
+| `update` | Downloads the server's current helper over this file (checked with `node --check` first); restart `work` or the service afterwards. A version refusal names this command. |
 | `claim` | Claims one call and prints its lease id. |
 | `run [--detach] [<lease>]` | Runs a claimed lease, or claims one and runs it. `--detach` starts the run in the background and prints the lease id. |
 | `wait <lease>` | Waits for a detached run and prints its result. Returns after at most 9 minutes with exit code 3 while the run still goes; run it again. |
@@ -262,7 +263,7 @@ Each maintainer and operator sets their own reserve on the Connect page: `GET`/`
 - A Claude login that expires within the call timeout plus 10 minutes makes the helper report `harness-missing` with "the Claude login expires soon; run claude to refresh it", the same check each call makes before it starts.
 - A run the provider refuses for its limit goes back to the queue without using an attempt. The helper holds until the reset the provider named (at most 7 days). A clock time without a time zone holds until a later reading shows headroom.
 
-The helper reports its readiness to `POST /api/remote/status` on every change and at least every 5 minutes, and keeps it in a 0600 status file in its cache directory.
+The helper reports its readiness to `POST /api/remote/status` on every change and at least every 5 minutes, and keeps it in a 0600 status file in its cache directory. Each report also carries its slots, the calls it runs now and its last error (a server request that failed after its retries, or a failed call's reason; a later success of the same kind clears it); the Connect page shows them per helper. A report is retried up to 4 times within a minute. The helper logs the first server failure and the recovery, one line each.
 
 | Readiness | Meaning |
 |---|---|
@@ -271,8 +272,8 @@ The helper reports its readiness to `POST /api/remote/status` on every change an
 | `paused` | The user ran `pause-until-reset`. |
 | `cooled-off` | The server gives the login no calls after repeated lost leases or failed replies. |
 | `sandbox-failed` | The sandbox check or canary failed. |
-| `version-refused` | The server refused the helper's version, or the harness version is not audited (Codex). |
-| `harness-missing` | The harness or its login is missing, or the Claude login expires soon. |
+| `version-refused` | The server refused the helper's version. |
+| `harness-missing` | The harness or its login is missing, no model is set for any tier, the harness version is not audited (Codex), or the Claude login expires soon. |
 | `failing` | The helper's last 5 calls failed or were given back in a row; it claims again at the time shown if its checks pass. |
 
 The planner counts as room only helpers whose last status is `ready` and at most 6 minutes old and whose last claim found nothing within 45 seconds. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
@@ -298,7 +299,7 @@ Each call is one agent run, shown on the Agents page and the item timeline. A us
 
 ### Health check
 
-The `remote-calls` check (see [Health checks](#health-checks)) warns when a model call has waited over 10 minutes and no helper has claimed any call in that time.
+The `remote-calls` check (see [Health checks](#health-checks)) warns when a model call has waited over 10 minutes and no helper has claimed any call in that time. The `remote-starved-<tier>` checks warn when a helper is ready but the oldest queued call of a tier has waited longer than 30 (top), 20 (mid) or 5 (small) minutes.
 
 ### Codex versions and guards
 
@@ -648,6 +649,7 @@ The dashboard computes the checks below from the database on each request; nothi
 | `worker:<env id>` (`workers` in the endpoint) | an enabled build environment has not reported (`last_seen_at`) for 5 minutes, or never (fail) |
 | `build-queue` | a build task has been queued for over 10 minutes: fail when no enabled environment has reported in 5 minutes, else warn (a security task while no confidential environment is ready counts under `confidential-env` instead) |
 | `remote-calls` | the inference mode is `user-local`, a remote model call has been queued for over 10 minutes, and no helper has claimed any call in that time (warn) |
+| `remote-starved-<tier>` | the inference mode is `user-local`, a helper reported `ready` in the last 6 minutes, and the oldest queued call of the tier has waited over 30 (top), 20 (mid) or 5 (small) minutes (warn) |
 | `confidential-env` | a security fix or a security build task waits and no confidential build environment is ready (warn) |
 | `sync` | no successful `sync_runs` row ended in the last 10 minutes, or the last 3 runs failed (fail) |
 | `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn; fail when more than half of the tracked repos have an error, for example after a token lost access). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |

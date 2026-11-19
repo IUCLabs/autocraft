@@ -208,6 +208,11 @@ function Helpers() {
                     <TerminalWindowIcon /> {h.harness}{h.models.top ? ` · ${h.models.top}` : ""}
                   </span>
                 )}
+                {h.fresh && h.slots !== null && h.busy !== null && (
+                  <span className="num text-sm text-ink/70" title="Calls running now, of the calls the helper runs at once">
+                    {h.busy} of {h.slots} busy
+                  </span>
+                )}
                 {h.usage && (
                   <span className="num text-sm text-ink/70" title="Plan used: 5-hour window, weekly">
                     <GaugeIcon className="mr-1 inline" />
@@ -221,6 +226,11 @@ function Helpers() {
                 )}
               </div>
               {h.fresh && h.readiness !== "ready" && h.reason && <p className="mt-1 text-sm text-ink/65">{h.reason}</p>}
+              {h.lastError && (
+                <p className="mt-1 break-words text-sm text-bad">
+                  {h.lastError.text} <TimeAgo iso={h.lastError.at} className="text-ink/55" />
+                </p>
+              )}
             </li>
           );
         })}

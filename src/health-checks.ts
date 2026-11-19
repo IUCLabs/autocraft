@@ -15,6 +15,7 @@ import { PROBE_HEADERS } from "./health.ts";
 import { unboundLogins } from "./author-ids.ts";
 import { inferenceMode } from "./remote/mode.ts";
 import { CALLER_STALE_MS } from "./remote/room.ts";
+import { STATUS_FRESH_MS } from "./remote/helpers.ts";
 import { confidentialReadyAt, PRIVATE_STEPS_SQL } from "./build/tasks.ts";
 
 /** Thresholds, in one place. */
@@ -34,6 +35,8 @@ export const THRESHOLDS = {
   rateFail: 100,
   /** In the user-local mode, a call queued this long with no claim by any helper in that time. */
   remoteQueuedMs: 10 * 60_000,
+  /** In the user-local mode with a ready helper, the longest a queued call of each tier may wait. */
+  remoteTierWaitMs: { top: 30 * 60_000, mid: 20 * 60_000, small: 5 * 60_000 },
 } as const;
 
 export type CheckState = "ok" | "warn" | "fail";
@@ -240,8 +243,25 @@ function remoteCallsCheck({ db, nowMs }: CheckCtx): Check[] {
   return [{ id: "remote-calls", state: "warn", text, brief: "Model calls are waiting and no helper is claiming them", since: new Date(q.oldest ?? cutoff).toISOString(), count: q.n, to: "/pipeline" }];
 }
 
+/** User-local mode: a helper is ready, yet the oldest queued call of a tier has waited past that tier's limit (the helpers' models, reserves or repo choices may not fit it). */
+function remoteStarvedCheck({ db, nowMs }: CheckCtx): Check[] {
+  if (inferenceMode(db) !== "user-local") return [];
+  const ready = (db.prepare("SELECT COUNT(*) AS n FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE t.can_run = 1 AND h.readiness = 'ready' AND h.reported_at >= ?").get(nowMs - STATUS_FRESH_MS) as { n: number }).n;
+  if (!ready) return [ok("remote-starved", "/pipeline")];
+  const out: Check[] = [];
+  for (const tier of ["top", "mid", "small"] as const) {
+    const limit = THRESHOLDS.remoteTierWaitMs[tier];
+    const q = db.prepare("SELECT COUNT(*) AS n, MIN(queued_since) AS oldest FROM main.remote_calls WHERE state = 'queued' AND tier = ? AND queued_since < ? AND seen_at >= ?").get(tier, nowMs - limit, nowMs - CALLER_STALE_MS) as { n: number; oldest: number | null };
+    if (!q.n || q.oldest === null) continue;
+    out.push({ id: `remote-starved-${tier}`, state: "warn", count: q.n, since: new Date(q.oldest).toISOString(), to: "/pipeline",
+      text: `The oldest queued ${tier}-tier model call has waited ${minutes(nowMs - q.oldest)} (limit ${minutes(limit)}) while ${ready} helper${ready === 1 ? " is" : "s are"} ready`,
+      brief: `${tier[0]!.toUpperCase()}${tier.slice(1)}-tier model calls wait although a helper is ready` });
+  }
+  return out.length ? out : [ok("remote-starved", "/pipeline")];
+}
+
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck, remoteStarvedCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs, probe }));
