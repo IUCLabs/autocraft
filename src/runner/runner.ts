@@ -28,7 +28,7 @@ import { jobBlock } from "./concurrency.ts";
 import { queueRoom } from "../agents/call.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
 import { envVar } from "../env.ts";
-import { jobRemoteWait, withdrawJobCalls } from "../remote/calls.ts";
+import { jobRemoteQueue, REMOTE_WAIT_CAP_MS, withdrawJobCalls } from "../remote/calls.ts";
 
 export const logsDir = (): string => envVar("RUNNER_LOGS") ?? join(homedir(), ".cache/autocraft-logs/jobs");
 
@@ -72,7 +72,7 @@ export type RunnerOptions = {
   graceMs?: number;
 };
 
-type Running = { child: ChildProcess; termAt: number | null; exited: Promise<void>; startedAt: number; deadlineMin: number; logPath: string; /** When the job was told to finish its current item and stop. */ flaggedAt: number | null; noProgressMin: number; /** Why it was told to stop. */ stopMsg: string | null };
+type Running = { child: ChildProcess; termAt: number | null; exited: Promise<void>; startedAt: number; deadlineMin: number; logPath: string; /** When the job was told to finish its current item and stop. */ flaggedAt: number | null; noProgressMin: number; /** Why it was told to stop. */ stopMsg: string | null; /** Time in which a user-local call of the job waited for a helper, summed over the checks that saw one waiting. */ remoteWaitMs: number; remoteSeen: { at: number; queued: boolean } | null };
 
 /** The error of a job the runner stopped for running past its step's limit. */
 export const deadlineError = (min: number): string => `stopped: ran past ${min} min`;
@@ -342,11 +342,16 @@ export class Runner {
     for (const [id, r] of this.running) {
       const row = this.db.prepare("SELECT cancel_requested_at FROM jobs WHERE id = ?").get(id) as { cancel_requested_at: string | null } | undefined;
       // Time a user-local model call waits for a helper counts like waiting for an account slot: not toward the deadline, and not as a time without progress.
-      const remote = jobRemoteWait(this.db, id);
-      const late = Date.now() - r.startedAt - remote.waitedMs >= r.deadlineMin * 60_000;
+      const nowMs = Date.now();
+      const remote = jobRemoteQueue(this.db, id);
+      if (r.remoteSeen?.queued) r.remoteWaitMs += nowMs - r.remoteSeen.at;
+      r.remoteSeen = { at: nowMs, queued: remote.queued };
+      // Up to REMOTE_WAIT_CAP_MS of it; past that a call nobody takes no longer holds the job and its item.
+      const waiting = remote.queued && r.remoteWaitMs < REMOTE_WAIT_CAP_MS;
+      const late = nowMs - r.startedAt - Math.min(r.remoteWaitMs, REMOTE_WAIT_CAP_MS) >= r.deadlineMin * 60_000;
       const cancel = !!row?.cancel_requested_at || this.stopping;
       // Progress is a new line in the job's log (the job's own output: progress lines, check-tool notes, results); reading its mtime costs one stat.
-      let lastLine = Math.max(r.startedAt, remote.queued ? Date.now() : remote.lastLeaseAt ?? 0);
+      let lastLine = Math.max(r.startedAt, waiting ? nowMs : remote.lastLeaseAt ?? 0);
       try { lastLine = Math.max(lastLine, statSync(r.logPath).mtimeMs); } catch { /* no log yet */ }
       const idle = r.flaggedAt === null && Date.now() - lastLine >= r.noProgressMin * 60_000;
       // Past its deadline a job is first asked to stop: the failure is recorded, which the job reads at its item boundaries (ctx.cancelled)
@@ -459,7 +464,7 @@ export class Runner {
         resolve();
       });
     });
-    this.running.set(id, { child, termAt: null, exited, startedAt: Date.now(), deadlineMin: this.maxMin(stepName, this.limitOf(id)), logPath, flaggedAt: null, noProgressMin: this.noProgressMin(stepName), stopMsg: null });
+    this.running.set(id, { child, termAt: null, exited, startedAt: Date.now(), deadlineMin: this.maxMin(stepName, this.limitOf(id)), logPath, flaggedAt: null, noProgressMin: this.noProgressMin(stepName), stopMsg: null, remoteWaitMs: 0, remoteSeen: null });
     return true;
   }
 

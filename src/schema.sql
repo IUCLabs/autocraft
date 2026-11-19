@@ -732,12 +732,14 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   harness TEXT, harness_version TEXT,
   model TEXT,                         -- the model the claim declared for the tier; a submit must report the same
   lease_secret_hash TEXT,             -- sha256 of the lease secret
+  token_id INTEGER,                   -- the agent token that claimed the lease; the lease ends when it may no longer run tasks
   leased_at INTEGER, heartbeat_at INTEGER,
   attempt INTEGER NOT NULL DEFAULT 1,
   max_attempts INTEGER NOT NULL,      -- the prompt's attempts limit
   timeout_ms INTEGER NOT NULL,        -- the bundle's wall-clock limit
   parent_id INTEGER,                  -- a follow-up turn: the call whose harness session it continues
   sticky_login TEXT COLLATE NOCASE,   -- a follow-up turn: only this user's helper holds the session
+  released_by TEXT COLLATE NOCASE, released_at INTEGER, -- the last helper that gave the lease back: not offered that login again for a while
   progress TEXT,                      -- the helper's last progress line
   reply TEXT, usage TEXT, turns INTEGER, session_id TEXT, duration_ms INTEGER,
   error TEXT,
@@ -1668,6 +1670,7 @@ CREATE TABLE IF NOT EXISTS pr_commits (
   committed_at TEXT NOT NULL,
   author TEXT,                        -- GitHub login; null when the commit email maps to no account
   first_seen_at TEXT,                 -- when the sync first read the commit; committed_at is author-controlled and is clamped to it
+  co_authors TEXT,                    -- JSON [login]: the commit's authors as GitHub lists them (the git author and Co-authored-by trailers)
   PRIMARY KEY (repo, number, oid)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS item_activity (

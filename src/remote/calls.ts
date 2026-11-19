@@ -14,7 +14,7 @@ import type { Role } from "../dash/types.ts";
 import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { acceptedModels, familyOf, isTier, TIERS } from "./mode.ts";
-import { PROTOCOL_VERSION, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
+import { PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { CALLER_STALE_MS } from "./room.ts";
 
 /** A lease with no heartbeat for this long goes back to the queue. */
@@ -29,6 +29,14 @@ export const CALLER_GONE_MS = 5 * 60_000;
 export const CLAIM_RETRY_S = 15;
 /** The oldest helper version that may run a lease. */
 export const REQUIRED_HELPER = "1.0.0";
+/** A call this login released is not offered to it again for this long (its helper could not run it). */
+export const RELEASE_SKIP_MS = 10 * 60_000;
+/**
+ * The most queue time the runner leaves out of a job's deadline and no-progress stop. Helpers run on people's own machines
+ * across time zones, so a call may wait out a night with nobody online; past 12 hours the call is unlikely to be taken at all
+ * (no eligible helper: the only maintainers authored the item), and the job is stopped so it no longer holds its item.
+ */
+export const REMOTE_WAIT_CAP_MS = 12 * 3600_000;
 /** Ended calls are kept this long (task status, follow-up lookups), then deleted. */
 const KEEP_MS = 24 * 3600_000;
 const LEASE_PREFIX = "aclease_";
@@ -36,7 +44,7 @@ const PROGRESS_MAX = 200;
 const REPLY_MAX = 4_000_000;
 
 /** Prompts that judge an item: their calls never go to an author or co-author of an item they judge. */
-const JUDGING = new Set(["review.opus", "premerge.opus", "postmerge.opus", "fixup.check", "fixissue.check", "decide.prepare", "conversation.turn", "verify.compare"]);
+const JUDGING = new Set(["review.opus", "premerge.opus", "postmerge.opus", "fixup.check", "fixissue.check", "decide.prepare", "conversation.turn", "verify.compare", "classify.haiku", "security.verify", "security.fixcheck"]);
 export const judges = (promptId: string): boolean => JUDGING.has(promptId) || promptId.startsWith("dupes.compare-");
 
 type Row = {
@@ -85,11 +93,19 @@ export function withdrawJobCalls(db: DatabaseSync, reason: string, jobId?: numbe
 }
 
 /** A lost lease goes back to the queue with the next attempt, or fails once the prompt's attempts are used up. */
-function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "max_attempts">, reason: string, nowMs: number): void {
+function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "max_attempts" | "leased_at">, reason: string, nowMs: number): void {
   const fail = r.attempt >= r.max_attempts;
-  const up = db.prepare(`UPDATE main.remote_calls SET state = ?, attempt = attempt + ?, lease_secret_hash = NULL, queued_since = ?, ended_at = ?, error = ?, progress = NULL
-    WHERE id = ? AND state = 'leased'`).run(fail ? "failed" : "queued", fail ? 0 : 1, fail ? null : nowMs, fail ? nowMs : null, reason, r.id);
+  // Compare and set: only the lease that was read ends, so two processes that saw it expire end it once.
+  const up = db.prepare(`UPDATE main.remote_calls SET state = ?, attempt = attempt + ?, lease_secret_hash = NULL, token_id = NULL, queued_since = ?, ended_at = ?, error = ?, progress = NULL
+    WHERE id = ? AND state = 'leased' AND attempt = ? AND leased_at IS ?`).run(fail ? "failed" : "queued", fail ? 0 : 1, fail ? null : nowMs, fail ? nowMs : null, reason, r.id, r.attempt, r.leased_at);
   if (Number(up.changes) === 1 && r.run_id !== null) finishRun(db, r.run_id, { state: "failed", error: reason, summary: "lease ended" });
+}
+
+/** Puts a leased call back in the queue without using an attempt (released by its helper, or its token lost the right to run it). */
+function unlease(db: DatabaseSync, id: number, runId: number | null, why: string, nowMs: number, releasedBy: string | null = null): void {
+  const up = db.prepare(`UPDATE main.remote_calls SET state = 'queued', lease_secret_hash = NULL, token_id = NULL, queued_since = ?, error = ?, progress = NULL, released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
+    WHERE id = ? AND state = 'leased'`).run(nowMs, why, releasedBy, releasedBy, nowMs, id);
+  if (Number(up.changes) === 1 && runId !== null) finishRun(db, runId, { state: "failed", error: why, summary: "returned to the queue" });
 }
 
 /**
@@ -117,8 +133,16 @@ export function liveLease(db: DatabaseSync, secret: string | undefined, nowMs: n
   const found = db.prepare("SELECT id FROM main.remote_calls WHERE lease_secret_hash = ? AND state = 'leased'").get(hash) as { id: number } | undefined;
   if (!found) return null;
   expireLeases(db, nowMs, Number(found.id));
-  const r = db.prepare("SELECT id, job_id, run_id, user_login, prompt_id, items, repo FROM main.remote_calls WHERE id = ? AND lease_secret_hash = ? AND state = 'leased'").get(found.id, hash) as
-    { id: number; job_id: number | null; run_id: number | null; user_login: string; prompt_id: string; items: string; repo: string | null } | undefined;
+  // The lease lives only while the token that claimed it may still run tasks and its login is still a maintainer or operator.
+  const r = db.prepare(`SELECT c.id, c.job_id, c.run_id, c.user_login, c.prompt_id, c.items, c.repo, a.login AS ok FROM main.remote_calls c
+      LEFT JOIN main.mcp_tokens t ON t.id = c.token_id AND t.can_run = 1 AND t.expires_at > ?
+      LEFT JOIN main.access a ON a.login = t.login AND a.role IN ('maintainer', 'operator')
+    WHERE c.id = ? AND c.lease_secret_hash = ? AND c.state = 'leased'`).get(new Date(nowMs).toISOString(), found.id, hash) as
+    { id: number; job_id: number | null; run_id: number | null; user_login: string; prompt_id: string; items: string; repo: string | null; ok: string | null } | undefined;
+  if (r && r.ok === null) {
+    unlease(db, Number(r.id), r.run_id, "returned to the queue: the token that claimed it may no longer run tasks", nowMs);
+    return null;
+  }
   return r ? { id: Number(r.id), jobId: r.job_id, runId: r.run_id, login: r.user_login, promptId: r.prompt_id, items: JSON.parse(r.items) as ItemRef[], repo: r.repo } : null;
 }
 
@@ -135,11 +159,12 @@ export type Caller = { tokenId: number; login: string; role: Role };
 
 const sameLogin = (a: string | null, b: string): boolean => a !== null && a.toLowerCase() === b.toLowerCase();
 
-/** Whether `login` authored, or committed to, any of the items. */
+/** Whether `login` authored any of the items, or authored or co-authored (a Co-authored-by trailer, as GitHub lists the commit's authors) a commit of one. */
 export function authorOf(db: DatabaseSync, refs: ItemRef[], login: string): boolean {
   const item = db.prepare("SELECT 1 FROM main.items WHERE repo = ? AND number = ? AND author = ? COLLATE NOCASE");
-  const commit = db.prepare("SELECT 1 FROM main.pr_commits WHERE repo = ? AND number = ? AND author = ? COLLATE NOCASE LIMIT 1");
-  return refs.some((r) => item.get(r.repo, r.number, login) !== undefined || commit.get(r.repo, r.number, login) !== undefined);
+  const commit = db.prepare(`SELECT 1 FROM main.pr_commits WHERE repo = ? AND number = ?
+    AND (author = ? COLLATE NOCASE OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(co_authors) THEN co_authors ELSE '[]' END) WHERE value = ? COLLATE NOCASE)) LIMIT 1`);
+  return refs.some((r) => item.get(r.repo, r.number, login) !== undefined || commit.get(r.repo, r.number, login, login) !== undefined);
 }
 
 /**
@@ -178,6 +203,13 @@ export function parseClaim(raw: unknown): Claim {
   return { protocol: PROTOCOL_VERSION, helperVersion: c.helperVersion, harness: c.harness as HarnessId, harnessVersion: c.harnessVersion, tiers, ...(c.repos !== undefined && { repos: c.repos as string[] }), ...(c.sessions !== undefined && { sessions: c.sessions as number[] }) };
 }
 
+/** Whether dotted version `v` is older than `min` (numeric parts compared in order; a part that is not a number counts as 0). */
+export function olderVersion(v: string, min: string): boolean {
+  const a = v.split(/[.+-]/).map((x) => Number.parseInt(x, 10) || 0), b = min.split(".").map((x) => Number(x));
+  for (let i = 0; i < b.length; i++) if ((a[i] ?? 0) !== b[i]) return (a[i] ?? 0) < b[i]!;
+  return false;
+}
+
 /** One line for the lease: the prompt and its first item. */
 function titleOf(promptId: string, refs: ItemRef[]): string {
   if (!refs.length) return promptId;
@@ -189,9 +221,9 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
   const secret = `${LEASE_PREFIX}${randomToken(32)}`;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', user_login = ?, harness = ?, harness_version = ?, model = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?,
+    const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?,
         queued_ms = queued_ms + CASE WHEN queued_since IS NULL THEN 0 ELSE MAX(0, ? - queued_since) END, queued_since = NULL, progress = NULL, error = NULL
-      WHERE id = ? AND state = 'queued' RETURNING ${COLS}`).get(caller.login, claim.harness, claim.harnessVersion, model, sha256hex(secret), nowMs, nowMs, nowMs, id) as Row | undefined;
+      WHERE id = ? AND state = 'queued' RETURNING ${COLS}`).get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, sha256hex(secret), nowMs, nowMs, nowMs, id) as Row | undefined;
     if (!r) {
       db.exec("COMMIT");
       return null;
@@ -213,7 +245,8 @@ type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "items" | "parent_id" | "s
 
 /** The queued calls a claim could take in the order it takes them, before eligibility: follow-up turns of the sessions its helper holds first, then the model queue's order, filtered by tiers and repos. */
 function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, repos: ReadonlySet<string> | null, sessionIds: readonly number[], nowMs: number): Cand[] {
-  const rows = (db.prepare("SELECT id, class AS cls, level, step, repo, since, prompt_id, tier, items, parent_id, sticky_login FROM main.remote_calls WHERE state = 'queued' AND seen_at >= ?").all(nowMs - CALLER_STALE_MS) as Cand[])
+  const rows = (db.prepare(`SELECT id, class AS cls, level, step, repo, since, prompt_id, tier, items, parent_id, sticky_login FROM main.remote_calls
+      WHERE state = 'queued' AND seen_at >= ? AND NOT COALESCE(released_by = ? COLLATE NOCASE AND released_at >= ?, 0)`).all(nowMs - CALLER_STALE_MS, caller.login, nowMs - RELEASE_SKIP_MS) as Cand[])
     .filter((r) => tiers.has(r.tier) && (!repos || (JSON.parse(r.items) as ItemRef[]).every((x) => repos.has(x.repo)) && (!r.repo || repos.has(r.repo))));
   const sessions = new Set(sessionIds);
   const followUps = rows.filter((r) => r.parent_id !== null && sessions.has(r.parent_id) && sameLogin(r.sticky_login, caller.login)).sort((a, b) => a.since - b.since || a.id - b.id);
@@ -253,6 +286,7 @@ export function callStatus(db: DatabaseSync, id: number, login: string): { id: n
  * write permission on a repo.
  */
 export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
+  if (olderVersion(claim.helperVersion, REQUIRED_HELPER)) throw new HttpError(409, `helper ${claim.helperVersion} is older than ${REQUIRED_HELPER}, the oldest this server accepts; download the current helper from ${ROUTES.helper}`);
   expireLeases(db, nowMs);
   const accepted = acceptedModels(db);
   const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null));
@@ -344,8 +378,7 @@ export function releaseCall(db: DatabaseSync, secret: string | undefined, raw: u
   const l = liveLease(db, secret, nowMs);
   if (!l) return false;
   const reason = progressLine((raw as Release | undefined)?.reason) ?? "released by the helper";
-  const up = db.prepare("UPDATE main.remote_calls SET state = 'queued', lease_secret_hash = NULL, queued_since = ?, error = ?, progress = NULL WHERE id = ? AND state = 'leased'").run(nowMs, `released: ${reason}`, l.id);
-  if (Number(up.changes) === 1 && l.runId !== null) finishRun(db, l.runId, { state: "failed", error: `released by the helper: ${reason}`, summary: "released" });
+  unlease(db, l.id, l.runId, `released by the helper: ${reason}`, nowMs, l.login);
   return true;
 }
 
@@ -366,7 +399,6 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * after `maxWaitMs` in the queue (WaitLimitError), and, for a follow-up, after STICKY_MS. The helper's progress lines go to `onProgress`.
  */
 export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress?: (line: string) => void; maxWaitMs?: number; log?: (line: string) => void } = {}): Promise<Outcome> {
-  const began = Date.now();
   const log = opts.log ?? console.log;
   let lastProgress: string | null = null, lastLog = 0;
   for (;;) {
@@ -378,6 +410,8 @@ export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress
     if (r.state === "done") {
       const stored = (r.usage ? JSON.parse(r.usage) : {}) as { byModel?: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>; costUsd?: number };
       const costUsd = typeof stored.costUsd === "number" ? stored.costUsd : null;
+      // The raw reply is not kept: the agent run stores the scrubbed copy.
+      db.prepare("UPDATE main.remote_calls SET reply = NULL WHERE id = ?").run(id);
       return { state: "done", text: r.reply ?? "", usage: { ...storedTokens(stored), cost: costUsd }, byModel: stored.byModel ?? null, costUsd, turns: r.turns, sessionId: r.session_id, runId: r.run_id };
     }
     if (r.state === "failed") return { state: "failed", error: r.error ?? "failed", tokens: r.usage ? storedTokens(JSON.parse(r.usage)) : null, runId: r.run_id };
@@ -392,7 +426,8 @@ export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress
         if (withdrawCall(db, id, "the helper holding the session did not take the follow-up", ["queued"])) return { state: "unclaimed" };
         continue;
       }
-      if (opts.maxWaitMs !== undefined && nowMs - began >= opts.maxWaitMs) {
+      // Only time in the queue counts; a helper running the call is not waiting.
+      if (opts.maxWaitMs !== undefined && r.queued_ms + (r.queued_since === null ? 0 : nowMs - r.queued_since) >= opts.maxWaitMs) {
         if (withdrawCall(db, id, "no helper took the call in time", ["queued"])) throw new WaitLimitError("no user-local helper took the call in time");
         continue;
       }
@@ -409,9 +444,8 @@ export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress
   }
 }
 
-/** For the runner: how long the job's remote calls have waited in the queue in all (not counted toward its deadline), whether one waits now, and when its latest lease began. */
-export function jobRemoteWait(db: DatabaseSync, jobId: number, nowMs: number = Date.now()): { waitedMs: number; queued: boolean; lastLeaseAt: number | null } {
-  const r = db.prepare(`SELECT COALESCE(SUM(queued_ms + CASE WHEN state = 'queued' AND queued_since IS NOT NULL THEN MAX(0, ? - queued_since) ELSE 0 END), 0) AS waited,
-      COALESCE(MAX(state = 'queued'), 0) AS queued, MAX(leased_at) AS last FROM main.remote_calls WHERE job_id = ?`).get(nowMs, jobId) as { waited: number; queued: number; last: number | null };
-  return { waitedMs: Number(r.waited), queued: Number(r.queued) === 1, lastLeaseAt: r.last === null ? null : Number(r.last) };
+/** For the runner: whether a remote call of the job waits in the queue now, and when its latest lease began. The runner sums the time in which any call waited (the union, as calls of one job wait side by side). */
+export function jobRemoteQueue(db: DatabaseSync, jobId: number): { queued: boolean; lastLeaseAt: number | null } {
+  const r = db.prepare("SELECT COALESCE(MAX(state = 'queued'), 0) AS queued, MAX(leased_at) AS last FROM main.remote_calls WHERE job_id = ?").get(jobId) as { queued: number; last: number | null };
+  return { queued: Number(r.queued) === 1, lastLeaseAt: r.last === null ? null : Number(r.last) };
 }

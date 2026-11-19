@@ -26,9 +26,9 @@ describe("user-local remote calls", () => {
   setInferenceMode(db, "user-local", "test");
   const T0 = new Date().toISOString();
   db.prepare("INSERT INTO items (repo, number, kind, state, title, author, created_at, updated_at) VALUES ('photocraft', 1287, 'pr', 'OPEN', 't', 'alice', ?, ?)").run(T0, T0);
-  db.prepare("INSERT INTO pr_commits (repo, number, oid, committed_at, author) VALUES ('photocraft', 1287, 'abc', ?, 'carol')").run(T0);
+  db.prepare("INSERT INTO pr_commits (repo, number, oid, committed_at, author, co_authors) VALUES ('photocraft', 1287, 'abc', ?, 'carol', ?)").run(T0, JSON.stringify(["carol", "Dave"]));
   const callers: Record<string, Caller> = {};
-  for (const login of ["alice", "bob", "carol"]) {
+  for (const login of ["alice", "bob", "carol", "dave"]) {
     db.prepare("INSERT INTO access (login, role) VALUES (?, 'maintainer')").run(login);
     callers[login] = { tokenId: createToken(db, login, "helper", false, true).row.id, login, role: "maintainer" };
   }
@@ -50,6 +50,8 @@ describe("user-local remote calls", () => {
     const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
     assert.equal(await leaseFor("alice"), null, "the PR's author");
     assert.equal(await leaseFor("carol"), null, "a committer on the PR");
+    assert.equal(await leaseFor("dave"), null, "a co-author of a commit");
+    await assert.rejects(claimCall(db, callers.bob!, { ...claim, helperVersion: "0.9.0" }, canWrite), /older than/);
     const lease = (await leaseFor("bob"))!;
     assert.match(lease.title, /^review\.opus on photocraft#1287/);
     const b = bundleOf(db, lease.secret)!;
@@ -62,6 +64,7 @@ describe("user-local remote calls", () => {
     assert.deepEqual(done(lease.secret, "the review"), { accepted: true });
     const r = await ask;
     assert.equal(r?.text, "the review");
+    assert.equal((db.prepare("SELECT reply FROM remote_calls WHERE id = ?").get(lease.id) as { reply: string | null }).reply, null, "the raw reply is not kept");
     assert.equal(r?.usage.input, 90);
     assert.deepEqual(r?.usage.extra?.map((e) => [e.model, e.usage.input]), [["haiku", 10]]);
     const run = db.prepare("SELECT state, user_login, harness, reported_model, account_id, cost_usd FROM agent_runs WHERE id = (SELECT run_id FROM remote_calls WHERE id = ?)").get(lease.id) as Record<string, unknown>;

@@ -615,7 +615,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const out = await handleMcp({
       db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && (caller.role === "operator" || (caller.role === "maintainer" && maintainerWritesOn(db))),
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
-      ...(caller.canRun && inferenceMode(db) === "user-local" && { run: { tokenId: caller.tokenId, canWrite: (repo: string) => userForLogin(db, box, provider, caller.login, caller.role, false).canWrite(repo) } }),
+      ...(caller.canRun && inferenceMode(db) === "user-local" && { run: { tokenId: caller.tokenId, canWrite: (repo: string) => userForLogin(db, box, provider, caller.login, caller.role, true).canWrite(repo) } }),
     }, m);
     if (mcpWrites(m)) live.poke();
     // A notification or a response from the client: accepted, nothing to say.
@@ -646,7 +646,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const claim = remote.parseClaim(await readJson(req));
         // In the server mode no call is queued for helpers: nothing to take for a while.
         if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300 });
-        const user = userForLogin(db, box, provider, caller.login, caller.role, false);
+        // A claim hands out work on the repo: the write permission it checks is at most a minute old.
+        const user = userForLogin(db, box, provider, caller.login, caller.role, true);
         return reply(200, await remote.claimCall(db, caller, claim, (repo) => user.canWrite(repo)));
       }
       if (path !== ROUTES.bundle && path !== ROUTES.heartbeat && path !== ROUTES.submit && path !== ROUTES.release) return reply(404, { error: "not found" });
