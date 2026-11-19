@@ -76,6 +76,18 @@ export function importFingerprint(dir: string): string {
   return h.digest("hex");
 }
 
+/** Cheap fingerprint of every file's name, size and mtime; no file is read. */
+export function statFingerprint(dir: string): string {
+  const h = createHash("sha256");
+  for (const f of listFiles(dir)) {
+    const st = statSync(join(dir, f));
+    h.update(`${f}\0${st.size}\0${st.mtimeMs}\0`);
+  }
+  return h.digest("hex");
+}
+
+export type BuildMode = "stat" | "content" | "force";
+
 function openIndex(file: string): DatabaseSync {
   mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
@@ -88,18 +100,29 @@ function openIndex(file: string): DatabaseSync {
 
 const metaGet = (db: DatabaseSync, key: string): string | undefined => (db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
 
-/** Builds the repo's index when it is missing or its model or import fingerprint differ; returns whether it was rebuilt. */
-export async function buildReferenceIndex(repo: string, opts: SearchOptions = {}, force = false): Promise<boolean> {
+/**
+ * Builds the repo's index when it is missing or its model or fingerprint differ; returns whether it was rebuilt.
+ * "stat" compares only the cheap name/size/mtime fingerprint (used on every search), "content" also hashes the
+ * text pages (when only mtimes changed, the stored stat fingerprint is refreshed without rebuilding), "force" always rebuilds.
+ */
+export async function buildReferenceIndex(repo: string, opts: SearchOptions = {}, mode: BuildMode = "content"): Promise<boolean> {
   checkRepo(repo);
   const dir = opts.dir ?? referenceFolder(repo), file = opts.indexFile ?? indexPath(repo);
   if (!existsSync(dir)) {
     rmSync(file, { force: true });
     return false;
   }
-  const embedder = embedderOf(opts), fingerprint = importFingerprint(dir);
+  const embedder = embedderOf(opts), stat = statFingerprint(dir);
   let db = openIndex(file);
+  let fingerprint = "";
   try {
-    if (!force && metaGet(db, "model") === embedder.id && metaGet(db, "fingerprint") === fingerprint && metaGet(db, "schema") === SCHEMA_VERSION) return false;
+    const same = metaGet(db, "model") === embedder.id && metaGet(db, "schema") === SCHEMA_VERSION;
+    if (mode !== "force" && same && metaGet(db, "stat") === stat) return false;
+    fingerprint = importFingerprint(dir);
+    if (mode !== "force" && same && metaGet(db, "fingerprint") === fingerprint) {
+      db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('stat', ?)").run(stat);
+      return false;
+    }
     const rows: { page: string; title: string; seq: number; text: string }[] = [];
     for (const f of listFiles(dir).filter((x) => TEXT.test(x))) {
       const body = readFileSync(join(dir, f), "utf8"), title = pageTitle(f, body);
@@ -117,6 +140,7 @@ export async function buildReferenceIndex(repo: string, opts: SearchOptions = {}
     const setMeta = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
     setMeta.run("model", embedder.id);
     setMeta.run("fingerprint", fingerprint);
+    setMeta.run("stat", stat);
     setMeta.run("schema", SCHEMA_VERSION);
     db.exec("COMMIT");
     return true;
@@ -134,7 +158,7 @@ export async function referenceSearch(repo: string, query: string, limit = 5, op
   checkRepo(repo);
   const n = Math.max(0, Math.min(MAX_RESULTS, Math.floor(limit)));
   if (!n || !query.trim()) return [];
-  await buildReferenceIndex(repo, opts);
+  await buildReferenceIndex(repo, opts, "stat");
   const file = opts.indexFile ?? indexPath(repo);
   if (!existsSync(file)) return [];
   const [qv] = await embedderOf(opts).embed([query], "query");

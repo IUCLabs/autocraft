@@ -161,7 +161,7 @@ export const commands = {
             await saveStdin(file);
             const r = importReference(connect(), "cli", rest[0], file, rest.includes("--replace"));
             console.log(`imported ${r.files} files (${r.bytes} bytes) for ${rest[0]}`);
-            await buildReferenceIndex(rest[0], {}, true);
+            await buildReferenceIndex(rest[0], {}, "force");
             console.log("search index built");
           } finally {
             rmSync(tmp, { recursive: true, force: true });
