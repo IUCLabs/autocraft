@@ -117,7 +117,12 @@ const capacity = { slots: 1, busy: 0 };
  * @property {{ parentCallId: number }} [resume]
  * @property {{ claude?: { args: string[], agents?: string } }} hints
  */
-/** @typedef {{ progress?: string }} Heartbeat */
+/** @typedef {{ phase: "preparing" | "running", progress?: string }} Heartbeat  `preparing` from the claim until the harness spawns */
+export const HEARTBEAT_S = 30;
+/** The longest a lease may stay in `preparing`. */
+export const PREPARE_MAX_S = 15 * 60;
+/** How long the server remembers a claim's `requestId` and its reply. */
+export const CLAIM_ID_TTL_S = 300;
 /** @typedef {{ inputTokens: number, outputTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number }} Usage */
 /** @typedef {{ name: string, args: string, resultBytes: number | null, isError: boolean, startedAt?: string, endedAt?: string }} SubmitTool */
 /**
@@ -1497,7 +1502,6 @@ const cacheDir = () => join(process.env.XDG_CACHE_HOME || join(homedir(), ".cach
 const SESSION_TTL_MS = 3 * 3600_000;
 const TREE_TTL_MS = 3 * 24 * 3600_000;
 const WAIT_MS = 9 * 60_000;
-const HEARTBEAT_MS = 30_000;
 
 /** @param {string} p */
 function privateDir(p) {
@@ -1614,21 +1618,122 @@ function prune() {
 
 class Gone extends Error {}
 
+/** A reply other than 2xx and 410. `retryAfterMs`: the reply's Retry-After, or null. */
+export class HttpError extends Error {
+  /** @param {string} route @param {number} status @param {string} text @param {number | null} retryAfterMs */
+  constructor(route, status, text, retryAfterMs) {
+    super(`${route}: HTTP ${status} ${redact(text).slice(0, 300)}`.trim());
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** A Retry-After header as milliseconds (delta seconds or an HTTP date); null when absent or unreadable. @param {string | null} v */
+export function retryAfterMs(v, now = Date.now()) {
+  if (!v) return null;
+  if (/^\s*\d+\s*$/.test(v)) return Number(v) * 1000;
+  const t = Date.parse(v);
+  return Number.isNaN(t) ? null : Math.max(0, t - now);
+}
+
+const NET_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "ENETDOWN", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
+
 /**
- * @param {string} server @param {string} route @param {string} bearer @param {unknown} [body]
+ * Whether one request's error is worth trying again: 408, 429, 5xx, a network error (reset, refused, DNS), a request timeout
+ * or a reply cut off. A 410, any other 4xx and the caller's own abort are final.
+ * @param {unknown} e @param {AbortSignal} [signal]
+ */
+export function transient(e, signal) {
+  if (signal?.aborted || e instanceof Gone) return false;
+  if (e instanceof HttpError) return e.status === 408 || e.status === 429 || e.status >= 500;
+  if (!e || typeof e !== "object") return false;
+  // fetch rejects with a TypeError ("fetch failed", "terminated" for a body cut off); JSON.parse of a cut-off body with a SyntaxError.
+  if (e instanceof TypeError || e instanceof SyntaxError) return true;
+  const x = /** @type {{ name?: string, code?: string, cause?: { code?: string } }} */ (e);
+  return x.name === "TimeoutError" || NET_CODES.has(x.code ?? "") || NET_CODES.has(x.cause?.code ?? "");
+}
+
+/** The wait before retry `attempt` (0 first): exponential from `baseMs` up to 30 s with jitter, at least the server's Retry-After. @param {number} attempt @param {number | null} retryAfter */
+export function backoffMs(attempt, retryAfter, baseMs = 1000) {
+  const exp = Math.min(30_000, baseMs * 2 ** attempt);
+  const wait = exp / 2 + (Math.random() * exp) / 2;
+  return retryAfter === null ? wait : Math.max(wait, retryAfter + Math.random() * baseMs);
+}
+
+/**
+ * Runs `fn` until it succeeds, fails for good (`transient` says no) or runs out of time (`deadline`, ms since epoch) or of
+ * `tries`; then throws its last error. `signal` ends the waits between tries.
+ * @template T @param {() => Promise<T>} fn @param {{ deadline: number, tries?: number, signal?: AbortSignal, baseMs?: number }} o
+ * @returns {Promise<T>}
+ */
+export async function withRetry(fn, o) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await fn(); }
+    catch (e) {
+      if (!transient(e, o.signal) || (o.tries !== undefined && attempt + 1 >= o.tries)) throw e;
+      const wait = backoffMs(attempt, e instanceof HttpError ? e.retryAfterMs : null, o.baseMs);
+      if (Date.now() + wait >= o.deadline) throw e;
+      try { await sleep(wait, undefined, o.signal && { signal: o.signal }); } catch { throw e; }
+    }
+  }
+}
+
+/**
+ * One request; `body` makes it a POST. Throws Gone on 410, HttpError on any other non-2xx.
+ * @param {string} server @param {string} route @param {string} bearer @param {unknown} [body] @param {{ signal?: AbortSignal, timeoutMs?: number }} [o]
  * @returns {Promise<any>}
  */
-async function api(server, route, bearer, body) {
+export async function api(server, route, bearer, body, o = {}) {
+  const timeout = AbortSignal.timeout(o.timeoutMs ?? 60_000);
   const res = await fetch(`${server}${route}`, {
     method: body === undefined ? "GET" : "POST",
     headers: { Authorization: `Bearer ${bearer}`, ...(body !== undefined && { "Content-Type": "application/json" }) },
     ...(body !== undefined && { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(60_000),
+    signal: o.signal ? AbortSignal.any([o.signal, timeout]) : timeout,
   });
   if (res.status === 410) throw new Gone("the lease is gone");
   const text = await res.text();
-  if (!res.ok) throw new Error(`${route}: HTTP ${res.status} ${redact(text).slice(0, 300)}`);
-  return text ? JSON.parse(text) : {};
+  if (!res.ok) throw new HttpError(route, res.status, text, retryAfterMs(res.headers.get("retry-after")));
+  return text.trim() ? JSON.parse(text) : {};
+}
+
+/** The server ends a lease this long after the call's time limit, or after its last heartbeat (docs/operations.md, Leases). */
+const LEASE_GRACE_MS = 120_000;
+/** Retries of a lease route stop this long before the lease's server deadline. */
+const RETRY_MARGIN_MS = 90_000;
+/** Retries of a tool call made from inside the sandbox, where the lease's deadline is unknown. */
+const TOOL_RETRY_MS = 3 * 60_000;
+
+/**
+ * The heartbeats of one lease, from the claim until `stop`: phase `preparing`, then `running` from `running()` on (sent at
+ * once; the server's time limit starts with it). Each beat is retried until the next is due; a 410 aborts `gone`.
+ * @param {LeaseRecord} lease
+ */
+function heartbeats(lease) {
+  const goneAc = new AbortController(), stopAc = new AbortController();
+  /** @type {Heartbeat["phase"]} */
+  let phase = "preparing";
+  let progress = "", sent = "", wake = () => {};
+  /** @type {number | null} */
+  let runStart = null;
+  const send = () => withRetry(() => api(lease.server, ROUTES.heartbeat, lease.secret, /** @type {Heartbeat} */ ({ phase, ...(progress && { progress }) }), { signal: stopAc.signal, timeoutMs: 20_000 }), { deadline: Date.now() + HEARTBEAT_S * 1000 - 2000, signal: stopAc.signal });
+  void (async () => {
+    while (!stopAc.signal.aborted) {
+      sent = phase;
+      try { await send(); } catch (e) { if (e instanceof Gone) { goneAc.abort(); return; } }
+      try { await keepStatusFresh(); } catch { /* next beat */ }
+      if (sent === phase && !stopAc.signal.aborted) await new Promise((r) => { const t = setTimeout(r, HEARTBEAT_S * 1000); wake = () => { clearTimeout(t); r(undefined); }; });
+    }
+  })();
+  return {
+    gone: goneAc.signal,
+    get runStart() { return runStart; },
+    /** The harness spawns now. */
+    running() { if (runStart !== null) return; runStart = Date.now(); phase = "running"; wake(); },
+    /** @param {string} p the harness's last progress line */
+    progress(p) { progress = p; },
+    stop() { stopAc.abort(); wake(); },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2181,17 +2286,23 @@ async function gitTree(m) {
   })));
 }
 
-/** A tree from the server's tarball route. @param {string} server @param {string} secret @param {{ repo: string, sha: string }} m */
-async function tarballTree(server, secret, m) {
+/**
+ * A tree from the server's tarball route. A transient failure (5xx, reset, a stream cut off) starts the download again in a
+ * fresh directory, until shortly before the preparation cap; `signal` ends it.
+ * @param {string} server @param {string} secret @param {{ repo: string, sha: string }} m @param {AbortSignal} [signal]
+ */
+async function tarballTree(server, secret, m, signal) {
   if (!NAME.test(m.repo) || !SHA.test(m.sha)) throw new Error(`bad tarball mount ${m.repo}@${m.sha}`);
   const tree = join(cacheDir(), "trees", "tarball", m.repo, m.sha);
-  return cachedTree(tree, async (tmp) => {
-    const res = await fetch(`${server}${ROUTES.tarball}?repo=${encodeURIComponent(m.repo)}&sha=${m.sha}`, { headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(10 * 60_000) });
+  const route = `${ROUTES.tarball}?repo=${encodeURIComponent(m.repo)}&sha=${m.sha}`;
+  return withRetry(() => cachedTree(tree, async (tmp) => {
+    const timeout = AbortSignal.timeout(10 * 60_000);
+    const res = await fetch(`${server}${route}`, { headers: { Authorization: `Bearer ${secret}` }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
     if (res.status === 410) throw new Gone("the lease is gone");
-    if (!res.ok || !res.body) throw new Error(`tarball ${m.repo}: HTTP ${res.status}`);
+    if (!res.ok || !res.body) throw new HttpError(`tarball ${m.repo}`, res.status, res.ok ? "no body" : await res.text().catch(() => ""), retryAfterMs(res.headers.get("retry-after")));
     const body = /** @type {any} */ (res.body);
     await untar(tmp, (stdin) => pipeline(Readable.fromWeb(body), stdin));
-  });
+  }), { deadline: Date.now() + PREPARE_MAX_S * 1000 - RETRY_MARGIN_MS, ...(signal && { signal }) });
 }
 
 /** Inline files into a fresh directory of the task. @param {string} dir @param {{ name: string, base64: string }[]} files */
@@ -2206,11 +2317,11 @@ function filesTree(dir, files) {
   return dir;
 }
 
-/** @param {string} server @param {string} secret @param {TaskBundle} b @param {string} taskDir */
-async function prepareMounts(server, secret, b, taskDir) {
+/** @param {string} server @param {string} secret @param {TaskBundle} b @param {string} taskDir @param {AbortSignal} [signal] */
+async function prepareMounts(server, secret, b, taskDir, signal) {
   return Promise.all(b.mounts.map(async (m, i) => {
     checkMountPath(m.path);
-    const host = m.kind === "git" ? await gitTree(m) : m.kind === "tarball" ? await tarballTree(server, secret, m) : m.kind === "files" ? filesTree(join(taskDir, "files", String(i)), m.files) : null;
+    const host = m.kind === "git" ? await gitTree(m) : m.kind === "tarball" ? await tarballTree(server, secret, m, signal) : m.kind === "files" ? filesTree(join(taskDir, "files", String(i)), m.files) : null;
     if (!host) throw new Error(`unknown mount kind ${/** @type {any} */ (m).kind}`);
     return { host, path: m.path };
   }));
@@ -2263,10 +2374,11 @@ async function claimOnce(cfg, slot) {
   /** @type {ClaimReply} */
   let reply;
   try {
-    reply = await api(server, ROUTES.claim, agentToken, claim);
+    // Retries resend the same request id, so a claim whose reply was lost gets its lease back instead of leaving it to expire.
+    reply = await withRetry(() => api(server, ROUTES.claim, agentToken, claim), { tries: 5, deadline: Date.now() + Math.min(60, CLAIM_ID_TTL_S / 2) * 1000 });
   } catch (e) {
     // Another protocol version, or a helper older than the server accepts: nothing runs until the helper is updated.
-    if (e instanceof Error && e.message.startsWith(`${ROUTES.claim}: HTTP 409`)) {
+    if (e instanceof HttpError && e.status === 409) {
       updateHelperStatus((s) => ({ ...s, refused: { version: HELPER_VERSION, at: Date.now(), reason: msg(e).slice(0, 300) } }));
       await checkReady(cfg);
     }
@@ -2283,7 +2395,7 @@ async function claimOnce(cfg, slot) {
       if (again.readiness !== "ready") {
         /** @type {Release} */
         const body = { reason: `the user's usage reserve rose: ${heldLine(again)}`.slice(0, 300) };
-        try { await api(server, ROUTES.release, reply.lease.secret, body); } catch { /* the lease expires on its own */ }
+        try { await withRetry(() => api(server, ROUTES.release, reply.lease.secret, body), { deadline: rec.claimedAt + LEASE_GRACE_MS - HEARTBEAT_S * 1000 }); } catch { /* the lease expires on its own */ }
         dropLease(reply.lease.id);
         return { held: again };
       }
@@ -2302,8 +2414,11 @@ async function claimOnce(cfg, slot) {
 }
 
 /**
- * Runs one claimed lease to its end: bundle, mounts, sandboxed harness with heartbeats, submit.
+ * Runs one claimed lease to its end: heartbeats from the start, bundle, mounts, sandboxed harness, submit.
  * Returns the status line; never throws. `slotHeld`: the caller holds the lease's slot (macOS).
+ * Anything that goes wrong before the harness spawns gives the call back (no attempt used); only a run's failure is
+ * reported as `ok: false`. Every report is retried until shortly before the lease's deadline, and recorded as submitted,
+ * failed or released only once the server accepted it.
  * @param {Config} cfg @param {number} id @param {{ signal?: AbortSignal, slotHeld?: boolean }} [opt]
  * @returns {Promise<RunStatus>}
  */
@@ -2315,17 +2430,25 @@ async function runLease(cfg, id, opt = {}) {
   secretsInUse.add(lease.secret);
   writeStatus(id, { state: "running", line: `running: ${lease.title}`, pid: process.pid, at: Date.now() });
   const started = Date.now();
-  /** @param {Submit} s */
-  const submit = async (s) => {
-    // A network failure is retried; an HTTP error or a 410 is final.
-    for (let i = 0; ; i++) {
-      try { return /** @type {SubmitReply} */ (await api(lease.server, ROUTES.submit, lease.secret, s)); }
-      catch (e) { if (e instanceof Gone || i >= 2 || (e instanceof Error && e.message.startsWith(ROUTES.submit))) throw e; await sleep(5000); }
-    }
-  };
+  const beat = heartbeats(lease);
+  const prepareEnd = lease.claimedAt + PREPARE_MAX_S * 1000;
+  // The preparation stops early enough that its release still has the full retry margin before the server's cap.
+  const prepTimeout = AbortSignal.timeout(Math.max(1, prepareEnd - 2 * RETRY_MARGIN_MS - Date.now()));
+  // Ends the preparation's requests: Ctrl-C, the lease gone, or the preparation cap.
+  const prep = AbortSignal.any([beat.gone, prepTimeout, ...(opt.signal ? [opt.signal] : [])]);
+  let timeoutSeconds = 0;
+  // The server's deadline: the preparation cap, then the call's time limit from the first `running` heartbeat.
+  const deadline = () => (beat.runStart === null ? prepareEnd : beat.runStart + timeoutSeconds * 1000 + LEASE_GRACE_MS) - RETRY_MARGIN_MS;
+  /** @param {string} route @param {unknown} [body] @param {AbortSignal} [signal] */
+  const call = (route, body, signal) => withRetry(() => api(lease.server, route, lease.secret, body, signal && { signal }), { deadline: deadline(), ...(signal && { signal }) });
+  const lost = () => end("lost", `lost: ${lease.title}: the lease was withdrawn`);
+  /** @param {string} what @param {unknown} e */
+  const undelivered = (what, e) => (e instanceof Gone ? lost() : end("lost", `lost: ${lease.title}: ${what} did not reach the server: ${msg(e)}`));
   /** @param {string} error @param {Usage} [usage] */
   const fail = async (error, usage) => {
-    try { await submit({ ok: false, error: redact(error).slice(0, 2000), ...(usage && { usage }), durationMs: Date.now() - started }); } catch (e) { if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`); }
+    /** @type {Submit} */
+    const body = { ok: false, error: redact(error).slice(0, 2000), ...(usage && { usage }), durationMs: Date.now() - started };
+    try { await call(ROUTES.submit, body); } catch (e) { return undelivered(`the failure (${error})`, e); }
     return end("failed", `failed: ${lease.title}: ${error}`);
   };
   /**
@@ -2335,61 +2458,65 @@ async function runLease(cfg, id, opt = {}) {
   const giveBack = async (reason, stop = false) => {
     /** @type {Release} */
     const body = { reason: redact(reason).slice(0, 300) };
-    try { await api(lease.server, ROUTES.release, lease.secret, body); } catch (e) { if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`); }
+    try { await call(ROUTES.release, body); } catch (e) { return undelivered(`the release (${reason})`, e); }
     return end("released", `released: ${lease.title}: ${reason}`, stop);
   };
-  if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`, true);
-  const problem = platformProblem();
-  if (problem) return giveBack(problem, true);
+  /** Why the preparation stopped, when one of its signals did. */
+  const prepStopped = () => (opt.signal?.aborted ? "stopped on the helper" : prepTimeout.aborted ? `preparing took longer than ${(PREPARE_MAX_S * 1000 - 2 * RETRY_MARGIN_MS) / 60_000} min` : null);
   /** @type {string[]} */
   const tokens = [];
   let releaseSlot = () => {};
-  if (process.platform === "darwin") {
-    if (lease.root === undefined || lease.slot === undefined) return giveBack("the lease was claimed without a slot");
-    if (!opt.slotHeld) {
-      const r = takeSlot(slotBase(), lease.slot);
-      if (!r) return giveBack(`slot ${lease.slot} is busy with another run`);
-      releaseSlot = r;
-    }
-  }
   let taskDir = "", unlock = () => {};
   try {
+    if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return await giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`, true);
+    const problem = platformProblem();
+    if (problem) return await giveBack(problem, true);
+    if (process.platform === "darwin") {
+      if (lease.root === undefined || lease.slot === undefined) return await giveBack("the lease was claimed without a slot");
+      if (!opt.slotHeld) {
+        const r = takeSlot(slotBase(), lease.slot);
+        if (!r) return await giveBack(`slot ${lease.slot} is busy with another run`);
+        releaseSlot = r;
+      }
+    }
     try { prune(); } catch { /* best effort */ }
     const adapter = adapterOf(cfg);
     const d = adapter.detect(cfg);
     const token = adapter.token(cfg) ?? "";
-    if (!d.bin || !token) return giveBack(`${adapter.id} binary or token missing on the helper`, true);
+    if (!d.bin || !token) return await giveBack(`${adapter.id} binary or token missing on the helper`, true);
     tokens.push(token); secretsInUse.add(token);
     if (adapter.exclusive) {
       const release = takeHarnessLock(adapter.id);
-      if (!release) return giveBack(`another ${adapter.id} call is running on this helper, and they share one login`);
+      if (!release) return await giveBack(`another ${adapter.id} call is running on this helper, and they share one login`);
       unlock = release;
     }
     const old = d.version && adapter.unaudited?.(d.version);
-    if (old) return giveBack(old, true);
+    if (old) return await giveBack(old, true);
     const unsafe = adapter.preflight?.(d.bin, token);
-    if (unsafe) return giveBack(unsafe, true);
+    if (unsafe) return await giveBack(unsafe, true);
     /** @type {TaskBundle} */
-    const b = await api(lease.server, ROUTES.bundle, lease.secret);
-    if (typeof b?.callId !== "number" || typeof b.stdin !== "string" || !Array.isArray(b.mounts) || !Array.isArray(b.mcpServers)) return fail("unreadable bundle");
+    const b = await call(ROUTES.bundle, undefined, prep);
+    // A bundle of the wrong shape is the server's fault, the same for every helper: the call fails rather than circling.
+    if (typeof b?.callId !== "number" || typeof b.stdin !== "string" || !Array.isArray(b.mounts) || !Array.isArray(b.mcpServers)) return await fail("unreadable bundle");
+    timeoutSeconds = b.timeoutSeconds;
     const model = { ...adapter.defaultTiers, ...cfg.tiers }[b.tier];
-    if (!model) return giveBack(`no ${adapter.id} model is set for the ${b.tier} tier ("tiers" in the config)`);
+    if (!model) return await giveBack(`no ${adapter.id} model is set for the ${b.tier} tier ("tiers" in the config)`);
     let runToken = token;
     if (adapter.tokenFor) {
       const t = adapter.tokenFor(cfg, b.timeoutSeconds);
-      if ("problem" in t) return giveBack(t.problem);
+      if ("problem" in t) return await giveBack(t.problem);
       runToken = t.token;
     }
     tokens.push(runToken); secretsInUse.add(runToken);
     privateDir(join(cacheDir(), "tasks"));
     taskDir = mkdtempSync(join(cacheDir(), "tasks", `${b.callId}-`));
-    const out = await execute(b, { adapter, bin: d.bin, token: runToken, model, taskDir, lease, root: lease.root ?? "", ...(lease.slot !== undefined && { slot: lease.slot }), ...(opt.signal && { signal: opt.signal }) });
-    if ("giveBack" in out) return giveBack(out.giveBack);
-    if ("fail" in out) return fail(out.fail, out.usage);
+    const out = await execute(b, { adapter, bin: d.bin, token: runToken, model, taskDir, lease, root: lease.root ?? "", ...(lease.slot !== undefined && { slot: lease.slot }), ...(opt.signal && { signal: opt.signal }), prep, beat });
+    if ("giveBack" in out) return await giveBack(prepStopped() ?? out.giveBack);
+    if ("fail" in out) return await fail(out.fail, out.usage);
     const { r, reply, tools } = out;
-    if (r.gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
-    if (r.timedOut) return fail(`timed out after ${b.timeoutSeconds} s`, reply.usage);
-    if (r.stopped) return giveBack("stopped on the helper");
+    if (r.gone) return lost();
+    if (r.timedOut) return await fail(`timed out after ${b.timeoutSeconds} s`, reply.usage);
+    if (r.stopped) return await giveBack("stopped on the helper");
     if (!reply.ok) {
       // The provider's usage limit: the call goes back without using an attempt, and the helper parks until the reset.
       const refusal = parseRefusal(`${reply.error ?? ""}\n${r.stderr}`);
@@ -2397,18 +2524,25 @@ async function runLease(cfg, id, opt = {}) {
         const c = readControl();
         writeControl({ ...c, park: { until: refusal.until, at: Date.now(), reason: `the provider refused a run: ${refusal.line}` } });
         try { await checkReady(cfg); } catch { /* reported with the next check */ }
-        return giveBack(`the provider refused the run for its usage limit: ${refusal.line}`);
+        return await giveBack(`the provider refused the run for its usage limit: ${refusal.line}`);
       }
-      return fail(`${reply.error ?? "no result"} (exit ${r.code}) ${r.stderr.trim().slice(-300)}`.trim(), reply.usage);
+      return await fail(`${reply.error ?? "no result"} (exit ${r.code}) ${r.stderr.trim().slice(-300)}`.trim(), reply.usage);
     }
     const usage = reply.usage ?? { inputTokens: 0, outputTokens: 0 };
-    const s = await submit({ ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), ...(tools.length > 0 && { tools }), durationMs: Date.now() - started });
+    /** @type {Submit} */
+    const body = { ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), ...(tools.length > 0 && { tools }), durationMs: Date.now() - started };
+    /** @type {SubmitReply} */
+    let s;
+    // A finished reply is never turned into a failure: the same body is retried until the server takes it or the lease ends.
+    try { s = await call(ROUTES.submit, body); } catch (e) { return undelivered("the reply", e); }
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
     return end("submitted", `submitted: ${lease.title}, ${kTokens(tokensOf(usage))} tokens`);
   } catch (e) {
-    if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
-    return fail(msg(e));
+    if (e instanceof Gone || beat.gone.aborted) return lost();
+    if (beat.runStart === null) return await giveBack(prepStopped() ?? `preparing failed: ${msg(e)}`);
+    return await fail(msg(e));
   } finally {
+    beat.stop();
     unlock();
     releaseSlot();
     if (taskDir) rmSync(taskDir, { recursive: true, force: true });
@@ -2419,17 +2553,18 @@ async function runLease(cfg, id, opt = {}) {
 
 /**
  * Runs one bundle in the sandbox: its files (in the slot on macOS), the session store, the file tools and the harness.
- * Private trees and MCP servers need the lease; `try` runs without one.
+ * Private trees and MCP servers need the lease; `try` runs without one. With a lease, `prep` ends the preparation's requests
+ * and `beat` carries its heartbeats; nothing spawns once either ended or `signal` aborted.
  * @param {TaskBundle} b
- * @param {{ adapter: Adapter, bin: string, token: string, model: string, taskDir: string, lease: LeaseRecord | null, root: string, slot?: number, signal?: AbortSignal }} x
+ * @param {{ adapter: Adapter, bin: string, token: string, model: string, taskDir: string, lease: LeaseRecord | null, root: string, slot?: number, signal?: AbortSignal, prep?: AbortSignal, beat?: ReturnType<typeof heartbeats> }} x
  * @returns {Promise<{ giveBack: string } | { fail: string, usage?: Usage } | { r: Awaited<ReturnType<typeof harness>>, reply: Reply, tools: SubmitTool[] }>}
  */
 async function execute(b, x) {
   const { adapter } = x;
   const server = x.lease?.server ?? "", secret = x.lease?.secret ?? "";
   let mounts;
-  try { mounts = await prepareMounts(server, secret, b, x.taskDir); } catch (e) {
-    if (e instanceof Gone) throw e;
+  try { mounts = await prepareMounts(server, secret, b, x.taskDir, x.prep); } catch (e) {
+    if (e instanceof Gone || x.prep?.aborted) throw e;
     return { giveBack: `setting up the files failed: ${msg(e)}` };
   }
   for (const n of b.mcpServers) if (!NAME.test(n)) return { fail: `bad MCP server name ${n}` };
@@ -2465,8 +2600,12 @@ async function execute(b, x) {
   let files = /** @type {{ url: string, token: string, close: () => void } | null} */ (null);
   try {
     if (adapter.fileTools) files = await serveFileTools(mounts);
+    if (x.beat?.gone.aborted || x.prep?.aborted || x.signal?.aborted) {
+      if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
+      throw x.beat?.gone.aborted ? new Gone("the lease is gone") : new Error("stopped before the run");
+    }
     const c = adapter.command({ bundle: b, model: x.model, bin: x.bin, token: x.token, mounts, taskDir: x.taskDir, mcpFile, sessionDir, resumeId, lease: { server, secret }, ...(files && { files: { url: files.url, token: files.token } }), ...(mac && { mac }) });
-    const r = await harness(c, b, x.lease, x.signal, adapter, x.root);
+    const r = await harness(c, b, x.beat ?? null, x.signal, adapter, x.root);
     const reply = adapter.parse(r.stdout, x.model);
     if (r.gone) {
       if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
@@ -2490,14 +2629,16 @@ async function execute(b, x) {
 }
 
 /**
- * Runs the sandboxed harness: stdin in, heartbeats every 30 s with the last progress line (with a lease), stopped at the
- * bundle's timeout, on a 410 heartbeat or when `signal` aborts. Progress lines name paths without the slot's root.
- * @param {{ cmd: string, args: string[], env: Record<string, string>, cwd?: string }} c @param {TaskBundle} b @param {LeaseRecord | null} lease @param {AbortSignal | undefined} signal @param {Adapter} adapter @param {string} root
+ * Runs the sandboxed harness: stdin in, stopped at the bundle's timeout, when the lease is gone or when `signal` aborts.
+ * With a lease, the spawn moves its heartbeats to `running` (the time limit counts from there, here and on the server)
+ * and they carry the last progress line. Progress lines name paths without the slot's root.
+ * @param {{ cmd: string, args: string[], env: Record<string, string>, cwd?: string }} c @param {TaskBundle} b @param {ReturnType<typeof heartbeats> | null} beat @param {AbortSignal | undefined} signal @param {Adapter} adapter @param {string} root
  */
-function harness(c, b, lease, signal, adapter, root) {
+function harness(c, b, beat, signal, adapter, root) {
   return new Promise((resolve) => {
     const p = spawn(c.cmd, c.args, { env: c.env, stdio: ["pipe", "pipe", "pipe"], ...(c.cwd && { cwd: c.cwd }) });
-    let stdout = "", stderr = "", partial = "", progress = "", gone = false, timedOut = false, stopped = false, settled = false;
+    beat?.running();
+    let stdout = "", stderr = "", partial = "", gone = false, timedOut = false, stopped = false, settled = false;
     /** @type {string[]} arrival time of each complete stdout line */
     const stamps = [];
     /** @type {string | undefined} */
@@ -2511,7 +2652,7 @@ function harness(c, b, lease, signal, adapter, root) {
       for (const l of lines) {
         stamps.push(at);
         const x = adapter.progress(root ? l.split(root).join("") : l);
-        if (x) progress = x;
+        if (x) beat?.progress(x);
         const bad = !unexpected && adapter.guard?.(l, b.mcpServers);
         if (bad) { unexpected = bad; kill(); }
       }
@@ -2519,19 +2660,16 @@ function harness(c, b, lease, signal, adapter, root) {
     p.stderr.on("data", (d) => { if (stderr.length < 16_000) stderr += d; });
     p.stdin.on("error", () => {});
     p.stdin.end(b.stdin);
-    const beat = lease ? setInterval(async () => {
-      try { await api(lease.server, ROUTES.heartbeat, lease.secret, /** @type {Heartbeat} */ (progress ? { progress } : {})); }
-      catch (e) { if (e instanceof Gone) { gone = true; kill(); } }
-      await keepStatusFresh();
-    }, HEARTBEAT_MS) : undefined;
     const timer = setTimeout(() => { timedOut = true; kill(); }, b.timeoutSeconds * 1000);
     const onAbort = () => { stopped = true; kill(); };
+    const onGone = () => { gone = true; kill(); };
     signal?.addEventListener("abort", onAbort);
+    beat?.gone.addEventListener("abort", onGone);
     /** @param {number | null} code */
     const done = (code) => {
       if (settled) return;
       settled = true;
-      clearInterval(beat); clearTimeout(timer); signal?.removeEventListener("abort", onAbort);
+      clearTimeout(timer); signal?.removeEventListener("abort", onAbort); beat?.gone.removeEventListener("abort", onGone);
       resolve({ code, stdout, stamps, stderr: redact(stderr), gone, timedOut, stopped, unexpected });
     };
     p.on("error", (e) => { stderr += String(e); done(-1); });
@@ -2978,11 +3116,16 @@ async function cmdMcp(argv) {
     let m;
     try { m = JSON.parse(line); } catch { return; }
     try {
-      const res = await fetch(url, { method: "POST", body: line, headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(session && { "Mcp-Session-Id": session }), ...(version && { "MCP-Protocol-Version": version }) } });
+      // Retried until the server answers with a status that is not transient; a reply's body, once read, is not.
+      const res = await withRetry(async () => {
+        const res = await fetch(url, { method: "POST", body: line, headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(session && { "Mcp-Session-Id": session }), ...(version && { "MCP-Protocol-Version": version }) } });
+        if (res.status === 410) throw new Gone("the lease is gone");
+        if (!res.ok && res.status !== 202) throw new HttpError(`${ROUTES.mcp}/${name}`, res.status, await res.text().catch(() => ""), retryAfterMs(res.headers.get("retry-after")));
+        return res;
+      }, { deadline: Date.now() + TOOL_RETRY_MS });
       const sid = res.headers.get("mcp-session-id");
       if (sid) session = sid;
       if (res.status === 202) return;
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       /** @param {any} x */
       const emit = (x) => { if (x?.result?.protocolVersion && m?.method === "initialize") version = x.result.protocolVersion; out(x); };
       if ((res.headers.get("content-type") ?? "").includes("text/event-stream") && res.body) {
@@ -3037,12 +3180,9 @@ async function cmdTool(argv) {
   let args;
   try { args = JSON.parse(json ?? "{}"); } catch { throw new Error("the tool arguments must be JSON"); }
   const { secret, server } = leaseAccess(id);
-  const res = await fetch(`${server}${ROUTES.tool}/${name}/${tool}`, { method: "POST", headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" }, body: JSON.stringify(args) });
-  if (res.status === 410) throw new Gone("the lease is gone");
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${redact(text).slice(0, 300)}`);
+  // A `check` streams whitespace while it runs; a reply cut off or a 5xx runs the call again.
   /** @type {{ content?: { text?: string }[], isError?: boolean }} */
-  const r = JSON.parse(text);
+  const r = await withRetry(() => api(server, `${ROUTES.tool}/${name}/${tool}`, secret, args, { timeoutMs: 60 * 60_000 }), { deadline: Date.now() + TOOL_RETRY_MS });
   console.log((r.content ?? []).map((c) => c.text ?? "").join("\n"));
   return r.isError ? 1 : 0;
 }
