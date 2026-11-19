@@ -10,6 +10,7 @@
 //
 //   autocraft-task login <server-url>      agent token on stdin
 //   autocraft-task harness claude          a `claude setup-token` token on stdin
+//   autocraft-task harness claude --config-dir [<dir>]  the login of a Claude config directory, read at each call
 //   autocraft-task harness codex [--device-auth]  logs Codex in to the helper's own CODEX_HOME
 //   autocraft-task claim                   claims one call; prints its lease id
 //   autocraft-task run [--detach] [<lease>]  runs a claimed lease (claims one when none is given)
@@ -24,7 +25,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -134,6 +135,7 @@ export const ROUTES = {
  * @property {(args: string[], sessionId: string) => string[]} resume  harness arguments for a follow-up turn
  * @property {(line: string) => string | null} progress  a progress line from one output line, or null
  * @property {(cfg: Config) => string | undefined} token  the stored harness credential
+ * @property {(cfg: Config, timeoutSeconds: number) => { token: string } | { problem: string }} [tokenFor]  the credential for a call of this timeout, or why the call can't run now (released, not failed)
  * @property {Partial<Record<Tier, string>>} defaultTiers  empty when the user must name every tier's model
  * @property {(bin: string) => { cmd: string, args: string[], env: Record<string, string> }} versionInSandbox  the harness's version command inside the sandbox (doctor)
  * @property {(bin: string, token: string) => string | null} [preflight]  prepares the harness's files before every call; why it must not run, or null
@@ -165,6 +167,21 @@ export function removeInstructionFiles(/** @type {string} */ root) {
   };
   walk("");
   return removed.sort();
+}
+
+export const CLAUDE_LOGIN_EXPIRES = "Claude login expires soon; run claude once to refresh it";
+
+/**
+ * The access token of a Claude login (the `claudeAiOauth` entry of its `.credentials.json`), only when it is still
+ * valid 10 minutes after the call's timeout: the sandboxed claude gets it as CLAUDE_CODE_OAUTH_TOKEN and can't refresh it.
+ * @param {any} creds @param {number} timeoutSeconds @param {number} [now]
+ * @returns {{ token: string } | { problem: string }}
+ */
+export function claudeLoginToken(creds, timeoutSeconds, now = Date.now()) {
+  const o = creds?.claudeAiOauth;
+  if (typeof o?.accessToken !== "string" || !o.accessToken || typeof o.expiresAt !== "number") return { problem: "no Claude login in the configured directory; run claude and log in" };
+  if (o.expiresAt <= now + (timeoutSeconds + 600) * 1000) return { problem: CLAUDE_LOGIN_EXPIRES };
+  return { token: o.accessToken };
 }
 
 /** The arguments with the model replaced (`--model x` or `--model=x`), or added after `-p` when absent. */
@@ -383,7 +400,11 @@ const claudeResume = (args, sessionId) => [...withoutResume(args), "--resume", s
 /** @type {Adapter} */
 const claudeAdapter = {
   id: "claude",
-  token: (cfg) => cfg.claudeToken,
+  token: (cfg) => (cfg.claudeConfigDir ? readClaudeCredentials(cfg.claudeConfigDir)?.claudeAiOauth?.accessToken : cfg.claudeToken),
+  tokenFor(cfg, timeoutSeconds) {
+    if (!cfg.claudeConfigDir) return cfg.claudeToken ? { token: cfg.claudeToken } : { problem: "no Claude token stored" };
+    return claudeLoginToken(readClaudeCredentials(cfg.claudeConfigDir), timeoutSeconds);
+  },
   defaultTiers: { top: "opus", mid: "sonnet", small: "haiku" },
   detect(cfg) {
     const bin = resolveClaudeBin(cfg);
@@ -818,7 +839,8 @@ const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter };
  * @property {string} [server]
  * @property {string} [agentToken]
  * @property {HarnessId} [harness]
- * @property {string} [claudeToken]
+ * @property {string} [claudeToken]  a `claude setup-token` token
+ * @property {string} [claudeConfigDir]  a Claude config directory whose login the helper uses instead (read only, never mounted)
  * @property {string} [claudeBin]
  * @property {string} [codexBin]
  * @property {Partial<Record<Tier, string>>} [tiers]  model per tier; defaults are the adapter's
@@ -852,6 +874,9 @@ function writePrivate(file, data) {
 function readJson(file) {
   try { return JSON.parse(readFileSync(file, "utf8")); } catch { return null; }
 }
+
+/** A Claude config directory's `.credentials.json`, read only. @param {string} dir @returns {any} */
+const readClaudeCredentials = (dir) => readJson(join(dir, ".credentials.json"));
 
 /** @returns {Config} */
 const loadConfig = () => readJson(join(configDir(), "config.json")) ?? {};
@@ -1168,6 +1193,8 @@ async function runLease(cfg, id, opt = {}) {
   if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`, true);
   const problem = platformProblem();
   if (problem) return giveBack(problem, true);
+  /** @type {string[]} */
+  const tokens = [];
   let taskDir = "", unlock = () => {}, files = /** @type {{ url: string, token: string, close: () => void } | null} */ (null);
   try {
     try { prune(); } catch { /* best effort */ }
@@ -1175,6 +1202,7 @@ async function runLease(cfg, id, opt = {}) {
     const d = adapter.detect(cfg);
     const token = adapter.token(cfg);
     if (!d.bin || !token) return giveBack(`${adapter.id} binary or token missing on the helper`, true);
+    tokens.push(token); secretsInUse.add(token);
     if (adapter.exclusive) {
       const release = takeHarnessLock(adapter.id);
       if (!release) return giveBack(`another ${adapter.id} call is running on this helper, and they share one login`);
@@ -1187,6 +1215,13 @@ async function runLease(cfg, id, opt = {}) {
     if (typeof b?.callId !== "number" || typeof b.stdin !== "string" || !Array.isArray(b.mounts) || !Array.isArray(b.mcpServers)) return fail("unreadable bundle");
     const model = { ...adapter.defaultTiers, ...cfg.tiers }[b.tier];
     if (!model) return giveBack(`no ${adapter.id} model is set for the ${b.tier} tier ("tiers" in the config)`);
+    let runToken = token;
+    if (adapter.tokenFor) {
+      const t = adapter.tokenFor(cfg, b.timeoutSeconds);
+      if ("problem" in t) return giveBack(t.problem);
+      runToken = t.token;
+    }
+    tokens.push(runToken); secretsInUse.add(runToken);
     privateDir(join(cacheDir(), "tasks"));
     taskDir = mkdtempSync(join(cacheDir(), "tasks", `${b.callId}-`));
     let mounts;
@@ -1211,7 +1246,7 @@ async function runLease(cfg, id, opt = {}) {
       sessionDir = mkdtempSync(join(sessionsDir(), "store-"));
     }
     if (adapter.fileTools) files = await serveFileTools(mounts);
-    const c = adapter.command({ bundle: b, model, bin: d.bin, token, mounts, taskDir, mcpFile, sessionDir, resumeId, lease: { server: lease.server, secret: lease.secret }, ...(files && { files: { url: files.url, token: files.token } }) });
+    const c = adapter.command({ bundle: b, model, bin: d.bin, token: runToken, mounts, taskDir, mcpFile, sessionDir, resumeId, lease: { server: lease.server, secret: lease.secret }, ...(files && { files: { url: files.url, token: files.token } }) });
     const r = await harness(c, b, lease, opt.signal, adapter);
     if (r.gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
     const reply = adapter.parse(r.stdout, model);
@@ -1232,6 +1267,7 @@ async function runLease(cfg, id, opt = {}) {
     unlock();
     if (taskDir) rmSync(taskDir, { recursive: true, force: true });
     secretsInUse.delete(lease.secret);
+    for (const t of tokens) secretsInUse.delete(t);
   }
 }
 
@@ -1325,10 +1361,23 @@ async function cmdLogin(argv) {
 async function cmdHarness(argv) {
   const id = argv[0];
   if (id === "codex") return codexLogin(argv.slice(1));
-  if (id !== "claude") throw new Error("usage: autocraft-task harness claude  (a `claude setup-token` token on stdin)\n       autocraft-task harness codex [--device-auth]");
+  if (id !== "claude") throw new Error("usage: autocraft-task harness claude  (a `claude setup-token` token on stdin)\n       autocraft-task harness claude --config-dir [<dir>]\n       autocraft-task harness codex [--device-auth]");
+  const at = argv.indexOf("--config-dir");
+  if (at >= 0) {
+    const given = argv[at + 1];
+    const dir = resolve(given && !given.startsWith("-") ? given : process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"));
+    const o = readClaudeCredentials(dir)?.claudeAiOauth;
+    if (typeof o?.accessToken !== "string" || typeof o.expiresAt !== "number") throw new Error(`no Claude login in ${dir}/.credentials.json: run claude with CLAUDE_CONFIG_DIR=${dir} and log in`);
+    const { claudeToken: _, ...rest } = loadConfig();
+    saveConfig({ ...rest, harness: "claude", claudeConfigDir: dir });
+    const d = claudeAdapter.detect(loadConfig());
+    console.log(`using the Claude login in ${dir} (its access token is valid for ${Math.max(0, Math.round((o.expiresAt - Date.now()) / 60_000))} more minutes; claude refreshes it whenever it runs)${d.bin ? `; claude ${d.version ?? "(version unknown)"} at ${d.bin}` : "; claude was not found on PATH"}`);
+    return;
+  }
   const token = await readSecret("Claude token (from `claude setup-token`): ");
   if (!token || /\s/.test(token)) throw new Error("no token on stdin");
-  saveConfig({ ...loadConfig(), harness: "claude", claudeToken: token });
+  const { claudeConfigDir: _, ...rest } = loadConfig();
+  saveConfig({ ...rest, harness: "claude", claudeToken: token });
   const d = claudeAdapter.detect(loadConfig());
   console.log(d.bin ? `stored the Claude token; claude ${d.version ?? "(version unknown)"} at ${d.bin}` : "stored the Claude token; claude was not found on PATH");
 }
@@ -1495,6 +1544,10 @@ async function cmdDoctor() {
     check(r.status === 0, r.status === 0 ? `${adapter.id} runs inside the sandbox` : `${adapter.id} does not run inside the sandbox: ${redact((r.stderr || "").trim()).slice(0, 200)}`);
   }
   check(d.loggedIn, d.loggedIn ? `${adapter.id} login stored` : `no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
+  if (adapter.id === "claude" && cfg.claudeConfigDir && d.loggedIn) {
+    const t = claudeLoginToken(readClaudeCredentials(cfg.claudeConfigDir), 0);
+    check("token" in t, "token" in t ? `uses the Claude login in ${cfg.claudeConfigDir}` : t.problem);
+  }
   if (adapter.id === "codex" && d.bin && d.loggedIn) {
     const r = spawnSync(d.bin, ["login", "status"], { encoding: "utf8", timeout: 30_000, env: { PATH: process.env.PATH ?? "/usr/bin", HOME: homedir(), CODEX_HOME: codexHome() } });
     check(r.status === 0, r.status === 0 ? `codex: ${(r.stderr || r.stdout).trim().split("\n")[0]}` : "codex login status: not logged in; run `autocraft-task harness codex`");
@@ -1604,6 +1657,7 @@ const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls unde
 
   login <server-url>          store the agent token (read from stdin)
   harness claude              store a \`claude setup-token\` token (read from stdin)
+  harness claude --config-dir [<dir>]  use the login of a Claude config directory (default $CLAUDE_CONFIG_DIR or ~/.claude)
   harness codex [--device-auth]  log Codex in to the helper's own CODEX_HOME (not your ~/.codex)
   claim                       claim one call; prints its lease id
   run [--detach] [<lease>]    run a claimed lease, or claim and run one

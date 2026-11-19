@@ -67,6 +67,14 @@ test("instruction files and .claude directories are removed from a checkout at a
   }
 });
 
+test("a Claude login's token is used only while it outlives the call's timeout by 10 minutes", () => {
+  const now = 1_000_000_000_000;
+  const creds = (expiresAt: number) => ({ claudeAiOauth: { accessToken: "sk-ant-oat-x", refreshToken: "r", expiresAt } });
+  assert.deepEqual(helper.claudeLoginToken(creds(now + (900 + 601) * 1000), 900, now), { token: "sk-ant-oat-x" });
+  assert.deepEqual(helper.claudeLoginToken(creds(now + (900 + 600) * 1000), 900, now), { problem: helper.CLAUDE_LOGIN_EXPIRES });
+  assert.ok("problem" in helper.claudeLoginToken(null, 900, now));
+});
+
 test("the claim's model replaces the hinted one; the token stays out of the sandbox arguments", () => {
   const hinted = ["-p", "--model", "opus", "--effort", "high", "--output-format", "stream-json", "--add-dir", "/repo", "--add-dir", "/repos", "--mcp-config", "/mcp.json", "--resume", "old"];
   const args = helper.withoutResume(helper.withModel(hinted, "claude-opus-4-5"));
