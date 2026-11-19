@@ -345,7 +345,8 @@ export function setWorkspace(f: WorkspaceFn): () => void {
  * and headroom, runs with that account's CLAUDE_CONFIG_DIR, and is recorded from
  * start to end (src/agents).
  */
-export type Reply = { text: string; usage: Usage; turns?: number };
+/** `model`: the model id that ran, as the helper's harness reported it; set only for user-local calls (a server call ran the model it asked for). */
+export type Reply = { text: string; usage: Usage; turns?: number; model?: string };
 /** The arguments of a fix turn: one turn and no permission for any tool. The tool list itself stays, so the resumed session's prompt cache still matches. */
 export function noToolArgs(args: string[]): string[] {
   const out: string[] = [];
@@ -404,12 +405,12 @@ async function lintTail(reply: Reply, lint: Lint, canFix: boolean, fixTurn: (mes
   const total = add(reply.usage, fix.usage);
   // The fix reply holds only the corrected fields; they are put into the first reply, which stays as it was otherwise.
   const merged = mergeFixFields(reply.text, fix.text, problems);
-  if (merged === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
+  if (merged === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.model && { model: reply.model }), problems: await full(), fixTurn: true };
   let after: LintProblem[] | null = null;
   try { after = await lint(merged, "fix"); } catch (e) { if (isHalt(e)) throw e; console.log(`lint failed: ${(e as Error).message}`); }
   // A merged reply the lint cannot read is not used; the first reply stands.
-  if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: await full(), fixTurn: true };
-  return { text: merged, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
+  if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.model && { model: reply.model }), problems: await full(), fixTurn: true };
+  return { text: merged, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.model && { model: reply.model }), problems: after, fixTurn: true };
 }
 
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<LintedReply | null> {
@@ -695,7 +696,8 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
       }
       const turns = sandboxed && o.turns !== null ? o.turns : undefined;
       if (o.runId !== null) finishRun(db, o.runId, { state: "done", tokens, costUsd: o.costUsd, summary: (after !== null ? "fix turn answered" : turns === undefined ? replySummary(stored, items.length) : `answered in ${turns} turns`) + (after === null && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: stored });
-      return { reply: { text, usage, ...(turns !== undefined && { turns }), ...(o.sessionId && { sessionId: o.sessionId }) }, callId };
+      const ran = o.runId !== null ? (db.prepare("SELECT reported_model FROM main.agent_runs WHERE id = ?").get(o.runId) as { reported_model: string | null } | undefined)?.reported_model ?? null : null;
+      return { reply: { text, usage, ...(turns !== undefined && { turns }), ...(ran && { model: ran }), ...(o.sessionId && { sessionId: o.sessionId }) }, callId };
     };
 
     const first = await turn(resume ? resume.message : parts.stdin, parent);
@@ -708,7 +710,7 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
     if (checkTool && persist && sessionId && needsClippy(checkTool, reply.text)) {
       const again = await turn(CHECK_REMINDER, last);
       if (typeof again === "object") {
-        reply = { text: again.reply.text, usage: add(reply.usage, again.reply.usage), ...(reply.turns !== undefined && { turns: reply.turns }) };
+        reply = { text: again.reply.text, usage: add(reply.usage, again.reply.usage), ...(reply.turns !== undefined && { turns: reply.turns }), ...((again.reply.model ?? reply.model) && { model: again.reply.model ?? reply.model }) };
         sessionId = again.reply.sessionId ?? sessionId;
         last = again.callId;
       } else if (again === "unclaimed") console.log("check reminder skipped: the helper holding the session did not take it");

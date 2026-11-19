@@ -93,14 +93,14 @@ export type StepOpts<I, C = void> = Omit<AskOptions, "lint"> & {
 };
 
 export type StepResult<I, V> =
-  | { ok: true; value: V; values: V[]; rest?: I; usage: Usage; runId: string | undefined }
+  | { ok: true; value: V; values: V[]; rest?: I; usage: Usage; runId: string | undefined; /** The model id that gave the last answer, when the harness reported one (user-local calls); otherwise absent. */ model?: string }
   | { ok: false; error: string; usage: Usage; runId: string | undefined };
 
 const zero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sizeOf = <I,>(step: { size?: (i: I) => number }, x: I) => step.size ? step.size(x) : Array.isArray(x) ? x.length : 1;
 
-type Reply = { text: string; usage: Usage; problems?: LintProblem[]; fixTurn?: boolean } | { answers: unknown; usage: Usage; code: number | null; json: boolean };
+type Reply = { text: string; usage: Usage; problems?: LintProblem[]; fixTurn?: boolean; model?: string } | { answers: unknown; usage: Usage; code: number | null; json: boolean };
 
 /**
  * Runs one declared step on `input`: the call, the parse, up to `attempts` calls (a parse error or a failed call repeats
@@ -115,6 +115,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
   let usage = zero();
   let todo: I | undefined = input, rest: I | undefined = input;
   let fallback: V | null = null, error = "no answer", sawUsage = false;
+  let ran: string | undefined;
   for (let attempt = 0; attempt < attempts && todo !== undefined; attempt++) {
     if (opts.cancelled?.()) break;
     if (step.provider === "jev" && !jevAvailable(db)) { error = "jev unavailable"; break; }
@@ -136,6 +137,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
       continue;
     }
     values.push(parsed.value);
+    if ("text" in r && r.model) ran = r.model;
     todo = rest = parsed.rest;
   }
   if (!values.length && fallback !== null) { values.push(fallback); rest = undefined; }
@@ -151,7 +153,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
   }
   const runId = opts.usage?.run;
   if (!ok) return { ok: false, error, usage, runId };
-  return { ok: true, value: values[values.length - 1]!, values, ...(rest !== undefined && { rest }), usage, runId };
+  return { ok: true, value: values[values.length - 1]!, values, ...(rest !== undefined && { rest }), usage, runId, ...(ran && { model: ran }) };
 }
 
 async function call<I, V, C>(db: DatabaseSync, step: ClaudeStep<I, V, C> | JevStep<I, V, C>, input: I, opts: StepOpts<I, C>): Promise<Reply | null> {

@@ -263,6 +263,7 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
       return;
     }
     const got = r.value;
+    const by = r.model ?? model;
     // The PR moved on while the call ran: the next pass prepares it for the new head. A group's kept item may be closed; prepareIds decides whether the group is still open.
     const after = itemOf.get(repo, n) as ItemRow | undefined;
     if (!after || (!group && after.state !== "OPEN") || (isPr && (d.kind === "merge" || d.kind === "hold") && after.head_oid !== head)) {
@@ -277,9 +278,9 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     try {
       if (single) {
         const cards = got.ask ? [got.ask] : [];
-        insertTurn(db, repo, n, { kind: "opus", login: "opus", body: got.text, block: opusBlock(got.text, cards, got.choices), notes: got.notes, cards, ...(got.choices && { choices: { decision: d, parsed: got.choices, source: "prepare" as const, by: model } }) }, { diff: p.diff });
+        insertTurn(db, repo, n, { kind: "opus", login: "opus", body: got.text, block: opusBlock(got.text, cards, got.choices), notes: got.notes, cards, ...(got.choices && { choices: { decision: d, parsed: got.choices, source: "prepare" as const, by } }) }, { diff: p.diff });
       }
-      store.run(got.pick, got.pick ? got.reason || null : null, model, got.summary, model, at, at, head, readKey, d.id, d.question, d.options);
+      store.run(got.pick, got.pick ? got.reason || null : null, by, got.summary, by, at, at, head, readKey, d.id, d.question, d.options);
       res.stored++;
     } catch (e) {
       p.log(`decide: could not store the prepare of ${d.id}: ${(e as Error).message}`);

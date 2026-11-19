@@ -14,13 +14,22 @@ const MAX_CLAIM_LINES = 12;
 /** Room kept for the note line the posting wrapper adds. */
 const NOTE_RESERVE = 100;
 
-/** "claude-opus-5-5" -> "Opus 5.5", "claude-opus-4-1-20250805" -> "Opus 4.1", "opus" -> "Opus". Other ids are returned as they are. */
+/**
+ * The display name of a model id. A prompt's alias names the family ("opus" -> "Opus"); a full id names the product and
+ * version ("claude-opus-5-5" -> "Claude Opus 5.5", "claude-opus-4-1-20250805" -> "Claude Opus 4.1", "gpt-6.2-astra" ->
+ * "Codex Astra 6.2"). Other ids are returned as they are.
+ */
 export function modelLabel(id: string | null | undefined): string {
   const t = (id ?? "").trim();
-  const m = /^(?:claude-)?(opus|sonnet|haiku)(?:-(\d+)(?:-(\d{1,2}))?)?(?:-\d{8})?(?:\[[^\]]*\])?$/i.exec(t);
-  if (!m) return t || "unknown model";
-  const name = m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase();
-  return m[2] ? `${name} ${m[2]}${m[3] ? `.${m[3]}` : ""}` : name;
+  const m = /^(claude-)?(opus|sonnet|haiku)(?:-(\d+)(?:-(\d{1,2}))?)?(?:-\d{8})?(?:\[[^\]]*\])?$/i.exec(t);
+  if (m) {
+    const name = m[2]!.charAt(0).toUpperCase() + m[2]!.slice(1).toLowerCase();
+    const version = m[3] ? ` ${m[3]}${m[4] ? `.${m[4]}` : ""}` : "";
+    return `${m[1] ? "Claude " : ""}${name}${version}`;
+  }
+  const a = /^(?:gpt-(\d+(?:\.\d+)?)-)?astra$/i.exec(t);
+  if (a) return `Codex Astra${a[1] ? ` ${a[1]}` : ""}`;
+  return t || "unknown model";
 }
 
 const VERDICT_LINE: Record<string, string> = {

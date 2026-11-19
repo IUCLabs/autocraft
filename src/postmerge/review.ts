@@ -145,7 +145,7 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
     });
     const got: Finding[] | null = r.ok ? r.value : null;
     if (got) {
-      saveReview(db, c, { sha: input.merge_sha, runId, model: deps.model, findings: got, error: null });
+      saveReview(db, c, { sha: input.merge_sha, runId, model: (r.ok && r.model) || deps.model, findings: got, error: null });
       jobItem(db, repo, c.number, `post-merge review: ${got.length} findings`, log);
       s.reviewed++; s.findings += got.length; s.defects += got.filter((f) => f.severity === "defect").length;
     } else {

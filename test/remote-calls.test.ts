@@ -7,6 +7,7 @@ import { describe, test } from "node:test";
 import { allocation } from "../src/agents/call.ts";
 import { askClaude } from "../src/classify/run.ts";
 import { handleMcp, type McpEnv } from "../src/dash/mcp/index.ts";
+import { noteLine } from "../src/github/note.ts";
 import { createToken } from "../src/dash/mcp/tokens.ts";
 import { connect } from "../src/db.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
@@ -71,6 +72,10 @@ describe("user-local remote calls", () => {
     assert.deepEqual(done(lease.secret, "the review"), { accepted: true });
     const r = await ask;
     assert.equal(r?.text, "the review");
+    assert.equal(r?.model, "claude-opus-4-5", "the stage learns the model that ran");
+    assert.equal(noteLine({ by: "model", kind: "review", model: r?.model }), "_AI-generated review (Claude Opus 4.5). Not a maintainer decision._");
+    assert.equal(noteLine({ by: "model", kind: "review", model: "gpt-6.2-astra" }), "_AI-generated review (Codex Astra 6.2). Not a maintainer decision._");
+    assert.equal(noteLine({ by: "model", kind: "review", model: "opus" }), "_AI-generated review (Opus). Not a maintainer decision._", "a server call names the prompt's model as before");
     assert.equal((db.prepare("SELECT reply FROM remote_calls WHERE id = ?").get(lease.id) as { reply: string | null }).reply, null, "the raw reply is not kept");
     assert.equal(r?.usage.input, 90);
     assert.deepEqual(r?.usage.extra?.map((e) => [e.model, e.usage.input]), [["haiku", 10]]);

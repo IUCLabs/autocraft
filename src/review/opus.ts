@@ -318,7 +318,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       }
       // A maintainer's word the model was not shown leaves the take to a person.
       if (p.maintDropped && got.sure && (got.verdict === "take" || got.verdict === "take-fix")) got = { ...got, sure: false, risks: [...got.risks, "a maintainer's comment was left out of the review for length"] };
-      saveOpus(db, runId, c, { mode, base, baseRef, model: deps.model, review: got, snap, unapplied: outcomes });
+      saveOpus(db, runId, c, { mode, base, baseRef, model: (r.ok && r.model) || deps.model, review: got, snap, unapplied: outcomes });
       tally(c, got);
     } else {
       recordReviewFailure(db, c.repo, c.number, c.head_oid);
