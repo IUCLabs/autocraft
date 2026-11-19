@@ -8,6 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isHalt } from "./agents/call.ts";
 import { jevAvailable } from "./agents/jev.ts";
 import { runModelStep } from "./agents/step.ts";
+import { inferenceMode } from "./remote/mode.ts";
 import { REFERENCE_HAIKU, REFERENCE_JEV } from "./agents/steps.ts";
 import { QUOTE_WORDS, REFERENCE_JEV_ACCEPT, REFERENCE_JEV_REJECT, type LintProblem } from "./replylint.ts";
 import { REFERENCE_LEAK } from "./review/opus-parse.ts";
@@ -155,6 +156,11 @@ export type SemanticDeps = {
 
 /** The longest wait for a free account slot before the Haiku check gives up (counts as no): the fix turn must follow while the prompt cache is warm. */
 export const HAIKU_WAIT_MS = 30_000;
+/**
+ * The same in the user-local mode, where the check waits for a helper that may be busy with a long call: an unanswered
+ * check lets the text out unchecked, which costs more than a fix turn on a cold cache.
+ */
+export const HAIKU_WAIT_REMOTE_MS = 10 * 60_000;
 
 export function defaultSemanticDeps(db: DatabaseSync, ref: string): SemanticDeps {
   return {
@@ -163,7 +169,7 @@ export function defaultSemanticDeps(db: DatabaseSync, ref: string): SemanticDeps
       return r.ok ? r.value : null;
     },
     async haiku(text) {
-      const r = await runModelStep(db, REFERENCE_HAIKU, [{ ref, text }], { maxWaitMs: HAIKU_WAIT_MS });
+      const r = await runModelStep(db, REFERENCE_HAIKU, [{ ref, text }], { maxWaitMs: inferenceMode(db) === "user-local" ? HAIKU_WAIT_REMOTE_MS : HAIKU_WAIT_MS });
       return r.ok ? r.value : null;
     },
     jevUsable: () => jevAvailable(db),
