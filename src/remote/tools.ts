@@ -82,27 +82,40 @@ function object(raw: unknown, allowed: string[]): Record<string, unknown> {
 
 const passageText = (p: Passage): string => `passage ${p.id}: ${p.title} (${p.page})\n${p.text}`;
 
+/** Passages promised to calls still searching, per lease, so parallel calls cannot together exceed the allowance. */
+const reserved = new Map<string, number>();
+
 /** Serves reference passages within the lease's allowance and records each one. */
 async function reference(db: DatabaseSync, lease: TaskLease, name: string, raw: unknown): Promise<ToolResult> {
   const repo = lease.referenceRepo;
   if (!repo) return { text: "this call has no reference documentation", isError: true };
   const used = (db.prepare("SELECT COUNT(*) AS n FROM main.remote_passages WHERE call_id = ? AND run_id IS ?").get(lease.id, lease.runId) as { n: number }).n;
-  const left = PASSAGES_PER_LEASE - Number(used);
+  const key = `${lease.id}:${lease.runId}`;
+  const left = PASSAGES_PER_LEASE - Number(used) - (reserved.get(key) ?? 0);
   if (left <= 0) return { text: `refused: the ${PASSAGES_PER_LEASE} reference passages of this call are used up; answer with what you know`, isError: true };
-  let found: Passage[];
-  if (name === "reference_search") {
-    const a = object(raw, ["query", "limit"]);
-    if (typeof a.query !== "string" || !a.query.trim() || a.query.length > 500) throw new BadArgs('"query" must be a string of at most 500 characters');
-    found = await referenceSearch(repo, a.query, Math.min(int(a, "limit", 5), MAX_RESULTS), referenceOptions);
-  } else {
-    const a = object(raw, ["passage", "before", "after"]);
-    if (a.passage === undefined) throw new BadArgs('missing argument "passage"');
-    found = referenceAround(repo, int(a, "passage", 0), int(a, "before", 1), int(a, "after", 1), referenceOptions);
+  // Reserve before the first await; the part not served is released in `finally`.
+  reserved.set(key, (reserved.get(key) ?? 0) + left);
+  let served: Passage[] = [];
+  let found: Passage[] = [];
+  try {
+    if (name === "reference_search") {
+      const a = object(raw, ["query", "limit"]);
+      if (typeof a.query !== "string" || !a.query.trim() || a.query.length > 500) throw new BadArgs('"query" must be a string of at most 500 characters');
+      found = await referenceSearch(repo, a.query, Math.min(int(a, "limit", 5), MAX_RESULTS), referenceOptions);
+    } else {
+      const a = object(raw, ["passage", "before", "after"]);
+      if (a.passage === undefined) throw new BadArgs('missing argument "passage"');
+      found = referenceAround(repo, int(a, "passage", 0), int(a, "before", 1), int(a, "after", 1), referenceOptions);
+    }
+    served = found.slice(0, left);
+    const now = Date.now();
+    const ins = db.prepare("INSERT INTO main.remote_passages (call_id, run_id, user_login, repo, passage_id, page, at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    for (const p of served) ins.run(lease.id, lease.runId, lease.login, repo, p.id, p.page, now);
+  } finally {
+    const rest = (reserved.get(key) ?? 0) - left;
+    if (rest > 0) reserved.set(key, rest);
+    else reserved.delete(key);
   }
-  const served = found.slice(0, left);
-  const now = Date.now();
-  const ins = db.prepare("INSERT INTO main.remote_passages (call_id, run_id, user_login, repo, passage_id, page, at) VALUES (?, ?, ?, ?, ?, ?, ?)");
-  for (const p of served) ins.run(lease.id, lease.runId, lease.login, repo, p.id, p.page, now);
   if (!served.length) return { text: name === "reference_search" ? "No passage matches." : "No passage next to it." };
   const cut = served.length < found.length ? `\n\n[${found.length - served.length} more passages withheld: the ${PASSAGES_PER_LEASE} passages of this call are used up]` : "";
   return { text: served.map(passageText).join("\n\n") + cut };
