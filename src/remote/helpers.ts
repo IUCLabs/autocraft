@@ -49,7 +49,19 @@ export function parseStatus(raw: unknown): HelperStatus {
     usage = { fiveHour: parseWindow(u.fiveHour, "fiveHour"), weekly: parseWindow(u.weekly, "weekly"), at: u.at };
   }
   const reason = typeof s.reason === "string" ? s.reason.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, REASON_MAX) : "";
+  const count = (v: unknown, name: string): number => {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 64) throw new HttpError(400, `${name} must be a whole number from 0 to 64`);
+    return v;
+  };
+  const slots = count(s.slots, "slots"), busy = count(s.busy, "busy");
+  let lastError: HelperStatus["lastError"];
+  if (s.lastError !== undefined && s.lastError !== null) {
+    const e = s.lastError as Record<string, unknown>;
+    if (typeof e !== "object" || typeof e.text !== "string" || !isoTime(e.at)) throw new HttpError(400, "lastError must be { text, at }");
+    lastError = { text: e.text.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, REASON_MAX), at: e.at };
+  }
   return {
+    slots, busy: Math.min(busy, slots), ...(lastError && { lastError }),
     readiness: s.readiness as Readiness, ...(isoTime(s.until) && { until: s.until }), ...(reason && { reason }),
     harness: s.harness as HarnessId, models, reserve: { fiveHour: r.fiveHour as number, weekly: r.weekly as number }, ...(usage && { usage }),
   };
@@ -77,7 +89,7 @@ export function listHelpers(db: DatabaseSync, login: string, nowMs: number = Dat
     // The server's own cool-off of the token shows even before the helper has reported it.
     const cooled = r.cooloff_until !== null && Number(r.cooloff_until) > nowMs && r.readiness !== "cooled-off";
     return {
-      tokenId: Number(r.id), label: r.label,
+      tokenId: Number(r.id), label: r.label, slots: null, busy: null, lastError: null,
       ...(cooled ? { readiness: "cooled-off" as const, until: new Date(Number(r.cooloff_until)).toISOString(), reason: COOLOFF_REASON } : { readiness: r.readiness, until: r.until, reason: r.reason }),
       fresh: reported !== null && nowMs - reported <= STATUS_FRESH_MS,
       lastSeen: Number.isFinite(seen) ? new Date(seen).toISOString() : null,

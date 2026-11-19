@@ -43,7 +43,7 @@ export const HELPER_VERSION = "1.1.0";
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
 
 /** Must equal the server's; the server refuses a claim from a helper of another version. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export const ROUTES = {
   claim: "/api/remote/claim",
@@ -71,6 +71,8 @@ export const ROUTES = {
  * @property {string[]} [repos]
  * @property {number[]} [sessions]
  * @property {string} [root]
+ * @property {string} requestId
+ * @property {boolean} [fastLane]
  */
 /** @typedef {{ fiveHour: number, weekly: number }} Reserve  percent of each plan window kept free */
 /** @typedef {{ lease: null, retryAfter: number, reserve: Reserve, reason?: string, until?: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string }, reserve: Reserve }} ClaimReply */
@@ -86,8 +88,13 @@ export const ROUTES = {
  * @property {Partial<Record<Tier, string>>} models
  * @property {Reserve} reserve
  * @property {UsageReading} [usage]
+ * @property {number} slots
+ * @property {number} busy
+ * @property {{ text: string, at: string }} [lastError]
  */
 /** @typedef {{ ok: true, reserve: Reserve }} StatusReply */
+/** The calls this process runs at once and how many run now, for status reports (set by `work`). */
+const capacity = { slots: 1, busy: 0 };
 /**
  * @typedef {{ kind: "git", path: string, owner: string, repo: string, sha: string, ref?: string }
  *   | { kind: "tarball", path: string, repo: string, sha: string }
@@ -1997,7 +2004,7 @@ async function checkReady(cfg, opt = {}) {
 async function sendStatus(cfg, harness, st, usage) {
   if (!cfg.server || !cfg.agentToken) return;
   /** @type {HelperStatus} */
-  const body = { readiness: st.readiness, ...(st.until !== null && { until: new Date(st.until).toISOString() }), ...(st.reason && { reason: redact(st.reason).slice(0, 300) }), harness, models: st.models, reserve: st.reserve, ...(usage && { usage }) };
+  const body = { readiness: st.readiness, ...(st.until !== null && { until: new Date(st.until).toISOString() }), ...(st.reason && { reason: redact(st.reason).slice(0, 300) }), harness, models: st.models, reserve: st.reserve, ...(usage && { usage }), slots: capacity.slots, busy: capacity.busy };
   const key = JSON.stringify({ ...body, usage: undefined });
   const prev = readHelperStatus();
   if (prev.sentKey === key && prev.sentAt !== undefined && Date.now() - prev.sentAt < STATUS_EVERY_MS) return;
@@ -2252,7 +2259,7 @@ async function claimOnce(cfg, slot) {
   const n = mac ? slot ?? pickSlot(slotBase()) : undefined;
   const root = n === undefined ? undefined : slotRoot(slotBase(), n);
   /** @type {Claim} */
-  const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, efforts: Object.fromEntries(Object.keys(tiers).map((t) => [t, adapter.maxEffort])), ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }) };
+  const claim = { requestId: randomBytes(16).toString("hex"), protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, efforts: Object.fromEntries(Object.keys(tiers).map((t) => [t, adapter.maxEffort])), ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }) };
   /** @type {ClaimReply} */
   let reply;
   try {

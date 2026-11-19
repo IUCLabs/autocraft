@@ -17,7 +17,7 @@ async function repoChoices(db: DatabaseSync, req: Req): Promise<string[]> {
 }
 
 export const settings = async (db: DatabaseSync, req: Req): Promise<UserSettingsReply> =>
-  ({ reserve: userReserve(db, req.user.login), repos: userRepos(db, req.user.login), repoChoices: await repoChoices(db, req) });
+  ({ reserve: userReserve(db, req.user.login), repos: userRepos(db, req.user.login), maxCalls: null, repoChoices: await repoChoices(db, req) });
 
 export async function setSettings(db: DatabaseSync, req: Req): Promise<UserSettingsReply> {
   if (req.user.role === "viewer") throw new HttpError(403, "viewers have no settings to change");

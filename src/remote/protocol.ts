@@ -4,7 +4,7 @@
 // No Node imports: the helper keeps its own copy of these shapes and the dashboard build may import this file.
 
 /** Bumped on any change to these shapes; the server refuses a claim from a helper of another version. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** API routes on the dashboard origin. Agent-token routes take `Authorization: Bearer <agent token>`; lease routes take `Authorization: Bearer <lease secret>`. */
 export const ROUTES = {
@@ -14,7 +14,7 @@ export const ROUTES = {
   bundle: "/api/remote/bundle",
   /** Agent token. Body `HelperStatus`, reply `StatusReply`: the helper's readiness, sent on every change and at least every STATUS_EVERY_S while it runs. */
   status: "/api/remote/status",
-  /** Lease secret. Body `Heartbeat`, reply `{ ok: true }`, or 410 when the lease is gone (expired, cancelled, re-queued). */
+  /** Lease secret. Body `Heartbeat`, reply `{ ok: true }`, or 410 when the lease is gone (expired, cancelled, re-queued). Every lease route answers 410 for an ended lease, never 401. */
   heartbeat: "/api/remote/heartbeat",
   /** Lease secret. Body `Submit`, reply `SubmitReply`. */
   submit: "/api/remote/submit",
@@ -57,7 +57,17 @@ export type Claim = {
    * paths are read back without it. Absolute, letters, digits and `. _ + @ -`, no `.` or `..` component. Absent: the fixed paths.
    */
   root?: string;
+  /**
+   * Unique per claim attempt (8 to 64 characters of letters, digits, `-` and `_`). A claim repeated with the same id within
+   * CLAIM_ID_TTL_S gets the same reply, so a helper whose reply was lost (reset, proxy error, timeout) retries safely.
+   */
+  requestId: string;
+  /** The claim comes from the helper's fast-lane slot: the server offers it only follow-ups of its sessions, gating calls and small-tier calls. */
+  fastLane?: boolean;
 };
+
+/** How long the server remembers a claim's `requestId` and its reply. */
+export const CLAIM_ID_TTL_S = 300;
 
 /**
  * The plan usage a helper keeps in reserve, per window: it claims only while the remaining percent (100 - used) of every
@@ -97,6 +107,12 @@ export type HelperStatus = {
   /** The reserve the helper enforces: the user's, raised by its local setting. */
   reserve: Reserve;
   usage?: UsageReading;
+  /** Calls the helper runs at once: its `--parallel` slots plus the fast lane. */
+  slots: number;
+  /** Slots running a call now. */
+  busy: number;
+  /** The helper's last error talking to the server or running a call, until it recovers: what failed, in one line, and when (ISO time). */
+  lastError?: { text: string; at: string };
 };
 /** The user's reserve, so a helper knows it before its first claim. */
 export type StatusReply = { ok: true; reserve: Reserve };
@@ -117,13 +133,16 @@ export type HelperInfo = {
   models: Partial<Record<Tier, string>>;
   reserve: Reserve | null;
   usage: UsageReading | null;
+  slots: number | null;
+  busy: number | null;
+  lastError: { text: string; at: string } | null;
 };
 
 /**
  * GET and PUT /api/me/settings (session routes): the signed-in user's own settings. `repos`: the repos their helpers take calls
  * from, empty for every repo. A PUT sends either field or both.
  */
-export type UserSettings = { reserve: Reserve; repos: string[] };
+export type UserSettings = { reserve: Reserve; repos: string[]; /** The most calls the user's helpers run at once, all helpers together; null for no limit. */ maxCalls: number | null };
 /** The settings with `repoChoices`: the tracked repos with the pipeline on where the user has write permission, sorted. */
 export type UserSettingsReply = UserSettings & { repoChoices: string[] };
 
@@ -164,7 +183,14 @@ export type TaskBundle = {
   };
 };
 
-export type Heartbeat = { /** The harness's last progress line, shown on the run. */ progress?: string };
+/**
+ * Sent every HEARTBEAT_S from the claim until the submit or release. `preparing`: fetching the bundle and the code; the
+ * call's time limit has not started, but preparing may take at most PREPARE_MAX_S. `running`: the harness runs; the first
+ * `running` heartbeat starts the time limit.
+ */
+export type Heartbeat = { phase: "preparing" | "running"; /** The harness's last progress line, shown on the run. */ progress?: string };
+export const HEARTBEAT_S = 30;
+export const PREPARE_MAX_S = 15 * 60;
 
 export type Usage = { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number };
 

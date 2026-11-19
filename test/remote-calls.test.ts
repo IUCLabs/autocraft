@@ -38,7 +38,7 @@ describe("user-local remote calls", () => {
     db.prepare("INSERT INTO access (login, role) VALUES (?, 'maintainer')").run(login);
     callers[login] = { tokenId: createToken(db, login, "helper", false, true).row.id, login, role: "maintainer" };
   }
-  const claim: Claim = { protocol: PROTOCOL_VERSION, helperVersion: "1.1.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } };
+  const claim: Claim = { requestId: "test-claim-0001", protocol: PROTOCOL_VERSION, helperVersion: "1.1.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } };
   const canWrite = async () => true;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const leaseFor = async (login: string) => {
@@ -205,7 +205,7 @@ describe("user-local remote calls", () => {
     assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'usage-reserve' AND login = 'bob'").get());
     assert.deepEqual(await claimCall(db, callers.bob!, claim, canWrite), { lease: null, retryAfter: CLAIM_RETRY_S, reserve: { fiveHour: 35, weekly: 10 } });
     assert.equal(remoteRoom(db, 0), 0, "an idle helper that never reported ready");
-    const status = { harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 35, weekly: 10 }, usage: { fiveHour: { usedPercent: 70, resetsAt: null }, weekly: null, at: new Date().toISOString() } };
+    const status = { slots: 1, busy: 0, harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 35, weekly: 10 }, usage: { fiveHour: { usedPercent: 70, resetsAt: null }, weekly: null, at: new Date().toISOString() } };
     storeStatus(db, callers.bob!.tokenId, "bob", parseStatus({ ...status, readiness: "ready" }));
     assert.equal(remoteRoom(db, 0), 1);
     storeStatus(db, callers.bob!.tokenId, "bob", parseStatus({ ...status, readiness: "quota-held", until: "2026-11-20T01:30:00.000Z", reason: "5-hour window 70% used" }));
