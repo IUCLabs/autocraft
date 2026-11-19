@@ -117,12 +117,27 @@ const capacity = { slots: 1, busy: 0 };
  * @property {{ parentCallId: number }} [resume]
  * @property {{ claude?: { args: string[], agents?: string } }} hints
  */
+/**
+ * Test-only: AUTOCRAFT_REMOTE_TIME_SCALE (0.01 to 1, unset = 1) multiplies every time window of the helper, as it does on
+ * the server (src/remote/time-scale.ts), so the load rig runs in minutes. The protocol constants below keep their production
+ * values; the scale applies where they are used.
+ */
+const TIME_SCALE = (() => {
+  const raw = process.env.AUTOCRAFT_REMOTE_TIME_SCALE;
+  if (raw === undefined || raw === "") return 1;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0.01 || n > 1) throw new Error(`AUTOCRAFT_REMOTE_TIME_SCALE must be a number from 0.01 to 1 (test only), got "${raw}"`);
+  return n;
+})();
+/** @param {number} ms @returns {number} */
+const scaled = (ms) => (TIME_SCALE === 1 ? ms : Math.max(1, Math.round(ms * TIME_SCALE)));
 /** @typedef {{ phase: "preparing" | "running", progress?: string }} Heartbeat  `preparing` from the claim until the harness spawns */
 export const HEARTBEAT_S = 30;
 /** The longest a lease may stay in `preparing`. */
 export const PREPARE_MAX_S = 15 * 60;
 /** How long the server remembers a claim's `requestId` and its reply. */
 export const CLAIM_ID_TTL_S = 300;
+const HEARTBEAT_MS = scaled(HEARTBEAT_S * 1000), PREPARE_MAX_MS = scaled(PREPARE_MAX_S * 1000), CLAIM_ID_TTL_MS = scaled(CLAIM_ID_TTL_S * 1000);
 /** @typedef {{ inputTokens: number, outputTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number }} Usage */
 /** @typedef {{ name: string, args: string, resultBytes: number | null, isError: boolean, startedAt?: string, endedAt?: string }} SubmitTool */
 /**
@@ -1787,8 +1802,8 @@ export function transient(e, signal) {
 }
 
 /** The wait before retry `attempt` (0 first): exponential from `baseMs` up to 30 s with jitter, at least the server's Retry-After. @param {number} attempt @param {number | null} retryAfter */
-export function backoffMs(attempt, retryAfter, baseMs = 1000) {
-  const exp = Math.min(30_000, baseMs * 2 ** attempt);
+export function backoffMs(attempt, retryAfter, baseMs = scaled(1000)) {
+  const exp = Math.min(scaled(30_000), baseMs * 2 ** attempt);
   const wait = exp / 2 + (Math.random() * exp) / 2;
   return retryAfter === null ? wait : Math.max(wait, retryAfter + Math.random() * baseMs);
 }
@@ -1831,16 +1846,16 @@ export async function api(server, route, bearer, body, o = {}) {
 }
 
 /** The server ends a lease this long after the call's time limit, or after its last heartbeat (docs/operations.md, Leases). */
-const LEASE_GRACE_MS = 120_000;
+const LEASE_GRACE_MS = scaled(120_000);
 /** Retries of a lease route stop this long before the lease's server deadline. */
-const RETRY_MARGIN_MS = 90_000;
+const RETRY_MARGIN_MS = scaled(90_000);
 /**
  * A finished reply's submit keeps trying this long past the helper's own deadline: after an outage of the dashboard the
  * server moves its lease deadlines forward by the gap (src/remote/liveness.ts), which the helper cannot see.
  */
-const SUBMIT_OUTAGE_MS = 30 * 60_000;
+const SUBMIT_OUTAGE_MS = scaled(30 * 60_000);
 /** Retries of a tool call made from inside the sandbox, where the lease's deadline is unknown. */
-const TOOL_RETRY_MS = 3 * 60_000;
+const TOOL_RETRY_MS = scaled(3 * 60_000);
 
 /**
  * The heartbeats of one lease, from the claim until `stop`: phase `preparing`, then `running` from `running()` on (sent at
@@ -1860,7 +1875,7 @@ function heartbeats(lease) {
       sent = phase;
       try { await send(); clearError("server"); } catch (e) { if (e instanceof Gone) { goneAc.abort(); return; } if (!stopAc.signal.aborted) noteError(msg(e), "server"); }
       try { await keepStatusFresh(); } catch { /* next beat */ }
-      if (sent === phase && !stopAc.signal.aborted) await new Promise((r) => { const t = setTimeout(r, HEARTBEAT_S * 1000); wake = () => { clearTimeout(t); r(undefined); }; });
+      if (sent === phase && !stopAc.signal.aborted) await new Promise((r) => { const t = setTimeout(r, HEARTBEAT_MS); wake = () => { clearTimeout(t); r(undefined); }; });
     }
   })();
   return {
@@ -1884,13 +1899,13 @@ function heartbeats(lease) {
 
 export const USAGE_STALE_MS = 5 * 60_000;
 /** A reading this young is used again instead of asking the provider (claims come every 15 s). */
-const USAGE_REUSE_MS = 60_000;
+const USAGE_REUSE_MS = scaled(60_000);
 /** While held, the helper reads its usage again about this often (jittered, and not the reuse interval, so slots do not wake together). */
-export const HOLD_RETRY_MS = 45_000;
+export const HOLD_RETRY_MS = scaled(45_000);
 /** @param {() => number} [rand] @returns {number} HOLD_RETRY_MS within plus or minus 20% */
 export const holdRetryDelay = (rand = Math.random) => Math.round(HOLD_RETRY_MS * (0.8 + 0.4 * rand()));
 /** An error reading is shared with other processes for this long before the provider is asked again (a provider's own wait overrides it). */
-const USAGE_ERROR_RETRY_MS = 30_000;
+const USAGE_ERROR_RETRY_MS = scaled(30_000);
 /** The last good reading keeps counting this long when a new read fails or is refused, while every window keeps the reserve plus LAST_GOOD_MARGIN free. */
 export const LAST_GOOD_MS = 15 * 60_000;
 export const LAST_GOOD_MARGIN = 10;
@@ -1898,7 +1913,7 @@ export const LAST_GOOD_MARGIN = 10;
 const READY_CALL_TIMEOUT_S = 900;
 /** The longest a process waits for another process's usage read. */
 const USAGE_LOCK_WAIT_MS = 20_000;
-export const STATUS_EVERY_MS = 5 * 60_000;
+export const STATUS_EVERY_MS = scaled(5 * 60_000);
 /** The longest a provider's refusal parks the helper: its reset time is text the helper cannot check. */
 export const PARK_CAP_MS = 7 * 24 * 3600_000;
 /** A refusal that names no reset parks for this long; the hold comes back if the usage still says so. */
@@ -2613,7 +2628,7 @@ async function tarballTree(server, secret, m, signal) {
     if (!res.ok || !res.body) throw new HttpError(`tarball ${m.repo}`, res.status, res.ok ? "no body" : await res.text().catch(() => ""), retryAfterMs(res.headers.get("retry-after")));
     const body = /** @type {any} */ (res.body);
     await untar(tmp, (stdin) => pipeline(Readable.fromWeb(body), stdin));
-  }), { deadline: Date.now() + PREPARE_MAX_S * 1000 - RETRY_MARGIN_MS, ...(signal && { signal }) });
+  }), { deadline: Date.now() + PREPARE_MAX_MS - RETRY_MARGIN_MS, ...(signal && { signal }) });
 }
 
 /** Inline files into a fresh directory of the task. @param {string} dir @param {{ name: string, base64: string }[]} files */
@@ -2687,7 +2702,7 @@ async function claimOnce(cfg, slot, fastLane = false) {
   let reply;
   try {
     // Retries resend the same request id, so a claim whose reply was lost gets its lease back instead of leaving it to expire.
-    reply = await withRetry(() => api(server, ROUTES.claim, agentToken, claim), { tries: 5, deadline: Date.now() + Math.min(60, CLAIM_ID_TTL_S / 2) * 1000 });
+    reply = await withRetry(() => api(server, ROUTES.claim, agentToken, claim), { tries: 5, deadline: Date.now() + Math.min(scaled(60_000), CLAIM_ID_TTL_MS / 2) });
   } catch (e) {
     // Another protocol version, or a helper older than the server accepts: nothing runs until the helper is updated.
     if (e instanceof HttpError && e.status === 409) {
@@ -2707,7 +2722,7 @@ async function claimOnce(cfg, slot, fastLane = false) {
       if (again.readiness !== "ready") {
         /** @type {Release} */
         const body = { reason: `the user's usage reserve rose: ${heldLine(again)}`.slice(0, 300) };
-        try { await withRetry(() => api(server, ROUTES.release, reply.lease.secret, body), { deadline: rec.claimedAt + LEASE_GRACE_MS - HEARTBEAT_S * 1000 }); } catch { /* the lease expires on its own */ }
+        try { await withRetry(() => api(server, ROUTES.release, reply.lease.secret, body), { deadline: rec.claimedAt + LEASE_GRACE_MS - HEARTBEAT_MS }); } catch { /* the lease expires on its own */ }
         dropLease(reply.lease.id);
         return { held: again };
       }
@@ -2743,7 +2758,7 @@ async function runLease(cfg, id, opt = {}) {
   writeStatus(id, { state: "running", line: `running: ${lease.title}`, pid: process.pid, at: Date.now() });
   const started = Date.now();
   const beat = heartbeats(lease);
-  const prepareEnd = lease.claimedAt + PREPARE_MAX_S * 1000;
+  const prepareEnd = lease.claimedAt + PREPARE_MAX_MS;
   // The preparation stops early enough that its release still has the full retry margin before the server's cap.
   const prepTimeout = AbortSignal.timeout(Math.max(1, prepareEnd - 2 * RETRY_MARGIN_MS - Date.now()));
   // Ends the preparation's requests: Ctrl-C, the lease gone, or the preparation cap.
@@ -2775,7 +2790,7 @@ async function runLease(cfg, id, opt = {}) {
     return end("released", `released: ${lease.title}: ${reason}`, hold);
   };
   /** Why the preparation stopped, when one of its signals did. */
-  const prepStopped = () => (opt.signal?.aborted ? "stopped on the helper" : prepTimeout.aborted ? `preparing took longer than ${(PREPARE_MAX_S * 1000 - 2 * RETRY_MARGIN_MS) / 60_000} min` : null);
+  const prepStopped = () => (opt.signal?.aborted ? "stopped on the helper" : prepTimeout.aborted ? `preparing took longer than ${(PREPARE_MAX_MS - 2 * RETRY_MARGIN_MS) / 60_000} min` : null);
   /** @type {string[]} */
   const tokens = [];
   let releaseSlot = () => {};
@@ -3251,14 +3266,14 @@ const STOP_SIGNALS = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
 const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 
 /** The waits before the next claim after 1, 2, 3 and 4 or more calls failed in a row. */
-const FAILURE_WAITS_MS = [60_000, 120_000, 300_000, 600_000];
+const FAILURE_WAITS_MS = [60_000, 120_000, 300_000, 600_000].map(scaled);
 /** After this many failed calls in a row the helper holds (`failing`) until its wait ends and its checks pass again. */
 export const FAILURES_TO_HOLD = 5;
 /** How long `work` waits before its next claim after `n` calls failed (or were given back) in a row. @param {number} n */
 export const failureWait = (n) => (n <= 0 ? 0 : FAILURE_WAITS_MS[Math.min(n, FAILURE_WAITS_MS.length) - 1] ?? 0);
 
 /** A lease with no live run is given back on start once it is this old (the server expires it after 2 minutes anyway). */
-const ORPHAN_AFTER_MS = 5 * 60_000;
+const ORPHAN_AFTER_MS = scaled(5 * 60_000);
 
 /**
  * Gives back, with a reason, the leases of runs whose process died (a crash, a kill, a reboot): a running status names its
@@ -3345,7 +3360,7 @@ async function cmdWork(argv) {
     while (!ac.signal.aborted) {
       if (Date.now() < notBefore) { await pause(notBefore - Date.now()); continue; }
       let r;
-      try { r = await claimOnce(loadConfig(), slot, fastLane); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue; }
+      try { r = await claimOnce(loadConfig(), slot, fastLane); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in ${Math.round(scaled(60_000) / 1000)} s`); await pause(scaled(60_000)); continue; }
       if ("held" in r) {
         // An external wait on this machine: the usage is read again every minute, and the status kept fresh.
         const line = heldLine(r.held);
@@ -3357,7 +3372,7 @@ async function cmdWork(argv) {
       if (!r.lease) {
         const say = r.reason ? `no calls for this helper: ${r.reason}${r.until ? ` (until ${new Date(r.until).toLocaleString()})` : ""}` : `no task queued; claiming again in ${r.retryAfter} s`;
         if (idleSaid !== say) { console.log(say); idleSaid = say; }
-        await pause(Math.max(1, r.retryAfter) * 1000);
+        await pause(Math.max(TIME_SCALE, r.retryAfter) * 1000);
         continue;
       }
       idleSaid = "";

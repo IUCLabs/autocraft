@@ -4,10 +4,11 @@
 // runs them on the CheckTool. Polling only: both sides use the model queue's poll interval.
 import type { DatabaseSync } from "node:sqlite";
 import { allocation } from "../agents/call.ts";
+import { scaled } from "./time-scale.ts";
 import type { CheckResult, CheckTool } from "../checktool/index.ts";
 
 /** How often the waiting dashboard request calls `tick` (the HTTP layer writes a keep-alive byte). */
-const TICK_MS = 15_000;
+const TICK_MS = scaled(15_000);
 
 const over = (db: DatabaseSync, id: number, r: CheckResult, nowMs = Date.now()): void => {
   db.prepare("UPDATE main.remote_checks SET state = 'done', result = ?, ended_at = ? WHERE id = ? AND state != 'done'").run(JSON.stringify(r), nowMs, id);

@@ -24,6 +24,7 @@ import { claimRepos } from "./my-repos.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimClass, gating } from "./claim-class.ts";
 import { userReserve } from "./reserve.ts";
+import { scaled, scaledS } from "./time-scale.ts";
 import { CALLER_STALE_MS, IDLE_FRESH_MS, SEEN_EVERY_MS } from "./room.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
 import { PERM_READ_TTL } from "../dash/server/sessions.ts";
@@ -31,26 +32,26 @@ import { endChecks, serveChecks } from "./check-relay.ts";
 import type { CheckTool } from "../checktool/index.ts";
 
 /** A lease with no heartbeat for this long, while the dashboard was serving (liveness.ts), goes back to the queue. */
-export const LEASE_IDLE_MS = 2 * 60_000;
+export const LEASE_IDLE_MS = scaled(2 * 60_000);
 /** A lease also ends this long after the bundle's own time limit, counted from its first `running` heartbeat. */
-export const LEASE_MARGIN_MS = 2 * 60_000;
+export const LEASE_MARGIN_MS = scaled(2 * 60_000);
 /**
  * How long a follow-up turn waits for the helper that holds its session before the caller falls back to a fresh call, while
  * that login runs no live lease. While it does (the helper is busy, and its fast lane takes the turn as soon as it is free),
  * the turn waits up to STICKY_CAP_MS.
  */
 export const STICKY_MS = LEASE_IDLE_MS;
-export const STICKY_CAP_MS = 15 * 60_000;
+export const STICKY_CAP_MS = scaled(15 * 60_000);
 /** A lease counts as live for a waiting follow-up while its last heartbeat is at most this old (three heartbeats). */
-const STICKY_LIVE_MS = 3 * HEARTBEAT_S * 1000;
+const STICKY_LIVE_MS = 3 * scaled(HEARTBEAT_S * 1000);
 /** A call whose caller has not polled for this long has lost it (the process died): the call fails. */
-export const CALLER_GONE_MS = 5 * 60_000;
+export const CALLER_GONE_MS = scaled(5 * 60_000);
 /** Seconds a helper waits before claiming again when nothing could be taken. */
-export const CLAIM_RETRY_S = 15;
+export const CLAIM_RETRY_S = scaledS(15);
 /** The oldest helper version that may run a lease. */
 export const REQUIRED_HELPER = "1.2.0";
 /** A call this login released is not offered to it again for this long (its helper could not run it). */
-export const RELEASE_SKIP_MS = 10 * 60_000;
+export const RELEASE_SKIP_MS = scaled(10 * 60_000);
 /**
  * The most queue time the runner leaves out of a job's deadline and no-progress stop. Helpers run on people's own machines
  * across time zones, so a call may wait out a night with nobody online; past 12 hours the call is unlikely to be taken at all
@@ -170,10 +171,10 @@ export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: 
     const idle = live.since <= nowMs - LEASE_IDLE_MS ? 1 : 0;
     const lost = db.prepare(`SELECT id, run_id, attempt, max_attempts, heartbeat_at, leased_at, started_at, timeout_ms, token_id, user_login, lease_secret_hash FROM main.remote_calls
       WHERE state = 'leased' AND ((? AND heartbeat_at < ?) OR (started_at IS NULL AND leased_at + ? < ?) OR (started_at IS NOT NULL AND started_at + timeout_ms + ? < ?))${one}`)
-      .all(idle, nowMs - LEASE_IDLE_MS, PREPARE_MAX_S * 1000, nowMs, LEASE_MARGIN_MS, nowMs, ...(id === undefined ? [] : [id])) as Row[];
+      .all(idle, nowMs - LEASE_IDLE_MS, scaled(PREPARE_MAX_S * 1000), nowMs, LEASE_MARGIN_MS, nowMs, ...(id === undefined ? [] : [id])) as Row[];
     for (const r of lost) {
-      const why = idle && Number(r.heartbeat_at) < nowMs - LEASE_IDLE_MS ? `lease expired: no heartbeat for ${LEASE_IDLE_MS / 60_000} min`
-        : r.started_at === null ? `lease expired: still preparing ${PREPARE_MAX_S / 60} min after the claim` : "lease expired: past the call's time limit";
+      const why = idle && Number(r.heartbeat_at) < nowMs - LEASE_IDLE_MS ? `lease expired: no heartbeat for ${Math.round(LEASE_IDLE_MS / 1000)} s`
+        : r.started_at === null ? `lease expired: still preparing ${Math.round(scaled(PREPARE_MAX_S * 1000) / 1000)} s after the claim` : "lease expired: past the call's time limit";
       // A lost lease counts toward its login's cool-off (cooloff.ts), and uses an attempt like a failed call.
       if (requeue(db, r, why, nowMs) && r.token_id !== null && r.user_login !== null) noteDrop(db, Number(r.token_id), r.user_login, nowMs);
     }
@@ -500,7 +501,7 @@ const claimReplies = new Map<string, { at: number; reply: Promise<ClaimReply> }>
  */
 export function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
   // Entries are in claim order, so the expired ones come first.
-  for (const [k, v] of claimReplies) { if (v.at >= nowMs - CLAIM_ID_TTL_S * 1000) break; claimReplies.delete(k); }
+  for (const [k, v] of claimReplies) { if (v.at >= nowMs - scaled(CLAIM_ID_TTL_S * 1000)) break; claimReplies.delete(k); }
   const key = `${caller.tokenId}:${claim.requestId}`;
   const seen = claimReplies.get(key);
   if (seen) return seen.reply;
