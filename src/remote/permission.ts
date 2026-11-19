@@ -9,7 +9,7 @@ export const APP_PERMISSION_TTL = 60_000;
 
 export type AppPermission =
   | { kind: "ok"; permission: string }
-  /** No app token for the repo's owner (app not registered or installed, repo unknown): the caller uses another source. */
+  /** No app token for the repo's owner (app not registered or installed, repo unknown), or GitHub answered 404: the caller uses another source. */
   | { kind: "unavailable" }
   /** GitHub could not be asked (error, rate limit). */
   | { kind: "error"; why: string };
@@ -58,8 +58,9 @@ async function lookup(db: DatabaseSync, login: string, repo: string, deps: Permi
       .run(login, repo, permission, new Date().toISOString());
     return { kind: "ok", permission };
   } catch (e) {
-    // GitHub answers 404 for a user who is not a collaborator or does not exist.
-    if (e instanceof AppError && e.status === 404) return { kind: "ok", permission: "none" };
+    // A 404 does not prove the user lacks access: the installation may not see the repo, or the login may have been renamed.
+    // A collaborator without access is answered 200 with permission "none". The session decides instead.
+    if (e instanceof AppError && e.status === 404) return { kind: "unavailable" };
     return { kind: "error", why: `GitHub permission check failed: ${(e as Error).message}` };
   }
 }

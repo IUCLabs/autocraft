@@ -253,15 +253,16 @@ export class Rig {
       const now = Date.now();
       const queued = this.db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'queued'").get().n;
       const leased = new Map(this.db.prepare("SELECT token_id AS t, COUNT(*) AS n FROM main.remote_calls WHERE state = 'leased' GROUP BY token_id").all().map((r) => [Number(r.t), Number(r.n)]));
-      const st = new Map(this.db.prepare("SELECT token_id AS t, readiness, reason, reported_at AS at FROM main.remote_helpers").all().map((r) => [Number(r.t), r]));
-      const cool = new Map(this.db.prepare("SELECT id, cooloff_until AS c FROM main.mcp_tokens").all().map((r) => [Number(r.id), r.c]));
+      const st = new Map(this.db.prepare("SELECT token_id AS t, readiness, reason, last_error, reported_at AS at FROM main.remote_helpers").all().map((r) => [Number(r.t), r]));
+      // Cool-off is per login (src/remote/cooloff.ts).
+      const cool = new Map(this.db.prepare("SELECT login, until FROM main.remote_cooloffs").all().map((r) => [String(r.login).toLowerCase(), r.until === null ? 0 : Number(r.until)]));
       const idle = [];
       for (const h of this.helpers) {
         if (!h) continue;
         const s = st.get(h.tokenId);
         const holds = (leased.get(h.tokenId) ?? 0) > 0;
         const down = h.proc.exitCode !== null || h.frozen;
-        const why = down ? "helper not running (shown as offline)" : cool.get(h.tokenId) > now ? "cooled off" : s && s.readiness !== "ready" ? `${s.readiness}: ${s.reason ?? ""}` : s?.lastError ? "last error shown" : null;
+        const why = down ? "helper not running (shown as offline)" : (cool.get(h.login.toLowerCase()) ?? 0) > now ? "cooled off" : s && s.readiness !== "ready" ? `${s.readiness}: ${s.reason ?? ""}` : s?.last_error ? "last error shown" : null;
         h.idleFor = !holds && queued > 0 && !down ? (h.idleFor ?? now) : null;
         // Idle for over 90 s with calls waiting, ready, no reason shown: nobody can tell why it does nothing.
         if (h.idleFor && now - h.idleFor > 90_000 && !why) idle.push(h.i + 1);

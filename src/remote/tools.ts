@@ -3,7 +3,7 @@
 // its server. The dashboard runs them; `check` is relayed to the job process that holds the call's CheckTool.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs";
-import { PassThrough, type Readable } from "node:stream";
+import { finished, PassThrough, type Readable } from "node:stream";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { CHECK_SERVER } from "../checktool/bridge.ts";
@@ -237,7 +237,9 @@ export async function archiveOf(lease: TaskLease, repo: string, sha: string): Pr
     mkdirSync(dir, { recursive: true });
     const tmp = join(dir, `.${name}.${process.pid}.${Date.now()}`);
     const sink = createWriteStream(tmp);
-    sink.on("error", () => { /* the client still gets its stream; the copy is dropped */ });
+    // A failed copy (disk full, the directory gone) is dropped; the client still gets its stream.
+    let sinkFailed = false;
+    sink.on("error", () => { sinkFailed = true; rmSync(tmp, { force: true }); });
     git = spawn("git", [...HARDENING, "archive", "--format=tar", sha], { env, stdio: ["ignore", "pipe", "ignore"] });
     git.stdout!.pipe(out, { end: false });
     git.stdout!.pipe(sink);
@@ -246,7 +248,9 @@ export async function archiveOf(lease: TaskLease, repo: string, sha: string): Pr
       release();
       if (code !== 0) { out.destroy(new Error("git archive failed")); sink.destroy(); rmSync(tmp, { force: true }); return; }
       out.end();
-      sink.end(() => {
+      // The pipe ends the sink with git's output; the copy is kept only when every byte was written.
+      finished(sink, (err) => {
+        if (err || sinkFailed) { rmSync(tmp, { force: true }); return; }
         try { renameSync(tmp, file); pruneArchives(dir, name); } catch { rmSync(tmp, { force: true }); }
       });
     });

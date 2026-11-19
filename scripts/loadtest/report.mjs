@@ -24,8 +24,9 @@ export function collect(rig) {
     if (starts > 1) m.duplicateRuns.push({ call: c.id, starts });
   }
   m.waits = waits;
-  m.cooloffs = db.prepare("SELECT at, target, login FROM main.audit WHERE action = 'remote-cooloff' ORDER BY at").all().map((r) => ({ at: r.at, tokenId: Number(r.target), login: r.login }));
-  m.cooloffHelpers = [...new Set(m.cooloffs.map((c) => rig.helpers.findIndex((h) => h && h.tokenId === c.tokenId) + 1))];
+  // The cool-off is per login: the audit target is the login cooled off.
+  m.cooloffs = db.prepare("SELECT at, target FROM main.audit WHERE action = 'remote-cooloff' ORDER BY at").all().map((r) => ({ at: r.at, login: String(r.target) }));
+  m.cooloffHelpers = [...new Set(m.cooloffs.flatMap((c) => rig.helpers.flatMap((h, i) => (h && h.login.toLowerCase() === c.login.toLowerCase() ? [i + 1] : []))))];
   m.requeues = db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE attempt > 1").get().n;
   const reqs = readFileSync(rig.proxyLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   const clean = reqs.filter((r) => r.upMs !== undefined && r.status > 0 && !/-after$|^upstream/.test(r.fault) && r.fault !== "reset-after");

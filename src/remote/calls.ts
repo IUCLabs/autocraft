@@ -174,8 +174,10 @@ export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: 
     for (const r of lost) {
       const why = idle && Number(r.heartbeat_at) < nowMs - LEASE_IDLE_MS ? `lease expired: no heartbeat for ${LEASE_IDLE_MS / 60_000} min`
         : r.started_at === null ? `lease expired: still preparing ${PREPARE_MAX_S / 60} min after the claim` : "lease expired: past the call's time limit";
-      // A lost lease counts toward its login's cool-off (cooloff.ts), and uses an attempt like a failed call.
-      if (requeue(db, r, why, nowMs) && r.token_id !== null && r.user_login !== null) noteDrop(db, Number(r.token_id), r.user_login, nowMs);
+      // A lost lease counts toward its login's cool-off (cooloff.ts), and uses an attempt like a failed call. A lease that never
+      // had a heartbeat does not count: the helper most likely never got the claim's reply.
+      const beaten = Number(r.heartbeat_at) > Number(r.leased_at);
+      if (requeue(db, r, why, nowMs) && beaten && r.token_id !== null && r.user_login !== null) noteDrop(db, Number(r.token_id), r.user_login, nowMs);
     }
   }
   const gone = db.prepare(`SELECT id FROM main.remote_calls WHERE state IN ('queued', 'leased') AND seen_at < ?${one}`).all(nowMs - CALLER_GONE_MS, ...(id === undefined ? [] : [id])) as { id: number }[];
@@ -616,10 +618,11 @@ const storedTokens = (v: unknown): { input: number; output: number; cacheRead: n
  */
 export function submitCall(db: DatabaseSync, secret: string | undefined, raw: unknown, nowMs: number = Date.now()): SubmitReply | null {
   const l = liveLease(db, secret, nowMs);
-  if (!l) {
+  const gone = (): SubmitReply | null => {
     const done = secret?.startsWith(LEASE_PREFIX) && db.prepare("SELECT 1 FROM main.remote_calls WHERE lease_secret_hash = ? AND state = 'done'").get(sha256hex(secret));
     return done ? { accepted: true } : null;
-  }
+  };
+  if (!l) return gone();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HttpError(400, "the body must be a Submit object");
   const s = raw as Submit;
   const usage = usageOf((s as { usage?: unknown }).usage);
@@ -640,8 +643,10 @@ export function submitCall(db: DatabaseSync, secret: string | undefined, raw: un
     const turns = Number.isInteger(s.turns) && s.turns! >= 0 ? s.turns! : null;
     const sessionId = typeof s.sessionId === "string" && s.sessionId.length <= 200 ? s.sessionId : null;
     const costUsd = typeof s.costUsd === "number" && Number.isFinite(s.costUsd) && s.costUsd >= 0 ? s.costUsd : null;
-    db.prepare("UPDATE main.remote_calls SET state = 'done', reply = ?, usage = ?, turns = ?, session_id = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased'")
-      .run(unrooted(s.text, r.root), JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }), ...(costUsd !== null && { costUsd }) }), turns, sessionId, duration, nowMs, l.id);
+    // The lease can end between the check above and this write (another process expired it): then the reply is not taken.
+    const up = db.prepare("UPDATE main.remote_calls SET state = 'done', reply = ?, usage = ?, turns = ?, session_id = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased' AND lease_secret_hash = ?")
+      .run(unrooted(s.text, r.root), JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }), ...(costUsd !== null && { costUsd }) }), turns, sessionId, duration, nowMs, l.id, sha256hex(secret!));
+    if (Number(up.changes) !== 1) return gone();
     noteSuccess(db, l.login);
     // The claim named the model the helper meant to run (often an alias); the reply names the one that ran.
     if (r.run_id !== null) {
@@ -680,9 +685,10 @@ export type Outcome =
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Whether the login's helpers hold a lease that heartbeats: the helper that holds a session is alive and busy. */
-const runsLiveLease = (db: DatabaseSync, login: string | null, nowMs: number): boolean =>
-  login !== null && db.prepare("SELECT 1 FROM main.remote_calls WHERE state = 'leased' AND user_login = ? COLLATE NOCASE AND heartbeat_at >= ? LIMIT 1").get(login, nowMs - STICKY_LIVE_MS) !== undefined;
+/** Whether the helper that ran the parent call (its agent token, which holds the session) holds a lease that heartbeats: it is alive and busy. */
+const runsLiveLease = (db: DatabaseSync, parentId: number, nowMs: number): boolean =>
+  db.prepare(`SELECT 1 FROM main.remote_calls WHERE state = 'leased' AND heartbeat_at >= ?
+    AND token_id = (SELECT token_id FROM main.remote_calls WHERE id = ?) LIMIT 1`).get(nowMs - STICKY_LIVE_MS, parentId) !== undefined;
 
 /**
  * Waits for the call's result, polling its row like the model queue polls (allocation.pollMs). Each poll ends a lost lease
@@ -728,7 +734,7 @@ async function pollCall(db: DatabaseSync, id: number, opts: { onProgress?: (line
         continue; // claimed meanwhile: the call runs on
       }
       const waited = nowMs - (r.queued_since ?? r.since);
-      if (r.parent_id !== null && (waited >= STICKY_CAP_MS || (waited >= STICKY_MS && !runsLiveLease(db, r.sticky_login, nowMs)))) {
+      if (r.parent_id !== null && (waited >= STICKY_CAP_MS || (waited >= STICKY_MS && !runsLiveLease(db, r.parent_id, nowMs)))) {
         if (withdrawCall(db, id, "the helper holding the session did not take the follow-up", ["queued"])) return { state: "unclaimed" };
         continue;
       }
