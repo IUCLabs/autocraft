@@ -10,6 +10,7 @@
 //
 //   autocraft-task login <server-url>      agent token on stdin
 //   autocraft-task harness claude          a `claude setup-token` token on stdin
+//   autocraft-task harness codex [--device-auth]  logs Codex in to the helper's own CODEX_HOME
 //   autocraft-task claim                   claims one call; prints its lease id
 //   autocraft-task run [--detach] [<lease>]  runs a claimed lease (claims one when none is given)
 //   autocraft-task wait <lease>            waits for a detached run (at most 9 minutes)
@@ -19,7 +20,9 @@
 //   autocraft-task tool <server> <tool> [<json>] [<lease>]  one tool call without MCP; prints the result
 
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync, closeSync } from "node:fs";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createServer } from "node:http";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -93,7 +96,7 @@ export const ROUTES = {
 /** @typedef {{ reason: string }} Release */
 
 // ---------------------------------------------------------------------------
-// Harness adapters. A Codex adapter goes beside `claudeAdapter` and into ADAPTERS.
+// Harness adapters: `claudeAdapter` and `codexAdapter`, listed in ADAPTERS.
 
 /**
  * What an adapter gets for one run.
@@ -101,10 +104,12 @@ export const ROUTES = {
  * @property {TaskBundle} bundle
  * @property {string} model      the model this helper runs for the bundle's tier
  * @property {string} bin        resolved harness binary on the host
- * @property {string} token      the harness credential (environment only, never argv)
+ * @property {string} token      the harness credential (environment only, never argv): a token, or for codex the helper's own CODEX_HOME
  * @property {{ host: string, path: string }[]} mounts   prepared read-only mounts, `path` inside the sandbox
  * @property {string} taskDir    host directory for generated files (MCP config, agents file)
  * @property {string} mcpFile    host file with the MCP config, or "" when the call has no MCP servers
+ * @property {{ server: string, secret: string }} lease  for adapters that configure the MCP servers themselves
+ * @property {{ url: string, token: string }} [files]  the helper's file tools for this run, for an adapter with `fileTools`
  * @property {string} [sessionDir]  writable host directory for the harness's session store
  * @property {string} [resumeId]    harness session id to continue
  */
@@ -129,7 +134,11 @@ export const ROUTES = {
  * @property {(args: string[], sessionId: string) => string[]} resume  harness arguments for a follow-up turn
  * @property {(line: string) => string | null} progress  a progress line from one output line, or null
  * @property {(cfg: Config) => string | undefined} token  the stored harness credential
- * @property {Record<Tier, string>} defaultTiers
+ * @property {Partial<Record<Tier, string>>} defaultTiers  empty when the user must name every tier's model
+ * @property {(bin: string) => { cmd: string, args: string[], env: Record<string, string> }} versionInSandbox  the harness's version command inside the sandbox (doctor)
+ * @property {(bin: string, token: string) => string | null} [preflight]  prepares the harness's files before every call; why it must not run, or null
+ * @property {boolean} [exclusive]  one call at a time per helper (the harness refreshes a shared login)
+ * @property {boolean} [fileTools]  the run gets the helper's read-only file tools (its own read tool can't be confined)
  */
 
 // ---------------------------------------------------------------------------
@@ -289,7 +298,7 @@ export function claudeProgress(raw) {
 
 const MOUNT_PATH = /^\/[A-Za-z0-9._/-]{1,200}$/;
 /** Paths the sandbox itself uses; a bundle mount may not sit on or under them. */
-const FIXED_PATHS = ["/usr", "/lib", "/lib64", "/bin", "/etc", "/proc", "/dev", "/tmp", "/home", "/work", "/opt", "/mcp.json", "/agents.json"];
+const FIXED_PATHS = ["/usr", "/lib", "/lib64", "/bin", "/etc", "/proc", "/dev", "/tmp", "/home", "/work", "/opt", "/mcp.json", "/agents.json", "/codex-home"];
 
 /** Throws unless `p` is a safe absolute mount point inside the sandbox. @param {string} p */
 export function checkMountPath(p) {
@@ -397,10 +406,409 @@ const claudeAdapter = {
   parse: parseClaudeOutput,
   resume: (args, sessionId) => claudeResume(args, sessionId),
   progress: claudeProgress,
+  versionInSandbox: (bin) => claudeSandbox({ claudeBin: bin, claudeArgs: ["--version"], mounts: [] }),
 };
 
-/** @type {Record<HarnessId, Adapter | undefined>} */
-const ADAPTERS = { claude: claudeAdapter, codex: undefined };
+// ---------------------------------------------------------------------------
+// Read-only file tools, for a harness whose own read tool can't be confined to the task (Codex: its shell would see
+// everything in the sandbox, its login included). The helper process serves them to that one run as a streamable
+// HTTP MCP server on 127.0.0.1 with a per-run bearer token. Paths are sandbox paths (/repo/..., /repos/<name>/...);
+// each resolves inside one prepared mount and never past it: symlinks are resolved and checked, and grep walks
+// without following them.
+
+const FILE_TOOLS_SERVER = "files";
+const READ_LINES = 2000;
+const READ_MAX_BYTES = 256 * 1024;
+const GREP_MAX_LINES = 200;
+const GLOB_MAX = 500;
+const LINE_MAX = 300;
+
+const FILE_TOOLS = [
+  { name: "read_file", description: "Reads a text file: numbered lines, at most 2000 from `offset` (1-based).", inputSchema: { type: "object", properties: { path: { type: "string", description: "Absolute path, e.g. /repo/src/main.rs" }, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: READ_LINES } }, required: ["path"] } },
+  { name: "grep", description: "Searches files under a directory for an extended regular expression; prints path:line:text, at most 200 lines.", inputSchema: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string", description: "Directory or file; default /repo" }, glob: { type: "string", description: "Only file names matching this, e.g. *.rs" }, ignore_case: { type: "boolean" } }, required: ["pattern"] } },
+  { name: "glob", description: "Lists files whose path below `path` matches a glob (** any depth, * and ? within a name), at most 500.", inputSchema: { type: "object", properties: { pattern: { type: "string", description: "e.g. **/*.rs" }, path: { type: "string", description: "Directory; default /repo" } }, required: ["pattern"] } },
+].map((t) => ({ ...t, annotations: { readOnlyHint: true, openWorldHint: false } }));
+
+/**
+ * The host path of a sandbox path inside one of the mounts, symlinks resolved; throws when the path is outside every
+ * mount or resolves outside its mount.
+ * @param {{ host: string, path: string }[]} mounts @param {unknown} p
+ */
+export function hostPath(mounts, p) {
+  if (typeof p !== "string" || !p.startsWith("/") || p.includes("\0")) throw new Error("path must be an absolute path such as /repo/src/main.rs");
+  const parts = p.split("/").filter((c) => c && c !== ".");
+  if (parts.includes("..")) throw new Error("path may not contain ..");
+  const norm = `/${parts.join("/")}`;
+  const m = [...mounts].sort((a, b) => b.path.length - a.path.length).find((x) => norm === x.path || norm.startsWith(`${x.path}/`));
+  if (!m) throw new Error(`no such path: ${norm} (readable: ${mounts.map((x) => x.path).join(", ")})`);
+  const root = realpathSync(m.host);
+  let real;
+  try { real = realpathSync(join(m.host, norm.slice(m.path.length))); } catch { throw new Error(`no such file: ${norm}`); }
+  if (real !== root && !real.startsWith(`${root}/`)) throw new Error(`${norm} points outside ${m.path}`);
+  return { real, root, mount: m };
+}
+
+/** A glob over `/`-separated relative paths as a RegExp: `**` any depth, `*` and `?` within one name. @param {string} g */
+export function globRegex(g) {
+  let re = "";
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i];
+    if (c === "*" && g[i + 1] === "*") { re += g[i + 2] === "/" ? "(?:.*/)?" : ".*"; i += g[i + 2] === "/" ? 2 : 1; }
+    else if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/** Files below `dir` (relative paths), not following symlinks, at most `max`. @param {string} dir @param {number} max */
+function walkFiles(dir, max) {
+  /** @type {string[]} */
+  const out = [];
+  /** @param {string} rel */
+  const walk = (rel) => {
+    if (out.length >= max) return;
+    let entries;
+    try { entries = readdirSync(join(dir, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (e.name !== ".git") walk(r); }
+      else if (e.isFile()) out.push(r);
+      if (out.length >= max) return;
+    }
+  };
+  walk("");
+  return out;
+}
+
+/** The sandbox path of a host path below a mount. @param {{ path: string }} mount @param {string} root @param {string} host */
+const sandboxPathOf = (mount, root, host) => (host === root ? mount.path : `${mount.path}${host.slice(root.length)}`);
+
+/**
+ * Runs one file tool; the text it returns, or throws with a message for the model.
+ * @param {{ host: string, path: string }[]} mounts @param {string} name @param {Record<string, unknown>} a
+ */
+export function runFileTool(mounts, name, a) {
+  const cut = (/** @type {string} */ l) => (l.length > LINE_MAX ? `${l.slice(0, LINE_MAX)}…` : l);
+  if (name === "read_file") {
+    const { real } = hostPath(mounts, a.path);
+    if (!statSync(real).isFile()) throw new Error(`${a.path} is not a file`);
+    const buf = readFileSync(real);
+    if (buf.subarray(0, 8000).includes(0)) throw new Error(`${a.path} is a binary file`);
+    const lines = buf.subarray(0, READ_MAX_BYTES * 8).toString("utf8").split("\n");
+    const from = Math.max(1, Number.isInteger(a.offset) ? Number(a.offset) : 1), n = Math.min(READ_LINES, Number.isInteger(a.limit) ? Number(a.limit) : READ_LINES);
+    let out = "", i = from;
+    for (; i < from + n && i <= lines.length; i++) {
+      const l = `${String(i).padStart(6)}\t${cut(lines[i - 1] ?? "")}\n`;
+      if (out.length + l.length > READ_MAX_BYTES) break;
+      out += l;
+    }
+    return out + (i <= lines.length ? `(${lines.length} lines; continue with offset ${i})\n` : "");
+  }
+  if (name === "glob") {
+    if (typeof a.pattern !== "string" || !a.pattern) throw new Error("pattern is required");
+    const { real, root, mount } = hostPath(mounts, a.path ?? "/repo");
+    const re = globRegex(a.pattern);
+    const base = sandboxPathOf(mount, root, real);
+    const hits = walkFiles(real, 50_000).filter((r) => re.test(r));
+    return hits.length ? hits.slice(0, GLOB_MAX).map((r) => `${base}/${r}`).join("\n") + (hits.length > GLOB_MAX ? `\n(${hits.length} files; narrow the pattern)` : "") : "no files match";
+  }
+  if (name === "grep") {
+    if (typeof a.pattern !== "string" || !a.pattern) throw new Error("pattern is required");
+    const { real, root, mount } = hostPath(mounts, a.path ?? "/repo");
+    const args = ["-rnIE", "--exclude-dir=.git", ...(a.ignore_case === true ? ["-i"] : []), ...(typeof a.glob === "string" && a.glob ? [`--include=${a.glob}`] : []), "-e", a.pattern, "--", real];
+    const r = spawnSync("grep", args, { encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 * 1024, env: { PATH: "/usr/bin:/bin", LC_ALL: "C.UTF-8" } });
+    if (r.error) throw new Error(`grep failed: ${r.error.message.includes("ETIMEDOUT") ? "timed out" : r.error.message}`);
+    if (r.status === 2) throw new Error(`grep: ${(r.stderr ?? "").replaceAll(root, mount.path).trim().slice(0, 300)}`);
+    const lines = (r.stdout ?? "").split("\n").filter(Boolean);
+    if (!lines.length) return "no matches";
+    const shown = lines.slice(0, GREP_MAX_LINES).map((l) => cut(l.startsWith(root) ? sandboxPathOf(mount, root, l.slice(0, root.length)) + l.slice(root.length) : l));
+    return shown.join("\n") + (lines.length > GREP_MAX_LINES ? `\n(${lines.length} matching lines; narrow the pattern or path)` : "");
+  }
+  throw new Error(`unknown tool ${name}`);
+}
+
+/**
+ * One JSON-RPC message to the file tools' MCP server: the reply, or null for a notification.
+ * @param {{ host: string, path: string }[]} mounts @param {any} m
+ */
+export function fileToolsMessage(mounts, m) {
+  if (!m || typeof m !== "object" || typeof m.method !== "string") return m?.id !== undefined ? { jsonrpc: "2.0", id: m.id, error: { code: -32600, message: "invalid request" } } : null;
+  if (m.id === undefined) return null;
+  const ok = (/** @type {unknown} */ result) => ({ jsonrpc: "2.0", id: m.id, result });
+  switch (m.method) {
+    case "initialize": return ok({ protocolVersion: typeof m.params?.protocolVersion === "string" ? m.params.protocolVersion : "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: FILE_TOOLS_SERVER, version: HELPER_VERSION } });
+    case "ping": return ok({});
+    case "tools/list": return ok({ tools: FILE_TOOLS });
+    case "tools/call": {
+      const name = m.params?.name, args = m.params?.arguments && typeof m.params.arguments === "object" ? m.params.arguments : {};
+      try { return ok({ content: [{ type: "text", text: runFileTool(mounts, String(name), args) }] }); }
+      catch (e) { return ok({ content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }], isError: true }); }
+    }
+    default: return { jsonrpc: "2.0", id: m.id, error: { code: -32601, message: `method ${m.method} not found` } };
+  }
+}
+
+/**
+ * Serves the file tools for one run on 127.0.0.1; `close` stops it.
+ * @param {{ host: string, path: string }[]} mounts @returns {Promise<{ url: string, token: string, close: () => void }>}
+ */
+function serveFileTools(mounts) {
+  const token = randomBytes(24).toString("hex");
+  const want = Buffer.from(`Bearer ${token}`);
+  const server = createServer((req, res) => {
+    const auth = Buffer.from(req.headers.authorization ?? "");
+    if (auth.length !== want.length || !timingSafeEqual(auth, want)) { res.writeHead(401).end(); return; }
+    if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }).end(); return; }
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (d) => { body += d; if (body.length > 1_000_000) req.destroy(); });
+    req.on("end", () => {
+      let m;
+      try { m = JSON.parse(body); } catch { res.writeHead(400).end(); return; }
+      const replies = (Array.isArray(m) ? m : [m]).map((x) => fileToolsMessage(mounts, x)).filter((x) => x !== null);
+      if (!replies.length) { res.writeHead(202).end(); return; }
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(Array.isArray(m) ? replies : replies[0]));
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const a = server.address();
+      const port = a && typeof a === "object" ? a.port : 0;
+      resolve({ url: `http://127.0.0.1:${port}/mcp`, token, close: () => server.close() });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The Codex adapter. What it relies on, from the Codex CLI source at tag rust-v0.170.0
+// (github.com/openai/codex, paths under codex-rs/) and its docs (non-interactive mode, auth):
+// - `codex exec` flags --json, --color, --skip-git-repo-check, --ignore-user-config, --ignore-rules, --ephemeral, -C, the
+//   prompt from stdin with `-`, and `exec resume <id>` taking the same flags: exec/src/cli.rs. Exec always runs with the
+//   approval policy "never": exec/src/lib.rs. A resume id that matches no thread starts a new one, so only the thread
+//   UUID the first run reported is passed.
+// - JSONL events thread.started {thread_id}, item.started/item.completed {item: agent_message | mcp_tool_call | error |
+//   ...}, turn.completed {usage}, turn.failed {error}, error: exec/src/exec_events.rs. Usage is the thread total;
+//   input_tokens includes cached_input_tokens and output_tokens includes reasoning: exec/src/event_processor_with_jsonl_output.rs,
+//   protocol/src/protocol.rs (TokenUsage). No event names the model except an error item "model rerouted: A -> B (...)",
+//   so the reply reports the configured model, or the model it was rerouted to.
+// - `-c key=value` values are TOML (utils/cli/src/config_override.rs) and keys split at every "." (config/src/overrides.rs):
+//   tables go in as inline tables. Keys used: model, model_reasoning_effort (protocol/src/openai_models.rs),
+//   developer_instructions, project_doc_max_bytes, web_search, agents, features, cli_auth_credentials_store,
+//   shell_environment_policy, default_permissions, permissions, mcp_servers: config/src/config_toml.rs, features/src/lib.rs.
+// - MCP: streamable HTTP servers with url and bearer_token_env_var (an inline bearer_token is refused);
+//   default_tools_approval_mode = "approve" lets exec call their tools under approval "never": config/src/mcp_types.rs,
+//   core/src/mcp_tool_call.rs. The model sees them as mcp__<server>__<tool>: codex-mcp/src/tools.rs.
+// - The credential. Codex's own sandbox does not keep the model's shell commands away from CODEX_HOME on Linux:
+//   read-only mode grants read on the whole root (protocol/src/permissions.rs:597-604, read_only_file_system_entries),
+//   Codex adds CODEX_HOME to the sandbox policy only on Windows (sandboxing/src/manager.rs:726-760), and nothing in
+//   linux-sandbox/src names CODEX_HOME or auth.json. A permission profile with a "deny" entry would mask it, but when
+//   Codex cannot mount a fresh /proc it silently keeps the outer one (linux-sandbox/src/linux_run_main.rs:395-415,
+//   run_bwrap_with_proc_fallback), and /proc/<codex pid>/root then reaches CODEX_HOME past the entry. So the shell is
+//   turned off (features shell_tool and unified_exec: core/src/tools/spec_plan.rs:1289-1296, add_shell_tools), with the
+//   other built-in tools that act outside the task (browser, computer use, apps, plugins, hooks, image generation,
+//   subagents, web search), and the model reads through the helper's file tools above, which the codex process reaches
+//   over HTTP. What is left reads through Codex's sandbox (view_image: core/src/tools/handlers/view_image.rs), which a
+//   permission profile extending ":read-only" (no writes, no network: protocol/src/models.rs:494-500) with CODEX_HOME
+//   denied confines: config/src/permissions_toml.rs:113-119, exec/tests/suite/seatbelt.rs:305-311. `--sandbox` is never
+//   passed, as it would replace the profile (config/src/permission_config.rs:46-48). shell_environment_policy sets the
+//   whole environment of any command (protocol/src/shell_environment.rs, populate_env), so no secret from the codex
+//   process's environment reaches one.
+// - The login. A separate CODEX_HOME is a separate login with its own refresh token. Refresh tokens rotate with reuse
+//   detection, Codex writes the new tokens back to auth.json, and two processes refreshing one auth.json race
+//   (login/src/auth/manager.rs, login/src/auth/storage.rs). So the helper keeps its own CODEX_HOME (`harness codex` runs
+//   `codex login` in it), binds it writable, never copies the user's ~/.codex, and runs one Codex call at a time.
+// - Instructions and config. $CODEX_HOME/AGENTS.md (or AGENTS.override.md) and $CODEX_HOME/.env are read even with
+//   --ignore-user-config (codex-home/src/instructions/mod.rs, arg0/src/lib.rs), so the helper removes them from its home;
+//   project_doc_max_bytes = 0 turns off AGENTS.md from the working directory (core/src/agents_md.rs); /etc/codex is not
+//   in the sandbox.
+// Codex has no turn limit: the bundle's wall-clock limit bounds the call.
+
+const SANDBOX_CODEX = "/opt/codex/codex";
+const CODEX_HOME_PATH = "/codex-home";
+const CODEX_PROFILE = "autocraft";
+const LEASE_ENV = "AUTOCRAFT_TASK_LEASE_SECRET";
+const FILES_ENV = "AUTOCRAFT_TASK_FILES_TOKEN";
+/** Files Codex reads from CODEX_HOME whatever the flags say. */
+const CODEX_HOME_INSTRUCTIONS = ["AGENTS.md", "AGENTS.override.md", ".env", "config.toml"];
+const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Built-in Codex features turned off: the shell, and every tool that reaches past the task directory or the call's MCP servers. */
+const CODEX_FEATURES_OFF = ["shell_tool", "unified_exec", "unified_exec_tty", "shell_snapshot", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "in_app_browser", "computer_use", "apps", "plugins", "remote_plugin", "tool_suggest", "skill_search", "skill_mcp_dependency_install", "hooks", "image_generation", "multi_agent", "goals", "workspace_dependencies"];
+
+/** A TOML basic string: JSON's escapes are TOML's, except that TOML also forbids a raw DEL. @param {string} v */
+const toml = (v) => JSON.stringify(v).replace(/\u007f/g, "\\u007F");
+
+/**
+ * `codex` arguments for one call: exec (or exec resume) reading the prompt on stdin, the model and effort, no shell,
+ * the call's MCP servers on our dashboard and the helper's file tools (tokens from the environment), and none of the
+ * user's config or instructions.
+ * @param {{ model: string, effort: string, system: string | null, server: string, servers: string[], files: string, keepSession: boolean, resumeId?: string, toolTimeoutSec: number }} o
+ */
+export function codexArgs(o) {
+  if (o.resumeId !== undefined && !THREAD_ID.test(o.resumeId)) throw new Error(`not a Codex thread id: ${o.resumeId}`);
+  const http = (/** @type {string} */ name, /** @type {string} */ url, /** @type {string} */ env, /** @type {number} */ timeout) =>
+    `${name}={url=${toml(url)}, bearer_token_env_var="${env}", default_tools_approval_mode="approve", startup_timeout_sec=30, tool_timeout_sec=${timeout}}`;
+  const mcp = o.servers.map((n) => {
+    if (!NAME.test(n) || n.includes(".") || n === FILE_TOOLS_SERVER) throw new Error(`bad MCP server name ${n}`);
+    return http(n, `${o.server}${ROUTES.mcp}/${n}`, LEASE_ENV, Math.max(60, Math.round(o.toolTimeoutSec)));
+  });
+  return ["exec", "--json", "--color", "never", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "-C", WORK_PATH,
+    // A call whose session may get a follow-up keeps its rollout in CODEX_HOME; any other leaves nothing behind.
+    ...(o.keepSession || o.resumeId ? [] : ["--ephemeral"]),
+    "-c", `model=${toml(o.model)}`, "-c", `model_reasoning_effort=${toml(o.effort)}`,
+    "-c", "project_doc_max_bytes=0", "-c", 'web_search="disabled"', "-c", "agents={enabled=false}", "-c", 'cli_auth_credentials_store="file"',
+    "-c", `features={${CODEX_FEATURES_OFF.map((f) => `${f}=false`).join(", ")}}`,
+    "-c", `shell_environment_policy={inherit="none", set={PATH="/usr/bin", HOME="${SANDBOX_HOME}", LANG="C.UTF-8"}}`,
+    "-c", `default_permissions="${CODEX_PROFILE}"`,
+    "-c", `permissions={${CODEX_PROFILE}={extends=":read-only", filesystem={"${CODEX_HOME_PATH}"="deny"}}}`,
+    "-c", `mcp_servers={${[http(FILE_TOOLS_SERVER, o.files, FILES_ENV, 60), ...mcp].join(", ")}}`,
+    ...(o.system ? ["-c", `developer_instructions=${toml(o.system)}`] : []),
+    ...(o.resumeId ? ["resume", o.resumeId] : []),
+    "-"];
+}
+
+/**
+ * The bwrap command for `codex`: the same outer sandbox as `claudeSandbox` (fixed paths, empty home, the binary
+ * read-only, every mount read-only, network shared), with the helper's CODEX_HOME bound writable at /codex-home so
+ * Codex can refresh its login and keep sessions. Tokens are only in `env`, never in `args`.
+ * @param {{ codexBin: string, codexHome: string, codexArgs: string[], mounts: { host: string, path: string }[], env?: Record<string, string> }} s
+ */
+export function codexSandbox(s) {
+  const mounts = s.mounts.map((m) => ({ host: m.host, path: checkMountPath(m.path) }));
+  const parents = [...new Set(mounts.map((m) => dirname(m.path)).filter((d) => d !== "/" && !mounts.some((m) => m.path === d)))];
+  const repo = mounts.filter((m) => m.path === "/repo"), rest = mounts.filter((m) => m.path !== "/repo");
+  const args = [
+    "--unshare-all", "--share-net", "--die-with-parent", "--new-session",
+    "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin",
+    "--ro-bind", "/etc/ssl", "/etc/ssl", "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
+    "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+    "--tmpfs", SANDBOX_HOME,
+    "--bind", s.codexHome, CODEX_HOME_PATH,
+    "--ro-bind", s.codexBin, SANDBOX_CODEX,
+    "--tmpfs", WORK_PATH,
+    ...repo.flatMap((m) => ["--ro-bind", m.host, m.path]),
+    ...parents.flatMap((d) => ["--dir", d]),
+    ...rest.flatMap((m) => ["--ro-bind", m.host, m.path]),
+    "--chdir", WORK_PATH,
+    SANDBOX_CODEX, ...s.codexArgs,
+  ];
+  return { cmd: BWRAP, args, env: { HOME: SANDBOX_HOME, CODEX_HOME: CODEX_HOME_PATH, PATH: "/usr/bin", LANG: "C.UTF-8", ...s.env } };
+}
+
+/** @param {unknown} u @returns {Usage | undefined} */
+function codexUsage(u) {
+  if (!u || typeof u !== "object") return undefined;
+  const x = /** @type {Record<string, unknown>} */ (u);
+  const n = (/** @type {unknown} */ v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  const cached = n(x.cached_input_tokens);
+  return { inputTokens: Math.max(0, n(x.input_tokens) - cached), outputTokens: n(x.output_tokens), cacheReadTokens: cached, cacheWriteTokens: n(x.cache_write_input_tokens) };
+}
+
+/**
+ * Reads `codex exec --json` output: the last agent message of the completed turn, the usage it reported, the thread
+ * id for a resume, the tool calls as turns, and the model (the configured one, or the one a reroute named).
+ * @param {string} stdout @param {string} model the configured model
+ * @returns {Reply}
+ */
+export function parseCodexOutput(stdout, model) {
+  /** @type {any[]} */
+  const evs = stdout.split("\n").filter((l) => l.startsWith("{")).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+  const sessionId = evs.find((e) => e?.type === "thread.started" && typeof e.thread_id === "string")?.thread_id;
+  const items = evs.filter((e) => e?.type === "item.completed" && e.item && typeof e.item === "object").map((e) => e.item);
+  const rerouted = items.map((i) => (i.type === "error" && typeof i.message === "string" ? /^model rerouted: \S+ -> (\S+)/.exec(i.message)?.[1] : undefined)).filter(Boolean).at(-1);
+  const done = evs.findLast((e) => e?.type === "turn.completed");
+  const failed = evs.findLast((e) => e?.type === "turn.failed" || e?.type === "error");
+  const base = { model: rerouted ?? model, usage: codexUsage(done?.usage), ...(sessionId && { sessionId }) };
+  if (!done) {
+    const why = typeof failed?.error?.message === "string" ? failed.error.message : typeof failed?.message === "string" ? failed.message : "";
+    return { ok: false, text: "", ...base, error: failed ? `model error ${why}`.trim().slice(0, 400) : evs.length ? "no result" : "unreadable output" };
+  }
+  const text = items.findLast((i) => i.type === "agent_message" && typeof i.text === "string")?.text;
+  if (text === undefined) return { ok: false, text: "", ...base, error: "no reply message" };
+  return { ok: true, text, ...base, turns: items.filter((i) => i.type === "mcp_tool_call").length + 1 };
+}
+
+/** The progress line of one `codex exec --json` line, or null. @param {string} raw */
+export function codexProgress(raw) {
+  if (!raw.startsWith("{")) return null;
+  try {
+    const e = JSON.parse(raw);
+    const i = e.type === "item.started" ? e.item : null;
+    if (i?.type !== "mcp_tool_call" || typeof i.server !== "string" || typeof i.tool !== "string") return null;
+    const a = i.arguments && typeof i.arguments === "object" ? i.arguments : {};
+    if (i.server === FILE_TOOLS_SERVER) {
+      if (i.tool === "read_file") return toolLine("Read", { file_path: a.path });
+      if (i.tool === "grep") return toolLine("Grep", { pattern: a.pattern, path: a.path });
+      if (i.tool === "glob") return toolLine("Glob", { pattern: a.pattern, path: a.path });
+    }
+    return toolLine(`mcp__${i.server}__${i.tool}`, a);
+  } catch { return null; }
+}
+
+/** The native codex binary: given, or `codex` on PATH; the npm package's launcher script is followed to its vendored binary. @param {Config} cfg */
+function resolveCodexBin(cfg) {
+  const given = process.env.AUTOCRAFT_TASK_CODEX_BIN || cfg.codexBin;
+  const candidates = given ? [given] : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((d) => join(d, "codex"));
+  const triple = process.arch === "arm64" ? "aarch64-unknown-linux-musl" : "x86_64-unknown-linux-musl";
+  const pkgArch = process.arch === "arm64" ? "arm64" : "x64";
+  for (const c of candidates) {
+    let p;
+    try { accessSync(c, constants.X_OK); p = realpathSync(c); } catch { continue; }
+    let head = "";
+    try { const fd = openSync(p, "r"); const b = Buffer.alloc(2); readSync(fd, b, 0, 2, 0); closeSync(fd); head = b.toString("latin1"); } catch { /* unreadable */ }
+    if (head !== "#!") return p;
+    // npm: <pkg>/bin/codex.js runs <platform pkg>/vendor/<triple>/bin/codex, or <pkg>/vendor/<triple>/bin/codex.
+    const pkg = dirname(dirname(p));
+    for (const v of [join(pkg, "node_modules", "@openai", `codex-linux-${pkgArch}`, "vendor"), join(dirname(pkg), `codex-linux-${pkgArch}`, "vendor"), join(pkg, "vendor")]) {
+      const bin = join(v, triple, "bin", "codex");
+      try { accessSync(bin, constants.X_OK); return realpathSync(bin); } catch { /* next */ }
+    }
+  }
+  return null;
+}
+
+/** The helper's own Codex login and sessions: never the user's ~/.codex. */
+const codexHome = () => join(configDir(), "codex-home");
+
+/** @type {Adapter} */
+const codexAdapter = {
+  id: "codex",
+  token: () => (existsSync(join(codexHome(), "auth.json")) ? codexHome() : undefined),
+  // Codex model ids change often and the operators accept them by name: every tier's model comes from the config.
+  defaultTiers: {},
+  exclusive: true,
+  fileTools: true,
+  detect(cfg) {
+    const bin = resolveCodexBin(cfg);
+    let version = null;
+    if (bin) {
+      const r = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 20_000, env: { PATH: process.env.PATH ?? "/usr/bin", HOME: homedir(), CODEX_HOME: codexHome() } });
+      version = r.status === 0 ? (r.stdout.trim().split(/\s+/).at(-1) || null) : null;
+    }
+    return { bin, version, loggedIn: !!this.token(cfg) };
+  },
+  preflight(_bin, home) {
+    for (const f of CODEX_HOME_INSTRUCTIONS) rmSync(join(home, f), { force: true });
+    return null;
+  },
+  command(t) {
+    if (!t.files) throw new Error("the file tools are not running");
+    const args = codexArgs({ model: t.model, effort: t.bundle.effort, system: t.bundle.system, server: t.lease.server, servers: t.bundle.mcpServers, files: t.files.url, keepSession: t.bundle.keepSession, ...(t.resumeId && { resumeId: t.resumeId }), toolTimeoutSec: t.bundle.timeoutSeconds });
+    return codexSandbox({ codexBin: t.bin, codexHome: t.token, codexArgs: args, mounts: t.mounts, env: { [FILES_ENV]: t.files.token, ...(t.bundle.mcpServers.length && { [LEASE_ENV]: t.lease.secret }) } });
+  },
+  parse: parseCodexOutput,
+  resume: (args, sessionId) => {
+    if (!THREAD_ID.test(sessionId)) throw new Error(`not a Codex thread id: ${sessionId}`);
+    const out = args.slice(0, -1).filter((a, i, all) => a !== "resume" && all[i - 1] !== "resume" && a !== "--ephemeral");
+    return [...out, "resume", sessionId, "-"];
+  },
+  progress: codexProgress,
+  versionInSandbox: (bin) => codexSandbox({ codexBin: bin, codexHome: codexHome(), codexArgs: ["--version"], mounts: [] }),
+};
+
+/** @type {Record<HarnessId, Adapter>} */
+const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter };
 
 // ---------------------------------------------------------------------------
 // Files: config and lease secrets under the config directory (mode 0700/0600), everything else in the cache.
@@ -412,6 +820,7 @@ const ADAPTERS = { claude: claudeAdapter, codex: undefined };
  * @property {HarnessId} [harness]
  * @property {string} [claudeToken]
  * @property {string} [claudeBin]
+ * @property {string} [codexBin]
  * @property {Partial<Record<Tier, string>>} [tiers]  model per tier; defaults are the adapter's
  * @property {string[]} [repos]
  */
@@ -704,9 +1113,11 @@ async function claimOnce(cfg) {
   const adapter = adapterOf(cfg);
   const d = adapter.detect(cfg);
   if (!d.bin || !d.version) throw new Error(`${adapter.id} not found or not runnable`);
-  if (!d.loggedIn) throw new Error(`no ${adapter.id} token: run \`autocraft-task harness ${adapter.id}\``);
+  if (!d.loggedIn) throw new Error(`no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
+  const tiers = { ...adapter.defaultTiers, ...cfg.tiers };
+  if (!Object.keys(tiers).length) throw new Error(`no model is set for any tier: add "tiers" (top, mid, small) with ${adapter.id} model ids to ${join(configDir(), "config.json")}`);
   /** @type {Claim} */
-  const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers: { ...adapter.defaultTiers, ...cfg.tiers }, ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions() };
+  const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions() };
   /** @type {ClaimReply} */
   const reply = await api(server, ROUTES.claim, agentToken, claim);
   if (reply.lease) {
@@ -757,17 +1168,25 @@ async function runLease(cfg, id, opt = {}) {
   if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`, true);
   const problem = platformProblem();
   if (problem) return giveBack(problem, true);
-  let taskDir = "";
+  let taskDir = "", unlock = () => {}, files = /** @type {{ url: string, token: string, close: () => void } | null} */ (null);
   try {
     try { prune(); } catch { /* best effort */ }
     const adapter = adapterOf(cfg);
     const d = adapter.detect(cfg);
     const token = adapter.token(cfg);
     if (!d.bin || !token) return giveBack(`${adapter.id} binary or token missing on the helper`, true);
+    if (adapter.exclusive) {
+      const release = takeHarnessLock(adapter.id);
+      if (!release) return giveBack(`another ${adapter.id} call is running on this helper, and they share one login`);
+      unlock = release;
+    }
+    const unsafe = adapter.preflight?.(d.bin, token);
+    if (unsafe) return giveBack(unsafe, true);
     /** @type {TaskBundle} */
     const b = await api(lease.server, ROUTES.bundle, lease.secret);
     if (typeof b?.callId !== "number" || typeof b.stdin !== "string" || !Array.isArray(b.mounts) || !Array.isArray(b.mcpServers)) return fail("unreadable bundle");
     const model = { ...adapter.defaultTiers, ...cfg.tiers }[b.tier];
+    if (!model) return giveBack(`no ${adapter.id} model is set for the ${b.tier} tier ("tiers" in the config)`);
     privateDir(join(cacheDir(), "tasks"));
     taskDir = mkdtempSync(join(cacheDir(), "tasks", `${b.callId}-`));
     let mounts;
@@ -791,7 +1210,8 @@ async function runLease(cfg, id, opt = {}) {
       privateDir(sessionsDir());
       sessionDir = mkdtempSync(join(sessionsDir(), "store-"));
     }
-    const c = adapter.command({ bundle: b, model, bin: d.bin, token, mounts, taskDir, mcpFile, sessionDir, resumeId });
+    if (adapter.fileTools) files = await serveFileTools(mounts);
+    const c = adapter.command({ bundle: b, model, bin: d.bin, token, mounts, taskDir, mcpFile, sessionDir, resumeId, lease: { server: lease.server, secret: lease.secret }, ...(files && { files: { url: files.url, token: files.token } }) });
     const r = await harness(c, b, lease, opt.signal, adapter);
     if (r.gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
     const reply = adapter.parse(r.stdout, model);
@@ -808,6 +1228,8 @@ async function runLease(cfg, id, opt = {}) {
     if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
     return fail(msg(e));
   } finally {
+    files?.close();
+    unlock();
     if (taskDir) rmSync(taskDir, { recursive: true, force: true });
     secretsInUse.delete(lease.secret);
   }
@@ -902,12 +1324,30 @@ async function cmdLogin(argv) {
 /** @param {string[]} argv */
 async function cmdHarness(argv) {
   const id = argv[0];
-  if (id !== "claude") throw new Error("usage: autocraft-task harness claude  (a `claude setup-token` token on stdin)");
+  if (id === "codex") return codexLogin(argv.slice(1));
+  if (id !== "claude") throw new Error("usage: autocraft-task harness claude  (a `claude setup-token` token on stdin)\n       autocraft-task harness codex [--device-auth]");
   const token = await readSecret("Claude token (from `claude setup-token`): ");
   if (!token || /\s/.test(token)) throw new Error("no token on stdin");
   saveConfig({ ...loadConfig(), harness: "claude", claudeToken: token });
   const d = claudeAdapter.detect(loadConfig());
   console.log(d.bin ? `stored the Claude token; claude ${d.version ?? "(version unknown)"} at ${d.bin}` : "stored the Claude token; claude was not found on PATH");
+}
+
+/**
+ * Logs Codex in to the helper's own CODEX_HOME, a login separate from the user's ~/.codex with its own refresh token,
+ * so the helper's refreshes never invalidate the user's session. `--device-auth` for a machine without a browser.
+ * @param {string[]} argv
+ */
+async function codexLogin(argv) {
+  const extra = argv.filter((a) => a === "--device-auth");
+  const bin = resolveCodexBin(loadConfig());
+  if (!bin) throw new Error("codex was not found on PATH (or set codexBin in the config)");
+  privateDir(codexHome());
+  const r = spawnSync(bin, ["-c", 'cli_auth_credentials_store="file"', "login", ...extra], { stdio: "inherit", env: { ...process.env, CODEX_HOME: codexHome() } });
+  if (r.status !== 0) throw new Error(`codex login failed (exit ${r.status})`);
+  saveConfig({ ...loadConfig(), harness: "codex" });
+  const tiers = loadConfig().tiers ?? {};
+  console.log(`logged Codex in for the helper (its own login in ${codexHome()}); harness set to codex${Object.keys(tiers).length ? "" : `. Set "tiers" in ${join(configDir(), "config.json")}: the Codex model id for top, mid and small`}`);
 }
 
 async function cmdClaim() {
@@ -980,11 +1420,30 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return /** @type {any} */ (e).code === "EPERM"; }
 }
 
+/** Takes the helper-wide lock of one harness (a lock file naming a live process); the release function, or null when another process holds it. @param {string} id */
+function takeHarnessLock(id) {
+  privateDir(configDir());
+  const file = join(configDir(), `${id}.lock`);
+  for (let i = 0; i < 2; i++) {
+    try {
+      writeFileSync(file, String(process.pid), { flag: "wx", mode: 0o600 });
+      return () => rmSync(file, { force: true });
+    } catch {
+      const pid = Number.parseInt((() => { try { return readFileSync(file, "utf8"); } catch { return ""; } })(), 10);
+      if (pid > 0 && alive(pid)) return null;
+      rmSync(file, { force: true });
+    }
+  }
+  return null;
+}
+
 /** @param {string[]} argv */
 async function cmdWork(argv) {
   const i = argv.indexOf("--parallel");
   const n = i >= 0 ? Number(argv[i + 1]) : 1;
   if (!Number.isInteger(n) || n < 1 || n > 16) throw new Error("--parallel takes a number from 1 to 16");
+  const exclusive = adapterOf(loadConfig());
+  if (exclusive.exclusive && n > 1) throw new Error(`${exclusive.id} runs one call at a time: its login refreshes in place and must not be shared by parallel calls`);
   const problem = platformProblem();
   if (problem) throw new Error(problem);
   const ac = new AbortController();
@@ -1031,11 +1490,15 @@ async function cmdDoctor() {
   const d = adapter.detect(cfg);
   check(!!d.bin && !!d.version, d.bin ? `${adapter.id} ${d.version ?? "(no version)"} at ${d.bin}` : `${adapter.id} not found on PATH`);
   if (d.bin) {
-    const c = claudeSandbox({ claudeBin: d.bin, claudeArgs: ["--version"], mounts: [] });
+    const c = adapter.versionInSandbox(d.bin);
     const r = spawnSync(c.cmd, c.args, { env: c.env, encoding: "utf8", timeout: 30_000 });
     check(r.status === 0, r.status === 0 ? `${adapter.id} runs inside the sandbox` : `${adapter.id} does not run inside the sandbox: ${redact((r.stderr || "").trim()).slice(0, 200)}`);
   }
-  check(d.loggedIn, d.loggedIn ? `${adapter.id} token stored` : `no ${adapter.id} token: run \`autocraft-task harness ${adapter.id}\``);
+  check(d.loggedIn, d.loggedIn ? `${adapter.id} login stored` : `no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
+  if (adapter.id === "codex" && d.bin && d.loggedIn) {
+    const r = spawnSync(d.bin, ["login", "status"], { encoding: "utf8", timeout: 30_000, env: { PATH: process.env.PATH ?? "/usr/bin", HOME: homedir(), CODEX_HOME: codexHome() } });
+    check(r.status === 0, r.status === 0 ? `codex: ${(r.stderr || r.stdout).trim().split("\n")[0]}` : "codex login status: not logged in; run `autocraft-task harness codex`");
+  }
   check(!!cfg.server && !!cfg.agentToken, cfg.server ? `server ${cfg.server}${cfg.agentToken ? ", agent token stored" : ", no agent token"}` : "not logged in: run `autocraft-task login <server-url>`");
   if (cfg.server) {
     try {
@@ -1043,7 +1506,8 @@ async function cmdDoctor() {
       check(res.ok, res.ok ? "server reachable" : `server answered HTTP ${res.status}`);
     } catch (e) { check(false, `server unreachable: ${msg(e)}`); }
   }
-  check(true, `tiers: ${Object.entries({ ...adapter.defaultTiers, ...cfg.tiers }).map(([t, m]) => `${t}=${m}`).join(", ")}`);
+  const tiers = Object.entries({ ...adapter.defaultTiers, ...cfg.tiers });
+  check(tiers.length > 0, tiers.length ? `tiers: ${tiers.map(([t, m]) => `${t}=${m}`).join(", ")}` : `no tiers set: add "tiers" with ${adapter.id} model ids to the config`);
   return bad ? 1 : 0;
 }
 
@@ -1140,6 +1604,7 @@ const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls unde
 
   login <server-url>          store the agent token (read from stdin)
   harness claude              store a \`claude setup-token\` token (read from stdin)
+  harness codex [--device-auth]  log Codex in to the helper's own CODEX_HOME (not your ~/.codex)
   claim                       claim one call; prints its lease id
   run [--detach] [<lease>]    run a claimed lease, or claim and run one
   wait <lease>                wait for a detached run (returns after at most 9 minutes)
@@ -1149,7 +1614,8 @@ const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls unde
   tool <server-name> <tool> [<json>] [<lease>]
                               one tool call without MCP; prints the result
 
-Config: ${"$XDG_CONFIG_HOME"}/autocraft-task/config.json (mode 0600); "tiers" maps top/mid/small to models.`;
+Config: ${"$XDG_CONFIG_HOME"}/autocraft-task/config.json (mode 0600); "tiers" maps top/mid/small to models
+(Claude defaults to opus, sonnet and haiku; Codex has no defaults).`;
 
 /** @param {string[]} argv */
 export async function main(argv) {

@@ -11,6 +11,7 @@ import type { Usage } from "../classify/run.ts";
 import { randomToken, sha256hex } from "../dash/server/crypto.ts";
 import { HttpError } from "../dash/server/util.ts";
 import type { Role } from "../dash/types.ts";
+import { fillHarness } from "../prompts/harness.ts";
 import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { acceptedModels, familyOf, isTier, TIERS } from "./mode.ts";
@@ -263,7 +264,7 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
       db.exec("COMMIT");
       return null;
     }
-    const b = JSON.parse(r.bundle) as Omit<TaskBundle, "callId">;
+    const b = forHarness(JSON.parse(r.bundle) as Omit<TaskBundle, "callId">, claim.harness);
     const refs = JSON.parse(r.items) as ItemRef[];
     const runId = insertRun(db, { jobId: r.job_id, step: r.step, stage: r.stage, promptId: r.prompt_id, promptVersion: r.prompt_version, provider: "claude", model: r.asked_model, accountId: null, items: refs, prompt: joinParts(b) });
     db.prepare("UPDATE main.agent_runs SET user_login = ?, harness = ?, reported_model = ? WHERE id = ?").run(caller.login, claim.harness, model, runId);
@@ -341,12 +342,18 @@ export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, 
 
 // ---- lease routes ------------------------------------------------------------------
 
-/** The task bundle of a live lease, or null. */
+/** A queued bundle as one harness reads it: the marked harness phrases of its text, and of the `claude` hints that carry the system prompt, filled in. */
+export function forHarness<B extends Omit<TaskBundle, "callId">>(b: B, harness: HarnessId): B {
+  const claude = b.hints.claude;
+  return { ...b, stdin: fillHarness(b.stdin, harness), system: b.system === null ? null : fillHarness(b.system, harness), hints: { ...b.hints, ...(claude && { claude: { ...claude, args: claude.args.map((a) => fillHarness(a, "claude")) } }) } };
+}
+
+/** The task bundle of a live lease, worded for the harness that claimed it, or null. */
 export function bundleOf(db: DatabaseSync, secret: string | undefined): TaskBundle | null {
   const l = liveLease(db, secret);
   if (!l) return null;
-  const r = db.prepare("SELECT bundle FROM main.remote_calls WHERE id = ?").get(l.id) as { bundle: string };
-  return { ...(JSON.parse(r.bundle) as Omit<TaskBundle, "callId">), callId: l.id };
+  const r = db.prepare("SELECT bundle, harness FROM main.remote_calls WHERE id = ?").get(l.id) as { bundle: string; harness: HarnessId };
+  return { ...forHarness(JSON.parse(r.bundle) as Omit<TaskBundle, "callId">, r.harness), callId: l.id };
 }
 
 /** A plain one-line progress text from the helper: control characters removed, scrubbed, cut. */

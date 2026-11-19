@@ -35,7 +35,7 @@ export const TIERS: readonly Tier[] = ["top", "mid", "small"];
 export const isTier = (v: unknown): v is Tier => typeof v === "string" && (TIERS as readonly string[]).includes(v);
 
 export const REMOTE_MODELS_KEY = "remote_models";
-/** Codex's top model: a placeholder family, not verified against Codex's model ids; operators correct it in the setting. */
+/** Codex's top model family: matches the Astra ids of Codex's bundled model catalogue (gpt-6.2-astra, gpt-6-astra); operators change it in the setting. */
 export const CODEX_TOP_PLACEHOLDER = "astra";
 /** The model families each tier accepts unless the `remote_models` setting says otherwise. */
 export const DEFAULT_REMOTE_MODELS: Record<Tier, string[]> = { top: ["opus", CODEX_TOP_PLACEHOLDER], mid: ["sonnet"], small: ["haiku"] };

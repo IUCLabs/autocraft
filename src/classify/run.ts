@@ -649,7 +649,9 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
   const sandboxed = at !== null;
   const docs = sandboxed && p.sandbox?.docs ? await docsOf(db, opts.checkout!) : undefined;
   if (docs) input = input.map((x) => ({ ...x, repo_docs: true })) as ClaudeInput[K];
-  const parts = claudeParts(id, input, sandboxed);
+  const reference = sandboxed && p.sandbox?.reference === true && opts.reference !== undefined;
+  if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
+  const parts = claudeParts(id, input, sandboxed, true);
   const items = refsOf(input);
   const resume = ses?.resume;
   const parent = resume ? remoteParent(resume.session) : null;
@@ -659,7 +661,6 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
     const workspace = sandboxed && p.sandbox?.workspace === true;
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
     const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;
-    const reference = sandboxed && p.sandbox?.reference === true && opts.reference !== undefined;
     const servers = [...Object.keys(it?.mcpServers ?? {}), ...(checkTool ? [CHECK_SERVER] : []), ...(reference ? [REFERENCE_SERVER] : [])].sort();
     const persist = sandboxed && ((opts.lint !== undefined && p.lint === true) || checkTool !== undefined || ses !== undefined);
     const args = claudeArgs(id, model, sandboxed, servers.length ? { config: MCP_PATH, servers } : undefined, parts.system, false, persist, docs !== undefined);
