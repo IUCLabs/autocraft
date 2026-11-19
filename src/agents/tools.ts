@@ -1,4 +1,4 @@
-// Tool uses of a model call, read from the `claude -p` event stream and stored per agent run (agent_run_tools).
+// Tool uses of a model call, read from the `claude -p` event stream (or reported by a remote call's helper) and stored per agent run (agent_run_tools).
 // Arguments are scrubbed and capped; results are never stored, only their size.
 import type { DatabaseSync } from "node:sqlite";
 import { scrub } from "../runner/scrub.ts";
@@ -60,7 +60,41 @@ export function clockLine(clock: ToolClock, raw: string, at: string = new Date()
  * run with the same command, skipping uses whose reply shows the tool wrote no row (refusals, nothing to check).
  */
 export function saveTools(db: DatabaseSync, runId: number, events: unknown, clock?: ToolClock): void {
-  const uses = toolUses(events);
+  saveUses(db, runId, toolUses(events), clock);
+}
+
+const MAX_REMOTE_TOOLS = 1000;
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+const time = (v: unknown): string | null => (typeof v === "string" && ISO.test(v) ? v : null);
+
+/**
+ * Stores the tool uses a remote call's helper reported (src/remote/protocol.ts SubmitTool). The helper's list is the one
+ * source: the lease's own tools (items, reference, check) appear in it as MCP tool uses. Whether a check use wrote a
+ * model_checks row comes from the relay's reply to it (remote_checks), in request order, not from the helper.
+ */
+export function saveRemoteTools(db: DatabaseSync, runId: number, callId: number, raw: unknown): void {
+  if (!Array.isArray(raw)) return;
+  const relayed = (db.prepare("SELECT result FROM main.remote_checks WHERE call_id = ? AND run_id = ? ORDER BY id").all(callId, runId) as { result: string | null }[])
+    .map((r) => { try { return textOf((JSON.parse(r.result ?? "null") as { text?: unknown } | null)?.text); } catch { return ""; } });
+  const clock: ToolClock = { start: new Map(), end: new Map() };
+  const uses: ToolUse[] = [];
+  for (const t of raw.slice(0, MAX_REMOTE_TOOLS) as Record<string, unknown>[]) {
+    if (!t || typeof t !== "object" || typeof t.name !== "string" || !t.name || typeof t.args !== "string") continue;
+    const id = `#${uses.length}`;
+    const args = scrub(t.args).slice(0, TOOL_ARGS_MAX);
+    let command: string | null = null;
+    if (t.name === CHECK_TOOL_NAME) { try { const c = (JSON.parse(t.args) as { command?: unknown } | null)?.command; command = typeof c === "string" ? c : null; } catch { /* capped or not JSON */ } }
+    const noRow = command !== null && NO_ROW.test(relayed.shift() ?? "");
+    const bytes = typeof t.resultBytes === "number" && Number.isInteger(t.resultBytes) && t.resultBytes >= 0 ? t.resultBytes : null;
+    uses.push({ id, name: t.name.slice(0, 100), args, resultBytes: bytes, isError: t.isError === true, command, noRow });
+    const s = time(t.startedAt), e = time(t.endedAt);
+    if (s) clock.start.set(id, s);
+    if (e) clock.end.set(id, e);
+  }
+  saveUses(db, runId, uses, clock);
+}
+
+function saveUses(db: DatabaseSync, runId: number, uses: ToolUse[], clock?: ToolClock): void {
   if (!uses.length) return;
   const checks = db.prepare("SELECT id, command FROM model_checks WHERE run_id = ? ORDER BY id").all(runId) as { id: number; command: string }[];
   const ins = db.prepare("INSERT OR REPLACE INTO agent_run_tools (run_id, seq, tool, args, result_bytes, is_error, started_at, ended_at, check_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");

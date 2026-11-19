@@ -51,6 +51,11 @@ test("stream-json output gives the reply, the called model's usage, usage per mo
   const cut = helper.parseClaudeOutput(SAMPLE.split("\n").slice(0, 3).join("\n"), "opus");
   assert.equal(cut.ok, false);
   assert.deepEqual(cut.usage, { inputTokens: 9, outputTokens: 120, cacheReadTokens: 15000, cacheWriteTokens: 4000 });
+  // Tool uses for the run's record, timed by the arrival of their lines; the explorer's included.
+  const stamps = SAMPLE.split("\n").map((_, i) => `2026-11-19T10:00:0${i}.000Z`);
+  const tools = helper.claudeTools(SAMPLE, stamps);
+  assert.deepEqual(tools[0], { name: "Read", args: '{"file_path":"/repo/src/lib.rs"}', resultBytes: 12, isError: false, startedAt: stamps[1], endedAt: stamps[2] });
+  assert.deepEqual(tools.map((t) => t.name).slice(0, 2), ["Read", "Grep"]);
 });
 
 test("instruction files and .claude directories are removed from a checkout at any depth", () => {
@@ -174,6 +179,7 @@ test("only audited Codex versions run, and a tool outside the call's MCP servers
     { type: "function_call_output", call_id: "c1", output: "x" },
   ];
   assert.equal(helper.codexRolloutProblem(rollout(fine), servers), null);
+  assert.deepEqual(helper.codexRolloutTools(rollout(fine)).map((t) => [t.name, t.args, t.resultBytes]), [["Read", "{}", 1], ["mcp__items__item", "{}", null], ["view_image", "{}", null]]);
   assert.equal(helper.codexRolloutProblem(rollout([...fine, { type: "function_call", name: "read_file", arguments: "{}", call_id: "c4" }]), servers), "unexpected tool: read_file");
   assert.equal(helper.codexRolloutProblem(rollout([{ type: "function_call", name: "list_dir", namespace: "mcp__reference__", arguments: "{}", call_id: "c5" }]), servers), "unexpected tool: mcp__reference__list_dir");
   assert.equal(helper.codexRolloutProblem(rollout([{ type: "custom_tool_call", name: "exec", input: "", call_id: "c6" }]), servers), "unexpected tool: custom_tool_call");

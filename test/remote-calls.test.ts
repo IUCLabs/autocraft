@@ -49,7 +49,8 @@ describe("user-local remote calls", () => {
     db.prepare("UPDATE mcp_tokens SET idle_claim_at = ?, idle_tiers = '[\"top\"]', idle_repos = NULL WHERE login = ?").run(Date.now(), login);
     db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES (?, 'photocraft', 'write', ?)").run(login, new Date().toISOString());
   };
-  const done = (secret: string, text: string) => submitCall(db, secret, { ok: true, text, model: "claude-opus-4-5", usage: { inputTokens: 100, outputTokens: 20 }, modelUsage: { "claude-opus-4-5": { inputTokens: 90, outputTokens: 15 }, "claude-haiku-4-5": { inputTokens: 10, outputTokens: 5 } }, costUsd: 0.25, durationMs: 1000 });
+  const done = (secret: string, text: string) => submitCall(db, secret, { ok: true, text, model: "claude-opus-4-5", usage: { inputTokens: 100, outputTokens: 20 }, modelUsage: { "claude-opus-4-5": { inputTokens: 90, outputTokens: 15 }, "claude-haiku-4-5": { inputTokens: 10, outputTokens: 5 } }, costUsd: 0.25,
+    tools: [{ name: "mcp__items__item", args: '{"ref":"photocraft#1"}', resultBytes: 300, isError: false, startedAt: "2026-11-19T10:00:00.000Z", endedAt: "2026-11-19T10:00:01.000Z" }], durationMs: 1000 });
 
   test("a helper claims, fetches the bundle and submits; authors and co-authors give way while another helper is idle", async () => {
     const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
@@ -75,6 +76,8 @@ describe("user-local remote calls", () => {
     assert.deepEqual(r?.usage.extra?.map((e) => [e.model, e.usage.input]), [["haiku", 10]]);
     const run = db.prepare("SELECT state, user_login, harness, reported_model, account_id, cost_usd FROM agent_runs WHERE id = (SELECT run_id FROM remote_calls WHERE id = ?)").get(lease.id) as Record<string, unknown>;
     assert.deepEqual({ ...run }, { state: "done", user_login: "bob", harness: "claude", reported_model: "claude-opus-4-5", account_id: null, cost_usd: 0.25 });
+    const tool = db.prepare("SELECT seq, tool, args, result_bytes, started_at FROM agent_run_tools WHERE run_id = (SELECT run_id FROM remote_calls WHERE id = ?)").get(lease.id) as Record<string, unknown>;
+    assert.deepEqual({ ...tool }, { seq: 1, tool: "mcp__items__item", args: '{"ref":"photocraft#1"}', result_bytes: 300, started_at: "2026-11-19T10:00:00.000Z" });
   });
 
   test("with no other helper asking for work, the PR's author gets the review", async () => {

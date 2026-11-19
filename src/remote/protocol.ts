@@ -90,8 +90,11 @@ export type Heartbeat = { /** The harness's last progress line, shown on the run
 
 export type Usage = { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number };
 
+/** One tool use of the call, as the harness recorded it: the same fields a local run stores (src/agents/tools.ts). */
+export type SubmitTool = { name: string; /** The input as JSON, at most 4000 characters. */ args: string; /** Size of the result; null when no result came back. */ resultBytes: number | null; isError: boolean; startedAt?: string; endedAt?: string };
+
 export type Submit =
-  | { ok: true; text: string; /** The full model id the harness reported (e.g. from the CLI's result); matched by family against the claim's model for the tier. */ model: string; usage: Usage; /** Per model id, subagents (the explorer) included; `usage` is the whole call when this is absent. */ modelUsage?: Record<string, Usage>; /** The harness's cost for the whole call at list price, when it reports one (the Claude CLI's `total_cost_usd`). */ costUsd?: number; turns?: number; /** The harness session id, kept by the helper for follow-ups. */ sessionId?: string; durationMs: number }
+  | { ok: true; text: string; /** The full model id the harness reported (e.g. from the CLI's result); matched by family against the claim's model for the tier. */ model: string; usage: Usage; /** Per model id, subagents (the explorer) included; `usage` is the whole call when this is absent. */ modelUsage?: Record<string, Usage>; /** The harness's cost for the whole call at list price, when it reports one (the Claude CLI's `total_cost_usd`). */ costUsd?: number; turns?: number; /** The harness session id, kept by the helper for follow-ups. */ sessionId?: string; /** Tool uses in order, subagents included. */ tools?: SubmitTool[]; durationMs: number }
   | { ok: false; error: string; usage?: Usage; durationMs: number };
 
 export type SubmitReply = { accepted: boolean; reason?: string };

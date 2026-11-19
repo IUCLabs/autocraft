@@ -89,8 +89,9 @@ export const ROUTES = {
  */
 /** @typedef {{ progress?: string }} Heartbeat */
 /** @typedef {{ inputTokens: number, outputTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number }} Usage */
+/** @typedef {{ name: string, args: string, resultBytes: number | null, isError: boolean, startedAt?: string, endedAt?: string }} SubmitTool */
 /**
- * @typedef {{ ok: true, text: string, model: string, usage: Usage, modelUsage?: Record<string, Usage>, costUsd?: number, turns?: number, sessionId?: string, durationMs: number }
+ * @typedef {{ ok: true, text: string, model: string, usage: Usage, modelUsage?: Record<string, Usage>, costUsd?: number, turns?: number, sessionId?: string, tools?: SubmitTool[], durationMs: number }
  *   | { ok: false, error: string, usage?: Usage, durationMs: number }} Submit
  */
 /** @typedef {{ accepted: boolean, reason?: string }} SubmitReply */
@@ -143,7 +144,8 @@ export const ROUTES = {
  * @property {boolean} [fileTools]  the run gets the helper's read-only file tools (its own read tool can't be confined)
  * @property {(version: string) => string | null} [unaudited]  why this harness version must not run calls, or null
  * @property {(line: string, servers: string[]) => string | null} [guard]  an output line showing a tool the call may not use: the run is stopped at once
- * @property {(o: { token: string, sessionId: string | undefined, servers: string[], keep: boolean }) => string | null} [verify]  after the run, from the harness's own record: a tool the call may not use, or null
+ * @property {(o: { token: string, sessionId: string | undefined, servers: string[], keep: boolean }) => { problem: string | null, tools?: SubmitTool[] }} [verify]  after the run, from the harness's own record: a tool the call may not use (or null), and the tool uses
+ * @property {(stdout: string, stamps: string[]) => SubmitTool[]} [tools]  the tool uses from the output; `stamps` holds the arrival time of each complete output line
  */
 
 // ---------------------------------------------------------------------------
@@ -270,6 +272,46 @@ export function parseClaudeOutput(stdout, model) {
   if (!result) return { ok: false, text: "", ...base, error: evs.length ? "no result" : "unreadable output" };
   if (result.is_error || typeof result.result !== "string") return { ok: false, text: "", ...base, error: `model error ${typeof result.result === "string" ? result.result : ""}`.trim().slice(0, 400) };
   return { ok: true, text: result.result, ...base };
+}
+
+const TOOL_ARGS_MAX = 4000;
+const MAX_TOOLS = 1000;
+
+/** Bytes of a tool result: text blocks by their text, anything else as JSON (as src/agents/tools.ts counts them). @param {unknown} c */
+const resultSize = (c) => {
+  if (typeof c === "string") return Buffer.byteLength(c);
+  if (Array.isArray(c)) return c.reduce((n, b) => n + (typeof b?.text === "string" ? Buffer.byteLength(b.text) : Buffer.byteLength(JSON.stringify(b ?? null))), 0);
+  return c === undefined || c === null ? 0 : Buffer.byteLength(JSON.stringify(c));
+};
+
+/** A tool's input as stored: JSON, secrets redacted, capped. @param {unknown} input */
+const toolArgs = (input) => redact(JSON.stringify(input ?? null) ?? "null").slice(0, TOOL_ARGS_MAX);
+
+/**
+ * The tool uses of `claude -p` stream-json output, in order and paired with their results by id, subagents included:
+ * the same reading as src/agents/tools.ts `toolUses`. `stamps[i]` is the arrival time of output line i.
+ * @param {string} stdout @param {string[]} [stamps]
+ * @returns {SubmitTool[]}
+ */
+export function claudeTools(stdout, stamps = []) {
+  /** @type {Map<string, SubmitTool>} */
+  const byId = new Map();
+  stdout.split("\n").forEach((line, i) => {
+    if (!line.startsWith("{") || !line.includes("tool_")) return;
+    let e;
+    try { e = JSON.parse(line); } catch { return; }
+    if (!Array.isArray(e?.message?.content)) return;
+    const at = stamps[i];
+    for (const b of e.message.content) {
+      if (e.type === "assistant" && b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string" && byId.size < MAX_TOOLS) {
+        byId.set(b.id, { name: b.name.slice(0, 100), args: toolArgs(b.input), resultBytes: null, isError: false, ...(at && { startedAt: at }) });
+      } else if (e.type === "user" && b?.type === "tool_result" && typeof b.tool_use_id === "string") {
+        const u = byId.get(b.tool_use_id);
+        if (u) { u.resultBytes = resultSize(b.content); u.isError = b.is_error === true; if (at) u.endedAt = at; }
+      }
+    }
+  });
+  return [...byId.values()];
 }
 
 /** @param {unknown} v @param {number} [n] */
@@ -428,6 +470,7 @@ const claudeAdapter = {
     return claudeSandbox({ claudeBin: t.bin, oauthToken: t.token, claudeArgs: args, mounts: t.mounts, agentsFile, mcpFile: t.mcpFile || undefined, sessionDir: t.sessionDir });
   },
   parse: parseClaudeOutput,
+  tools: claudeTools,
   resume: (args, sessionId) => claudeResume(args, sessionId),
   progress: claudeProgress,
   versionInSandbox: (bin) => claudeSandbox({ claudeBin: bin, claudeArgs: ["--version"], mounts: [] }),
@@ -721,6 +764,49 @@ export function codexRolloutProblem(text, servers) {
   return null;
 }
 
+/** The helper's file tools as the item page names them for Claude: Read, Grep, Glob with Claude's argument names. @param {string} name @param {any} a */
+function codexToolName(name, a) {
+  if (name === `mcp__${FILE_TOOLS_SERVER}__read_file`) return { name: "Read", input: { file_path: a?.path } };
+  if (name === `mcp__${FILE_TOOLS_SERVER}__grep`) return { name: "Grep", input: { pattern: a?.pattern, path: a?.path } };
+  if (name === `mcp__${FILE_TOOLS_SERVER}__glob`) return { name: "Glob", input: { pattern: a?.pattern, path: a?.path } };
+  return { name, input: a };
+}
+
+/**
+ * The tool uses a Codex rollout records, in order and paired with their outputs by call id, timed by the rollout's
+ * line timestamps. An MCP result's isError comes from its content.
+ * @param {string} text
+ * @returns {SubmitTool[]}
+ */
+export function codexRolloutTools(text) {
+  /** @type {Map<string, SubmitTool>} */
+  const byId = new Map();
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const p = e?.type === "response_item" ? e.payload : null;
+    if (!p || typeof p.call_id !== "string") continue;
+    const at = typeof e.timestamp === "string" ? e.timestamp : undefined;
+    if (CODEX_CALLS.has(p.type) && byId.size < MAX_TOOLS) {
+      let a = p.arguments ?? p.input ?? p.action ?? null;
+      if (typeof a === "string") { try { a = JSON.parse(a); } catch { /* raw text input */ } }
+      const t = codexToolName(p.type === "function_call" ? flatName(p) : p.type, a);
+      byId.set(p.call_id, { name: t.name.slice(0, 100), args: toolArgs(t.input), resultBytes: null, isError: false, ...(at && { startedAt: at }) });
+    } else if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
+      const u = byId.get(p.call_id);
+      if (!u) continue;
+      const out = p.output;
+      let parsed = out;
+      if (typeof out === "string") { try { parsed = JSON.parse(out); } catch { parsed = out; } }
+      u.resultBytes = resultSize(typeof out === "string" ? out : out?.content ?? out);
+      u.isError = parsed?.isError === true || parsed?.success === false || out?.success === false;
+      if (at) u.endedAt = at;
+    }
+  }
+  return [...byId.values()];
+}
+
 /** Files below `dir`, recursively (no symlinks followed). @param {string} dir @returns {string[]} */
 function filesBelow(dir) {
   /** @type {string[]} */
@@ -880,14 +966,14 @@ const codexAdapter = {
   unaudited: codexUnaudited,
   guard: codexStreamProblem,
   verify({ token, sessionId, servers, keep }) {
-    if (!sessionId || !THREAD_ID.test(sessionId)) return "unexpected tool: no thread id, so no record of the tools used";
+    if (!sessionId || !THREAD_ID.test(sessionId)) return { problem: "unexpected tool: no thread id, so no record of the tools used" };
     const file = filesBelow(join(token, "sessions")).find((f) => f.endsWith(`-${sessionId}.jsonl`));
-    if (!file) return "unexpected tool: no rollout, so no record of the tools used";
+    if (!file) return { problem: "unexpected tool: no rollout, so no record of the tools used" };
     let text = "";
-    try { text = readFileSync(file, "utf8"); } catch { return "unexpected tool: the rollout is unreadable"; }
+    try { text = readFileSync(file, "utf8"); } catch { return { problem: "unexpected tool: the rollout is unreadable" }; }
     // The rollout is the session: kept for a follow-up, else removed now.
     if (!keep) rmSync(file, { force: true });
-    return codexRolloutProblem(text, servers);
+    return { problem: codexRolloutProblem(text, servers), tools: codexRolloutTools(text) };
   },
   detect(cfg) {
     const bin = resolveCodexBin(cfg);
@@ -1350,7 +1436,10 @@ async function runLease(cfg, id, opt = {}) {
     if (r.gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
     const reply = adapter.parse(r.stdout, model);
     // A tool the call may not use: the reply never leaves this machine, and the session is not kept.
-    const unexpected = r.unexpected ?? adapter.verify?.({ token: runToken, sessionId: reply.sessionId, servers: b.mcpServers, keep: !!sessionDir && !r.unexpected }) ?? null;
+    /** @type {{ problem: string | null, tools?: SubmitTool[] } | undefined} */
+    const checked = r.unexpected ? { problem: r.unexpected } : adapter.verify?.({ token: runToken, sessionId: reply.sessionId, servers: b.mcpServers, keep: !!sessionDir });
+    const unexpected = checked?.problem ?? null;
+    const tools = checked?.tools ?? adapter.tools?.(r.stdout, r.stamps) ?? [];
     if (unexpected) {
       if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
       return fail(unexpected, reply.usage);
@@ -1361,7 +1450,7 @@ async function runLease(cfg, id, opt = {}) {
     if (r.stopped) return giveBack("stopped on the helper");
     if (!reply.ok) return fail(`${reply.error ?? "no result"} (exit ${r.code}) ${r.stderr.trim().slice(-300)}`.trim(), reply.usage);
     const usage = reply.usage ?? { inputTokens: 0, outputTokens: 0 };
-    const s = await submit({ ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), durationMs: Date.now() - started });
+    const s = await submit({ ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), ...(tools.length > 0 && { tools }), durationMs: Date.now() - started });
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
     return end("submitted", `submitted: ${lease.title}, ${kTokens(tokensOf(usage))} tokens`);
   } catch (e) {
@@ -1385,6 +1474,8 @@ function harness(c, b, lease, signal, adapter) {
   return new Promise((resolve) => {
     const p = spawn(c.cmd, c.args, { env: c.env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "", partial = "", progress = "", gone = false, timedOut = false, stopped = false, settled = false;
+    /** @type {string[]} arrival time of each complete stdout line */
+    const stamps = [];
     /** @type {string | undefined} */
     let unexpected;
     const kill = () => { p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 5000).unref(); };
@@ -1392,7 +1483,9 @@ function harness(c, b, lease, signal, adapter) {
       stdout += d;
       const lines = (partial + d).split("\n");
       partial = lines.pop() ?? "";
+      const at = new Date().toISOString();
       for (const l of lines) {
+        stamps.push(at);
         const x = adapter.progress(l);
         if (x) progress = x;
         const bad = !unexpected && adapter.guard?.(l, b.mcpServers);
@@ -1414,7 +1507,7 @@ function harness(c, b, lease, signal, adapter) {
       if (settled) return;
       settled = true;
       clearInterval(beat); clearTimeout(timer); signal?.removeEventListener("abort", onAbort);
-      resolve({ code, stdout, stderr: redact(stderr), gone, timedOut, stopped, unexpected });
+      resolve({ code, stdout, stamps, stderr: redact(stderr), gone, timedOut, stopped, unexpected });
     };
     p.on("error", (e) => { stderr += String(e); done(-1); });
     p.on("close", done);

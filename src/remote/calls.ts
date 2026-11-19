@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { allocation, callQueue, queueOrder, stepOf, throwIfHalted, WaitLimitError, type Waiter } from "../agents/call.ts";
 import { finishRun, insertRun, setRunProgress } from "../agents/runs.ts";
+import { saveRemoteTools } from "../agents/tools.ts";
 import { scrubError } from "../agents/text.ts";
 import type { Usage } from "../classify/run.ts";
 import { randomToken, sha256hex } from "../dash/server/crypto.ts";
@@ -410,7 +411,10 @@ export function submitCall(db: DatabaseSync, secret: string | undefined, raw: un
     db.prepare("UPDATE main.remote_calls SET state = 'done', reply = ?, usage = ?, turns = ?, session_id = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased'")
       .run(s.text, JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }), ...(costUsd !== null && { costUsd }) }), turns, sessionId, duration, nowMs, l.id);
     // The claim named the model the helper meant to run (often an alias); the reply names the one that ran.
-    if (r.run_id !== null) db.prepare("UPDATE main.agent_runs SET reported_model = ? WHERE id = ?").run(s.model.slice(0, 100), r.run_id);
+    if (r.run_id !== null) {
+      db.prepare("UPDATE main.agent_runs SET reported_model = ? WHERE id = ?").run(s.model.slice(0, 100), r.run_id);
+      try { saveRemoteTools(db, r.run_id, r.id, (s as { tools?: unknown }).tools); } catch (e) { console.log(`tool uses of remote call ${r.id} not stored: ${(e as Error).message}`); }
+    }
     return { accepted: true };
   }
   if (s.ok !== false || typeof s.error !== "string") throw new HttpError(400, "ok must be true with text and model, or false with error");
