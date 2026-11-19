@@ -7,7 +7,7 @@ const DAY = 86_400_000;
 /** The Connect page's tokens, in memory; the server's rules (at most five, own tokens only) apply. */
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference" | "remote"> & { meSettings: Api["me"]["settings"] } {
   let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] }, minEffort: { top: "high" } };
-  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, maxCalls: null, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "photocraft", "wordcraft"] };
+  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, maxCalls: null, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "iconcraft", "pdfcraft", "photocraft", "Sheetcraft", "wordcraft"] };
   const at = (ms: number) => new Date(NOW + ms).toISOString();
   const helpers: RemoteHelper[] = [
     { tokenId: 2, label: "laptop", slots: 5, busy: 2, lastError: null, readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-40_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
