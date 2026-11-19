@@ -246,13 +246,14 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
     .map((f) => (f && typeof f.file === "string" && typeof f.change === "string" ? { file: stripSandboxPath(f.file.trim()).replace(/^\.\//, ""), change: f.change } : null))
     .filter((f): f is { file: string; change: string } => !!f && safePath(f.file) && !!f.change.trim() && !drop.has(f.change) && (keepLeaky || (!REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))))
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
-  if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
   const parsed = parseClaims(r.claims, drop, keepLeaky, files), listed = parsed?.claims ?? [];
   // Every valid claim reaches the verdict; only the texts stored and posted are cleaned. A list that was not fully read leaves the review unsure.
   const bad = listed.filter((c) => c.impact === "code-wrong"), unknownClaim = listed.find((c) => c.impact === "unknown");
+  // A take-fix needs a fix: its own list, or the fix of every claim that shows wrong code.
+  if (verdict === "take-fix" && !fixes.length && !(bad.length && bad.every((c) => c.fix))) return null;
   const unproven = parsed === null ? !!body.trim() : parsed.rejected > 0 || !!unknownClaim;
   let outVerdict = verdict as ReviewVerdict, outFixes = verdict === "take-fix" ? fixes : [], outReason = r.reason, sure = r.sure;
   const notes: string[] = [];

@@ -66,6 +66,14 @@ describe("claims reach the verdict", () => {
     assert.deepEqual(publicTexts(reply).map((t) => t.field), ["claims[1].claim", "claims[1].evidence"]);
     assert.equal(premergeTexts(JSON.stringify({ ref: "app#1", findings: [], claims: [{ claim: 3 }, ok] }), "app#1")[0]!.field, "claims[1].claim");
   });
+
+  test("a take-fix whose only fix sits on a code-wrong claim is a take-fix with that fix", () => {
+    const fix = { file: "src/a.rs", change: "fix it" };
+    const o = parseOpusReply(JSON.stringify({ ...take, verdict: "take-fix", fixes: [], claims: [{ ...bad, claim: "x", evidence: "src/a.rs:1 w", fix }] }), "app#1")!;
+    assert.equal(o.verdict, "take-fix");
+    assert.deepEqual(o.fixes, [fix]);
+    assert.equal(parseOpusReply(JSON.stringify({ ...take, verdict: "take-fix", fixes: [] }), "app#1"), null);
+  });
 });
 
 describe("Merge? question for an unsure pre-merge review", () => {
