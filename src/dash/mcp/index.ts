@@ -47,7 +47,7 @@ export type McpEnv = {
 
 export type Msg = { jsonrpc?: unknown; id?: string | number | null; method?: unknown; params?: Record<string, unknown> };
 export type Reply = { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string } };
-type ToolResult = { text: string; isError?: boolean };
+export type ToolResult = { text: string; isError?: boolean };
 
 const INSTRUCTIONS = `AutoCraft's Inbox: the open work its pipeline could not settle on its own, across every storytold craft app it tracks. You act as the signed-in dashboard user who made this token, with their role.
 
@@ -491,8 +491,11 @@ export const RUN_TOOLS = [
 /** Whether a tools/call writes (so the server can tell its live watchers). */
 export const writes = (msg: Msg): boolean => msg.method === "tools/call" && ["send_feedback", "answer_decision", "undo_answer"].includes(String(msg.params?.name));
 
-/** The reply to one JSON-RPC message, or null for a notification or a response. */
-export async function handleMcp(env: McpEnv, msg: Msg): Promise<Reply | null> {
+/** One MCP server over JSON-RPC: what initialize reports, the tools it lists and how a tool call runs. */
+export type McpServerDef = { name: string; title: string; instructions?: string; tools: readonly unknown[]; call: (name: unknown, args: unknown) => Promise<ToolResult> };
+
+/** The reply to one JSON-RPC message for `server` (initialize, ping, tools/list, tools/call), or null for a notification or a response. */
+export async function mcpReply(server: McpServerDef, msg: Msg): Promise<Reply | null> {
   if (msg.id === undefined || msg.id === null || typeof msg.method !== "string") return null;
   const id = msg.id;
   const ok = (result: unknown): Reply => ({ jsonrpc: "2.0", id, result });
@@ -502,16 +505,16 @@ export async function handleMcp(env: McpEnv, msg: Msg): Promise<Reply | null> {
       return ok({
         protocolVersion: typeof want === "string" && MCP_PROTOCOLS.includes(want) ? want : MCP_PROTOCOLS[0],
         capabilities: { tools: {} },
-        serverInfo: { name: "autocraft-inbox", title: "AutoCraft Inbox", version: "1.0.0" },
-        instructions: INSTRUCTIONS + (env.canAnswer ? ANSWER_INSTRUCTIONS : "") + (env.run ? RUN_INSTRUCTIONS : ""),
+        serverInfo: { name: server.name, title: server.title, version: "1.0.0" },
+        ...(server.instructions !== undefined && { instructions: server.instructions }),
       });
     }
     case "ping":
       return ok({});
     case "tools/list":
-      return ok({ tools: [...TOOLS, ...(env.canAnswer ? ANSWER_TOOLS : []), ...(env.run ? RUN_TOOLS : [])] });
+      return ok({ tools: server.tools });
     case "tools/call": {
-      const r = await callTool(env, msg.params?.name, msg.params?.arguments);
+      const r = await server.call(msg.params?.name, msg.params?.arguments);
       return ok({ content: [{ type: "text", text: r.text }], ...(r.isError ? { isError: true } : {}) });
     }
     default:
@@ -519,3 +522,10 @@ export async function handleMcp(env: McpEnv, msg: Msg): Promise<Reply | null> {
   }
 }
 
+/** The reply to one JSON-RPC message, or null for a notification or a response. */
+export function handleMcp(env: McpEnv, msg: Msg): Promise<Reply | null> {
+  return mcpReply({
+    name: "autocraft-inbox", title: "AutoCraft Inbox", instructions: INSTRUCTIONS + (env.canAnswer ? ANSWER_INSTRUCTIONS : "") + (env.run ? RUN_INSTRUCTIONS : ""),
+    tools: [...TOOLS, ...(env.canAnswer ? ANSWER_TOOLS : []), ...(env.run ? RUN_TOOLS : [])], call: (name, raw) => callTool(env, name, raw),
+  }, msg);
+}

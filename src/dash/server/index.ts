@@ -32,11 +32,12 @@ import { saveUserTokens } from "./user-tokens.ts";
 import { FakeProvider, GitHubProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { retryWaiting } from "../../github/user-lane.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
-import { answering, handleMcp, writes as mcpWrites, type Msg as McpMsg } from "../mcp/index.ts";
+import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg, type Reply as McpReply } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import * as remote from "../../remote/calls.ts";
 import { inferenceMode } from "../../remote/mode.ts";
-import { ROUTES } from "../../remote/protocol.ts";
+import { ROUTES, type ToolReply } from "../../remote/protocol.ts";
+import { archiveOf, callTaskTool, TASK_TOOLS, taskLease, type TaskLease, type ToolResult } from "../../remote/tools.ts";
 import { handleDelivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH } from "../../github/webhooks.ts";
 import { esc, HttpError, parseCookies, plainPage, previewTags, RateLimiter, safeReturnTo } from "./util.ts";
 
@@ -47,6 +48,9 @@ const STATE_COOKIE = "__Host-craft_oauth";
 const BODY_LIMIT = 64 * 1024;
 /** A helper's submit carries the whole reply (a patch can be large). */
 const SUBMIT_BODY_LIMIT = 8 * 1024 * 1024;
+/** A task tool call: a `check` call carries the whole patch, as the local bridge allows. */
+const TOOL_BODY_LIMIT = 2 * 1024 * 1024;
+const HELPER_FILE = new URL("../../../worker/autocraft-task.mjs", import.meta.url);
 const PUBLIC_FILES = new Set(["/artcraft-mark.svg", "/artcraft-mark.png"]);
 const FILE_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", svg: "image/svg+xml",
@@ -202,6 +206,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const mcpLimitIp = new RateLimiter(300, 60_000);
   // Claims of one login: a helper with several slots claims every few seconds at most.
   const remoteLimitToken = new RateLimiter(240, 60_000);
+  // Tool calls of one remote call (item, reference and check tools together).
+  const remoteToolLimit = new RateLimiter(300, 60_000);
   const webhookLimitIp = new RateLimiter(5000, 60_000);  // flood guard only; the periodic sync still runs. Before the body is read or the signature checked
   // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
   const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
@@ -526,6 +532,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       if (url.pathname === "/mcp") return await handleMcpHttp(req, res);
       if (url.pathname.startsWith("/api/remote/")) return await handleRemoteHttp(req, res, url);
+      if (url.pathname.startsWith(`${ROUTES.mcp}/`)) return await handleTaskMcp(req, res, url);
+      // Public: the helper script, which a maintainer downloads before having any credential.
+      if (url.pathname === ROUTES.helper) return await sendHelper(req, res);
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(req, res);
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
@@ -633,7 +642,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (!sameOrigin(req)) return reply(403, { error: "cross-origin request refused" });
     const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
     const path = url.pathname;
-    const method = path === ROUTES.bundle ? "GET" : "POST";
+    const method = path === ROUTES.bundle || path === ROUTES.tarball ? "GET" : "POST";
     if (req.method !== method) return reply(405, { error: `use ${method}` }, { allow: method });
     const tooMany = (): void => reply(429, { error: "too many requests; wait a minute" }, { "retry-after": "60" });
     try {
@@ -650,7 +659,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const user = userForLogin(db, box, provider, caller.login, caller.role, true);
         return reply(200, await remote.claimCall(db, caller, claim, (repo) => user.canWrite(repo)));
       }
-      if (path !== ROUTES.bundle && path !== ROUTES.heartbeat && path !== ROUTES.submit && path !== ROUTES.release) return reply(404, { error: "not found" });
+      const tool = path.startsWith(`${ROUTES.tool}/`) ? /^([a-z][a-z0-9_-]{0,40})\/([a-z][a-z0-9_]{0,60})$/.exec(path.slice(ROUTES.tool.length + 1)) : null;
+      if (![ROUTES.bundle, ROUTES.heartbeat, ROUTES.submit, ROUTES.release, ROUTES.tarball].includes(path as never) && !tool) return reply(404, { error: "not found" });
       // An unknown secret counts against the address; a known one whose lease ended is answered 410.
       if (!remote.leaseState(db, bearer)) {
         if (!mcpLimitIp.allow(clientIp(req))) return tooMany();
@@ -663,11 +673,98 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       if (path === ROUTES.heartbeat) return remote.heartbeat(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
       if (path === ROUTES.release) return remote.releaseCall(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
-      return reply(200, remote.submitCall(db, bearer, await readJson(req, SUBMIT_BODY_LIMIT)));
+      if (path === ROUTES.submit) return reply(200, remote.submitCall(db, bearer, await readJson(req, SUBMIT_BODY_LIMIT)));
+      const lease = taskLease(db, bearer);
+      if (!lease) return gone();
+      if (path === ROUTES.tarball) return sendArchive(res, lease, url.searchParams.get("repo") ?? "", url.searchParams.get("sha") ?? "");
+      const [, server, name] = tool!;
+      if (!TASK_TOOLS[server!] || !lease.servers.includes(server!)) return reply(403, { error: `this call has no ${server} tools` });
+      if (!remoteToolLimit.allow(String(lease.id))) return tooMany();
+      const args = await readJson(req, TOOL_BODY_LIMIT);
+      const w = waitingJson(res);
+      const r = await callTaskTool(db, lease, bearer!, server!, name, args, w.opts);
+      return w.send({ content: [{ type: "text", text: r.text }], ...(r.isError && { isError: true }) } satisfies ToolReply);
     } catch (e) {
       if (e instanceof HttpError) return reply(e.status, { error: e.message });
       throw e;
     }
+  }
+
+  /**
+   * A JSON reply that may take minutes (a relayed `check`): while waiting, `tick` sends the headers and then a space, so
+   * clients and proxies with idle timeouts keep the request open; JSON allows the leading whitespace. `signal` is the
+   * client going away.
+   */
+  function waitingJson(res: ServerResponse): { opts: { signal: AbortSignal; tick: () => void }; send: (body: unknown) => void } {
+    const ac = new AbortController();
+    res.on("close", () => { if (!res.writableEnded) ac.abort(); });
+    const headers = (): Record<string, string | string[]> => secure({ "cache-control": "no-store", "content-type": "application/json; charset=utf-8" }, "default-src 'none'");
+    return {
+      opts: { signal: ac.signal, tick: () => { if (!res.headersSent) res.writeHead(200, headers()); res.write(" "); } },
+      send: (body) => { if (!res.headersSent) res.writeHead(200, headers()); res.end(JSON.stringify(body)); },
+    };
+  }
+
+  // POST /mcp/task/<server>: the tools of one server of a remote call as a Streamable HTTP MCP server (one JSON-RPC message
+  // per request, a JSON reply, no event stream), authenticated by the call's lease secret, for harnesses that take tools through MCP.
+  async function handleTaskMcp(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const reply = (status: number, body: unknown, headers: Record<string, string> = {}): void => {
+      res.writeHead(status, secure({ "cache-control": "no-store", ...(body === null ? {} : { "content-type": "application/json; charset=utf-8" }), ...headers }, "default-src 'none'"));
+      res.end(body === null ? "" : JSON.stringify(body));
+    };
+    const rpcError = (code: number, message: string) => ({ jsonrpc: "2.0", id: null, error: { code, message } });
+    if (req.method !== "POST") return reply(405, rpcError(-32000, "POST one JSON-RPC message; this server has no event stream"), { allow: "POST" });
+    if (!sameOrigin(req)) return reply(403, rpcError(-32000, "cross-origin request refused"));
+    const bearer = /^Bearer\s+(\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
+    if (!remote.leaseState(db, bearer)) {
+      if (!mcpLimitIp.allow(clientIp(req))) return reply(429, rpcError(-32000, "too many requests; wait a minute"), { "retry-after": "60" });
+      return reply(401, rpcError(-32001, "a lease secret is required (Authorization: Bearer <secret>)"), { "www-authenticate": 'Bearer realm="autocraft"' });
+    }
+    const lease = taskLease(db, bearer);
+    if (!lease) return reply(410, rpcError(-32001, "the lease is gone (expired, withdrawn or already submitted)"));
+    const server = url.pathname.slice(ROUTES.mcp.length + 1);
+    const tools = TASK_TOOLS[server];
+    if (!tools || !lease.servers.includes(server)) return reply(403, rpcError(-32001, `this call has no ${server} tools`));
+    if (!remoteToolLimit.allow(String(lease.id))) return reply(429, rpcError(-32000, "too many requests; wait a minute"), { "retry-after": "60" });
+    let msg: unknown;
+    try {
+      msg = await readJson(req, TOOL_BODY_LIMIT);
+    } catch (e) {
+      if (e instanceof HttpError) return reply(e.status, rpcError(e.status === 400 ? -32700 : -32600, e.message));
+      throw e;
+    }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return reply(400, rpcError(-32600, "send one JSON-RPC message as an object; batches are not supported"));
+    const w = waitingJson(res);
+    const call = (name: unknown, args: unknown): Promise<ToolResult> => callTaskTool(db, lease, bearer!, server, name, args, w.opts);
+    const out: McpReply | null = await mcpReply({ name: `autocraft-${server}`, title: `AutoCraft ${server}`, tools, call }, msg as McpMsg);
+    if (!out) return reply(202, null);
+    return w.send(out);
+  }
+
+  /** Streams `git archive` of one tarball mount of the lease's bundle. */
+  function sendArchive(res: ServerResponse, lease: TaskLease, repo: string, sha: string): void {
+    const git = archiveOf(lease, repo, sha);
+    if (!git) {
+      res.writeHead(404, secure({ "cache-control": "no-store", "content-type": "application/json; charset=utf-8" }, "default-src 'none'"));
+      return void res.end(JSON.stringify({ error: "the call has no such tarball" }));
+    }
+    res.writeHead(200, secure({ "cache-control": "no-store", "content-type": "application/x-tar" }, "default-src 'none'"));
+    git.stdout!.pipe(res);
+    // A failed archive cuts the stream, so the helper sees an error rather than a short tree.
+    git.on("close", (code) => { if (code !== 0) res.destroy(); });
+    git.on("error", () => res.destroy());
+    res.on("close", () => { if (git.exitCode === null) git.kill(); });
+  }
+
+  /** GET or HEAD of the helper script. */
+  async function sendHelper(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405, secure({ allow: "GET, HEAD", "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
+      return void res.end("method not allowed");
+    }
+    const body = await readFile(HELPER_FILE);
+    res.writeHead(200, secure({ "content-type": "text/javascript; charset=utf-8", "content-length": String(body.length), "cache-control": "no-cache" }, "default-src 'none'"));
+    res.end(req.method === "HEAD" ? undefined : body);
   }
 
   async function sendImage(req: IncomingMessage, res: ServerResponse, url: URL, session: Session): Promise<void> {

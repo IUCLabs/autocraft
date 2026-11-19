@@ -744,11 +744,39 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   progress TEXT,                      -- the helper's last progress line
   reply TEXT, usage TEXT, turns INTEGER, session_id TEXT, duration_ms INTEGER,
   error TEXT,
-  ended_at INTEGER
+  ended_at INTEGER,
+  reference_repo TEXT                 -- the repo whose reference documentation the call's reference tools search
 );
 CREATE INDEX IF NOT EXISTS remote_calls_state ON remote_calls(state, tier);
 CREATE INDEX IF NOT EXISTS remote_calls_job ON remote_calls(job_id) WHERE job_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS remote_calls_secret ON remote_calls(lease_secret_hash) WHERE lease_secret_hash IS NOT NULL;
+
+-- `check` calls of a remote call's harness, relayed from the dashboard to the job process that holds the call's CheckTool
+-- (src/remote/check-relay.ts): the dashboard inserts a request and polls for its result, the job's awaitCall loop runs it.
+CREATE TABLE IF NOT EXISTS remote_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  call_id INTEGER NOT NULL,
+  run_id INTEGER,                     -- the lease's agent run, which the check's model_checks row is recorded under
+  input TEXT NOT NULL,                -- JSON tool arguments as the harness sent them
+  state TEXT NOT NULL,                -- requested | running | done
+  result TEXT,                        -- JSON {text, isError?}
+  requested_at INTEGER NOT NULL,      -- ms since epoch
+  ended_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS remote_checks_call ON remote_checks(call_id, state);
+
+-- Reference passages served to remote calls (src/remote/tools.ts): each lease gets a limited number, and every one is recorded.
+CREATE TABLE IF NOT EXISTS remote_passages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  call_id INTEGER NOT NULL,
+  run_id INTEGER,                     -- the lease's agent run: the cap counts per lease
+  user_login TEXT NOT NULL COLLATE NOCASE,
+  repo TEXT NOT NULL,
+  passage_id INTEGER NOT NULL,        -- id in the repo's reference index
+  page TEXT NOT NULL,
+  at INTEGER NOT NULL                 -- ms since epoch
+);
+CREATE INDEX IF NOT EXISTS remote_passages_lease ON remote_passages(call_id, run_id);
 
 -- Who is working a PR, issue or finding right now: bookkeeping for src/runner/leases.ts. A lease whose job is not
 -- running is free; runner start and a job's end delete its rows.

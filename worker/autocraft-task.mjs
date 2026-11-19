@@ -16,6 +16,7 @@
 //   autocraft-task work [--parallel N]     claims, runs and submits in a loop
 //   autocraft-task doctor                  checks platform, sandbox, harness, login and server
 //   autocraft-task mcp <server> <lease>    stdio-to-HTTP proxy for one of the lease's MCP servers
+//   autocraft-task tool <server> <tool> [<json>] [<lease>]  one tool call without MCP; prints the result
 
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync, closeSync } from "node:fs";
@@ -42,6 +43,7 @@ export const ROUTES = {
   submit: "/api/remote/submit",
   release: "/api/remote/release",
   tarball: "/api/remote/tarball",
+  tool: "/api/remote/tool",
   mcp: "/mcp/task",
   helper: "/worker/autocraft-task.mjs",
 };
@@ -1053,11 +1055,7 @@ async function cmdDoctor() {
 async function cmdMcp(argv) {
   const [name, id] = argv;
   if (!name || !NAME.test(name) || !id) throw new Error("usage: autocraft-task mcp <server-name> <lease>");
-  const lease = readLease(leaseId(id));
-  const secret = lease?.secret ?? process.env.AUTOCRAFT_TASK_LEASE_SECRET;
-  const server = lease?.server ?? process.env.AUTOCRAFT_TASK_SERVER ?? loadConfig().server;
-  if (!secret || !server) throw new Error(`no lease ${id} on this machine`);
-  secretsInUse.add(secret);
+  const { secret, server } = leaseAccess(id);
   const url = `${server}${ROUTES.mcp}/${name}`;
   let session = "", version = "";
   /** @param {unknown} m */
@@ -1104,6 +1102,40 @@ async function cmdMcp(argv) {
   return 0;
 }
 
+/**
+ * The secret and server of a lease: from the lease store, or from AUTOCRAFT_TASK_LEASE_SECRET and AUTOCRAFT_TASK_SERVER inside a sandbox.
+ * @param {string | undefined} id
+ */
+function leaseAccess(id) {
+  const lease = id === undefined ? null : readLease(leaseId(id));
+  const secret = lease?.secret ?? process.env.AUTOCRAFT_TASK_LEASE_SECRET;
+  const server = lease?.server ?? process.env.AUTOCRAFT_TASK_SERVER ?? loadConfig().server;
+  if (!secret || !server) throw new Error(id === undefined ? "no lease: give its id or set AUTOCRAFT_TASK_LEASE_SECRET" : `no lease ${id} on this machine`);
+  secretsInUse.add(secret);
+  return { secret: /** @type {string} */ (secret), server: /** @type {string} */ (server) };
+}
+
+/**
+ * One tool call of a lease's server without MCP, for harnesses that take tools as commands: prints the result's text, exit 1 for an
+ * error result. A `check` call can take minutes; the server keeps the request alive meanwhile.
+ * @param {string[]} argv
+ */
+async function cmdTool(argv) {
+  const [name, tool, json, id] = argv;
+  if (!name || !NAME.test(name) || !tool || !/^[a-z][a-z0-9_]{0,60}$/.test(tool)) throw new Error("usage: autocraft-task tool <server-name> <tool> [<json arguments>] [<lease>]");
+  let args;
+  try { args = JSON.parse(json ?? "{}"); } catch { throw new Error("the tool arguments must be JSON"); }
+  const { secret, server } = leaseAccess(id);
+  const res = await fetch(`${server}${ROUTES.tool}/${name}/${tool}`, { method: "POST", headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" }, body: JSON.stringify(args) });
+  if (res.status === 410) throw new Gone("the lease is gone");
+  const text = await res.text();
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${redact(text).slice(0, 300)}`);
+  /** @type {{ content?: { text?: string }[], isError?: boolean }} */
+  const r = JSON.parse(text);
+  console.log((r.content ?? []).map((c) => c.text ?? "").join("\n"));
+  return r.isError ? 1 : 0;
+}
+
 const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls under your own harness subscription.
 
   login <server-url>          store the agent token (read from stdin)
@@ -1114,6 +1146,8 @@ const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls unde
   work [--parallel N]         claim, run and submit in a loop
   doctor                      check platform, sandbox, harness, login and server
   mcp <server-name> <lease>   stdio-to-HTTP proxy for one of the lease's MCP servers
+  tool <server-name> <tool> [<json>] [<lease>]
+                              one tool call without MCP; prints the result
 
 Config: ${"$XDG_CONFIG_HOME"}/autocraft-task/config.json (mode 0600); "tiers" maps top/mid/small to models.`;
 
@@ -1130,6 +1164,7 @@ export async function main(argv) {
       case "work": return await cmdWork(rest);
       case "doctor": return await cmdDoctor();
       case "mcp": return await cmdMcp(rest);
+      case "tool": return await cmdTool(rest);
       case "version": case "--version": console.log(HELPER_VERSION); return 0;
       default: console.log(USAGE); return cmd === undefined || cmd === "help" || cmd === "--help" ? 0 : 64;
     }

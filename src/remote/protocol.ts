@@ -20,7 +20,9 @@ export const ROUTES = {
   release: "/api/remote/release",
   /** Lease secret. A private repo's checkout or a workspace entry as a tar stream: `?repo=<name>&sha=<sha>`. */
   tarball: "/api/remote/tarball",
-  /** Lease secret. Streamable HTTP MCP servers with only this call's tools, one per server name: `/mcp/task/<name>` (items, check, reference). */
+  /** Lease secret. One tool call of a server the bundle lists, without MCP: `POST ${tool}/<server>/<tool>`, body the tool's arguments, reply `ToolReply`. A long call (the `check` tool) sends whitespace before the JSON while it runs. */
+  tool: "/api/remote/tool",
+  /** Lease secret. Streamable HTTP MCP servers with only this call's tools, one per server name: `/mcp/task/<name>` (items, build, reference). */
   mcp: "/mcp/task",
   /** The helper itself, a single file. */
   helper: "/worker/autocraft-task.mjs",
@@ -93,5 +95,8 @@ export type Submit =
   | { ok: false; error: string; usage?: Usage; durationMs: number };
 
 export type SubmitReply = { accepted: boolean; reason?: string };
+
+/** A tool's result, as an MCP tools/call result carries it. */
+export type ToolReply = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 export type Release = { /** Why the helper gives the lease back, shown on the call. */ reason: string };
