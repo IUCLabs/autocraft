@@ -16,6 +16,8 @@ import { scrub } from "../runner/scrub.ts";
 import { acceptedModels, familyOf, isTier } from "./mode.ts";
 import { PROTOCOL_VERSION, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { CALLER_STALE_MS } from "./room.ts";
+import { endChecks, serveChecks } from "./check-relay.ts";
+import type { CheckTool } from "../checktool/index.ts";
 
 /** A lease with no heartbeat for this long goes back to the queue. */
 export const LEASE_IDLE_MS = 2 * 60_000;
@@ -55,16 +57,18 @@ export type NewCall = {
   bundle: Omit<TaskBundle, "callId">; items: ItemRef[]; level: number; maxAttempts: number;
   /** A follow-up turn on the session of this call. */
   parentId?: number;
+  /** The repo whose reference documentation the call's reference tools search (when its bundle lists REFERENCE_SERVER). */
+  referenceRepo?: string;
 };
 
 /** Queues a call for the current job and step; a follow-up is offered only to the helper of the parent's lease holder. */
 export function enqueueCall(db: DatabaseSync, c: NewCall, nowMs: number = Date.now()): number {
   const s = stepOf(c.promptId), q = callQueue(c.promptId);
   const sticky = c.parentId === undefined ? null : (db.prepare("SELECT user_login FROM main.remote_calls WHERE id = ?").get(c.parentId) as { user_login: string | null } | undefined)?.user_login ?? null;
-  return Number(db.prepare(`INSERT INTO main.remote_calls (job_id, step, stage, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class, level, since, seen_at, queued_since, max_attempts, timeout_ms, parent_id, sticky_login)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  return Number(db.prepare(`INSERT INTO main.remote_calls (job_id, step, stage, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class, level, since, seen_at, queued_since, max_attempts, timeout_ms, parent_id, sticky_login, reference_repo)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(s.jobId, s.step, s.stage, c.promptId, c.promptVersion, c.tier, c.effort, c.askedModel, JSON.stringify(c.bundle), JSON.stringify(c.items), q.repo, q.cls, c.level, nowMs, nowMs, nowMs,
-      Math.max(1, c.maxAttempts), c.bundle.timeoutSeconds * 1000, c.parentId ?? null, sticky).lastInsertRowid);
+      Math.max(1, c.maxAttempts), c.bundle.timeoutSeconds * 1000, c.parentId ?? null, sticky, c.referenceRepo ?? null).lastInsertRowid);
 }
 
 /** Ends a call that is in one of `states` as failed; true when it did. A leased call's agent run fails with it. */
@@ -107,7 +111,10 @@ export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: 
   }
   const gone = db.prepare(`SELECT id FROM main.remote_calls WHERE state IN ('queued', 'leased') AND seen_at < ?${one}`).all(nowMs - CALLER_GONE_MS, ...(id === undefined ? [] : [id])) as { id: number }[];
   for (const r of gone) withdrawCall(db, Number(r.id), "the caller stopped waiting", undefined, nowMs);
-  if (id === undefined) db.prepare("DELETE FROM main.remote_calls WHERE state IN ('done', 'failed') AND COALESCE(ended_at, since) < ?").run(nowMs - KEEP_MS);
+  if (id === undefined) {
+    db.prepare("DELETE FROM main.remote_calls WHERE state IN ('done', 'failed') AND COALESCE(ended_at, since) < ?").run(nowMs - KEEP_MS);
+    db.prepare("DELETE FROM main.remote_checks WHERE state = 'done' AND COALESCE(ended_at, requested_at) < ?").run(nowMs - KEEP_MS);
+  }
 }
 
 /** The call a lease secret belongs to while its lease is live (expired leases are ended first), or null. For the per-lease routes: bundle, heartbeat, submit, the task MCP servers and the tarball. */
@@ -338,8 +345,17 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * Waits for the call's result, polling its row like the model queue polls (allocation.pollMs). Each poll ends a lost lease
  * (expireLeases). A queued call is withdrawn when the job is cancelled or the pipeline is switched off (the halt is thrown),
  * after `maxWaitMs` in the queue (WaitLimitError), and, for a follow-up, after STICKY_MS. The helper's progress lines go to `onProgress`.
+ * While the call is leased, each poll runs the `check` requests the dashboard relayed for it on `check` (src/remote/check-relay.ts).
  */
-export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress?: (line: string) => void; maxWaitMs?: number; log?: (line: string) => void } = {}): Promise<Outcome> {
+export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress?: (line: string) => void; maxWaitMs?: number; log?: (line: string) => void; check?: Pick<CheckTool, "run"> } = {}): Promise<Outcome> {
+  try {
+    return await pollCall(db, id, opts);
+  } finally {
+    endChecks(db, id);
+  }
+}
+
+async function pollCall(db: DatabaseSync, id: number, opts: { onProgress?: (line: string) => void; maxWaitMs?: number; log?: (line: string) => void; check?: Pick<CheckTool, "run"> }): Promise<Outcome> {
   const began = Date.now();
   const log = opts.log ?? console.log;
   let lastProgress: string | null = null, lastLog = 0;
@@ -375,6 +391,7 @@ export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress
         log(`waiting for a user-local helper (${r.prompt_id}, ${r.tier} tier)`);
       }
     }
+    if (r.state === "leased" && opts.check) serveChecks(db, id, opts.check);
     if (r.progress && r.progress !== lastProgress) {
       lastProgress = r.progress;
       try { opts.onProgress?.(r.progress); } catch { /* progress is best effort */ }

@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
@@ -669,17 +669,17 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
     const tier = tierOfModel(model);
     const level = levelBand(db, items[0]?.repo, items[0]?.number);
 
-    /** One remote turn: the first message, or with `after` a follow-up on the session of that call. */
+    /** One remote turn: the first message, or with `after` a follow-up on the session of that call. The reference folder is named after its repo (referenceDir). */
     const turn = async (stdin: string, after: number | null, lean = false): Promise<{ reply: Turned; callId: number } | "failed" | "unclaimed"> => {
       const callId = enqueueCall(db, {
-        promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, askedModel: model, items, level, maxAttempts: p.limits.attempts, ...(after !== null && { parentId: after }),
+        promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, askedModel: model, items, level, maxAttempts: p.limits.attempts, ...(after !== null && { parentId: after }), ...(reference && { referenceRepo: basename(opts.reference!) }),
         bundle: {
           promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, timeoutSeconds, maxTurns: sandboxed ? (lean ? 1 : p.sandbox!.maxTurns) : null,
           stdin, system: parts.system, mounts, mcpServers: servers, keepSession: persist, ...(after !== null && { resume: { parentCallId: after } }),
           hints: { claude: { args: lean ? noToolArgs(args) : args, ...(agents && { agents }) } },
         },
       });
-      const o = await awaitCall(db, callId, { ...(opts.onProgress && { onProgress: opts.onProgress }), ...(opts.maxWaitMs !== undefined && { maxWaitMs: opts.maxWaitMs }) });
+      const o = await awaitCall(db, callId, { ...(opts.onProgress && { onProgress: opts.onProgress }), ...(opts.maxWaitMs !== undefined && { maxWaitMs: opts.maxWaitMs }), ...(checkTool && { check: checkTool }) });
       if (o.state === "unclaimed") return "unclaimed";
       if (o.state === "failed") {
         if (o.runId !== null) finishRun(db, o.runId, { state: "failed", ...(o.tokens && { tokens: o.tokens }), error: scrubError(o.error), summary: "failed" });
