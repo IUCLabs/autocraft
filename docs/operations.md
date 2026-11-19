@@ -232,7 +232,9 @@ Each maintainer and operator sets their own reserve on the Connect page: `GET`/`
 
 - Before each claim the helper reads its harness's plan usage and claims only while every 5-hour and weekly window keeps more than the reserve free. Claude: Claude Code's `GET /api/oauth/usage` with the helper's Claude login, no model call. Codex: `account/rateLimits/read` from `codex app-server` with the helper's own `CODEX_HOME`.
 - A local `config reserve` can only raise the server's reserve.
-- A missing, failed, unparseable or stale (over 5 minutes) reading, or a window kind the helper does not know, holds the helper. A held helper reads again every minute.
+- One usage read runs at a time per machine: the slots of a process share one request, and processes share a lock file and the cached reading in the helper's cache directory. A reading under a minute old is reused. A failed or refused read is shared for 30 seconds at most, or for the provider's `Retry-After` (up to an hour), before the provider is asked again.
+- When a read fails or is refused, the last good reading keeps counting for up to 15 minutes, marked as an earlier reading, while every window has at least 10 points more free than the reserve. Otherwise, and for a missing, unparseable or stale (over 5 minutes) reading or a window kind the helper does not know, the helper holds. A held helper reads again about every 45 seconds, 20% more or less at random so slots do not wake together.
+- A Claude login that expires within the call timeout plus 10 minutes makes the helper report `harness-missing` with "the Claude login expires soon; run claude to refresh it", the same check each call makes before it starts.
 - A run the provider refuses for its limit goes back to the queue without using an attempt. The helper holds until the reset the provider named (at most 7 days). A clock time without a time zone holds until a later reading shows headroom.
 
 The helper reports its readiness to `POST /api/remote/status` on every change and at least every 5 minutes, and keeps it in a 0600 status file in its cache directory.
@@ -245,7 +247,7 @@ The helper reports its readiness to `POST /api/remote/status` on every change an
 | `cooled-off` | The server gives the token no calls after repeated lost leases. |
 | `sandbox-failed` | The sandbox check or canary failed. |
 | `version-refused` | The server refused the helper's version, or the harness version is not audited (Codex). |
-| `harness-missing` | The harness or its login is missing. |
+| `harness-missing` | The harness or its login is missing, or the Claude login expires soon. |
 
 The planner counts as room only helpers whose last status is `ready` and at most 6 minutes old and whose last claim found nothing within 45 seconds. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
 
