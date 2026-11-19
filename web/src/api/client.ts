@@ -8,6 +8,8 @@ import type {
   InferenceEffort,
   InferenceSettings,
   InferenceTier,
+  MySettings,
+  RemoteHelper,
   DiscordLinkCode,
   DiscordSetup,
   Home,
@@ -130,7 +132,14 @@ import type {
 
 /** The dashboard API as the frontend sees it. The mock and the HTTP client both implement it. */
 export interface Api {
-  me(): Promise<User>;
+  /** The signed-in user; `settings` holds their own settings (maintainers and operators). */
+  me: {
+    (): Promise<User>;
+    settings: {
+      get(): Promise<MySettings>;
+      put(body: MySettings): Promise<MySettings>;
+    };
+  };
   repos(): Promise<RepoName[]>;
   /** Owners of the visible repos that are not storytold's, by repo name. */
   repoOwners(): Promise<Record<string, string>>;
@@ -293,6 +302,10 @@ export interface Api {
     /** `answer`: operators only; the token's agent may also answer decisions, and it lasts 7 days. */
     create(label: string, answer?: boolean, run?: boolean): Promise<McpTokenCreated>;
     revoke(id: number): Promise<McpTokens>;
+  };
+  /** The signed-in user's helpers in the user-local inference mode. */
+  remote: {
+    helpers(): Promise<{ helpers: RemoteHelper[] }>;
   };
   /** Operator only. */
   access: {

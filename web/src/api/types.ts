@@ -2484,6 +2484,9 @@ export type McpTokens = { tokens: McpToken[]; max: number; path: string; /** Whe
 /** After making a token: the list, the new token's id, and its value, shown this once. */
 export type McpTokenCreated = McpTokens & { id: number; token: string };
 
+/** The signed-in user's own settings, and their user-local helpers as the server last saw them (src/remote/protocol.ts). */
+export type { UserSettings as MySettings, HelperInfo as RemoteHelper, Readiness as HelperReadiness, UsageWindow } from "../../../src/remote/protocol.ts";
+
 // ---- redesign: one status per item, Home, the two-sided item page, findings as items ----------------------------
 
 export type ItemPhase = "Triage" | "Waiting for a person" | "Review" | "Fixing" | "Verifying" | "In queue" | "Merged" | "Closed" | "Held" | "Out of scope" | "Pipeline off";

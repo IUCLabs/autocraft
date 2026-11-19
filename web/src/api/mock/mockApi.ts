@@ -148,8 +148,9 @@ export function createMockApi(): Api {
   const LEVEL_RANK = (d: Decision): number => 4 - Number((d.priority?.level ?? "P2").slice(1));
   // A screenshot aid: localStorage.mockSlow (ms) delays decision refetches so the moment after an answer can be captured.
   const lag = () => Number(globalThis.localStorage?.getItem("mockSlow")) || 10;
+  const mcpMock = createMcpMock(me, changed);
   const api: Omit<Api, keyof RedesignApi> = {
-    me: () => wait(me, 10),
+    me: Object.assign(() => wait(me, 10), { settings: mcpMock.meSettings }),
     repos: () => wait(REPOS, 10),
     repoOwners: () => wait(MOCK_REPO_OWNERS, 10),
     decisions: {
@@ -350,7 +351,9 @@ export function createMockApi(): Api {
     }),
     ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),
-    ...createMcpMock(me, changed),
+    mcp: mcpMock.mcp,
+    inference: mcpMock.inference,
+    remote: mcpMock.remote,
     classifiers: {
       report: (sel) => wait(classifierReport(sel), 80),
       disagreements: (f) => wait(disagreementList(f), 60),

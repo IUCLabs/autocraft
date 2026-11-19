@@ -1,12 +1,22 @@
 import type { Api } from "../client";
-import type { InferenceSettings, McpToken, User } from "../types";
+import type { InferenceSettings, McpToken, MySettings, RemoteHelper, User } from "../types";
 import { NOW } from "./fixtures";
 
 const DAY = 86_400_000;
 
 /** The Connect page's tokens, in memory; the server's rules (at most five, own tokens only) apply. */
-export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference"> {
+export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference" | "remote"> & { meSettings: Api["me"]["settings"] } {
   let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] }, minEffort: { top: "high" } };
+  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 } };
+  const at = (ms: number) => new Date(NOW + ms).toISOString();
+  const helpers: RemoteHelper[] = [
+    { tokenId: 2, label: "laptop", readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-40_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
+      usage: { fiveHour: { usedPercent: 42, resetsAt: at(3 * 3600_000) }, weekly: { usedPercent: 18, resetsAt: at(4 * DAY) }, at: at(-40_000) } },
+    { tokenId: 3, label: "workstation", readiness: "quota-held", until: at(95 * 60_000), reason: "5-hour window 83% used (reserve 20% free)", fresh: true, lastSeen: at(-4 * 60_000), harness: "codex", models: { top: "astra", mid: "astra-mini", small: "astra-mini" }, reserve: { fiveHour: 20, weekly: 10 },
+      usage: { fiveHour: { usedPercent: 83, resetsAt: at(95 * 60_000) }, weekly: { usedPercent: 61, resetsAt: at(2 * DAY) }, at: at(-4 * 60_000) } },
+    { tokenId: 4, label: "mini", readiness: "cooled-off", until: at(5 * 3600_000), reason: "its leases were lost 3 times within 2 hours (no heartbeat, or past the call's time limit)", fresh: true, lastSeen: at(-90_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
+      usage: { fiveHour: { usedPercent: 12, resetsAt: at(4 * 3600_000) }, weekly: { usedPercent: 30, resetsAt: at(4 * DAY) }, at: at(-90_000) } },
+  ];
   let next = 3;
   let tokens: McpToken[] = [
     { id: 2, label: "laptop", canAnswer: false, canRun: true, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
@@ -29,6 +39,18 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
         return wait(structuredClone(inference));
       },
     },
+    meSettings: {
+      get: () => wait(structuredClone(settings)),
+      async put(body) {
+        if (me.role === "viewer") throw new Error("viewers have no settings");
+        const ok = (n: number) => Number.isInteger(n) && n >= 0 && n <= 90;
+        if (!ok(body.reserve.fiveHour) || !ok(body.reserve.weekly)) throw new Error("keep-free values are whole numbers from 0 to 90");
+        settings = structuredClone(body);
+        changed();
+        return wait(structuredClone(settings));
+      },
+    },
+    remote: { helpers: () => wait({ helpers: structuredClone(helpers) }) },
     mcp: {
       tokens: () => wait(list()),
       async create(label, answer = false, run = false) {
