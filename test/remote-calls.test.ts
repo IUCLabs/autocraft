@@ -13,8 +13,9 @@ import { connect } from "../src/db.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
 import type { User } from "../src/dash/types.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
-import { bundleOf, claimCall, heartbeat, submitCall, type Caller } from "../src/remote/calls.ts";
-import { setInferenceMode } from "../src/remote/mode.ts";
+import { bundleOf, claimCall, expireLeases, heartbeat, withdrawCall, submitCall, type Caller } from "../src/remote/calls.ts";
+import { clearCooloff } from "../src/remote/cooloff.ts";
+import { setAcceptedModels, setInferenceMode } from "../src/remote/mode.ts";
 import { PROTOCOL_VERSION, type Claim } from "../src/remote/protocol.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -110,6 +111,51 @@ describe("user-local remote calls", () => {
     const runs = db.prepare("SELECT state, error FROM agent_runs WHERE prompt_id = 'review.opus' ORDER BY id DESC LIMIT 2").all() as { state: string; error: string }[];
     assert.deepEqual(runs.map((x) => x.state), ["failed", "failed"]);
     assert.match(runs[1]!.error, /lease expired/);
+  });
+
+  test("three lost leases within two hours cool a token off for six hours; its next claim says why and until when; an operator clears it", async () => {
+    db.prepare("INSERT INTO access (login, role) VALUES ('erin', 'maintainer')").run();
+    const erin: Caller = { tokenId: createToken(db, "erin", "helper", false, true).row.id, login: "erin", role: "maintainer" };
+    const mine = async () => (await claimCall(db, erin, claim, canWrite)).lease;
+    const lose = (id: number, now: number) => {
+      db.prepare("UPDATE remote_calls SET heartbeat_at = ? WHERE id = ?").run(now - 3 * 60000, id);
+      expireLeases(db, now);
+    };
+    const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
+    const t0 = Date.now();
+    let lease = null;
+    for (let i = 0; i < 200 && !lease; i++) { lease = await mine(); if (!lease) await sleep(5); }
+    lose(lease!.id, t0);
+    const again = (await mine())!;
+    assert.equal(again.id, lease!.id, "a lost lease is not a failed call: the call goes back to the queue");
+    lose(again.id, t0 + 1000);
+    assert.equal(await ask, null, "the call used its attempts");
+    const ask2 = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
+    let third = null;
+    for (let i = 0; i < 200 && !third; i++) { third = await mine(); if (!third) await sleep(5); }
+    lose(third!.id, t0 + 2000);
+    const reply = await claimCall(db, erin, claim, canWrite, t0 + 3000);
+    assert.equal(reply.lease, null);
+    assert.equal(reply.lease === null && reply.until, t0 + 2000 + 6 * 3600_000);
+    assert.match(reply.lease === null ? reply.reason ?? "" : "", /3 times within 2 hours/);
+    assert.equal(clearCooloff(db, "erin", "test"), 1);
+    assert.ok((await claimCall(db, erin, claim, canWrite, t0 + 3000)).lease, "the call is back in the queue for the cleared helper");
+    withdrawCall(db, (db.prepare("SELECT id FROM remote_calls WHERE state IN ('queued','leased') ORDER BY id DESC LIMIT 1").get() as { id: number }).id, "test over");
+    await ask2;
+  });
+
+  test("a claim whose declared effort is below a tier's minimum gets nothing, and the refusal names the families and the floor", async () => {
+    setAcceptedModels(db, undefined, "test", { top: "high" });
+    const claimant = callers.bob!;
+    await assert.rejects(claimCall(db, claimant, claim, canWrite), /opus\/astra at effort high or higher/);
+    await assert.rejects(claimCall(db, claimant, { ...claim, efforts: { top: "medium" } }, canWrite), /at effort high or higher/);
+    assert.equal((await claimCall(db, claimant, { ...claim, efforts: { top: "xhigh" } }, canWrite)).lease, null, "meets the floor; nothing is queued");
+    setAcceptedModels(db, undefined, "test", { top: "max" });
+    const codex: Claim = { ...claim, harness: "codex", tiers: { top: "gpt-6-astra" }, efforts: { top: "xhigh" } };
+    assert.equal((await claimCall(db, claimant, codex, canWrite)).lease, null, "Codex's top level, xhigh, meets a max floor");
+    await assert.rejects(claimCall(db, claimant, { ...claim, efforts: { top: "xhigh" } }, canWrite), /effort max/);
+    setAcceptedModels(db, undefined, "test", { top: null });
+    assert.equal((await claimCall(db, claimant, claim, canWrite)).lease, null, "no floor: any helper");
   });
 
   test("the session tools count what the login may claim, and show a lease only to its holder", async () => {

@@ -259,3 +259,9 @@ test("macOS runs: the canary verdict, the command line, Codex's paths in the slo
   assert.match(helper.claudeKeychainItem({ USER: "a b", CLAUDE_CONFIG_DIR: "/Users/ann/.claude-work" }).service, /^Claude Code-credentials-[0-9a-f]{8}$/);
   assert.equal(helper.claudeKeychainItem({ USER: "a b" }).account, "claude-code-user");
 });
+
+test("Codex gets at most its top effort; Claude takes the whole ladder", () => {
+  assert.equal(helper.harnessEffort("max", "xhigh"), "xhigh");
+  assert.equal(helper.harnessEffort("medium", "xhigh"), "medium");
+  assert.equal(helper.harnessEffort("max", "max"), "max");
+});

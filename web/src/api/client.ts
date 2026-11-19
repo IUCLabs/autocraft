@@ -5,6 +5,7 @@ import { usePageProject, withProject } from "./scope";
 import type {
   DiscordAccount,
   InferenceMode,
+  InferenceEffort,
   InferenceSettings,
   InferenceTier,
   DiscordLinkCode,
@@ -284,7 +285,7 @@ export interface Api {
   /** Operator only: who runs the model calls, and the model families each tier accepts in the user-local mode. */
   inference: {
     get(): Promise<InferenceSettings>;
-    put(body: { mode?: InferenceMode; models?: Record<InferenceTier, string[]> }): Promise<InferenceSettings>;
+    put(body: { mode?: InferenceMode; models?: Record<InferenceTier, string[]>; /** A tier to its lowest effort, or null for none. */ minEffort?: Partial<Record<InferenceTier, InferenceEffort | null>> }): Promise<InferenceSettings>;
   };
   /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
   mcp: {

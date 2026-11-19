@@ -6,7 +6,7 @@ const DAY = 86_400_000;
 
 /** The Connect page's tokens, in memory; the server's rules (at most five, own tokens only) apply. */
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference"> {
-  let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] } };
+  let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] }, minEffort: { top: "high" } };
   let next = 3;
   let tokens: McpToken[] = [
     { id: 2, label: "laptop", canAnswer: false, canRun: true, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
@@ -18,7 +18,12 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
       get: () => wait(structuredClone(inference)),
       async put(body) {
         if (me.role !== "operator") throw new Error("only operators change the inference mode");
-        inference = { mode: body.mode ?? inference.mode, models: body.models ?? inference.models };
+        const minEffort = { ...inference.minEffort };
+        for (const [t, e] of Object.entries(body.minEffort ?? {})) {
+          if (e === null) delete minEffort[t as keyof typeof minEffort];
+          else minEffort[t as keyof typeof minEffort] = e;
+        }
+        inference = { mode: body.mode ?? inference.mode, models: body.models ?? inference.models, minEffort };
         me.inference = inference.mode;
         changed();
         return wait(structuredClone(inference));

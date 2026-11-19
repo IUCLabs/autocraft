@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { XIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
-import type { InferenceMode, InferenceSettings, InferenceTier } from "../../api/types";
+import type { InferenceEffort, InferenceMode, InferenceSettings, InferenceTier } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
+import { Select } from "../../ui/atoms/Select";
 import { Block } from "../../ui/molecules/Block";
 import { Dialog } from "../../ui/molecules/Dialog";
 import { Segmented } from "../../ui/molecules/Segmented";
@@ -21,6 +22,7 @@ const TIERS: { tier: InferenceTier; label: string }[] = [
   { tier: "mid", label: "Mid" },
   { tier: "small", label: "Small" },
 ];
+const EFFORTS: InferenceEffort[] = ["low", "medium", "high", "xhigh", "max"];
 const FAMILY = /^[a-z0-9][a-z0-9.-]{0,39}$/;
 
 export function InferenceView(_: ViewProps) {
@@ -38,16 +40,18 @@ export function InferenceView(_: ViewProps) {
     });
   const saveModels = (models: InferenceSettings["models"]) => write.run("models", () => api.inference.put({ models }));
 
+  const saveEffort = (tier: InferenceTier, effort: InferenceEffort | null) => write.run("effort", () => api.inference.put({ minEffort: { [tier]: effort } }));
+
   return (
     <Page title="Inference">
       <ErrorLine error={write.error} className="mt-3" />
       <Block className="mt-4" title="Model calls run on">
         <Segmented label="Where model calls run" value={data.mode} options={MODES} onChange={(m) => m !== data.mode && setPending(m)} />
       </Block>
-      <Block className="mt-4" title="Accepted models" aside="model families per tier">
+      <Block className="mt-4" title="Accepted models" aside="model families and lowest effort per tier">
         <ul className="divide-y divide-line">
           {TIERS.map(({ tier, label }) => (
-            <Families key={tier} label={label} families={data.models[tier]} busy={write.busy === "models"} onChange={(list) => saveModels({ ...data.models, [tier]: list })} />
+            <Families key={tier} label={label} families={data.models[tier]} busy={write.busy === "models" || write.busy === "effort"} onChange={(list) => saveModels({ ...data.models, [tier]: list })} minEffort={data.minEffort[tier] ?? null} onMinEffort={(e) => saveEffort(tier, e)} />
           ))}
         </ul>
       </Block>
@@ -70,7 +74,7 @@ export function InferenceView(_: ViewProps) {
   );
 }
 
-function Families({ label, families, busy, onChange }: { label: string; families: string[]; busy: boolean; onChange: (list: string[]) => Promise<boolean> }) {
+function Families({ label, families, busy, onChange, minEffort, onMinEffort }: { label: string; families: string[]; busy: boolean; onChange: (list: string[]) => Promise<boolean>; minEffort: InferenceEffort | null; onMinEffort: (e: InferenceEffort | null) => Promise<boolean> }) {
   const [text, setText] = useState("");
   const name = text.trim().toLowerCase();
   const ok = FAMILY.test(name) && !families.includes(name);
@@ -97,6 +101,20 @@ function Families({ label, families, busy, onChange }: { label: string; families
           </li>
         ))}
       </ul>
+      <Select
+        aria-label={`${label} lowest effort`}
+        value={minEffort ?? ""}
+        disabled={busy}
+        onChange={(e) => void onMinEffort((e.target.value || null) as InferenceEffort | null)}
+        className="max-md:w-full"
+      >
+        <option value="">Any effort</option>
+        {EFFORTS.map((e) => (
+          <option key={e} value={e}>
+            {e} or higher
+          </option>
+        ))}
+      </Select>
       <form
         className="flex items-center gap-2 max-md:w-full"
         onSubmit={(e) => {

@@ -62,11 +62,12 @@ export const ROUTES = {
  * @property {HarnessId} harness
  * @property {string} harnessVersion
  * @property {Partial<Record<Tier, string>>} tiers
+ * @property {Partial<Record<Tier, "low" | "medium" | "high" | "xhigh" | "max">>} [efforts]
  * @property {string[]} [repos]
  * @property {number[]} [sessions]
  * @property {string} [root]
  */
-/** @typedef {{ lease: null, retryAfter: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string } }} ClaimReply */
+/** @typedef {{ lease: null, retryAfter: number, reason?: string, until?: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string } }} ClaimReply */
 /**
  * @typedef {{ kind: "git", path: string, owner: string, repo: string, sha: string, ref?: string }
  *   | { kind: "tarball", path: string, repo: string, sha: string }
@@ -141,6 +142,7 @@ export const ROUTES = {
  * @property {(cfg: Config) => string | undefined} token  the stored harness credential
  * @property {(cfg: Config, timeoutSeconds: number) => { token: string } | { problem: string }} [tokenFor]  the credential for a call of this timeout, or why the call can't run now (released, not failed)
  * @property {Partial<Record<Tier, string>>} defaultTiers  empty when the user must name every tier's model
+ * @property {"high" | "xhigh" | "max"} maxEffort  the highest level of the effort ladder the harness is given; a bundle's higher effort is passed as this
  * @property {(bin: string) => { cmd: string, args: string[], env: Record<string, string> }} versionInSandbox  the harness's version command inside the sandbox (doctor, Linux)
  * @property {(bin: string) => { argv: string[], files: string[], dirs: string[] }} install  macOS: what runs the harness and what of its install the profile lets it read
  * @property {(bin: string, token: string) => string | null} [preflight]  prepares the harness's files before every call; why it must not run, or null
@@ -476,6 +478,7 @@ const claudeAdapter = {
     return claudeLoginToken(readClaudeCredentials(cfg.claudeConfigDir), timeoutSeconds);
   },
   defaultTiers: { top: "opus", mid: "sonnet", small: "haiku" },
+  maxEffort: "max",
   detect(cfg) {
     const bin = resolveClaudeBin(cfg);
     let version = null;
@@ -856,6 +859,10 @@ const CODEX_FEATURES_OFF = ["shell_tool", "unified_exec", "unified_exec_tty", "s
 /** A TOML basic string: JSON's escapes are TOML's, except that TOML also forbids a raw DEL. @param {string} v */
 const toml = (v) => JSON.stringify(v).replace(/\u007f/g, "\\u007F");
 
+const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "max"];
+/** The effort passed to a harness: `effort`, or the harness's highest level when that is lower. @param {string} effort @param {string} max */
+export const harnessEffort = (effort, max) => (EFFORT_LADDER.indexOf(effort) > EFFORT_LADDER.indexOf(max) ? max : effort);
+
 /**
  * `codex` arguments for one call: exec (or exec resume) reading the prompt on stdin, the model and effort, no shell,
  * the call's MCP servers on our dashboard and the helper's file tools (tokens from the environment), and none of the
@@ -994,6 +1001,7 @@ const codexAdapter = {
   token: () => (existsSync(join(codexHome(), "auth.json")) ? codexHome() : undefined),
   // Codex model ids change often and the operators accept them by name: every tier's model comes from the config.
   defaultTiers: {},
+  maxEffort: "xhigh",
   exclusive: true,
   fileTools: true,
   unaudited: codexUnaudited,
@@ -1030,7 +1038,7 @@ const codexAdapter = {
     // macOS: Codex runs under the helper's profile only. Its shell is off, so it starts no command and never nests its own
     // seatbelt inside ours; its permission profile still denies its home to the tools that read through it (view_image).
     const paths = t.mac ? { work: `${t.mac.root}/work`, home: `${t.mac.root}/tmp/home`, codexHome: t.token } : undefined;
-    const args = codexArgs({ model: t.model, effort: t.bundle.effort, system: t.bundle.system, server: t.lease.server, servers: t.bundle.mcpServers, files: t.files.url, keepSession: t.bundle.keepSession, ...(t.resumeId && { resumeId: t.resumeId }), toolTimeoutSec: t.bundle.timeoutSeconds, ...(paths && { paths }) });
+    const args = codexArgs({ model: t.model, effort: harnessEffort(t.bundle.effort, codexAdapter.maxEffort), system: t.bundle.system, server: t.lease.server, servers: t.bundle.mcpServers, files: t.files.url, keepSession: t.bundle.keepSession, ...(t.resumeId && { resumeId: t.resumeId }), toolTimeoutSec: t.bundle.timeoutSeconds, ...(paths && { paths }) });
     if (t.mac) return macCommand({ profile: t.mac.profile, root: t.mac.root, argv: [...t.mac.install.argv, ...args], env: { CODEX_HOME: t.token, [FILES_ENV]: t.files.token, ...(t.bundle.mcpServers.length && { [LEASE_ENV]: t.lease.secret }) } });
     return codexSandbox({ codexBin: t.bin, codexHome: t.token, codexArgs: args, mounts: t.mounts, env: { [FILES_ENV]: t.files.token, ...(t.bundle.mcpServers.length && { [LEASE_ENV]: t.lease.secret }) } });
   },
@@ -1764,7 +1772,7 @@ async function claimOnce(cfg, slot) {
   const n = mac ? slot ?? pickSlot(slotBase()) : undefined;
   const root = n === undefined ? undefined : slotRoot(slotBase(), n);
   /** @type {Claim} */
-  const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }) };
+  const claim = { protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, efforts: Object.fromEntries(Object.keys(tiers).map((t) => [t, adapter.maxEffort])), ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }) };
   /** @type {ClaimReply} */
   const reply = await api(server, ROUTES.claim, agentToken, claim);
   if (reply.lease) {
@@ -2106,7 +2114,7 @@ async function cmdClaim() {
   const problem = platformProblem();
   if (problem) throw new Error(problem);
   const r = await claimOnce(loadConfig());
-  if (!r.lease) { console.log(`no task queued; claim again in ${r.retryAfter} s`); return null; }
+  if (!r.lease) { console.log(r.reason ? `no calls for this helper: ${r.reason}${r.until ? ` (until ${new Date(r.until).toLocaleString()})` : ""}` : `no task queued; claim again in ${r.retryAfter} s`); return null; }
   console.log(`lease ${r.lease.id}: ${r.lease.title}`);
   return r.lease.id;
 }
@@ -2132,7 +2140,7 @@ async function cmdRun(argv) {
     if (pos[0]) id = leaseId(pos[0]);
     else {
       const r = await claimOnce(cfg, held?.n);
-      if (!r.lease) { console.log(`no task queued; try again in ${r.retryAfter} s`); return 0; }
+      if (!r.lease) { console.log(r.reason ? `no calls for this helper: ${r.reason}${r.until ? ` (until ${new Date(r.until).toLocaleString()})` : ""}` : `no task queued; try again in ${r.retryAfter} s`); return 0; }
       id = r.lease.id;
     }
     return await runOrDetach(cfg, id, detach, held !== null);
@@ -2213,7 +2221,7 @@ async function cmdWork(argv) {
   requireCanary();
   const ac = new AbortController();
   process.on("SIGINT", () => { if (ac.signal.aborted) process.exit(130); console.log("stopping: running calls are stopped and reported; press Ctrl-C again to quit at once"); ac.abort(); });
-  let idleSaid = false;
+  let idleSaid = "";
   /** @param {number} ms */
   const pause = (ms) => sleep(ms, undefined, { signal: ac.signal }).catch(() => {});
   const loop = async () => {
@@ -2227,11 +2235,12 @@ async function cmdWork(argv) {
       let r;
       try { r = await claimOnce(loadConfig(), slot); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue; }
       if (!r.lease) {
-        if (!idleSaid) { console.log(`no task queued; claiming again in ${r.retryAfter} s`); idleSaid = true; }
+        const say = r.reason ? `no calls for this helper: ${r.reason}${r.until ? ` (until ${new Date(r.until).toLocaleString()})` : ""}` : `no task queued; claiming again in ${r.retryAfter} s`;
+        if (idleSaid !== say) { console.log(say); idleSaid = say; }
         await pause(Math.max(1, r.retryAfter) * 1000);
         continue;
       }
-      idleSaid = false;
+      idleSaid = "";
       console.log(`lease ${r.lease.id}: ${r.lease.title}`);
       const s = await runLease(loadConfig(), r.lease.id, { signal: ac.signal, slotHeld: slot !== undefined });
       console.log(s.line);

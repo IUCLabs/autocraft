@@ -730,7 +730,8 @@ export interface User {
 }
 export type InferenceMode = "server" | "user-local";
 export type InferenceTier = "top" | "mid" | "small";
-export type InferenceSettings = { mode: InferenceMode; /** Accepted model families per tier. */ models: Record<InferenceTier, string[]> };
+export type InferenceEffort = "low" | "medium" | "high" | "xhigh" | "max";
+export type InferenceSettings = { mode: InferenceMode; /** Accepted model families per tier. */ models: Record<InferenceTier, string[]>; /** The lowest effort a helper may declare per tier; a tier without one takes any. */ minEffort: Partial<Record<InferenceTier, InferenceEffort>> };
 
 export interface DecisionFilter {
   repo?: RepoName[];

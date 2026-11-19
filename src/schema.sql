@@ -240,8 +240,14 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL,
   can_run INTEGER NOT NULL DEFAULT 0, -- the token's helper may claim model calls in the user-local inference mode
   idle_claim_at INTEGER,              -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
-  idle_tiers TEXT, idle_repos TEXT    -- JSON: the tiers and repos (null: any) that empty claim asked for
+  idle_tiers TEXT, idle_repos TEXT,   -- JSON: the tiers and repos (null: any) that empty claim asked for
+  cooloff_until INTEGER               -- ms since epoch: the token gets no calls until then, after repeated lost leases (src/remote/cooloff.ts)
 );
+-- Each lease of a token that ended without a release or a reply (lost heartbeat, past its time limit), newest 2 hours kept.
+CREATE TABLE IF NOT EXISTS remote_lease_drops (
+  token_id INTEGER NOT NULL, at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS remote_lease_drops_token ON remote_lease_drops(token_id, at);
 CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
 -- The GitHub App's user token of each login, written at every sign-in while the GitHub identity is the app.
 -- Separate from sessions: later steps act for a login when it has no live session.
