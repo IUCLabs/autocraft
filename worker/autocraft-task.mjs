@@ -28,7 +28,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
-import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync, closeSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, chmodSync, closeSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -76,7 +76,7 @@ export const ROUTES = {
  */
 /** @typedef {{ fiveHour: number, weekly: number }} Reserve  percent of each plan window kept free */
 /** @typedef {{ lease: null, retryAfter: number, reserve: Reserve, reason?: string, until?: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string }, reserve: Reserve }} ClaimReply */
-/** @typedef {"ready" | "quota-held" | "paused" | "cooled-off" | "sandbox-failed" | "version-refused" | "harness-missing"} Readiness */
+/** @typedef {"ready" | "quota-held" | "paused" | "cooled-off" | "sandbox-failed" | "version-refused" | "harness-missing" | "failing"} Readiness */
 /** @typedef {{ usedPercent: number, resetsAt: string | null }} UsageWindow */
 /** @typedef {{ fiveHour: UsageWindow | null, weekly: UsageWindow | null, at: string }} UsageReading */
 /**
@@ -184,6 +184,7 @@ export const CLAIM_ID_TTL_S = 300;
  * @property {(line: string, servers: string[]) => string | null} [guard]  an output line showing a tool the call may not use: the run is stopped at once
  * @property {(o: { token: string, sessionId: string | undefined, servers: string[], keep: boolean }) => { problem: string | null, tools?: SubmitTool[] }} [verify]  after the run, from the harness's own record: a tool the call may not use (or null), and the tool uses
  * @property {(stdout: string, stamps: string[]) => SubmitTool[]} [tools]  the tool uses from the output; `stamps` holds the arrival time of each complete output line
+ * @property {(line: string) => string | null} compact  the part of one output line that `parse` and `tools` read, or null: the run keeps only these
  */
 
 // ---------------------------------------------------------------------------
@@ -359,14 +360,42 @@ export function claudeTools(stdout, stamps = []) {
     const at = stamps[i];
     for (const b of e.message.content) {
       if (e.type === "assistant" && b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string" && byId.size < MAX_TOOLS) {
-        byId.set(b.id, { name: b.name.slice(0, 100), args: toolArgs(b.input), resultBytes: null, isError: false, ...(at && { startedAt: at }) });
+        byId.set(b.id, { name: b.name.slice(0, 100), args: typeof b.args === "string" ? b.args : toolArgs(b.input), resultBytes: null, isError: false, ...(at && { startedAt: at }) });
       } else if (e.type === "user" && b?.type === "tool_result" && typeof b.tool_use_id === "string") {
         const u = byId.get(b.tool_use_id);
-        if (u) { u.resultBytes = resultSize(b.content); u.isError = b.is_error === true; if (at) u.endedAt = at; }
+        if (u) { u.resultBytes = typeof b.bytes === "number" ? b.bytes : resultSize(b.content); u.isError = b.is_error === true; if (at) u.endedAt = at; }
       }
     }
   });
   return [...byId.values()];
+}
+
+/**
+ * The part of one `claude -p` output line that parseClaudeOutput and claudeTools read, or null: the init's model and
+ * session, the result whole, an assistant message's id, usage and tool uses (their stored arguments, not the input), and a
+ * tool result's size. A `--output-format json` event list is kept whole.
+ * @param {string} line @returns {string | null}
+ */
+export function claudeCompact(line) {
+  if (line.startsWith("[")) return line;
+  if (!line.startsWith("{")) return null;
+  let e;
+  try { e = JSON.parse(line); } catch { return null; }
+  const sid = typeof e?.session_id === "string" ? { session_id: e.session_id } : {};
+  if (e?.type === "result") return line;
+  if (e?.type === "system") return typeof e.model === "string" || sid.session_id ? JSON.stringify({ type: "system", ...(typeof e.model === "string" && { model: e.model }), ...sid }) : null;
+  /** @type {any[]} */
+  const content = Array.isArray(e?.message?.content) ? e.message.content : [];
+  if (e?.type === "assistant") {
+    const uses = content.filter((b) => b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string").map((b) => ({ type: "tool_use", id: b.id, name: b.name, args: toolArgs(b.input) }));
+    if (!uses.length && !e.message?.usage) return null;
+    return JSON.stringify({ type: "assistant", ...sid, message: { ...(e.message.id !== undefined && { id: e.message.id }), ...(e.message.usage && { usage: e.message.usage }), content: uses } });
+  }
+  if (e?.type === "user") {
+    const results = content.filter((b) => b?.type === "tool_result" && typeof b.tool_use_id === "string").map((b) => ({ type: "tool_result", tool_use_id: b.tool_use_id, is_error: b.is_error === true, bytes: resultSize(b.content) }));
+    return results.length ? JSON.stringify({ type: "user", ...sid, message: { content: results } }) : null;
+  }
+  return null;
 }
 
 /** @param {unknown} v @param {number} [n] */
@@ -534,6 +563,7 @@ const claudeAdapter = {
   },
   parse: parseClaudeOutput,
   tools: claudeTools,
+  compact: claudeCompact,
   resume: (args, sessionId) => claudeResume(args, sessionId),
   progress: claudeProgress,
   versionInSandbox: (bin) => claudeSandbox({ claudeBin: bin, claudeArgs: ["--version"], mounts: [] }),
@@ -987,6 +1017,21 @@ export function parseCodexOutput(stdout, model) {
   return { ok: true, text, ...base, turns: items.filter((i) => i.type === "mcp_tool_call").length + 1 };
 }
 
+/**
+ * The part of one `codex exec --json` line that parseCodexOutput reads, or null: the thread, the turn's end or failure, and
+ * each completed item's type, with an agent message's text and an error's message.
+ * @param {string} line @returns {string | null}
+ */
+export function codexCompact(line) {
+  if (!line.startsWith("{")) return null;
+  let e;
+  try { e = JSON.parse(line); } catch { return null; }
+  if (e?.type === "thread.started" || e?.type === "turn.completed" || e?.type === "turn.failed" || e?.type === "error") return line;
+  const i = e?.type === "item.completed" && e.item && typeof e.item === "object" ? e.item : null;
+  if (!i) return null;
+  return JSON.stringify({ type: e.type, item: i.type === "agent_message" ? { type: i.type, text: i.text } : i.type === "error" ? { type: i.type, message: i.message } : { type: i.type } });
+}
+
 /** The progress line of one `codex exec --json` line, or null. @param {string} raw */
 export function codexProgress(raw) {
   if (!raw.startsWith("{")) return null;
@@ -1082,6 +1127,7 @@ const codexAdapter = {
     return [...out, "resume", sessionId, "-"];
   },
   progress: codexProgress,
+  compact: codexCompact,
   versionInSandbox: (bin) => codexSandbox({ codexBin: bin, codexHome: codexHome(), codexArgs: ["--version"], mounts: [] }),
   install: (bin) => ({ argv: [bin], files: [bin], dirs: [dirname(bin)] }),
 };
@@ -1239,20 +1285,45 @@ function slotBase() {
 /** @param {string} base @param {number} n */
 export const slotRoot = (base, n) => `${base}/slot-${n}`;
 
-/** Takes slot `n`'s lock (a file naming a live process); the release function, or null when another run holds it. @param {string} base @param {number} n */
+/**
+ * Takes slot `n`'s lock (a file naming a live process); the release function, or null when another run holds it. A harness
+ * process group that a crashed holder left in the slot is stopped first.
+ * @param {string} base @param {number} n
+ */
 function takeSlot(base, n) {
-  const file = `${slotRoot(base, n)}.lock`;
-  for (let i = 0; i < 2; i++) {
-    try {
-      writeFileSync(file, String(process.pid), { flag: "wx", mode: 0o600 });
-      return () => rmSync(file, { force: true });
-    } catch {
-      const pid = Number.parseInt((() => { try { return readFileSync(file, "utf8"); } catch { return ""; } })(), 10);
-      if (pid > 0 && alive(pid)) return null;
-      rmSync(file, { force: true });
-    }
+  const release = takeLockFile(`${slotRoot(base, n)}.lock`);
+  if (release) stopOrphan(slotRoot(base, n));
+  return release;
+}
+
+/** Waits `ms` without returning to the event loop (a sync caller). @param {number} ms */
+const blockFor = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * Stops the harness process group a run recorded in `<slot>.harness` and did not remove: its helper died while the harness
+ * ran. The group is signalled only while its leader is gone or has the recorded start time, so a reused pid is left alone.
+ * @param {string} root the slot's root
+ */
+function stopOrphan(root) {
+  const file = `${root}.harness`;
+  /** @type {{ pgid?: unknown, started?: unknown } | null} */
+  const rec = readJson(file);
+  if (!rec) return;
+  try {
+    const pgid = Number(rec.pgid);
+    if (!Number.isInteger(pgid) || pgid <= 1) return;
+    const ps = spawnSync("/bin/ps", ["-A", "-o", "pid=,pgid=,lstart="], { encoding: "utf8", timeout: 10_000 });
+    if (ps.status !== 0) return;
+    const rows = ps.stdout.split("\n").map((l) => /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(l)).filter((m) => m !== null && Number(m[2]) === pgid);
+    const leader = rows.find((m) => Number(m?.[1]) === pgid);
+    if (!rows.length || (leader && leader[3] !== rec.started)) return;
+    const signalGroup = (/** @type {NodeJS.Signals | 0} */ sig) => { try { process.kill(-pgid, sig); return true; } catch { return false; } };
+    signalGroup("SIGTERM");
+    for (let i = 0; i < 25 && signalGroup(0); i++) blockFor(200);
+    signalGroup("SIGKILL");
+  } finally {
+    rmSync(file, { force: true });
   }
-  return null;
 }
 
 /** The lowest free slot, held until `release`. @param {string} base @returns {{ n: number, release: () => void }} */
@@ -1441,14 +1512,21 @@ function scratchSlot(name) {
 }
 
 /**
- * Runs the canary inside the profile the harness runs in, with Node as the harness. Throws nothing.
- * @returns {{ ok: boolean, lines: string[] }}
+ * Runs the canary inside the profile the harness runs in, with Node as the harness, in a scratch slot of this process.
+ * Throws nothing.
+ * @returns {{ ok: boolean, lines: string[], at: number }}
  */
 function macCanary() {
-  let planted = "";
+  const r = canaryRun();
+  return { ...r, at: Date.now() };
+}
+
+/** @returns {{ ok: boolean, lines: string[] }} */
+function canaryRun() {
+  let planted = "", root = "";
   try {
     const home = realpathSync(homedir());
-    const root = scratchSlot("canary");
+    root = scratchSlot(`canary-${process.pid}`);
     writeFileSync(`${root}/slot.txt`, "slot");
     planted = join(home, `.autocraft-task-canary-${randomBytes(6).toString("hex")}`);
     writeFileSync(planted, "planted", { mode: 0o600 });
@@ -1463,15 +1541,17 @@ function macCanary() {
     return { ok: false, lines: [`the canary could not be set up: ${msg(e)}`] };
   } finally {
     if (planted) { rmSync(planted, { force: true }); rmSync(`${planted}.w`, { force: true }); }
+    if (root) { rmSync(root, { recursive: true, force: true }); rmSync(`${root}.sb`, { force: true }); }
   }
 }
 
-/** @type {{ ok: boolean, lines: string[] } | null} */
+const CANARY_RETRY_MS = 10 * 60_000;
+/** @type {{ ok: boolean, lines: string[], at: number } | null} */
 let canaryResult = null;
-/** Throws unless the canary passed in this process (run once, before the first claim). */
+/** Throws unless the canary passed in this process: run before the first claim, and again CANARY_RETRY_MS after a failure. */
 function requireCanary() {
   if (process.platform !== "darwin") return;
-  canaryResult ??= macCanary();
+  if (!canaryResult || (!canaryResult.ok && Date.now() - canaryResult.at >= CANARY_RETRY_MS)) canaryResult = macCanary();
   if (!canaryResult.ok) throw new Error(`the macOS sandbox canary failed, so no call is claimed:\n  ${canaryResult.lines.join("\n  ")}`);
 }
 
@@ -1495,12 +1575,20 @@ const ADAPTERS = { claude: claudeAdapter, codex: codexAdapter };
  * @property {Partial<Record<Tier, string>>} [tiers]  model per tier; defaults are the adapter's
  * @property {string[]} [repos]
  * @property {Reserve} [reserve]  the local usage reserve: it only raises the server's, window by window
+ * @property {number} [treeCacheGb]  the cap of the cached trees in GB (default TREE_CACHE_GB)
  */
 
 const configDir = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "autocraft-task");
 const cacheDir = () => join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "autocraft-task");
 const SESSION_TTL_MS = 3 * 3600_000;
 const TREE_TTL_MS = 3 * 24 * 3600_000;
+/** A tree used this recently may be mounted by a running call: the size cap leaves it. */
+const TREE_BUSY_MS = 6 * 3600_000;
+/** The tree cache's default cap (config `treeCacheGb`). */
+const TREE_CACHE_GB = 20;
+const BARE_TTL_MS = 7 * 24 * 3600_000;
+const GC_EVERY_MS = 24 * 3600_000;
+const PRUNE_EVERY_MS = 10 * 60_000;
 const WAIT_MS = 9 * 60_000;
 
 /** @param {string} p */
@@ -1540,7 +1628,15 @@ const readLease = (id) => readJson(leaseFile(id));
 /** @param {number | string} id */
 const dropLease = (id) => rmSync(leaseFile(id), { force: true });
 
-/** `stop`: the helper can take no call until it is updated. @typedef {{ state: "running" | "submitted" | "failed" | "lost" | "released", line: string, pid?: number, at: number, stop?: boolean }} RunStatus */
+/**
+ * `hold`: the helper can take no call for a while (`ms`; null: until it is restarted), shown as `readiness`.
+ * @typedef {{ readiness: Readiness, ms: number | null }} RunHold
+ * @typedef {{ state: "running" | "submitted" | "failed" | "lost" | "released", line: string, pid?: number, at: number, hold?: RunHold }} RunStatus
+ */
+/** A run's hold for a missing harness, login or sandbox: they need the user, so they are checked again only after a while. */
+const STOP_HOLD_MS = 10 * 60_000;
+/** A run's hold for a login that could not be read: Claude Code rewrites its credentials in place, a Keychain read can fail once. */
+const TOKEN_HOLD_MS = 30_000;
 /** @param {number | string} id */
 const statusFile = (id) => join(cacheDir(), "runs", `${Number(id)}.json`);
 /** @param {number | string} id @param {RunStatus} s */
@@ -1577,9 +1673,17 @@ function heldSessions(slot) {
   return readdirSync(sessionsDir()).flatMap((f) => { const m = /^(\d+)\.json$/.exec(f); const s = m ? readSession(Number(m[1])) : null; return s && s.slot === slot ? [Number(m?.[1])] : []; });
 }
 
-/** Removes expired session stores, old cached trees, status files, lease files and task directories a crash left behind. */
+let prunedAt = 0;
+
+/**
+ * Removes expired session stores, status files, lease files and task directories a crash left behind; bare repos unused for
+ * BARE_TTL_MS; cached trees unused for TREE_TTL_MS, then the least recently used ones while all of them exceed the size cap.
+ * Runs at most every PRUNE_EVERY_MS per process.
+ */
 function prune() {
   const now = Date.now();
+  if (now - prunedAt < PRUNE_EVERY_MS) return;
+  prunedAt = now;
   /** @param {string} p */
   const age = (p) => { try { return now - statSync(p).mtimeMs; } catch { return 0; } };
   const sd = sessionsDir();
@@ -1596,17 +1700,46 @@ function prune() {
   const tasks = join(cacheDir(), "tasks");
   if (existsSync(tasks)) for (const d of readdirSync(tasks)) if (age(join(tasks, d)) > 24 * 3600_000) rmSync(join(tasks, d), { recursive: true, force: true });
   const trees = join(cacheDir(), "trees");
+  /** @type {{ p: string, at: number, bytes: number }[]} */
+  const kept = [];
   /** @param {string} dir @param {number} depth */
   const walk = (dir, depth) => {
     if (!existsSync(dir)) return;
     for (const d of readdirSync(dir)) {
       const p = join(dir, d);
       if (depth > 0) walk(p, depth - 1);
-      else if (age(p) > TREE_TTL_MS) rmSync(p, { recursive: true, force: true });
+      else if (d.endsWith(".size")) { if (!existsSync(p.slice(0, -5))) rmSync(p, { force: true }); }
+      else if (age(p) > TREE_TTL_MS) { rmSync(p, { recursive: true, force: true }); rmSync(`${p}.size`, { force: true }); }
+      else if (!d.includes(".tmp-")) {
+        let bytes = Number.parseInt((() => { try { return readFileSync(`${p}.size`, "utf8"); } catch { return ""; } })(), 10);
+        if (!(bytes >= 0)) { bytes = treeBytes(p); try { writeFileSync(`${p}.size`, String(bytes)); } catch { /* counted anyway */ } }
+        kept.push({ p, at: now - age(p), bytes });
+      }
     }
   };
   walk(join(trees, "git"), 2);
   walk(join(trees, "tarball"), 1);
+  const capGb = loadConfig().treeCacheGb;
+  const cap = (typeof capGb === "number" && capGb > 0 ? capGb : TREE_CACHE_GB) * 1e9;
+  let total = kept.reduce((n, t) => n + t.bytes, 0);
+  for (const t of kept.sort((a, b) => a.at - b.at)) {
+    if (total <= cap || now - t.at < TREE_BUSY_MS) break;
+    rmSync(t.p, { recursive: true, force: true }); rmSync(`${t.p}.size`, { force: true });
+    total -= t.bytes;
+  }
+  const git = join(cacheDir(), "git");
+  if (existsSync(git)) for (const owner of readdirSync(git)) {
+    const od = join(git, owner);
+    let repos = [];
+    try { repos = readdirSync(od); } catch { continue; }
+    for (const r of repos) {
+      const bare = join(od, r);
+      if (!r.endsWith(".git") || age(bare) <= BARE_TTL_MS) continue;
+      const release = takeLockFile(`${bare}.lock`, FETCH_LOCK_STALE_MS);
+      if (!release) continue;
+      try { rmSync(bare, { recursive: true, force: true }); } finally { release(); }
+    }
+  }
   const runs = join(cacheDir(), "runs");
   if (existsSync(runs)) for (const f of readdirSync(runs)) if (age(join(runs, f)) > 24 * 3600_000) rmSync(join(runs, f), { force: true });
   const leases = join(configDir(), "leases");
@@ -2116,6 +2249,7 @@ const helperStatusFile = () => join(cacheDir(), "status.json");
  * @property {Reserve} [serverReserve]
  * @property {{ version: string, at: number, reason: string }} [refused]  the server refused this helper version
  * @property {{ until: number, reason: string }} [cooloff]  the server gives this token no calls until then (repeated lost leases)
+ * @property {Hold} [hold]  a `work` process holds its claims: a run's stop, or calls failed in a row
  * @property {number} [at]
  * @property {number} [sentAt]
  * @property {string} [sentKey]
@@ -2125,6 +2259,18 @@ const helperStatusFile = () => join(cacheDir(), "status.json");
 const readHelperStatus = () => readJson(helperStatusFile()) ?? {};
 /** @param {(s: StatusFile) => StatusFile} f */
 const updateHelperStatus = (f) => writePrivate(helperStatusFile(), f(readHelperStatus()));
+
+/**
+ * A hold the `work` process `pid` put on its claims, shown as the helper's readiness while that process lives and until
+ * `until` (null: until it is restarted). `resume` ends it.
+ * @typedef {{ pid: number, readiness: Readiness, reason: string, until: number | null }} Hold
+ */
+/** @param {Readiness} readiness @param {string} reason @param {number | null} until */
+const setHold = (readiness, reason, until) => updateHelperStatus((s) => ({ ...s, hold: { pid: process.pid, readiness, reason: redact(reason).slice(0, 300), until } }));
+/** Ends this process's hold; with `readiness`, only a hold of that kind. @param {Readiness} [readiness] */
+const clearHold = (readiness) => updateHelperStatus(({ hold, ...s }) => (hold && (readiness === undefined || hold.readiness === readiness) ? s : { ...s, ...(hold && { hold }) }));
+/** The hold in force now, or null. @param {StatusFile} s @param {number} now */
+const holdNow = (s, now) => (s.hold && alive(s.hold.pid) && (s.hold.until === null || now < s.hold.until) ? s.hold : null);
 
 /**
  * @typedef {object} Ready
@@ -2156,7 +2302,9 @@ async function checkReady(cfg, opt = {}) {
   const models = adapter ? { ...adapter.defaultTiers, ...cfg.tiers } : { ...cfg.tiers };
   const base = { reserve, reading: null, models, ...(adapter && { adapter }) };
   const problem = platformProblem();
+  const hold = holdNow(prev, now);
   if (prev.refused?.version === HELPER_VERSION && now - prev.refused.at < REFUSED_RETRY_MS) st = { ...base, readiness: "version-refused", until: null, reason: prev.refused.reason };
+  else if (hold) st = { ...base, readiness: hold.readiness, until: hold.until, reason: hold.reason };
   else if (!adapter) st = { ...base, readiness: "harness-missing", until: null, reason: `no adapter for harness ${cfg.harness}` };
   else if (problem) st = { ...base, readiness: "sandbox-failed", until: null, reason: problem };
   else {
@@ -2327,7 +2475,11 @@ async function untar(dir, feed) {
   await Promise.all([feed(t.stdin), extracted]);
 }
 
-/** Builds a tree once: into a temporary directory, instruction files removed, then renamed into place. Reused while it exists. @param {string} dir @param {(tmp: string) => Promise<void>} fill */
+/**
+ * Builds a tree once: into a temporary directory, instruction files removed, then renamed into place, its size in `<dir>.size`
+ * for the cache cap. Reused while it exists; each use touches it.
+ * @param {string} dir @param {(tmp: string) => Promise<void>} fill
+ */
 async function cachedTree(dir, fill) {
   if (existsSync(dir)) { const t = new Date(); utimesSync(dir, t, t); return dir; }
   mkdirSync(dirname(dir), { recursive: true });
@@ -2335,11 +2487,29 @@ async function cachedTree(dir, fill) {
   try {
     await fill(tmp);
     removeInstructionFiles(tmp);
-    try { renameSync(tmp, dir); } catch (e) { if (!existsSync(dir)) throw e; }
+    const bytes = treeBytes(tmp);
+    try { renameSync(tmp, dir); writeFileSync(`${dir}.size`, String(bytes)); } catch (e) { if (!existsSync(dir)) throw e; }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
   return dir;
+}
+
+/** Bytes of the files below `dir` (symlinks not followed). @param {string} dir */
+function treeBytes(dir) {
+  let n = 0;
+  /** @param {string} d */
+  const walk = (d) => {
+    let names;
+    try { names = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of names) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else try { n += lstatSync(p).size; } catch { /* gone */ }
+    }
+  };
+  walk(dir);
+  return n;
 }
 
 /** @type {Map<string, Promise<unknown>>} */
@@ -2357,19 +2527,29 @@ async function gitTree(m) {
   const bare = join(cacheDir(), "git", m.owner, `${m.repo}.git`);
   const tree = join(cacheDir(), "trees", "git", m.owner, m.repo, m.sha);
   if (existsSync(tree)) return cachedTree(tree, async () => {});
-  await serial(bare, async () => {
+  mkdirSync(dirname(bare), { recursive: true });
+  // One fetch per bare repo at a time, in this process (serial) and across the user's helper processes (the lock file).
+  await serial(bare, () => withLockFile(`${bare}.lock`, async () => {
     if (!existsSync(join(bare, "HEAD"))) {
       mkdirSync(bare, { recursive: true });
       const init = await run("git", ["init", "--bare", "-q", bare]);
       if (init.code !== 0) throw new Error(`git init: ${init.stderr.trim()}`);
       await run("git", ["-C", bare, "remote", "add", "origin", `https://github.com/${m.owner}/${m.repo}.git`]);
     }
+    // The bare repo's time is its last use: prune removes repos unused for BARE_TTL_MS.
+    const now = new Date();
+    utimesSync(bare, now, now);
     const has = async () => (await run("git", ["-C", bare, "cat-file", "-e", `${m.sha}^{commit}`])).code === 0;
     if (await has()) return;
     const bySha = await run("git", ["-C", bare, "fetch", "-q", "--depth", "1", "origin", m.sha]);
     if (bySha.code !== 0 && m.ref) await run("git", ["-C", bare, "fetch", "-q", "--depth", "1", "origin", m.ref]);
     if (!(await has())) throw new Error(`could not fetch ${m.owner}/${m.repo}@${m.sha.slice(0, 12)}: ${bySha.stderr.trim().slice(0, 200)}`);
-  });
+    // Each fetch adds a pack; `gc --auto` packs them once enough piled up, checked at most once a day per repo.
+    const stamp = join(bare, "autocraft-gc");
+    let gcAt = 0;
+    try { gcAt = statSync(stamp).mtimeMs; } catch { /* never */ }
+    if (Date.now() - gcAt > GC_EVERY_MS) { await run("git", ["-C", bare, "gc", "--auto", "--quiet"]); writeFileSync(stamp, ""); }
+  }));
   return cachedTree(tree, (tmp) => untar(tmp, (stdin) => new Promise((resolve, reject) => {
     const a = spawn("git", ["-C", bare, "archive", "--format=tar", m.sha], { env: GIT_ENV, stdio: ["ignore", "pipe", "ignore"] });
     a.stdout.pipe(stdin);
@@ -2516,8 +2696,8 @@ async function claimOnce(cfg, slot) {
  */
 async function runLease(cfg, id, opt = {}) {
   const lease = readLease(id);
-  /** @param {RunStatus["state"]} state @param {string} line @param {boolean} [stop] @returns {RunStatus} */
-  const end = (state, line, stop = false) => { const s = { state, line: redact(line), at: Date.now(), ...(stop && { stop }) }; writeStatus(id, s); if (state !== "running") dropLease(id); return s; };
+  /** @param {RunStatus["state"]} state @param {string} line @param {RunHold} [hold] @returns {RunStatus} */
+  const end = (state, line, hold) => { const s = { state, line: redact(line), at: Date.now(), ...(hold && { hold }) }; writeStatus(id, s); if (state !== "running") dropLease(id); return s; };
   if (!lease) return end("failed", `failed: no lease ${id} was claimed on this machine`);
   secretsInUse.add(lease.secret);
   writeStatus(id, { state: "running", line: `running: ${lease.title}`, pid: process.pid, at: Date.now() });
@@ -2545,13 +2725,13 @@ async function runLease(cfg, id, opt = {}) {
   };
   /**
    * The helper's own fault, not the call's: the call goes back to the queue without using an attempt.
-   * @param {string} reason @param {boolean} [stop] the helper can take no call until it is updated
+   * @param {string} reason @param {RunHold} [hold] the helper can take no call for a while
    */
-  const giveBack = async (reason, stop = false) => {
+  const giveBack = async (reason, hold) => {
     /** @type {Release} */
     const body = { reason: redact(reason).slice(0, 300) };
     try { await call(ROUTES.release, body); } catch (e) { return undelivered(`the release (${reason})`, e); }
-    return end("released", `released: ${lease.title}: ${reason}`, stop);
+    return end("released", `released: ${lease.title}: ${reason}`, hold);
   };
   /** Why the preparation stopped, when one of its signals did. */
   const prepStopped = () => (opt.signal?.aborted ? "stopped on the helper" : prepTimeout.aborted ? `preparing took longer than ${(PREPARE_MAX_S * 1000 - 2 * RETRY_MARGIN_MS) / 60_000} min` : null);
@@ -2560,9 +2740,9 @@ async function runLease(cfg, id, opt = {}) {
   let releaseSlot = () => {};
   let taskDir = "", unlock = () => {};
   try {
-    if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return await giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`, true);
+    if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return await giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper} and restart the helper`, { readiness: "version-refused", ms: null });
     const problem = platformProblem();
-    if (problem) return await giveBack(problem, true);
+    if (problem) return await giveBack(problem, { readiness: "sandbox-failed", ms: STOP_HOLD_MS });
     if (process.platform === "darwin") {
       if (lease.root === undefined || lease.slot === undefined) return await giveBack("the lease was claimed without a slot");
       if (!opt.slotHeld) {
@@ -2574,8 +2754,11 @@ async function runLease(cfg, id, opt = {}) {
     try { prune(); } catch { /* best effort */ }
     const adapter = adapterOf(cfg);
     const d = adapter.detect(cfg);
-    const token = adapter.token(cfg) ?? "";
-    if (!d.bin || !token) return await giveBack(`${adapter.id} binary or token missing on the helper`, true);
+    // A login read can miss once (a credentials file rewritten in place, a failed Keychain read): read it again first.
+    let token = adapter.token(cfg) ?? "";
+    if (!token) { await sleep(2000); token = adapter.token(cfg) ?? ""; }
+    if (!d.bin) return await giveBack(`${adapter.id} binary missing on the helper`, { readiness: "harness-missing", ms: STOP_HOLD_MS });
+    if (!token) return await giveBack(`the ${adapter.id} login could not be read`, { readiness: "harness-missing", ms: TOKEN_HOLD_MS });
     tokens.push(token); secretsInUse.add(token);
     if (adapter.exclusive) {
       const release = takeHarnessLock(adapter.id);
@@ -2583,9 +2766,9 @@ async function runLease(cfg, id, opt = {}) {
       unlock = release;
     }
     const old = d.version && adapter.unaudited?.(d.version);
-    if (old) return await giveBack(old, true);
+    if (old) return await giveBack(old, { readiness: "version-refused", ms: STOP_HOLD_MS });
     const unsafe = adapter.preflight?.(d.bin, token);
-    if (unsafe) return await giveBack(unsafe, true);
+    if (unsafe) return await giveBack(unsafe, { readiness: "harness-missing", ms: STOP_HOLD_MS });
     /** @type {TaskBundle} */
     const b = await call(ROUTES.bundle, undefined, prep);
     // A bundle of the wrong shape is the server's fault, the same for every helper: the call fails rather than circling.
@@ -2595,8 +2778,9 @@ async function runLease(cfg, id, opt = {}) {
     if (!model) return await giveBack(`no ${adapter.id} model is set for the ${b.tier} tier ("tiers" in the config)`);
     let runToken = token;
     if (adapter.tokenFor) {
-      const t = adapter.tokenFor(cfg, b.timeoutSeconds);
-      if ("problem" in t) return await giveBack(t.problem);
+      let t = adapter.tokenFor(cfg, b.timeoutSeconds);
+      if ("problem" in t && t.problem !== CLAUDE_LOGIN_EXPIRES) { await sleep(2000); t = adapter.tokenFor(cfg, b.timeoutSeconds); }
+      if ("problem" in t) return await giveBack(t.problem, { readiness: "harness-missing", ms: TOKEN_HOLD_MS });
       runToken = t.token;
     }
     tokens.push(runToken); secretsInUse.add(runToken);
@@ -2720,29 +2904,51 @@ async function execute(b, x) {
   }
 }
 
+/** Bytes of the harness's plain-text output (lines that are no event) kept for the error line. */
+const STDOUT_TAIL = 4000;
+
 /**
  * Runs the sandboxed harness: stdin in, stopped at the bundle's timeout, when the lease is gone or when `signal` aborts.
  * With a lease, the spawn moves its heartbeats to `running` (the time limit counts from there, here and on the server)
- * and they carry the last progress line. Progress lines name paths without the slot's root.
+ * and they carry the last progress line. Progress lines name paths without the slot's root. Of the output it keeps only
+ * what the adapter reads (`compact`), and the tail of plain-text lines, which goes with stderr.
+ * On macOS the harness runs in its own process group, recorded beside the slot, so a helper that crashed leaves a group
+ * the next taker of the slot can stop (stopOrphan).
  * @param {{ cmd: string, args: string[], env: Record<string, string>, cwd?: string }} c @param {TaskBundle} b @param {ReturnType<typeof heartbeats> | null} beat @param {AbortSignal | undefined} signal @param {Adapter} adapter @param {string} root
  */
 function harness(c, b, beat, signal, adapter, root) {
   return new Promise((resolve) => {
-    const p = spawn(c.cmd, c.args, { env: c.env, stdio: ["pipe", "pipe", "pipe"], ...(c.cwd && { cwd: c.cwd }) });
+    const group = process.platform === "darwin" && !!root;
+    const p = spawn(c.cmd, c.args, { env: c.env, stdio: ["pipe", "pipe", "pipe"], ...(c.cwd && { cwd: c.cwd }), ...(group && { detached: true }) });
     beat?.running();
-    let stdout = "", stderr = "", partial = "", gone = false, timedOut = false, stopped = false, settled = false;
-    /** @type {string[]} arrival time of each complete stdout line */
+    const groupFile = `${root}.harness`;
+    if (group && p.pid) {
+      const started = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(p.pid)], { encoding: "utf8", timeout: 10_000 }).stdout?.trim();
+      try { writeFileSync(groupFile, JSON.stringify({ pgid: p.pid, started }), { mode: 0o600 }); } catch { /* the slot lock still guards the slot */ }
+    }
+    let stderr = "", partial = "", tail = "", gone = false, timedOut = false, stopped = false, settled = false;
+    /** @type {string[]} the compacted output lines */
+    const kept = [];
+    /** @type {string[]} the arrival time of each kept line */
     const stamps = [];
     /** @type {string | undefined} */
     let unexpected;
-    const kill = () => { p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 5000).unref(); };
+    /** @param {NodeJS.Signals} sig */
+    const signalRun = (sig) => { try { if (group && p.pid) process.kill(-p.pid, sig); else p.kill(sig); } catch { /* gone */ } };
+    const kill = () => { signalRun("SIGTERM"); setTimeout(() => signalRun("SIGKILL"), 5000).unref(); };
+    /** @param {string} l @param {string} at */
+    const keep = (l, at) => {
+      const k = adapter.compact(l);
+      if (k !== null) { kept.push(k); stamps.push(at); }
+      else if (!l.startsWith("{") && l.trim()) tail = `${tail}${l}\n`.slice(-STDOUT_TAIL);
+    };
+    p.stdout.setEncoding("utf8");
     p.stdout.on("data", (d) => {
-      stdout += d;
       const lines = (partial + d).split("\n");
       partial = lines.pop() ?? "";
       const at = new Date().toISOString();
       for (const l of lines) {
-        stamps.push(at);
+        keep(l, at);
         const x = adapter.progress(root ? l.split(root).join("") : l);
         if (x) beat?.progress(x);
         const bad = !unexpected && adapter.guard?.(l, b.mcpServers);
@@ -2762,7 +2968,10 @@ function harness(c, b, beat, signal, adapter, root) {
       if (settled) return;
       settled = true;
       clearTimeout(timer); signal?.removeEventListener("abort", onAbort); beat?.gone.removeEventListener("abort", onGone);
-      resolve({ code, stdout, stamps, stderr: redact(stderr), gone, timedOut, stopped, unexpected });
+      if (group) rmSync(groupFile, { force: true });
+      if (partial) keep(partial, new Date().toISOString());
+      const text = tail ? `${stderr}${stderr && !stderr.endsWith("\n") ? "\n" : ""}stdout: ${tail}` : stderr;
+      resolve({ code, stdout: kept.join("\n"), stamps, stderr: redact(text), gone, timedOut, stopped, unexpected });
     };
     p.on("error", (e) => { stderr += String(e); done(-1); });
     p.on("close", done);
@@ -2926,8 +3135,7 @@ async function runOrDetach(cfg, id, detach, slotHeld) {
     return 0;
   }
   const ac = new AbortController();
-  process.once("SIGINT", () => ac.abort());
-  process.once("SIGTERM", () => ac.abort());
+  for (const sig of STOP_SIGNALS) process.once(sig, () => ac.abort());
   const s = await runLease(cfg, id, { signal: ac.signal, slotHeld });
   console.log(s.line);
   return s.state === "submitted" ? 0 : 1;
@@ -2953,38 +3161,132 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return /** @type {any} */ (e).code === "EPERM"; }
 }
 
-/** Takes the helper-wide lock of one harness (a lock file naming a live process); the release function, or null when another process holds it. @param {string} id */
-function takeHarnessLock(id) {
-  privateDir(configDir());
-  const file = join(configDir(), `${id}.lock`);
+/**
+ * Takes a lock file naming this process; the release function, or null while a live process holds it. A lock of a dead
+ * process, or one not touched for `staleMs` (its holder refreshes it), is taken over.
+ * @param {string} file @param {number} [staleMs]
+ */
+function takeLockFile(file, staleMs = Infinity) {
   for (let i = 0; i < 2; i++) {
     try {
       writeFileSync(file, String(process.pid), { flag: "wx", mode: 0o600 });
       return () => rmSync(file, { force: true });
-    } catch {
+    } catch (e) {
+      if (/** @type {any} */ (e).code !== "EEXIST") throw e;
       const pid = Number.parseInt((() => { try { return readFileSync(file, "utf8"); } catch { return ""; } })(), 10);
-      if (pid > 0 && alive(pid)) return null;
+      let touched = Date.now();
+      try { touched = statSync(file).mtimeMs; } catch { /* just released */ }
+      if (pid > 0 && alive(pid) && Date.now() - touched < staleMs) return null;
       rmSync(file, { force: true });
     }
   }
   return null;
 }
 
-/** @param {string[]} argv */
-async function cmdWork(argv) {
+/** Takes the helper-wide lock of one harness; the release function, or null when another process holds it. @param {string} id */
+function takeHarnessLock(id) {
+  privateDir(configDir());
+  return takeLockFile(join(configDir(), `${id}.lock`));
+}
+
+const FETCH_LOCK_STALE_MS = 5 * 60_000;
+
+/**
+ * Runs `fn` while holding `file`, waiting while another process holds it (one git fetch per bare repo across processes).
+ * The lock is touched every minute, so a holder that hangs or died with its pid reused is taken over after FETCH_LOCK_STALE_MS.
+ * @template T @param {string} file @param {() => Promise<T>} fn @returns {Promise<T>}
+ */
+async function withLockFile(file, fn) {
+  let release;
+  while (!(release = takeLockFile(file, FETCH_LOCK_STALE_MS))) await sleep(500);
+  const touch = setInterval(() => { try { const t = new Date(); utimesSync(file, t, t); } catch { /* released */ } }, 60_000);
+  try { return await fn(); } finally { clearInterval(touch); release(); }
+}
+
+/** The signals that stop a run or `work` like Ctrl-C (a service manager's stop, a closed terminal), with their exit codes. */
+const STOP_SIGNALS = /** @type {const} */ (["SIGINT", "SIGTERM", "SIGHUP"]);
+const SIGNAL_EXIT = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
+
+/** The waits before the next claim after 1, 2, 3 and 4 or more calls failed in a row. */
+const FAILURE_WAITS_MS = [60_000, 120_000, 300_000, 600_000];
+/** After this many failed calls in a row the helper holds (`failing`) until its wait ends and its checks pass again. */
+export const FAILURES_TO_HOLD = 5;
+/** How long `work` waits before its next claim after `n` calls failed (or were given back) in a row. @param {number} n */
+export const failureWait = (n) => (n <= 0 ? 0 : FAILURE_WAITS_MS[Math.min(n, FAILURE_WAITS_MS.length) - 1] ?? 0);
+
+/** A lease with no live run is given back on start once it is this old (the server expires it after 2 minutes anyway). */
+const ORPHAN_AFTER_MS = 5 * 60_000;
+
+/**
+ * Gives back, with a reason, the leases of runs whose process died (a crash, a kill, a reboot): a running status names its
+ * pid. A lease claimed and never started, or started without a pid, counts once it is ORPHAN_AFTER_MS old. Returns their ids.
+ * @param {number} [now]
+ */
+export async function releaseOrphans(now = Date.now()) {
+  const dir = join(configDir(), "leases");
+  if (!existsSync(dir)) return [];
+  /** @type {number[]} */
+  const out = [];
+  for (const f of readdirSync(dir)) {
+    const m = /^(\d+)\.json$/.exec(f);
+    const id = m ? Number(m[1]) : NaN;
+    const lease = m ? readLease(id) : null;
+    if (!lease) continue;
+    /** @type {RunStatus | null} */
+    const s = readJson(statusFile(id));
+    if (s && s.state !== "running") { dropLease(id); continue; }
+    const dead = s ? (s.pid ? !alive(s.pid) : now - s.at > ORPHAN_AFTER_MS) : now - lease.claimedAt > ORPHAN_AFTER_MS;
+    if (!dead) continue;
+    const reason = "the helper process that ran it stopped";
+    /** @type {Release} */
+    const body = { reason };
+    try { await api(lease.server, ROUTES.release, lease.secret, body); } catch { /* gone, or the server expires it */ }
+    dropLease(id);
+    writeStatus(id, { state: "released", line: `released: ${lease.title}: ${reason}`, at: Date.now() });
+    out.push(id);
+  }
+  return out;
+}
+
+/** `--parallel N` of `work` (1 when absent). @param {string[]} argv */
+function parallelOf(argv) {
   const i = argv.indexOf("--parallel");
   const n = i >= 0 ? Number(argv[i + 1]) : 1;
   if (!Number.isInteger(n) || n < 1 || n > 16) throw new Error("--parallel takes a number from 1 to 16");
+  return n;
+}
+
+/** @param {string[]} argv */
+async function cmdWork(argv) {
+  const n = parallelOf(argv);
   const exclusive = adapterOf(loadConfig());
   if (exclusive.exclusive && n > 1) throw new Error(`${exclusive.id} runs one call at a time: its login refreshes in place and must not be shared by parallel calls`);
   const problem = platformProblem();
   if (problem) throw new Error(problem);
-  requireCanary();
+  // A failed canary holds the helper (sandbox-failed, see checkReady) and runs again after a while; the process stays up.
+  try { requireCanary(); } catch (e) { console.log(msg(e)); }
   const ac = new AbortController();
-  process.on("SIGINT", () => { if (ac.signal.aborted) process.exit(130); console.log("stopping: running calls are stopped and reported; press Ctrl-C again to quit at once"); ac.abort(); });
-  let idleSaid = "", heldSaid = "";
+  for (const sig of STOP_SIGNALS) {
+    process.on(sig, () => {
+      if (ac.signal.aborted) process.exit(SIGNAL_EXIT[sig]);
+      console.log(`stopping (${sig}): running calls are stopped and given back; ${sig === "SIGINT" ? "press Ctrl-C" : "signal"} again to quit at once`);
+      ac.abort();
+    });
+  }
+  // A hold of an earlier process (its pid may be ours now) ends with it.
+  updateHelperStatus(({ hold, ...s }) => (hold && hold.pid !== process.pid && alive(hold.pid) ? { ...s, hold } : s));
+  for (const id of await releaseOrphans()) console.log(`gave back lease ${id}: the helper process that ran it stopped`);
+  capacity.slots = n;
+  capacity.busy = 0;
+  let idleSaid = "", heldSaid = "", failures = 0, notBefore = 0;
   /** @param {number} ms */
   const pause = (ms) => sleep(ms, undefined, { signal: ac.signal }).catch(() => {});
+  /** @param {Readiness} readiness @param {string} reason @param {number | null} until */
+  const hold = (readiness, reason, until) => {
+    setHold(readiness, reason, until);
+    heldSaid = heldLine({ readiness, reason, until });
+    console.log(`not claiming: ${heldSaid}; running calls finish`);
+  };
   const loop = async () => {
     // macOS: each loop holds one slot for its lifetime, so its claims name that slot's root and sessions.
     const held = process.platform === "darwin" ? holdSlot(slotBase()) : null;
@@ -2993,6 +3295,7 @@ async function cmdWork(argv) {
   /** @param {number | undefined} slot */
   const claimLoop = async (slot) => {
     while (!ac.signal.aborted) {
+      if (Date.now() < notBefore) { await pause(notBefore - Date.now()); continue; }
       let r;
       try { r = await claimOnce(loadConfig(), slot); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue; }
       if ("held" in r) {
@@ -3011,11 +3314,23 @@ async function cmdWork(argv) {
       }
       idleSaid = "";
       console.log(`lease ${r.lease.id}: ${r.lease.title}`);
-      const s = await runLease(loadConfig(), r.lease.id, { signal: ac.signal, slotHeld: slot !== undefined });
+      capacity.busy++;
+      let s;
+      try { s = await runLease(loadConfig(), r.lease.id, { signal: ac.signal, slotHeld: slot !== undefined }); } finally { capacity.busy--; }
       console.log(s.line);
-      if (s.stop) { console.log("stopping: this helper can take no call until that is fixed"); ac.abort(); }
-      // A released call goes back to the queue; claiming at once would likely hand it straight back.
-      else if (s.state === "released") await pause(60_000);
+      if (s.hold) hold(s.hold.readiness, s.line, s.hold.ms === null ? null : Date.now() + s.hold.ms);
+      else if (s.state === "submitted") {
+        if (failures >= FAILURES_TO_HOLD) clearHold("failing");
+        failures = 0; notBefore = 0;
+      } else if ((s.state === "failed" || s.state === "released") && !ac.signal.aborted) {
+        // A broken helper fails every call: it waits longer after each failure in a row, and holds after FAILURES_TO_HOLD.
+        // A released call also goes back to the queue, and claiming at once would likely hand it straight back.
+        failures++;
+        const wait = failureWait(failures);
+        notBefore = Math.max(notBefore, Date.now() + wait);
+        if (failures >= FAILURES_TO_HOLD) hold("failing", `${failures} calls failed in a row; the last: ${s.line}`, Date.now() + wait);
+        else console.log(`${failures === 1 ? "the call did not finish" : `${failures} calls in a row did not finish`}; claiming again in ${wait / 60_000} min`);
+      }
     }
   };
   await Promise.all(Array.from({ length: n }, loop));
@@ -3052,10 +3367,11 @@ async function cmdPause() {
   console.log(until === null ? "paused until `autocraft-task resume` (no reset time is known)" : `paused until ${clock(until)}, or \`autocraft-task resume\``);
 }
 
-/** Ends a pause, and a hold after a provider's refusal; the usage still decides. */
+/** Ends a pause, a hold after a provider's refusal, and a `work` process's hold; the usage still decides. */
 async function cmdResume() {
   const { pause: _p, park: _k, ...rest } = readControl();
   writeControl(rest);
+  clearHold();
   const st = await checkReady(loadConfig());
   console.log(st.readiness === "ready" ? "resumed: ready" : `resumed; ${heldLine(st)}`);
 }
@@ -3279,6 +3595,123 @@ async function cmdTool(argv) {
   return r.isError ? 1 : 0;
 }
 
+// ---------------------------------------------------------------------------
+// Service: `work` under the user's own service manager, started at login and restarted whenever it ends. No root.
+
+const SERVICE_NAME = "autocraft-task";
+/** Passed on to the service when set: PATH finds git, tar and the harness; the others name the helper's and Claude's directories. */
+const SERVICE_ENV = ["PATH", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"];
+
+/**
+ * A systemd user unit that runs `argv` and restarts it whenever it ends. A stop signals the helper alone (KillMode=mixed),
+ * so it gives its running calls back before the rest of the unit is killed.
+ * @param {{ argv: string[], env: Record<string, string> }} s
+ */
+export function systemdUnit(s) {
+  const q = (/** @type {string} */ v) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%")}"`;
+  return [
+    "[Unit]",
+    "Description=AutoCraft helper (autocraft-task work)",
+    "",
+    "[Service]",
+    `ExecStart=${s.argv.map((a) => q(a).replace(/\$/g, "$$$$")).join(" ")}`,
+    ...Object.entries(s.env).map(([k, v]) => `Environment=${q(`${k}=${v}`)}`),
+    "Restart=always",
+    "RestartSec=30",
+    "KillMode=mixed",
+    "TimeoutStopSec=90",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
+}
+
+/**
+ * A launchd agent that runs `argv` at login and again whenever it ends, its output appended to `log`.
+ * @param {{ label: string, argv: string[], env: Record<string, string>, log: string }} s
+ */
+export function launchdPlist(s) {
+  const x = (/** @type {string} */ v) => `<string>${v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</string>`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>${x(s.label)}
+  <key>ProgramArguments</key>
+  <array>
+${s.argv.map((a) => `    ${x(a)}`).join("\n")}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${Object.entries(s.env).map(([k, v]) => `    <key>${k}</key>${x(v)}`).join("\n")}
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>ExitTimeOut</key><integer>90</integer>
+  <key>StandardOutPath</key>${x(s.log)}
+  <key>StandardErrorPath</key>${x(s.log)}
+</dict>
+</plist>
+`;
+}
+
+/** `service install [--parallel N] | uninstall | status`. @param {string[]} argv */
+async function cmdService(argv) {
+  const [action, ...rest] = argv;
+  const mac = process.platform === "darwin";
+  if (!mac && process.platform !== "linux") throw new Error("service runs on Linux (a systemd user unit) and macOS (a launchd agent)");
+  const file = mac ? join(homedir(), "Library", "LaunchAgents", `${SERVICE_NAME}.plist`) : join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "systemd", "user", `${SERVICE_NAME}.service`);
+  const log = join(cacheDir(), "service.log");
+  const job = `gui/${userInfo().uid}/${SERVICE_NAME}`;
+  const logLine = mac ? `log: tail -f ${log}` : `log: journalctl --user -u ${SERVICE_NAME} -f`;
+  /** @param {string} cmd @param {string[]} args */
+  const sys = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 60_000 }); return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}${r.error ? String(r.error) : ""}`.trim() }; };
+  /** @param {string} cmd @param {string[]} args */
+  const must = (cmd, args) => { const r = sys(cmd, args); if (!r.ok) throw new Error(`${cmd} ${args.join(" ")}: ${r.out.slice(0, 300)}`); };
+  if (action === "install") {
+    parallelOf(rest);
+    if (!loadConfig().agentToken) throw new Error("not logged in: run `autocraft-task login <server-url>` first");
+    const run = [process.execPath, self, "work", ...rest];
+    const env = Object.fromEntries(SERVICE_ENV.flatMap((k) => (process.env[k] ? [[k, String(process.env[k])]] : [])));
+    mkdirSync(dirname(file), { recursive: true });
+    if (mac) {
+      privateDir(cacheDir());
+      writeFileSync(file, launchdPlist({ label: SERVICE_NAME, argv: run, env, log }), { mode: 0o644 });
+      sys("/bin/launchctl", ["bootout", job]);
+      must("/bin/launchctl", ["bootstrap", `gui/${userInfo().uid}`, file]);
+    } else {
+      writeFileSync(file, systemdUnit({ argv: run, env }), { mode: 0o644 });
+      must("systemctl", ["--user", "daemon-reload"]);
+      must("systemctl", ["--user", "enable", SERVICE_NAME]);
+      must("systemctl", ["--user", "restart", SERVICE_NAME]);
+    }
+    console.log(`installed ${file}: \`autocraft-task ${run.slice(2).join(" ")}\` runs ${mac ? "at login" : "with your user session"} and restarts whenever it ends`);
+    console.log(logLine);
+    if (!mac) console.log("to keep it running while you are logged out: loginctl enable-linger");
+    return 0;
+  }
+  if (action === "uninstall") {
+    if (!existsSync(file)) { console.log("no service installed"); return 0; }
+    if (mac) sys("/bin/launchctl", ["bootout", job]);
+    else sys("systemctl", ["--user", "disable", "--now", SERVICE_NAME]);
+    rmSync(file, { force: true });
+    if (!mac) sys("systemctl", ["--user", "daemon-reload"]);
+    console.log(`removed ${file}; the helper no longer runs as a service`);
+    return 0;
+  }
+  if (action === "status") {
+    if (!existsSync(file)) { console.log("no service installed: autocraft-task service install [--parallel N]"); return 3; }
+    const r = mac ? sys("/bin/launchctl", ["print", job]) : sys("systemctl", ["--user", "status", SERVICE_NAME, "--no-pager", "--lines", "10"]);
+    const out = mac ? r.out.split("\n").filter((l) => /^\s*(state|pid|last exit code|runs) =/.test(l)).map((l) => l.trim()).join("\n") : r.out;
+    console.log(r.ok || out ? out || "loaded" : "installed, not loaded");
+    console.log(logLine);
+    return r.ok ? 0 : 3;
+  }
+  throw new Error("usage: autocraft-task service install [--parallel N] | uninstall | status");
+}
+
 const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls under your own harness subscription.
 
   login <server-url>          store the agent token (read from stdin)
@@ -3290,6 +3723,8 @@ const USAGE = `autocraft-task ${HELPER_VERSION}: runs AutoCraft model calls unde
   run [--detach] [<lease>]    run a claimed lease, or claim and run one
   wait <lease>                wait for a detached run (returns after at most 9 minutes)
   work [--parallel N]         claim, run and submit in a loop
+  service install [--parallel N] | uninstall | status
+                              run \`work\` as a systemd user unit (Linux) or launchd agent (macOS) that restarts whenever it ends
   doctor                      check platform, sandbox (on macOS with a canary), harness, login and server
   try <bundle.json> [--slot N]  run a bundle from a file without a server and print the reply (testing)
   mcp <server-name> <lease>   stdio-to-HTTP proxy for one of the lease's MCP servers
@@ -3317,6 +3752,7 @@ export async function main(argv) {
       case "run": return await cmdRun(rest);
       case "wait": return await cmdWait(rest);
       case "work": return await cmdWork(rest);
+      case "service": return await cmdService(rest);
       case "doctor": return await cmdDoctor();
       case "try": return await cmdTry(rest);
       case "mcp": return await cmdMcp(rest);

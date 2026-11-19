@@ -167,21 +167,23 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
    | `claude setup-token`, then `autocraft-task harness claude` (token on stdin) | A long-lived token. It may not be allowed to read plan usage; the helper then holds (see [Usage reserve](#usage-reserve-and-readiness)). |
    | `autocraft-task harness codex [--device-auth]` | Logs Codex in to the helper's own `CODEX_HOME`, a login separate from `~/.codex`, so refreshes never invalidate your own session. `--device-auth` is for a machine without a browser. |
 
-4. Models. Claude defaults to `opus`, `sonnet` and `haiku` for the three tiers. Codex has no defaults: add `"tiers": {"top": "...", "mid": "...", "small": "..."}` to `$XDG_CONFIG_HOME/autocraft-task/config.json` (mode 0600; default `~/.config/autocraft-task/config.json`). The config also takes `repos` (claim only calls on these repos), `claudeBin` and `codexBin`.
-5. Run `autocraft-task doctor`, then `autocraft-task work`.
+4. Models. Claude defaults to `opus`, `sonnet` and `haiku` for the three tiers. Codex has no defaults: add `"tiers": {"top": "...", "mid": "...", "small": "..."}` to `$XDG_CONFIG_HOME/autocraft-task/config.json` (mode 0600; default `~/.config/autocraft-task/config.json`). The config also takes `repos` (claim only calls on these repos), `claudeBin`, `codexBin` and `treeCacheGb` (the tree cache cap, default 20).
+5. Run `autocraft-task doctor`, then `autocraft-task work`, or `autocraft-task service install [--parallel N]` to keep it running.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
-| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16; Codex runs one call at a time because its login refreshes in place. Ctrl-C stops running calls and reports them; a second Ctrl-C quits at once. |
+| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16; Codex runs one call at a time because its login refreshes in place. Ctrl-C, SIGTERM and SIGHUP stop running calls and give them back; a second signal quits at once. See [Helper process](#helper-process). |
+| `service install [--parallel N]` | Writes and starts a systemd user unit (Linux, `~/.config/systemd/user/autocraft-task.service`) or a launchd agent (macOS, `~/Library/LaunchAgents/autocraft-task.plist`) that runs `work` with these arguments and restarts it whenever it ends (systemd `Restart=always`, launchd `KeepAlive`). It keeps `PATH`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR` from the shell it ran in. The log: `journalctl --user -u autocraft-task -f` (Linux), `$XDG_CACHE_HOME/autocraft-task/service.log` (macOS). On Linux, `loginctl enable-linger` keeps it running while the user is logged out. No root. |
+| `service uninstall` / `service status` | Stops and removes the service; prints its state and where its log is. |
 | `claim` | Claims one call and prints its lease id. |
 | `run [--detach] [<lease>]` | Runs a claimed lease, or claims one and runs it. `--detach` starts the run in the background and prints the lease id. |
 | `wait <lease>` | Waits for a detached run and prints its result. Returns after at most 9 minutes with exit code 3 while the run still goes; run it again. |
 | `doctor` | Checks Node, platform, sandbox (on macOS with the canary), `git` and `tar`, the harness binary, version and login, a harness start inside the sandbox, the server and the tiers. Exit code 1 when a check fails. |
 | `status` | Prints whether the helper claims now, with plan usage, reserve, pause and hold. Exit code 0 only when `ready`. |
 | `pause-until-reset` | Claims nothing until the plan window resets, whatever the usage. `resume` ends it. |
-| `resume` | Ends a pause and a hold after a provider refusal. The usage reading still decides. |
+| `resume` | Ends a pause, a hold after a provider refusal, and a hold of `work` (a stopped run, failed calls). The usage reading still decides. |
 | `config reserve <5h> <weekly>` | Keeps more of each window free than the server's reserve (percent, 0 to 100). `config reserve off` drops it. |
 | `tool <server> <tool> [<json>] [<lease>]` | One tool call of a lease's server without MCP; prints the result, exit code 1 for an error result. |
 | `mcp <server> <lease>` | Stdio-to-HTTP proxy for one of the lease's MCP servers. |
@@ -189,13 +191,22 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
 
 Helper state lives in `$XDG_CONFIG_HOME/autocraft-task` (config, lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-task` (task directories, run logs, status file). Heartbeats go out every 30 seconds.
 
+### Helper process
+
+- **Start.** `work` gives back, with a reason, every lease on the machine whose run process is dead (a crash, a kill, a reboot), and a lease claimed and never started once it is 5 minutes old.
+- **Stop from a run.** A run that finds the helper cannot take calls (helper older than the server requires, sandbox missing, harness binary or login missing, harness version not audited) gives its call back and holds the helper's claims; calls running in other slots finish. The hold shows as the readiness with the run's reason. A helper that is too old holds until it is restarted; the others are checked again after 10 minutes. A login that cannot be read is read again after 2 seconds, and if still missing holds for 30 seconds only: Claude Code rewrites its credentials file in place, and a Keychain read can fail once.
+- **Failed calls.** After a call fails or is given back, `work` waits 1, 2, 5 and then 10 minutes before its next claim, by the number of such calls in a row. After 5 in a row it reports `failing` with the last error until the wait ends; then it claims again if its usage and harness checks pass. A submitted call resets the count.
+- **Disk.** One git fetch per bare repo at a time across the user's helper processes (a lock file beside the repo). `git gc --auto` runs after a fetch at most once a day per repo. Bare repos unused for 7 days are removed. Cached trees unused for 3 days are removed, then the least recently used ones while the cache is over `treeCacheGb` (default 20 GB); a tree used in the last 6 hours stays, since a running call may have it mounted. Pruning runs before a call, at most every 10 minutes.
+- **Memory.** Of the harness's output the helper keeps only what it reads (the result, usage, session, and each tool use's stored arguments and result size) and the last 4,000 bytes of plain-text lines, which go into the error line with stderr.
+- **macOS orphans.** The harness runs in its own process group, recorded beside its slot. A helper that crashed leaves that file; the next process to take the slot stops the group first (only while its leader is gone or has the recorded start time).
+
 ### Sandbox
 
 The harness never runs outside a sandbox that shows it only the call's own files.
 
 - **Linux and WSL.** bubblewrap with every namespace unshared and the network shared, an empty home, the harness binary and every mount read-only, and a temporary work directory. The credential reaches the harness through its environment only, never through arguments.
 - **macOS.** `sandbox-exec` with a per-slot profile: the harness reads its slot and the files of its install, writes its temporary directory and nothing else. `sandbox-exec` cannot remap paths, so each slot (up to 16, one per parallel call) has its own root, which the claim reports to the server.
-- **Canary (macOS).** Before the first claim, and in `doctor`, the helper runs a Node probe inside the profile. It must read its slot and write its temporary directory, and must fail to read a file planted in the home, list the home, `~/.ssh` and the Keychains, and write the home or the slot. A failed canary makes the helper `sandbox-failed`, and it claims nothing.
+- **Canary (macOS).** Before the first claim, and in `doctor`, the helper runs a Node probe inside the profile, in a scratch slot of its own process. It must read its slot and write its temporary directory, and must fail to read a file planted in the home, list the home, `~/.ssh` and the Keychains, and write the home or the slot. A failed canary makes the helper `sandbox-failed`, and it claims nothing; the canary runs again 10 minutes later.
 - **Instruction files.** `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `.claude` directories are removed from every checkout before a run.
 
 ### Who gets which call
@@ -248,6 +259,7 @@ The helper reports its readiness to `POST /api/remote/status` on every change an
 | `sandbox-failed` | The sandbox check or canary failed. |
 | `version-refused` | The server refused the helper's version, or the harness version is not audited (Codex). |
 | `harness-missing` | The harness or its login is missing, or the Claude login expires soon. |
+| `failing` | The helper's last 5 calls failed or were given back in a row; it claims again at the time shown if its checks pass. |
 
 The planner counts as room only helpers whose last status is `ready` and at most 6 minutes old and whose last claim found nothing within 45 seconds. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
 
