@@ -6,7 +6,7 @@ import type { JobUsage } from "../../web/src/api/types.ts";
 import { setCallContext, StoppedError } from "../agents/call.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
-import { AUTOPILOT_USER, isEnabled } from "./autopilot.ts";
+import { AUTOPILOT_USER, isDraining, isEnabled } from "./autopilot.ts";
 import { leaseSkipKeys, leaseSkips } from "./leases.ts";
 import { DEADLINE_ERROR, jobRow, scrub } from "./jobs.ts";
 import { loadSteps, validateParams, type StepContext } from "./steps.ts";
@@ -81,7 +81,9 @@ export async function execJob(id: number): Promise<number> {
     },
     stopping: () => ctx.cancelled() || (row.requested_by === AUTOPILOT_USER && !isEnabled(db)),
   };
-  setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled, stopping: ctx.stopping });
+  setCallContext({ jobId: id, step: step.name, stage: step.stage, class: step.priority ?? 0, ...(typeof params.repo === "string" && { repo: params.repo }), cancelled: ctx.cancelled,
+    // Model calls (local and remote) are withdrawn when the pipeline is switched off, not during a drain: running jobs finish with their calls.
+    stopping: () => ctx.cancelled() || (row.requested_by === AUTOPILOT_USER && !isEnabled(db) && !isDraining(db)) });
   try {
     const summary = await step.run(ctx);
     saveUsage();
