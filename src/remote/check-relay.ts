@@ -13,9 +13,9 @@ const over = (db: DatabaseSync, id: number, r: CheckResult, nowMs = Date.now()):
   db.prepare("UPDATE main.remote_checks SET state = 'done', result = ?, ended_at = ? WHERE id = ? AND state != 'done'").run(JSON.stringify(r), nowMs, id);
 };
 
-/** Job side, on each poll of a leased call: starts the call's requested checks on `tool`, each recorded under the run the request names. */
+/** Job side, on each poll of a leased call: starts the call's requested checks on `tool`, each recorded under the run the request names. A request made under an earlier lease's run is stale and left alone. */
 export function serveChecks(db: DatabaseSync, callId: number, tool: Pick<CheckTool, "run">): void {
-  const rows = db.prepare("SELECT id, run_id, input FROM main.remote_checks WHERE call_id = ? AND state = 'requested' ORDER BY id").all(callId) as { id: number; run_id: number | null; input: string }[];
+  const rows = db.prepare("SELECT id, run_id, input FROM main.remote_checks WHERE call_id = ? AND state = 'requested' AND run_id IS (SELECT run_id FROM main.remote_calls WHERE id = ?) ORDER BY id").all(callId, callId) as { id: number; run_id: number | null; input: string }[];
   for (const r of rows) {
     if (Number(db.prepare("UPDATE main.remote_checks SET state = 'running' WHERE id = ? AND state = 'requested'").run(r.id).changes) !== 1) continue;
     let input: unknown;

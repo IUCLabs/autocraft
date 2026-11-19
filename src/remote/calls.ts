@@ -300,10 +300,11 @@ const memoWrite = (canWrite: (repo: string) => Promise<boolean>): ((repo: string
 };
 
 /** How many queued calls the caller could claim now (same filters and eligibility as claimCall, nothing is leased), for a session's next_task. Follow-ups of a helper's own sessions are not counted. */
-export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { tiers?: readonly Tier[] }, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<number> {
+export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { tiers?: readonly Tier[]; models?: Partial<Record<Tier, string>> }, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<number> {
   expireLeases(db, nowMs);
   const accepted = acceptedModels(db);
-  const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0));
+  // A tier counts when the model the helper would use for it is of an accepted family; without a model, when the tier accepts any.
+  const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0 && (opts.models?.[t] === undefined || familyOf(opts.models[t]!, accepted[t]) !== null)));
   const can = memoWrite(canWrite);
   let n = 0;
   for (const r of claimOrder(db, caller, tiers, null, [], nowMs)) if (await eligible(db, caller, r, can, nowMs)) n++;

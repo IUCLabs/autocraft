@@ -8,6 +8,7 @@ import { LABELS } from "../../classify/rules.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./shown.ts";
+import { canSeeInternals } from "./staff.ts";
 import { excludeHidden, hiddenRepos } from "./visible.ts";
 
 const FLAGS = ["security", "needs decision"];
@@ -146,7 +147,11 @@ const TOTALS = `COUNT(*) AS calls, COALESCE(SUM(items), 0) AS items, COALESCE(SU
 export async function cost(db: DatabaseSync, req: Req): Promise<CostReport> {
   const run = req.query.get("run") ?? "";
   const p: Record<string, string | number> = { run };
-  const hide = excludeHidden("repo", await hiddenRepos(db, req), p);
+  const hidden = await hiddenRepos(db, req);
+  const hide = excludeHidden("repo", hidden, p);
+  // Per-user usage is for staff. Under a repo filter a run counts only when it has items and all of them are visible.
+  const hideRuns = excludeHidden("x.repo", hidden, p);
+  const staff = canSeeInternals(req);
   // Null-safe: calls without a repo (classification runs) stay in the totals.
   const flt = `(:run = '' OR run_id = :run)${hide ? ` AND (repo IS NULL OR ${hide})` : ""}`;
   const q = <T>(sql: string) => (db.prepare(sql).all(p) as T[]).map((r) => ({ ...r }) as T);
@@ -162,10 +167,10 @@ export async function cost(db: DatabaseSync, req: Req): Promise<CostReport> {
     itemsClassified: (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT repo, number FROM classifications WHERE ${flt})`).get(p) as { n: number }).n,
     stages: q<CostReport["stages"][number]>(`SELECT COALESCE(stage, '') AS stage, COALESCE(model, '') AS model, ${TOTALS} FROM token_usage WHERE ${flt} GROUP BY stage, model ORDER BY stage, model`),
     repos: q<CostReport["repos"][number]>(`SELECT repo, ${TOTALS} FROM token_usage WHERE ${flt} AND repo IS NOT NULL GROUP BY repo ORDER BY COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) DESC`),
-    users: q<CostReport["users"][number]>(`SELECT user_login AS login, COUNT(*) AS calls, COALESCE(SUM(item_count), 0) AS items, COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output,
+    users: !staff ? [] : q<CostReport["users"][number]>(`SELECT user_login AS login, COUNT(*) AS calls, COALESCE(SUM(item_count), 0) AS items, COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output,
         COALESCE(SUM(cache_read_tokens), 0) AS cacheRead, COALESCE(SUM(cache_write_tokens), 0) AS cacheWrite, SUM(cost_usd) AS usd,
         COALESCE(ROUND((julianday(MAX(ended_at)) - julianday(MIN(started_at))) * 86400), 0) AS wallSeconds
-      FROM agent_runs WHERE provider = 'claude' AND (:run = '' OR started_at BETWEEN (SELECT MIN(started_at) FROM token_usage WHERE run_id = :run) AND (SELECT MAX(COALESCE(ended_at, started_at)) FROM token_usage WHERE run_id = :run))
+      FROM agent_runs WHERE provider = 'claude'${hideRuns ? ` AND EXISTS (SELECT 1 FROM agent_run_items y WHERE y.run_id = agent_runs.id) AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = agent_runs.id AND NOT (${hideRuns}))` : ""} AND (:run = '' OR started_at BETWEEN (SELECT MIN(started_at) FROM token_usage WHERE run_id = :run) AND (SELECT MAX(COALESCE(ended_at, started_at)) FROM token_usage WHERE run_id = :run))
       GROUP BY user_login ORDER BY user_login IS NULL, COALESCE(SUM(cost_usd), 0) DESC`),
     series: q<CostReport["series"][number]>(`SELECT substr(COALESCE(ended_at, started_at), 1, ${len}) AS bucket,
         COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) AS tokens, SUM(cost_usd) AS usd

@@ -896,8 +896,8 @@ const dropLease = (id) => rmSync(leaseFile(id), { force: true });
 const statusFile = (id) => join(cacheDir(), "runs", `${Number(id)}.json`);
 /** @param {number | string} id @param {RunStatus} s */
 function writeStatus(id, s) {
-  mkdirSync(dirname(statusFile(id)), { recursive: true });
-  writeFileSync(`${statusFile(id)}.tmp`, JSON.stringify(s));
+  privateDir(dirname(statusFile(id)));
+  writeFileSync(`${statusFile(id)}.tmp`, JSON.stringify(s), { mode: 0o600 });
   renameSync(`${statusFile(id)}.tmp`, statusFile(id));
 }
 
@@ -927,7 +927,7 @@ function heldSessions() {
   return readdirSync(sessionsDir()).flatMap((f) => { const m = /^(\d+)\.json$/.exec(f); return m && readSession(Number(m[1])) ? [Number(m[1])] : []; });
 }
 
-/** Removes expired session stores, old cached trees and task directories a crash left behind. */
+/** Removes expired session stores, old cached trees, status files, lease files and task directories a crash left behind. */
 function prune() {
   const now = Date.now();
   /** @param {string} p */
@@ -959,6 +959,8 @@ function prune() {
   walk(join(trees, "tarball"), 1);
   const runs = join(cacheDir(), "runs");
   if (existsSync(runs)) for (const f of readdirSync(runs)) if (age(join(runs, f)) > 24 * 3600_000) rmSync(join(runs, f), { force: true });
+  const leases = join(configDir(), "leases");
+  if (existsSync(leases)) for (const f of readdirSync(leases)) if (age(join(leases, f)) > 24 * 3600_000) rmSync(join(leases, f), { force: true });
 }
 
 // ---------------------------------------------------------------------------

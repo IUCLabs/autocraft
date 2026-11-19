@@ -89,7 +89,7 @@ export const SOURCES: Source[] = [
     pull: (c) => newest<Parameters<typeof runEvent>[0] & At>(c, {
       cols: `${RUN_COLUMNS}, i.repo AS repo, i.number AS number, r.started_at AS ${T}`,
       from: "agent_runs r JOIN agent_run_items i ON i.run_id = r.id AND (i.repo, i.number) = (SELECT x.repo, x.number FROM agent_run_items x WHERE x.run_id = r.id ORDER BY x.repo, x.number LIMIT 1) LEFT JOIN claude_accounts a ON a.id = r.account_id",
-      time: "r.started_at", repoCol: "i.repo", where: hiddenSql(c.hidden).replace(/^ AND /, "") || undefined, args: hiddenArgs(c.hidden), map: (r) => [runEvent(r)],
+      time: "r.started_at", repoCol: "i.repo", where: hiddenSql(c.hidden).replace(/^ AND /, "") || undefined, args: hiddenArgs(c.hidden), map: (r) => [runEvent(r, c.staff)],
     }),
   },
   plain<Parameters<typeof checkEvent>[0] & At>("check", "model_checks", "started_at", "repo, number, id, run_id, step, head, command, crate, test_name, task_id, outcome, started_at", checkEvent),

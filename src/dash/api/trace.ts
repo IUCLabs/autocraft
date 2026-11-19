@@ -139,18 +139,18 @@ const PROMPT_TITLES: Record<string, string> = { "lint.reference.jev": "Reference
 export const RUN_COLUMNS = `r.id, r.step, r.prompt_id, r.model, r.provider, r.state, r.started_at, r.ended_at, r.input_tokens, r.output_tokens, r.cost_usd, r.summary, r.job_id, r.user_login, r.harness, r.reported_model,
        COALESCE(a.label, r.account_id) AS label, (SELECT COUNT(*) FROM agent_run_tools t WHERE t.run_id = r.id) AS tools`;
 export const runEvent = (r: { id: number; step: string; prompt_id: string; model: string; provider: string; state: string; started_at: string; ended_at: string | null; input_tokens: number | null; output_tokens: number | null;
-  cost_usd: number | null; summary: string | null; label: string | null; tools: number; job_id: number | null; user_login?: string | null; harness?: string | null; reported_model?: string | null }): Ev => ({
+  cost_usd: number | null; summary: string | null; label: string | null; tools: number; job_id: number | null; user_login?: string | null; harness?: string | null; reported_model?: string | null }, staff = false): Ev => ({
   id: `run:${r.id}`, kind: "model-call", at: r.started_at, head: null, actor: model(r.model, "model"),
   summary: `${PROMPT_TITLES[r.prompt_id] ?? stepTitle(r.step)}: ${r.state === "running" ? "running" : r.state === "failed" ? "failed" : clip(r.summary, 100) || "done"}`,
   ref: { runId: r.id, ...(r.job_id !== null ? { jobId: r.job_id } : {}) },
-  call: { promptId: r.prompt_id, step: stepTitle(r.step), model: r.model, provider: r.provider, account: r.label, state: r.state, inputTokens: r.input_tokens, outputTokens: r.output_tokens, costUsd: r.cost_usd, toolCalls: r.tools, endedAt: r.ended_at, ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }) },
+  call: { promptId: r.prompt_id, step: stepTitle(r.step), model: r.model, provider: r.provider, account: r.label, state: r.state, inputTokens: r.input_tokens, outputTokens: r.output_tokens, costUsd: r.cost_usd, toolCalls: r.tools, endedAt: r.ended_at, ...(staff && r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }) },
 });
 
 const modelCalls: Source = {
   kinds: ["model-call"],
-  run: ({ db, repo, n, hidden }) => rows<Parameters<typeof runEvent>[0]>(db,
+  run: ({ db, repo, n, hidden, staff }) => rows<Parameters<typeof runEvent>[0]>(db,
     `SELECT ${RUN_COLUMNS}
-     FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE i.repo = ? AND i.number = ?${hiddenSql(hidden)}`, repo, n, ...hiddenArgs(hidden)).map(runEvent),
+     FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE i.repo = ? AND i.number = ?${hiddenSql(hidden)}`, repo, n, ...hiddenArgs(hidden)).map((r) => runEvent(r, staff)),
 };
 
 const CHECK_NAMES: Record<string, string> = { fmt: "Format check", clippy: "Clippy", check: "Build check", test: "Tests" };

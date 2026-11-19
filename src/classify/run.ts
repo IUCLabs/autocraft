@@ -37,6 +37,7 @@ import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { runModelStep } from "../agents/step.ts";
 import { CLASSIFY_HAIKU, CLASSIFY_JEV } from "../agents/steps.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import { stripMarks } from "../prompts/harness.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 import { envVar } from "../env.ts";
@@ -676,7 +677,7 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
         promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, askedModel: model, items, level, maxAttempts: p.limits.attempts, ...(after !== null && { parentId: after }), ...(reference && { referenceRepo: basename(opts.reference!) }),
         bundle: {
           promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, timeoutSeconds, maxTurns: sandboxed ? (lean ? 1 : p.sandbox!.maxTurns) : null,
-          stdin, system: parts.system, mounts, mcpServers: servers, keepSession: persist, ...(after !== null && { resume: { parentCallId: after } }),
+          stdin: stdin === parts.stdin ? stdin : stripMarks(stdin), system: parts.system, mounts, mcpServers: servers, keepSession: persist, ...(after !== null && { resume: { parentCallId: after } }),
           hints: { claude: { args: lean ? noToolArgs(args) : args, ...(agents && { agents }) } },
         },
       });

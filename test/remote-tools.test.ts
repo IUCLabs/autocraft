@@ -60,10 +60,11 @@ describe("per-lease tools of remote calls", () => {
     const common = { promptId: "review.opus", promptVersion: "1", tier: "top" as const, effort: "medium", askedModel: "opus", items, level: 2, maxAttempts: 1 };
     const ids = {
       tools: enqueueCall(db, { ...common, bundle: bundle(["items", "reference"]), referenceRepo: "photocraft" }),
+      race: enqueueCall(db, { ...common, bundle: bundle(["reference"]), referenceRepo: "photocraft" }),
       build: enqueueCall(db, { ...common, bundle: bundle(["build"]) }),
       ended: enqueueCall(db, { ...common, bundle: bundle(["items"]) }),
     };
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       const r = await claimCall(db, caller, { protocol: PROTOCOL_VERSION, helperVersion: "1.0.0", harness: "claude", harnessVersion: "2", tiers: { top: "opus" } }, async () => true);
       const name = Object.entries(ids).find(([, id]) => id === r.lease?.id)![0];
       leases.set(name, r.lease!);
@@ -133,6 +134,14 @@ describe("per-lease tools of remote calls", () => {
     assert.equal(served, PASSAGES_PER_LEASE);
     const rows = db.prepare("SELECT COUNT(*) AS n, MIN(user_login) AS login, MIN(repo) AS repo FROM remote_passages WHERE call_id = ?").get(leases.get("tools")!.id) as { n: number; login: string; repo: string };
     assert.deepEqual({ ...rows }, { n: PASSAGES_PER_LEASE, login: "bob", repo: "photocraft" });
+  });
+
+  test("parallel reference searches together stay within the passage allowance", async () => {
+    const rs = await Promise.all(Array.from({ length: 20 }, () => tool("race", "reference", "reference_search", { query: "layer", limit: 8 })));
+    const served = rs.reduce((n, r) => n + (r.body.isError ? 0 : r.body.content[0]!.text.match(/^passage \d+:/gm)!.length), 0);
+    assert.ok(served <= PASSAGES_PER_LEASE);
+    const rows = db.prepare("SELECT COUNT(*) AS n FROM remote_passages WHERE call_id = ?").get(leases.get("race")!.id) as { n: number };
+    assert.equal(Number(rows.n), served);
   });
 
   test("a check call reaches the CheckTool of the waiting process, under the lease's agent run", async () => {

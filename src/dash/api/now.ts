@@ -227,7 +227,7 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
       placeChild(r.job_id, base({
         key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : r.user_login ? r.model : operator ? `${r.model} on ${r.label ?? "an unknown account"}` : r.model, progress: blankIfHidden(r.progress, hidden) || null,
         item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.map((i) => item(i.repo, i.number)), itemCount: Math.max(r.item_count, its.length), event: its[0] ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
-        ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }),
+        ...(staff && r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }),
       }));
     }
     for (const t of all<{ id: number; job_id: number | null; step: string; repo: string; number: number | null; state: string; queued_at: string; started_at: string | null; summary: string | null; label: string | null }>(db,

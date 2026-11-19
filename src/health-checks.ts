@@ -237,7 +237,7 @@ function remoteCallsCheck({ db, nowMs }: CheckCtx): Check[] {
   const last = (db.prepare("SELECT MAX(leased_at) AS at FROM main.remote_calls").get() as { at: number | null }).at;
   if (!q.n || (last !== null && last >= cutoff)) return [ok("remote-calls", "/pipeline")];
   const text = `${q.n} model call${q.n === 1 ? " has" : "s have"} waited over ${minutes(THRESHOLDS.remoteQueuedMs)} for a user's helper, and no helper has claimed a call in that time`;
-  return [{ id: "remote-calls", state: "fail", text, brief: "Model calls are waiting and no helper is claiming them", since: new Date(q.oldest ?? cutoff).toISOString(), count: q.n, to: "/pipeline" }];
+  return [{ id: "remote-calls", state: "warn", text, brief: "Model calls are waiting and no helper is claiming them", since: new Date(q.oldest ?? cutoff).toISOString(), count: q.n, to: "/pipeline" }];
 }
 
 /** Every check, in the order the lists show them. */
