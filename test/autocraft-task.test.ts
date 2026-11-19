@@ -115,7 +115,7 @@ test("codex runs without a shell or --sandbox, reads through the file tools, and
   const line = args.join(" ");
   assert.deepEqual(args.slice(0, 2), ["exec", "--json"]);
   assert.equal(args.at(-1), "-");
-  assert.ok(args.includes("--ephemeral") && !args.includes("--sandbox") && !args.includes("-s"));
+  assert.ok(!args.includes("--ephemeral") && !args.includes("--sandbox") && !args.includes("-s"));
   assert.match(line, /features=\{shell_tool=false, unified_exec=false/);
   assert.match(line, /permissions=\{autocraft=\{extends=":read-only", filesystem=\{"\/codex-home"="deny"\}\}\}/);
   assert.match(line, /files=\{url="http:\/\/127\.0\.0\.1:4100\/mcp", bearer_token_env_var="AUTOCRAFT_TASK_FILES_TOKEN"/);
@@ -123,7 +123,7 @@ test("codex runs without a shell or --sandbox, reads through the file tools, and
   const thread = "019a8c2e-5b7d-7e31-9a0c-3f4d2b1e6a90";
   const resumed = helper.codexArgs({ model: "m", effort: "low", system: "Answer as JSON.", server: "https://ac.example", servers: [], files: "http://127.0.0.1:1/mcp", keepSession: true, resumeId: thread, toolTimeoutSec: 60 });
   assert.deepEqual(resumed.slice(-3), ["resume", thread, "-"]);
-  assert.ok(resumed.includes('developer_instructions="Answer as JSON."') && !resumed.includes("--ephemeral"));
+  assert.ok(resumed.includes('developer_instructions="Answer as JSON."'));
   assert.throws(() => helper.codexArgs({ model: "m", effort: "low", system: null, server: "s", servers: [], files: "f", keepSession: true, resumeId: "last-review", toolTimeoutSec: 60 }), /thread id/);
   const c = helper.codexSandbox({ codexBin: "/bin/codex", codexHome: "/cfg/codex-home", codexArgs: args, mounts: [{ host: "/cache/tree", path: "/repo" }, { host: "/cache/fw", path: "/repos/framework" }], env: { AUTOCRAFT_TASK_FILES_TOKEN: "files-secret", AUTOCRAFT_TASK_LEASE_SECRET: "aclease_secret" } });
   assert.ok(!c.args.join(" ").includes("secret"));
@@ -153,4 +153,29 @@ test("the file tools read only inside the mounts: no path outside them, no symli
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("only audited Codex versions run, and a tool outside the call's MCP servers and view_image fails the call", () => {
+  assert.equal(helper.codexUnaudited("0.170.3"), null);
+  assert.match(helper.codexUnaudited("0.171.0") ?? "", /not a version this helper has audited \(0\.170\.x\)/);
+  assert.match(helper.codexUnaudited("1.0.0-beta") ?? "", /not a version/);
+  const servers = ["build", "items"];
+  const line = (item: object) => JSON.stringify({ type: "item.started", item: { id: "item_1", ...item } });
+  assert.equal(helper.codexStreamProblem(CODEX_SAMPLE.split("\n")[3]!, servers), null);
+  assert.equal(helper.codexStreamProblem(line({ type: "mcp_tool_call", server: "items", tool: "item" }), servers), null);
+  assert.equal(helper.codexStreamProblem(line({ type: "command_execution", command: "cat /codex-home/auth.json" }), servers), "unexpected tool: command_execution");
+  assert.equal(helper.codexStreamProblem(line({ type: "mcp_tool_call", server: "github", tool: "get_file" }), servers), "unexpected tool: MCP server github");
+  const rollout = (calls: object[]) => calls.map((payload) => JSON.stringify({ timestamp: "2026-11-19T10:00:00.000Z", type: "response_item", payload })).join("\n");
+  const fine = [
+    { type: "message", role: "user", content: [] },
+    { type: "function_call", name: "read_file", namespace: "mcp__files__", arguments: "{}", call_id: "c1" },
+    { type: "function_call", name: "mcp__items__item", arguments: "{}", call_id: "c2" },
+    { type: "function_call", name: "view_image", arguments: "{}", call_id: "c3" },
+    { type: "function_call_output", call_id: "c1", output: "x" },
+  ];
+  assert.equal(helper.codexRolloutProblem(rollout(fine), servers), null);
+  assert.equal(helper.codexRolloutProblem(rollout([...fine, { type: "function_call", name: "read_file", arguments: "{}", call_id: "c4" }]), servers), "unexpected tool: read_file");
+  assert.equal(helper.codexRolloutProblem(rollout([{ type: "function_call", name: "list_dir", namespace: "mcp__reference__", arguments: "{}", call_id: "c5" }]), servers), "unexpected tool: mcp__reference__list_dir");
+  assert.equal(helper.codexRolloutProblem(rollout([{ type: "custom_tool_call", name: "exec", input: "", call_id: "c6" }]), servers), "unexpected tool: custom_tool_call");
+  assert.equal(helper.codexRolloutProblem(rollout([{ type: "local_shell_call", call_id: "c7", status: "completed", action: {} }]), servers), "unexpected tool: local_shell_call");
 });

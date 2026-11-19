@@ -141,6 +141,9 @@ export const ROUTES = {
  * @property {(bin: string, token: string) => string | null} [preflight]  prepares the harness's files before every call; why it must not run, or null
  * @property {boolean} [exclusive]  one call at a time per helper (the harness refreshes a shared login)
  * @property {boolean} [fileTools]  the run gets the helper's read-only file tools (its own read tool can't be confined)
+ * @property {(version: string) => string | null} [unaudited]  why this harness version must not run calls, or null
+ * @property {(line: string, servers: string[]) => string | null} [guard]  an output line showing a tool the call may not use: the run is stopped at once
+ * @property {(o: { token: string, sessionId: string | undefined, servers: string[], keep: boolean }) => string | null} [verify]  after the run, from the harness's own record: a tool the call may not use, or null
  */
 
 // ---------------------------------------------------------------------------
@@ -644,6 +647,20 @@ function serveFileTools(mounts) {
 //   --ignore-user-config (codex-home/src/instructions/mod.rs, arg0/src/lib.rs), so the helper removes them from its home;
 //   project_doc_max_bytes = 0 turns off AGENTS.md from the working directory (core/src/agents_md.rs); /etc/codex is not
 //   in the sandbox.
+// - Audited versions only. The confinement above rests on the built-in tools of the versions in CODEX_AUDITED; earlier
+//   versions had model-gated file tools (read_file, list_dir, grep_files) that read in the codex process. In 0.170
+//   no such handler exists (core/src/tools/handlers/), and experimental_supported_tools, which comes with the model
+//   catalogue and can't be set by -c, gates only web search's literature search (ext/web-search/src/extension.rs:157-161).
+//   Any other version is refused, and every run is checked twice: the --json stream stops the run at the first tool
+//   item other than an MCP call to the call's own servers; it does not show every tool (view_image, dynamic and
+//   extension tools map to nothing: exec/src/event_processor_with_jsonl_output.rs:144-324), so after the run the
+//   thread's rollout ($CODEX_HOME/sessions/.../rollout-*-<thread>.jsonl, every model tool call as a response_item:
+//   history/src/rollout_payload.rs, protocol/src/models.rs ResponseItem) must hold no call but those MCP tools and
+//   view_image. A missing rollout fails the call too. Either way the reply is not submitted.
+// - view_image stays: with a profile that lacks full read access its reads go through Codex's sandboxed filesystem
+//   helper (exec-server/src/local_file_system.rs:91, file-system/src/lib.rs:395), and bytes that are not an image are
+//   refused before they reach the model (core/src/tools/handlers/view_image.rs:178), so even the /proc fallback above
+//   cannot turn it into a text reader.
 // Codex has no turn limit: the bundle's wall-clock limit bounds the call.
 
 const SANDBOX_CODEX = "/opt/codex/codex";
@@ -654,6 +671,68 @@ const FILES_ENV = "AUTOCRAFT_TASK_FILES_TOKEN";
 /** Files Codex reads from CODEX_HOME whatever the flags say. */
 const CODEX_HOME_INSTRUCTIONS = ["AGENTS.md", "AGENTS.override.md", ".env", "config.toml"];
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Codex versions (major.minor) whose built-in tools were audited for the confinement above. */
+export const CODEX_AUDITED = ["0.170"];
+/** Rollout item types that are model tool calls (protocol/src/models.rs ResponseItem). */
+const CODEX_CALLS = new Set(["function_call", "custom_tool_call", "local_shell_call", "tool_search_call", "web_search_call", "image_generation_call"]);
+
+/** Why a Codex version may not run calls, or null. @param {string} version */
+export function codexUnaudited(version) {
+  const m = /^(\d+)\.(\d+)\.\d+$/.exec(version);
+  if (m && CODEX_AUDITED.includes(`${Number(m[1])}.${Number(m[2])}`)) return null;
+  return `codex ${version} is not a version this helper has audited (${CODEX_AUDITED.map((v) => `${v}.x`).join(", ")}): its built-in tools may read past the task's files. Install an audited version or update the helper.`;
+}
+
+/** The MCP servers a Codex call may call: the helper's file tools and the bundle's. @param {string[]} servers */
+const allowedServers = (servers) => new Set([FILE_TOOLS_SERVER, ...servers]);
+
+/** A `codex exec --json` line that shows a tool the call may not use: the reason, or null. @param {string} raw @param {string[]} servers */
+export function codexStreamProblem(raw, servers) {
+  if (!raw.startsWith("{")) return null;
+  let e;
+  try { e = JSON.parse(raw); } catch { return null; }
+  if (!["item.started", "item.updated", "item.completed"].includes(e?.type)) return null;
+  const i = e.item ?? {};
+  if (["agent_message", "reasoning", "error"].includes(i.type)) return null;
+  if (i.type === "mcp_tool_call" && allowedServers(servers).has(i.server)) return null;
+  return `unexpected tool: ${clean(i.type === "mcp_tool_call" ? `MCP server ${i.server}` : i.type, 60)}`;
+}
+
+/** The tool name of a rollout call: namespace and name joined as the model saw it (core/src/tools/mod.rs flat_tool_name). @param {any} p */
+const flatName = (p) => {
+  const name = typeof p.name === "string" ? p.name : "", ns = typeof p.namespace === "string" ? p.namespace : "";
+  return !ns ? name : ns.endsWith("__") ? `${ns}${name}` : `${ns}__${name}`;
+};
+
+/** A rollout's first tool call the call may not use: the reason, or null. @param {string} text @param {string[]} servers */
+export function codexRolloutProblem(text, servers) {
+  const ok = allowedServers(servers);
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const p = e?.type === "response_item" ? e.payload : null;
+    if (!p || !CODEX_CALLS.has(p.type)) continue;
+    const name = p.type === "function_call" ? flatName(p) : "";
+    const mcp = /^mcp__([A-Za-z0-9_-]+?)__[A-Za-z0-9_]+$/.exec(name);
+    if (name === "view_image" || (mcp && ok.has(mcp[1]))) continue;
+    return `unexpected tool: ${clean(name || p.type, 80)}`;
+  }
+  return null;
+}
+
+/** Files below `dir`, recursively (no symlinks followed). @param {string} dir @returns {string[]} */
+function filesBelow(dir) {
+  /** @type {string[]} */
+  const out = [];
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...filesBelow(p)); else if (e.isFile()) out.push(p);
+  }
+  return out;
+}
 /** Built-in Codex features turned off: the shell, and every tool that reaches past the task directory or the call's MCP servers. */
 const CODEX_FEATURES_OFF = ["shell_tool", "unified_exec", "unified_exec_tty", "shell_snapshot", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "in_app_browser", "computer_use", "apps", "plugins", "remote_plugin", "tool_suggest", "skill_search", "skill_mcp_dependency_install", "hooks", "image_generation", "multi_agent", "goals", "workspace_dependencies"];
 
@@ -675,8 +754,6 @@ export function codexArgs(o) {
     return http(n, `${o.server}${ROUTES.mcp}/${n}`, LEASE_ENV, Math.max(60, Math.round(o.toolTimeoutSec)));
   });
   return ["exec", "--json", "--color", "never", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "-C", WORK_PATH,
-    // A call whose session may get a follow-up keeps its rollout in CODEX_HOME; any other leaves nothing behind.
-    ...(o.keepSession || o.resumeId ? [] : ["--ephemeral"]),
     "-c", `model=${toml(o.model)}`, "-c", `model_reasoning_effort=${toml(o.effort)}`,
     "-c", "project_doc_max_bytes=0", "-c", 'web_search="disabled"', "-c", "agents={enabled=false}", "-c", 'cli_auth_credentials_store="file"',
     "-c", `features={${CODEX_FEATURES_OFF.map((f) => `${f}=false`).join(", ")}}`,
@@ -800,6 +877,18 @@ const codexAdapter = {
   defaultTiers: {},
   exclusive: true,
   fileTools: true,
+  unaudited: codexUnaudited,
+  guard: codexStreamProblem,
+  verify({ token, sessionId, servers, keep }) {
+    if (!sessionId || !THREAD_ID.test(sessionId)) return "unexpected tool: no thread id, so no record of the tools used";
+    const file = filesBelow(join(token, "sessions")).find((f) => f.endsWith(`-${sessionId}.jsonl`));
+    if (!file) return "unexpected tool: no rollout, so no record of the tools used";
+    let text = "";
+    try { text = readFileSync(file, "utf8"); } catch { return "unexpected tool: the rollout is unreadable"; }
+    // The rollout is the session: kept for a follow-up, else removed now.
+    if (!keep) rmSync(file, { force: true });
+    return codexRolloutProblem(text, servers);
+  },
   detect(cfg) {
     const bin = resolveCodexBin(cfg);
     let version = null;
@@ -811,6 +900,10 @@ const codexAdapter = {
   },
   preflight(_bin, home) {
     for (const f of CODEX_HOME_INSTRUCTIONS) rmSync(join(home, f), { force: true });
+    // Rollouts of sessions no follow-up can reach any more.
+    for (const f of filesBelow(join(home, "sessions"))) {
+      try { if (Date.now() - statSync(f).mtimeMs > SESSION_TTL_MS) rmSync(f, { force: true }); } catch { /* gone */ }
+    }
     return null;
   },
   command(t) {
@@ -821,7 +914,7 @@ const codexAdapter = {
   parse: parseCodexOutput,
   resume: (args, sessionId) => {
     if (!THREAD_ID.test(sessionId)) throw new Error(`not a Codex thread id: ${sessionId}`);
-    const out = args.slice(0, -1).filter((a, i, all) => a !== "resume" && all[i - 1] !== "resume" && a !== "--ephemeral");
+    const out = args.slice(0, -1).filter((a, i, all) => a !== "resume" && all[i - 1] !== "resume");
     return [...out, "resume", sessionId, "-"];
   },
   progress: codexProgress,
@@ -1139,6 +1232,8 @@ async function claimOnce(cfg) {
   const d = adapter.detect(cfg);
   if (!d.bin || !d.version) throw new Error(`${adapter.id} not found or not runnable`);
   if (!d.loggedIn) throw new Error(`no ${adapter.id} login: run \`autocraft-task harness ${adapter.id}\``);
+  const old = adapter.unaudited?.(d.version);
+  if (old) throw new Error(old);
   const tiers = { ...adapter.defaultTiers, ...cfg.tiers };
   if (!Object.keys(tiers).length) throw new Error(`no model is set for any tier: add "tiers" (top, mid, small) with ${adapter.id} model ids to ${join(configDir(), "config.json")}`);
   /** @type {Claim} */
@@ -1208,6 +1303,8 @@ async function runLease(cfg, id, opt = {}) {
       if (!release) return giveBack(`another ${adapter.id} call is running on this helper, and they share one login`);
       unlock = release;
     }
+    const old = d.version && adapter.unaudited?.(d.version);
+    if (old) return giveBack(old, true);
     const unsafe = adapter.preflight?.(d.bin, token);
     if (unsafe) return giveBack(unsafe, true);
     /** @type {TaskBundle} */
@@ -1250,6 +1347,12 @@ async function runLease(cfg, id, opt = {}) {
     const r = await harness(c, b, lease, opt.signal, adapter);
     if (r.gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`);
     const reply = adapter.parse(r.stdout, model);
+    // A tool the call may not use: the reply never leaves this machine, and the session is not kept.
+    const unexpected = r.unexpected ?? adapter.verify?.({ token: runToken, sessionId: reply.sessionId, servers: b.mcpServers, keep: !!sessionDir && !r.unexpected }) ?? null;
+    if (unexpected) {
+      if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
+      return fail(unexpected, reply.usage);
+    }
     if (sessionDir && reply.sessionId) writePrivate(join(sessionsDir(), `${b.callId}.json`), { sessionId: reply.sessionId, dir: sessionDir, at: Date.now() });
     else if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
     if (r.timedOut) return fail(`timed out after ${b.timeoutSeconds} s`, reply.usage);
@@ -1280,12 +1383,19 @@ function harness(c, b, lease, signal, adapter) {
   return new Promise((resolve) => {
     const p = spawn(c.cmd, c.args, { env: c.env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "", partial = "", progress = "", gone = false, timedOut = false, stopped = false, settled = false;
+    /** @type {string | undefined} */
+    let unexpected;
     const kill = () => { p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 5000).unref(); };
     p.stdout.on("data", (d) => {
       stdout += d;
       const lines = (partial + d).split("\n");
       partial = lines.pop() ?? "";
-      for (const l of lines) { const x = adapter.progress(l); if (x) progress = x; }
+      for (const l of lines) {
+        const x = adapter.progress(l);
+        if (x) progress = x;
+        const bad = !unexpected && adapter.guard?.(l, b.mcpServers);
+        if (bad) { unexpected = bad; kill(); }
+      }
     });
     p.stderr.on("data", (d) => { if (stderr.length < 16_000) stderr += d; });
     p.stdin.on("error", () => {});
@@ -1302,7 +1412,7 @@ function harness(c, b, lease, signal, adapter) {
       if (settled) return;
       settled = true;
       clearInterval(beat); clearTimeout(timer); signal?.removeEventListener("abort", onAbort);
-      resolve({ code, stdout, stderr: redact(stderr), gone, timedOut, stopped });
+      resolve({ code, stdout, stderr: redact(stderr), gone, timedOut, stopped, unexpected });
     };
     p.on("error", (e) => { stderr += String(e); done(-1); });
     p.on("close", done);
@@ -1538,6 +1648,7 @@ async function cmdDoctor() {
   const adapter = adapterOf(cfg);
   const d = adapter.detect(cfg);
   check(!!d.bin && !!d.version, d.bin ? `${adapter.id} ${d.version ?? "(no version)"} at ${d.bin}` : `${adapter.id} not found on PATH`);
+  if (d.version && adapter.unaudited) { const old = adapter.unaudited(d.version); check(!old, old ?? `${adapter.id} ${d.version} is an audited version`); }
   if (d.bin) {
     const c = adapter.versionInSandbox(d.bin);
     const r = spawnSync(c.cmd, c.args, { env: c.env, encoding: "utf8", timeout: 30_000 });
