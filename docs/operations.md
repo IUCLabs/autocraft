@@ -189,10 +189,13 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
 | `mcp <server> <lease>` | Stdio-to-HTTP proxy for one of the lease's MCP servers. |
 | `try <bundle.json> [--slot N]` | Runs a bundle from a file without a server and prints the reply (testing). |
 
-Helper state lives in `$XDG_CONFIG_HOME/autocraft-task` (config, lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-task` (task directories, run logs, status file). Heartbeats go out every 30 seconds.
+Helper state lives in `$XDG_CONFIG_HOME/autocraft-task` (config, lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-task` (task directories, run logs, status file).
 
 ### Helper process
 
+- **Retries.** The claim and every lease request (bundle, tarball, heartbeat, release, submit) are retried after a 408, 429 or 5xx, a network error, a request timeout or a cut-off reply, with exponential backoff from 1 to 30 seconds, jitter, and at least the server's `Retry-After`. A 410 or another 4xx is final. A claim is tried up to 5 times within 60 seconds with the same `requestId`, so a claim whose reply was lost gets its lease back. Lease requests are retried until 90 seconds before the lease's deadline on the server. A finished reply's submit is retried until the server answers it, up to 30 minutes past that deadline, since the server moves its deadlines past a dashboard outage; a reply whose submit failed is never sent as a failure. A tool call from inside the sandbox is retried for 3 minutes.
+- **Heartbeats.** One every 30 seconds from the claim on, each retried until the next is due. The phase is `preparing` while the helper fetches the bundle and sets up the files, and `running` from the harness's spawn, sent at once; the harness's timer starts there too. A 410 stops the run (`lost`).
+- **Preparation.** Anything that fails before the harness spawns (bundle, files, git, tarball, disk, login) gives the call back without using an attempt. Preparation stops 12 minutes after the claim, so its release still reaches the server before the 15-minute cap.
 - **Start.** `work` gives back, with a reason, every lease on the machine whose run process is dead (a crash, a kill, a reboot), and a lease claimed and never started once it is 5 minutes old.
 - **Stop from a run.** A run that finds the helper cannot take calls (helper older than the server requires, sandbox missing, harness binary or login missing, harness version not audited) gives its call back and holds the helper's claims; calls running in other slots finish. The hold shows as the readiness with the run's reason. A helper that is too old holds until it is restarted; the others are checked again after 10 minutes. A login that cannot be read is read again after 2 seconds, and if still missing holds for 30 seconds only: Claude Code rewrites its credentials file in place, and a Keychain read can fail once.
 - **Failed calls.** After a call fails or is given back, `work` waits 1, 2, 5 and then 10 minutes before its next claim, by the number of such calls in a row. After 5 in a row it reports `failing` with the last error until the wait ends; then it claims again if its usage and harness checks pass. A submitted call resets the count.
@@ -219,7 +222,7 @@ A call goes to a maintainer or operator whose cached GitHub permission is `write
 - Author preference. For prompts that judge an item (reviews, the pre- and post-merge reviews, fix-up and fix-issue checks, decision prepares, conversation turns, verify compare, classify, duplicate compares and the two security prompts), an author or co-author of an item of the call (a `Co-authored-by` trailer counts) is passed over while another eligible helper has asked for work in the last 45 seconds and could take it (tier, repos, role, write permission and not an author). With no such helper, the author takes the call.
 - A follow-up turn of a session goes first to the helper that holds the session. If that helper does not take it within 2 minutes, the call is withdrawn and the caller starts a fresh one.
 - A call the login released is not offered to it again for 10 minutes.
-- A claim from a helper older than 1.1.0 or of another protocol version (2) is refused with 409.
+- A claim from a helper older than 1.2.0, or of another protocol version than 3, is refused with 409.
 
 ### Leases
 

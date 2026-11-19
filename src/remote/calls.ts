@@ -39,7 +39,7 @@ export const CALLER_GONE_MS = 5 * 60_000;
 /** Seconds a helper waits before claiming again when nothing could be taken. */
 export const CLAIM_RETRY_S = 15;
 /** The oldest helper version that may run a lease. */
-export const REQUIRED_HELPER = "1.1.0";
+export const REQUIRED_HELPER = "1.2.0";
 /** A call this login released is not offered to it again for this long (its helper could not run it). */
 export const RELEASE_SKIP_MS = 10 * 60_000;
 /**

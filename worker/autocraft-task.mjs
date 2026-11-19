@@ -37,7 +37,7 @@ import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.1.0";
+export const HELPER_VERSION = "1.2.0";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
@@ -1834,6 +1834,11 @@ export async function api(server, route, bearer, body, o = {}) {
 const LEASE_GRACE_MS = 120_000;
 /** Retries of a lease route stop this long before the lease's server deadline. */
 const RETRY_MARGIN_MS = 90_000;
+/**
+ * A finished reply's submit keeps trying this long past the helper's own deadline: after an outage of the dashboard the
+ * server moves its lease deadlines forward by the gap (src/remote/liveness.ts), which the helper cannot see.
+ */
+const SUBMIT_OUTAGE_MS = 30 * 60_000;
 /** Retries of a tool call made from inside the sandbox, where the lease's deadline is unknown. */
 const TOOL_RETRY_MS = 3 * 60_000;
 
@@ -2809,8 +2814,9 @@ async function runLease(cfg, id, opt = {}) {
     const body = { ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), ...(tools.length > 0 && { tools }), durationMs: Date.now() - started };
     /** @type {SubmitReply} */
     let s;
-    // A finished reply is never turned into a failure: the same body is retried until the server takes it or the lease ends.
-    try { s = await call(ROUTES.submit, body); } catch (e) { return undelivered("the reply", e); }
+    // A finished reply is never turned into a failure: the same body is retried until the server answers it (accepted, 410
+    // or another final 4xx), through an outage of the server up to SUBMIT_OUTAGE_MS past the lease's deadline.
+    try { s = await withRetry(() => api(lease.server, ROUTES.submit, lease.secret, body), { deadline: deadline() + SUBMIT_OUTAGE_MS }); } catch (e) { return undelivered("the reply", e); }
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
     return end("submitted", `submitted: ${lease.title}, ${kTokens(tokensOf(usage))} tokens`);
   } catch (e) {

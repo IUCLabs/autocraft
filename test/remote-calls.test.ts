@@ -41,7 +41,7 @@ describe("user-local remote calls", () => {
   }
   let claims = 0;
   /** A claim body with its own request id: a repeated id gets the first claim's reply. */
-  const claim = (): Claim => ({ requestId: `test-claim-${String(++claims).padStart(4, "0")}`, protocol: PROTOCOL_VERSION, helperVersion: "1.1.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } });
+  const claim = (): Claim => ({ requestId: `test-claim-${String(++claims).padStart(4, "0")}`, protocol: PROTOCOL_VERSION, helperVersion: "1.2.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } });
   const canWrite = async () => true;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const leaseFor = async (login: string) => {
