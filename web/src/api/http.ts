@@ -1,6 +1,6 @@
 import type { Api } from "./client";
 import { requestProject, SCOPE_HEADER } from "./scope";
-import type { ConversationCard, DecisionFilter, ItemFilter, MySettings, User } from "./types";
+import type { ConversationCard, DecisionFilter, ItemFilter, MySettings, MySettingsChange, User } from "./types";
 
 /** Query string from the set fields; booleans as 1 / 0. */
 function qs(f: object): string {
@@ -118,7 +118,7 @@ export function createHttpApi(): Api {
     me: Object.assign(() => get<User>("/api/me"), {
       settings: {
         get: () => get<MySettings>("/api/me/settings"),
-        put: (body: MySettings) => put<MySettings>("/api/me/settings", body),
+        put: (body: Partial<MySettingsChange>) => put<MySettings>("/api/me/settings", body),
       },
     }),
     repos: () => get("/api/repos"),

@@ -9,6 +9,7 @@ import type {
   InferenceSettings,
   InferenceTier,
   MySettings,
+  MySettingsChange,
   RemoteHelper,
   DiscordLinkCode,
   DiscordSetup,
@@ -137,7 +138,7 @@ export interface Api {
     (): Promise<User>;
     settings: {
       get(): Promise<MySettings>;
-      put(body: MySettings): Promise<MySettings>;
+      put(body: Partial<MySettingsChange>): Promise<MySettings>;
     };
   };
   repos(): Promise<RepoName[]>;

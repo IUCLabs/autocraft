@@ -13,7 +13,7 @@ import { connect } from "../src/db.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
 import type { User } from "../src/dash/types.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
-import { bundleOf, claimCall, CLAIM_RETRY_S, expireLeases, heartbeat, withdrawCall, submitCall, type Caller } from "../src/remote/calls.ts";
+import { bundleOf, claimableCalls, claimCall, CLAIM_RETRY_S, expireLeases, heartbeat, withdrawCall, submitCall, type Caller } from "../src/remote/calls.ts";
 import { clearCooloff } from "../src/remote/cooloff.ts";
 import * as userSettings from "../src/dash/api/user-settings.ts";
 import type { Req } from "../src/dash/types.ts";
@@ -55,6 +55,7 @@ describe("user-local remote calls", () => {
     db.prepare("UPDATE mcp_tokens SET idle_claim_at = ?, idle_tiers = '[\"top\"]', idle_repos = NULL WHERE login = ?").run(Date.now(), login);
     db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES (?, 'photocraft', 'write', ?)").run(login, new Date().toISOString());
   };
+  const req = (login: string, role: string, json?: unknown) => ({ user: { login, role, canWrite: async () => true }, json }) as unknown as Req;
   const done = (secret: string, text: string) => submitCall(db, secret, { ok: true, text, model: "claude-opus-4-5", usage: { inputTokens: 100, outputTokens: 20 }, modelUsage: { "claude-opus-4-5": { inputTokens: 90, outputTokens: 15 }, "claude-haiku-4-5": { inputTokens: 10, outputTokens: 5 } }, costUsd: 0.25,
     tools: [{ name: "mcp__items__item", args: '{"ref":"photocraft#1"}', resultBytes: 300, isError: false, startedAt: "2026-11-19T10:00:00.000Z", endedAt: "2026-11-19T10:00:01.000Z" }], durationMs: 1000 });
 
@@ -195,13 +196,12 @@ describe("user-local remote calls", () => {
   });
 
   test("a user sets their own usage reserve, the claim reply carries it, and only a helper that reported ready is room", async () => {
-    const req = (login: string, role: string, json?: unknown) => ({ user: { login, role }, json }) as unknown as Req;
-    assert.deepEqual(userSettings.settings(db, req("bob", "maintainer")), { reserve: { fiveHour: 20, weekly: 20 } }, "the default");
-    userSettings.setSettings(db, req("bob", "maintainer", { reserve: { fiveHour: 35, weekly: 10 } }));
-    assert.deepEqual(userSettings.settings(db, req("bob", "maintainer")), { reserve: { fiveHour: 35, weekly: 10 } });
-    assert.deepEqual(userSettings.settings(db, req("carol", "maintainer")).reserve, { fiveHour: 20, weekly: 20 }, "another user's is their own");
-    assert.throws(() => userSettings.setSettings(db, req("bob", "maintainer", { reserve: { fiveHour: 95, weekly: 10 } })), /0 to 90/);
-    assert.throws(() => userSettings.setSettings(db, req("eve", "viewer", { reserve: { fiveHour: 30, weekly: 30 } })), /viewers/);
+    assert.deepEqual((await userSettings.settings(db, req("bob", "maintainer"))).reserve, { fiveHour: 20, weekly: 20 }, "the default");
+    await userSettings.setSettings(db, req("bob", "maintainer", { reserve: { fiveHour: 35, weekly: 10 } }));
+    assert.deepEqual((await userSettings.settings(db, req("bob", "maintainer"))).reserve, { fiveHour: 35, weekly: 10 });
+    assert.deepEqual((await userSettings.settings(db, req("carol", "maintainer"))).reserve, { fiveHour: 20, weekly: 20 }, "another user's is their own");
+    await assert.rejects(userSettings.setSettings(db, req("bob", "maintainer", { reserve: { fiveHour: 95, weekly: 10 } })), /0 to 90/);
+    await assert.rejects(userSettings.setSettings(db, req("eve", "viewer", { reserve: { fiveHour: 30, weekly: 30 } })), /viewers/);
     assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'usage-reserve' AND login = 'bob'").get());
     assert.deepEqual(await claimCall(db, callers.bob!, claim, canWrite), { lease: null, retryAfter: CLAIM_RETRY_S, reserve: { fiveHour: 35, weekly: 10 } });
     assert.equal(remoteRoom(db, 0), 0, "an idle helper that never reported ready");
@@ -217,5 +217,28 @@ describe("user-local remote calls", () => {
     db.prepare("UPDATE mcp_tokens SET cooloff_until = ? WHERE id = ?").run(Date.now() + 3600_000, callers.bob!.tokenId);
     assert.equal(listHelpers(db, "bob")[0]?.readiness, "cooled-off", "the server's cool-off shows before the helper reports it");
     db.prepare("UPDATE mcp_tokens SET cooloff_until = NULL WHERE id = ?").run(callers.bob!.tokenId);
+  });
+
+  test("a user's repo picks limit their claims and next_task; the helper's own list narrows them, never widens them", async () => {
+    db.prepare("UPDATE mcp_tokens SET idle_claim_at = NULL, cooloff_until = NULL").run();
+    db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('photocraft', 1), ('fontcraft', 1), ('gridcraft', 0) ON CONFLICT (name) DO UPDATE SET pipeline = excluded.pipeline").run();
+    const pick = (repos: string[]) => userSettings.setSettings(db, req("bob", "maintainer", { repos }));
+    const got = await pick(["fontcraft", "gridcraft"]);
+    assert.deepEqual([got.repos, got.repoChoices], [["fontcraft", "gridcraft"], ["fontcraft", "photocraft"]], "picks are kept; choices are the pipeline-on repos");
+    await assert.rejects(pick(["nosuchrepo"]), /not tracked/);
+    const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
+    while (!db.prepare("SELECT 1 FROM remote_calls WHERE state = 'queued'").get()) await sleep(5);
+    assert.equal((await claimCall(db, callers.bob!, claim, canWrite)).lease, null, "photocraft is not picked");
+    assert.equal((db.prepare("SELECT idle_repos FROM mcp_tokens WHERE id = ?").get(callers.bob!.tokenId) as { idle_repos: string }).idle_repos, '["fontcraft","gridcraft"]', "the idle helper records what it takes");
+    assert.equal(await claimableCalls(db, callers.bob!, {}, canWrite), 0);
+    await pick(["photocraft"]);
+    assert.equal(await claimableCalls(db, callers.bob!, {}, canWrite), 1);
+    assert.equal((await claimCall(db, callers.bob!, { ...claim, repos: ["fontcraft"] }, canWrite)).lease, null, "the helper's list narrows");
+    assert.equal((db.prepare("SELECT idle_repos FROM mcp_tokens WHERE id = ?").get(callers.bob!.tokenId) as { idle_repos: string }).idle_repos, "[]");
+    const lease = (await claimCall(db, callers.bob!, { ...claim, repos: ["photocraft", "fontcraft"] }, canWrite)).lease!;
+    assert.match(lease.title, /photocraft#1287/);
+    done(lease.secret, "picked");
+    assert.equal((await ask)?.text, "picked");
+    await pick([]);
   });
 });

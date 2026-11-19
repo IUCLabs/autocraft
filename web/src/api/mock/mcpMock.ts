@@ -7,7 +7,7 @@ const DAY = 86_400_000;
 /** The Connect page's tokens, in memory; the server's rules (at most five, own tokens only) apply. */
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference" | "remote"> & { meSettings: Api["me"]["settings"] } {
   let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] }, minEffort: { top: "high" } };
-  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 } };
+  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "photocraft", "wordcraft"] };
   const at = (ms: number) => new Date(NOW + ms).toISOString();
   const helpers: RemoteHelper[] = [
     { tokenId: 2, label: "laptop", readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-40_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
@@ -44,8 +44,8 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
       async put(body) {
         if (me.role === "viewer") throw new Error("viewers have no settings");
         const ok = (n: number) => Number.isInteger(n) && n >= 0 && n <= 90;
-        if (!ok(body.reserve.fiveHour) || !ok(body.reserve.weekly)) throw new Error("keep-free values are whole numbers from 0 to 90");
-        settings = structuredClone(body);
+        if (body.reserve && (!ok(body.reserve.fiveHour) || !ok(body.reserve.weekly))) throw new Error("keep-free values are whole numbers from 0 to 90");
+        settings = { ...settings, ...structuredClone(body), ...(body.repos && { repos: [...new Set(body.repos)].sort() }) };
         changed();
         return wait(structuredClone(settings));
       },

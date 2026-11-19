@@ -19,6 +19,7 @@ import { scrub } from "../runner/scrub.ts";
 import { COOLOFF_REASON, cooloffUntil, noteDrop } from "./cooloff.ts";
 import { acceptedModels, familyOf, isEffort, isTier, meetsEffort, minEfforts, TIERS } from "./mode.ts";
 import { PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
+import { claimRepos } from "./my-repos.ts";
 import { userReserve } from "./reserve.ts";
 import { CALLER_STALE_MS, IDLE_FRESH_MS } from "./room.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
@@ -291,7 +292,7 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
 
 type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "items" | "parent_id" | "sticky_login">;
 
-/** The queued calls a claim could take in the order it takes them, before eligibility: follow-up turns of the sessions its helper holds first, then the model queue's order, filtered by tiers and repos. */
+/** The queued calls a claim could take in the order it takes them, before eligibility: follow-up turns of the sessions its helper holds first, then the model queue's order, filtered by tiers and repos (claimRepos: every repo a call names must be in the set). */
 function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, repos: ReadonlySet<string> | null, sessionIds: readonly number[], nowMs: number): Cand[] {
   const rows = (db.prepare(`SELECT id, class AS cls, level, step, repo, since, prompt_id, tier, items, parent_id, sticky_login FROM main.remote_calls
       WHERE state = 'queued' AND seen_at >= ? AND NOT COALESCE(released_by = ? COLLATE NOCASE AND released_at >= ?, 0)`).all(nowMs - CALLER_STALE_MS, caller.login, nowMs - RELEASE_SKIP_MS) as Cand[])
@@ -320,7 +321,7 @@ export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { t
   const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0 && (opts.models?.[t] === undefined || familyOf(opts.models[t]!, accepted[t]) !== null)));
   const can = memoWrite(canWrite);
   let n = 0;
-  for (const r of claimOrder(db, caller, tiers, null, [], nowMs)) if (await eligible(db, caller, r, can, nowMs)) n++;
+  for (const r of claimOrder(db, caller, tiers, claimRepos(db, caller.login, undefined), [], nowMs)) if (await eligible(db, caller, r, can, nowMs)) n++;
   return n;
 }
 
@@ -344,15 +345,16 @@ export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, 
   const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
   if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
   const can = memoWrite(canWrite);
-  for (const r of claimOrder(db, caller, tiers, claim.repos ? new Set(claim.repos) : null, claim.sessions ?? [], nowMs)) {
+  const repos = claimRepos(db, caller.login, claim.repos);
+  for (const r of claimOrder(db, caller, tiers, repos, claim.sessions ?? [], nowMs)) {
     if (!(await eligible(db, caller, r, can, nowMs))) continue;
     const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now());
     if (!lease) continue;
     db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
     return { lease, reserve: userReserve(db, caller.login) };
   }
-  // An idle helper, with what it takes: an author's claim gives way to it (otherHelperIdle).
-  db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(nowMs, JSON.stringify([...tiers]), claim.repos ? JSON.stringify(claim.repos) : null, caller.tokenId);
+  // An idle helper, with what it takes (the user's picks narrowed by the helper's list): an author's claim gives way to it (otherHelperIdle).
+  db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(nowMs, JSON.stringify([...tiers]), repos ? JSON.stringify([...repos]) : null, caller.tokenId);
   return { lease: null, retryAfter: CLAIM_RETRY_S, reserve: userReserve(db, caller.login) };
 }
 

@@ -5,6 +5,7 @@ import type { HelperReadiness, McpToken, RemoteHelper, UsageWindow } from "../..
 import type { ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
+import { Chip } from "../../ui/atoms/Chip";
 import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
@@ -26,8 +27,10 @@ const setupSteps = (origin: string): { title: string; text: string }[] => [
   { title: "1. Install the helper", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft-task.mjs -o ~/.local/bin/autocraft-task && chmod +x ~/.local/bin/autocraft-task` },
   { title: "2. Log in (token on stdin)", text: `autocraft-task login ${origin}` },
   { title: "3. Harness: your Claude Code login (Linux)", text: "autocraft-task harness claude --config-dir" },
+  { title: "3. Or, on macOS: your Claude Code login", text: "autocraft-task harness claude --keychain" },
   { title: "3. Or: a long-lived token (on stdin)", text: "claude setup-token\nautocraft-task harness claude" },
-  { title: "4. Work, from a terminal or an agent", text: "autocraft-task work\n\n# or, from an agent\nautocraft-task run --detach\nautocraft-task wait <id>" },
+  { title: "4. Check the setup", text: "autocraft-task doctor" },
+  { title: "5. Work, from a terminal or an agent", text: "autocraft-task work\n\n# or, from an agent\nautocraft-task run --detach\nautocraft-task wait <id>" },
 ];
 const jsonConfig = (url: string, token: string) => JSON.stringify({ mcpServers: { "autocraft-inbox": { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2);
 
@@ -231,10 +234,28 @@ function MySettings() {
   const { data, error } = useQuery("my-settings", (a) => a.me.settings.get());
   const [vals, setVals] = useState<{ fiveHour: string; weekly: string } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [picks, setPicks] = useState<string[]>([]);
   useEffect(() => {
-    if (data) setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
+    if (!data) return;
+    setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
+    setPicks(data.repos);
   }, [data]);
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
+  const savePicks = (next: string[]) => {
+    const was = picks;
+    setPicks(next);
+    void write.run("repos", async () => {
+      try {
+        setPicks((await api.me.settings.put({ repos: next })).repos);
+      } catch (e) {
+        setPicks(was);
+        throw e;
+      }
+    });
+  };
+  const choices = new Set(data.repoChoices);
+  // Picks that are no longer available (pipeline off, or no write permission) stay listed so they can be removed.
+  const shown = [...new Set([...data.repoChoices, ...picks])].sort();
   const valid = (v: string) => /^\d+$/.test(v) && Number(v) <= 90;
   const save = (next: { fiveHour: string; weekly: string }) => {
     if (!valid(next.fiveHour) || !valid(next.weekly)) {
@@ -276,6 +297,28 @@ function MySettings() {
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-6">
         {field("fiveHour", "Keep free: 5-hour window")}
         {field("weekly", "Keep free: weekly")}
+      </div>
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-2">
+        <span className="w-44 shrink-0 pt-1.5 text-sm text-ink/80">My repos</span>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="My repos">
+          <Chip active={!picks.length} onClick={() => picks.length && savePicks([])}>
+            All
+          </Chip>
+          {shown.map((r) => {
+            const on = picks.includes(r);
+            return (
+              <Chip
+                key={r}
+                active={on}
+                className={choices.has(r) ? undefined : "line-through opacity-60"}
+                title={choices.has(r) ? undefined : "Pipeline off or no write permission"}
+                onClick={() => savePicks(on ? picks.filter((x) => x !== r) : [...picks, r].sort())}
+              >
+                {r}
+              </Chip>
+            );
+          })}
+        </div>
       </div>
       <ErrorLine error={problem ?? write.error} className="mt-2" />
     </Block>

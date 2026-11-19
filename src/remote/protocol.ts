@@ -46,7 +46,7 @@ export type Claim = {
   tiers: Partial<Record<Tier, string>>;
   /** The highest effort the helper passes to its harness per tier (for Claude the prompt's effort as given, for Codex the reasoning effort its adapter maps to). The server offers a tier only when this meets the tier's minimum effort; a tier without it meets no minimum. */
   efforts?: Partial<Record<Tier, Effort>>;
-  /** Only calls on these repos; absent means any the user may take. */
+  /** Only calls on these repos, within the repos the user picked on the Connect page; absent means any the user may take. */
   repos?: string[];
   /** A follow-up turn for a session this helper still holds: the server offers follow-ups for these call ids first. */
   sessions?: number[];
@@ -119,8 +119,13 @@ export type HelperInfo = {
   usage: UsageReading | null;
 };
 
-/** GET and PUT /api/me/settings (session routes): the signed-in user's own settings. */
-export type UserSettings = { reserve: Reserve };
+/**
+ * GET and PUT /api/me/settings (session routes): the signed-in user's own settings. `repos`: the repos their helpers take calls
+ * from, empty for every repo. A PUT sends either field or both.
+ */
+export type UserSettings = { reserve: Reserve; repos: string[] };
+/** The settings with `repoChoices`: the tracked repos with the pipeline on where the user has write permission, sorted. */
+export type UserSettingsReply = UserSettings & { repoChoices: string[] };
 
 /** A directory the harness reads, at a fixed path inside the sandbox. */
 export type Mount =
