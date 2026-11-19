@@ -1,0 +1,73 @@
+#!/usr/bin/env node
+// Runs the robustness scenarios (section 4 of the plan) against a scratch instance and prints the acceptance report.
+//   node scripts/loadtest/run.mjs <smoke|1|2|3|4|5|6|all> [--dir <work dir>] [--db <db to copy>] [--time-factor F]
+//                                 [--users N] [--parallel K] [--calls M] [--max-minutes N] [--sequential]
+// `all` runs 1 to 5 side by side, then 6 alone (its latency numbers need the machine to itself). See README.md.
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { collect, evaluate } from "./report.mjs";
+import { Rig, sleep } from "./rig.mjs";
+
+const argv = process.argv.slice(2);
+const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : d; };
+const flag = (n) => argv.includes(`--${n}`);
+const which = argv.find((a) => !a.startsWith("--") && !argv[argv.indexOf(a) - 1]?.startsWith("--")) ?? "smoke";
+
+const FAULTS = { rate502: 0.10, rateReset: 0.05, rate429: 0.02, retryAfter: 2, latMin: 0, latMax: 3000 };
+
+/** Each scenario: defaults for the rig, what to do while the queue drains, and which acceptance lines apply. */
+const SCENARIOS = {
+  smoke: { title: "2 helpers, 20 calls, faults on", users: 2, parallel: 2, calls: 20, timeFactor: 0.05, faults: FAULTS, accept: ["noLoss", "idle"], maxMin: 8 },
+  1: { title: "10% 502, 5% resets, 2% 429, 0-3 s latency", users: 6, parallel: 2, calls: 60, timeFactor: 0.1, faults: FAULTS, accept: ["noLoss", "idle"], maxMin: 12 },
+  2: { title: "dashboard restarted mid-call, then stopped for 5 minutes", users: 6, parallel: 2, calls: 50, timeFactor: 0.5, accept: ["noLoss", "noCooloff", "idle"], maxMin: 16,
+    async during(rig) { await sleep(60_000); await rig.restartDashboard(); await sleep(60_000); await rig.dashboardOutage(300); } },
+  3: { title: "a helper frozen with SIGSTOP for 3 minutes", users: 4, parallel: 2, calls: 40, timeFactor: 0.5, accept: ["noLoss", "noDouble", "idle"], maxMin: 12,
+    async during(rig) { await sleep(40_000); rig.helpers[0].frozen = true; await rig.freezeHelper(0, 180); rig.helpers[0].frozen = false; } },
+  4: { title: "a helper killed with SIGKILL mid-call and restarted", users: 4, parallel: 2, calls: 40, timeFactor: 0.5, accept: ["noLoss", "idle"], maxMin: 12,
+    async during(rig) { await sleep(45_000); rig.killHelper(0); await sleep(20_000); rig.restartHelper(0); } },
+  5: { title: "a helper whose harness always fails", users: 5, parallel: 2, calls: 60, timeFactor: 0.1, failing: [4], accept: ["oneCooloff", "idle"], maxMin: 10 },
+  6: { title: "50 helpers x 4 slots against 500 mixed calls", users: 50, parallel: 4, calls: 500, timeFactor: 1, accept: ["noLoss", "latency", "idle"], maxMin: 25 },
+};
+
+async function run(key) {
+  const sp = SCENARIOS[key];
+  const spec = { ...sp, name: `scenario-${key}`, users: Number(opt("users", sp.users)), parallel: Number(opt("parallel", sp.parallel)), calls: Number(opt("calls", sp.calls)), timeFactor: Number(opt("time-factor", sp.timeFactor)), maxMin: Number(opt("max-minutes", sp.maxMin)) };
+  const dir = opt("dir", join(tmpdir(), `autocraft-loadtest-${Date.now()}`));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const rig = new Rig({ name: spec.name, dir, users: spec.users, parallel: spec.parallel, timeFactor: spec.timeFactor, dbFrom: opt("db"), faults: sp.faults });
+  try {
+    await rig.init();
+    for (let i = 0; i < spec.users; i++) rig.startHelper(i, { failing: (sp.failing ?? []).includes(i) });
+    rig.note(`${spec.users} helpers started, ${spec.parallel} slots each`);
+    await sleep(Math.min(20_000, 4000 + spec.users * 300));
+    await rig.enqueueMix(spec.calls);
+    rig.note(`${spec.calls} calls queued (time factor ${spec.timeFactor})`);
+    const during = sp.during ? sp.during(rig).catch((e) => rig.note(`scenario step failed: ${e.message}`)) : Promise.resolve();
+    const drained = await rig.waitDrained(spec.maxMin * 60_000);
+    await during;
+    if (sp.failing) await sleep(5000);
+    rig.note(drained ? "queue drained" : `not drained after ${spec.maxMin} min: ${rig.openCalls()} calls still open`);
+    await rig.collectDone();
+    rig.sample();
+    const m = collect(rig);
+    const { lines, checks } = evaluate(rig, spec, m);
+    writeFileSync(join(rig.dir, "report.json"), JSON.stringify({ spec: { name: spec.name, title: spec.title }, metrics: m, checks, timeline: rig.events }, null, 1));
+    return { key, lines, checks, dir: rig.dir };
+  } finally {
+    await rig.stop();
+  }
+}
+
+const keys = which === "all" ? ["1", "2", "3", "4", "5", "6"] : [which];
+if (!keys.every((k) => SCENARIOS[k])) { console.error(`unknown scenario ${which}; use smoke, 1-6 or all`); process.exit(64); }
+const results = [];
+if (which === "all" && !flag("sequential")) {
+  results.push(...await Promise.all(keys.slice(0, 5).map((k) => run(k))));
+  results.push(await run("6"));
+} else for (const k of keys) results.push(await run(k));
+console.log("\n==================== acceptance ====================");
+for (const r of results) console.log(`${r.lines.join("\n")}\n(files: ${r.dir})\n`);
+const fails = results.flatMap((r) => r.checks.filter((c) => !c.ok).map((c) => `scenario ${r.key}: ${c.name}`));
+console.log(fails.length ? `FAILED ${fails.length}:\n  ${fails.join("\n  ")}` : "ALL PASSED");
+process.exit(fails.length ? 1 : 0);
