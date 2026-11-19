@@ -1,7 +1,8 @@
 // Harness wording for the user-local inference mode. A remote call's prompt is rendered when it is queued, before
-// anyone has claimed it, so the phrases that name one harness's tools are carried as marked spans and filled in when
-// a helper claims the call and its harness is known (src/remote/calls.ts `bundleOf`). For `claude` the filled text is
-// exactly the server's text. No Node imports: src/prompts/index.ts uses this.
+// anyone has claimed it, so the phrases that name one harness's tools, and the fixed sandbox paths, are carried as marked
+// spans and filled in when a helper claims the call and its harness and path root are known (src/remote/calls.ts
+// `forHarness`). For `claude` without a root the filled text is exactly the server's text. No Node imports:
+// src/prompts/index.ts uses this.
 import type { HarnessId } from "../remote/protocol.ts";
 
 /** Marks a span. Untrusted text has the character removed (`stripMarks`) before it joins a prompt, so data cannot hold a marker. */
@@ -39,20 +40,60 @@ const MCP_NAME: Record<HarnessId, (server: string, tool: string) => string> = {
 
 const MCP_TOOL = /mcp__([a-z][a-z0-9-]*)__([a-z][a-z0-9_]*)/g;
 
-/** Trusted prompt text with every harness phrase and MCP tool name replaced by its marker. */
+/**
+ * The fixed sandbox paths a prompt names (src/sandbox/command.ts, agents.ts), each by its marker id. A helper whose sandbox
+ * cannot place them at the filesystem root (macOS) claims with a path root, and they are filled in below it. Not the
+ * reference folder: the user-local mode has none, and the rule never to name it keeps its usual wording.
+ */
+const SANDBOX_PATHS: Record<string, string> = { "repo-docs": "/repo-docs", repos: "/repos", repo: "/repo", agents: "/agents.json", mcp: "/mcp.json" };
+/** A fixed path as a whole path or the start of one: not part of a longer name, a URL, a relative path or a closing tag (`</repo>`). */
+const SANDBOX_PATH = /(?<![\w./<-])\/(repo-docs|repos|repo|agents\.json|mcp\.json)(?![\w-])/g;
+const PATH_ID: Record<string, string> = Object.fromEntries(Object.entries(SANDBOX_PATHS).map(([id, p]) => [p.slice(1), id]));
+
+/** Trusted prompt text with every harness phrase, MCP tool name and fixed sandbox path replaced by its marker. */
 export function markHarness(text: string): string {
   let out = text;
   for (const p of PHRASES) out = out.split(p.claude).join(`${MARK}${p.id}${MARK}`);
-  return out.replace(MCP_TOOL, (_, server: string, tool: string) => `${MARK}mcp:${server}:${tool}${MARK}`);
+  out = out.replace(MCP_TOOL, (_, server: string, tool: string) => `${MARK}mcp:${server}:${tool}${MARK}`);
+  return out.replace(SANDBOX_PATH, (_, name: string) => `${MARK}path:${PATH_ID[name]}${MARK}`);
 }
 
-/** The text a harness reads: every marker replaced by that harness's wording; anything else between marks is left alone. */
-export function fillHarness(text: string, harness: HarnessId): string {
+/**
+ * The text a harness reads: every marker replaced by that harness's wording, and each marked sandbox path by the same path
+ * below `root` (or the path itself without one); anything else between marks is left alone.
+ */
+export function fillHarness(text: string, harness: HarnessId, root = ""): string {
   if (!text.includes(MARK)) return text;
   return text.replace(/\u0001([\w:-]+)\u0001/g, (whole, id: string) => {
+    const path = /^path:([\w-]+)$/.exec(id);
+    if (path) return SANDBOX_PATHS[path[1]!] !== undefined ? `${root}${SANDBOX_PATHS[path[1]!]}` : whole;
     const mcp = /^mcp:([a-z][a-z0-9-]*):([a-z][a-z0-9_]*)$/.exec(id);
     if (mcp) return MCP_NAME[harness](mcp[1]!, mcp[2]!);
     const p = PHRASES.find((x) => x.id === id);
     return p ? p[harness] : whole;
+  });
+}
+
+/** A path root a helper may claim with: absolute, plain characters, no `.` or `..` component, no trailing slash. */
+export const ROOT_PATH = /^(?:\/[A-Za-z0-9._+@-]+){1,30}$/;
+export const validRoot = (root: string): boolean => root.length <= 200 && ROOT_PATH.test(root) && !root.split("/").some((c) => c === "." || c === "..");
+
+/**
+ * `claude` arguments for a helper's path root: the values of --add-dir, --agents and --mcp-config, and the Read rules of
+ * --allowedTools, when they are fixed sandbox paths. Exact tokens only: every other argument, the system prompt included
+ * (its paths are marked), stays as it is.
+ */
+export function rootArgs(args: string[], root: string): string[] {
+  if (!root) return args;
+  const fixed = new Set([...Object.values(SANDBOX_PATHS), "/reference"]);
+  const under = (p: string): string | null => {
+    const top = `/${p.split("/")[1] ?? ""}`;
+    return fixed.has(top) && !p.split("/").some((c) => c === "..") ? `${root}${p}` : null;
+  };
+  return args.map((a, i) => {
+    const prev = args[i - 1];
+    if (prev === "--add-dir" || prev === "--agents" || prev === "--mcp-config") return under(a) ?? a;
+    if (prev === "--allowedTools") return a.split(",").map((t) => { const m = /^Read\(\/(\/[^()]*)\/\*\*\)$/.exec(t); const r = m ? under(m[1]!) : null; return r ? `Read(/${r}/**)` : t; }).join(",");
+    return a;
   });
 }
