@@ -403,11 +403,17 @@ async function nextTask(env: McpEnv, raw: unknown): Promise<ToolResult> {
   if (raw === undefined || raw === null) raw = {};
   if (typeof raw !== "object" || Array.isArray(raw)) throw new BadArgs("arguments must be an object");
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (k !== "harness" && k !== "tiers") throw new BadArgs(`unknown argument "${k}"`);
+  for (const k of Object.keys(o)) if (k !== "harness" && k !== "tiers" && k !== "models") throw new BadArgs(`unknown argument "${k}"`);
   if (o.harness !== undefined && !HARNESS_IDS.includes(o.harness as HarnessId)) throw new BadArgs(`"harness" must be one of ${HARNESS_IDS.join(", ")}`);
   if (o.tiers !== undefined && (!Array.isArray(o.tiers) || !o.tiers.every(isTier))) throw new BadArgs(`"tiers" must be a list of ${TIERS.join(", ")}`);
+  let models: Partial<Record<Tier, string>> | undefined;
+  if (o.models !== undefined) {
+    const m = o.models;
+    if (!m || typeof m !== "object" || Array.isArray(m) || !Object.entries(m).every(([k, v]) => isTier(k) && typeof v === "string" && v.length > 0 && v.length <= 100)) throw new BadArgs(`"models" must map model tiers (${TIERS.join(", ")}) to model names`);
+    models = m as Partial<Record<Tier, string>>;
+  }
   const user = env.user(false);
-  const queued = await claimableCalls(env.db, { tokenId: run.tokenId, login: user.login, role: user.role }, { tiers: o.tiers as Tier[] | undefined }, run.canWrite);
+  const queued = await claimableCalls(env.db, { tokenId: run.tokenId, login: user.login, role: user.role }, { tiers: o.tiers as Tier[] | undefined, ...(models && { models }) }, run.canWrite);
   if (!queued) return { text: "No call is queued that your user may take. Try again later." };
   return { text: `${queued} call${queued === 1 ? " is" : "s are"} queued that your user may take.\nRun \`autocraft-task run --detach\` (it claims one and prints its lease id), then \`autocraft-task wait <lease>\` until it reports the call ended, then call next_task again. Do not read or change the helper's bundle or reply files.` };
 }
@@ -470,6 +476,7 @@ export const RUN_TOOLS = [
       properties: {
         harness: { type: "string", enum: HARNESS_IDS, description: "The harness your user's helper runs (default: any)." },
         tiers: { type: "array", items: { type: "string", enum: [...TIERS] }, description: "Only calls of these model tiers (default: all)." },
+        models: { type: "object", additionalProperties: { type: "string" }, description: "The model your user's helper runs for each tier, for example {\"top\": \"opus\"}; only calls of a tier whose accepted models include it are counted (default: any model)." },
       },
     },
     annotations: { readOnlyHint: true },

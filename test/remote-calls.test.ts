@@ -122,6 +122,8 @@ describe("user-local remote calls", () => {
     idle("bob");
     assert.match((await call(env("alice"), "next_task")).text, /^No call is queued/, "the PR's author, while bob's helper is idle");
     assert.match((await call(env("bob"), "next_task", { tiers: ["mid"] })).text, /^No call is queued/, "wrong tier");
+    assert.match((await call(env("bob"), "next_task", { models: { top: "gpt-5" } })).text, /^No call is queued/, "a model outside the accepted families");
+    assert.match((await call(env("bob"), "next_task", { models: { top: "claude-opus-4-5" } })).text, /^1 call is queued/);
     const queued = await call(env("bob"), "next_task");
     assert.match(queued.text, /^1 call is queued/);
     assert.match(queued.text, /autocraft-task run --detach/);
