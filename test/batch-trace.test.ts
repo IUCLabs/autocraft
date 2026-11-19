@@ -41,6 +41,10 @@ describe("failure locations", () => {
     ]);
     for (const bad of ["-rf", "../x.rs", "a//b.rs", "a/./b.rs", "target/debug/x.rs", "x y.rs", "$(rm).rs"]) assert.equal(repoPath(bad), null, bad);
     assert.equal(repoPath("D:\\a\\app\\app\\src\\win.rs"), "src/win.rs");
+    // Only an absolute path loses a checkout prefix; a relative one is the repo's as it is.
+    assert.equal(repoPath("crates/work/x/y/lib.rs"), "crates/work/x/y/lib.rs");
+    assert.equal(repoPath("/home/runner/work/app/app/crates/work/x/y/lib.rs"), "crates/work/x/y/lib.rs");
+    assert.deepEqual(failureLocations("thread 'w' panicked at D:\\a\\app\\app\\src\\win.rs:9:1:\n"), [{ file: "src/win.rs", line: 9, what: "panic" }]);
   });
 });
 
@@ -73,6 +77,7 @@ function setup(prs: number[], o: { build?: boolean } = {}) {
         if (a[0] === "diff-tree") return ok("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
         if (a[0] === "rev-list") return ok(`${sha40(Number(/sha(\d+)/.exec(a[1]!)![1]))}\n`);
         if (a[0] === "diff" && a.includes("--name-only")) return ok(`${(fake.files[Number(/sha(\d+)$/.exec(a.at(-1)!)![1])] ?? []).join("\n")}\n`);
+        if (a[0] === "rev-parse" && a[1] === "refs/batch/main") return ok(`${mainHead}\n`);
         if (a[0] === "blame") {
           const n = fake.blame[`${a.at(-1)}:${a[a.indexOf("-L") + 1]!.split(",")[0]}`];
           return n ? ok(`${sha40(n)} 4 4 1\nauthor x\n`) : ok(`${MAIN} 4 4 1\n`);
@@ -94,7 +99,8 @@ function setup(prs: number[], o: { build?: boolean } = {}) {
   const membersOf = (id: number) => w.rows("SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", id).map((r) => r.number);
   const red = () => w.gh.live(900, { ci: "failure" });
   const setMain = (sha: string) => { mainHead = sha; };
-  return { w, fake, reruns, run, batches, membersOf, red, setMain };
+  const baseOf = (id: number) => (w.rows("SELECT base_sha FROM merge_batches WHERE id = ?", id)[0] as { base_sha: string }).base_sha;
+  return { w, fake, reruns, run, batches, membersOf, red, setMain, baseOf, deps };
 }
 
 const errorAt = (file: string, line: number) => `test\tRun tests\terror[E0308]: mismatched types\ntest\tRun tests\t  --> ${file}:${line}:5\n`;
@@ -112,7 +118,7 @@ describe("a red batch", () => {
     const rows = t.batches();
     assert.equal(rows[0]!.state, "split");
     assert.match(rows[0]!.summary!, /traced to #2 \(the error at src\/b\.rs:4 is in its commit c000000\)/);
-    assert.deepEqual(rows.slice(1).map((b) => [b.parent_id, t.membersOf(b.id)]), [[1, [1, 3]], [1, [2]]]);
+    assert.deepEqual(rows.slice(1).map((b) => [b.parent_id, t.membersOf(b.id)]), [[1, [2]], [1, [1, 3]]]);
     assert.equal(batchSizeOf(t.w.db, "app"), size);
     assert.deepEqual(t.reruns, []);
     assert.equal(t.w.rows("SELECT target FROM audit WHERE action = 'batch-blame'").map((r) => r.target).join(), "app#2");
@@ -182,6 +188,7 @@ describe("a red batch", () => {
     assert.equal(s.superseded.length, 1);
     assert.equal(t.batches()[0]!.state, "superseded");
     assert.deepEqual(t.membersOf(t.batches()[1]!.id), [1, 2]);
+    assert.equal(t.baseOf(t.batches()[1]!.id), "d".repeat(40));
     assert.deepEqual(t.w.rows("SELECT number FROM stages WHERE stage = 'hold'"), []);
   });
 
@@ -199,6 +206,44 @@ describe("a red batch", () => {
     await t.run();
     const rows = t.batches();
     assert.match(rows[0]!.summary!, /combined tree failed at test; traced to #3/);
-    assert.deepEqual(rows.slice(1).map((b) => t.membersOf(b.id)), [[1, 2], [3]]);
+    assert.deepEqual(rows.slice(1).map((b) => t.membersOf(b.id)), [[3], [1, 2]]);
+  });
+
+  test("after the rerun, results that cannot be read wait out the deadline instead of holding the PR", async () => {
+    const t = setup([1]);
+    await t.run();
+    t.red();
+    await t.run();
+    assert.deepEqual(t.reruns, ["77"]);
+    // The check runs cannot be read now: no fresh result, so the batch waits.
+    const exec = t.deps.exec;
+    t.deps.exec = async (cmd, args, opts) => (cmd === "gh" && args[0] === "api" && /check-runs/.test(args[1] ?? "") ? { code: 1, stdout: "", stderr: "HTTP 502" } : exec(cmd, args, opts));
+    assert.equal((await t.run()).waiting.length, 1);
+    assert.equal(t.batches()[0]!.state, "open");
+    assert.deepEqual(t.w.rows("SELECT number FROM stages WHERE stage = 'hold'"), []);
+    // Past the deadline the batch goes on, as it would with stale results.
+    t.w.db.prepare("UPDATE merge_batches SET ci_rerun_at = '2026-01-01T00:00:00Z'").run();
+    await t.run();
+    assert.equal(t.batches()[0]!.state, "failed");
+    assert.deepEqual(t.w.rows("SELECT number FROM stages WHERE stage = 'hold'").map((r) => r.number), [1]);
+  });
+
+  test("the batches a trace starts share one base, also when the default branch moves between them", async () => {
+    const t = setup([1, 2, 3]);
+    await t.run();
+    t.fake.log = errorAt("src/b.rs", 4);
+    t.fake.blame["src/b.rs:4"] = 2;
+    t.red();
+    // The default branch moves after each fetch: separate fetches would give each batch its own base.
+    let fetches = 0;
+    const exec = t.deps.exec;
+    t.deps.exec = async (cmd, args, opts) => {
+      if (cmd === "git" && args.includes("fetch")) t.setMain(`${"e".repeat(39)}${++fetches}`);
+      return exec(cmd, args, opts);
+    };
+    await t.run();
+    const started = t.batches().slice(1);
+    assert.equal(started.length, 2);
+    assert.equal(t.baseOf(started[0]!.id), t.baseOf(started[1]!.id));
   });
 });

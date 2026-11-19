@@ -18,10 +18,14 @@ export const MAX_SUSPECTS = 3;
 const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
 const ARROW = /^\s*-->\s+(\S+?):(\d+)(?::\d+)?\s*$/;
 // `thread 'x' panicked at src/a.rs:3:5:` (Rust 1.73 on) and `panicked at 'msg', src/a.rs:3:5` (before).
-const PANIC = /panicked at (?:'.*?', |".*?", )?([^\s:'"]+\.rs):(\d+)(?::\d+)?/;
+// The path may start with a Windows drive (`D:\a\app\app\src\a.rs:3:5`); its colon is not the line's.
+const PANIC = /panicked at (?:'.*?', |".*?", )?((?:[A-Za-z]:)?[^\s:'"]+\.rs):(\d+)(?::\d+)?/;
 const ERROR = /^\s*error(\[E\d+\])?:/;
-/** A runner's checkout prefix (`/home/runner/work/<repo>/<repo>/`, `D:\a\<repo>\<repo>\`), cut so the path is the repo's. */
-const CHECKOUT = /^(?:.*?[/\\](?:work|a)[/\\][^/\\]+[/\\][^/\\]+[/\\])/;
+/**
+ * A runner's checkout prefix (`/home/runner/work/<repo>/<repo>/`, `D:\a\<repo>\<repo>\`), cut so the path is the repo's.
+ * Only an absolute path has one: a relative path such as `crates/work/x/y/lib.rs` is already the repo's.
+ */
+const CHECKOUT = /^(?:\/|[A-Za-z]:[/\\])(?:.*?[/\\])?(?:work|a)[/\\][^/\\]+[/\\][^/\\]+[/\\]/;
 
 /** A path inside the repo, or null: relative, no `..`, no option-like or odd characters, not a dependency's source. */
 export function repoPath(raw: string): string | null {

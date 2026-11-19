@@ -145,9 +145,12 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (r.code !== 0) log(`  ${b.branch}: could not close the batch PR: ${oneLine(r.stderr)}`);
   };
 
-  /** Builds a batch of the candidates, in order, from the current head of the default branch; null when no PR could be merged. */
-  async function startBatch(cands: Cand[], max: number, parentId: number | null): Promise<number | null> {
-    const base = await git.fetchMain(ownerOf(repo), repo, branch);
+  /**
+   * Builds a batch of the candidates, in order, from the current head of the default branch (or `onBase`, a head the caller
+   * fetched for several batches that must share it); null when no PR could be merged.
+   */
+  async function startBatch(cands: Cand[], max: number, parentId: number | null, onBase?: string): Promise<number | null> {
+    const base = onBase ?? await git.fetchMain(ownerOf(repo), repo, branch);
     const who = await whoAmI(d.exec);
     const author = await commitIdentity(db, repo, async () => who);
     setPipelineLogin(db, who.login);
@@ -278,12 +281,16 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     for (const [n, w] of traced) audit(db, ACTOR, "batch-blame", refOf(n), { run: runId, batch: b.branch, reason: oneLine(w, 200) });
     s.split.push(b.branch);
     log(`  ${b.branch}: ${why}; traced to ${list}`);
-    const rest = members.filter((m) => !traced.has(m.number) && !mergeHeld(db, repo, m.number));
-    if (rest.length && left() > 0 && activeBatches(db, repo).length < MAX_ACTIVE) await startBatch(asCands(rest), left(), b.id);
+    // Every batch started here is built on one head, so a suspect alone is never red from a change the others did not have.
+    const base = await git.fetchMain(ownerOf(repo), repo, branch);
+    // The suspects go first: their tests alone are what the trace asks for. A rest that finds no room returns to the queue
+    // and is batched again later; nothing of it is lost.
     for (const m of members.filter((x) => traced.has(x.number) && !mergeHeld(db, repo, x.number))) {
       if (left() <= 0 || activeBatches(db, repo).length >= MAX_ACTIVE) break;
-      await startBatch(asCands([m]), 1, b.id);
+      await startBatch(asCands([m]), 1, b.id, base);
     }
+    const rest = members.filter((m) => !traced.has(m.number) && !mergeHeld(db, repo, m.number));
+    if (rest.length && left() > 0 && activeBatches(db, repo).length < MAX_ACTIVE) await startBatch(asCands(rest), left(), b.id, base);
   }
 
   /** The members a failure's log text points at, when that is a trace worth following (some, not all, and few). */
@@ -342,9 +349,10 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       return;
     }
     const failure = await readBatchFailure(b);
-    if (b.ci_reruns && b.ci_rerun_at && failure) {
-      // Only results from after the rerun say it failed again; older ones are what the rerun replaces.
-      const fresh = failure.checks.every((c) => !!c.completedAt && Date.parse(c.completedAt) > Date.parse(b.ci_rerun_at!));
+    if (b.ci_reruns && b.ci_rerun_at) {
+      // Only results from after the rerun say it failed again; older ones are what the rerun replaces. Results that cannot
+      // be read are not fresh either: a GitHub hiccup must not split or hold before the wait is over.
+      const fresh = !!failure && failure.checks.every((c) => !!c.completedAt && Date.parse(c.completedAt) > Date.parse(b.ci_rerun_at!));
       if (!fresh && d.now().getTime() < Date.parse(b.ci_rerun_at) + RERUN_WAIT_MS) { s.waiting.push(b.branch); return; }
     }
     const traced = failure && await traceOf(b, members, failure.checks.flatMap((c) => c.steps.map((x) => x.tail)).join("\n"));
