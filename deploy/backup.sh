@@ -14,7 +14,9 @@ umask 077
 mkdir -p "$dir"
 tmp="$(mktemp -p "$dir" .snapshot.XXXXXX)"
 trap 'rm -f "$tmp"' EXIT
-sqlite3 "$db" ".timeout 60000" ".backup '$tmp'"
+# VACUUM INTO copies inside one read transaction: writers keep going and the copy never restarts. The online backup
+# API (.backup) starts over whenever another connection writes, so on a busy database it may never finish.
+sqlite3 "$db" ".timeout 60000" "VACUUM INTO '$tmp'"
 [ "$(sqlite3 "$tmp" 'PRAGMA quick_check')" = ok ] || { echo "snapshot failed the integrity check" >&2; exit 1; }
 out="$dir/$prefix-$(date -u +%Y%m%dT%H%M%SZ).db"
 if command -v zstd >/dev/null; then zstd -q -3 -T2 -o "$out.zst" "$tmp"; else gzip -1 <"$tmp" >"$out.gz"; fi
