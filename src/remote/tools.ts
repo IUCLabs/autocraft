@@ -1,8 +1,10 @@
 // The per-lease tools of a remote call (src/remote/protocol.ts ROUTES.tool and ROUTES.mcp): the item tools over the
 // snapshot, the repo's reference documentation and the `check` build tool, each served only to a call whose bundle lists
 // its server. The dashboard runs them; `check` is relayed to the job process that holds the call's CheckTool.
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { join } from "node:path";
+import { spawn, type ChildProcess } from "node:child_process";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs";
+import { PassThrough, type Readable } from "node:stream";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { CHECK_SERVER } from "../checktool/bridge.ts";
 import { TOOL as CHECK_TOOL } from "../checktool/server/tool.ts";
@@ -121,18 +123,35 @@ async function reference(db: DatabaseSync, lease: TaskLease, name: string, raw: 
   return { text: served.map(passageText).join("\n\n") + cut };
 }
 
+const SNAPSHOT_IDLE_MS = 60_000;
+let snapshotHandle: { file: string; stamp: string; db: DatabaseSync; timer: NodeJS.Timeout } | undefined;
+
+function closeSnapshot(): void {
+  if (!snapshotHandle) return;
+  clearTimeout(snapshotHandle.timer);
+  try { snapshotHandle.db.close(); } catch { /* already closed */ }
+  snapshotHandle = undefined;
+}
+
+/** The read-only handle of the snapshot database, kept open between tool calls; reopened when the file is replaced, closed after an idle minute. */
+function snapshotDb(file: string): DatabaseSync {
+  const st = statSync(file), stamp = `${st.mtimeMs}:${st.size}:${st.ino}`;
+  if (snapshotHandle && (snapshotHandle.file !== file || snapshotHandle.stamp !== stamp)) closeSnapshot();
+  if (!snapshotHandle) snapshotHandle = { file, stamp, db: openDb(file), timer: setTimeout(closeSnapshot, SNAPSHOT_IDLE_MS).unref() };
+  else snapshotHandle.timer.refresh();
+  return snapshotHandle.db;
+}
+
 function items(name: string, raw: unknown): ToolResult {
+  const file = snapshotFile();
   let db: DatabaseSync;
   try {
-    db = openDb(snapshotFile());
+    db = snapshotDb(file);
   } catch {
+    closeSnapshot();
     return { text: "the item tools are not available right now", isError: true };
   }
-  try {
-    return itemTool(db, { db: snapshotFile(), diffs: diffCacheDir() }, name, raw);
-  } finally {
-    db.close();
-  }
+  return itemTool(db, { db: file, diffs: diffCacheDir() }, name, raw);
 }
 
 /**
@@ -154,13 +173,83 @@ export async function callTaskTool(db: DatabaseSync, lease: TaskLease, secret: s
   }
 }
 
+const ARCHIVE_SLOTS = 4;
+/** Archives kept on disk (total bytes); the least recently used are removed first. */
+const ARCHIVE_CACHE_BYTES = 2 * 1024 ** 3;
+let archiveActive = 0;
+const archiveWaiting: (() => void)[] = [];
+const archiveDir = (): string => join(dirname(diffCacheDir()), "archives");
+
+async function archiveSlot(): Promise<void> {
+  if (archiveActive < ARCHIVE_SLOTS) archiveActive++;
+  else await new Promise<void>((r) => archiveWaiting.push(r));
+}
+function archiveSlotDone(): void {
+  const next = archiveWaiting.shift();
+  if (next) next();
+  else archiveActive--;
+}
+
+function pruneArchives(dir: string, keep: string): void {
+  try {
+    const files = readdirSync(dir).filter((f) => f.endsWith(".tar")).map((f) => ({ f, st: statSync(join(dir, f)) }));
+    let total = files.reduce((n, x) => n + x.st.size, 0);
+    for (const x of files.sort((a, b) => a.st.mtimeMs - b.st.mtimeMs)) {
+      if (total <= ARCHIVE_CACHE_BYTES) break;
+      if (x.f === keep) continue;
+      rmSync(join(dir, x.f), { force: true });
+      total -= x.st.size;
+    }
+  } catch { /* the cache is best effort */ }
+}
+
+const gitOk = (args: string[], env: NodeJS.ProcessEnv): Promise<boolean> =>
+  new Promise((ok) => {
+    const p = spawn("git", [...HARDENING, ...args], { env, stdio: "ignore" });
+    p.on("error", () => ok(false));
+    p.on("close", (code) => ok(code === 0));
+  });
+
 /**
- * `git archive` of a tarball mount the lease's bundle lists, from our clone of the repo: a running process whose stdout is
- * the tar stream, or null when the bundle has no such mount or the clone lacks the commit. Instruction files stay in; the helper removes them.
+ * The tar stream of a tarball mount the lease's bundle lists, or null when the bundle has no such mount or our clone of
+ * the repo lacks the commit. The stream ends normally only when the archive is complete; otherwise it is destroyed with
+ * an error. Archives are cached on disk per repo and commit, and at most ARCHIVE_SLOTS `git archive` run at once.
+ * Instruction files stay in; the helper removes them.
  */
-export function archiveOf(lease: TaskLease, repo: string, sha: string): ChildProcess | null {
+export async function archiveOf(lease: TaskLease, repo: string, sha: string): Promise<Readable | null> {
   if (!lease.mounts.some((m) => m.kind === "tarball" && m.repo === repo && m.sha === sha)) return null;
+  const dir = archiveDir(), name = `${repo}@${sha}.tar`, file = join(dir, name);
+  if (existsSync(file)) {
+    const now = new Date();
+    try { utimesSync(file, now, now); } catch { /* evicted meanwhile */ }
+    return createReadStream(file);
+  }
   const env = { ...process.env, ...GIT_ENV, ...gitDirEnv(join(fixupDir(), repo)) };
-  if (spawnSync("git", [...HARDENING, "cat-file", "-e", `${sha}^{commit}`], { env, stdio: "ignore" }).status !== 0) return null;
-  return spawn("git", [...HARDENING, "archive", "--format=tar", sha], { env, stdio: ["ignore", "pipe", "ignore"] });
+  if (!await gitOk(["cat-file", "-e", `${sha}^{commit}`], env)) return null;
+  const out = new PassThrough();
+  let git: ChildProcess | undefined, held = false;
+  const release = (): void => { if (held) { held = false; archiveSlotDone(); } };
+  out.on("close", () => { if (git && git.exitCode === null) git.kill(); });
+  void (async () => {
+    await archiveSlot();
+    held = true;
+    if (out.destroyed) return release();
+    mkdirSync(dir, { recursive: true });
+    const tmp = join(dir, `.${name}.${process.pid}.${Date.now()}`);
+    const sink = createWriteStream(tmp);
+    sink.on("error", () => { /* the client still gets its stream; the copy is dropped */ });
+    git = spawn("git", [...HARDENING, "archive", "--format=tar", sha], { env, stdio: ["ignore", "pipe", "ignore"] });
+    git.stdout!.pipe(out, { end: false });
+    git.stdout!.pipe(sink);
+    git.on("error", () => { out.destroy(new Error("git archive failed")); sink.destroy(); rmSync(tmp, { force: true }); release(); });
+    git.on("close", (code) => {
+      release();
+      if (code !== 0) { out.destroy(new Error("git archive failed")); sink.destroy(); rmSync(tmp, { force: true }); return; }
+      out.end();
+      sink.end(() => {
+        try { renameSync(tmp, file); pruneArchives(dir, name); } catch { rmSync(tmp, { force: true }); }
+      });
+    });
+  })();
+  return out;
 }

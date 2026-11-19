@@ -5,9 +5,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { dbPath } from "./db.ts";
 import { DEFAULT_MODEL, localEmbedder, type Embedder } from "./embed/model.ts";
 import { toBlob } from "./embed/store.ts";
+import type { ScoreReply, ScoreRequest } from "./reference-score-worker.ts";
 
 export type Passage = { id: number; page: string; title: string; text: string };
 export type SearchOptions = { embedder?: Embedder; dir?: string; indexFile?: string };
@@ -163,6 +165,52 @@ async function buildIndex(repo: string, file: string, opts: SearchOptions, mode:
   }
 }
 
+/** Concurrent searches; more wait in a queue. The scoring worker itself handles one request at a time. */
+const MAX_SEARCHES = 4;
+let active = 0;
+const waiting: (() => void)[] = [];
+async function slot<T>(run: () => Promise<T>): Promise<T> {
+  if (active >= MAX_SEARCHES) await new Promise<void>((r) => waiting.push(r));
+  else active++;
+  try {
+    return await run();
+  } finally {
+    const next = waiting.shift();
+    if (next) next();
+    else active--;
+  }
+}
+
+let scorer: Worker | undefined, seq = 0;
+const pending = new Map<number, { ok: (ids: number[]) => void; fail: (e: Error) => void }>();
+function scoreWorker(): Worker {
+  if (scorer) return scorer;
+  const w = new Worker(new URL("./reference-score-worker.ts", import.meta.url));
+  const drop = (e: Error): void => {
+    if (scorer === w) scorer = undefined;
+    for (const p of pending.values()) p.fail(e);
+    pending.clear();
+  };
+  w.on("message", (m: ScoreReply) => {
+    const p = pending.get(m.n);
+    pending.delete(m.n);
+    if (m.error !== undefined) p?.fail(new Error(m.error));
+    else p?.ok(m.ids ?? []);
+  });
+  w.on("error", drop);
+  w.on("exit", () => drop(new Error("the reference scoring worker stopped")));
+  w.unref();
+  return (scorer = w);
+}
+
+/** Ids of the `top` passages nearest to the query vector, scored in the worker thread. */
+const nearest = (file: string, query: Float32Array, top: number): Promise<number[]> =>
+  new Promise((ok, fail) => {
+    const n = ++seq;
+    pending.set(n, { ok, fail });
+    scoreWorker().postMessage({ n, file, query, top } satisfies ScoreRequest);
+  });
+
 const ftsQuery = (q: string): string => (q.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 32).map((t) => `"${t}"`).join(" OR ");
 
 const toPassage = (r: { id: number; page: string; title: string; text: string }): Passage => ({ id: r.id, page: r.page, title: r.title, text: r.text.slice(0, RESULT_CHARS) });
@@ -178,27 +226,22 @@ export async function referenceSearch(repo: string, query: string, limit = 5, op
   if (!n || !query.trim()) return [];
   const file = opts.indexFile ?? indexPath(repo);
   if (!existsSync(file)) return [];
-  const [qv] = await queryEmbedderOf(opts).embed([query], "query");
-  const db = openIndex(file);
-  try {
-    const scored: { id: number; score: number }[] = [];
-    for (const r of db.prepare("SELECT id, vec FROM passages").all() as { id: number; vec: Uint8Array }[]) {
-      const v = new Float32Array(r.vec.buffer.slice(r.vec.byteOffset, r.vec.byteOffset + r.vec.byteLength));
-      let s = 0;
-      for (let i = 0; i < v.length; i++) s += v[i]! * qv![i]!;
-      scored.push({ id: r.id, score: s });
+  return slot(async () => {
+    const [qv] = await queryEmbedderOf(opts).embed([query], "query");
+    const byVec = await nearest(file, qv!, 50);
+    const db = openIndex(file);
+    try {
+      const match = ftsQuery(query);
+      const byText = match ? (db.prepare("SELECT rowid AS id FROM passages_fts WHERE passages_fts MATCH ? ORDER BY rank LIMIT 50").all(match) as { id: number }[]).map((x) => x.id) : [];
+      const fused = new Map<number, number>();
+      for (const list of [byVec, byText]) list.forEach((id, rank) => fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + rank + 1)));
+      const top = [...fused].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, n).map(([id]) => id);
+      const get = db.prepare("SELECT id, page, title, text FROM passages WHERE id = ?");
+      return top.map((id) => toPassage(get.get(id) as Passage));
+    } finally {
+      db.close();
     }
-    const byVec = scored.sort((a, b) => b.score - a.score).slice(0, 50).map((x) => x.id);
-    const match = ftsQuery(query);
-    const byText = match ? (db.prepare("SELECT rowid AS id FROM passages_fts WHERE passages_fts MATCH ? ORDER BY rank LIMIT 50").all(match) as { id: number }[]).map((x) => x.id) : [];
-    const fused = new Map<number, number>();
-    for (const list of [byVec, byText]) list.forEach((id, rank) => fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + rank + 1)));
-    const top = [...fused].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, n).map(([id]) => id);
-    const get = db.prepare("SELECT id, page, title, text FROM passages WHERE id = ?");
-    return top.map((id) => toPassage(get.get(id) as Passage));
-  } finally {
-    db.close();
-  }
+  });
 }
 
 /** The passages next to one passage on the same page, in page order, up to 3 on each side; the passage itself is not included. */
