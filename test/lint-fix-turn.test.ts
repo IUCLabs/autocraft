@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { askClaude, setRunner } from "../src/classify/run.ts";
+import { askClaude, FIX_TURN_MAX_TURNS, setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
 import { mergeFixFields, type Lint } from "../src/replylint.ts";
@@ -43,7 +43,7 @@ describe("reply lint fix turn", () => {
     assert.equal(calls.length, 2);
     assert.ok(calls[1]!.includes("--resume"));
     assert.ok(!calls[1]!.includes("--allowedTools"), "no tool is allowed");
-    assert.equal(calls[1]![calls[1]!.indexOf("--max-turns") + 1], "1");
+    assert.equal(calls[1]![calls[1]!.indexOf("--max-turns") + 1], String(FIX_TURN_MAX_TURNS));
     assert.ok(calls[0]!.includes("--allowedTools"));
     assert.match(messages[1]!, /public\.points\[0\]/);
     assert.ok(!messages[1]!.includes("verdict"), "only the flagged field is named");

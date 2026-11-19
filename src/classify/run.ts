@@ -347,13 +347,19 @@ export function setWorkspace(f: WorkspaceFn): () => void {
  */
 /** `model`: the model id that ran, as the helper's harness reported it; set only for user-local calls (a server call ran the model it asked for). */
 export type Reply = { text: string; usage: Usage; turns?: number; model?: string };
-/** The arguments of a fix turn: one turn and no permission for any tool. The tool list itself stays, so the resumed session's prompt cache still matches. */
+/**
+ * The turns of a fix turn. Its message says not to use tools, but a model sometimes calls one anyway; the call is denied,
+ * and the spare turns let it answer after the denial instead of ending at the turn limit.
+ */
+export const FIX_TURN_MAX_TURNS = 3;
+
+/** The arguments of a fix turn: FIX_TURN_MAX_TURNS turns and no permission for any tool. The tool list itself stays, so the resumed session's prompt cache still matches. */
 export function noToolArgs(args: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--allowedTools") { i++; continue; }
     out.push(args[i]!);
-    if (args[i] === "--max-turns") { out.push("1"); i++; }
+    if (args[i] === "--max-turns") { out.push(String(FIX_TURN_MAX_TURNS)); i++; }
   }
   return out;
 }
@@ -677,7 +683,7 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
       const callId = enqueueCall(db, {
         promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, askedModel: model, items, level, maxAttempts: p.limits.attempts, ...(after !== null && { parentId: after }), ...(reference && { referenceRepo: basename(opts.reference!) }),
         bundle: {
-          promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, timeoutSeconds, maxTurns: sandboxed ? (lean ? 1 : p.sandbox!.maxTurns) : null,
+          promptId: id, promptVersion: promptVersion(id), tier, effort: p.effort, timeoutSeconds, maxTurns: sandboxed ? (lean ? FIX_TURN_MAX_TURNS : p.sandbox!.maxTurns) : null,
           stdin: stdin === parts.stdin ? stdin : stripMarks(stdin), system: parts.system, mounts, mcpServers: servers, keepSession: persist, ...(after !== null && { resume: { parentCallId: after } }),
           hints: { claude: { args: lean ? noToolArgs(args) : args, ...(agents && { agents }) } },
         },
