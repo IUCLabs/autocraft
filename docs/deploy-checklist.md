@@ -43,7 +43,7 @@ The image sets every path (`/data/...`, `/config/...`). A deployment sets only t
 | Name | Required | Default | Purpose |
 |---|---|---|---|
 | `AUTOCRAFT_BASE_URL` | dashboard: yes | none | Public origin, `https://autocraft.example.com`, no path. Used for sign-in callbacks and links. |
-| `AUTOCRAFT_TRUST_PROXY` | behind a proxy | off | `1` reads the client address from the last `X-Forwarded-For` entry, for rate limits. Set it only when the proxy sets that header. |
+| `AUTOCRAFT_TRUST_PROXY` | behind a proxy | `0` | The number of proxies that append to `X-Forwarded-For`; the client address for rate limits is that many entries from the end (`1`: the last entry). A proxy that replaces the header with a CDN's client header counts as one. |
 | `GH_TOKEN` | yes, on dashboard, runner and periodic | none | GitHub token for `gh` (the dashboard's image proxy and repository adds, sync, pipeline calls): a classic token with `repo`, `read:org` and `workflow` scopes. Keep it in a Secret. |
 | `AUTOCRAFT_STOP_TIMEOUT` | no | `25` | Seconds the runner may take to stop. Keep the pod's `terminationGracePeriodSeconds` above it (30). |
 | `AUTOCRAFT_HEALTH_LISTEN` | no | off | `host:port` of a runner listener that serves only `/healthz` and `/readyz`. |

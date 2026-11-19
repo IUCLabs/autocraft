@@ -225,6 +225,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["remote_calls", "released_by", "TEXT COLLATE NOCASE"],
   ["remote_calls", "released_at", "INTEGER"],
   ["remote_calls", "root", "TEXT"],
+  ["remote_calls", "authors", "TEXT"],
   ["dupe_comparisons", "sizes", "TEXT"],
   ["build_envs", "confidential", "INTEGER NOT NULL DEFAULT 0"],
   ["build_envs", "confidential_since", "TEXT"],
@@ -236,6 +237,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
 // Covering indexes on the hash columns let the planner compare stored hashes without reading item rows.
 // The trigger clears the hashes of an item whose hashed fields were edited without bringing its own (sync does).
 const ADDED_INDEXES = [
+  // Covers the claims' read of the queued remote calls (src/remote/calls.ts queuedCalls) and the room count, so neither walks the overflow pages of each row's bundle.
+  "CREATE INDEX IF NOT EXISTS main.remote_calls_queued ON remote_calls(class, seen_at, level, since, step, repo, prompt_id, tier, parent_id, sticky_login, released_by, released_at) WHERE state = 'queued'",
   // One live card per set of choices: a double press cannot run the same choice twice.
   "CREATE UNIQUE INDEX IF NOT EXISTS main.conversation_cards_choice_live ON conversation_cards(choice_id) WHERE choice_id IS NOT NULL AND state IN ('proposed', 'running', 'done')",
   // Records the answerer's role when an answer is written (any writer); cleared with the answerer by an undo.
@@ -617,7 +620,20 @@ function stampOf(db: DatabaseSync): string | null {
   }
 }
 
-export function connect(path: string = dbPath()): DatabaseSync {
+/**
+ * Opens the database and brings its schema up to date. `busyTimeoutMs` replaces the 30-second busy timeout once the
+ * schema is current: a connection that serves requests waits that long for a write lock, then throws SQLITE_BUSY.
+ */
+export function connect(path: string = dbPath(), opts: { busyTimeoutMs?: number } = {}): DatabaseSync {
+  const db = open(path);
+  if (opts.busyTimeoutMs !== undefined) db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(opts.busyTimeoutMs))}`);
+  return db;
+}
+
+/** Whether `e` is SQLite's "database is locked" (SQLITE_BUSY, any extended code): another connection held the write lock past the busy timeout. */
+export const isBusy = (e: unknown): boolean => typeof (e as { errcode?: unknown } | null)?.errcode === "number" && ((e as { errcode: number }).errcode & 0xff) === 5;
+
+function open(path: string): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { timeout: 30_000 });
   // WAL so the dashboard can read while a sync writes
