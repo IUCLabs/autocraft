@@ -183,6 +183,7 @@ const readinessBadge = (h: RemoteHelper): { text: string; tone: Tone } => {
     "sandbox-failed": { text: "Sandbox check failed", tone: "bad" },
     "version-refused": { text: "Helper too old", tone: "bad" },
     "harness-missing": { text: "Harness missing", tone: "bad" },
+    failing: { text: until("Calls failing"), tone: "bad" },
   };
   return map[h.readiness];
 };

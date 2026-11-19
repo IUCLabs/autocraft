@@ -82,11 +82,12 @@ export type ClaimReply =
 /**
  * Whether a helper takes calls now. `ready`: it claims. `quota-held`: a plan window is at or below the reserve, its usage
  * could not be read, or the provider refused a run for its limit. `paused`: its user paused it until a reset. `cooled-off`: the
- * server gives the token no calls for a while after repeated lost leases (ClaimReply `reason`, `until`). The rest need
- * the user: the sandbox check failed, the server refused the helper's version, or the harness or its login is missing.
+ * server gives the token no calls for a while after repeated lost leases (ClaimReply `reason`, `until`). `failing`: the
+ * helper's last 5 calls failed in a row; it claims again at `until` if its checks pass (`reason` names the last error). The
+ * rest need the user: the sandbox check failed, the server refused the helper's version, or the harness or its login is missing.
  */
-export type Readiness = "ready" | "quota-held" | "paused" | "cooled-off" | "sandbox-failed" | "version-refused" | "harness-missing";
-export const READINESS: readonly Readiness[] = ["ready", "quota-held", "paused", "cooled-off", "sandbox-failed", "version-refused", "harness-missing"];
+export type Readiness = "ready" | "quota-held" | "paused" | "cooled-off" | "sandbox-failed" | "version-refused" | "harness-missing" | "failing";
+export const READINESS: readonly Readiness[] = ["ready", "quota-held", "paused", "cooled-off", "sandbox-failed", "version-refused", "harness-missing", "failing"];
 /** The longest time between two status reports of a running helper. */
 export const STATUS_EVERY_S = 300;
 
