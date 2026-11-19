@@ -223,6 +223,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["remote_calls", "token_id", "INTEGER"],
   ["remote_calls", "released_by", "TEXT COLLATE NOCASE"],
   ["remote_calls", "released_at", "INTEGER"],
+  ["remote_calls", "root", "TEXT"],
   ["dupe_comparisons", "sizes", "TEXT"],
   ["build_envs", "confidential", "INTEGER NOT NULL DEFAULT 0"],
   ["build_envs", "confidential_since", "TEXT"],

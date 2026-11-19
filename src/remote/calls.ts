@@ -11,7 +11,8 @@ import type { Usage } from "../classify/run.ts";
 import { randomToken, sha256hex } from "../dash/server/crypto.ts";
 import { HttpError } from "../dash/server/util.ts";
 import type { Role } from "../dash/types.ts";
-import { fillHarness } from "../prompts/harness.ts";
+import { fillHarness, rootArgs, validRoot } from "../prompts/harness.ts";
+import { rootAgents } from "../sandbox/agents.ts";
 import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { acceptedModels, familyOf, isTier, TIERS } from "./mode.ts";
@@ -58,9 +59,9 @@ type Row = {
   cls: number; level: number; since: number; seen_at: number; queued_since: number | null; queued_ms: number;
   user_login: string | null; harness: string | null; model: string | null; leased_at: number | null; heartbeat_at: number | null;
   attempt: number; max_attempts: number; timeout_ms: number; parent_id: number | null; sticky_login: string | null; progress: string | null;
-  reply: string | null; usage: string | null; turns: number | null; session_id: string | null; error: string | null;
+  reply: string | null; usage: string | null; turns: number | null; session_id: string | null; error: string | null; root: string | null;
 };
-const COLS = "id, job_id, step, stage, run_id, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class AS cls, level, since, seen_at, queued_since, queued_ms, user_login, harness, model, leased_at, heartbeat_at, attempt, max_attempts, timeout_ms, parent_id, sticky_login, progress, reply, usage, turns, session_id, error";
+const COLS = "id, job_id, step, stage, run_id, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, items, repo, class AS cls, level, since, seen_at, queued_since, queued_ms, user_login, harness, model, leased_at, heartbeat_at, attempt, max_attempts, timeout_ms, parent_id, sticky_login, progress, reply, usage, turns, session_id, error, root";
 const rowOf = (db: DatabaseSync, id: number): Row | undefined => db.prepare(`SELECT ${COLS} FROM main.remote_calls WHERE id = ?`).get(id) as Row | undefined;
 
 export type NewCall = {
@@ -137,23 +138,23 @@ export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: 
 }
 
 /** The call a lease secret belongs to while its lease is live (expired leases are ended first), or null. For the per-lease routes: bundle, heartbeat, submit, the task MCP servers and the tarball. */
-export function liveLease(db: DatabaseSync, secret: string | undefined, nowMs: number = Date.now()): { id: number; jobId: number | null; runId: number | null; login: string; promptId: string; items: ItemRef[]; repo: string | null } | null {
+export function liveLease(db: DatabaseSync, secret: string | undefined, nowMs: number = Date.now()): { id: number; jobId: number | null; runId: number | null; login: string; promptId: string; items: ItemRef[]; repo: string | null; root: string | null } | null {
   if (!secret || secret.length > 200 || !secret.startsWith(LEASE_PREFIX)) return null;
   const hash = sha256hex(secret);
   const found = db.prepare("SELECT id FROM main.remote_calls WHERE lease_secret_hash = ? AND state = 'leased'").get(hash) as { id: number } | undefined;
   if (!found) return null;
   expireLeases(db, nowMs, Number(found.id));
   // The lease lives only while the token that claimed it may still run tasks and its login is still a maintainer or operator.
-  const r = db.prepare(`SELECT c.id, c.job_id, c.run_id, c.user_login, c.prompt_id, c.items, c.repo, a.login AS ok FROM main.remote_calls c
+  const r = db.prepare(`SELECT c.id, c.job_id, c.run_id, c.user_login, c.prompt_id, c.items, c.repo, c.root, a.login AS ok FROM main.remote_calls c
       LEFT JOIN main.mcp_tokens t ON t.id = c.token_id AND t.can_run = 1 AND t.expires_at > ?
       LEFT JOIN main.access a ON a.login = t.login AND a.role IN ('maintainer', 'operator')
     WHERE c.id = ? AND c.lease_secret_hash = ? AND c.state = 'leased'`).get(new Date(nowMs).toISOString(), found.id, hash) as
-    { id: number; job_id: number | null; run_id: number | null; user_login: string; prompt_id: string; items: string; repo: string | null; ok: string | null } | undefined;
+    { id: number; job_id: number | null; run_id: number | null; user_login: string; prompt_id: string; items: string; repo: string | null; root: string | null; ok: string | null } | undefined;
   if (r && r.ok === null) {
     unlease(db, Number(r.id), r.run_id, "returned to the queue: the token that claimed it may no longer run tasks", nowMs);
     return null;
   }
-  return r ? { id: Number(r.id), jobId: r.job_id, runId: r.run_id, login: r.user_login, promptId: r.prompt_id, items: JSON.parse(r.items) as ItemRef[], repo: r.repo } : null;
+  return r ? { id: Number(r.id), jobId: r.job_id, runId: r.run_id, login: r.user_login, promptId: r.prompt_id, items: JSON.parse(r.items) as ItemRef[], repo: r.repo, root: r.root } : null;
 }
 
 /** The state of the call a lease secret was issued for, live or not (for task status); null for an unknown secret. */
@@ -236,7 +237,8 @@ export function parseClaim(raw: unknown): Claim {
   }
   if (c.repos !== undefined && (!Array.isArray(c.repos) || c.repos.length > 500 || !c.repos.every((x) => short(x, 100)))) throw new HttpError(400, "repos must be a list of repo names");
   if (c.sessions !== undefined && (!Array.isArray(c.sessions) || c.sessions.length > 500 || !c.sessions.every((x) => Number.isInteger(x)))) throw new HttpError(400, "sessions must be a list of call ids");
-  return { protocol: PROTOCOL_VERSION, helperVersion: c.helperVersion, harness: c.harness as HarnessId, harnessVersion: c.harnessVersion, tiers, ...(c.repos !== undefined && { repos: c.repos as string[] }), ...(c.sessions !== undefined && { sessions: c.sessions as number[] }) };
+  if (c.root !== undefined && (typeof c.root !== "string" || !validRoot(c.root))) throw new HttpError(400, "root must be an absolute path of plain characters (letters, digits, . _ + @ -) without . or .. components");
+  return { protocol: PROTOCOL_VERSION, helperVersion: c.helperVersion, harness: c.harness as HarnessId, harnessVersion: c.harnessVersion, tiers, ...(c.repos !== undefined && { repos: c.repos as string[] }), ...(c.sessions !== undefined && { sessions: c.sessions as number[] }), ...(c.root !== undefined && { root: c.root as string }) };
 }
 
 /** Whether dotted version `v` is older than `min` (numeric parts compared in order; a part that is not a number counts as 0). */
@@ -257,14 +259,14 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
   const secret = `${LEASE_PREFIX}${randomToken(32)}`;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?,
+    const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, root = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?,
         queued_ms = queued_ms + CASE WHEN queued_since IS NULL THEN 0 ELSE MAX(0, ? - queued_since) END, queued_since = NULL, progress = NULL, error = NULL
-      WHERE id = ? AND state = 'queued' RETURNING ${COLS}`).get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, sha256hex(secret), nowMs, nowMs, nowMs, id) as Row | undefined;
+      WHERE id = ? AND state = 'queued' RETURNING ${COLS}`).get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, claim.root ?? null, sha256hex(secret), nowMs, nowMs, nowMs, id) as Row | undefined;
     if (!r) {
       db.exec("COMMIT");
       return null;
     }
-    const b = forHarness(JSON.parse(r.bundle) as Omit<TaskBundle, "callId">, claim.harness);
+    const b = forHarness(JSON.parse(r.bundle) as Omit<TaskBundle, "callId">, claim.harness, r.root ?? "");
     const refs = JSON.parse(r.items) as ItemRef[];
     const runId = insertRun(db, { jobId: r.job_id, step: r.step, stage: r.stage, promptId: r.prompt_id, promptVersion: r.prompt_version, provider: "claude", model: r.asked_model, accountId: null, items: refs, prompt: joinParts(b) });
     db.prepare("UPDATE main.agent_runs SET user_login = ?, harness = ?, reported_model = ? WHERE id = ?").run(caller.login, claim.harness, model, runId);
@@ -342,18 +344,29 @@ export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, 
 
 // ---- lease routes ------------------------------------------------------------------
 
-/** A queued bundle as one harness reads it: the marked harness phrases of its text, and of the `claude` hints that carry the system prompt, filled in. */
-export function forHarness<B extends Omit<TaskBundle, "callId">>(b: B, harness: HarnessId): B {
+/**
+ * A queued bundle as one harness reads it: the marked harness phrases of its text, and of the `claude` hints that carry the
+ * system prompt, filled in. With the claim's path root (a macOS helper) the marked sandbox paths, the path arguments of the
+ * hints and the explorer's prompt name the same paths below it; the mounts keep the fixed paths, which the helper places
+ * below its root itself.
+ */
+export function forHarness<B extends Omit<TaskBundle, "callId">>(b: B, harness: HarnessId, root = ""): B {
   const claude = b.hints.claude;
-  return { ...b, stdin: fillHarness(b.stdin, harness), system: b.system === null ? null : fillHarness(b.system, harness), hints: { ...b.hints, ...(claude && { claude: { ...claude, args: claude.args.map((a) => fillHarness(a, "claude")) } }) } };
+  return {
+    ...b, stdin: fillHarness(b.stdin, harness, root), system: b.system === null ? null : fillHarness(b.system, harness, root),
+    hints: { ...b.hints, ...(claude && { claude: { ...claude, args: rootArgs(claude.args.map((a) => fillHarness(a, "claude", root)), root), ...(claude.agents !== undefined && { agents: rootAgents(claude.agents, root) }) } }) },
+  };
 }
+
+/** Reply or progress text with the claim's path root taken off, so paths read as the fixed sandbox paths the rest of the server expects (`/repo/src/a.rs`). */
+const unrooted = (text: string, root: string | null): string => (root ? text.split(root).join("") : text);
 
 /** The task bundle of a live lease, worded for the harness that claimed it, or null. */
 export function bundleOf(db: DatabaseSync, secret: string | undefined): TaskBundle | null {
   const l = liveLease(db, secret);
   if (!l) return null;
   const r = db.prepare("SELECT bundle, harness FROM main.remote_calls WHERE id = ?").get(l.id) as { bundle: string; harness: HarnessId };
-  return { ...forHarness(JSON.parse(r.bundle) as Omit<TaskBundle, "callId">, r.harness), callId: l.id };
+  return { ...forHarness(JSON.parse(r.bundle) as Omit<TaskBundle, "callId">, r.harness, l.root ?? ""), callId: l.id };
 }
 
 /** A plain one-line progress text from the helper: control characters removed, scrubbed, cut. */
@@ -363,7 +376,8 @@ const progressLine = (v: unknown): string | null => (typeof v === "string" && v.
 export function heartbeat(db: DatabaseSync, secret: string | undefined, raw: unknown, nowMs: number = Date.now()): boolean {
   const l = liveLease(db, secret, nowMs);
   if (!l) return false;
-  const line = progressLine((raw as Heartbeat | undefined)?.progress);
+  const p = (raw as Heartbeat | undefined)?.progress;
+  const line = progressLine(typeof p === "string" ? unrooted(p, l.root) : p);
   db.prepare("UPDATE main.remote_calls SET heartbeat_at = ?, progress = COALESCE(?, progress) WHERE id = ?").run(nowMs, line, l.id);
   if (line && l.runId !== null) setRunProgress(db, l.runId, line);
   return true;
@@ -407,12 +421,12 @@ export function submitCall(db: DatabaseSync, secret: string | undefined, raw: un
     const sessionId = typeof s.sessionId === "string" && s.sessionId.length <= 200 ? s.sessionId : null;
     const costUsd = typeof s.costUsd === "number" && Number.isFinite(s.costUsd) && s.costUsd >= 0 ? s.costUsd : null;
     db.prepare("UPDATE main.remote_calls SET state = 'done', reply = ?, usage = ?, turns = ?, session_id = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased'")
-      .run(s.text, JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }), ...(costUsd !== null && { costUsd }) }), turns, sessionId, duration, nowMs, l.id);
+      .run(unrooted(s.text, r.root), JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }), ...(costUsd !== null && { costUsd }) }), turns, sessionId, duration, nowMs, l.id);
     return { accepted: true };
   }
   if (s.ok !== false || typeof s.error !== "string") throw new HttpError(400, "ok must be true with text and model, or false with error");
   db.prepare("UPDATE main.remote_calls SET state = 'failed', error = ?, usage = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased'")
-    .run(scrubError(`helper: ${s.error}`), usage ? JSON.stringify(usage) : null, duration, nowMs, l.id);
+    .run(scrubError(`helper: ${unrooted(s.error, l.root)}`), usage ? JSON.stringify(usage) : null, duration, nowMs, l.id);
   return { accepted: true };
 }
 

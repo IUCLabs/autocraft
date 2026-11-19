@@ -43,6 +43,13 @@ export type Claim = {
   repos?: string[];
   /** A follow-up turn for a session this helper still holds: the server offers follow-ups for these call ids first. */
   sessions?: number[];
+  /**
+   * A directory the helper places the sandbox paths below, when its sandbox cannot place them at the filesystem root
+   * (macOS: sandbox-exec confines paths but cannot remap them). The bundle's text and `claude` hints then name
+   * `<root>/repo`, `<root>/repos/<name>`, `<root>/repo-docs`, `<root>/mcp.json` and `<root>/agents.json`, and the reply's
+   * paths are read back without it. Absolute, letters, digits and `. _ + @ -`, no `.` or `..` component. Absent: the fixed paths.
+   */
+  root?: string;
 };
 
 export type ClaimReply =
@@ -71,7 +78,7 @@ export type TaskBundle = {
   stdin: string;
   /** The system prompt for a call without a sandbox; null when the harness's own system prompt is kept. */
   system: string | null;
-  /** Read-only mounts. Paths are the fixed sandbox paths (/repo, /repos/<name>, /repo-docs, /reference, /agents.json). Empty for a call without tools. */
+  /** Read-only mounts. Paths are the fixed sandbox paths (/repo, /repos/<name>, /repo-docs, /reference, /agents.json), below the claim's `root` when it has one. Empty for a call without tools. */
   mounts: Mount[];
   /** MCP servers the call may use, each served at `${ROUTES.mcp}/<name>` with this lease's secret; the names give the tool names (`mcp__<name>__*`). */
   mcpServers: string[];
@@ -81,7 +88,7 @@ export type TaskBundle = {
   resume?: { parentCallId: number };
   /** Exact arguments for adapters that can use them; an adapter without hints builds its own from the fields above. */
   hints: {
-    /** `claude` arguments as the server would run them (src/prompts `claudeArgs`), for the fixed sandbox paths. The model name is replaced by the claim's model for the tier. */
+    /** `claude` arguments as the server would run them (src/prompts `claudeArgs`), for the fixed sandbox paths or below the claim's `root`. The model name is replaced by the claim's model for the tier. */
     claude?: { args: string[]; /** The `--agents` file content when the call has the explorer. */ agents?: string };
   };
 };

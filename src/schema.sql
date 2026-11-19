@@ -745,7 +745,8 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   reply TEXT, usage TEXT, turns INTEGER, session_id TEXT, duration_ms INTEGER,
   error TEXT,
   ended_at INTEGER,
-  reference_repo TEXT                 -- the repo whose reference documentation the call's reference tools search
+  reference_repo TEXT,                -- the repo whose reference documentation the call's reference tools search
+  root TEXT                           -- the lease's path root: the claim's directory the sandbox paths are placed below (macOS helpers), or NULL for the fixed paths
 );
 CREATE INDEX IF NOT EXISTS remote_calls_state ON remote_calls(state, tier);
 CREATE INDEX IF NOT EXISTS remote_calls_job ON remote_calls(job_id) WHERE job_id IS NOT NULL;
