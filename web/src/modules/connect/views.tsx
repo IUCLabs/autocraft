@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { GaugeIcon, TerminalWindowIcon } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import { useApi, useQuery } from "../../api/client";
-import type { McpToken } from "../../api/types";
+import type { HelperReadiness, McpToken, RemoteHelper } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { Badge } from "../../ui/atoms/Badge";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
@@ -15,7 +16,7 @@ import { CodeBlock } from "../../ui/molecules/CodeBlock";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Page } from "../../ui/organisms/Page";
 import { useIsPhone } from "../../shell/useMedia";
-import { day } from "../../lib/format";
+import { clock, day } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
 
 /** The command that adds the server to Claude Code; other clients take the URL and header the same way. */
@@ -91,6 +92,8 @@ export function ConnectView({ user }: ViewProps) {
         )}
         {data && <Tokens tokens={data.tokens} write={write} fresh={made?.id ?? null} />}
       </Block>
+      {!viewer && user.inference === "user-local" && <MySettings />}
+      {!viewer && user.inference === "user-local" && <Helpers />}
       {!viewer && user.inference === "user-local" && (
         <Block className="mt-4" title="Run model calls">
           <div className="space-y-3">
@@ -162,5 +165,104 @@ function Tokens({ tokens, write, fresh }: { tokens: McpToken[]; write: ReturnTyp
         </tbody>
       </table>
     </div>
+  );
+}
+
+const readinessBadge = (h: RemoteHelper): { text: string; tone: Tone } => {
+  const at = h.until ? ` ${clock(h.until)}` : "";
+  const map: Record<HelperReadiness, { text: string; tone: Tone }> = {
+    ready: { text: "Ready", tone: "ok" },
+    "quota-held": { text: `Holding${h.until ? " until" : ""}${at}`, tone: "warn" },
+    paused: { text: `Paused${h.until ? " until" : ""}${at}`, tone: "warn" },
+    "sandbox-failed": { text: "Sandbox check failed", tone: "bad" },
+    "version-refused": { text: "Helper too old", tone: "bad" },
+    "harness-missing": { text: "Harness missing", tone: "bad" },
+  };
+  return map[h.readiness];
+};
+
+const used = (n: number | null | undefined) => (n == null ? "–" : `${Math.round(n)}%`);
+
+function Helpers() {
+  const { data } = useQuery("remote-helpers", (a) => a.remote.helpers(), { pollMs: 30_000 });
+  if (!data?.helpers.length) return null;
+  return (
+    <Block className="mt-4" flush title="My helpers">
+      <ul>
+        {data.helpers.map((h) => {
+          const b = readinessBadge(h);
+          return (
+            <li key={h.tokenId} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2.5 last:border-0">
+              <span className="min-w-[8rem] font-medium">{h.label}</span>
+              <Badge tone={b.tone} icon={<span className="inline-block size-1.5 rounded-full bg-current" />}>{b.text}</Badge>
+              <span className="flex items-center gap-1 text-sm text-ink/70">
+                <TerminalWindowIcon /> {h.harness} · {h.models.top}
+              </span>
+              <span className="num text-sm text-ink/70" title="Plan used: 5-hour window, weekly">
+                <GaugeIcon className="mr-1 inline" />
+                5h {used(h.usage?.fiveHour)} · week {used(h.usage?.weekly)}
+              </span>
+              <span className="text-xs text-ink/55 sm:ml-auto">
+                <TimeAgo iso={h.lastSeen} />
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </Block>
+  );
+}
+
+function MySettings() {
+  const api = useApi();
+  const write = useWrite();
+  const { data, error } = useQuery("my-settings", (a) => a.me.settings.get());
+  const [vals, setVals] = useState<{ fiveHour: string; weekly: string } | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => {
+    if (data) setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
+  }, [data]);
+  if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
+  const valid = (v: string) => /^\d+$/.test(v) && Number(v) <= 90;
+  const save = (next: { fiveHour: string; weekly: string }) => {
+    if (!valid(next.fiveHour) || !valid(next.weekly)) {
+      setProblem("Enter a whole number from 0 to 90.");
+      return;
+    }
+    setProblem(null);
+    const body = { reserve: { fiveHour: Number(next.fiveHour), weekly: Number(next.weekly) } };
+    if (body.reserve.fiveHour === data.reserve.fiveHour && body.reserve.weekly === data.reserve.weekly) return;
+    void write.run("settings", () => api.me.settings.put(body));
+  };
+  const field = (key: "fiveHour" | "weekly", label: string) => (
+    <label className="flex items-center gap-2 text-sm">
+      <span className="w-44 shrink-0 text-ink/80">{label}</span>
+      <Input
+        type="number"
+        inputMode="numeric"
+        min={0}
+        max={90}
+        step={1}
+        value={vals[key]}
+        invalid={!valid(vals[key])}
+        onChange={(e) => {
+          const next = { ...vals, [key]: e.target.value };
+          setVals(next);
+          save(next);
+        }}
+        aria-label={label}
+        className="w-20"
+      />
+      <span className="text-ink/55">%</span>
+    </label>
+  );
+  return (
+    <Block className="mt-4" title="My settings">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-6">
+        {field("fiveHour", "Keep free: 5-hour window")}
+        {field("weekly", "Keep free: weekly")}
+      </div>
+      <ErrorLine error={problem ?? write.error} className="mt-2" />
+    </Block>
   );
 }

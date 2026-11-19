@@ -2483,6 +2483,23 @@ export type McpTokens = { tokens: McpToken[]; max: number; path: string; /** Whe
 /** After making a token: the list, the new token's id, and its value, shown this once. */
 export type McpTokenCreated = McpTokens & { id: number; token: string };
 
+/** The signed-in user's share of their plan kept free from model calls, in percent (0-90). */
+export type MySettings = { reserve: { fiveHour: number; weekly: number } };
+export type HelperReadiness = "ready" | "quota-held" | "paused" | "sandbox-failed" | "version-refused" | "harness-missing";
+/** One of the caller's helpers (`autocraft-task`) as the server last saw it. */
+export type RemoteHelper = {
+  tokenId: number;
+  label: string;
+  readiness: HelperReadiness;
+  /** When a held or paused helper may work again. */
+  until: string | null;
+  harness: "claude" | "codex";
+  models: Record<"top" | "mid" | "small", string>;
+  /** Percent of each plan window used; null when the harness has not reported it. */
+  usage: { fiveHour: number | null; weekly: number | null } | null;
+  lastSeen: string;
+};
+
 // ---- redesign: one status per item, Home, the two-sided item page, findings as items ----------------------------
 
 export type ItemPhase = "Triage" | "Waiting for a person" | "Review" | "Fixing" | "Verifying" | "In queue" | "Merged" | "Closed" | "Held" | "Out of scope" | "Pipeline off";
