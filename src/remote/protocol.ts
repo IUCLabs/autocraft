@@ -18,7 +18,7 @@ export const ROUTES = {
   submit: "/api/remote/submit",
   /** Lease secret. A private repo's checkout or a workspace entry as a tar stream: `?repo=<name>&sha=<sha>`. */
   tarball: "/api/remote/tarball",
-  /** Lease secret. Streamable HTTP MCP server with only this call's tools (items, check, reference). */
+  /** Lease secret. Streamable HTTP MCP servers with only this call's tools, one per server name: `/mcp/task/<name>` (items, check, reference). */
   mcp: "/mcp/task",
   /** The helper itself, a single file. */
   helper: "/worker/autocraft-task.mjs",
@@ -69,7 +69,7 @@ export type TaskBundle = {
   system: string | null;
   /** Read-only mounts. Paths are the fixed sandbox paths (/repo, /repos/<name>, /repo-docs, /reference, /agents.json). Empty for a call without tools. */
   mounts: Mount[];
-  /** MCP servers the call may use, served by ROUTES.mcp with this lease's secret; the names give the tool names (`mcp__<name>__*`). */
+  /** MCP servers the call may use, each served at `${ROUTES.mcp}/<name>` with this lease's secret; the names give the tool names (`mcp__<name>__*`). */
   mcpServers: string[];
   /** A follow-up turn: resume this helper's session of the parent call instead of starting one. */
   resume?: { parentCallId: number };
