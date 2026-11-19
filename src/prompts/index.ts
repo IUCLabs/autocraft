@@ -203,7 +203,7 @@ const OPUS_REVIEW: ClaudePrompt = {
     owner_statements: STATEMENTS_DOC,
     repo_access: REPO_ACCESS_DOC,
   },
-  sandbox: { docs: true, tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, reference: true },
+  sandbox: { docs: true, tools: ["Read", "Grep", "Glob"], maxTurns: 40, workspace: true, reference: true },
   lint: true,
   template: `You review a pull request on one of the storytold craft apps, open-source reimplementations of a reference application. Your verdict decides what happens next: only a PR you rate take or take-fix is merged or fixed up. A wrong take costs more than a wrong hold.
 
@@ -436,7 +436,7 @@ const CIFIX: ClaudePrompt = {
   models: ["sonnet"],
   effort: "high",
   placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, failure (the failed checks, each with the failed steps: job, step and the end of that step's log), files (path and full current content of each file the patch may edit, or for a long file its excerpt, or the path alone when you can read the file in the repository: total_lines, outline and numbered regions) and diff (the pull request's unified diff). After a failed lint check it also has previous: the earlier patch and the findings on its lines.", repo_access: REPO_ACCESS_DOC },
-  sandbox: { docs: true, tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, check: true },
+  sandbox: { docs: true, tools: ["Read", "Grep", "Glob"], maxTurns: 40, workspace: true, check: true },
   template: `You fix a failing CI check on a pull request to one of the storytold craft apps. The pull request is wanted; its CI run failed. Change the code so the check passes, with the smallest edit that keeps what the pull request does.
 
 Rules:

@@ -532,7 +532,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         const parsed = parseOutput(r.stdout);
         // Before the result is looked at: a call that timed out or ended without a result still shows the tools it used.
         try { saveTools(db, runId, parsed, clock); } catch (e) { console.log(`tool uses not stored: ${(e as Error).message}`); }
-        const j = lastResult(parsed) as { result?: string; is_error?: boolean; session_id?: string; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
+        const j = lastResult(parsed) as { result?: string; subtype?: string; is_error?: boolean; session_id?: string; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
         if (!j) {
           authFailed(`${r.stderr} ${cliErrorText(parsed)}`);
           finish({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: scrub(r.stdout) });
@@ -542,7 +542,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         const costUsd = typeof j.total_cost_usd === "number" ? j.total_cost_usd : usage.cost;
         if (j.is_error || typeof j.result !== "string") {
           if (j.is_error) authFailed(typeof j.result === "string" ? j.result : "");
-          finish({ state: "failed", tokens, costUsd, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: scrub(r.stdout) });
+          finish({ state: "failed", tokens, costUsd, error: scrubError(modelError(j)), summary: j.subtype === "error_max_turns" ? "turn limit" : "model error", output: scrub(r.stdout) });
           return null;
         }
         const turns = sandboxed ? j.num_turns : undefined;
@@ -788,4 +788,10 @@ export async function runJev(db: DatabaseSync, runId: string, items: Item[], wid
     if (r.ok) saveVerdict(db, "jev", runId, r.value);
     else if (jevAvailable(db)) console.error(`jev: no valid answer for ${ref}`);
   }), width);
+}
+
+/** A failed CLI result in words: the turn limit by name, else the CLI's text. */
+export function modelError(j: { result?: string; subtype?: string }): string {
+  if (j.subtype === "error_max_turns") return "turn limit: the model used every turn the prompt allows without an answer";
+  return `model error ${typeof j.result === "string" ? j.result : ""}`.trim();
 }
