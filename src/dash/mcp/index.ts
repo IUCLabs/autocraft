@@ -13,9 +13,10 @@ import { KINDS } from "../../decisions.ts";
 import { frame } from "../../itemtools/server/tools.ts";
 import * as dec from "../api/decisions.ts";
 import { cancelItemPreapproval } from "../api/operator.ts";
-import { fastTrackAdd, fastTrackRemove, fastTrackWeight, queueAdd, queuePage } from "../api/queue-page.ts";
-import { visibleTo } from "../api/visible.ts";
-import { fastPositions, FastTrackError, parseItemRef, WEIGHT_DEFAULT, WEIGHT_MAX, WEIGHT_MIN, type FastRef } from "../../fasttrack.ts";
+import { queueAdd, queuePage } from "../api/queue-page.ts";
+import { needVisible, visibleTo } from "../api/visible.ts";
+import { cachedQueue } from "../../core/plan-read.ts";
+import { addFastTrack, fastPositions, FastTrackError, parseItemRef, removeFastTrack, setFastTrackWeight, WEIGHT_DEFAULT, WEIGHT_MAX, WEIGHT_MIN, type FastRef } from "../../fasttrack.ts";
 import { callStatus, claimableCalls } from "../../remote/calls.ts";
 import { listHelpers } from "../../remote/helpers.ts";
 import { isTier, TIERS } from "../../remote/mode.ts";
@@ -457,14 +458,23 @@ async function setWeight(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const r = itemArg(a.item);
   const user = env.user(true);
   requireOperator(user);
-  const req = reqOf(user, { method: "POST", json: { item: refText(r), weight: a.weight } });
-  const listed = !!env.db.prepare("SELECT 1 FROM main.fast_track WHERE repo = ? AND number = ?").get(r.repo, r.number);
-  if (a.remove === true) {
-    await fastTrackRemove(env.db, req);
-    return { text: listed ? `Took ${refText(r)} off the fast-track list; it goes back to the work rank. An approved merge stays (cancel_queued withdraws it).` : `${refText(r)} was not fast-tracked.` };
+  await needVisible(env.db, reqOf(user), r.repo);
+  // From here on nothing awaits: whether the item is listed and the write that follows see the same table, so a queue_pr that
+  // lands meanwhile cannot leave its own weight in place of the one asked for here.
+  try {
+    if (a.remove === true) {
+      const { removed } = removeFastTrack(env.db, user.login, refText(r));
+      return { text: removed ? `Took ${refText(r)} off the fast-track list; it goes back to the work rank. An approved merge stays (cancel_queued withdraws it).` : `${refText(r)} was not fast-tracked.` };
+    }
+    const w = (a.weight as number | undefined) ?? WEIGHT_DEFAULT;
+    const listed = !!env.db.prepare("SELECT 1 FROM main.fast_track WHERE repo = ? AND number = ?").get(r.repo, r.number);
+    if (listed) setFastTrackWeight(env.db, user.login, refText(r), w);
+    else addFastTrack(env.db, user.login, refText(r), w);
+    return { text: `${listed ? "Set the weight" : "Fast-tracked it; its merge is not approved by this (queue_pr does that)"}. ${placeOf(env, r)}` };
+  } catch (e) {
+    if (e instanceof FastTrackError) throw new HttpError(e.status, e.message);
+    throw e;
   }
-  await (listed ? fastTrackWeight(env.db, req) : fastTrackAdd(env.db, req));
-  return { text: `${listed ? "Set the weight" : "Fast-tracked it; its merge is not approved by this (queue_pr does that)"}. ${placeOf(env, r)}` };
 }
 
 async function cancelQueued(env: McpEnv, raw: unknown): Promise<ToolResult> {
@@ -478,11 +488,16 @@ async function cancelQueued(env: McpEnv, raw: unknown): Promise<ToolResult> {
 
 async function listMergeQueue(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { repo: "repo", limit: "limit", cursor: "cursor" });
-  if (a.cursor !== undefined && !/^\d{1,6}$/.test(a.cursor as string)) throw new BadArgs(`"cursor" is not valid`);
+  // The cursor holds both lists' places: `<offset of the next queue row>:<id of the last pre-approval shown>`, "x" for a list that is done.
+  const c = a.cursor === undefined ? null : /^(\d{1,6}|x):(\d{1,12}|x)$/.exec(a.cursor as string);
+  if (a.cursor !== undefined && !c) throw new BadArgs(`"cursor" is not valid`);
+  const limit = (a.limit as number | undefined) ?? 10;
   spend(env);
   const user = env.user(false);
   const staff = user.role !== "viewer";
-  const page = await queuePage(env.db, reqOf(user, { query: { tab: "merge", repos: (a.repo as string | undefined) ?? "pipeline", limit: String(a.limit ?? 10), offset: a.cursor as string | undefined } }));
+  const rowsDone = c?.[1] === "x", pendingDone = c?.[2] === "x";
+  const page = await queuePage(env.db, reqOf(user, { query: { tab: "merge", repos: (a.repo as string | undefined) ?? "pipeline", limit: String(limit), offset: rowsDone ? undefined : c?.[1] } }));
+  if (rowsDone) { page.mergeRows = []; page.next = null; }
   const item = (x: { repo: string; number: number }) => `${x.repo}#${x.number}`;
   const prs = page.mergeRows.map((x) => ({
     item: item(x), title: x.title, author: x.author, state: x.state, mergesBy: x.path, verdict: x.verdict, ci: x.ci, mergeable: x.mergeable,
@@ -490,19 +505,25 @@ async function listMergeQueue(env: McpEnv, raw: unknown): Promise<ToolResult> {
     fastTrack: x.fast ? { weight: x.fast.weight, position: x.fast.position, of: x.fast.of } : null, held: x.held,
     added: x.added ? { how: x.added.how, by: x.added.by, at: x.added.at } : null, closes: x.closes ?? [], link: link(env, itemPath(x.repo, x.number)),
   }));
-  // Pre-approved merges whose PR has no take review at its head yet are not queue rows: listed apart, so an agent sees what it queued.
+  // Pre-approved merges whose PR is no queue row yet (no take review at its head), so an agent sees what it queued. A PR that is a
+  // queue row anywhere, on any page and in any repo, is left out. They are the operators' own picks, so the list covers every
+  // visible repo (or the one asked for), not only the pipeline's scope the queue rows default to.
   const visible = new Set(await visibleTo(env.db, user));
-  const inPage = new Set(prs.map((p) => p.item));
-  const pending = (env.db.prepare("SELECT repo, number, state, by, at FROM preapprovals WHERE state IN ('fixup', 'review', 'ci') ORDER BY id").all() as { repo: string; number: number; state: string; by: string; at: string }[])
-    .filter((p) => visible.has(p.repo) && (a.repo === undefined || p.repo === a.repo) && !inPage.has(item(p)))
-    .slice(0, LIST_MAX).map((p) => ({ item: item(p), state: p.state, by: staff ? p.by : null, at: p.at }));
+  const queued = new Set(cachedQueue(env.db, { merged: "exclude" }).map(item));
+  type Pending = { id: number; repo: string; number: number; state: string; by: string; at: string };
+  const pendingAll = (pendingDone ? [] : env.db.prepare("SELECT id, repo, number, state, by, at FROM preapprovals WHERE state IN ('fixup', 'review', 'ci') AND id > ? ORDER BY id").all(Number(c?.[2] ?? 0)) as Pending[])
+    .filter((p) => visible.has(p.repo) && (a.repo === undefined || p.repo === a.repo) && !queued.has(item(p)));
+  const shown = pendingAll.slice(0, limit);
+  const pending = shown.map((p) => ({ item: item(p), state: p.state, by: staff ? p.by : null, at: p.at }));
+  const pendingNext = pendingAll.length > shown.length ? String(shown[shown.length - 1]!.id) : null;
+  const next = page.next === null && pendingNext === null ? null : `${page.next ?? "x"}:${pendingNext ?? "x"}`;
   const data = {
-    total: page.total, prs, next: page.next === null ? null : String(page.next),
+    total: page.total, prs, next,
     nextMerges: page.nextMerges.map((n) => ({ item: item(n), title: n.title, waitsFor: n.label, batch: n.batch?.branch ?? null })),
     batches: page.batches.map((b) => ({ repo: b.repo, branch: b.branch, state: b.state, size: b.size, prs: b.prs.map(item), pr: b.prUrl, summary: b.summary })),
     preapprovedBeforeReview: pending,
   };
-  const header = `${page.total} PR${page.total === 1 ? "" : "s"} in the merge queue; showing ${prs.length}.${page.next !== null ? ` More: call list_merge_queue again with cursor "${page.next}".` : ""}`;
+  const header = `${page.total} PR${page.total === 1 ? "" : "s"} in the merge queue; showing ${prs.length}, and ${pending.length} pre-approved before review.${next !== null ? ` More: call list_merge_queue again with cursor "${next}".` : ""}`;
   return show(header, "merge queue", data);
 }
 

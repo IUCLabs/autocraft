@@ -5,6 +5,7 @@ import { afterEach, describe, test } from "node:test";
 import { handleMcp, type McpEnv } from "../src/dash/mcp/index.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
 import type { Role } from "../src/dash/types.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import { fastTrackList } from "../src/fasttrack.ts";
 import { preapprovalOf } from "../src/preapproval/index.ts";
 import { OPERATOR, world, type World } from "./world-db.ts";
@@ -13,9 +14,10 @@ let current: World | null = null;
 const fresh = (): World => (current = world().repo());
 afterEach(() => current?.close());
 
-const envOf = (w: World, role: Role, login = role === "operator" ? OPERATOR : "maint"): McpEnv => ({
+/** `who.role` is read on every call, as the server reads the access list: a test changes it to demote the login under a live session. */
+const envOf = (w: World, role: Role, login = role === "operator" ? OPERATOR : "maint", who = { role }): McpEnv => ({
   db: w.db, baseUrl: null, limiter: new RateLimiter(60, 3600_000), canAnswer: false, expensive: () => 0,
-  user: () => ({ login, role, canWrite: async () => true, canRead: async () => true }),
+  user: () => ({ login, role: who.role, canWrite: async () => true, canRead: async () => true }),
 });
 
 let id = 0;
@@ -44,7 +46,7 @@ describe("merge queue tools", () => {
     assert.doesNotMatch((await rpc(maint, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
   });
 
-  test("a maintainer's call is refused and changes nothing, also when the role changed after tools/list", async () => {
+  test("a maintainer's call is refused and changes nothing", async () => {
     const w = fresh().pr(1);
     const maint = envOf(w, "maintainer");
     for (const [name, args] of [["queue_pr", { item: "app#1" }], ["set_weight", { item: "app#1", weight: 9 }], ["cancel_queued", { item: "app#1" }]] as const) {
@@ -54,6 +56,24 @@ describe("merge queue tools", () => {
     }
     assert.equal(preapprovalOf(w.db, "app", 1), null);
     assert.deepEqual(weights(w), []);
+  });
+
+  test("an operator demoted after tools/list is refused on the next call, with the tools still in its client's list", async () => {
+    const w = fresh().pr(1).pr(2);
+    const who: { role: Role } = { role: "operator" };
+    const env = envOf(w, "operator", OPERATOR, who);
+    assert.ok((await names(env)).includes("queue_pr"));
+    assert.equal((await call(env, "queue_pr", { item: "app#2", weight: 4 })).isError, false);
+    who.role = "maintainer";
+    for (const [name, args] of [["queue_pr", { item: "app#1" }], ["set_weight", { item: "app#2", weight: 9 }], ["cancel_queued", { item: "app#2" }]] as const) {
+      const r = await call(env, name, args);
+      assert.equal(r.isError, true, name);
+      assert.match(r.text, /only operators steer the merge queue; op is a maintainer/);
+    }
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    assert.equal(preapprovalOf(w.db, "app", 2)?.state, "review");
+    assert.deepEqual(weights(w), [[2, 4]]);
+    assert.equal((await names(env)).includes("queue_pr"), false);
   });
 
   test("queue_pr pre-approves the PR at its head and fast-tracks it with the weight, as the Queue page does", async () => {
@@ -123,5 +143,43 @@ describe("merge queue tools", () => {
       } else assert.equal(pending.by, role === "viewer" ? null : OPERATOR);
     }
     assert.equal((await call(envOf(w, "viewer"), "list_merge_queue", { cursor: "x" })).isError, true);
+  });
+
+  /** Every page of list_merge_queue at `limit`, following the cursor. */
+  async function pages(env: McpEnv, limit: number): Promise<{ prs: string[]; pending: string[]; cursors: string[] }> {
+    const out = { prs: [] as string[], pending: [] as string[], cursors: [] as string[] };
+    let cursor: string | undefined;
+    for (let k = 0; k < 20; k++) {
+      const r = await call(env, "list_merge_queue", { repo: "app", limit, ...(cursor ? { cursor } : {}) });
+      assert.equal(r.isError, false, r.text);
+      const d = data(r.text);
+      out.prs.push(...d.prs.map((p: { item: string }) => p.item));
+      out.pending.push(...d.preapprovedBeforeReview.map((p: { item: string }) => p.item));
+      if (d.next === null) return out;
+      out.cursors.push(d.next);
+      cursor = d.next;
+    }
+    throw new Error("the cursor never ended");
+  }
+
+  test("a queued PR that is a queue row on a later page is never listed as before its review", async () => {
+    const w = fresh().pr(1).review(1).pr(2).review(2).pr(3);
+    const op = envOf(w, "operator");
+    for (const n of [1, 2, 3]) assert.equal((await call(op, "queue_pr", { item: `app#${n}` })).isError, false);
+    refreshPlanCache(w.db);
+    const all = await pages(op, 1);
+    assert.deepEqual(all.prs.sort(), ["app#1", "app#2"]);
+    assert.deepEqual(all.pending, ["app#3"]);
+  });
+
+  test("pre-approvals before review page on with the cursor: none is skipped or shown twice", async () => {
+    const w = fresh().pr(1).pr(2).pr(3).pr(4).pr(5);
+    const op = envOf(w, "operator");
+    for (const n of [1, 2, 3, 4, 5]) await call(op, "queue_pr", { item: `app#${n}` });
+    const all = await pages(op, 2);
+    assert.deepEqual(all.pending, ["app#1", "app#2", "app#3", "app#4", "app#5"]);
+    assert.equal(all.cursors.length, 2);
+    assert.ok(all.cursors.every((c) => /^x:\d+$/.test(c)), all.cursors.join());
+    for (const cursor of ["7", "1:", "a:b", "1:2:3"]) assert.equal((await call(op, "list_merge_queue", { cursor })).isError, true, cursor);
   });
 });

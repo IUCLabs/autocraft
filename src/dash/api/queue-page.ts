@@ -226,12 +226,10 @@ async function guarded<T>(f: () => Promise<T> | T): Promise<T> {
   }
 }
 
-/** Fast-tracks an item with the body's `weight` (the default when it has none). */
 export async function fastTrackAdd(db: DatabaseSync, req: Req): Promise<string[]> {
   const r = item(req);
-  const w = weightOf(req);
   await needVisible(db, req, r.repo);
-  await guarded(() => addFastTrack(db, req.user.login, `${r.repo}#${r.number}`, w));
+  await guarded(() => addFastTrack(db, req.user.login, `${r.repo}#${r.number}`));
   return fastTrackRefs(db, req);
 }
 
