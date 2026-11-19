@@ -749,9 +749,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       return void res.end(JSON.stringify({ error: "the call has no such tarball" }));
     }
     res.writeHead(200, secure({ "cache-control": "no-store", "content-type": "application/x-tar" }, "default-src 'none'"));
-    git.stdout!.pipe(res);
-    // A failed archive cuts the stream, so the helper sees an error rather than a short tree.
-    git.on("close", (code) => { if (code !== 0) res.destroy(); });
+    // The response ends only after git exits 0: a failed archive cuts the stream, so the helper sees an error rather than a short tree.
+    git.stdout!.pipe(res, { end: false });
+    git.on("close", (code) => { if (code === 0) res.end(); else res.destroy(); });
     git.on("error", () => res.destroy());
     res.on("close", () => { if (git.exitCode === null) git.kill(); });
   }
