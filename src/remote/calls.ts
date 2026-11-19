@@ -16,7 +16,8 @@ import { fillHarness, rootArgs, validRoot } from "../prompts/harness.ts";
 import { rootAgents } from "../sandbox/agents.ts";
 import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
-import { acceptedModels, familyOf, isTier, TIERS } from "./mode.ts";
+import { COOLOFF_REASON, cooloffUntil, noteDrop } from "./cooloff.ts";
+import { acceptedModels, familyOf, isEffort, isTier, meetsEffort, minEfforts, TIERS } from "./mode.ts";
 import { PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { userReserve } from "./reserve.ts";
 import { CALLER_STALE_MS, IDLE_FRESH_MS } from "./room.ts";
@@ -103,12 +104,13 @@ export function withdrawJobCalls(db: DatabaseSync, reason: string, jobId?: numbe
 }
 
 /** A lost lease goes back to the queue with the next attempt, or fails once the prompt's attempts are used up. */
-function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "max_attempts" | "leased_at">, reason: string, nowMs: number): void {
+function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "max_attempts" | "leased_at">, reason: string, nowMs: number): boolean {
   const fail = r.attempt >= r.max_attempts;
   // Compare and set: only the lease that was read ends, so two processes that saw it expire end it once.
   const up = db.prepare(`UPDATE main.remote_calls SET state = ?, attempt = attempt + ?, lease_secret_hash = NULL, token_id = NULL, queued_since = ?, ended_at = ?, error = ?, progress = NULL
     WHERE id = ? AND state = 'leased' AND attempt = ? AND leased_at IS ?`).run(fail ? "failed" : "queued", fail ? 0 : 1, fail ? null : nowMs, fail ? nowMs : null, reason, r.id, r.attempt, r.leased_at);
   if (Number(up.changes) === 1 && r.run_id !== null) finishRun(db, r.run_id, { state: "failed", error: reason, summary: "lease ended" });
+  return Number(up.changes) === 1;
 }
 
 /** Puts a leased call back in the queue without using an attempt (released by its helper, or its token lost the right to run it). */
@@ -121,15 +123,16 @@ function unlease(db: DatabaseSync, id: number, runId: number | null, why: string
 /**
  * The failure backoff of remote calls (registered in src/stages/registry.ts): a lease with no heartbeat for LEASE_IDLE_MS, or past
  * its time limit plus LEASE_MARGIN_MS, goes back to the queue (attempt + 1, up to the prompt's attempts); a call whose caller
- * stopped polling fails. Run by each claim (every call, and old rows are pruned) and by the caller's poll (`id`: that call only).
+ * stopped polling fails. The lost lease also counts toward its token's flap cool-off. Run by each claim (every call, and old rows are pruned) and by the caller's poll (`id`: that call only).
  */
 export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: number): void {
   const one = id === undefined ? "" : " AND id = ?";
-  const lost = db.prepare(`SELECT id, run_id, attempt, max_attempts, heartbeat_at, leased_at, timeout_ms FROM main.remote_calls
-    WHERE state = 'leased' AND (heartbeat_at < ? OR leased_at + timeout_ms + ? < ?)${one}`).all(nowMs - LEASE_IDLE_MS, LEASE_MARGIN_MS, nowMs, ...(id === undefined ? [] : [id])) as (Row & { timeout_ms: number })[];
+  const lost = db.prepare(`SELECT id, run_id, attempt, max_attempts, heartbeat_at, leased_at, timeout_ms, token_id FROM main.remote_calls
+    WHERE state = 'leased' AND (heartbeat_at < ? OR leased_at + timeout_ms + ? < ?)${one}`).all(nowMs - LEASE_IDLE_MS, LEASE_MARGIN_MS, nowMs, ...(id === undefined ? [] : [id])) as (Row & { timeout_ms: number; token_id: number | null })[];
   for (const r of lost) {
     const why = Number(r.heartbeat_at) < nowMs - LEASE_IDLE_MS ? `lease expired: no heartbeat for ${LEASE_IDLE_MS / 60_000} min` : "lease expired: past the call's time limit";
-    requeue(db, r, why, nowMs);
+    // A lost lease counts toward its token's cool-off (cooloff.ts), not as a call failure: the attempt counting stays as it is.
+    if (requeue(db, r, why, nowMs) && r.token_id !== null) noteDrop(db, Number(r.token_id), nowMs);
   }
   const gone = db.prepare(`SELECT id FROM main.remote_calls WHERE state IN ('queued', 'leased') AND seen_at < ?${one}`).all(nowMs - CALLER_GONE_MS, ...(id === undefined ? [] : [id])) as { id: number }[];
   for (const r of gone) withdrawCall(db, Number(r.id), "the caller stopped waiting", undefined, nowMs);
@@ -237,10 +240,15 @@ export function parseClaim(raw: unknown): Claim {
     if (!isTier(t) || !short(m, 100)) throw new HttpError(400, `tier ${t}: a known tier with a model name`);
     tiers[t] = m;
   }
+  let efforts: Claim["efforts"];
+  if (c.efforts !== undefined) {
+    if (!c.efforts || typeof c.efforts !== "object" || Array.isArray(c.efforts) || !Object.entries(c.efforts).every(([t, e]) => isTier(t) && isEffort(e))) throw new HttpError(400, "efforts must map a tier to an effort of the ladder low, medium, high, xhigh, max");
+    efforts = c.efforts as Claim["efforts"];
+  }
   if (c.repos !== undefined && (!Array.isArray(c.repos) || c.repos.length > 500 || !c.repos.every((x) => short(x, 100)))) throw new HttpError(400, "repos must be a list of repo names");
   if (c.sessions !== undefined && (!Array.isArray(c.sessions) || c.sessions.length > 500 || !c.sessions.every((x) => Number.isInteger(x)))) throw new HttpError(400, "sessions must be a list of call ids");
   if (c.root !== undefined && (typeof c.root !== "string" || !validRoot(c.root))) throw new HttpError(400, "root must be an absolute path of plain characters (letters, digits, . _ + @ -) without . or .. components");
-  return { protocol: PROTOCOL_VERSION, helperVersion: c.helperVersion, harness: c.harness as HarnessId, harnessVersion: c.harnessVersion, tiers, ...(c.repos !== undefined && { repos: c.repos as string[] }), ...(c.sessions !== undefined && { sessions: c.sessions as number[] }), ...(c.root !== undefined && { root: c.root as string }) };
+  return { protocol: PROTOCOL_VERSION, helperVersion: c.helperVersion, harness: c.harness as HarnessId, harnessVersion: c.harnessVersion, tiers, ...(efforts && { efforts }), ...(c.repos !== undefined && { repos: c.repos as string[] }), ...(c.sessions !== undefined && { sessions: c.sessions as number[] }), ...(c.root !== undefined && { root: c.root as string }) };
 }
 
 /** Whether dotted version `v` is older than `min` (numeric parts compared in order; a part that is not a number counts as 0). */
@@ -306,6 +314,7 @@ const memoWrite = (canWrite: (repo: string) => Promise<boolean>): ((repo: string
 /** How many queued calls the caller could claim now (same filters and eligibility as claimCall, nothing is leased), for a session's next_task. Follow-ups of a helper's own sessions are not counted. */
 export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { tiers?: readonly Tier[]; models?: Partial<Record<Tier, string>> }, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<number> {
   expireLeases(db, nowMs);
+  if (cooloffUntil(db, caller.tokenId, nowMs) !== null) return 0;
   const accepted = acceptedModels(db);
   // A tier counts when the model the helper would use for it is of an accepted family; without a model, when the tier accepts any.
   const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0 && (opts.models?.[t] === undefined || familyOf(opts.models[t]!, accepted[t]) !== null)));
@@ -329,9 +338,11 @@ export function callStatus(db: DatabaseSync, id: number, login: string): { id: n
 export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
   if (olderVersion(claim.helperVersion, REQUIRED_HELPER)) throw new HttpError(409, `helper ${claim.helperVersion} is older than ${REQUIRED_HELPER}, the oldest this server accepts; download the current helper from ${ROUTES.helper}`);
   expireLeases(db, nowMs);
-  const accepted = acceptedModels(db);
-  const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null));
-  if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}`).join(", ")}`);
+  const until = cooloffUntil(db, caller.tokenId, nowMs);
+  if (until !== null) return { lease: null, retryAfter: Math.ceil((until - nowMs) / 1000), reason: COOLOFF_REASON, until, reserve: userReserve(db, caller.login) };
+  const accepted = acceptedModels(db), floors = minEfforts(db);
+  const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
+  if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
   const can = memoWrite(canWrite);
   for (const r of claimOrder(db, caller, tiers, claim.repos ? new Set(claim.repos) : null, claim.sessions ?? [], nowMs)) {
     if (!(await eligible(db, caller, r, can, nowMs))) continue;

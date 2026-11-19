@@ -3,7 +3,7 @@
 // submit (src/remote/calls.ts). Jev calls and embeddings run on this host in both modes.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import type { Tier } from "./protocol.ts";
+import { EFFORTS, type Effort, type HarnessId, type Tier } from "./protocol.ts";
 
 export const INFERENCE_MODES = ["server", "user-local"] as const;
 export type InferenceMode = (typeof INFERENCE_MODES)[number];
@@ -41,10 +41,48 @@ export const CODEX_TOP_PLACEHOLDER = "astra";
 export const DEFAULT_REMOTE_MODELS: Record<Tier, string[]> = { top: ["opus", CODEX_TOP_PLACEHOLDER], mid: ["sonnet"], small: ["haiku"] };
 const FAMILY = /^[a-z0-9][a-z0-9.-]{0,39}$/;
 
-export function acceptedModels(db: DatabaseSync): Record<Tier, string[]> {
+const rawModels = (db: DatabaseSync): Record<string, unknown> => {
   const raw = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(REMOTE_MODELS_KEY) as { value: string } | undefined)?.value;
-  if (!raw) return DEFAULT_REMOTE_MODELS;
-  try { return { ...DEFAULT_REMOTE_MODELS, ...checkModels(JSON.parse(raw)) }; } catch { return DEFAULT_REMOTE_MODELS; }
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+  } catch { return {}; }
+};
+
+export function acceptedModels(db: DatabaseSync): Record<Tier, string[]> {
+  const { minEffort: _, ...fams } = rawModels(db);
+  try { return { ...DEFAULT_REMOTE_MODELS, ...checkModels(fams) }; } catch { return DEFAULT_REMOTE_MODELS; }
+}
+
+export const isEffort = (v: unknown): v is Effort => typeof v === "string" && (EFFORTS as readonly string[]).includes(v);
+
+/** The lowest effort each tier accepts, for the tiers that set one (stored as `minEffort` beside the families in the `remote_models` setting). */
+export function minEfforts(db: DatabaseSync): Partial<Record<Tier, Effort>> {
+  try { return checkEfforts(rawModels(db).minEffort ?? {}); } catch { return {}; }
+}
+
+/** `{tier: effort}` for some or all tiers, checked; throws with the reason. */
+function checkEfforts(v: unknown): Partial<Record<Tier, Effort>> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("minEffort must map a tier to an effort");
+  const out: Partial<Record<Tier, Effort>> = {};
+  for (const [t, e] of Object.entries(v as Record<string, unknown>)) {
+    if (!isTier(t)) throw new Error(`unknown tier ${t}`);
+    if (!isEffort(e)) throw new Error(`tier ${t}: effort must be one of ${EFFORTS.join(", ")}`);
+    out[t] = e;
+  }
+  return out;
+}
+
+/**
+ * Whether `declared` meets `floor` on the ladder. Codex stops at xhigh, so there xhigh meets a max floor. No floor is always met;
+ * a floor with no declared effort (an older helper) is not.
+ */
+export function meetsEffort(declared: Effort | undefined, floor: Effort | undefined, harness: HarnessId): boolean {
+  if (!floor) return true;
+  if (!declared) return false;
+  const top = harness === "codex" ? EFFORTS.indexOf("xhigh") : EFFORTS.length;
+  return Math.min(EFFORTS.indexOf(declared), top) >= Math.min(EFFORTS.indexOf(floor), top);
 }
 
 /** `{tier: [family, ...]}` for some or all tiers, checked; throws with the reason. */
@@ -59,11 +97,26 @@ function checkModels(v: unknown): Partial<Record<Tier, string[]>> {
   return out;
 }
 
-/** Replaces the accepted families of the tiers given (audited as `by`); returns the whole table. */
-export function setAcceptedModels(db: DatabaseSync, raw: unknown, by: string): Record<Tier, string[]> {
-  const next = { ...acceptedModels(db), ...checkModels(raw) };
-  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(REMOTE_MODELS_KEY, JSON.stringify(next));
-  audit(db, by, "remote-models", REMOTE_MODELS_KEY, next);
+/**
+ * Replaces the accepted families and minimum efforts of the tiers given (audited as `by`). `minEffort` maps a tier to an
+ * effort, or to null to remove its floor. Returns the families table.
+ */
+export function setAcceptedModels(db: DatabaseSync, raw: unknown, by: string, minEffort?: unknown): Record<Tier, string[]> {
+  const next = raw === undefined ? acceptedModels(db) : { ...acceptedModels(db), ...checkModels(raw) };
+  let floors = minEfforts(db);
+  if (minEffort !== undefined) {
+    if (!minEffort || typeof minEffort !== "object" || Array.isArray(minEffort)) throw new Error("minEffort must map a tier to an effort");
+    const set: Record<string, unknown> = {}, clear: string[] = [];
+    for (const [t, e] of Object.entries(minEffort as Record<string, unknown>)) {
+      if (e === null) clear.push(t);
+      else set[t] = e;
+    }
+    floors = { ...floors, ...checkEfforts(set) };
+    for (const t of clear) { if (!isTier(t)) throw new Error(`unknown tier ${t}`); delete floors[t]; }
+  }
+  const stored = { ...next, ...(Object.keys(floors).length && { minEffort: floors }) };
+  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(REMOTE_MODELS_KEY, JSON.stringify(stored));
+  audit(db, by, "remote-models", REMOTE_MODELS_KEY, stored);
   return next;
 }
 

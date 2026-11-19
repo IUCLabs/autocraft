@@ -31,6 +31,9 @@ export const ROUTES = {
 } as const;
 
 export type Tier = "top" | "mid" | "small";
+/** The effort ladder, lowest first; a harness without the top levels maps them to its own highest (Codex: max to xhigh). */
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
 export type HarnessId = "claude" | "codex";
 
 /** What a helper offers when it asks for work. */
@@ -41,6 +44,8 @@ export type Claim = {
   harnessVersion: string;
   /** Tiers this helper takes, each with the model its harness runs for it: an alias (opus, sonnet, haiku) or a full model id. The server accepts a tier only when the model belongs to a family accepted for it, and matches models by family. */
   tiers: Partial<Record<Tier, string>>;
+  /** The highest effort the helper passes to its harness per tier (for Claude the prompt's effort as given, for Codex the reasoning effort its adapter maps to). The server offers a tier only when this meets the tier's minimum effort; a tier without it meets no minimum. */
+  efforts?: Partial<Record<Tier, Effort>>;
   /** Only calls on these repos; absent means any the user may take. */
   repos?: string[];
   /** A follow-up turn for a session this helper still holds: the server offers follow-ups for these call ids first. */
@@ -61,16 +66,17 @@ export type Claim = {
 export type Reserve = { fiveHour: number; weekly: number };
 
 export type ClaimReply =
-  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number; reserve: Reserve }
+  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number; reserve: Reserve; /** Present while the token gets no calls: why (repeated lost leases), and when it may claim again (ms since epoch). `retryAfter` then runs to `until`. */ reason?: string; until?: number }
   | { lease: { id: number; secret: string; /** One line: prompt id and the item, e.g. "review.opus on designcraft#1502". */ title: string; requiredHelper: string }; reserve: Reserve };
 
 /**
  * Whether a helper takes calls now. `ready`: it claims. `quota-held`: a plan window is at or below the reserve, its usage
- * could not be read, or the provider refused a run for its limit. `paused`: its user paused it until a reset. The rest need
+ * could not be read, or the provider refused a run for its limit. `paused`: its user paused it until a reset. `cooled-off`: the
+ * server gives the token no calls for a while after repeated lost leases (ClaimReply `reason`, `until`). The rest need
  * the user: the sandbox check failed, the server refused the helper's version, or the harness or its login is missing.
  */
-export type Readiness = "ready" | "quota-held" | "paused" | "sandbox-failed" | "version-refused" | "harness-missing";
-export const READINESS: readonly Readiness[] = ["ready", "quota-held", "paused", "sandbox-failed", "version-refused", "harness-missing"];
+export type Readiness = "ready" | "quota-held" | "paused" | "cooled-off" | "sandbox-failed" | "version-refused" | "harness-missing";
+export const READINESS: readonly Readiness[] = ["ready", "quota-held", "paused", "cooled-off", "sandbox-failed", "version-refused", "harness-missing"];
 /** The longest time between two status reports of a running helper. */
 export const STATUS_EVERY_S = 300;
 

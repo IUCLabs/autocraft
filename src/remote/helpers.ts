@@ -3,6 +3,7 @@
 // last status is `ready` and fresh (room.ts); the Connect page and my_work list the user's own.
 import type { DatabaseSync } from "node:sqlite";
 import { HttpError } from "../dash/server/util.ts";
+import { COOLOFF_REASON } from "./cooloff.ts";
 import { isTier } from "./mode.ts";
 import { READINESS, STATUS_EVERY_S, type HarnessId, type HelperInfo, type HelperStatus, type Readiness, type Reserve, type Tier, type UsageReading, type UsageWindow } from "./protocol.ts";
 
@@ -65,16 +66,19 @@ export function storeStatus(db: DatabaseSync, tokenId: number, login: string, s:
 
 /** The login's helpers: every live token that may run tasks, with its last status. */
 export function listHelpers(db: DatabaseSync, login: string, nowMs: number = Date.now()): HelperInfo[] {
-  const rows = db.prepare(`SELECT t.id, t.label, t.last_used_at, h.readiness, h.until, h.reason, h.harness, h.models, h.reserve, h.usage, h.reported_at
+  const rows = db.prepare(`SELECT t.id, t.label, t.last_used_at, t.cooloff_until, h.readiness, h.until, h.reason, h.harness, h.models, h.reserve, h.usage, h.reported_at
       FROM main.mcp_tokens t LEFT JOIN main.remote_helpers h ON h.token_id = t.id
     WHERE t.login = ? AND t.can_run = 1 AND t.expires_at > ? ORDER BY t.created_at DESC, t.id DESC`).all(login, new Date(nowMs).toISOString()) as
-    { id: number; label: string | null; last_used_at: string | null; readiness: Readiness | null; until: string | null; reason: string | null; harness: HarnessId | null; models: string | null; reserve: string | null; usage: string | null; reported_at: number | null }[];
+    { id: number; label: string | null; last_used_at: string | null; cooloff_until: number | null; readiness: Readiness | null; until: string | null; reason: string | null; harness: HarnessId | null; models: string | null; reserve: string | null; usage: string | null; reported_at: number | null }[];
   return rows.map((r) => {
     const reported = r.reported_at === null ? null : Number(r.reported_at);
     const used = r.last_used_at ? Date.parse(r.last_used_at) : null;
     const seen = Math.max(reported ?? -Infinity, used ?? -Infinity);
+    // The server's own cool-off of the token shows even before the helper has reported it.
+    const cooled = r.cooloff_until !== null && Number(r.cooloff_until) > nowMs && r.readiness !== "cooled-off";
     return {
-      tokenId: Number(r.id), label: r.label, readiness: r.readiness, until: r.until, reason: r.reason,
+      tokenId: Number(r.id), label: r.label,
+      ...(cooled ? { readiness: "cooled-off" as const, until: new Date(Number(r.cooloff_until)).toISOString(), reason: COOLOFF_REASON } : { readiness: r.readiness, until: r.until, reason: r.reason }),
       fresh: reported !== null && nowMs - reported <= STATUS_FRESH_MS,
       lastSeen: Number.isFinite(seen) ? new Date(seen).toISOString() : null,
       harness: r.harness, models: r.models ? JSON.parse(r.models) as Partial<Record<Tier, string>> : {},

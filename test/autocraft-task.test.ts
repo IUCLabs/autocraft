@@ -325,3 +325,9 @@ test("a provider's refusal for its usage limit parks until the reset it names, c
   assert.equal(helper.parseRefusal("You've hit your usage limit.", now)?.until, now + 15 * 60_000);
   assert.equal(helper.parseRefusal("model error max turns reached", now), null);
 });
+
+test("Codex gets at most its top effort; Claude takes the whole ladder", () => {
+  assert.equal(helper.harnessEffort("max", "xhigh"), "xhigh");
+  assert.equal(helper.harnessEffort("medium", "xhigh"), "medium");
+  assert.equal(helper.harnessEffort("max", "max"), "max");
+});
