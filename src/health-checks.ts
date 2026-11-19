@@ -13,6 +13,8 @@ import { coverageSnapshot, githubIdentity } from "./github/identity.ts";
 import { readAppSecrets } from "./github/install-token.ts";
 import { PROBE_HEADERS } from "./health.ts";
 import { unboundLogins } from "./author-ids.ts";
+import { inferenceMode } from "./remote/mode.ts";
+import { CALLER_STALE_MS } from "./remote/room.ts";
 import { confidentialReadyAt, PRIVATE_STEPS_SQL } from "./build/tasks.ts";
 
 /** Thresholds, in one place. */
@@ -30,6 +32,8 @@ export const THRESHOLDS = {
   /** GitHub API points left in the hour: warn below `warn`, fail below `fail`. */
   rateWarn: 500,
   rateFail: 100,
+  /** In the user-local mode, a call queued this long with no claim by any helper in that time. */
+  remoteQueuedMs: 10 * 60_000,
 } as const;
 
 export type CheckState = "ok" | "warn" | "fail";
@@ -224,8 +228,20 @@ function outsideSurgeCheck({ db }: CheckCtx): Check[] {
   return [{ id: "outside-surge", state: "warn", text: `New items from outside authors are held: ${t.reason}`, brief: "New items from outside authors are held", since: t.tripped_at, count: held, to: "/pipeline" }];
 }
 
+/** User-local mode: model calls have waited for a helper and none has claimed anything in that time. */
+function remoteCallsCheck({ db, nowMs }: CheckCtx): Check[] {
+  if (inferenceMode(db) !== "user-local") return [];
+  const cutoff = nowMs - THRESHOLDS.remoteQueuedMs;
+  // Calls whose caller stopped polling are about to be withdrawn and do not count as waiting.
+  const q = db.prepare("SELECT COUNT(*) AS n, MIN(queued_since) AS oldest FROM main.remote_calls WHERE state = 'queued' AND queued_since < ? AND seen_at >= ?").get(cutoff, nowMs - CALLER_STALE_MS) as { n: number; oldest: number | null };
+  const last = (db.prepare("SELECT MAX(leased_at) AS at FROM main.remote_calls").get() as { at: number | null }).at;
+  if (!q.n || (last !== null && last >= cutoff)) return [ok("remote-calls", "/pipeline")];
+  const text = `${q.n} model call${q.n === 1 ? " has" : "s have"} waited over ${minutes(THRESHOLDS.remoteQueuedMs)} for a user's helper, and no helper has claimed a call in that time`;
+  return [{ id: "remote-calls", state: "fail", text, brief: "Model calls are waiting and no helper is claiming them", since: new Date(q.oldest ?? cutoff).toISOString(), count: q.n, to: "/pipeline" }];
+}
+
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs, probe }));

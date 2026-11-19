@@ -615,6 +615,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const out = await handleMcp({
       db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && (caller.role === "operator" || (caller.role === "maintainer" && maintainerWritesOn(db))),
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
+      ...(caller.canRun && inferenceMode(db) === "user-local" && { run: { tokenId: caller.tokenId, canWrite: (repo: string) => userForLogin(db, box, provider, caller.login, caller.role, false).canWrite(repo) } }),
     }, m);
     if (mcpWrites(m)) live.poke();
     // A notification or a response from the client: accepted, nothing to say.

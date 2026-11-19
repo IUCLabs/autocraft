@@ -13,7 +13,7 @@ import { HttpError } from "../dash/server/util.ts";
 import type { Role } from "../dash/types.ts";
 import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
-import { acceptedModels, familyOf, isTier } from "./mode.ts";
+import { acceptedModels, familyOf, isTier, TIERS } from "./mode.ts";
 import { PROTOCOL_VERSION, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { CALLER_STALE_MS } from "./room.ts";
 
@@ -209,9 +209,47 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
   }
 }
 
+type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "items" | "parent_id" | "sticky_login">;
+
+/** The queued calls a claim could take in the order it takes them, before eligibility: follow-up turns of the sessions its helper holds first, then the model queue's order, filtered by tiers and repos. */
+function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, repos: ReadonlySet<string> | null, sessionIds: readonly number[], nowMs: number): Cand[] {
+  const rows = (db.prepare("SELECT id, class AS cls, level, step, repo, since, prompt_id, tier, items, parent_id, sticky_login FROM main.remote_calls WHERE state = 'queued' AND seen_at >= ?").all(nowMs - CALLER_STALE_MS) as Cand[])
+    .filter((r) => tiers.has(r.tier) && (!repos || (JSON.parse(r.items) as ItemRef[]).every((x) => repos.has(x.repo)) && (!r.repo || repos.has(r.repo))));
+  const sessions = new Set(sessionIds);
+  const followUps = rows.filter((r) => r.parent_id !== null && sessions.has(r.parent_id) && sameLogin(r.sticky_login, caller.login)).sort((a, b) => a.since - b.since || a.id - b.id);
+  return [...followUps, ...queueOrder(db, nowMs, rows.filter((r) => r.parent_id === null))];
+}
+
+/** Memoises the caller's write permission per repo; a failed lookup counts as no permission. */
+const memoWrite = (canWrite: (repo: string) => Promise<boolean>): ((repo: string) => Promise<boolean>) => {
+  const memo = new Map<string, Promise<boolean>>();
+  return (repo) => {
+    let p = memo.get(repo);
+    if (!p) memo.set(repo, (p = canWrite(repo).catch(() => false)));
+    return p;
+  };
+};
+
+/** How many queued calls the caller could claim now (same filters and eligibility as claimCall, nothing is leased), for a session's next_task. Follow-ups of a helper's own sessions are not counted. */
+export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { tiers?: readonly Tier[] }, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<number> {
+  expireLeases(db, nowMs);
+  const accepted = acceptedModels(db);
+  const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0));
+  const can = memoWrite(canWrite);
+  let n = 0;
+  for (const r of claimOrder(db, caller, tiers, null, [], nowMs)) if (await eligible(db, caller, r, can)) n++;
+  return n;
+}
+
+/** The state of a call this login holds or held (by its lease id); null for an unknown call and for another login's. */
+export function callStatus(db: DatabaseSync, id: number, login: string): { id: number; state: Row["state"]; error: string | null; title: string } | null {
+  const r = db.prepare("SELECT id, state, error, prompt_id, items, user_login FROM main.remote_calls WHERE id = ?").get(id) as { id: number; state: Row["state"]; error: string | null; prompt_id: string; items: string; user_login: string | null } | undefined;
+  if (!r || !sameLogin(r.user_login, login)) return null;
+  return { id: Number(r.id), state: r.state, error: r.error, title: titleOf(r.prompt_id, JSON.parse(r.items) as ItemRef[]) };
+}
+
 /**
- * Gives the caller the first queued call it may take: follow-up turns of the sessions its helper holds first, then the model
- * queue's order (queueOrder), filtered by the claim's tiers and repos and by eligibility. `canWrite` reads the caller's live
+ * Gives the caller the first queued call it may take (claimOrder), filtered by eligibility. `canWrite` reads the caller's live
  * write permission on a repo.
  */
 export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
@@ -219,20 +257,8 @@ export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, 
   const accepted = acceptedModels(db);
   const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null));
   if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}`).join(", ")}`);
-  const repos = claim.repos ? new Set(claim.repos) : null;
-  type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "items" | "parent_id" | "sticky_login">;
-  const rows = (db.prepare("SELECT id, class AS cls, level, step, repo, since, prompt_id, tier, items, parent_id, sticky_login FROM main.remote_calls WHERE state = 'queued' AND seen_at >= ?").all(nowMs - CALLER_STALE_MS) as Cand[])
-    .filter((r) => tiers.has(r.tier) && (!repos || (JSON.parse(r.items) as ItemRef[]).every((x) => repos.has(x.repo)) && (!r.repo || repos.has(r.repo))));
-  const sessions = new Set(claim.sessions ?? []);
-  const followUps = rows.filter((r) => r.parent_id !== null && sessions.has(r.parent_id) && sameLogin(r.sticky_login, caller.login)).sort((a, b) => a.since - b.since || a.id - b.id);
-  const fresh = queueOrder(db, nowMs, rows.filter((r) => r.parent_id === null));
-  const memo = new Map<string, Promise<boolean>>();
-  const can = (repo: string): Promise<boolean> => {
-    let p = memo.get(repo);
-    if (!p) memo.set(repo, (p = canWrite(repo).catch(() => false)));
-    return p;
-  };
-  for (const r of [...followUps, ...fresh]) {
+  const can = memoWrite(canWrite);
+  for (const r of claimOrder(db, caller, tiers, claim.repos ? new Set(claim.repos) : null, claim.sessions ?? [], nowMs)) {
     if (!(await eligible(db, caller, r, can))) continue;
     const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now());
     if (!lease) continue;
