@@ -68,7 +68,7 @@ export const list = (db: DatabaseSync, req: Req) => wrap(async () => {
   const f: AgentRunFilter = {
     state: q("state") as AgentRunState | "recent" | undefined, step: q("step"), account: q("account"), repo: q("repo"), cursor: q("cursor"), limit: intParam(req, "limit"),
   };
-  return listRuns(db, f, await hiddenRepos(db, req));
+  return listRuns(db, f, await hiddenRepos(db, req), canSeeInternals(req));
 });
 
 // The prompt and output texts hold item and comment text verbatim: operators and maintainers only.

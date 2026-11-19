@@ -98,13 +98,14 @@ function refs(s: string): ItemRef[] {
   }
 }
 
-function toRun(r: RunRow, shown: (repo: string, number: number) => ItemShown): AgentRun {
+/** `via` (the helper's login) goes to staff only. */
+function toRun(r: RunRow, shown: (repo: string, number: number) => ItemShown, staff: boolean): AgentRun {
   return {
     id: r.id, jobId: r.job_id, step: r.step, stage: r.stage, promptId: r.prompt_id, promptVersion: r.prompt_version,
     provider: r.provider === "jev" ? "jev" : "claude", model: r.model, accountId: r.account_id, accountLabel: r.account_id ? (r.account_label ?? r.account_id) : null,
     items: refs(r.items).map((x) => ({ ...x, ...shown(x.repo, x.number) })), itemCount: r.item_count, state: r.state, startedAt: r.started_at, endedAt: r.ended_at,
     inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheReadTokens: r.cache_read_tokens, cacheWriteTokens: r.cache_write_tokens, costUsd: r.cost_usd, summary: r.summary,
-    ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }),
+    ...(staff && r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }),
     ...(r.state === "running" && r.progress && { progress: r.progress }),
   };
 }
@@ -124,7 +125,7 @@ const CURSOR_RE = /^[1-9][0-9]{0,15}$/;
 export const AGENT_PAGE_DEFAULT = 50, AGENT_PAGE_MAX = 200;
 
 /** Newest first, keyset on id: a page costs index reads proportional to its size, however many runs exist. */
-export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: HiddenRepos = []): AgentRunPage {
+export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: HiddenRepos = [], staff = false): AgentRunPage {
   if (f.state !== undefined && !["running", "done", "failed", "recent"].includes(f.state)) throw new RunQueryError(400, "unknown state");
   if (f.step !== undefined && !STEP_RE.test(f.step)) throw new RunQueryError(400, "bad step");
   if (f.account !== undefined && !ACCOUNT_RE.test(f.account)) throw new RunQueryError(400, "bad account");
@@ -152,7 +153,7 @@ export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: HiddenRepo
   const rows = db.prepare(sql).all(...args, limit + 1) as RunRow[];
   const shown = shownLookup(db);
   const page = rows.slice(0, limit);
-  return { runs: page.map((x) => toRun(x, shown)), nextCursor: rows.length > limit ? String(page[page.length - 1]!.id) : null };
+  return { runs: page.map((x) => toRun(x, shown, staff)), nextCursor: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
 /**
@@ -174,9 +175,9 @@ export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: HiddenRep
   }
   const tools = runTools(db, id);
   // Tool arguments carry file paths and patch text: like the prompt, for operators only.
-  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error ? "failed" : null, tools: tools.map((t) => ({ ...t, args: null })), textsHidden: true };
+  if (!view.texts) return { ...toRun(r, shownLookup(db), false), prompt: null, output: null, error: r.error ? "failed" : null, tools: tools.map((t) => ({ ...t, args: null })), textsHidden: true };
   const t = db.prepare("SELECT prompt, output FROM agent_run_texts WHERE run_id = ?").get(id) as { prompt: unknown; output: unknown } | undefined;
-  return { ...toRun(r, shownLookup(db)), prompt: unpackText(t?.prompt), output: unpackText(t?.output), error: r.error, tools };
+  return { ...toRun(r, shownLookup(db), view.texts === true), prompt: unpackText(t?.prompt), output: unpackText(t?.output), error: r.error, tools };
 }
 
 /** The tool uses of a run in order; a check-tool use carries its model_checks row. */
