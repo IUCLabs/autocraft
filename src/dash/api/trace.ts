@@ -136,14 +136,14 @@ export const hiddenArgs = (hidden: HiddenRepos): string[] => (filtered(hidden) ?
 /** Prompts whose calls are named by what they do, not by the step that makes them. */
 const PROMPT_TITLES: Record<string, string> = { "lint.reference.jev": "Reference lint", "lint.reference.haiku": "Reference lint" };
 
-export const RUN_COLUMNS = `r.id, r.step, r.prompt_id, r.model, r.provider, r.state, r.started_at, r.ended_at, r.input_tokens, r.output_tokens, r.cost_usd, r.summary, r.job_id,
+export const RUN_COLUMNS = `r.id, r.step, r.prompt_id, r.model, r.provider, r.state, r.started_at, r.ended_at, r.input_tokens, r.output_tokens, r.cost_usd, r.summary, r.job_id, r.user_login, r.harness, r.reported_model,
        COALESCE(a.label, r.account_id) AS label, (SELECT COUNT(*) FROM agent_run_tools t WHERE t.run_id = r.id) AS tools`;
 export const runEvent = (r: { id: number; step: string; prompt_id: string; model: string; provider: string; state: string; started_at: string; ended_at: string | null; input_tokens: number | null; output_tokens: number | null;
-  cost_usd: number | null; summary: string | null; label: string | null; tools: number; job_id: number | null }): Ev => ({
+  cost_usd: number | null; summary: string | null; label: string | null; tools: number; job_id: number | null; user_login?: string | null; harness?: string | null; reported_model?: string | null }): Ev => ({
   id: `run:${r.id}`, kind: "model-call", at: r.started_at, head: null, actor: model(r.model, "model"),
   summary: `${PROMPT_TITLES[r.prompt_id] ?? stepTitle(r.step)}: ${r.state === "running" ? "running" : r.state === "failed" ? "failed" : clip(r.summary, 100) || "done"}`,
   ref: { runId: r.id, ...(r.job_id !== null ? { jobId: r.job_id } : {}) },
-  call: { promptId: r.prompt_id, step: stepTitle(r.step), model: r.model, provider: r.provider, account: r.label, state: r.state, inputTokens: r.input_tokens, outputTokens: r.output_tokens, costUsd: r.cost_usd, toolCalls: r.tools, endedAt: r.ended_at },
+  call: { promptId: r.prompt_id, step: stepTitle(r.step), model: r.model, provider: r.provider, account: r.label, state: r.state, inputTokens: r.input_tokens, outputTokens: r.output_tokens, costUsd: r.cost_usd, toolCalls: r.tools, endedAt: r.ended_at, ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }) },
 });
 
 const modelCalls: Source = {

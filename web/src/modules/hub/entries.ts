@@ -1,9 +1,9 @@
-import { DownloadSimpleIcon, BookOpenIcon, BroadcastIcon, FlowArrowIcon, BrainIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, MoonIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
+import { DownloadSimpleIcon, BookOpenIcon, BroadcastIcon, FlowArrowIcon, BrainIcon, CpuIcon, ChartLineUpIcon, ClockCounterClockwiseIcon, CoinsIcon, DiscordLogoIcon, FileTextIcon, GaugeIcon, GithubLogoIcon, HeartbeatIcon, KeyIcon, MoonIcon, PlugsConnectedIcon, RobotIcon, ScalesIcon, TreeStructureIcon, UsersIcon, FolderSimpleIcon, StackIcon, type Icon } from "@phosphor-icons/react";
 import { modules } from "../../registry";
 import { can } from "../../registry/permissions";
 import type { User } from "../../api/types";
 
-export interface Entry { label: string; to: string; icon: Icon; path: string }
+export interface Entry { label: string; to: string; icon: Icon; path: string; /** Left out while the instance runs model calls on users' machines. */ serverOnly?: boolean }
 
 export const REPORTS: Entry[] = [
   { label: "Now feed", to: "/now", path: "now", icon: BroadcastIcon },
@@ -24,7 +24,8 @@ export const SETTINGS: Entry[] = [
   { label: "Repos", to: "/repos", path: "repos", icon: FolderSimpleIcon },
   { label: "Contributors", to: "/contributors", path: "contributors", icon: UsersIcon },
   { label: "Build environments", to: "/envs", path: "envs", icon: StackIcon },
-  { label: "Accounts", to: "/accounts", path: "accounts", icon: BrainIcon },
+  { label: "Inference", to: "/inference", path: "inference", icon: CpuIcon },
+  { label: "Accounts", to: "/accounts", path: "accounts", icon: BrainIcon, serverOnly: true },
   { label: "Access", to: "/access", path: "access", icon: KeyIcon },
   { label: "GitHub App", to: "/admin/github-app", path: "admin/github-app", icon: GithubLogoIcon },
   { label: "Discord", to: "/admin/discord", path: "admin/discord", icon: DiscordLogoIcon },
@@ -35,4 +36,4 @@ export const SETTINGS: Entry[] = [
 
 /** The entries the reader's role can open. */
 export const openEntries = (user: User, entries: Entry[]): Entry[] =>
-  entries.filter((e) => modules.some((m) => can(user, m.permission) && m.routes.some((r) => (r.path === e.path || r.path.startsWith(`${e.path}/`)) && (!r.permission || can(user, r.permission)))));
+  entries.filter((e) => !(e.serverOnly && user.inference === "user-local")).filter((e) => modules.some((m) => can(user, m.permission) && m.routes.some((r) => (r.path === e.path || r.path.startsWith(`${e.path}/`)) && (!r.permission || can(user, r.permission)))));

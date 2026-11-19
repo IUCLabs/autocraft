@@ -4,6 +4,9 @@ import { topicsFor } from "./topics";
 import { usePageProject, withProject } from "./scope";
 import type {
   DiscordAccount,
+  InferenceMode,
+  InferenceSettings,
+  InferenceTier,
   DiscordLinkCode,
   DiscordSetup,
   Home,
@@ -278,11 +281,16 @@ export interface Api {
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
     setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo>;
   };
+  /** Operator only: who runs the model calls, and the model families each tier accepts in the user-local mode. */
+  inference: {
+    get(): Promise<InferenceSettings>;
+    put(body: { mode?: InferenceMode; models?: Record<InferenceTier, string[]> }): Promise<InferenceSettings>;
+  };
   /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
   mcp: {
     tokens(): Promise<McpTokens>;
     /** `answer`: operators only; the token's agent may also answer decisions, and it lasts 7 days. */
-    create(label: string, answer?: boolean): Promise<McpTokenCreated>;
+    create(label: string, answer?: boolean, run?: boolean): Promise<McpTokenCreated>;
     revoke(id: number): Promise<McpTokens>;
   };
   /** Operator only. */

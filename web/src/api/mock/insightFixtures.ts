@@ -123,5 +123,11 @@ export function costReport(run = ""): CostReport {
     tokens: Math.round((900_000 + r() * 6_000_000) * k),
     usd: Math.round((0.4 + r() * 4.5) * k * 100) / 100,
   }));
-  return { runs: [{ id: RUN, from: "2026-10-27T08:00:00Z", to: "2026-11-02T10:30:00Z" }, { id: "pilot-1029", from: "2026-10-29T14:00:00Z", to: "2026-10-29T15:10:00Z" }], run, total, itemsClassified: Math.round(21000 * k), stages, repos, series, bucketSize: "hour" };
+  const users = [
+    { login: "kiri-n", ...s(t(310, 700, 1_900_000, 900_000, 14_000_000, 2_000_000, 21.4, 9100)) },
+    { login: "ochre-fox", ...s(t(140, 300, 800_000, 420_000, 8_000_000, 1_100_000, 12.6, 4300)) },
+    { login: "mara-t", ...s(t(46, 120, 260_000, 150_000, 2_100_000, 400_000, null, 1500)) },
+    { login: null, ...s(t(1364, 21700, 33_000_000, 6_900_000, 41_000_000, 31_000_000, 62.1, 21000)) },
+  ];
+  return { runs: [{ id: RUN, from: "2026-10-27T08:00:00Z", to: "2026-11-02T10:30:00Z" }, { id: "pilot-1029", from: "2026-10-29T14:00:00Z", to: "2026-10-29T15:10:00Z" }], run, total, itemsClassified: Math.round(21000 * k), stages, repos, users, series, bucketSize: "hour" };
 }

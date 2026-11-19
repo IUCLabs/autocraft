@@ -220,13 +220,14 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
   };
   // Calls and build tasks nest under a running job; those without a job stand alone.
   if (!before) {
-    for (const r of all<{ id: number; job_id: number | null; step: string; model: string; provider: string; label: string | null; started_at: string; progress: string | null; item_count: number }>(db,
-      `SELECT r.id, r.job_id, r.step, r.model, r.provider, COALESCE(a.label, r.account_id) AS label, r.started_at, r.progress, r.item_count
+    for (const r of all<{ id: number; job_id: number | null; step: string; model: string; provider: string; label: string | null; started_at: string; progress: string | null; item_count: number; user_login: string | null; harness: string | null; reported_model: string | null }>(db,
+      `SELECT r.id, r.job_id, r.step, r.model, r.provider, COALESCE(a.label, r.account_id) AS label, r.started_at, r.progress, r.item_count, r.user_login, r.harness, r.reported_model
        FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE r.state = 'running'${hiddenRuns} ORDER BY r.id`, ...hideArgs(hidden))) {
       const its = all<{ repo: string; number: number }>(db, "SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT ?", r.id, PER_KIND);
       placeChild(r.job_id, base({
-        key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : operator ? `${r.model} on ${r.label ?? "an unknown account"}` : r.model, progress: blankIfHidden(r.progress, hidden) || null,
+        key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : r.user_login ? r.model : operator ? `${r.model} on ${r.label ?? "an unknown account"}` : r.model, progress: blankIfHidden(r.progress, hidden) || null,
         item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.map((i) => item(i.repo, i.number)), itemCount: Math.max(r.item_count, its.length), event: its[0] ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
+        ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }),
       }));
     }
     for (const t of all<{ id: number; job_id: number | null; step: string; repo: string; number: number | null; state: string; queued_at: string; started_at: string | null; summary: string | null; label: string | null }>(db,

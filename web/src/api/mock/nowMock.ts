@@ -42,7 +42,7 @@ const entry = (e: Partial<NowEntry> & Pick<NowEntry, "key" | "kind" | "state" | 
 const REVIEW_JOB = entry({
   key: "job:640", kind: "job", state: "running", at: at(7), title: "Review pull requests", progress: "Reviewing 1 of 2: designcraft#1484", item: A, items: [A, B], itemCount: 2, event: "job:2210", detail: "/pipeline/640",
   children: [
-    entry({ key: "run:912", kind: "call", state: "running", at: at(6), title: "Review pull requests", what: "opus on Team account B", progress: "Reading crates/app-core/src/frame.rs", item: A, items: [A], itemCount: 1, event: "run:912", detail: "/agents/912" }),
+    entry({ key: "run:912", kind: "call", state: "running", at: at(6), title: "Review pull requests", what: "opus", via: { login: "kiri-n", harness: "claude", model: "claude-opus-4-5" }, progress: "Reading crates/app-core/src/frame.rs", item: A, items: [A], itemCount: 1, event: "run:912", detail: "/agents/912" }),
     entry({ key: "task:931", kind: "task", state: "running", at: at(5), title: "Build task, Verify pull requests", what: "Build box", item: A, items: [A], itemCount: 1, event: "task:931", detail: "/envs/931" }),
   ],
 });

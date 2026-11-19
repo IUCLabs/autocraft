@@ -225,9 +225,13 @@ export function createHttpApi(): Api {
       setPipeline: (name, on) => post(on ? "/api/repos/pipeline-on" : "/api/repos/pipeline-off", { name }),
       approveLabels: (name, approved) => post(approved ? "/api/repos/labels-approve" : "/api/repos/labels-revoke", { name }),
     },
+    inference: {
+      get: () => get("/api/settings/inference"),
+      put: (body) => put("/api/settings/inference", body),
+    },
     mcp: {
       tokens: () => get("/api/mcp/tokens"),
-      create: (label, answer = false) => post("/api/mcp/tokens", { label, answer }),
+      create: (label, answer = false, run = false) => post("/api/mcp/tokens", { label, answer, run }),
       revoke: (id) => post("/api/mcp/tokens/revoke", { id }),
     },
     access: {

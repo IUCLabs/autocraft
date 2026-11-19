@@ -49,7 +49,7 @@ export const EVENTS: TraceEvent[] = ([
   { id: "decision:d9:asked", kind: "decision", at: at(95), head: H1, actor: { type: "step", name: "Ask decisions" }, summary: "Asked: Merge this fix?", ref: { decisionId: "designcraft#1484:merge" } },
   {
     id: "run:901", kind: "model-call", at: at(120), head: H1, actor: { type: "model", name: "opus" }, summary: "Review pull requests: hold", ref: { runId: 901, jobId: 52 },
-    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: "Team account C", state: "done", inputTokens: 51_000, outputTokens: 3_300, costUsd: 0.97, toolCalls: 11, endedAt: at(118) },
+    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: null, via: { login: "kiri-n", harness: "claude", model: "claude-opus-4-5" }, state: "done", inputTokens: 51_000, outputTokens: 3_300, costUsd: 0.97, toolCalls: 11, endedAt: at(118) },
   },
   { id: "plan:38", kind: "plan", at: at(125), head: H1, actor: { type: "step", name: "Planner" }, summary: "Plan started as reviewing", ref: { head: H1 } },
   { id: "gh:opened", kind: "github", at: at(400 * 1440), head: H1, actor: { type: "person", name: "contributor" }, summary: "Opened pull request on GitHub by contributor", ref: {} },
