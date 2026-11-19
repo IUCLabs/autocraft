@@ -25,8 +25,12 @@ const dataDir = (): string => dirname(dbPath());
 const referenceFolder = (repo: string): string => join(dataDir(), "reference", repo);
 export const indexPath = (repo: string): string => join(dataDir(), "reference-index", `${repo}.db`);
 
-let defaultEmbedder: Embedder | undefined;
+let defaultEmbedder: Embedder | undefined, queryEmbedder: Embedder | undefined;
 const embedderOf = (o: SearchOptions): Embedder => o.embedder ?? (defaultEmbedder ??= localEmbedder({ name: DEFAULT_MODEL }));
+// A search embeds one short query: one thread, so the dashboard that serves searches keeps no spinning thread pool.
+const queryEmbedderOf = (o: SearchOptions): Embedder => o.embedder ?? (queryEmbedder ??= localEmbedder({ name: DEFAULT_MODEL, threads: 1 }));
+/** Builds in progress per index file: a second request for the same index waits for the first. */
+const building = new Map<string, Promise<boolean>>();
 
 function checkRepo(repo: string): void {
   if (!REPO.test(repo)) throw new Error(`invalid repo name ${repo}`);
@@ -105,9 +109,19 @@ const metaGet = (db: DatabaseSync, key: string): string | undefined => (db.prepa
  * "stat" compares only the cheap name/size/mtime fingerprint (used on every search), "content" also hashes the
  * text pages (when only mtimes changed, the stored stat fingerprint is refreshed without rebuilding), "force" always rebuilds.
  */
-export async function buildReferenceIndex(repo: string, opts: SearchOptions = {}, mode: BuildMode = "content"): Promise<boolean> {
+export function buildReferenceIndex(repo: string, opts: SearchOptions = {}, mode: BuildMode = "content"): Promise<boolean> {
   checkRepo(repo);
-  const dir = opts.dir ?? referenceFolder(repo), file = opts.indexFile ?? indexPath(repo);
+  const file = opts.indexFile ?? indexPath(repo);
+  let p = building.get(file);
+  if (!p) {
+    p = buildIndex(repo, file, opts, mode).finally(() => building.delete(file));
+    building.set(file, p);
+  }
+  return p;
+}
+
+async function buildIndex(repo: string, file: string, opts: SearchOptions, mode: BuildMode): Promise<boolean> {
+  const dir = opts.dir ?? referenceFolder(repo);
   if (!existsSync(dir)) {
     rmSync(file, { force: true });
     return false;
@@ -153,15 +167,18 @@ const ftsQuery = (q: string): string => (q.toLowerCase().match(/[\p{L}\p{N}]+/gu
 
 const toPassage = (r: { id: number; page: string; title: string; text: string }): Passage => ({ id: r.id, page: r.page, title: r.title, text: r.text.slice(0, RESULT_CHARS) });
 
-/** Hybrid search: embedding similarity and FTS5 rank, fused by reciprocal rank. Up to 8 passages. */
+/**
+ * Hybrid search: embedding similarity and FTS5 rank, fused by reciprocal rank. Up to 8 passages. It reads the index as
+ * built and never builds one: embedding a whole manual takes many minutes of CPU, which the dashboard serving the search
+ * cannot spare. `autocraft reference import` and `autocraft reference index` build it.
+ */
 export async function referenceSearch(repo: string, query: string, limit = 5, opts: SearchOptions = {}): Promise<Passage[]> {
   checkRepo(repo);
   const n = Math.max(0, Math.min(MAX_RESULTS, Math.floor(limit)));
   if (!n || !query.trim()) return [];
-  await buildReferenceIndex(repo, opts, "stat");
   const file = opts.indexFile ?? indexPath(repo);
   if (!existsSync(file)) return [];
-  const [qv] = await embedderOf(opts).embed([query], "query");
+  const [qv] = await queryEmbedderOf(opts).embed([query], "query");
   const db = openIndex(file);
   try {
     const scored: { id: number; score: number }[] = [];

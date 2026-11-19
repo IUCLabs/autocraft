@@ -255,6 +255,7 @@ A call's bundle lists the servers it may use: `items` (search and read the synce
 - **HTTP routes.** `POST /api/remote/tool/<server>/<tool>` with the lease secret as bearer token and the tool's arguments as JSON body. The reply is an MCP `tools/call` result. A long call (`check`) sends whitespace before the JSON while it runs.
 - **MCP.** `POST /mcp/task/<server>` is a Streamable HTTP MCP server with only that server's tools. Claude gets it through the bundle's MCP config. Codex gets it through its configuration. An agent can use `autocraft-task mcp` or `autocraft-task tool` instead.
 - **Reference cap.** One lease may read 60 reference passages in all (`reference_search` and `reference_around` together); past that, results are cut with a note.
+- **Reference index.** `reference_search` reads the repo's search index as built; a repo without one returns no passages. `autocraft reference import` builds it, and `autocraft reference index <repo>` builds or refreshes it (the dashboard never builds one: embedding a manual takes minutes of CPU).
 - **Check relay.** `check` runs in the job process that waits for the call, which keeps the call's count, time limit and run set. The dashboard queues the request and polls for the result; a request still waiting when the lease ends is refused.
 - **Checkouts.** Public repos are fetched by the helper from GitHub at the call's commit. Private repos and workspace entries come from `GET /api/remote/tarball?repo=&sha=` with the lease secret.
 

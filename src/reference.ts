@@ -153,6 +153,7 @@ export const commands = {
           console.log(await buildReferenceIndex(rest[0]!) ? "search index built" : "search index is current");
         } else if (sub === "search" && rest.length >= 2) {
           if (!referenceDir(rest[0]!)) throw new ReferenceError(`${rest[0]} has no reference documentation`);
+          await buildReferenceIndex(rest[0]!, {}, "stat");
           for (const p of await referenceSearch(rest[0]!, rest.slice(1).join(" "), 5)) console.log(`#${p.id} ${p.title} (${p.page})\n${p.text}\n`);
         } else if (sub === "import" && rest[0] && rest.every((a, i) => i === 0 || a === "--replace")) {
           const tmp = mkdtempSync(join(dirname(dbPath()), ".reference-tar-"));
