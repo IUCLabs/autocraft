@@ -741,7 +741,7 @@ function serveFileTools(mounts) {
 //   (login/src/auth/manager.rs, login/src/auth/storage.rs). So the helper keeps its own CODEX_HOME (`harness codex` runs
 //   `codex login` in it), binds it writable, never copies the user's ~/.codex, and runs one Codex call at a time.
 // - Instructions and config. $CODEX_HOME/AGENTS.md (or AGENTS.override.md) and $CODEX_HOME/.env are read even with
-//   --ignore-user-config (codex-home/src/instructions/mod.rs, arg0/src/lib.rs), so the helper removes them from its home;
+//   --ignore-user-config (codex-home/src/instructions/mod.rs, arg0/src/lib.rs), so the helper removes them, and any config.toml, from its home;
 //   project_doc_max_bytes = 0 turns off AGENTS.md from the working directory (core/src/agents_md.rs); /etc/codex is not
 //   in the sandbox.
 // - Audited versions only. The confinement above rests on the built-in tools of the versions in CODEX_AUDITED; earlier
