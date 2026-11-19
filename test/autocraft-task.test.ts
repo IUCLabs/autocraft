@@ -36,10 +36,14 @@ const SAMPLE = [
     } },
 ].map((e) => JSON.stringify(e)).join("\n");
 
-test("stream-json output gives the reply, the called model's usage, the reported model, session and turns", () => {
+test("stream-json output gives the reply, the called model's usage, usage per model, cost, the reported model, session and turns", () => {
   assert.deepEqual(helper.parseClaudeOutput(SAMPLE, "opus"), {
     ok: true, text: "Recommendation: merge", model: "claude-opus-4-5-20251101", sessionId: "6f1c0d2e", turns: 4,
-    usage: { inputTokens: 12, outputTokens: 920, cacheReadTokens: 15000, cacheWriteTokens: 4000 },
+    usage: { inputTokens: 12, outputTokens: 920, cacheReadTokens: 15000, cacheWriteTokens: 4000 }, costUsd: 0.41,
+    modelUsage: {
+      "claude-opus-4-5-20251101": { inputTokens: 12, outputTokens: 920, cacheReadTokens: 15000, cacheWriteTokens: 4000 },
+      "claude-haiku-4-5-20251001": { inputTokens: 400, outputTokens: 30, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    },
   });
   const lines = SAMPLE.split("\n").map(helper.claudeProgress).filter(Boolean);
   assert.deepEqual(lines, ["Reading src/lib.rs", 'Explorer: Searching for "target" in bundle']);

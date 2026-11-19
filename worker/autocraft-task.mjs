@@ -40,6 +40,7 @@ export const ROUTES = {
   bundle: "/api/remote/bundle",
   heartbeat: "/api/remote/heartbeat",
   submit: "/api/remote/submit",
+  release: "/api/remote/release",
   tarball: "/api/remote/tarball",
   mcp: "/mcp/task",
   helper: "/worker/autocraft-task.mjs",
@@ -61,7 +62,7 @@ export const ROUTES = {
 /**
  * @typedef {{ kind: "git", path: string, owner: string, repo: string, sha: string, ref?: string }
  *   | { kind: "tarball", path: string, repo: string, sha: string }
- *   | { kind: "files", path: string, files: { name: string, base64: string }[] }} Mount
+ *   | { kind: "files", path: string, files: { name: string, base64: string }[] }} Mount  a `files` name is a relative path, possibly with subdirectories
  */
 /**
  * @typedef {object} TaskBundle
@@ -76,16 +77,18 @@ export const ROUTES = {
  * @property {string | null} system
  * @property {Mount[]} mounts
  * @property {string[]} mcpServers
+ * @property {boolean} keepSession  keep the harness session after the call, for follow-up turns
  * @property {{ parentCallId: number }} [resume]
  * @property {{ claude?: { args: string[], agents?: string } }} hints
  */
 /** @typedef {{ progress?: string }} Heartbeat */
 /** @typedef {{ inputTokens: number, outputTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number }} Usage */
 /**
- * @typedef {{ ok: true, text: string, model: string, usage: Usage, turns?: number, sessionId?: string, durationMs: number }
+ * @typedef {{ ok: true, text: string, model: string, usage: Usage, modelUsage?: Record<string, Usage>, costUsd?: number, turns?: number, sessionId?: string, durationMs: number }
  *   | { ok: false, error: string, usage?: Usage, durationMs: number }} Submit
  */
 /** @typedef {{ accepted: boolean, reason?: string }} SubmitReply */
+/** @typedef {{ reason: string }} Release */
 
 // ---------------------------------------------------------------------------
 // Harness adapters. A Codex adapter goes beside `claudeAdapter` and into ADAPTERS.
@@ -108,7 +111,9 @@ export const ROUTES = {
  * @property {boolean} ok
  * @property {string} text
  * @property {string} model
- * @property {Usage | undefined} usage
+ * @property {Usage | undefined} usage  the requested model's
+ * @property {Record<string, Usage>} [modelUsage]  per model id, subagents included
+ * @property {number} [costUsd]  the whole call's cost as the harness reports it
  * @property {number} [turns]
  * @property {string} [sessionId]
  * @property {string} [error]
@@ -122,7 +127,6 @@ export const ROUTES = {
  * @property {(args: string[], sessionId: string) => string[]} resume  harness arguments for a follow-up turn
  * @property {(line: string) => string | null} progress  a progress line from one output line, or null
  * @property {(cfg: Config) => string | undefined} token  the stored harness credential
- * @property {(bundle: TaskBundle) => boolean} keepsSession  whether the call's session is kept for follow-up turns
  * @property {Record<Tier, string>} defaultTiers
  */
 
@@ -228,7 +232,10 @@ export function parseClaudeOutput(stdout, model) {
       }
     }
   }
-  const base = { model: reported, usage, ...(typeof result?.num_turns === "number" && { turns: result.num_turns }), ...(sessionId && { sessionId }) };
+  /** @type {Record<string, Usage>} */
+  const modelUsage = Object.fromEntries(per.map(([m, x]) => [m, { inputTokens: x.inputTokens ?? 0, outputTokens: x.outputTokens ?? 0, cacheReadTokens: x.cacheReadInputTokens ?? 0, cacheWriteTokens: x.cacheCreationInputTokens ?? 0 }]));
+  const base = { model: reported, usage, ...(per.length > 0 && { modelUsage }), ...(typeof result?.total_cost_usd === "number" && { costUsd: result.total_cost_usd }),
+    ...(typeof result?.num_turns === "number" && { turns: result.num_turns }), ...(sessionId && { sessionId }) };
   if (!result) return { ok: false, text: "", ...base, error: evs.length ? "no result" : "unreadable output" };
   if (result.is_error || typeof result.result !== "string") return { ok: false, text: "", ...base, error: `model error ${typeof result.result === "string" ? result.result : ""}`.trim().slice(0, 400) };
   return { ok: true, text: result.result, ...base };
@@ -366,7 +373,6 @@ const claudeResume = (args, sessionId) => [...withoutResume(args), "--resume", s
 const claudeAdapter = {
   id: "claude",
   token: (cfg) => cfg.claudeToken,
-  keepsSession: (b) => !(b.hints.claude?.args ?? []).includes("--no-session-persistence"),
   defaultTiers: { top: "opus", mid: "sonnet", small: "haiku" },
   detect(cfg) {
     const bin = resolveClaudeBin(cfg);
@@ -449,7 +455,7 @@ const readLease = (id) => readJson(leaseFile(id));
 /** @param {number | string} id */
 const dropLease = (id) => rmSync(leaseFile(id), { force: true });
 
-/** @typedef {{ state: "running" | "submitted" | "failed" | "lost", line: string, pid?: number, at: number }} RunStatus */
+/** `stop`: the helper can take no call until it is updated. @typedef {{ state: "running" | "submitted" | "failed" | "lost" | "released", line: string, pid?: number, at: number, stop?: boolean }} RunStatus */
 /** @param {number | string} id */
 const statusFile = (id) => join(cacheDir(), "runs", `${Number(id)}.json`);
 /** @param {number | string} id @param {RunStatus} s */
@@ -717,8 +723,8 @@ async function claimOnce(cfg) {
  */
 async function runLease(cfg, id, opt = {}) {
   const lease = readLease(id);
-  /** @param {RunStatus["state"]} state @param {string} line @returns {RunStatus} */
-  const end = (state, line) => { const s = { state, line: redact(line), at: Date.now() }; writeStatus(id, s); if (state !== "running") dropLease(id); return s; };
+  /** @param {RunStatus["state"]} state @param {string} line @param {boolean} [stop] @returns {RunStatus} */
+  const end = (state, line, stop = false) => { const s = { state, line: redact(line), at: Date.now(), ...(stop && { stop }) }; writeStatus(id, s); if (state !== "running") dropLease(id); return s; };
   if (!lease) return end("failed", `failed: no lease ${id} was claimed on this machine`);
   secretsInUse.add(lease.secret);
   writeStatus(id, { state: "running", line: `running: ${lease.title}`, pid: process.pid, at: Date.now() });
@@ -736,23 +742,37 @@ async function runLease(cfg, id, opt = {}) {
     try { await submit({ ok: false, error: redact(error).slice(0, 2000), ...(usage && { usage }), durationMs: Date.now() - started }); } catch (e) { if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`); }
     return end("failed", `failed: ${lease.title}: ${error}`);
   };
-  if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return fail(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`);
+  /**
+   * The helper's own fault, not the call's: the call goes back to the queue without using an attempt.
+   * @param {string} reason @param {boolean} [stop] the helper can take no call until it is updated
+   */
+  const giveBack = async (reason, stop = false) => {
+    /** @type {Release} */
+    const body = { reason: redact(reason).slice(0, 300) };
+    try { await api(lease.server, ROUTES.release, lease.secret, body); } catch (e) { if (e instanceof Gone) return end("lost", `lost: ${lease.title}: the lease was withdrawn`); }
+    return end("released", `released: ${lease.title}: ${reason}`, stop);
+  };
+  if (compareVersions(HELPER_VERSION, lease.requiredHelper) < 0) return giveBack(`helper ${HELPER_VERSION} is older than the required ${lease.requiredHelper}; download ${lease.server}${ROUTES.helper}`, true);
   const problem = platformProblem();
-  if (problem) return fail(problem);
+  if (problem) return giveBack(problem, true);
   let taskDir = "";
   try {
     try { prune(); } catch { /* best effort */ }
     const adapter = adapterOf(cfg);
     const d = adapter.detect(cfg);
     const token = adapter.token(cfg);
-    if (!d.bin || !token) return fail(`${adapter.id} binary or token missing on the helper`);
+    if (!d.bin || !token) return giveBack(`${adapter.id} binary or token missing on the helper`, true);
     /** @type {TaskBundle} */
     const b = await api(lease.server, ROUTES.bundle, lease.secret);
     if (typeof b?.callId !== "number" || typeof b.stdin !== "string" || !Array.isArray(b.mounts) || !Array.isArray(b.mcpServers)) return fail("unreadable bundle");
     const model = { ...adapter.defaultTiers, ...cfg.tiers }[b.tier];
     privateDir(join(cacheDir(), "tasks"));
     taskDir = mkdtempSync(join(cacheDir(), "tasks", `${b.callId}-`));
-    const mounts = await prepareMounts(lease.server, lease.secret, b, taskDir);
+    let mounts;
+    try { mounts = await prepareMounts(lease.server, lease.secret, b, taskDir); } catch (e) {
+      if (e instanceof Gone) throw e;
+      return giveBack(`setting up the files failed: ${msg(e)}`);
+    }
     let mcpFile = "";
     if (b.mcpServers.length) {
       for (const n of b.mcpServers) if (!NAME.test(n)) return fail(`bad MCP server name ${n}`);
@@ -765,7 +785,7 @@ async function runLease(cfg, id, opt = {}) {
       const parent = readSession(b.resume.parentCallId);
       if (!parent) return fail(`the session of call ${b.resume.parentCallId} is no longer held by this helper`);
       sessionDir = parent.dir; resumeId = parent.sessionId;
-    } else if (adapter.keepsSession(b)) {
+    } else if (b.keepSession) {
       privateDir(sessionsDir());
       sessionDir = mkdtempSync(join(sessionsDir(), "store-"));
     }
@@ -776,10 +796,10 @@ async function runLease(cfg, id, opt = {}) {
     if (sessionDir && reply.sessionId) writePrivate(join(sessionsDir(), `${b.callId}.json`), { sessionId: reply.sessionId, dir: sessionDir, at: Date.now() });
     else if (sessionDir && !resumeId) rmSync(sessionDir, { recursive: true, force: true });
     if (r.timedOut) return fail(`timed out after ${b.timeoutSeconds} s`, reply.usage);
-    if (r.stopped) return fail("stopped on the helper", reply.usage);
+    if (r.stopped) return giveBack("stopped on the helper");
     if (!reply.ok) return fail(`${reply.error ?? "no result"} (exit ${r.code}) ${r.stderr.trim().slice(-300)}`.trim(), reply.usage);
     const usage = reply.usage ?? { inputTokens: 0, outputTokens: 0 };
-    const s = await submit({ ok: true, text: reply.text, model: reply.model, usage, ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), durationMs: Date.now() - started });
+    const s = await submit({ ok: true, text: reply.text, model: reply.model, usage, ...(reply.modelUsage && { modelUsage: reply.modelUsage }), ...(reply.costUsd !== undefined && { costUsd: reply.costUsd }), ...(reply.turns !== undefined && { turns: reply.turns }), ...(reply.sessionId && { sessionId: reply.sessionId }), durationMs: Date.now() - started });
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
     return end("submitted", `submitted: ${lease.title}, ${kTokens(tokensOf(usage))} tokens`);
   } catch (e) {
@@ -983,6 +1003,9 @@ async function cmdWork(argv) {
       console.log(`lease ${r.lease.id}: ${r.lease.title}`);
       const s = await runLease(loadConfig(), r.lease.id, { signal: ac.signal });
       console.log(s.line);
+      if (s.stop) { console.log("stopping: this helper can take no call until that is fixed"); ac.abort(); }
+      // A released call goes back to the queue; claiming at once would likely hand it straight back.
+      else if (s.state === "released") await pause(60_000);
     }
   };
   await Promise.all(Array.from({ length: n }, loop));

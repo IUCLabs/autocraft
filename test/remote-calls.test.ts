@@ -41,7 +41,7 @@ describe("user-local remote calls", () => {
     }
     throw new Error("no call was queued");
   };
-  const done = (secret: string, text: string) => submitCall(db, secret, { ok: true, text, model: "claude-opus-4-5", usage: { inputTokens: 100, outputTokens: 20 }, modelUsage: { "claude-opus-4-5": { inputTokens: 90, outputTokens: 15 }, "claude-haiku-4-5": { inputTokens: 10, outputTokens: 5 } }, durationMs: 1000 });
+  const done = (secret: string, text: string) => submitCall(db, secret, { ok: true, text, model: "claude-opus-4-5", usage: { inputTokens: 100, outputTokens: 20 }, modelUsage: { "claude-opus-4-5": { inputTokens: 90, outputTokens: 15 }, "claude-haiku-4-5": { inputTokens: 10, outputTokens: 5 } }, costUsd: 0.25, durationMs: 1000 });
 
   test("a helper claims, fetches the bundle and submits; authors and committers of the PR get nothing", async () => {
     const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
@@ -61,8 +61,8 @@ describe("user-local remote calls", () => {
     assert.equal(r?.text, "the review");
     assert.equal(r?.usage.input, 90);
     assert.deepEqual(r?.usage.extra?.map((e) => [e.model, e.usage.input]), [["haiku", 10]]);
-    const run = db.prepare("SELECT state, user_login, harness, reported_model, account_id FROM agent_runs WHERE id = (SELECT run_id FROM remote_calls WHERE id = ?)").get(lease.id) as Record<string, unknown>;
-    assert.deepEqual({ ...run }, { state: "done", user_login: "bob", harness: "claude", reported_model: "opus", account_id: null });
+    const run = db.prepare("SELECT state, user_login, harness, reported_model, account_id, cost_usd FROM agent_runs WHERE id = (SELECT run_id FROM remote_calls WHERE id = ?)").get(lease.id) as Record<string, unknown>;
+    assert.deepEqual({ ...run }, { state: "done", user_login: "bob", harness: "claude", reported_model: "opus", account_id: null, cost_usd: 0.25 });
   });
 
   test("a lease without heartbeats goes back to the queue and the next claim gets it; the old secret is dead", async () => {

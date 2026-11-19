@@ -628,11 +628,11 @@ const remoteParent = (k: KeptSession): number | null => {
   return m ? Number(m[1]) : null;
 };
 
-/** Tokens of a remote reply in the shape of a local result: the asked model's in the main fields, other models (the explorer) as extras. The helper reports no cost. */
+/** Tokens of a remote reply in the shape of a local result: the asked model's in the main fields, other models (the explorer) as extras. The helper reports at most the whole call's cost, so the main fields carry it only when there are no extras. */
 function remoteUsage(o: Extract<Outcome, { state: "done" }>, model: string): ReturnType<typeof resultUsage> {
   const modelUsage = o.byModel ? Object.fromEntries(Object.entries(o.byModel).map(([m, u]) => [m, { inputTokens: u.input, outputTokens: u.output, cacheReadInputTokens: u.cacheRead, cacheCreationInputTokens: u.cacheWrite }])) : undefined;
   const r = resultUsage({ usage: { input_tokens: o.usage.input, output_tokens: o.usage.output, cache_read_input_tokens: o.usage.cacheRead, cache_creation_input_tokens: o.usage.cacheWrite }, ...(modelUsage && { modelUsage }) }, model);
-  return { ...r, usage: { ...r.usage, cost: null, ...(r.usage.extra && { extra: r.usage.extra.map((e) => ({ model: e.model, usage: { ...e.usage, cost: null } })) }) } };
+  return { ...r, usage: { ...r.usage, cost: r.usage.extra ? null : o.costUsd, ...(r.usage.extra && { extra: r.usage.extra.map((e) => ({ model: e.model, usage: { ...e.usage, cost: null } })) }) } };
 }
 
 /**
@@ -692,7 +692,7 @@ async function askRemote<K extends ClaudePromptId>(id: K, model: string, input: 
         return "failed";
       }
       const turns = sandboxed && o.turns !== null ? o.turns : undefined;
-      if (o.runId !== null) finishRun(db, o.runId, { state: "done", tokens, costUsd: null, summary: (after !== null ? "fix turn answered" : turns === undefined ? replySummary(stored, items.length) : `answered in ${turns} turns`) + (after === null && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: stored });
+      if (o.runId !== null) finishRun(db, o.runId, { state: "done", tokens, costUsd: o.costUsd, summary: (after !== null ? "fix turn answered" : turns === undefined ? replySummary(stored, items.length) : `answered in ${turns} turns`) + (after === null && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: stored });
       return { reply: { text, usage, ...(turns !== undefined && { turns }), ...(o.sessionId && { sessionId: o.sessionId }) }, callId };
     };
 

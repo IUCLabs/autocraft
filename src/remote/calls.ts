@@ -302,8 +302,9 @@ export function submitCall(db: DatabaseSync, secret: string | undefined, raw: un
     if (mu && typeof mu === "object" && !Array.isArray(mu)) for (const [m, u] of Object.entries(mu).slice(0, 20)) if (m.length <= 100 && usageOf(u)) byModel[m] = usageOf(u);
     const turns = Number.isInteger(s.turns) && s.turns! >= 0 ? s.turns! : null;
     const sessionId = typeof s.sessionId === "string" && s.sessionId.length <= 200 ? s.sessionId : null;
+    const costUsd = typeof s.costUsd === "number" && Number.isFinite(s.costUsd) && s.costUsd >= 0 ? s.costUsd : null;
     db.prepare("UPDATE main.remote_calls SET state = 'done', reply = ?, usage = ?, turns = ?, session_id = ?, duration_ms = ?, ended_at = ?, progress = NULL WHERE id = ? AND state = 'leased'")
-      .run(s.text, JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }) }), turns, sessionId, duration, nowMs, l.id);
+      .run(s.text, JSON.stringify({ ...(usage ?? usageOf({})), ...(Object.keys(byModel).length > 0 && { byModel }), ...(costUsd !== null && { costUsd }) }), turns, sessionId, duration, nowMs, l.id);
     return { accepted: true };
   }
   if (s.ok !== false || typeof s.error !== "string") throw new HttpError(400, "ok must be true with text and model, or false with error");
@@ -325,8 +326,8 @@ export function releaseCall(db: DatabaseSync, secret: string | undefined, raw: u
 // ---- the caller's side -------------------------------------------------------------
 
 export type Outcome =
-  /** `byModel`: tokens per model id as the helper reported them (subagents included), when it did. */
-  | { state: "done"; text: string; usage: Usage; byModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> | null; turns: number | null; sessionId: string | null; runId: number | null }
+  /** `byModel`: tokens per model id as the helper reported them (subagents included), when it did. `costUsd`: the harness's cost of the whole call, when it reported one. */
+  | { state: "done"; text: string; usage: Usage; byModel: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> | null; costUsd: number | null; turns: number | null; sessionId: string | null; runId: number | null }
   | { state: "failed"; error: string; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | null; runId: number | null }
   /** A follow-up turn that the session's helper did not take within STICKY_MS; it was withdrawn. */
   | { state: "unclaimed" };
@@ -349,8 +350,9 @@ export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress
     const r = rowOf(db, id);
     if (!r) return { state: "failed", error: "the call is gone", tokens: null, runId: null };
     if (r.state === "done") {
-      const stored = (r.usage ? JSON.parse(r.usage) : {}) as { byModel?: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> };
-      return { state: "done", text: r.reply ?? "", usage: { ...storedTokens(stored), cost: null }, byModel: stored.byModel ?? null, turns: r.turns, sessionId: r.session_id, runId: r.run_id };
+      const stored = (r.usage ? JSON.parse(r.usage) : {}) as { byModel?: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>; costUsd?: number };
+      const costUsd = typeof stored.costUsd === "number" ? stored.costUsd : null;
+      return { state: "done", text: r.reply ?? "", usage: { ...storedTokens(stored), cost: costUsd }, byModel: stored.byModel ?? null, costUsd, turns: r.turns, sessionId: r.session_id, runId: r.run_id };
     }
     if (r.state === "failed") return { state: "failed", error: r.error ?? "failed", tokens: r.usage ? storedTokens(JSON.parse(r.usage)) : null, runId: r.run_id };
     if (r.state === "queued") {

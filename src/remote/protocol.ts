@@ -89,7 +89,7 @@ export type Heartbeat = { /** The harness's last progress line, shown on the run
 export type Usage = { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number };
 
 export type Submit =
-  | { ok: true; text: string; /** The full model id the harness reported (e.g. from the CLI's result); matched by family against the claim's model for the tier. */ model: string; usage: Usage; /** Per model id, subagents (the explorer) included; `usage` is the whole call when this is absent. */ modelUsage?: Record<string, Usage>; turns?: number; /** The harness session id, kept by the helper for follow-ups. */ sessionId?: string; durationMs: number }
+  | { ok: true; text: string; /** The full model id the harness reported (e.g. from the CLI's result); matched by family against the claim's model for the tier. */ model: string; usage: Usage; /** Per model id, subagents (the explorer) included; `usage` is the whole call when this is absent. */ modelUsage?: Record<string, Usage>; /** The harness's cost for the whole call at list price, when it reports one (the Claude CLI's `total_cost_usd`). */ costUsd?: number; turns?: number; /** The harness session id, kept by the helper for follow-ups. */ sessionId?: string; durationMs: number }
   | { ok: false; error: string; usage?: Usage; durationMs: number };
 
 export type SubmitReply = { accepted: boolean; reason?: string };
