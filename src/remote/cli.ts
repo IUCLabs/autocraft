@@ -1,5 +1,9 @@
 // `autocraft inference [server|user-local]`: shows or sets the inference mode (src/remote/mode.ts). `autocraft remote cooloff clear`: ends a helper's lease cool-off (src/remote/cooloff.ts).
+// `autocraft remote token <login>`: makes a running agent token for a maintainer or operator and prints only the token, so it
+// can be piped into `autocraft-task login` on the same host without anyone seeing it.
 import { connect } from "../db.ts";
+import { audit } from "../dash/audit.ts";
+import { createToken, MCP_TOKENS_PER_LOGIN } from "../dash/mcp/tokens.ts";
 import { clearCooloff } from "./cooloff.ts";
 import { inferenceMode, isInferenceMode, setInferenceMode } from "./mode.ts";
 
@@ -21,8 +25,9 @@ export const commands = {
     },
   },
   remote: {
-    summary: "remote cooloff clear <token-id|login>: lets a helper claim calls again after its lease cool-off",
+    summary: "remote cooloff clear <token-id|login>: lets a helper claim calls again after its lease cool-off; remote token <login> [--label <text>]: a running agent token on stdout, for piping into autocraft-task login",
     run(args: string[]): void {
+      if (args[0] === "token") return makeToken(args.slice(1));
       if (args[0] !== "cooloff" || args[1] !== "clear" || !args[2] || args.length > 3) {
         console.error("usage: autocraft remote cooloff clear <token-id|login>");
         process.exit(1);
@@ -32,3 +37,37 @@ export const commands = {
     },
   },
 };
+
+const TOKEN_USAGE = "usage: autocraft remote token <login> [--label <text>] | autocraft-task login <dashboard url>   (stdout must not be a terminal)";
+
+function makeToken(args: string[]): void {
+  const login = args[0];
+  const at = args.indexOf("--label");
+  const label = at > 0 ? args[at + 1] : "helper";
+  if (!login || login.startsWith("-") || (at > 0 && !label) || args.length !== (at > 0 ? 3 : 1)) {
+    console.error(TOKEN_USAGE);
+    process.exit(1);
+  }
+  // The token is printed once and only into a pipe: on a terminal it would be on screen and in scrollback.
+  if (process.stdout.isTTY) {
+    console.error(`refused: stdout is a terminal\n${TOKEN_USAGE}`);
+    process.exit(1);
+  }
+  const db = connect();
+  const role = (db.prepare("SELECT role FROM access WHERE login = ?").get(login) as { role: string } | undefined)?.role;
+  if (role !== "maintainer" && role !== "operator") {
+    console.error(`refused: ${login} is ${role ? `a ${role}` : "not on the access list"}; only maintainers and operators run model calls`);
+    process.exit(1);
+  }
+  let made: ReturnType<typeof createToken>;
+  try {
+    made = createToken(db, login, label, false, true);
+  } catch (e) {
+    console.error(`refused: ${(e as Error).message} (at most ${MCP_TOKENS_PER_LOGIN} per login; revoke one on the Connect page)`);
+    process.exit(1);
+  }
+  const { token, row } = made;
+  audit(db, "cli", "mcp-token-create", login, { id: row.id, label: row.label ?? undefined, canRun: true, via: "cli" });
+  process.stdout.write(`${token}\n`);
+  console.error(`made running token ${row.id} (${row.label ?? "no label"}) for ${login}; revoke it on the Connect page`);
+}
