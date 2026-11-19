@@ -2665,14 +2665,17 @@ function needLogin(cfg) {
 // ---------------------------------------------------------------------------
 // Claiming and running.
 
+const newClaimId = () => randomBytes(16).toString("hex");
+
 /**
  * Claims one call when the helper is ready (checkReady); otherwise claims nothing and says why (`held`). On macOS the claim
  * names the path root of slot `slot` (a free one when not given), which the lease keeps, and offers only that slot's sessions.
  * A lease that comes back with a higher reserve than the one checked, which the usage no longer allows, is released.
- * `fastLane`: the claim comes from the fast-lane slot (Claim.fastLane).
- * @param {Config} cfg @param {number} [slot] @param {boolean} [fastLane] @returns {Promise<ClaimReply | { held: Ready }>}
+ * `fastLane`: the claim comes from the fast-lane slot (Claim.fastLane). `requestId`: a caller whose last claim failed in
+ * transit passes that claim's id again, so the server answers with the lease it may have taken.
+ * @param {Config} cfg @param {number} [slot] @param {boolean} [fastLane] @param {string} [requestId] @returns {Promise<ClaimReply | { held: Ready }>}
  */
-async function claimOnce(cfg, slot, fastLane = false) {
+async function claimOnce(cfg, slot, fastLane = false, requestId = newClaimId()) {
   const { server, agentToken } = needLogin(cfg);
   const ready = await checkReady(cfg);
   const cooled = ready.readiness === "cooled-off" && ready.quotaReady === true;
@@ -2682,7 +2685,7 @@ async function claimOnce(cfg, slot, fastLane = false) {
   const n = mac ? slot ?? pickSlot(slotBase()) : undefined;
   const root = n === undefined ? undefined : slotRoot(slotBase(), n);
   /** @type {Claim} */
-  const claim = { requestId: randomBytes(16).toString("hex"), protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, efforts: Object.fromEntries(Object.keys(tiers).map((t) => [t, adapter.maxEffort])), ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }), ...(fastLane && { fastLane: true }) };
+  const claim = { requestId, protocol: PROTOCOL_VERSION, helperVersion: HELPER_VERSION, harness: adapter.id, harnessVersion: d.version, tiers, efforts: Object.fromEntries(Object.keys(tiers).map((t) => [t, adapter.maxEffort])), ...(cfg.repos && { repos: cfg.repos }), sessions: heldSessions(n), ...(root && { root }), ...(fastLane && { fastLane: true }) };
   /** @type {ClaimReply} */
   let reply;
   try {
@@ -3342,10 +3345,15 @@ async function cmdWork(argv) {
   };
   /** @param {number | undefined} slot @param {boolean} fastLane */
   const claimLoop = async (slot, fastLane) => {
+    let claimId = newClaimId();
     while (!ac.signal.aborted) {
       if (Date.now() < notBefore) { await pause(notBefore - Date.now()); continue; }
       let r;
-      try { r = await claimOnce(loadConfig(), slot, fastLane); } catch (e) { console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue; }
+      try { r = await claimOnce(loadConfig(), slot, fastLane, claimId); claimId = newClaimId(); } catch (e) {
+        // A claim lost in transit may have leased a call: the next try sends the same id and gets that lease back.
+        if (!transient(e)) claimId = newClaimId();
+        console.log(`claim failed: ${msg(e)}; retrying in 60 s`); await pause(60_000); continue;
+      }
       if ("held" in r) {
         // An external wait on this machine: the usage is read again every minute, and the status kept fresh.
         const line = heldLine(r.held);

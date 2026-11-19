@@ -115,6 +115,7 @@ describe("user-local remote calls", () => {
     assert.deepEqual(leaseState(db, first.secret), { id: first.id, live: false }, "a requeued lease's secret is known: 410, not 401");
     assert.equal(leaseState(db, "aclease_never-issued"), null);
     assert.equal((db.prepare("SELECT attempt FROM remote_calls WHERE id = ?").get(first.id) as { attempt: number }).attempt, 2);
+    assert.equal(db.prepare("SELECT 1 FROM remote_lease_drops WHERE login = 'bob'").get(), undefined, "a lease that never had a heartbeat (its claim's reply was likely lost) is no drop");
     // A reply from another model family than the claim declared is refused.
     assert.equal(submitCall(db, second!.secret, { ok: true, text: "x", model: "claude-sonnet-4-5", usage: { inputTokens: 1, outputTokens: 1 }, durationMs: 1 })?.accepted, false);
     assert.equal(await ask, null, "both attempts are used up");
@@ -130,7 +131,8 @@ describe("user-local remote calls", () => {
     let erin: Caller = { tokenId: tokens[0]!, login: "erin", role: "maintainer" };
     const mine = async () => (await claimCall(db, erin, claim(), canWrite)).lease;
     const lose = (id: number, now: number) => {
-      db.prepare("UPDATE remote_calls SET heartbeat_at = ? WHERE id = ?").run(now - 3 * 60000, id);
+      // The helper heartbeat after its claim, then went quiet.
+      db.prepare("UPDATE remote_calls SET leased_at = ?, heartbeat_at = ? WHERE id = ?").run(now - 4 * 60000, now - 3 * 60000, id);
       expireLeases(db, now);
     };
     const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
@@ -218,6 +220,8 @@ describe("user-local remote calls", () => {
     const status = { slots: 1, busy: 0, harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 35, weekly: 10 }, usage: { fiveHour: { usedPercent: 70, resetsAt: null }, weekly: null, at: new Date().toISOString() } };
     storeStatus(db, callers.bob!.tokenId, "bob", parseStatus({ ...status, readiness: "ready" }));
     assert.equal(remoteRoom(db, 0), 1);
+    storeStatus(db, callers.bob!.tokenId, "bob", parseStatus({ ...status, slots: 3, readiness: "ready" }));
+    assert.equal(remoteRoom(db, 0), 2, "--parallel 2 and the fast lane: the fast lane is no room");
     storeStatus(db, callers.bob!.tokenId, "bob", parseStatus({ ...status, readiness: "quota-held", until: "2026-11-20T01:30:00.000Z", reason: "5-hour window 70% used" }));
     assert.equal(remoteRoom(db, 0), 0, "held by its plan usage");
     const [h] = listHelpers(db, "bob");

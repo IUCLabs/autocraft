@@ -1,7 +1,7 @@
 // Room in the user-local model queue: how many more calls may be made now. Each helper whose last status is `ready` and
 // fresh (helpers.ts), and which is active (its last claim found nothing within IDLE_FRESH_MS, or it runs a lease that
-// heartbeats), is room for its free slots: the slots it reported (its `--parallel` slots and the fast lane) less the leases
-// its token holds. A user's helpers together count no more than the user's "Max calls at once" leaves (max-calls.ts). The
+// heartbeats), is room for its free slots: its `--parallel` slots (the fast lane is not counted, see remoteRoom) less the
+// leases its token holds. A user's helpers together count no more than the user's "Max calls at once" leaves (max-calls.ts). The
 // queued calls that rank at or above the caller's class in the claim order (claim-class.ts) take room first. A helper
 // held by its plan usage or paused stops asking for work and reports so; a helper that stopped without a word stops
 // counting once its last claim and heartbeats are old.
@@ -21,6 +21,13 @@ export const CALLER_STALE_MS = 2 * SEEN_EVERY_MS + 15_000;
 /** A lease whose last heartbeat is at most this old shows its helper is running (three heartbeats). */
 const LIVE_LEASE_MS = 3 * HEARTBEAT_S * 1000;
 
+/**
+ * Room for calls of class `cls`. A helper's fast-lane slot takes only small-tier and gating calls, and the planner does not
+ * know which calls it is about to make, so the fast lane is not room. The status names no fast lane: a helper reporting 2
+ * or more slots is taken to run one (work adds it to `--parallel N`, except for a harness that runs one call at a time,
+ * which reports 1, and on macOS at `--parallel 16`, which this undercounts by one). A lease in the fast lane is not told
+ * apart from the others', so it also undercounts by one while it runs.
+ */
 export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.now()): number {
   const helpers = db.prepare(`SELECT t.login, t.idle_claim_at, COALESCE(h.slots, 1) AS slots,
       (SELECT COUNT(*) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS leased,
@@ -33,7 +40,8 @@ export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.n
     const active = (h.beat !== null && Number(h.beat) >= nowMs - LIVE_LEASE_MS) || (h.idle_claim_at !== null && Number(h.idle_claim_at) >= nowMs - IDLE_FRESH_MS);
     if (!active) continue;
     const key = h.login.toLowerCase();
-    free.set(key, (free.get(key) ?? 0) + Math.max(0, Number(h.slots) - Number(h.leased)));
+    const slots = Number(h.slots) - (Number(h.slots) >= 2 ? 1 : 0);
+    free.set(key, (free.get(key) ?? 0) + Math.max(0, slots - Number(h.leased)));
   }
   let room = 0;
   for (const [login, n] of free) {

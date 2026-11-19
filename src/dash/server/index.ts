@@ -673,23 +673,24 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // when it is installed for the repo's owner (no dashboard session needed), else from the login's session. While GitHub cannot be
   // asked, a write permission confirmed within PERM_READ_TTL still counts, so a GitHub failure does not stall the helpers;
   // past that the call is passed over and `errors` says why.
+  // Claims are helper routes: the permission reads and writes use their short busy timeout (rdb).
   function claimPermission(login: string, role: Role): { canWrite: (repo: string) => Promise<boolean>; errors: Map<string, string> } {
-    const user = userForLogin(db, box, provider, login, role, true);
+    const user = userForLogin(rdb, box, provider, login, role, true);
     const errors = new Map<string, string>();
     return {
       errors,
       canWrite: async (repo) => {
-        const app = await appPermission(db, login, repo);
+        const app = await appPermission(rdb, login, repo);
         if (app.kind === "ok") return WRITE_PERMISSIONS.has(app.permission);
         if (app.kind === "error") {
-          if (cachedWrite(db, login, repo, PERM_READ_TTL)) return true;
+          if (cachedWrite(rdb, login, repo, PERM_READ_TTL)) return true;
           errors.set(repo, app.why);
           return false;
         }
         if (await user.canWrite(repo)) return true;
         const why = user.permissionError?.(repo);
         if (!why) return false;
-        if (cachedWrite(db, login, repo, PERM_READ_TTL)) return true;
+        if (cachedWrite(rdb, login, repo, PERM_READ_TTL)) return true;
         errors.set(repo, why);
         return false;
       },
