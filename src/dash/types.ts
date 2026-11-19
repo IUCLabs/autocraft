@@ -14,6 +14,9 @@ export type User = {
   canWrite(repo: string): Promise<boolean>;
   // Any permission but none on <owner>/<repo>, from the same cached check.
   canRead(repo: string): Promise<boolean>;
+  // Why the permission on <owner>/<repo> could not be told after a check
+  // (GitHub error, no token), or null when the last check got an answer.
+  permissionError?(repo: string): string | null;
 };
 
 export type Req = {

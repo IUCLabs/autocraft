@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
 import { LOGIN, checkGithubId, getAccess } from "../../access.ts";
 import { audit, auditRefusedSignIn } from "../audit.ts";
-import type { Req, Res, Route } from "../types.ts";
+import type { Req, Res, Role, Route } from "../types.ts";
 import { isLoopbackHost, type Config } from "./config.ts";
 import { resealLegacyValues } from "./reseal.ts";
 import { pkceChallenge, randomToken, safeEqual, TokenBox } from "./crypto.ts";
@@ -31,7 +31,7 @@ import { githubIdentity } from "../../github/identity.ts";
 import { saveUserTokens } from "./user-tokens.ts";
 import { FakeProvider, GitHubProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { retryWaiting } from "../../github/user-lane.ts";
-import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
+import { cachedWrite, createSession, deleteSession, loadSession, makeUser, PERM_READ_TTL, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg, type Reply as McpReply } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import * as remote from "../../remote/calls.ts";
@@ -627,12 +627,31 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const out = await handleMcp({
       db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && (caller.role === "operator" || (caller.role === "maintainer" && maintainerWritesOn(db))),
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
-      ...(caller.canRun && inferenceMode(db) === "user-local" && { run: { tokenId: caller.tokenId, canWrite: (repo: string) => userForLogin(db, box, provider, caller.login, caller.role, true).canWrite(repo) } }),
+      ...(caller.canRun && inferenceMode(db) === "user-local" && { run: { tokenId: caller.tokenId, canWrite: claimPermission(caller.login, caller.role).canWrite } }),
     }, m);
     if (mcpWrites(m)) live.poke();
     // A notification or a response from the client: accepted, nothing to say.
     if (!out) return reply(202, null);
     return reply(200, out);
+  }
+
+  // A claim hands out work on the repo: the write permission it checks is at most a minute old. While GitHub cannot be
+  // asked, a write permission confirmed within PERM_READ_TTL still counts, so a GitHub failure does not stall the helpers;
+  // past that the call is passed over and `errors` says why.
+  function claimPermission(login: string, role: Role): { canWrite: (repo: string) => Promise<boolean>; errors: Map<string, string> } {
+    const user = userForLogin(db, box, provider, login, role, true);
+    const errors = new Map<string, string>();
+    return {
+      errors,
+      canWrite: async (repo) => {
+        if (await user.canWrite(repo)) return true;
+        const why = user.permissionError?.(repo);
+        if (!why) return false;
+        if (cachedWrite(db, login, repo, PERM_READ_TTL)) return true;
+        errors.set(repo, why);
+        return false;
+      },
+    };
   }
 
   // The routes of the user-local helper (src/remote/protocol.ts ROUTES): claim with an agent token that may run tasks, the
@@ -658,9 +677,11 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const claim = remote.parseClaim(await readJson(req));
         // In the server mode no call is queued for helpers: nothing to take for a while.
         if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login) } satisfies ClaimReply);
-        // A claim hands out work on the repo: the write permission it checks is at most a minute old.
-        const user = userForLogin(db, box, provider, caller.login, caller.role, true);
-        return reply(200, await remote.claimCall(db, caller, claim, (repo) => user.canWrite(repo)));
+        const perm = claimPermission(caller.login, caller.role);
+        const out = await remote.claimCall(db, caller, claim, perm.canWrite);
+        // Calls passed over because GitHub could not confirm the permission: the helper logs why it gets nothing.
+        if (!out.lease && out.reason === undefined && perm.errors.size) out.reason = [...perm.errors.values()][0];
+        return reply(200, out);
       }
       if (path === ROUTES.status) {
         const caller = loadToken(db, bearer);

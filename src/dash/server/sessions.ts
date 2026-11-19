@@ -154,35 +154,49 @@ export function userForLogin(db: DatabaseSync, box: TokenBox, provider: Provider
     login, role,
     canWrite: async (repo) => WRITE_PERMISSIONS.has(cached(repo) ?? ""),
     canRead: async (repo) => { const p = cached(repo); return p !== null && p !== "none"; },
+    permissionError: (repo) => cached(repo) === null ? `${login} has no live dashboard session to read the permission on ${repo} from GitHub` : null,
   };
+}
+
+/** Whether `login` had write permission on `repo` at its last successful check, made less than `maxAgeMs` ago. */
+export function cachedWrite(db: DatabaseSync, login: string, repo: string, maxAgeMs: number): boolean {
+  const row = db.prepare("SELECT permission, checked_at FROM repo_permissions WHERE login = ? AND repo = ?").get(login, repo) as { permission: string; checked_at: string } | undefined;
+  return !!row && WRITE_PERMISSIONS.has(row.permission) && Date.now() - Date.parse(row.checked_at) < maxAgeMs;
 }
 
 // `forWrite` is true on POST requests: a handler that calls canWrite there is
 // about to write, so the cached permission must be at most a minute old.
 export function makeUser(db: DatabaseSync, box: TokenBox, provider: Provider, s: Session, forWrite: boolean, mirrorUserTokens = false): User {
   const memo = new Map<string, Promise<string | null>>();
-  // The user's permission on the repo from GitHub (cached), or null when it can't be told.
+  const failed = new Map<string, string>();
+  const fail = (repo: string, why: string): null => {
+    failed.set(repo, why);
+    return null;
+  };
+  // The user's permission on the repo from GitHub (cached), or null when it can't be told (the reason goes in `failed`).
   const check = async (repo: string): Promise<string | null> => {
-    if (!REPO_NAME.test(repo)) return null;
+    if (!REPO_NAME.test(repo)) return fail(repo, `${repo} is not a repo name`);
     const maxAge = forWrite ? PERM_WRITE_TTL : PERM_READ_TTL;
     const cached = db.prepare("SELECT permission, checked_at FROM repo_permissions WHERE login = ? AND repo = ?")
       .get(s.login, repo) as { permission: string; checked_at: string } | undefined;
     if (cached && Date.now() - Date.parse(cached.checked_at) < maxAge) return cached.permission;
     let permission: string | undefined;
     try {
+      const noToken = (t: string | null | undefined): null => fail(repo, t === null ? `${s.login}'s dashboard session has ended; sign in again` : `${s.login}'s GitHub token could not be refreshed (GitHub did not answer)`);
       let token = await accessToken(db, box, provider, s.idHash, mirrorUserTokens);
-      if (!token) return null;
+      if (!token) return noToken(token);
       permission = await provider.permission(token, repo);
       if (permission === "unauthorized") {
         token = await accessToken(db, box, provider, s.idHash, mirrorUserTokens, token);
-        if (!token) return null;
+        if (!token) return noToken(token);
         permission = await provider.permission(token, repo);
-        if (permission === "unauthorized") return null;
+        if (permission === "unauthorized") return fail(repo, `GitHub refused ${s.login}'s token`);
       }
     } catch (e) {
       console.error(`permission check ${s.login} ${repo}: ${(e as Error).message}`);
-      return null;
+      return fail(repo, `GitHub permission check failed: ${(e as Error).message}`);
     }
+    failed.delete(repo);
     db.prepare(`INSERT INTO repo_permissions (login, repo, permission, checked_at) VALUES (?, ?, ?, ?)
                 ON CONFLICT (login, repo) DO UPDATE SET permission = excluded.permission, checked_at = excluded.checked_at`)
       .run(s.login, repo, permission, new Date().toISOString());
@@ -203,5 +217,6 @@ export function makeUser(db: DatabaseSync, box: TokenBox, provider: Provider, s:
       const p = await permission(repo);
       return p !== null && p !== "none";
     },
+    permissionError: (repo) => failed.get(repo) ?? null,
   };
 }
