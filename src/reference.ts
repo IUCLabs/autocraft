@@ -10,6 +10,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
 import { connect, dbPath } from "./db.ts";
 import { isTracked } from "./repos.ts";
+import { buildReferenceIndex, referenceSearch } from "./reference-search.ts";
 import { isInstructionPath } from "./sandbox/instruction-paths.ts";
 
 export class ReferenceError extends Error {}
@@ -137,7 +138,7 @@ async function saveStdin(file: string): Promise<void> {
   await pipeline(process.stdin, cap, createWriteStream(file));
 }
 
-const USAGE = "usage: autocraft reference import <repo> [--replace]   (tar stream of .txt/.md/.pdf and image files on stdin)\n       autocraft reference list";
+const USAGE = "usage: autocraft reference import <repo> [--replace]   (tar stream of .txt/.md/.pdf and image files on stdin)\n       autocraft reference list\n       autocraft reference index <repo>\n       autocraft reference search <repo> <query...>";
 
 export const commands = {
   reference: {
@@ -147,6 +148,12 @@ export const commands = {
       try {
         if (sub === "list") {
           for (const r of listReferences()) console.log(`${r.repo.padEnd(28)} ${String(r.files).padStart(6)} files ${String(r.bytes).padStart(10)} bytes`);
+        } else if (sub === "index" && rest.length === 1) {
+          if (!referenceDir(rest[0]!)) throw new ReferenceError(`${rest[0]} has no reference documentation`);
+          console.log(await buildReferenceIndex(rest[0]!) ? "search index built" : "search index is current");
+        } else if (sub === "search" && rest.length >= 2) {
+          if (!referenceDir(rest[0]!)) throw new ReferenceError(`${rest[0]} has no reference documentation`);
+          for (const p of await referenceSearch(rest[0]!, rest.slice(1).join(" "), 5)) console.log(`#${p.id} ${p.title} (${p.page})\n${p.text}\n`);
         } else if (sub === "import" && rest[0] && rest.every((a, i) => i === 0 || a === "--replace")) {
           const tmp = mkdtempSync(join(dirname(dbPath()), ".reference-tar-"));
           try {
@@ -154,6 +161,8 @@ export const commands = {
             await saveStdin(file);
             const r = importReference(connect(), "cli", rest[0], file, rest.includes("--replace"));
             console.log(`imported ${r.files} files (${r.bytes} bytes) for ${rest[0]}`);
+            await buildReferenceIndex(rest[0], {}, true);
+            console.log("search index built");
           } finally {
             rmSync(tmp, { recursive: true, force: true });
           }
