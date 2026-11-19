@@ -16,11 +16,13 @@ void [
   same<protocol.Submit, H.Submit>((b) => b), same<H.Submit, protocol.Submit>((b) => b),
   same<protocol.HelperStatus, H.HelperStatus>((b) => b), same<H.HelperStatus, protocol.HelperStatus>((b) => b),
   same<protocol.StatusReply, H.StatusReply>((b) => b), same<H.StatusReply, protocol.StatusReply>((b) => b),
+  same<protocol.Heartbeat, H.Heartbeat>((b) => b), same<H.Heartbeat, protocol.Heartbeat>((b) => b),
 ];
 
 test("the helper speaks the server's protocol version and routes", () => {
   assert.equal(helper.PROTOCOL_VERSION, protocol.PROTOCOL_VERSION);
   assert.deepEqual(helper.ROUTES, protocol.ROUTES);
+  assert.deepEqual([helper.HEARTBEAT_S, helper.PREPARE_MAX_S, helper.CLAIM_ID_TTL_S], [protocol.HEARTBEAT_S, protocol.PREPARE_MAX_S, protocol.CLAIM_ID_TTL_S]);
 });
 
 // A sandboxed review call with the explorer subagent, as `claude -p --output-format stream-json --verbose` prints it.
