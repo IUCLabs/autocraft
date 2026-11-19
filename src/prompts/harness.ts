@@ -4,8 +4,11 @@
 // exactly the server's text. No Node imports: src/prompts/index.ts uses this.
 import type { HarnessId } from "../remote/protocol.ts";
 
-/** Marks a span: a control character never appears in the JSON that carries item data, so data cannot hold a marker. */
+/** Marks a span. Untrusted text has the character removed (`stripMarks`) before it joins a prompt, so data cannot hold a marker. */
 const MARK = "\u0001";
+
+/** Text with every marker character removed. */
+export const stripMarks = (text: string): string => text.replaceAll(MARK, "");
 
 /**
  * Codex runs with its shell turned off: its sandbox would let commands read the login, so it reads through the helper's

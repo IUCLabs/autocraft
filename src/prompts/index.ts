@@ -11,7 +11,7 @@ import { AREAS_MAX, AREAS_MIN, AREA_DESCRIPTION_MAX, AREA_NAME_MAX, AREA_PATHS_M
 import { LABELS, LABEL_MEANING, RULES, UNTRUSTED_NOTE } from "../classify/rules.ts";
 import { CHECK_MAX_CALLS, CHECK_MAX_WALL_MS, CHECK_OUTPUT_LINES } from "../core/rules.ts";
 import { ENTRY_LIMIT, REVIEW_BODY_LIMIT, TOTAL_LIMIT, VERDICTS } from "../review/parse.ts";
-import { markHarness } from "./harness.ts";
+import { markHarness, stripMarks } from "./harness.ts";
 import { AGENT_TOOL, EXPLORER, EXPLORER_MODEL, EXPLORER_TOOLS, MCP_PATH, mcpTools } from "../sandbox/agents.ts";
 import { AGENTS_PATH, DENIED_READS, REFERENCE_PATH, REPO_DOCS_PATH, REPOS_ROOT, REPO_PATH, WORK_PATH, sandboxCommand } from "../sandbox/command.ts";
 import { CLAIM_CHARS, CLAIM_EVIDENCE_CHARS, MAX_CLAIMS, OPUS_MAX_FIXES, OPUS_REASON_WORDS, STATEMENT_PROMPT_CHARS, statementsList, type OpusPr } from "../review/opus-parse.ts";
@@ -1603,13 +1603,16 @@ function takeDocs<T>(input: T): { input: T; docs: boolean } {
 /**
  * The placeholder values of a prompt for its input; with the docs mounted, the fixed docs sentence ends the repository access.
  * `remote` (the user-local mode): the reference documentation is named as tools, and the harness phrases of the repository
- * access are marked (src/prompts/harness.ts); it is the only value with trusted text, the others carry item data.
+ * access are marked (src/prompts/harness.ts); it is the only value with trusted text; the others carry item data and have the marker character removed.
  */
 function valuesOf<K extends ClaudePromptId>(id: K, input: ClaudeInput[K], remote = false): Record<string, string> {
   const t = takeDocs(input);
   const v = VALUES[id](t.input);
   if (t.docs && claudePromptOf(id).sandbox?.docs && v.repo_access) v.repo_access = `${v.repo_access} ${REPO_DOCS_NOTE}`;
-  if (remote && v.repo_access) v.repo_access = markHarness(v.repo_access.replace(REFERENCE_NOTE, REFERENCE_TOOLS_NOTE));
+  if (remote) {
+    for (const k of Object.keys(v)) if (k !== "repo_access") v[k] = stripMarks(v[k]!);
+    if (v.repo_access) v.repo_access = markHarness(v.repo_access.replace(REFERENCE_NOTE, REFERENCE_TOOLS_NOTE));
+  }
   return v;
 }
 
