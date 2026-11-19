@@ -178,6 +178,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["agent_runs", "reported_model", "TEXT"],
   ["mcp_tokens", "can_run", "INTEGER NOT NULL DEFAULT 0"],
   ["mcp_tokens", "idle_claim_at", "INTEGER"],
+  ["mcp_tokens", "idle_tiers", "TEXT"],
+  ["mcp_tokens", "idle_repos", "TEXT"],
   // GitHub's type of an item's author (User, Bot, ...); Bot authors are exempt from the outside-author limits.
   ["items", "author_type", "TEXT"],
   // GitHub's numeric id of the author's account; a login string can pass to another account, the id cannot.

@@ -239,7 +239,8 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   can_answer INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL,
   can_run INTEGER NOT NULL DEFAULT 0, -- the token's helper may claim model calls in the user-local inference mode
-  idle_claim_at INTEGER               -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
+  idle_claim_at INTEGER,              -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
+  idle_tiers TEXT, idle_repos TEXT    -- JSON: the tiers and repos (null: any) that empty claim asked for
 );
 CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
 -- The GitHub App's user token of each login, written at every sign-in while the GitHub identity is the app.

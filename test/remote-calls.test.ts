@@ -44,10 +44,16 @@ describe("user-local remote calls", () => {
     }
     throw new Error("no call was queued");
   };
+  /** `login`'s helper asked for top-tier work a moment ago and found none; its write permission on the repo is cached. */
+  const idle = (login: string) => {
+    db.prepare("UPDATE mcp_tokens SET idle_claim_at = ?, idle_tiers = '[\"top\"]', idle_repos = NULL WHERE login = ?").run(Date.now(), login);
+    db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES (?, 'photocraft', 'write', ?)").run(login, new Date().toISOString());
+  };
   const done = (secret: string, text: string) => submitCall(db, secret, { ok: true, text, model: "claude-opus-4-5", usage: { inputTokens: 100, outputTokens: 20 }, modelUsage: { "claude-opus-4-5": { inputTokens: 90, outputTokens: 15 }, "claude-haiku-4-5": { inputTokens: 10, outputTokens: 5 } }, costUsd: 0.25, durationMs: 1000 });
 
-  test("a helper claims, fetches the bundle and submits; authors and committers of the PR get nothing", async () => {
+  test("a helper claims, fetches the bundle and submits; authors and co-authors give way while another helper is idle", async () => {
     const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
+    idle("bob");
     assert.equal(await leaseFor("alice"), null, "the PR's author");
     assert.equal(await leaseFor("carol"), null, "a committer on the PR");
     assert.equal(await leaseFor("dave"), null, "a co-author of a commit");
@@ -69,6 +75,15 @@ describe("user-local remote calls", () => {
     assert.deepEqual(r?.usage.extra?.map((e) => [e.model, e.usage.input]), [["haiku", 10]]);
     const run = db.prepare("SELECT state, user_login, harness, reported_model, account_id, cost_usd FROM agent_runs WHERE id = (SELECT run_id FROM remote_calls WHERE id = ?)").get(lease.id) as Record<string, unknown>;
     assert.deepEqual({ ...run }, { state: "done", user_login: "bob", harness: "claude", reported_model: "opus", account_id: null, cost_usd: 0.25 });
+  });
+
+  test("with no other helper asking for work, the PR's author gets the review", async () => {
+    db.prepare("UPDATE mcp_tokens SET idle_claim_at = NULL").run();
+    const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
+    const lease = (await leaseFor("alice"))!;
+    assert.ok(lease, "the author's helper takes it");
+    done(lease.secret, "by the author");
+    assert.equal((await ask)?.text, "by the author");
   });
 
   test("a lease without heartbeats goes back to the queue and the next claim gets it; the old secret is dead", async () => {
@@ -104,7 +119,8 @@ describe("user-local remote calls", () => {
     assert.ok(!(await names(env("bob", false))).includes("next_task"), "not offered without can_run in user-local mode");
     const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
     while (!db.prepare("SELECT 1 FROM remote_calls WHERE state = 'queued'").get()) await sleep(5);
-    assert.match((await call(env("alice"), "next_task")).text, /^No call is queued/, "the PR's author");
+    idle("bob");
+    assert.match((await call(env("alice"), "next_task")).text, /^No call is queued/, "the PR's author, while bob's helper is idle");
     assert.match((await call(env("bob"), "next_task", { tiers: ["mid"] })).text, /^No call is queued/, "wrong tier");
     const queued = await call(env("bob"), "next_task");
     assert.match(queued.text, /^1 call is queued/);

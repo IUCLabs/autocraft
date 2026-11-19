@@ -15,7 +15,9 @@ import { joinParts } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { acceptedModels, familyOf, isTier, TIERS } from "./mode.ts";
 import { PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
-import { CALLER_STALE_MS } from "./room.ts";
+import { CALLER_STALE_MS, IDLE_FRESH_MS } from "./room.ts";
+import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
+import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 
 /** A lease with no heartbeat for this long goes back to the queue. */
 export const LEASE_IDLE_MS = 2 * 60_000;
@@ -43,7 +45,7 @@ const LEASE_PREFIX = "aclease_";
 const PROGRESS_MAX = 200;
 const REPLY_MAX = 4_000_000;
 
-/** Prompts that judge an item: their calls never go to an author or co-author of an item they judge. */
+/** Prompts that judge an item: an author or co-author of an item they judge gets their calls only when no other helper that could take them is asking for work. */
 const JUDGING = new Set(["review.opus", "premerge.opus", "postmerge.opus", "fixup.check", "fixissue.check", "decide.prepare", "conversation.turn", "verify.compare", "classify.haiku", "security.verify", "security.fixcheck"]);
 export const judges = (promptId: string): boolean => JUDGING.has(promptId) || promptId.startsWith("dupes.compare-");
 
@@ -167,19 +169,45 @@ export function authorOf(db: DatabaseSync, refs: ItemRef[], login: string): bool
   return refs.some((r) => item.get(r.repo, r.number, login) !== undefined || commit.get(r.repo, r.number, login, login) !== undefined);
 }
 
+type CallScope = Pick<Row, "prompt_id" | "items" | "repo" | "tier">;
+const reposOf = (r: CallScope, refs: ItemRef[]): string[] => [...new Set([...refs.map((x) => x.repo), ...(r.repo ? [r.repo] : [])])];
+/** The role rules: maintainers and operators; discord.* calls and calls that name no repo go to operators only. */
+const roleFits = (role: string, r: CallScope, repos: string[]): boolean =>
+  (role === "operator" || role === "maintainer") && !((r.prompt_id.startsWith("discord.") || !repos.length) && role !== "operator");
+
+/**
+ * Whether a login other than `login` could take the call now: its helper's last claim found nothing within IDLE_FRESH_MS, that
+ * claim covered the call's tier and repos, the login fits the role rules, its cached write permission covers every repo and
+ * it authored no item of the call. A state check made at each claim; nothing waits on it.
+ */
+function otherHelperIdle(db: DatabaseSync, login: string, r: CallScope, refs: ItemRef[], repos: string[], nowMs: number): boolean {
+  const idle = db.prepare(`SELECT t.login, a.role, t.idle_tiers, t.idle_repos FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login
+    WHERE t.can_run = 1 AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
+    { login: string; role: string; idle_tiers: string | null; idle_repos: string | null }[];
+  const perm = db.prepare("SELECT permission, checked_at FROM main.repo_permissions WHERE login = ? AND repo = ?");
+  const canWrite = (who: string, repo: string): boolean => {
+    const p = perm.get(who, repo) as { permission: string; checked_at: string } | undefined;
+    return p !== undefined && WRITE_PERMISSIONS.has(p.permission) && nowMs - Date.parse(p.checked_at) < PERM_READ_TTL;
+  };
+  return idle.some((o) => {
+    const tiers = o.idle_tiers ? JSON.parse(o.idle_tiers) as string[] : [];
+    const only = o.idle_repos ? new Set(JSON.parse(o.idle_repos) as string[]) : null;
+    return tiers.includes(r.tier) && (!only || repos.every((x) => only.has(x))) && roleFits(o.role, r, repos)
+      && repos.every((x) => canWrite(o.login, x)) && !authorOf(db, refs, o.login);
+  });
+}
+
 /**
  * Who may take a call: a maintainer or operator with write permission on every repo of the call (which covers reading a
- * private one), not an author or co-author of an item a judging prompt judges; discord.* calls go to operators only, and a
- * call that names no repo goes to operators only.
+ * private one); discord.* calls and calls that name no repo go to operators only. An author or co-author of an item a judging
+ * prompt judges is passed over only while another helper that could take the call is asking for work (otherHelperIdle).
  */
-async function eligible(db: DatabaseSync, caller: Caller, r: Pick<Row, "prompt_id" | "items" | "repo">, canWrite: (repo: string) => Promise<boolean>): Promise<boolean> {
-  if (caller.role !== "operator" && caller.role !== "maintainer") return false;
-  if (r.prompt_id.startsWith("discord.") && caller.role !== "operator") return false;
+async function eligible(db: DatabaseSync, caller: Caller, r: CallScope, canWrite: (repo: string) => Promise<boolean>, nowMs: number): Promise<boolean> {
   const refs = JSON.parse(r.items) as ItemRef[];
-  const repos = [...new Set([...refs.map((x) => x.repo), ...(r.repo ? [r.repo] : [])])];
-  if (!repos.length && caller.role !== "operator") return false;
+  const repos = reposOf(r, refs);
+  if (!roleFits(caller.role, r, repos)) return false;
   for (const repo of repos) if (!(await canWrite(repo))) return false;
-  return !(judges(r.prompt_id) && authorOf(db, refs, caller.login));
+  return !(judges(r.prompt_id) && authorOf(db, refs, caller.login) && otherHelperIdle(db, caller.login, r, refs, repos, nowMs));
 }
 
 const HARNESSES: HarnessId[] = ["claude", "codex"];
@@ -270,7 +298,7 @@ export async function claimableCalls(db: DatabaseSync, caller: Caller, opts: { t
   const tiers = new Set((opts.tiers ?? TIERS).filter((t) => accepted[t].length > 0));
   const can = memoWrite(canWrite);
   let n = 0;
-  for (const r of claimOrder(db, caller, tiers, null, [], nowMs)) if (await eligible(db, caller, r, can)) n++;
+  for (const r of claimOrder(db, caller, tiers, null, [], nowMs)) if (await eligible(db, caller, r, can, nowMs)) n++;
   return n;
 }
 
@@ -293,13 +321,14 @@ export async function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, 
   if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}`).join(", ")}`);
   const can = memoWrite(canWrite);
   for (const r of claimOrder(db, caller, tiers, claim.repos ? new Set(claim.repos) : null, claim.sessions ?? [], nowMs)) {
-    if (!(await eligible(db, caller, r, can))) continue;
+    if (!(await eligible(db, caller, r, can, nowMs))) continue;
     const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now());
     if (!lease) continue;
     db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
     return { lease };
   }
-  db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ? WHERE id = ?").run(nowMs, caller.tokenId);
+  // An idle helper, with what it takes: an author's claim gives way to it (otherHelperIdle).
+  db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(nowMs, JSON.stringify([...tiers]), claim.repos ? JSON.stringify(claim.repos) : null, caller.tokenId);
   return { lease: null, retryAfter: CLAIM_RETRY_S };
 }
 
