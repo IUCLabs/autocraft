@@ -59,6 +59,7 @@ import { isQuiet } from "../../security/quiet.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
 import * as inference from "./inference.ts";
+import { inferenceMode } from "../../remote/mode.ts";
 import { fixes as needsFixes, needs } from "./needs.ts";
 import { home } from "./home.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
@@ -104,6 +105,7 @@ async function me(db: DatabaseSync, req: Req): Promise<User> {
     role: req.user.role,
     writeRepos: await writeRepos(db, req),
     maintainerWrites: mw?.value === "1",
+    inference: inferenceMode(db),
   };
 }
 

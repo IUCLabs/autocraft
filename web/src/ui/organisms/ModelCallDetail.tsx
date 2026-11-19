@@ -1,5 +1,6 @@
 import type { AgentRunDetail, TraceEvent } from "../../api/types";
 import { Link } from "react-router-dom";
+import { RemoteVia } from "../molecules/RemoteVia";
 import { Facts } from "../molecules/Facts";
 import { CodeBlock } from "../molecules/CodeBlock";
 import { ToolCallList } from "../molecules/ToolCallList";
@@ -18,7 +19,8 @@ export function ModelCallDetail({ call, runId, run, error }: { call: Call; runId
       <Facts
         rows={[
           ["Model", call.model],
-          ["Account", call.account],
+          ["Account", call.via ? null : call.account],
+          ["Run by", call.via && <RemoteVia key="via" via={call.via} />],
           ["Tokens", tokens],
           ["Cost", call.costUsd === null ? null : usd(call.costUsd)],
           ["Took", call.endedAt && run ? span(Date.parse(call.endedAt) - Date.parse(run.startedAt)) : null],

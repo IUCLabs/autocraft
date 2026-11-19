@@ -1,6 +1,6 @@
 // The Agents page: model calls running now, recent calls with server-side filters and keyset paging,
 // and a detail panel with the rendered prompt and the output.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { CaretDownIcon, CaretRightIcon, XIcon } from "@phosphor-icons/react";
@@ -12,6 +12,7 @@ import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useNow } from "../../lib/useNow";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
+import { RemoteVia } from "../../ui/molecules/RemoteVia";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
@@ -45,7 +46,7 @@ function Items({ r, max = 3, expandable }: { r: AgentRun; max?: number; expandab
   );
 }
 
-const who = (r: AgentRun) => (r.provider === "jev" ? "Jev (no account)" : (r.accountLabel ?? "unknown account"));
+const who = (r: AgentRun): ReactNode => (r.provider === "jev" ? "Jev (no account)" : r.via ? <RemoteVia via={r.via} /> : (r.accountLabel ?? "unknown account"));
 
 // ---- running now ---------------------------------------------------------------
 
@@ -150,7 +151,7 @@ function RecentRuns({ selected }: { selected?: number }) {
                   </Link>
                 </td>
                 <td className="px-3 max-md:hidden">{r.model}</td>
-                <td className="whitespace-nowrap px-3 text-ink/70 max-md:hidden">{r.provider === "jev" ? "–" : r.accountLabel}</td>
+                <td className="whitespace-nowrap px-3 text-ink/70 max-md:hidden">{r.provider === "jev" ? "–" : r.via ? <RemoteVia via={r.via} /> : r.accountLabel}</td>
                 <td className="px-3">
                   <Items r={r} max={2} />
                 </td>
@@ -336,7 +337,7 @@ export function FlowRunning({ params }: ViewProps) {
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <Link to={`/agents/${r.id}`} className="code text-sm font-medium hover:underline">{r.step}</Link>
               <Badge tone="accent">{r.model}</Badge>
-              <span className="text-xs text-ink/70">{r.provider === "jev" ? "Jev" : (r.accountLabel ?? "unknown account")}</span>
+              <span className="text-xs text-ink/70">{r.provider === "jev" ? "Jev" : r.via ? <RemoteVia via={r.via} /> : (r.accountLabel ?? "unknown account")}</span>
               <span className="num ml-auto text-xs text-ink/70">{elapsed(r)}</span>
             </div>
             <div className="mt-0.5">

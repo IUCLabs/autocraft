@@ -725,7 +725,12 @@ export interface User {
   writeRepos: RepoName[];
   /** Deployment setting `maintainer_writes`: maintainers with write access settle decisions on repos that use the app's identity. */
   maintainerWrites: boolean;
+  /** Who runs the model calls: the registered accounts (`server`) or the users' own helpers (`user-local`). */
+  inference: InferenceMode;
 }
+export type InferenceMode = "server" | "user-local";
+export type InferenceTier = "top" | "mid" | "small";
+export type InferenceSettings = { mode: InferenceMode; /** Accepted model families per tier. */ models: Record<InferenceTier, string[]> };
 
 export interface DecisionFilter {
   repo?: RepoName[];
@@ -1133,6 +1138,8 @@ export interface CostReport {
   itemsClassified: number;
   stages: ({ stage: string; model: string } & UsageTotals)[];
   repos: ({ repo: string } & UsageTotals)[];
+  /** Calls run by users' helpers, per user (user-local mode); `login` is null for calls on server accounts. */
+  users: ({ login: string | null } & UsageTotals)[];
   /** Spend per time bucket; `bucket` is an ISO hour or day. */
   series: { bucket: string; tokens: number; usd: number | null }[];
   bucketSize: "hour" | "day";
@@ -1695,7 +1702,10 @@ export type AgentRun = {
   costUsd: number | null;    // USD; Jev is input tokens at the flat price; null for runs from before costs were stored
   summary: string | null;    // one line: verdict counts, error class
   progress?: string;         // running calls with tools: the latest thing the model is doing
+  via?: RemoteVia;           // user-local mode: who ran the call and with what
 };
+/** A model call run by a user's helper: their login, the harness (claude, codex) and the model it reported. */
+export type RemoteVia = { login: string; harness: string; model: string };
 export type AgentRunDetail = AgentRun & {
   prompt: string | null;     // rendered prompt; null once past retention (ten years)
   output: string | null;     // raw model output, same retention
@@ -2161,7 +2171,7 @@ export type TraceEvent = {
     /** The prompt the call ran; calls of one step and prompt family are grouped on the item page. */
     promptId?: string; /** The step's display name. */ step?: string;
     model: string; provider: string; account: string | null; state: string;
-    inputTokens: number | null; outputTokens: number | null; costUsd: number | null; toolCalls: number; endedAt: string | null;
+    inputTokens: number | null; outputTokens: number | null; costUsd: number | null; toolCalls: number; endedAt: string | null; via?: RemoteVia;
   };
 };
 export type ItemTraceHeader = {
@@ -2294,6 +2304,8 @@ export type NowEntry = {
   title: string;
   /** Model and account for calls, environment for tasks, the branch for batches. */
   what: string | null;
+  /** Calls run by a user's helper: who, with what. */
+  via?: RemoteVia;
   /** The outcome once ended. */
   summary: string | null;
   /** The latest progress line while running. */
@@ -2538,7 +2550,7 @@ export interface ReviewHistory { latest: OpusReviewEntry | null; earlier: OpusRe
 
 
 export type HistoryKind = "model" | "write" | "decision" | "event";
-export interface HistoryCall { label: string; kind: "model" | "tool"; costUsd: number | null }
+export interface HistoryCall { label: string; kind: "model" | "tool"; costUsd: number | null; via?: RemoteVia }
 export interface HistoryEntry {
   id: string;
   at: string;

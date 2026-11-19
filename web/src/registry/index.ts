@@ -17,6 +17,7 @@ import { connectModule } from "../modules/connect";
 import { pipelineModule } from "../modules/pipeline";
 import { promptsModule } from "../modules/prompts";
 import { accountsModule } from "../modules/accounts";
+import { inferenceModule } from "../modules/inference";
 import { agentsModule } from "../modules/agents";
 import { envsModule } from "../modules/envs";
 import { ratesModule } from "../modules/rates";
@@ -31,6 +32,6 @@ import { securityModule } from "../modules/security";
 import { homeModule } from "../modules/home";
 import { hubModule } from "../modules/hub";
 
-export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, downloadsModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, nightlyModule, stuckModule, batchModule, securityModule];
+export const modules: FeatureModule[] = [homeModule, hubModule, nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, downloadsModule, reposModule, accessModule, githubAppModule, discordModule, auditModule, aboutModule, connectModule, pipelineModule, promptsModule, similarModule, accountsModule, inferenceModule, mainCiModule, nightlyModule, stuckModule, batchModule, securityModule];
 
 setListPages(modules.flatMap((m) => m.routes.filter((r) => r.scoped).map((r) => r.path)));

@@ -84,6 +84,7 @@ type RunRow = {
   id: number; job_id: number | null; step: string; stage: number; prompt_id: string; prompt_version: string; provider: string; model: string;
   account_id: string | null; account_label: string | null; items: string; item_count: number; state: AgentRunState; started_at: string; ended_at: string | null;
   input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; summary: string | null; error: string | null; progress: string | null; cost_usd: number | null;
+  user_login: string | null; harness: string | null; reported_model: string | null;
 };
 
 const SELECT = "SELECT r.*, a.label AS account_label FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id";
@@ -103,6 +104,7 @@ function toRun(r: RunRow, shown: (repo: string, number: number) => ItemShown): A
     provider: r.provider === "jev" ? "jev" : "claude", model: r.model, accountId: r.account_id, accountLabel: r.account_id ? (r.account_label ?? r.account_id) : null,
     items: refs(r.items).map((x) => ({ ...x, ...shown(x.repo, x.number) })), itemCount: r.item_count, state: r.state, startedAt: r.started_at, endedAt: r.ended_at,
     inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheReadTokens: r.cache_read_tokens, cacheWriteTokens: r.cache_write_tokens, costUsd: r.cost_usd, summary: r.summary,
+    ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }),
     ...(r.state === "running" && r.progress && { progress: r.progress }),
   };
 }

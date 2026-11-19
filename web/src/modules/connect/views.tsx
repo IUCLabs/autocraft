@@ -20,6 +20,13 @@ import { useWrite } from "../../lib/hooks";
 
 /** The command that adds the server to Claude Code; other clients take the URL and header the same way. */
 const claudeCommand = (url: string, token: string) => `claude mcp add --transport http autocraft-inbox ${url} --header "Authorization: Bearer ${token}"`;
+/** The helper's setup, one command per step; `origin` is this dashboard. */
+const setupSteps = (origin: string): { title: string; text: string }[] => [
+  { title: "1. Install the helper", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft-task.mjs -o ~/.local/bin/autocraft-task && chmod +x ~/.local/bin/autocraft-task` },
+  { title: "2. Log in (token on stdin)", text: `autocraft-task login ${origin}` },
+  { title: "3. Set up the harness (token on stdin)", text: "claude setup-token\nautocraft-task harness claude" },
+  { title: "4. Work, from a terminal or an agent", text: "autocraft-task work\n\n# or, from an agent\nautocraft-task run --detach\nautocraft-task wait <id>" },
+];
 const jsonConfig = (url: string, token: string) => JSON.stringify({ mcpServers: { "autocraft-inbox": { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2);
 
 export function ConnectView({ user }: ViewProps) {
@@ -28,6 +35,7 @@ export function ConnectView({ user }: ViewProps) {
   const { data, error } = useQuery("mcp-tokens", (a) => a.mcp.tokens());
   const [label, setLabel] = useState("");
   const [answer, setAnswer] = useState(false);
+  const [runTasks, setRunTasks] = useState(false);
   const [made, setMade] = useState<{ id: number; token: string } | null>(null);
   const url = `${location.origin}${data?.path ?? "/mcp"}`;
   const full = !!data && data.tokens.length >= data.max;
@@ -36,10 +44,11 @@ export function ConnectView({ user }: ViewProps) {
 
   const create = () =>
     void write.run("create", async () => {
-      const r = await api.mcp.create(label, settles && !!data?.answering && answer);
+      const r = await api.mcp.create(label, settles && !!data?.answering && answer, runTasks);
       setMade({ id: r.id, token: r.token });
       setLabel("");
       setAnswer(false);
+      setRunTasks(false);
     });
 
   return (
@@ -59,6 +68,10 @@ export function ConnectView({ user }: ViewProps) {
               Can answer decisions
             </span>
           )}
+          <span className="flex items-center gap-2 text-sm text-ink/80">
+            <Switch on={runTasks} onChange={setRunTasks} label="Can run tasks" />
+            Can run tasks
+          </span>
           <Button type="submit" variant="primary" disabled={full} loading={write.busy === "create"} className="max-md:h-11">
             Make a token
           </Button>
@@ -77,7 +90,15 @@ export function ConnectView({ user }: ViewProps) {
         )}
         {data && <Tokens tokens={data.tokens} write={write} fresh={made?.id ?? null} />}
       </Block>
-
+      {!viewer && user.inference === "user-local" && (
+        <Block className="mt-4" title="Run model calls">
+          <div className="space-y-3">
+            {setupSteps(location.origin).map((s) => (
+              <CodeBlock key={s.title} title={s.title} text={s.text} lines={6} />
+            ))}
+          </div>
+        </Block>
+      )}
     </Page>
   );
 }
@@ -93,6 +114,7 @@ function Tokens({ tokens, write, fresh }: { tokens: McpToken[]; write: ReturnTyp
     <>
       {t.label ?? <span className="text-ink/40">no label</span>}
       {t.canAnswer && <Badge className="ml-2">answers decisions</Badge>}
+      {t.canRun && <Badge className="ml-2">runs tasks</Badge>}
       {t.id === fresh && <Badge tone="accent" className="ml-2">new</Badge>}
     </>
   );

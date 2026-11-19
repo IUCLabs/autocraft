@@ -165,7 +165,7 @@ const hist = (id: string, minAgo: number, step: string, outcome: string, model: 
 
 const HISTORY_1484: HistoryEntry[] = [
   hist("h1", 4 * D + 3 * H, "Classify", "missing feature, three of three agree", "Jev", 0.0, "model"),
-  hist("h2", 4 * D + 2 * H, "Review", "Hold, unsure", "Opus", 1.1, "model", [{ label: "Read crates/spell/src/hu.rs", kind: "tool", costUsd: null }, { label: "Read data/hu/hyph.dic", kind: "tool", costUsd: null }, { label: "Opus, 38k tokens", kind: "model", costUsd: 1.1 }]),
+  hist("h2", 4 * D + 2 * H, "Review", "Hold, unsure", "Opus", 1.1, "model", [{ label: "Read crates/spell/src/hu.rs", kind: "tool", costUsd: null }, { label: "Read data/hu/hyph.dic", kind: "tool", costUsd: null }, { label: "Opus, 38k tokens", via: { login: "kiri-n", harness: "claude", model: "claude-opus-4-5" }, kind: "model", costUsd: 1.1 }]),
   hist("h3", 4 * D + 2 * H - 4, "Posted review on GitHub", "Review comment created", null, null, "write", [], "w1"),
   hist("h4", 3 * D + 4 * H, "Review", "Take with fixes, new head b72c4d8", "Opus", 0.74, "model", [{ label: "Read crates/spell/tests/hyphen.rs", kind: "tool", costUsd: null }, { label: "Opus, 29k tokens", kind: "model", costUsd: 0.74 }]),
   hist("h5", 3 * D + 4 * H - 3, "Edited review on GitHub", "Review comment updated", null, null, "write", [], "w2"),

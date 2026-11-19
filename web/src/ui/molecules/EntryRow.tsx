@@ -8,6 +8,7 @@ import { Badge } from "../atoms/Badge";
 import { TimeAgo } from "../atoms/TimeAgo";
 import { cn } from "../cn";
 import { ItemRef } from "./ItemRef";
+import { RemoteVia } from "./RemoteVia";
 
 const ICON: Record<NowEntryKind, PhosphorIcon> = { job: GearIcon, call: SparkleIcon, task: CubeIcon, batch: GitMergeIcon, write: PencilSimpleIcon, merge: GitMergeIcon, decision: QuestionIcon, failure: WarningIcon };
 
@@ -90,6 +91,7 @@ function ChildRow({ entry: c }: { entry: NowEntry }) {
       <Icon className="shrink-0 text-ink/55" aria-hidden />
       {href ? <Link to={href} className="text-xs font-medium after:absolute after:inset-0">{c.kind === "task" ? "Build task" : c.title}</Link> : <span className="text-xs font-medium">{c.title}</span>}
       {c.what && <Badge tone={c.kind === "call" ? "accent" : "neutral"}>{c.what}</Badge>}
+      {c.via && <RemoteVia via={c.via} className="relative z-10" />}
       {c.state === "queued" && <Badge>Queued</Badge>}
       <span className="num ml-auto text-xs text-ink/60">{span(nowMs() - Date.parse(c.at))}</span>
       {c.progress && <p className="w-full text-xs text-ink/50 [overflow-wrap:anywhere]">{c.progress}</p>}

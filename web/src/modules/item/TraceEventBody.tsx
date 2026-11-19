@@ -102,7 +102,7 @@ function ReviewCall({ runId, n, of }: { runId: number; n: number; of: number }) 
   const r = run.data;
   const call = r && {
     model: r.model, provider: r.provider, account: r.accountLabel, state: r.state, inputTokens: r.inputTokens, outputTokens: r.outputTokens,
-    costUsd: r.costUsd, toolCalls: r.tools.length, endedAt: r.endedAt,
+    costUsd: r.costUsd, toolCalls: r.tools.length, endedAt: r.endedAt, via: r.via,
   };
   return (
     <div className="flex min-w-0 flex-col gap-2 border-t border-line pt-3">

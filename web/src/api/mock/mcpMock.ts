@@ -1,26 +1,37 @@
 import type { Api } from "../client";
-import type { McpToken, User } from "../types";
+import type { InferenceSettings, McpToken, User } from "../types";
 import { NOW } from "./fixtures";
 
 const DAY = 86_400_000;
 
 /** The Connect page's tokens, in memory; the server's rules (at most five, own tokens only) apply. */
-export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp"> {
+export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference"> {
+  let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] } };
   let next = 3;
   let tokens: McpToken[] = [
-    { id: 2, label: "laptop", canAnswer: false, canRun: false, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
+    { id: 2, label: "laptop", canAnswer: false, canRun: true, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
   ];
   const list = () => ({ tokens: structuredClone(tokens), max: 5, path: "/mcp", answering: false });
   const wait = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 60));
   return {
+    inference: {
+      get: () => wait(structuredClone(inference)),
+      async put(body) {
+        if (me.role !== "operator") throw new Error("only operators change the inference mode");
+        inference = { mode: body.mode ?? inference.mode, models: body.models ?? inference.models };
+        me.inference = inference.mode;
+        changed();
+        return wait(structuredClone(inference));
+      },
+    },
     mcp: {
       tokens: () => wait(list()),
-      async create(label, answer = false) {
+      async create(label, answer = false, run = false) {
         if (me.role === "viewer") throw new Error("viewers cannot make agent tokens");
         if (answer) throw new Error("answering from an agent is not available yet");
         if (tokens.length >= 5) throw new Error("you have 5 tokens; revoke one first");
         const id = next++;
-        tokens = [{ id, label: label.trim() || null, canAnswer: answer, canRun: false, createdAt: new Date(NOW).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + (answer ? 7 : 90) * DAY).toISOString() }, ...tokens];
+        tokens = [{ id, label: label.trim() || null, canAnswer: answer, canRun: run, createdAt: new Date(NOW).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + (answer ? 7 : 90) * DAY).toISOString() }, ...tokens];
         changed();
         return wait({ ...list(), id, token: `acmcp_mock${id}${"x".repeat(36)}` });
       },

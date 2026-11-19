@@ -37,7 +37,7 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
   const { db, repo, n, staff } = c;
   const out: TimelineEntry[] = [];
   const callsOf = (jobId: unknown): HistoryCall[] =>
-    !staff ? [] : ev.filter((x) => x.kind === "model-call" && x.ref.jobId === jobId).map((x) => ({ label: `${x.call?.step ?? x.summary} (${x.call?.model ?? x.actor.name})`, kind: "model" as const, costUsd: x.call?.costUsd ?? null }));
+    !staff ? [] : ev.filter((x) => x.kind === "model-call" && x.ref.jobId === jobId).map((x) => ({ label: `${x.call?.step ?? x.summary} (${x.call?.model ?? x.actor.name})`, kind: "model" as const, costUsd: x.call?.costUsd ?? null, ...(x.call?.via && { via: x.call.via }) }));
   const callCost = (calls: HistoryCall[]): number | null => (calls.some((x) => x.costUsd !== null) ? calls.reduce((s, x) => s + (x.costUsd ?? 0), 0) : null);
   const fixSteps = ev.filter((e) => e.kind === "step" && /^(fixup|cifix|conflict):/.test(e.id));
   const stepOfJob = new Map(q<{ id: number; step: string }>(db, "SELECT id, step FROM jobs WHERE json_extract(params, '$.number') = ?1 AND repo = ?2 UNION SELECT j.id, j.step FROM job_items ji JOIN jobs j ON j.id = ji.job_id WHERE ji.number = ?1 AND ji.repo = ?2", n, repo).map((j) => [j.id, j.step]));
@@ -214,8 +214,8 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
 
 function runCalls(db: DatabaseSync, ids: number[]): HistoryCall[] {
   if (!ids.length) return [];
-  return q<{ step: string; model: string; cost_usd: number | null }>(db, `SELECT step, model, cost_usd FROM agent_runs WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY id`, ...ids)
-    .map((r) => ({ label: `${stepTitle(r.step)} (${r.model})`, kind: "model" as const, costUsd: r.cost_usd }));
+  return q<{ step: string; model: string; cost_usd: number | null; user_login: string | null; harness: string | null; reported_model: string | null }>(db, `SELECT step, model, cost_usd, user_login, harness, reported_model FROM agent_runs WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY id`, ...ids)
+    .map((r) => ({ label: `${stepTitle(r.step)} (${r.model})`, kind: "model" as const, costUsd: r.cost_usd, ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }) }));
 }
 
 function detailLines(d: Record<string, unknown>): string[] {

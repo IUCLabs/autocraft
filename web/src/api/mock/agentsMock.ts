@@ -50,7 +50,8 @@ const shown = (i: { repo: string; number: number }): AgentRun["items"][number] =
 
 function makeRun(id: number, startedMsAgo: number, running: boolean): AgentRun {
   const s = pick(STEPS);
-  const acct = s.provider === "jev" ? null : running ? pick(accounts.filter((a) => a.enabled)) : pick(accounts);
+  const remote = s.provider === "claude" && id % 3 === 0;
+  const acct = s.provider === "jev" || remote ? null : running ? pick(accounts.filter((a) => a.enabled)) : pick(accounts);
   const n = s.step === "classify-new" ? 1 + Math.floor(rnd() * 30) : s.step === "opus-review" ? 1 + Math.floor(rnd() * 4) : 1 + Math.floor(rnd() * 8);
   const repo = pick(REPOS);
   const items = Array.from({ length: Math.min(n, 50) }, (_, i) => ({ repo: i % 3 === 2 ? pick(REPOS) : repo, number: 1000 + Math.floor(rnd() * 1400) })).map(shown);
@@ -64,6 +65,7 @@ function makeRun(id: number, startedMsAgo: number, running: boolean): AgentRun {
     startedAt: iso(startedMsAgo), endedAt: running ? null : iso(startedMsAgo - dur),
     inputTokens: tokens, outputTokens: running ? Math.round(tokens * 0.03) : Math.round(tokens * 0.08),
     cacheReadTokens: s.provider === "jev" ? null : Math.round(tokens * 0.5), cacheWriteTokens: s.provider === "jev" ? null : Math.round(tokens * 0.1),
+    ...(remote && { via: { login: pick(["kiri-n", "ochre-fox", "mara-t"]), harness: pick(["claude", "claude", "codex"]), model: s.model === "opus" ? "claude-opus-4-5" : "claude-haiku-4-5" } }),
     summary: running ? null : failed ? "timeout after 600 s" : s.step === "classify-new" ? `${n} classified` : `${Math.max(0, n - 1)} take, ${Math.min(1, n)} hold`,
   };
 }

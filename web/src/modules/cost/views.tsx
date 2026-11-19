@@ -155,6 +155,11 @@ export function Cost(_: ViewProps) {
         <Block title="By stage and model" className="mt-4" flush>
           <UsageTable name="Stage" subName="Model" rows={r.stages.map((s) => ({ key: s.stage, sub: s.model, u: s }))} />
         </Block>
+        {r.users.some((x) => x.login !== null) && (
+          <Block title="By user" className="mt-4" flush>
+            <UsageTable name="User" rows={r.users.map((x) => ({ key: x.login ? `@${x.login}` : "server accounts", u: x }))} />
+          </Block>
+        )}
         <Block title="By repo" className="mt-4" flush>
           {r.repos.length ? <UsageTable name="Repo" rows={r.repos.map((x) => ({ key: x.repo, u: x }))} /> : <p className="p-4 text-sm text-ink/55">No call recorded a repo.</p>}
         </Block>
