@@ -726,6 +726,8 @@ export interface User {
   writeRepos: RepoName[];
   /** Deployment setting `maintainer_writes`: maintainers with write access settle decisions on repos that use the app's identity. */
   maintainerWrites: boolean;
+  /** Computed by the server: maintainers with write access settle now (`maintainer_writes` on and the app's identity), so Queue items is open to them. */
+  maintainerSettles: boolean;
   /** Who runs the model calls: the registered accounts (`server`) or the users' own helpers (`user-local`). */
   inference: InferenceMode;
 }

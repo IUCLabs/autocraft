@@ -97,7 +97,7 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
 export function QueueItems() {
   const [open, setOpen] = useState(false);
   const user = useUser();
-  if (!(user.role === "operator" || (user.role === "maintainer" && user.maintainerWrites && user.writeRepos.length > 0))) return null;
+  if (!(user.role === "operator" || (user.role === "maintainer" && user.maintainerSettles && user.writeRepos.length > 0))) return null;
   return (
     <>
       <Button className="max-md:h-11" onClick={() => setOpen(true)}>
