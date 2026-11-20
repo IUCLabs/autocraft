@@ -8,7 +8,7 @@
 // One file, only `node:` imports, Node 22 or later. The dashboard serves it at /worker/autocraft.mjs.
 // The harness runs inside bubblewrap on Linux and WSL, inside sandbox-exec on macOS.
 //
-//   autocraft login <server-url> [--label X] [--no-wait]  makes a credential and has it approved on the dashboard
+//   autocraft login <server-url> [--label X] [--no-wait] [--answer] [--no-agent]  makes a credential and has it approved on the dashboard
 //   autocraft login --wait                 waits for the approval of a login started with --no-wait (at most 9 minutes)
 //   autocraft login <server-url> --stdin   stores a Task Runner credential given on stdin
 //   autocraft harness claude [--keychain]  a `claude setup-token` token on stdin, or (macOS) Claude Code's own login from the Keychain
@@ -26,6 +26,7 @@
 //   autocraft pause-until-reset       takes no call until the plan window resets (or `resume`)
 //   autocraft resume                  ends a pause, and a hold after the provider refused a run
 //   autocraft config reserve <5h> <weekly>  raises the usage reserve the server sets (percent kept free)
+//   autocraft tools | guide | help <tool> | <tool> [args] | call <tool> [args]  the server's agent tools (MCP over HTTP)
 //   autocraft migrate                 moves an autocraft-task 1.2.0 install over (directories, credential, binary, service)
 
 import { spawn, spawnSync } from "node:child_process";
@@ -38,9 +39,10 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.3.0";
+export const HELPER_VERSION = "1.3.1";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
@@ -82,7 +84,11 @@ export const ROUTES = {
  * @property {number} [wait]  protocol 4: seconds the server may hold the claim open when nothing is queued (0 to 30)
  */
 /** @typedef {{ fiveHour: number, weekly: number }} Reserve  percent of each plan window kept free */
-/** @typedef {{ lease: null, retryAfter: number, reserve: Reserve, reason?: string, until?: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string }, reserve: Reserve }} ClaimReply */
+/** Body encodings besides plain JSON; a server lists the ones it accepts in its claim and status replies. */
+export const ENCODINGS = /** @type {const} */ (["gzip+base64"]);
+/** @typedef {(typeof ENCODINGS)[number]} Encoding */
+/** @typedef {{ encoding: Encoding, body: string }} Envelope  `body`: base64 of the gzip of the plain JSON body */
+/** @typedef {{ lease: null, retryAfter: number, reserve: Reserve, reason?: string, until?: number, encodings?: Encoding[] } | { lease: { id: number, secret: string, title: string, requiredHelper: string }, reserve: Reserve, encodings?: Encoding[] }} ClaimReply */
 /** @typedef {"ready" | "quota-held" | "paused" | "cooled-off" | "sandbox-failed" | "version-refused" | "harness-missing" | "failing"} Readiness */
 /** @typedef {{ usedPercent: number, resetsAt: string | null }} UsageWindow */
 /** @typedef {{ fiveHour: UsageWindow | null, weekly: UsageWindow | null, at: string }} UsageReading */
@@ -101,9 +107,9 @@ export const ROUTES = {
  * @property {string} [helperVersion]
  * @property {Machine} [machine]
  */
-/** @typedef {{ ok: true, reserve: Reserve }} StatusReply */
+/** @typedef {{ ok: true, reserve: Reserve, encodings?: Encoding[] }} StatusReply */
 /** @typedef {{ hostname: string, platform: string, arch: string }} Machine */
-/** @typedef {{ credentialHash: string, label: string, machine: Machine, helperVersion: string }} LoginStart */
+/** @typedef {{ credentialHash: string, label: string, machine: Machine, helperVersion: string, scopes?: { agent?: boolean, answer?: boolean } }} LoginStart */
 /** @typedef {{ userCode: string, verifyUrl: string, interval: number, expiresIn: number }} LoginStartReply */
 /** @typedef {"pending" | "approved" | "denied" | "expired"} LoginState */
 /** @typedef {{ state: LoginState }} LoginPollReply */
@@ -1829,6 +1835,18 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * An HTML reply with a 4xx status other than 404 and 410: a CDN, web application firewall or other proxy in front of the
+ * server refused the request (the server answers JSON). Retried like a network error, never taken for a refused credential.
+ */
+export class ProxyBlocked extends HttpError {
+  /** @param {string} route @param {number} status @param {number | null} retryAfterMs */
+  constructor(route, status, retryAfterMs) {
+    super(route, status, "", retryAfterMs);
+    this.message = `${route}: blocked by a proxy in front of the server (HTTP ${status}, HTML reply)`;
+  }
+}
+
 /** A Retry-After header as milliseconds (delta seconds or an HTTP date); null when absent or unreadable. @param {string | null} v */
 export function retryAfterMs(v, now = Date.now()) {
   if (!v) return null;
@@ -1840,12 +1858,13 @@ export function retryAfterMs(v, now = Date.now()) {
 const NET_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "ENETDOWN", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
 
 /**
- * Whether one request's error is worth trying again: 408, 429, 5xx, a network error (reset, refused, DNS), a request timeout
- * or a reply cut off. A 410, any other 4xx and the caller's own abort are final.
+ * Whether one request's error is worth trying again: 408, 429, 5xx, a proxy's refusal (ProxyBlocked), a network error (reset,
+ * refused, DNS), a request timeout or a reply cut off. A 410, any other 4xx and the caller's own abort are final.
  * @param {unknown} e @param {AbortSignal} [signal]
  */
 export function transient(e, signal) {
   if (signal?.aborted || e instanceof Gone) return false;
+  if (e instanceof ProxyBlocked) return true;
   if (e instanceof HttpError) return e.status === 408 || e.status === 429 || e.status >= 500;
   if (!e || typeof e !== "object") return false;
   // fetch rejects with a TypeError ("fetch failed", "terminated" for a body cut off); JSON.parse of a cut-off body with a SyntaxError.
@@ -1880,7 +1899,20 @@ export async function withRetry(fn, o) {
 }
 
 /**
- * One request; `body` makes it a POST, a null `bearer` sends no credential. Throws Gone on 410, HttpError on any other non-2xx.
+ * Servers whose latest claim or status reply listed the `gzip+base64` encoding: POST bodies to them go as an Envelope, so
+ * a CDN or web application firewall in front of the server never matches its content rules against model text.
+ * @type {Set<string>}
+ */
+const envelopeServers = new Set();
+
+/** A JSON body as an Envelope. @param {unknown} body @returns {Envelope} */
+export function envelope(body) {
+  return { encoding: "gzip+base64", body: gzipSync(JSON.stringify(body)).toString("base64") };
+}
+
+/**
+ * One request; `body` makes it a POST, a null `bearer` sends no credential. Throws Gone on 410, ProxyBlocked on an HTML 4xx,
+ * HttpError on any other non-2xx. A claim or status reply tells whether later bodies to `server` go as an Envelope.
  * @param {string} server @param {string} route @param {string | null} bearer @param {unknown} [body] @param {{ signal?: AbortSignal, timeoutMs?: number }} [o]
  * @returns {Promise<any>}
  */
@@ -1889,13 +1921,23 @@ export async function api(server, route, bearer, body, o = {}) {
   const res = await fetch(`${server}${route}`, {
     method: body === undefined ? "GET" : "POST",
     headers: { ...(bearer !== null && { Authorization: `Bearer ${bearer}` }), ...(body !== undefined && { "Content-Type": "application/json" }) },
-    ...(body !== undefined && { body: JSON.stringify(body) }),
+    ...(body !== undefined && { body: JSON.stringify(envelopeServers.has(server) ? envelope(body) : body) }),
     signal: o.signal ? AbortSignal.any([o.signal, timeout]) : timeout,
   });
   if (res.status === 410) throw new Gone("the lease is gone");
   const text = await res.text();
-  if (!res.ok) throw new HttpError(route, res.status, text, retryAfterMs(res.headers.get("retry-after")));
-  return text.trim() ? JSON.parse(text) : {};
+  if (!res.ok) {
+    const after = retryAfterMs(res.headers.get("retry-after"));
+    const html = /html/i.test(res.headers.get("content-type") ?? "") || /^\s*</.test(text);
+    if (html && res.status >= 400 && res.status < 500 && res.status !== 404) throw new ProxyBlocked(route, res.status, after);
+    throw new HttpError(route, res.status, text, after);
+  }
+  const out = text.trim() ? JSON.parse(text) : {};
+  if (route === ROUTES.claim || route === ROUTES.status) {
+    if (Array.isArray(out?.encodings) && out.encodings.includes("gzip+base64")) envelopeServers.add(server);
+    else envelopeServers.delete(server);
+  }
+  return out;
 }
 
 /** The server ends a lease this long after the call's time limit, or after its last heartbeat (docs/operations.md, Leases). */
@@ -2956,7 +2998,13 @@ async function runLease(cfg, id, opt = {}) {
     let s;
     // A finished reply is never turned into a failure: the same body is retried until the server answers it (accepted, 410
     // or another final 4xx), through an outage of the server up to SUBMIT_OUTAGE_MS past the lease's deadline.
-    try { s = await withRetry(() => api(lease.server, ROUTES.submit, lease.secret, body), { deadline: deadline() + SUBMIT_OUTAGE_MS }); } catch (e) { return undelivered("the reply", e); }
+    // A proxy's refusal is said once and retried like an outage.
+    let blockedSaid = false;
+    const submit = () => api(lease.server, ROUTES.submit, lease.secret, body).catch((e) => {
+      if (e instanceof ProxyBlocked && !blockedSaid) { blockedSaid = true; console.log(`${lease.title}: ${msg(e)}; retrying the reply`); }
+      throw e;
+    });
+    try { s = await withRetry(submit, { deadline: deadline() + SUBMIT_OUTAGE_MS }); } catch (e) { return undelivered("the reply", e); }
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
     clearError("call");
     return end("submitted", `submitted: ${lease.title}, ${kTokens(tokensOf(usage))} tokens`);
@@ -3181,8 +3229,8 @@ async function cmdLogin(argv) {
   const flags = new Set(argv.filter((a) => a.startsWith("--")));
   const label = argValues(argv, "--label")[0];
   const url = argv.find((a, i) => !a.startsWith("--") && argv[i - 1] !== "--label");
-  const usage = "usage: autocraft login <server-url> [--label <name>] [--no-wait] | login --wait | login <server-url> --stdin";
-  for (const f of flags) if (!["--label", "--no-wait", "--wait", "--stdin"].includes(f)) throw new Error(usage);
+  const usage = "usage: autocraft login <server-url> [--label <name>] [--no-wait] [--answer] [--no-agent] | login --wait | login <server-url> --stdin";
+  for (const f of flags) if (!["--label", "--no-wait", "--wait", "--stdin", "--answer", "--no-agent"].includes(f)) throw new Error(usage);
   if (flags.has("--wait")) {
     if (url || flags.has("--stdin") || flags.has("--no-wait")) throw new Error(usage);
     const p = loadCredentials().pending;
@@ -3204,7 +3252,7 @@ async function cmdLogin(argv) {
   // Kept before the server hears of it, so a login cut off here leaves nothing usable behind on the server.
   saveCredentials({ ...loadCredentials(), pending: p });
   /** @type {LoginStart} */
-  const body = { credentialHash: credentialHash(p.credential), label: name, machine: machine(), helperVersion: HELPER_VERSION };
+  const body = { credentialHash: credentialHash(p.credential), label: name, machine: machine(), helperVersion: HELPER_VERSION, scopes: { agent: !flags.has("--no-agent"), answer: flags.has("--answer") } };
   /** @type {LoginStartReply} */
   let r;
   try { r = await withRetry(() => api(server, ROUTES.loginStart, null, body), { tries: 4, deadline: Date.now() + 60_000, baseMs: 2000 }); }
@@ -3556,14 +3604,20 @@ async function cmdWork(argv) {
   /** @param {number | undefined} slot @param {boolean} fastLane */
   const claimLoop = async (slot, fastLane) => {
     let claimId = newClaimId();
+    let blockedRun = 0;
     while (!ac.signal.aborted) {
       if (Date.now() < notBefore) { await pause(notBefore - Date.now()); continue; }
       let r;
-      try { r = await claimOnce(loadConfig(), slot, fastLane, claimId, ac.signal); claimId = newClaimId(); } catch (e) {
+      try { r = await claimOnce(loadConfig(), slot, fastLane, claimId, ac.signal); claimId = newClaimId(); blockedRun = 0; } catch (e) {
         if (ac.signal.aborted) break;
         // A claim lost in transit may have leased a call: the next try sends the same id and gets that lease back.
         if (!transient(e)) claimId = newClaimId();
-        if (e instanceof HttpError && (e.status === 401 || e.status === 403)) {
+        blockedRun = e instanceof ProxyBlocked ? blockedRun + 1 : 0;
+        if (blockedRun >= 10) {
+          if (blockedRun === 10) console.log("the server's replies are blocked by a proxy, or the credential was revoked; run autocraft login if this persists");
+          await pause(REVOKED_RETRY_MS); continue;
+        }
+        if (e instanceof HttpError && !(e instanceof ProxyBlocked) && (e.status === 401 || e.status === 403)) {
           // A revoked or expired credential: the process stays up (no restart loop of its service) and looks again now and then.
           const line = `credential revoked or expired (${msg(e)}); run \`autocraft login <server-url>\``;
           if (line !== heldSaid) { console.log(`not claiming: ${line}; checking again every ${Math.round(REVOKED_RETRY_MS / 60_000)} min`); heldSaid = line; idleSaid = ""; }
@@ -4250,11 +4304,271 @@ function migrateAtStart() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Agent commands: the server's MCP tools (/mcp, Streamable HTTP, JSON-RPC) as command-line commands, with the runner's own
+// credential. Arguments come from each tool's inputSchema, so a new server tool needs no change here.
+
+/** A wrong command line: exit code 2. */
+class UsageError extends Error {}
+
+/** Runner commands: a tool of the same name is reached with `autocraft call <tool>`. */
+const RUNNER_COMMANDS = new Set(["login", "harness", "claim", "run", "wait", "work", "service", "doctor", "try", "mcp", "tool", "status", "pause-until-reset", "resume", "config", "update", "migrate", "version", "help", "tools", "guide", "call"]);
+const MCP_PROTOCOL = "2025-06-18";
+/** Tool names compare with dashes and underscores alike. @param {string} s */
+const toolKey = (s) => s.replace(/-/g, "_");
+
+/**
+ * The text of an MCP reply body: a JSON message, or an event stream whose `data:` lines hold it.
+ * @param {string} text @param {string} contentType @param {number} id
+ * @returns {any}
+ */
+export function mcpMessage(text, contentType, id) {
+  if (!contentType.includes("text/event-stream")) return JSON.parse(text);
+  /** @type {any} */
+  let found;
+  for (const ev of text.split(/\r?\n\r?\n/)) {
+    const data = ev.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).replace(/^ /, "")).join("\n");
+    if (!data.trim()) continue;
+    let m;
+    try { m = JSON.parse(data); } catch { continue; }
+    if (m && m.id === id && (m.result !== undefined || m.error !== undefined)) found = m;
+  }
+  if (!found) throw new Error("the server's event stream held no reply");
+  return found;
+}
+
+/** One MCP session over HTTP. @param {string} server @param {string} credential */
+export function mcpClient(server, credential) {
+  let nextId = 1;
+  /** @type {string | undefined} */
+  let session;
+  /** @param {string} method @param {unknown} [params] @param {boolean} [notify] @returns {Promise<any>} */
+  async function send(method, params, notify = false) {
+    const id = notify ? undefined : nextId++;
+    const res = await fetch(`${server}/mcp`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential}`, Accept: "application/json, text/event-stream", "Content-Type": "application/json",
+        ...(session && { "Mcp-Session-Id": session, "MCP-Protocol-Version": MCP_PROTOCOL }),
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", ...(id !== undefined && { id }), method, ...(params !== undefined && { params }) }),
+      signal: AbortSignal.timeout(10 * 60_000),
+    });
+    session = res.headers.get("mcp-session-id") ?? session;
+    const text = await res.text();
+    if (!res.ok) {
+      if (res.status >= 400 && res.status < 500 && res.status !== 404 && res.status !== 410 && (/html/i.test(res.headers.get("content-type") ?? "") || /^\s*</.test(text))) {
+        throw new ProxyBlocked("/mcp", res.status, retryAfterMs(res.headers.get("retry-after")));
+      }
+      let reason = "";
+      try { reason = JSON.parse(text)?.error?.message ?? ""; } catch { reason = text.slice(0, 300); }
+      if (res.status === 401) throw new Error(`the server refused the credential (revoked or expired): run \`autocraft login ${server}\``);
+      // A server from before agent access answers a runner credential with its connector message.
+      if (res.status === 403) throw new Error(reason && !/MCP Connector/.test(reason) ? redact(reason) : "this Task Runner has no agent access; tick Agent access for it on the Connect page");
+      throw new HttpError("/mcp", res.status, reason || text, retryAfterMs(res.headers.get("retry-after")));
+    }
+    if (notify || !text.trim()) return undefined;
+    const m = mcpMessage(text, res.headers.get("content-type") ?? "", /** @type {number} */ (id));
+    if (m.error) throw new Error(`${method}: ${redact(String(m.error.message ?? JSON.stringify(m.error)))}`);
+    return m.result;
+  }
+  /** @param {string} method @param {unknown} [params] */
+  const read = (method, params) => withRetry(() => send(method, params), { tries: 3, deadline: Date.now() + 30_000 });
+  return {
+    /** @returns {Promise<{ instructions?: string }>} */
+    async initialize() {
+      const r = await read("initialize", { protocolVersion: MCP_PROTOCOL, capabilities: {}, clientInfo: { name: "autocraft-runner", version: HELPER_VERSION } });
+      await send("notifications/initialized", undefined, true).catch(() => {});
+      return r ?? {};
+    },
+    /** @returns {Promise<any[]>} */
+    async tools() { return (await read("tools/list"))?.tools ?? []; },
+    /** @param {string} name @param {Record<string, unknown>} args @returns {Promise<{ content?: { type?: string, text?: string }[], isError?: boolean, structuredContent?: unknown }>} */
+    call(name, args) { return send("tools/call", { name, arguments: args }); },
+  };
+}
+
+/** A connected client with its initialize result, for the credential of this machine. */
+async function agentSession() {
+  const { server, agentToken } = needLogin(loadConfig());
+  const client = mcpClient(server, agentToken);
+  const init = await client.initialize();
+  return { client, init, server };
+}
+
+/** @param {any} s the type of a schema property: its first non-null type */
+const typeOf = (s) => (Array.isArray(s?.type) ? s.type.find((/** @type {string} */ t) => t !== "null") : s?.type) ?? (s?.enum ? "string" : undefined);
+/** @param {string} s */
+const firstLine = (s) => (String(s ?? "").split("\n").find((l) => l.trim()) ?? "").trim();
+
+/** The tool named `name` (dashes or underscores). @param {any[]} tools @param {string} name */
+function findTool(tools, name) {
+  const t = tools.find((x) => toolKey(x.name) === toolKey(name));
+  if (!t) throw new UsageError(`no tool ${name}: \`autocraft tools\` lists them (a tool you cannot use is not listed)`);
+  return t;
+}
+
+/** `tools`: every tool, one line each. */
+async function cmdTools() {
+  const { client } = await agentSession();
+  const tools = await client.tools();
+  const w = Math.max(0, ...tools.map((t) => t.name.length));
+  for (const t of tools) {
+    const shadowed = RUNNER_COMMANDS.has(t.name) || RUNNER_COMMANDS.has(t.name.replace(/_/g, "-"));
+    console.log(`${t.name.padEnd(w)}  ${firstLine(t.description).slice(0, 110)}${shadowed ? "  [runner command of the same name: use `autocraft call " + t.name + "`]" : ""}`);
+  }
+  return 0;
+}
+
+/** `help <tool>`: the description and the arguments of its schema. @param {any} tool */
+function toolHelp(tool) {
+  const props = tool.inputSchema?.properties ?? {};
+  const required = new Set(tool.inputSchema?.required ?? []);
+  const lines = [`autocraft ${tool.name.replace(/_/g, "-")} [args]`, "", String(tool.description ?? "").trim(), ""];
+  const names = Object.keys(props);
+  lines.push(names.length ? "Arguments:" : "No arguments.");
+  for (const k of names) {
+    const p = props[k], t = typeOf(p);
+    const bits = [t === "array" ? `${typeOf(p.items) ?? "value"}, repeat or comma-separate` : t === "object" ? "JSON" : t ?? "value"];
+    if (p.enum) bits.push(`one of ${p.enum.join(", ")}`);
+    else if (p.items?.enum) bits.push(`each one of ${p.items.enum.join(", ")}`);
+    if (p.minimum !== undefined) bits.push(`min ${p.minimum}`);
+    if (p.maximum !== undefined) bits.push(`max ${p.maximum}`);
+    if (p.default !== undefined) bits.push(`default ${JSON.stringify(p.default)}`);
+    lines.push(`  --${k.replace(/_/g, "-")}${t === "boolean" ? "/--no-" + k.replace(/_/g, "-") : ""}  (${bits.join("; ")})${required.has(k) ? " required" : ""}${p.description ? ": " + String(p.description).replace(/\s+/g, " ").trim() : ""}`);
+  }
+  const pos = positionalOf(tool.inputSchema);
+  if (pos) lines.push("", `${pos} may be given without its flag: autocraft ${tool.name.replace(/_/g, "-")} <${pos}>`);
+  lines.push("", "Add --json to print the raw result.");
+  return lines.join("\n");
+}
+
+/** The one required string argument a tool takes positionally, if it has exactly one. @param {any} schema */
+function positionalOf(schema) {
+  const req = schema?.required ?? [];
+  return req.length === 1 && typeOf(schema.properties?.[req[0]]) === "string" ? /** @type {string} */ (req[0]) : null;
+}
+
+/**
+ * Tool arguments from a command line, typed by the tool's schema.
+ * @param {any} tool @param {string[]} argv
+ * @returns {{ args: Record<string, unknown>, json: boolean }}
+ */
+export function parseToolArgs(tool, argv) {
+  const props = tool.inputSchema?.properties ?? {};
+  const byFlag = new Map(Object.keys(props).map((k) => [toolKey(k), k]));
+  const valid = () => Object.keys(props).map((k) => `--${k.replace(/_/g, "-")}`).join(", ") || "(none)";
+  /** @type {Record<string, unknown>} */
+  const args = {};
+  let json = false;
+  /** @type {string[]} */
+  const positional = [];
+  /** @param {string} key @param {string} raw */
+  const typed = (key, raw) => {
+    const p = props[key], t = typeOf(p);
+    const bad = (/** @type {string} */ why) => new UsageError(`--${key.replace(/_/g, "-")}: ${why}`);
+    /** @param {any} spec @param {string} v */
+    const one = (spec, v) => {
+      const st = typeOf(spec);
+      /** @type {any} */
+      let out = v;
+      if (st === "integer" || st === "number") {
+        if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(v.trim())) throw bad(`${JSON.stringify(v)} is not a number`);
+        out = Number(v);
+        if (st === "integer" && !Number.isInteger(out)) throw bad(`${v} is not an integer`);
+        if (spec.minimum !== undefined && out < spec.minimum) throw bad(`${v} is below the minimum ${spec.minimum}`);
+        if (spec.maximum !== undefined && out > spec.maximum) throw bad(`${v} is above the maximum ${spec.maximum}`);
+      } else if (st === "boolean") {
+        if (!/^(true|false)$/.test(v)) throw bad(`${JSON.stringify(v)} is not true or false`);
+        out = v === "true";
+      } else if (st === "object" || st === "array") {
+        try { out = JSON.parse(v); } catch { throw bad("not valid JSON"); }
+      }
+      if (spec?.enum && !spec.enum.includes(out)) throw bad(`${JSON.stringify(v)} is not one of ${spec.enum.join(", ")}`);
+      return out;
+    };
+    if (t === "array") {
+      const item = p.items ?? {};
+      if (raw.trim().startsWith("[")) { try { const a = JSON.parse(raw); if (Array.isArray(a)) return a; } catch { /* a plain value */ } }
+      return (typeOf(item) === "object" ? [raw] : raw.split(",").map((s) => s.trim()).filter((s) => s !== "")).map((v) => one(item, v));
+    }
+    return one(p, raw);
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") { positional.push(...argv.slice(i + 1)); break; }
+    if (a === "--json") { json = true; continue; }
+    if (!a.startsWith("--") || a === "--") { positional.push(a); continue; }
+    const eq = a.indexOf("=");
+    let name = a.slice(2, eq < 0 ? undefined : eq);
+    let inline = eq < 0 ? undefined : a.slice(eq + 1);
+    let key = byFlag.get(toolKey(name));
+    if (!key && name.startsWith("no-") && inline === undefined) {
+      const k = byFlag.get(toolKey(name.slice(3)));
+      if (k && typeOf(props[k]) === "boolean") { args[k] = false; continue; }
+    }
+    if (!key) throw new UsageError(`unknown option ${a.slice(0, eq < 0 ? undefined : eq)} for ${tool.name}; valid: ${valid()}`);
+    const t = typeOf(props[key]);
+    if (t === "boolean") {
+      if (inline === undefined && /^(true|false)$/.test(argv[i + 1] ?? "")) inline = argv[++i];
+      args[key] = inline === undefined ? true : typed(key, inline);
+      continue;
+    }
+    if (inline === undefined) {
+      if (i + 1 >= argv.length) throw new UsageError(`--${name} needs a value`);
+      inline = argv[++i];
+    }
+    const v = typed(key, inline);
+    args[key] = t === "array" ? [...(Array.isArray(args[key]) ? /** @type {unknown[]} */ (args[key]) : []), ...v] : v;
+  }
+  if (positional.length) {
+    const pos = positionalOf(tool.inputSchema);
+    if (!pos || args[pos] !== undefined) throw new UsageError(`${tool.name} takes no positional argument${pos ? ` besides --${pos.replace(/_/g, "-")}` : ""}; valid options: ${valid()}`);
+    if (positional.length > 1) throw new UsageError(`${tool.name} takes one positional argument (${pos}); quote a value with spaces`);
+    args[pos] = positional[0];
+  }
+  const missing = (tool.inputSchema?.required ?? []).filter((/** @type {string} */ k) => args[k] === undefined);
+  if (missing.length) throw new UsageError(`${tool.name} needs ${missing.map((/** @type {string} */ k) => `--${k.replace(/_/g, "-")}`).join(", ")}; see \`autocraft help ${tool.name}\``);
+  return { args, json };
+}
+
+/** `<tool> [args]` and `call <tool> [args]`. @param {string} name @param {string[]} argv */
+async function cmdAgentTool(name, argv) {
+  const { client } = await agentSession();
+  const tool = findTool(await client.tools(), name);
+  if (argv.includes("--help")) { console.log(toolHelp(tool)); return 0; }
+  const { args, json } = parseToolArgs(tool, argv);
+  const r = await client.call(tool.name, args);
+  if (json) console.log(JSON.stringify(r, null, 2));
+  else {
+    const text = (r?.content ?? []).map((c) => c.text ?? "").join("\n") || (r?.structuredContent !== undefined ? JSON.stringify(r.structuredContent, null, 2) : "");
+    (r?.isError ? console.error : console.log)(text);
+  }
+  return r?.isError ? 1 : 0;
+}
+
+/** `help <tool>`; `help` alone prints the usage. @param {string[]} argv */
+async function cmdHelp(argv) {
+  if (!argv[0]) { console.log(USAGE); return 0; }
+  const { client } = await agentSession();
+  console.log(toolHelp(findTool(await client.tools(), argv[0])));
+  return 0;
+}
+
+/** `guide`: the server's instructions for an agent. */
+async function cmdGuide() {
+  const { init } = await agentSession();
+  console.log(init.instructions ?? "the server gives no instructions");
+  return 0;
+}
+
 const USAGE = `autocraft ${HELPER_VERSION}: the AutoCraft Task Runner runs AutoCraft model calls under your own harness subscription.
 
   login <server-url> [--label <name>] [--no-wait]
                               make a credential and wait for its approval on the dashboard (it prints the link);
                               --no-wait returns at once, \`login --wait\` then waits (at most 9 minutes)
+  login <server-url> [--answer] [--no-agent]
+                              --answer also asks to answer decisions and approve merges; --no-agent asks for no agent access
   login <server-url> --stdin  store a Task Runner credential read from stdin
   harness claude [--keychain] store a \`claude setup-token\` token (read from stdin); on macOS
                               --keychain uses your Claude Code login from the Keychain instead
@@ -4277,6 +4591,15 @@ const USAGE = `autocraft ${HELPER_VERSION}: the AutoCraft Task Runner runs AutoC
   pause-until-reset           claim nothing until the plan window resets, even when usage recovers
   resume                      end a pause, and a hold after the provider refused a run for its limit
   config reserve <5h> <weekly>  keep more of each plan window free than the server's reserve (percent); \`off\` drops it
+
+Agent commands (the server's tools for you, with this machine's login; needs Agent access on the dashboard's Connect page):
+  tools                       list the tools
+  guide                       the server's instructions: how to use the tools
+  help <tool>                 a tool's description and arguments
+  <tool> [args]               call a tool: --key value, --flag / --no-flag, repeated or comma-separated lists, JSON objects;
+                              a tool with one required text argument takes it bare, e.g. \`autocraft get-inbox-item <id>\`
+  call <tool> [args]          the same, for a tool named like a runner command above (status, run, ...)
+  Add --json for the raw result. Exit 0 done, 1 the tool refused or failed, 2 wrong command line.
 
 The runner claims only while every plan window keeps more than the reserve free (set per user on the
 dashboard, default 20%), and holds whenever it cannot read the usage.
@@ -4337,11 +4660,20 @@ export async function main(argv) {
       case "update": return await cmdUpdate();
       case "migrate": return cmdMigrate();
       case "version": case "--version": console.log(HELPER_VERSION); return 0;
-      default: console.log(USAGE); return cmd === undefined || cmd === "help" || cmd === "--help" ? 0 : 64;
+      case "tools": return await cmdTools();
+      case "guide": return await cmdGuide();
+      case "help": return await cmdHelp(rest);
+      case "call":
+        if (!rest[0]) throw new UsageError("usage: autocraft call <tool> [args]");
+        return await cmdAgentTool(rest[0], rest.slice(1));
+      default:
+        if (cmd === undefined || cmd === "--help") { console.log(USAGE); return 0; }
+        if (cmd.startsWith("-")) { console.log(USAGE); return 64; }
+        return await cmdAgentTool(cmd, rest);
     }
   } catch (e) {
     console.error(`autocraft: ${msg(e)}`);
-    return 1;
+    return e instanceof UsageError ? 2 : 1;
   }
 }
 

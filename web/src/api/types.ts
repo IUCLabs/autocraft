@@ -2486,7 +2486,7 @@ export type McpTokens = { tokens: McpToken[]; max: number; path: string; /** Whe
 export type McpTokenCreated = McpTokens & { id: number; token: string };
 
 /** The signed-in user's own settings, and their user-local helpers as the server last saw them (src/remote/protocol.ts). */
-export type { HelperInfo as RemoteHelper, Readiness as HelperReadiness, UsageWindow, Machine, RunnerInfo, RunnersReply, PendingRunnerLogin } from "../../../src/remote/protocol.ts";
+export type { HelperInfo as RemoteHelper, Readiness as HelperReadiness, UsageWindow, Machine, RunnerInfo, RunnersReply, PendingRunnerLogin, LoginScopes } from "../../../src/remote/protocol.ts";
 /** `manualOnly`: the user's Task Runners take only the calls the user picked and follow-ups of their own sessions. */
 export type MySettings = UserSettingsReply & { manualOnly: boolean };
 export type MySettingsChange = UserSettings & { manualOnly: boolean };

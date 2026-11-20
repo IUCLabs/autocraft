@@ -1,11 +1,12 @@
 // Device-style login of a Task Runner (protocol.ts LoginStart). The runner makes its own credential and sends only its
 // hash (POST ROUTES.loginStart, no credential); it shows the user code and link, and polls with the credential as its
 // bearer (ROUTES.loginPoll). A signed-in maintainer or operator approves the code on the Connect page (src/dash/api/runners.ts),
-// which turns the stored hash into a `runner` mcp_tokens row, so the credential then works on the runner routes as it is.
+// which turns the stored hash into a `runner` mcp_tokens row, so the credential then works on the runner routes as it is. The
+// runner asks for scopes (agent access, answering); the approver's ticks decide what the row gets.
 // A login is single use and lasts LOGIN_TTL_MS; its row stays an hour past that for the runner to read the outcome (pruneTokens).
 import { randomInt } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { addRunnerToken, cleanLabel, type McpTokenRow } from "../dash/mcp/tokens.ts";
+import { addRunnerToken, cleanLabel, type McpTokenRow, type Scopes } from "../dash/mcp/tokens.ts";
 import { sha256hex } from "../dash/server/crypto.ts";
 import { HttpError } from "../dash/server/util.ts";
 import type { LoginPollReply, LoginStart, LoginStartReply, LoginState, Machine, PendingRunnerLogin } from "./protocol.ts";
@@ -49,7 +50,14 @@ export function parseLoginStart(raw: unknown): LoginStart {
   const m = b.machine as Record<string, unknown> | undefined;
   if (!m || typeof m !== "object" || Array.isArray(m) || !field(m.hostname, 253) || !field(m.platform, 40) || !field(m.arch, 40)) throw new HttpError(400, "machine must be { hostname, platform, arch }");
   if (typeof b.helperVersion !== "string" || !/^[0-9A-Za-z.+-]{1,40}$/.test(b.helperVersion)) throw new HttpError(400, "helperVersion must be a version string");
-  return { credentialHash: b.credentialHash, label: b.label, machine: { hostname: m.hostname, platform: m.platform, arch: m.arch }, helperVersion: b.helperVersion };
+  const sc = b.scopes as Record<string, unknown> | undefined;
+  if (sc !== undefined && (!sc || typeof sc !== "object" || Array.isArray(sc) || (sc.agent !== undefined && typeof sc.agent !== "boolean") || (sc.answer !== undefined && typeof sc.answer !== "boolean"))) {
+    throw new HttpError(400, "scopes must be { agent?: boolean, answer?: boolean }");
+  }
+  return {
+    credentialHash: b.credentialHash, label: b.label, machine: { hostname: m.hostname, platform: m.platform, arch: m.arch }, helperVersion: b.helperVersion,
+    scopes: { agent: sc?.agent !== false, answer: sc?.answer === true },
+  };
 }
 
 /** A user code as stored (uppercase, no hyphen), or null when it cannot be one. */
@@ -73,11 +81,11 @@ export function startLogin(db: DatabaseSync, start: LoginStart, ip: string, base
     throw new HttpError(409, "this credential was already used for a login; make a new one");
   }
   const label = cleanLabel(start.label) ?? start.machine.hostname.slice(0, 60);
-  const insert = db.prepare(`INSERT INTO main.runner_logins (user_code, secret_hash, label, machine, ip, helper_version, created_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_code) DO NOTHING RETURNING id`);
+  const insert = db.prepare(`INSERT INTO main.runner_logins (user_code, secret_hash, label, machine, ip, helper_version, created_at, expires_at, want_agent, want_answer)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_code) DO NOTHING RETURNING id`);
   for (let i = 0; i < 8; i++) {
     const code = Array.from({ length: 8 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join("");
-    if (insert.get(code, start.credentialHash, label, JSON.stringify(start.machine), ip, start.helperVersion, nowMs, nowMs + LOGIN_TTL_MS)) {
+    if (insert.get(code, start.credentialHash, label, JSON.stringify(start.machine), ip, start.helperVersion, nowMs, nowMs + LOGIN_TTL_MS, start.scopes?.agent === false ? 0 : 1, start.scopes?.answer === true ? 1 : 0)) {
       return { userCode: showCode(code), verifyUrl: `${baseUrl}/connect?runner=${showCode(code)}`, interval: POLL_INTERVAL_S, expiresIn: LOGIN_TTL_MS / 1000 };
     }
   }
@@ -99,10 +107,10 @@ export function pollLogin(db: DatabaseSync, credential: string, nowMs: number = 
   return { state: row.state };
 }
 
-type Row = { id: number; secret_hash: string; label: string | null; machine: string | null; ip: string | null; helper_version: string | null; created_at: number; expires_at: number };
+type Row = { id: number; secret_hash: string; label: string | null; machine: string | null; ip: string | null; helper_version: string | null; created_at: number; expires_at: number; want_agent: number; want_answer: number };
 
 function pendingRow(db: DatabaseSync, code: string, nowMs: number): Row | null {
-  return (db.prepare("SELECT id, secret_hash, label, machine, ip, helper_version, created_at, expires_at FROM main.runner_logins WHERE user_code = ? AND state = 'pending' AND expires_at > ?")
+  return (db.prepare("SELECT id, secret_hash, label, machine, ip, helper_version, created_at, expires_at, want_agent, want_answer FROM main.runner_logins WHERE user_code = ? AND state = 'pending' AND expires_at > ?")
     .get(code, nowMs) as Row | undefined) ?? null;
 }
 
@@ -115,16 +123,17 @@ export function pendingLogin(db: DatabaseSync, code: string, yourIp: string, now
   return {
     label: r.label ?? "", machine: machineOf(r) ?? { hostname: "", platform: "", arch: "" }, ip: r.ip ?? "", yourIp,
     startedAt: new Date(Number(r.created_at)).toISOString(), helperVersion: r.helper_version ?? "", expiresAt: new Date(Number(r.expires_at)).toISOString(),
+    scopes: { agent: r.want_agent === 1, answer: r.want_answer === 1 },
   };
 }
 
 /**
  * Approves a waiting login for `login`: inserts its runner credential (at most MCP_TOKENS_PER_LOGIN runners, else 409) and marks
- * the login approved. `rawLabel` replaces the runner's own label when given. A login started from another address than the
- * approver's (`approverIp`, addressKey) is approved only with `otherMachine`, the approver's statement that they started it
- * elsewhere; 409 otherwise. Null when no login waits under the code.
+ * the login approved with the approver's `scopes`. `rawLabel` replaces the runner's own label when given. A login started from
+ * another address than the approver's (`approverIp`, addressKey) is approved only with `otherMachine`, the approver's statement
+ * that they started it elsewhere; 409 otherwise. Null when no login waits under the code. The caller checks who may grant `answer`.
  */
-export function approveLogin(db: DatabaseSync, login: string, code: string, rawLabel: unknown, approverIp: string, otherMachine: boolean, nowMs: number = Date.now()): { row: McpTokenRow; machine: Machine | null; ip: string | null } | null {
+export function approveLogin(db: DatabaseSync, login: string, code: string, rawLabel: unknown, scopes: Scopes, approverIp: string, otherMachine: boolean, nowMs: number = Date.now()): { row: McpTokenRow; machine: Machine | null; ip: string | null } | null {
   const label = rawLabel === undefined ? undefined : cleanLabel(rawLabel);
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -136,7 +145,7 @@ export function approveLogin(db: DatabaseSync, login: string, code: string, rawL
     if (!otherMachine && !sameAddress(r.ip ?? "", approverIp)) {
       throw new HttpError(409, "this login was started from another address than yours; approve it only if you started it on another machine, and say so (otherMachine)");
     }
-    const row = addRunnerToken(db, login, r.secret_hash, label ?? r.label, r.machine);
+    const row = addRunnerToken(db, login, r.secret_hash, label ?? r.label, r.machine, scopes);
     db.prepare("UPDATE main.runner_logins SET state = 'approved', login = ?, token_id = ? WHERE id = ?").run(login, row.id, r.id);
     db.exec("COMMIT");
     return { row, machine: machineOf(r), ip: r.ip };

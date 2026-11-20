@@ -4,6 +4,8 @@ import { maintainerWritesOn } from "../../settlers.ts";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { gunzip } from "node:zlib";
+import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
 import { LOGIN, checkGithubId, getAccess } from "../../access.ts";
@@ -43,7 +45,7 @@ import { isBusy } from "../../db.ts";
 import { inferenceMode } from "../../remote/mode.ts";
 import { hasFreshRunner, parseStatus, storeStatus } from "../../remote/helpers.ts";
 import { addressKey, parseLoginStart, pollLogin, startLogin } from "../../remote/device-login.ts";
-import { ROUTES, type ClaimReply, type LoginPollReply, type LoginStartReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
+import { ENCODINGS, ROUTES, type ClaimReply, type LoginPollReply, type LoginStartReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
 import { userReserve } from "../../remote/reserve.ts";
 import { startLiveness } from "../../remote/liveness.ts";
 import { archiveOf, callTaskTool, TASK_TOOLS, taskLease, type TaskLease, type ToolResult } from "../../remote/tools.ts";
@@ -167,6 +169,32 @@ async function readJson(req: IncomingMessage, limit: number = BODY_LIMIT): Promi
     return JSON.parse(raw.toString("utf8"));
   } catch {
     throw new HttpError(400, "The body is not valid JSON");
+  }
+}
+
+const gunzipAsync = promisify(gunzip);
+
+/**
+ * readJson for the Task Runner routes: the body may also come as an Envelope (src/remote/protocol.ts ENCODINGS), an object
+ * with exactly `encoding` (one of ENCODINGS) and `body` (strings); any other body is plain JSON; its uncompressed body has the same `limit`.
+ */
+async function readRemoteJson(req: IncomingMessage, limit: number = BODY_LIMIT): Promise<unknown> {
+  const json = await readJson(req, limit);
+  if (!json || typeof json !== "object" || Array.isArray(json)) return json;
+  const keys = Object.keys(json);
+  const env = json as { encoding?: unknown; body?: unknown };
+  if (keys.length !== 2 || typeof env.encoding !== "string" || typeof env.body !== "string" || !(ENCODINGS as readonly string[]).includes(env.encoding)) return json;
+  let raw: Buffer;
+  try {
+    raw = await gunzipAsync(Buffer.from(env.body, "base64"), { maxOutputLength: limit });
+  } catch (e) {
+    if ((e as { code?: string }).code === "ERR_BUFFER_TOO_LARGE") throw new HttpError(413, "Request too large");
+    throw new HttpError(400, `The body is not valid ${env.encoding}`);
+  }
+  try {
+    return JSON.parse(raw.toString("utf8"));
+  } catch {
+    throw new HttpError(400, "The encoded body is not valid JSON");
   }
 }
 
@@ -656,7 +684,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     // The per-address limit counts failed authentications only: behind a proxy every client shares one address.
     if (!caller && !mcpLimitIp.allow(clientIp(req))) return reply(429, rpcError(-32000, "too many requests; wait a minute"), { "retry-after": "60" });
     if (!caller) return reply(401, rpcError(-32001, "a valid AutoCraft agent token is required (Authorization: Bearer <token>); make one on the dashboard's Connect page"), { "www-authenticate": 'Bearer realm="autocraft"' });
-    if (caller.kind !== "connector") return reply(403, rpcError(-32001, "this is a Task Runner credential; the MCP Connector needs a token from the dashboard's Connect page"));
+    if (!caller.canAgent) return reply(403, rpcError(-32001, "this Task Runner has no agent access; tick Agent access for it on the dashboard's Connect page"));
     if (!mcpLimitToken.allow(caller.login.toLowerCase())) return reply(429, rpcError(-32000, "too many requests for this login; wait a minute"), { "retry-after": "60" });
     let msg: unknown;
     try {
@@ -738,7 +766,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (path === ROUTES.loginStart) {
         const ip = clientIp(req);
         if (!loginStartLimit.allow(addressKey(ip))) return reply(429, { error: "too many logins from this address; wait a few minutes" }, { "retry-after": "600" });
-        const start = parseLoginStart(await readJson(req));
+        const start = parseLoginStart(await readRemoteJson(req));
         return reply(200, startLogin(db, start, ip, config.baseUrl ?? `http://${req.headers.host ?? "localhost"}`) satisfies LoginStartReply);
       }
       if (path === ROUTES.loginPoll) {
@@ -757,22 +785,22 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const gone = new AbortController();
         res.once("close", () => { if (!res.writableEnded) gone.abort(); });
         if (req.socket.destroyed) gone.abort();
-        const claim = remote.parseClaim(await readJson(req));
+        const claim = remote.parseClaim(await readRemoteJson(req));
         // In the server mode no call is queued for helpers: nothing to take for a while.
-        if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login) } satisfies ClaimReply);
+        if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login), encodings: [...ENCODINGS] } satisfies ClaimReply);
         const perm = claimPermission(caller.login, caller.role);
         const out = await remote.claimCall(db, caller, claim, perm.canWrite, Date.now(), { waits: claimWaits, signal: gone.signal, blocked: () => perm.errors.size > 0 });
         // Calls passed over because GitHub could not confirm the permission: the helper logs why it gets nothing.
         if (!out.lease && out.reason === undefined && perm.errors.size) out.reason = [...perm.errors.values()][0];
         // How long the claim waited for a call, so a latency measurement can leave it out.
-        return reply(200, out, { "x-held-ms": String(heldMsOf(out)) });
+        return reply(200, { ...out, encodings: [...ENCODINGS] } satisfies ClaimReply, { "x-held-ms": String(heldMsOf(out)) });
       }
       if (path === ROUTES.status) {
         const caller = runner();
         if (!caller) return;
         if (!remoteStatusLimit.allow(String(caller.tokenId))) return tooMany();
-        storeStatus(db, caller.tokenId, caller.login, parseStatus(await readJson(req)));
-        return reply(200, { ok: true, reserve: userReserve(db, caller.login) } satisfies StatusReply);
+        storeStatus(db, caller.tokenId, caller.login, parseStatus(await readRemoteJson(req)));
+        return reply(200, { ok: true, reserve: userReserve(db, caller.login), encodings: [...ENCODINGS] } satisfies StatusReply);
       }
       const tool = path.startsWith(`${ROUTES.tool}/`) ? /^([a-z][a-z0-9_-]{0,40})\/([a-z][a-z0-9_]{0,60})$/.exec(path.slice(ROUTES.tool.length + 1)) : null;
       if (![ROUTES.bundle, ROUTES.heartbeat, ROUTES.submit, ROUTES.release, ROUTES.tarball].includes(path as never) && !tool) return reply(404, { error: "not found" });
@@ -788,10 +816,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const b = remote.bundleOf(db, bearer);
         return b ? reply(200, b) : gone();
       }
-      if (path === ROUTES.heartbeat) return remote.heartbeat(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
-      if (path === ROUTES.release) return remote.releaseCall(db, bearer, await readJson(req)) ? reply(200, { ok: true }) : gone();
+      if (path === ROUTES.heartbeat) return remote.heartbeat(db, bearer, await readRemoteJson(req)) ? reply(200, { ok: true }) : gone();
+      if (path === ROUTES.release) return remote.releaseCall(db, bearer, await readRemoteJson(req)) ? reply(200, { ok: true }) : gone();
       if (path === ROUTES.submit) {
-        const out = remote.submitCall(db, bearer, await readJson(req, SUBMIT_BODY_LIMIT));
+        const out = remote.submitCall(db, bearer, await readRemoteJson(req, SUBMIT_BODY_LIMIT));
         return out ? reply(200, out) : gone();
       }
       const lease = taskLease(db, bearer);
@@ -803,7 +831,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       const [, server, name] = tool!;
       if (!TASK_TOOLS[server!] || !lease.servers.includes(server!)) return reply(403, { error: `this call has no ${server} tools` });
       if (!remoteToolLimit.allow(String(lease.id))) return tooMany();
-      const args = await readJson(req, TOOL_BODY_LIMIT);
+      const args = await readRemoteJson(req, TOOL_BODY_LIMIT);
       const w = waitingJson(res);
       const r = await callTaskTool(db, lease, bearer!, server!, name, args, w.opts);
       return w.send({ content: [{ type: "text", text: r.text }], ...(r.isError && { isError: true }) } satisfies ToolReply);
