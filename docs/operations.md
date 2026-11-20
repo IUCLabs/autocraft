@@ -196,7 +196,7 @@ Rate limits: 10 logins started per 10 minutes and 5 pending per client address (
 
 ### Setting up a Task Runner
 
-A Task Runner needs a maintainer or operator login on the dashboard. The Connect page lists the same steps with the server's address filled in.
+A Task Runner needs a maintainer or operator login on the dashboard. The Connect page lists the same steps with the server's address filled in. The page, "Connect your Agents", has two views for a user who has a Task Runner: Overview (My settings, the Task Runners, then the MCP Connector) and Setup guide (`/connect/setup`). A user with no Task Runner yet sees the setup guide above the MCP Connector.
 
 Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` or `codex`), and a sandbox tool: bubblewrap (`/usr/bin/bwrap`) on Linux and WSL, `sandbox-exec` on macOS. Other systems are refused.
 
