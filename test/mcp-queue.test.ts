@@ -1,22 +1,25 @@
 // The Inbox MCP server's merge queue tools: an operator's agent queues, weights and withdraws PRs with the Queue page's
 // own handlers (pre-approval, fast track); other roles only read the queue.
 import assert from "node:assert/strict";
-import { afterEach, describe, test } from "node:test";
-import { handleMcp, type McpEnv } from "../src/dash/mcp/index.ts";
+import { afterEach, before, describe, test } from "node:test";
+import { answering, handleMcp, type McpEnv } from "../src/dash/mcp/index.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
 import type { Role } from "../src/dash/types.ts";
 import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import { fastTrackList } from "../src/fasttrack.ts";
+import { insertBatch, updateBatch } from "../src/merge/batch-store.ts";
 import { preapprovalOf } from "../src/preapproval/index.ts";
 import { OPERATOR, world, type World } from "./world-db.ts";
 
 let current: World | null = null;
+// The pre-approval tools need an answering token, which exists only while answering is available.
+before(() => { answering.enabled = true; });
 const fresh = (): World => (current = world().repo());
 afterEach(() => current?.close());
 
 /** `who.role` is read on every call, as the server reads the access list: a test changes it to demote the login under a live session. */
-const envOf = (w: World, role: Role, login = role === "operator" ? OPERATOR : "maint", who = { role }): McpEnv => ({
-  db: w.db, baseUrl: null, limiter: new RateLimiter(60, 3600_000), canAnswer: false, expensive: () => 0,
+const envOf = (w: World, role: Role, login = role === "operator" ? OPERATOR : "maint", who = { role }, canAnswer = true): McpEnv => ({
+  db: w.db, baseUrl: null, limiter: new RateLimiter(60, 3600_000), canAnswer, expensive: () => 0,
   user: () => ({ login, role: who.role, canWrite: async () => true, canRead: async () => true }),
 });
 
@@ -44,6 +47,50 @@ describe("merge queue tools", () => {
     }
     assert.match((await rpc(op, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
     assert.doesNotMatch((await rpc(maint, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
+  });
+
+  test("an operator token that cannot answer is not offered queue_pr or cancel_queued, and a call is refused", async () => {
+    const w = fresh().pr(1);
+    const op = envOf(w, "operator", OPERATOR, { role: "operator" }, false);
+    const list = await names(op);
+    assert.deepEqual(list.filter((n) => ["queue_pr", "cancel_queued"].includes(n)), []);
+    assert.ok(list.includes("set_weight") && list.includes("list_merge_queue"));
+    assert.doesNotMatch((await rpc(op, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
+    for (const name of ["queue_pr", "cancel_queued"]) {
+      const r = await call(op, name, { item: "app#1" });
+      assert.equal(r.isError, true, name);
+      assert.match(r.text, /cannot answer decisions/);
+    }
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    assert.equal((await call(op, "set_weight", { item: "app#1", weight: 3 })).isError, false);
+  });
+
+  test("queue_pr needs write permission on the repo and audits its writes as mcp", async () => {
+    const w = fresh().pr(1);
+    const noWrite: McpEnv = { ...envOf(w, "operator"), user: () => ({ login: OPERATOR, role: "operator", canWrite: async () => false, canRead: async () => true }) };
+    const r = await call(noWrite, "queue_pr", { item: "app#1" });
+    assert.equal(r.isError, true);
+    assert.match(r.text, /no write access to app/);
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    const op = envOf(w, "operator");
+    await call(op, "queue_pr", { item: "app#1" });
+    await call(op, "cancel_queued", { item: "app#1" });
+    await call(op, "set_weight", { item: "app#1", remove: true });
+    const rows = w.db.prepare("SELECT action, details FROM audit WHERE action IN ('preapproval', 'fasttrack-add', 'fasttrack-remove')").all() as { action: string; details: string | null }[];
+    assert.ok(rows.length >= 4);
+    for (const x of rows) assert.equal(JSON.parse(x.details ?? "{}").via, "mcp", `${x.action} ${x.details}`);
+  });
+
+  test("a viewer gets no batch summary, staff do", async () => {
+    const w = fresh().pr(1);
+    const id = insertBatch(w.db, { repo: "app", branch: "batch-1", baseSha: "b", commitSha: "c", parentId: null, members: [{ number: 1, head_oid: "h" }], at: "2026-01-01T00:00:00Z" });
+    updateBatch(w.db, id, "2026-01-01T00:00:00Z", { summary: "push failed: remote said no" });
+    refreshPlanCache(w.db);
+    for (const [role, want] of [["operator", "push failed: remote said no"], ["maintainer", "push failed: remote said no"], ["viewer", null]] as const) {
+      const d = data((await call(envOf(w, role), "list_merge_queue", { repo: "app" })).text);
+      assert.equal(d.batches.length, 1, role);
+      assert.equal(d.batches[0].summary, want, role);
+    }
   });
 
   test("a maintainer's call is refused and changes nothing", async () => {

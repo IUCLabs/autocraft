@@ -26,14 +26,14 @@ async function run(db: DatabaseSync, req: Req, f: (db: DatabaseSync, by: string,
 }
 
 /** Operator: cancels the PR's pre-approved merge while it is before the merge queue's merge. */
-export async function cancelItemPreapproval(db: DatabaseSync, req: Req) {
+export async function cancelItemPreapproval(db: DatabaseSync, req: Req, via?: string) {
   if (req.user.role !== "operator") throw new HttpError(403, "only operators can cancel a pre-approved merge");
   const repo = req.params.repo!;
   const n = Number(req.params.n);
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
   await needVisible(db, req, repo);
   try {
-    return await cancelPreapproval(db, req.user.login, repo, n);
+    return await cancelPreapproval(db, req.user.login, repo, n, undefined, via);
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }
