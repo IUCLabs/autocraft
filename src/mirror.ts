@@ -350,8 +350,14 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const live = appSlug();
   if (live) { try { rememberSlug(db, live); } catch { /* read-only connection */ } }
   const own = mentionNames(db, live);
+  const lastRead = db.prepare("SELECT synced_at FROM main.item_reads WHERE repo = ? AND number = ?");
   db.exec("BEGIN IMMEDIATE");
   try {
+    // A read never replaces what a later-started read stored: the item, its comments and its read time stay the newer read's.
+    nodes = nodes.filter((n) => {
+      const last = (lastRead.get(repo, n.number) as { synced_at: string } | undefined)?.synced_at;
+      return last === undefined || !(Date.parse(last) > Date.parse(readAt));
+    });
     for (const n of nodes) {
       const row = toRow(repo, kind, n, detail);
       // A row identical to the stored one (overlapping reads re-fetch many) writes nothing.
@@ -369,7 +375,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
     }
     if (nodes.length) {
       db.prepare(`INSERT INTO main.item_reads (repo, number, synced_at) VALUES ${nodes.map(() => "(?,?,?)").join(",")}
-        ON CONFLICT (repo, number) DO UPDATE SET synced_at = excluded.synced_at`).run(...nodes.flatMap((n) => [repo, n.number, readAt]));
+        ON CONFLICT (repo, number) DO UPDATE SET synced_at = excluded.synced_at WHERE julianday(excluded.synced_at) >= julianday(item_reads.synced_at)`).run(...nodes.flatMap((n) => [repo, n.number, readAt]));
     }
     db.exec("COMMIT");
   } catch (e) {
