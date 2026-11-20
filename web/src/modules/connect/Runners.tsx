@@ -1,11 +1,10 @@
-import { GaugeIcon, TerminalWindowIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, PlusIcon, TerminalWindowIcon, XIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
-import type { HelperReadiness, LoginScopes, Machine, RunnerInfo, UsageWindow } from "../../api/types";
+import type { HelperReadiness, LoginScopes, RunnerInfo, UsageWindow } from "../../api/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
-import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
 import { Switch } from "../../ui/atoms/Switch";
@@ -15,14 +14,15 @@ import { CheckRow } from "../../ui/molecules/CheckRow";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { clock, day, nowMs } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
-import { SectionTitle } from "./SectionTitle";
+import { cn } from "../../ui/cn";
+import { RunnerSetup } from "./Setup";
+import { SectionTitle, touch } from "./SectionTitle";
 
 /** A runner made this recently carries a "new" badge, so one the user did not add stands out. */
 const NEW_MS = 24 * 3600_000;
 
 const PLATFORMS: Record<string, string> = { darwin: "macOS", linux: "Linux", win32: "Windows" };
 const platform = (p: string) => PLATFORMS[p] ?? p;
-const machineText = (m: Machine) => `${m.hostname} · ${platform(m.platform)} ${m.arch}`;
 
 const readinessBadge = (h: RunnerInfo): { text: string; tone: Tone } => {
   if (!h.readiness) return { text: "No status yet", tone: "neutral" };
@@ -49,40 +49,36 @@ const ANSWER = "Can answer decisions and approve merges";
 const withAgent = (s: LoginScopes, agent: boolean): LoginScopes => ({ agent, answer: agent && s.answer });
 const withAnswer = (s: LoginScopes, answer: boolean): LoginScopes => ({ agent: s.agent || answer, answer });
 
-/** The user's Task Runners, and the approval of a device login (`?runner=CODE`, or a typed code). */
+/** The user's Task Runners, the setup steps, and the approval of a device login (`?runner=CODE`, the link `autocraft login` prints). */
 export function Runners() {
   const [sp, setSp] = useSearchParams();
   const code = sp.get("runner")?.trim() || null;
-  const setCode = (c: string | null) => {
+  const closeCode = () => {
     const next = new URLSearchParams(sp);
-    if (c) next.set("runner", c);
-    else next.delete("runner");
+    next.delete("runner");
     setSp(next, { replace: true });
   };
   const { data, error } = useQuery("runners", (a) => a.runners.list());
-  const [typed, setTyped] = useState("");
+  const [adding, setAdding] = useState(false);
+  const any = !!data?.runners.length;
   return (
-    <Block className="mt-4" flush title={<SectionTitle icon={TerminalWindowIcon}>Task Runners</SectionTitle>} aside={data ? String(data.runners.length) : undefined}>
-      {code ? (
-        <ApprovalCard key={code} code={code} answering={!!data?.answering} onDone={() => setCode(null)} />
-      ) : (
-        <form
-          className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (typed.trim()) setCode(typed.trim().toUpperCase());
-            setTyped("");
-          }}
-        >
-          <Input value={typed} onChange={(e) => setTyped(e.target.value)} maxLength={12} placeholder="Code, e.g. BCDF-GHJK" aria-label="Task Runner code" autoCapitalize="characters" autoComplete="off" spellCheck={false} className="code min-w-[10rem] flex-1 sm:max-w-[14rem]" />
-          <Button type="submit" disabled={!typed.trim()}>
-            Look up
+    <Block
+      dense
+      flush
+      className="mt-4"
+      title={<SectionTitle icon={TerminalWindowIcon}>Task Runners</SectionTitle>}
+      aside={
+        any && (
+          <Button size="sm" variant={adding ? "ghost" : "secondary"} icon={adding ? XIcon : PlusIcon} aria-expanded={adding} onClick={() => setAdding(!adding)} className={touch}>
+            {adding ? "Close" : "Add a Task Runner"}
           </Button>
-        </form>
-      )}
-      <ErrorLine error={error?.message} className="px-4 pt-3" />
-      {data && !data.runners.length && <EmptyState>No Task Runners yet.</EmptyState>}
-      {data && data.runners.length > 0 && (
+        )
+      }
+    >
+      {code && <ApprovalCard key={code} code={code} answering={!!data?.answering} onDone={closeCode} />}
+      <ErrorLine error={error?.message} className="px-3 pt-2" />
+      {data && (!any || adding) && <RunnerSetup className={cn(any && "border-b border-line bg-ink/[0.02]")} />}
+      {any && (
         <ul>
           {data.runners.map((r) => (
             <RunnerRow key={r.tokenId} r={r} answering={data.answering} />
@@ -93,72 +89,91 @@ export function Runners() {
   );
 }
 
+/** Parts of a line joined by middle dots; a line breaks only between parts. */
+const dotted = (parts: ReactNode[]) =>
+  parts
+    .filter((p) => p !== null && p !== false && p !== undefined && p !== "")
+    .map((p, i) => (
+      <span key={i}>
+        {i > 0 && <span className="text-ink/30"> · </span>}
+        <span className="whitespace-nowrap">{p}</span>
+      </span>
+    ));
+
 function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
   const api = useApi();
   const write = useWrite();
+  const [open, setOpen] = useState(false);
   const b = readinessBadge(r);
   const isNew = nowMs() - Date.parse(r.createdAt) < NEW_MS;
+  const name = r.label ?? `Runner ${r.tokenId}`;
   const setScopes = (s: LoginScopes) => void write.run("scopes", () => api.runners.setScopes(r.tokenId, s));
   return (
-    <li className="flex items-start gap-3 border-b border-line px-4 py-2.5 last:border-0">
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span className="font-medium">
-            {r.label ?? `Runner ${r.tokenId}`}
-            {isNew && (
-              <Badge tone="accent" className="ml-2">
-                new
-              </Badge>
+    <li className={cn("border-b border-line last:border-0", open && "bg-ink/[0.02]")}>
+      <button type="button" aria-expanded={open} aria-label={`${name}: details`} onClick={() => setOpen(!open)} className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-ink/[0.03]">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium">{name}</span>
+            {isNew && <Badge tone="accent">new</Badge>}
+            <Badge tone={b.tone} icon={<span className="inline-block size-1.5 rounded-full bg-current" />}>
+              {b.text}
+            </Badge>
+            {r.fresh && r.slots !== null && r.busy !== null && (
+              <span className="num ml-auto text-xs text-ink/60" title="Calls running now, of the calls the runner runs at once">
+                {r.busy} of {r.slots} busy
+              </span>
             )}
-          </span>
-          <Badge tone={b.tone} icon={<span className="inline-block size-1.5 rounded-full bg-current" />}>
-            {b.text}
-          </Badge>
-          {r.harness && (
-            <span className="text-sm text-ink/70">
-              {r.harness}
-              {r.models.top ? ` · ${r.models.top}` : ""}
-            </span>
-          )}
-          {r.fresh && r.slots !== null && r.busy !== null && (
-            <span className="num text-sm text-ink/70" title="Calls running now, of the calls the runner runs at once">
-              {r.busy} of {r.slots} busy
-            </span>
-          )}
-          {r.usage && (
-            <span className="num text-sm text-ink/70" title="Plan used: 5-hour window, weekly">
-              <GaugeIcon className="mr-1 inline" />
-              5h {used(r.usage.fiveHour)} · week {used(r.usage.weekly)}
-            </span>
+          </div>
+          <div className="mt-0.5 text-xs text-ink/55">
+            {dotted([
+              r.machine?.hostname,
+              r.machine && platform(r.machine.platform),
+              r.helperVersion && <span className="num">{r.helperVersion}</span>,
+              r.usage && (
+                <span className="num" title="Plan used: 5-hour window, weekly">
+                  5h {used(r.usage.fiveHour)} · week {used(r.usage.weekly)}
+                </span>
+              ),
+              r.lastSeen ? <>seen <TimeAgo iso={r.lastSeen} /></> : "never seen",
+            ])}
+          </div>
+          {r.lastError && (
+            <p className={cn("mt-0.5 text-xs text-bad", open ? "break-words" : "truncate")}>
+              {r.lastError.text} <TimeAgo iso={r.lastError.at} className="text-ink/55" />
+            </p>
           )}
         </div>
-        <div className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-ink/55">
-          {r.machine && <span>{machineText(r.machine)}</span>}
-          {r.helperVersion && <span className="num">{r.helperVersion}</span>}
-          <span>{r.lastSeen ? <>seen <TimeAgo iso={r.lastSeen} /></> : "never seen"}</span>
-          <span>expires {day(r.expiresAt)}</span>
-        </div>
-        <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-sm text-ink/80">
-          <span className="flex items-center gap-2">
-            <Switch on={r.agent} onChange={(on) => setScopes(withAgent(r, on))} label={AGENT} busy={write.busy === "scopes"} />
-            {AGENT}
-          </span>
-          {(answering || r.answer) && (
+        <CaretDownIcon aria-hidden className={cn("mt-1 shrink-0 text-ink/45 transition-transform duration-fast", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="space-y-2 px-3 pb-2.5">
+          {r.fresh && r.readiness !== "ready" && r.reason && <p className="text-xs text-ink/65">{r.reason}</p>}
+          <div className="flex flex-col gap-y-2 text-sm text-ink/80 sm:flex-row sm:flex-wrap sm:gap-x-6">
             <span className="flex items-center gap-2">
-              <Switch on={r.answer} onChange={(on) => setScopes(withAnswer(r, on))} label={ANSWER} busy={write.busy === "scopes"} />
-              {ANSWER}
+              <Switch on={r.agent} onChange={(on) => setScopes(withAgent(r, on))} label={AGENT} busy={write.busy === "scopes"} />
+              {AGENT}
             </span>
-          )}
+            {(answering || r.answer) && (
+              <span className="flex items-center gap-2">
+                <Switch on={r.answer} onChange={(on) => setScopes(withAnswer(r, on))} label={ANSWER} busy={write.busy === "scopes"} />
+                {ANSWER}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <div className="min-w-0 flex-1 text-xs text-ink/55">
+              {dotted([
+                r.harness && `${r.harness}${r.models.top ? ` · ${r.models.top}` : ""}`,
+                r.machine && r.machine.arch,
+                `added ${day(r.createdAt)}`,
+                `expires ${day(r.expiresAt)}`,
+              ])}
+            </div>
+            <ConfirmButton label="Revoke" confirmLabel="Revoke now" idle="secondary" loading={write.busy === "revoke"} onConfirm={() => void write.run("revoke", () => api.runners.revoke(r.tokenId))} />
+          </div>
+          <ErrorLine error={write.error} />
         </div>
-        {r.fresh && r.readiness !== "ready" && r.reason && <p className="mt-1 text-sm text-ink/65">{r.reason}</p>}
-        {r.lastError && (
-          <p className="mt-1 break-words text-sm text-bad">
-            {r.lastError.text} <TimeAgo iso={r.lastError.at} className="text-ink/55" />
-          </p>
-        )}
-        <ErrorLine error={write.error} className="mt-1" />
-      </div>
-      <ConfirmButton label="Revoke" confirmLabel="Revoke now" loading={write.busy === "revoke"} onConfirm={() => void write.run("revoke", () => api.runners.revoke(r.tokenId))} />
+      )}
     </li>
   );
 }
@@ -177,14 +192,14 @@ function ApprovalCard({ code, answering, onDone }: { code: string; answering: bo
   }, [shown]);
   if (data === undefined)
     return error ? (
-      <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+      <div className="flex items-center gap-3 border-b border-line px-3 py-3">
         <ErrorLine error={error.message} className="flex-1" />
         <Button variant="ghost" onClick={onDone}>Close</Button>
       </div>
     ) : null;
   if (data === null)
     return (
-      <div ref={ref} className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
+      <div ref={ref} className="flex flex-wrap items-center gap-3 border-b border-line px-3 py-3">
         <p className="flex-1 text-sm">
           No Task Runner login is waiting under <span className="code">{code}</span>.
         </p>
@@ -211,7 +226,7 @@ function ApprovalCard({ code, answering, onDone }: { code: string; answering: bo
     </>
   );
   return (
-    <div ref={ref} className="space-y-3 border-b border-line bg-accent/[0.04] px-4 py-3">
+    <div ref={ref} className="space-y-2 border-b border-line bg-accent/[0.04] px-3 py-3">
       <p className="text-md font-medium">
         Add Task Runner '{data.label}' on {data.machine.hostname} ({platform(data.machine.platform)})?
       </p>
@@ -232,11 +247,11 @@ function ApprovalCard({ code, answering, onDone }: { code: string; answering: bo
           <Input value={name} onChange={(e) => setLabel(e.target.value)} maxLength={60} aria-label="Task Runner label" className="w-full sm:max-w-xs" />
         </dd>
       </dl>
-      <div>
+      <div className="-mx-2">
         <CheckRow checked={scopes.agent} onChange={(on) => setTicks(withAgent(scopes, on))} title={AGENT} />
         {answering && <CheckRow checked={scopes.answer} onChange={(on) => setTicks(withAnswer(scopes, on))} title={ANSWER} />}
+        {differ && <CheckRow checked={elsewhere} onChange={setElsewhere} title="I started this on another machine" />}
       </div>
-      {differ && <CheckRow checked={elsewhere} onChange={setElsewhere} title="I started this on another machine" />}
       <div className="flex flex-wrap gap-2">
         <Button variant="primary" disabled={differ && !elsewhere} loading={write.busy === "approve"} onClick={approve}>
           Approve

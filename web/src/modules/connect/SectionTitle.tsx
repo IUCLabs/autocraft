@@ -10,3 +10,6 @@ export function SectionTitle({ icon: I, children }: { icon: Icon; children: Reac
     </span>
   );
 }
+
+/** A small header button's hit area, grown to 44 px on phones without making the header taller. */
+export const touch = "relative max-md:after:absolute max-md:after:inset-x-0 max-md:after:-inset-y-2";
