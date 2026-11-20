@@ -353,7 +353,8 @@ export function createMockApi(): Api {
     ...createAdminMock(me, changed),
     mcp: mcpMock.mcp,
     inference: mcpMock.inference,
-    remote: mcpMock.remote,
+    runners: mcpMock.runners,
+    modelQueue: mcpMock.modelQueue,
     classifiers: {
       report: (sel) => wait(classifierReport(sel), 80),
       disagreements: (f) => wait(disagreementList(f), 60),

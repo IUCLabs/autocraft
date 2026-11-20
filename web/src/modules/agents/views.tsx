@@ -16,6 +16,7 @@ import { RemoteVia } from "../../ui/molecules/RemoteVia";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
+import { RunsQueueSwitch } from "./queue";
 
 const STATE_TONE: Record<AgentRunState, Tone> = { running: "accent", done: "ok", failed: "bad" };
 const STATE_LABEL: Record<AgentRunState, string> = { running: "Running", done: "Done", failed: "Failed" };
@@ -274,10 +275,11 @@ export function DetailPanel({ params }: ViewProps) {
 
 // ---- page ----------------------------------------------------------------------
 
-export function AgentsView({ params }: ViewProps) {
+export function AgentsView({ params, user }: ViewProps) {
   const id = params.id ? Number(params.id) : undefined;
   return (
     <Page title="Agents" sub="Model calls through the prompt registry">
+      {user.inference === "user-local" && <RunsQueueSwitch value="runs" />}
       <div className="mt-4 space-y-4">
         <RunningNow selected={id} />
         <RecentRuns selected={id} />

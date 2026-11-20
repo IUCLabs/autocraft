@@ -66,7 +66,10 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["access", ["access"]],
   // Making and revoking a token writes an audit row.
   ["mcp-tokens", ["access"]],
-  ["remote-helpers", ["remote-helpers"]],
+  // Approving and revoking a runner writes an audit row.
+  ["runners", ["remote-helpers", "access"]],
+  ["runner-pending:", ["access"]],
+  ["model-queue", ["remote-queue"]],
   ["audit:", ["access"]],
   ["prompts", []],
   ["flow-running", ["agents"]],
