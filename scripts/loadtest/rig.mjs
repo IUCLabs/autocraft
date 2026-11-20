@@ -1,5 +1,5 @@
 // The load rig: a scratch dashboard (user-local mode, fresh data directory), a fault-injection proxy, a ledger the fake
-// harnesses report to, N helpers (worker/autocraft-task.mjs with the fake harness), and a driver that queues calls the way a
+// harnesses report to, N Task Runners (worker/autocraft.mjs with the fake harness), and a driver that queues calls the way a
 // job process does. No external services: helpers run with scripts/loadtest/preload.mjs, which answers the plan-usage
 // endpoint itself and blocks every other non-loopback request.
 import { spawn } from "node:child_process";
@@ -156,10 +156,13 @@ export class Rig {
     let src = readFileSync(join(here, "fake-harness.mjs"), "utf8");
     if (failing) src = src.replace("const ALWAYS_FAIL = false;", "const ALWAYS_FAIL = true;");
     writeFileSync(harness, src, { mode: 0o755 }); chmodSync(harness, 0o755);
-    mkdir(join(cfg, "autocraft-task"));
-    writeFileSync(join(cfg, "autocraft-task", "config.json"), JSON.stringify({ server: `http://127.0.0.1:${this.proxyPort}`, agentToken: u.token, harness: "claude", claudeToken: "rig-fake-token" }), { mode: 0o600 });
+    const server = `http://127.0.0.1:${this.proxyPort}`;
+    mkdir(join(cfg, "autocraft-runner"));
+    writeFileSync(join(cfg, "autocraft-runner", "config.json"), JSON.stringify({ server, harness: "claude", claudeToken: "rig-fake-token" }), { mode: 0o600 });
+    // The runner credential as `autocraft login` stores it once approved.
+    writeFileSync(join(cfg, "autocraft-runner", "credentials.json"), JSON.stringify({ server, credential: u.token, label: u.login, state: "approved" }), { mode: 0o600 });
     const env = {
-      PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache, AUTOCRAFT_TASK_CLAUDE_BIN: harness, ...this.scaleEnv(),
+      PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache, AUTOCRAFT_RUNNER_CLAUDE_BIN: harness, ...this.scaleEnv(),
       NODE_OPTIONS: `--import=${join(here, "preload.mjs")}`,
     };
     const h = { i, login: u.login, tokenId: u.tokenId, dir: hd, failing, parallel, env, proc: null, log: join(hd, "helper.log"), stopped: false, restarts: 0 };
@@ -170,7 +173,7 @@ export class Rig {
   spawnHelper(h) {
     const out = createWriteStream(h.log, { flags: "a" });
     // Its own process group, so SIGSTOP and SIGKILL reach the harnesses and sandboxes below it as a laptop sleep or a crash would.
-    h.proc = spawn(process.execPath, [join(ROOT, "worker/autocraft-task.mjs"), "work", "--parallel", String(h.parallel)], { cwd: ROOT, env: h.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    h.proc = spawn(process.execPath, [join(ROOT, "worker/autocraft.mjs"), "work", "--parallel", String(h.parallel)], { cwd: ROOT, env: h.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     h.proc.stdout.pipe(out); h.proc.stderr.pipe(out);
     h.proc.on("exit", () => out.end());
     h.pid = h.proc.pid;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// A stand-in for `claude` in sandbox tests: AUTOCRAFT_TASK_CLAUDE_BIN=<this file> autocraft-task try <bundle>. It reads the
+// A stand-in for `claude` in sandbox tests: AUTOCRAFT_RUNNER_CLAUDE_BIN=<this file> autocraft try <bundle>. It reads the
 // prompt, tries what the sandbox must allow (listing each --add-dir) and deny (the real home, ~/.ssh), and answers with the
 // results as the reply, in claude's stream-json format.
 import { readdirSync, readFileSync } from "node:fs";
