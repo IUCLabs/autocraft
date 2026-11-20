@@ -14,7 +14,7 @@ const WORKER = realpathSync(new URL("../worker/autocraft.mjs", import.meta.url).
 const SHIM = realpathSync(new URL("../worker/autocraft-task.mjs", import.meta.url).pathname);
 
 /** A home with an autocraft-task 1.2.0 install: config with its agent token, cache, a systemd unit, and a fake systemctl that logs its calls. */
-function legacyHome(scriptOf: (home: string) => string) {
+function legacyHome(scriptOf: (home: string) => string, failStart = false) {
   const dir = mkdtempSync(join(tmpdir(), "ac-migrate-"));
   const home = join(dir, "home"), cfg = join(home, ".config"), cache = join(home, ".cache"), bin = join(dir, "bin"), log = join(dir, "systemctl.log");
   for (const d of [join(cfg, "autocraft-task", "leases"), join(cache, "autocraft-task", "runs"), join(cfg, "systemd", "user"), bin]) mkdirSync(d, { recursive: true });
@@ -22,7 +22,8 @@ function legacyHome(scriptOf: (home: string) => string) {
   writeFileSync(join(cache, "autocraft-task", "status.json"), JSON.stringify({ sent: { busy: 0 } }));
   const env = { PATH: "/usr/bin:/bin", CLAUDE_CONFIG_DIR: "/home/x/.claude 50%", ODD: "a$$b" };
   writeFileSync(join(cfg, "systemd", "user", "autocraft-task.service"), helper.systemdUnit({ argv: [process.execPath, scriptOf(home), "work", "--parallel", "3"], env }));
-  writeFileSync(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >> ${log}\n`, { mode: 0o755 });
+  const fail = failStart ? `[ "$*" = "--user start autocraft" ] && { echo "Job failed" >&2; exit 1; }\n` : "";
+  writeFileSync(join(bin, "systemctl"), `#!/bin/sh\necho "$*" >> ${log}\n${fail}`, { mode: 0o755 });
   const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
   return { dir, home, cfg, cache, bin, env, calls, procEnv: { ...process.env, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache, PATH: `${bin}:${process.env.PATH}` } };
 }
@@ -51,9 +52,29 @@ test("a restart of the old unit moves the runner over: directories, credential, 
     assert.deepEqual(unit?.env, h.env);
     assert.ok(!existsSync(join(h.cfg, "systemd", "user", "autocraft-task.service")));
     const calls = h.calls();
-    assert.ok(calls.includes("--user enable autocraft") && calls.includes("--user disable autocraft-task"));
+    assert.ok(calls.indexOf("--user enable autocraft") < calls.indexOf("--user start autocraft"));
+    assert.ok(calls.indexOf("--user start autocraft") < calls.indexOf("--user disable autocraft-task"));
     assert.equal(calls.at(-1), "--user --no-block stop autocraft-task");
-    assert.ok(calls.indexOf("--user --no-block start autocraft") < calls.length - 1);
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    rmSync(h.dir, { recursive: true, force: true });
+  }
+});
+
+test("a new unit that fails to start leaves the old unit installed, enabled and running", () => {
+  const h = legacyHome(() => SHIM, true);
+  const saved = { ...process.env };
+  Object.assign(process.env, h.procEnv);
+  try {
+    const cgroup = join(h.dir, "cgroup");
+    writeFileSync(cgroup, "0::/user.slice/user-1000.slice/user@1000.service/app.slice/autocraft-task.service\n");
+    assert.throws(() => helper.migrateLegacy({ cgroup }), /autocraft service did not start; autocraft-task stays/);
+    assert.ok(existsSync(join(h.cfg, "systemd", "user", "autocraft-task.service")));
+    assert.ok(!existsSync(join(h.cfg, "systemd", "user", "autocraft.service")));
+    const calls = h.calls();
+    assert.ok(calls.includes("--user disable autocraft"));
+    assert.ok(!calls.some((c) => /autocraft-task/.test(c)), calls.join("; "));
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);
@@ -85,7 +106,7 @@ test("migrate by hand waits while the old runner runs a call, then renames the i
     const unit = helper.legacyService(join(h.cfg, "systemd", "user", "autocraft.service"), false);
     assert.deepEqual(unit?.argv, [process.execPath, bin, "work", "--parallel", "3"]);
     const calls = h.calls();
-    assert.ok(calls.indexOf("--user stop autocraft-task") < calls.indexOf("--user --no-block start autocraft"));
+    assert.ok(calls.indexOf("--user stop autocraft-task") < calls.indexOf("--user start autocraft"));
     assert.ok(!calls.includes("--user --no-block stop autocraft-task"));
   } finally { rmSync(h.dir, { recursive: true, force: true }); }
 });

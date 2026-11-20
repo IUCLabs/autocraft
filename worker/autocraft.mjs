@@ -4117,7 +4117,8 @@ export function movedCommand(argv, file) {
  *    the agent token of config.json moves into credentials.json.
  * 2. An installed copy named `autocraft-task` is renamed `autocraft`, with an `autocraft-task` symlink left as an alias.
  * 3. The legacy service is replaced by an `autocraft` one with the same `work` arguments and environment: from inside the
- *    old service (which then stops this process: `switched`), or run by hand (`manual`) while it runs no call.
+ *    old service (which then stops this process: `switched`), or run by hand (`manual`) while it runs no call. The old
+ *    service is disabled and removed only once the new one has started; a failed start throws and leaves it as it was.
  * Returns what it did, one line each, and whether this process now waits for its service's stop.
  * @param {{ manual?: boolean, cgroup?: string }} [o] `cgroup`: the file naming this process's control group (Linux)
  * @returns {{ lines: string[], switched: boolean }}
@@ -4177,7 +4178,8 @@ export function migrateLegacy(o = {}) {
     if (old && dirsFree && (inUnit || stopped)) {
       const argv = movedCommand(old.argv, file);
       const newFile = mac ? launchdPlistFile(SERVICE_NAME) : systemdUnitFile(SERVICE_NAME);
-      if (!existsSync(newFile)) {
+      const wrote = !existsSync(newFile);
+      if (wrote) {
         mkdirSync(dirname(newFile), { recursive: true });
         writeFileSync(newFile, mac ? launchdPlist({ label: SERVICE_NAME, argv, env: old.env, log: join(xdgCache(), RUNNER_DIR, "service.log") }) : systemdUnit({ argv, env: old.env }), { mode: 0o644 });
       }
@@ -4187,12 +4189,21 @@ export function migrateLegacy(o = {}) {
         // Last: from inside the old agent this stops this process.
         if (!stopped) sys("/bin/launchctl", ["bootout", job]);
       } else {
-        must("systemctl", ["--user", "daemon-reload"]);
-        must("systemctl", ["--user", "enable", SERVICE_NAME]);
+        // The old unit stays installed and enabled until the new one has started, so a failed start leaves a working runner.
+        try {
+          must("systemctl", ["--user", "daemon-reload"]);
+          must("systemctl", ["--user", "enable", SERVICE_NAME]);
+          must("systemctl", ["--user", "start", SERVICE_NAME]);
+        } catch (e) {
+          sys("systemctl", ["--user", "disable", SERVICE_NAME]);
+          if (wrote) rmSync(newFile, { force: true });
+          sys("systemctl", ["--user", "daemon-reload"]);
+          if (stopped) sys("systemctl", ["--user", "start", LEGACY_SERVICE]);
+          throw new Error(`the ${SERVICE_NAME} service did not start; ${LEGACY_SERVICE} stays: ${msg(e)}`);
+        }
         sys("systemctl", ["--user", "disable", LEGACY_SERVICE]);
         rmSync(oldFile, { force: true });
-        must("systemctl", ["--user", "daemon-reload"]);
-        must("systemctl", ["--user", "--no-block", "start", SERVICE_NAME]);
+        sys("systemctl", ["--user", "daemon-reload"]);
         // Last: from inside the old unit this stops this process, which holds no lease yet.
         if (inUnit) sys("systemctl", ["--user", "--no-block", "stop", LEGACY_SERVICE]);
       }
