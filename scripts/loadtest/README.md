@@ -6,8 +6,8 @@ Runs user-local helpers against a scratch dashboard with injected faults and loa
 
 ```sh
 node scripts/loadtest/run.mjs smoke                 # 2 helpers, 20 calls, faults on; about 1 minute
-node scripts/loadtest/run.mjs 1                     # one scenario: 1 to 6
-node scripts/loadtest/run.mjs all                   # 1-5 side by side, then 6 alone in its own process; about 2 minutes
+node scripts/loadtest/run.mjs 1                     # one scenario: 1 to 7
+node scripts/loadtest/run.mjs all                   # 1-5 side by side, then 6 and 7 each alone in its own process
 ```
 
 Options: `--dir <work dir>` (default a new directory under the system temp dir; mode 0700), `--db <path>` (copy of a production-like database, taken with `VACUUM INTO`; the source is opened read-only), `--time-scale S` (0.01 to 1, default 0.1, see below), `--time-factor F` (multiplies the fake harness delays, on top of the scale), `--users N`, `--parallel K`, `--calls M`, `--max-minutes N`, `--sequential` (with `all`). Exit code 1 when a line fails.
@@ -44,10 +44,11 @@ Requirements: Node 24, `bwrap` (the helper's own sandbox check), and the reposit
 | 4 | One helper killed with SIGKILL mid-call, restarted 20 s later | no reply lost |
 | 5 | One helper whose harness always fails (5 slots and the fast lane, so it fails 5 calls in a row before the queue drains) | only that helper cooled off; the others finish every call |
 | 6 | 50 helpers x 4 slots against 300 mixed calls queued over 25 s, at time scale 0.5 (claim, heartbeat and status intervals about twice production's rate) with harness delays cut to 10% | dashboard p99 under 200 ms, no request over 5 s, no SQLite busy lines, gating p95 wait under 60 s |
+| 7 | 20 long-polling runners (protocol 4 claimers in the run process with `wait: 25`; a lease is submitted at once, no harness), 60 calls arriving at random over 120 s, the dashboard restarted at 60 s; time scale 0.25 | pickup p95 under 2 s (scaled); empty claims per minute below polling's (every slot every 15 s); claims held when the dashboard stopped are all answered with an empty reply, none reset |
 
 Every scenario also checks that no helper sat idle for over 90 seconds with calls queued without a reason visible to the user (a cool-off, a readiness other than `ready`, a last error, or a helper that is not running).
 
-Definitions: a lost reply is a call the fake harness answered (ledger) whose call row did not end `done`. Duplicate runs are calls with more than one harness start. A reply accepted from a requeued lease is a call two of whose leases ended `submitted` in the helpers' logs. Latency is the dashboard's time per request as the proxy sees it, excluding injected delay and faults. SQLite busy errors are lines in the dashboard log matching `SQLITE_BUSY` or `database is locked`. Queue wait is the call's `queued_ms`.
+Definitions: a lost reply is a call the fake harness answered (ledger) whose call row did not end `done`. Duplicate runs are calls with more than one harness start. A reply accepted from a requeued lease is a call two of whose leases ended `submitted` in the helpers' logs. Latency is the dashboard's time per request as the proxy sees it, excluding injected delay, faults and a held claim's wait (`X-Held-Ms`). SQLite busy errors are lines in the dashboard log matching `SQLITE_BUSY` or `database is locked`. Queue wait is the call's `queued_ms`.
 
 ## Output
 

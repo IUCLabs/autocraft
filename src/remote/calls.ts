@@ -23,6 +23,7 @@ import { ACCEPTED_PROTOCOLS, CLAIM_ID_TTL_S, HEARTBEAT_S, PREPARE_MAX_S, ROUTES,
 import { claimRepos } from "./my-repos.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimClass, gating } from "./claim-class.ts";
+import { holdMs, Ticket, type ClaimTry, type ClaimWaits, type EmptyReply } from "./claim-wait.ts";
 import { userReserve } from "./reserve.ts";
 import { scaled, scaledS } from "./time-scale.ts";
 import { CALLER_STALE_MS, IDLE_FRESH_MS, SEEN_EVERY_MS } from "./room.ts";
@@ -587,65 +588,109 @@ export function callStatus(db: DatabaseSync, id: number, login: string): { id: n
  * claims, so the secret is never stored; the promise is kept from the start, so a repeat that arrives while the first is
  * still being answered waits for it.
  */
-const claimReplies = new Map<string, { at: number; reply: Promise<ClaimReply> }>();
+const claimReplies = new Map<string, { at: number; reply: Promise<ClaimReply>; ticket?: Ticket }>();
 
 /**
  * Gives the caller the first queued call it may take (claimOrder), filtered by eligibility. `canWrite` reads the caller's live
  * write permission on a repo. The reply carries the user's reserve either way. A claim repeated with the same request id
  * gets the first one's reply. While the login's leases are at the user's "Max calls at once" (max-calls.ts), only a follow-up
  * of its own sessions is leased, one past the limit at most, so a session can finish; otherwise the reply says why.
+ * With `hold`, a protocol 4 claim that finds nothing and has no reason to give waits for a call up to its `wait` (claim-wait.ts).
  */
-export function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
+export function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now(), hold?: Hold): Promise<ClaimReply> {
   // Entries are in claim order, so the expired ones come first.
   for (const [k, v] of claimReplies) { if (v.at >= nowMs - scaled(CLAIM_ID_TTL_S * 1000)) break; claimReplies.delete(k); }
   const key = `${caller.tokenId}:${claim.requestId}`;
   const seen = claimReplies.get(key);
-  if (seen) return seen.reply;
-  const reply = claimNew(db, caller, claim, canWrite, nowMs);
-  claimReplies.set(key, { at: nowMs, reply });
+  if (seen) {
+    if (hold) seen.ticket?.attach(hold.signal);
+    return seen.reply;
+  }
+  // Protocol 3 helpers send no wait (parseClaim); their claims are answered at once.
+  const ms = hold && claim.protocol >= 4 ? holdMs(claim.wait) : 0;
+  const ticket = hold && ms > 0 ? new Ticket(hold.signal) : undefined;
+  const reply = claimNew(db, caller, claim, canWrite, nowMs, hold && ticket ? { ...hold, ms, ticket } : undefined);
+  claimReplies.set(key, { at: nowMs, reply, ticket });
   reply.catch(() => { if (claimReplies.get(key)?.reply === reply) claimReplies.delete(key); });
+  // Every request for a held claim left before its reply: a retry with the same id claims afresh. A lease already given stays
+  // remembered, so the retry gets it.
+  if (ticket) ticket.onGone = () => void reply.then((r) => { if (!r.lease && claimReplies.get(key)?.reply === reply) claimReplies.delete(key); }, () => {});
   return reply;
 }
 
-async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number): Promise<ClaimReply> {
+/**
+ * How a claim may wait (claim-wait.ts): `signal` aborts when the request's connection closes before its reply; `blocked` says
+ * the claim has a reason to give outside its tries (a write permission GitHub could not confirm), so it is answered at once.
+ * `waits.closed` (shutting down) answers at once too.
+ */
+export type Hold = { waits: ClaimWaits; signal: AbortSignal; blocked: () => boolean };
+
+async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number, hold?: Hold & { ms: number; ticket: Ticket }): Promise<ClaimReply> {
+  const c = prepareClaim(db, caller, claim, canWrite, nowMs);
+  if ("reply" in c) return c.reply;
+  const live = hold?.ticket.live ?? (() => true);
+  const first = await c.attempt(nowMs, { quick: false, live });
+  if (first) return first;
+  c.idle(nowMs);
+  if (!hold || hold.waits.closed || hold.ticket.gone || hold.blocked()) return c.empty(nowMs, false);
+  return hold.waits.hold(hold.ticket, nowMs + hold.ms, { ...c, blocked: hold.blocked });
+}
+
+/**
+ * The once-per-claim part of a claim: the helper's version, and a lease of a repeated claim the dashboard no longer remembers.
+ * Returns a reply when the claim is answered here, else its tries: `attempt` re-reads the cool-off, the accepted models, the
+ * repos and the user's max calls at once each time, and gives null when there is nothing to take and no reason to give.
+ */
+function prepareClaim(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number):
+  { reply: ClaimReply } | { attempt: ClaimTry; idle: (nowMs: number) => void; empty: (nowMs: number, held: boolean) => EmptyReply } {
   if (olderVersion(claim.helperVersion, REQUIRED_HELPER)) throw new HttpError(409, `helper ${claim.helperVersion} is older than ${REQUIRED_HELPER}, the oldest this server accepts; download the current helper from ${ROUTES.helper}`);
   // A repeat the dashboard no longer remembers (it restarted in between): the lease the first claim took cannot be given
   // out again, as only its secret's hash is stored, so it goes back to the queue unused and this claim is answered afresh.
   const orphan = db.prepare("SELECT id, run_id, lease_secret_hash FROM main.remote_calls WHERE token_id = ? AND claim_id = ? AND state = 'leased'").get(caller.tokenId, claim.requestId) as { id: number; run_id: number | null; lease_secret_hash: string | null } | undefined;
   if (orphan) unlease(db, { id: Number(orphan.id), runId: orphan.run_id, hash: orphan.lease_secret_hash }, "returned to the queue: the claim that leased it was repeated after a server restart", nowMs);
   expireLeases(db, nowMs);
-  const cooled = cooloffOf(db, caller.login, nowMs);
-  if (cooled) return { lease: null, retryAfter: Math.ceil((cooled.until - nowMs) / 1000), reason: cooled.reason, until: cooled.until, reserve: userReserve(db, caller.login) };
-  const accepted = acceptedModels(db), floors = minEfforts(db);
-  const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
-  if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
-  const can = memoWrite(canWrite), others = idleOthers(db, caller.login, nowMs);
-  const repos = claimRepos(db, caller.login, claim.repos);
   const fast = claim.fastLane === true;
-  const max = userMaxCalls(db, caller.login);
-  const atLimit = (): ClaimReply => ({ lease: null, retryAfter: CLAIM_RETRY_S, reason: `your helpers run ${max} calls, your limit of calls at once (Connect page, My settings)`, reserve: userReserve(db, caller.login) });
-  const full = max !== null && leasedBy(db, caller.login) >= max;
-  let limited = full;
-  for (const r of claimOrder(db, caller, tiers, repos, claim.sessions ?? [], nowMs, fast)) {
-    // Only follow-ups of the helper's own sessions carry a parent here (claimOrder).
-    if (full && r.parent_id === null) continue;
-    if (!(await eligible(caller, r, can, others))) continue;
-    const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now(), max === null ? null : r.parent_id !== null ? max + 1 : max);
-    if (lease === "limit") {
-      limited = true;
-      continue;
+  // What the latest full try took, for a quick try's look at the queue.
+  let tiers = new Set<Tier>(), repos: ReadonlySet<string> | null = null;
+  const attempt: ClaimTry = async (now, { quick, live }) => {
+    if (quick && !claimOrder(db, caller, tiers, repos, claim.sessions ?? [], now, fast).length) return null;
+    const cooled = cooloffOf(db, caller.login, now);
+    if (cooled) return { lease: null, retryAfter: Math.ceil((cooled.until - now) / 1000), reason: cooled.reason, until: cooled.until, reserve: userReserve(db, caller.login) };
+    const accepted = acceptedModels(db), floors = minEfforts(db);
+    tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
+    if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
+    const can = memoWrite(canWrite), others = idleOthers(db, caller.login, now);
+    repos = claimRepos(db, caller.login, claim.repos);
+    const max = userMaxCalls(db, caller.login);
+    const full = max !== null && leasedBy(db, caller.login) >= max;
+    let limited = full;
+    for (const r of claimOrder(db, caller, tiers, repos, claim.sessions ?? [], now, fast)) {
+      // Only follow-ups of the helper's own sessions carry a parent here (claimOrder).
+      if (full && r.parent_id === null) continue;
+      if (!(await eligible(caller, r, can, others))) continue;
+      // The client left while eligibility was read: nothing is leased to nobody.
+      if (!live()) return null;
+      const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now(), max === null ? null : r.parent_id !== null ? max + 1 : max);
+      if (lease === "limit") {
+        limited = true;
+        continue;
+      }
+      if (!lease) continue;
+      takeFromQueueCache(db, Number(r.id));
+      // The fast lane says nothing about the helper's other slots: only their claims mark it idle or busy.
+      if (!fast) db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
+      return { lease, reserve: userReserve(db, caller.login) };
     }
-    if (!lease) continue;
-    takeFromQueueCache(db, Number(r.id));
-    // The fast lane says nothing about the helper's other slots: only their claims mark it idle or busy.
-    if (!fast) db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
-    return { lease, reserve: userReserve(db, caller.login) };
-  }
-  if (limited) return atLimit();
-  if (fast) return { lease: null, retryAfter: CLAIM_RETRY_S, reserve: userReserve(db, caller.login) };
-  // An idle helper, with what it takes (the user's picks narrowed by the helper's list): an author's claim gives way to it (idleOthers).
-  db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(nowMs, JSON.stringify([...tiers]), repos ? JSON.stringify([...repos]) : null, caller.tokenId);
-  return { lease: null, retryAfter: CLAIM_RETRY_S, reserve: userReserve(db, caller.login) };
+    if (limited) return { lease: null, retryAfter: CLAIM_RETRY_S, reason: `your helpers run ${max} calls, your limit of calls at once (Connect page, My settings)`, reserve: userReserve(db, caller.login) };
+    return null;
+  };
+  return {
+    attempt,
+    // An idle helper, with what it takes (the user's picks narrowed by the helper's list): an author's claim gives way to it
+    // (idleOthers). The fast lane says nothing about the helper's other slots.
+    idle: (now) => { if (!fast) db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(now, JSON.stringify([...tiers]), repos ? JSON.stringify([...repos]) : null, caller.tokenId); },
+    empty: (_now, held) => ({ lease: null, retryAfter: held ? scaledS(1) : CLAIM_RETRY_S, reserve: userReserve(db, caller.login) }),
+  };
 }
 
 // ---- lease routes ------------------------------------------------------------------

@@ -7,8 +7,9 @@
 // reset and 502 faults that are "after".
 // Control port (JSON): GET /state; POST /set {rate502, rateReset, rate429, retryAfter, latMin, latMax, afterShare};
 // POST /down?s=N (refuse connections for N seconds; the listener closes and reopens); POST /up.
-// Every finished request is one line in the log: { t, route, method, status, upMs, totalMs, fault }. `upMs` is the
-// dashboard's own time from the forwarded request to the end of its answer; `fault` is empty for an untouched request.
+// Every finished request is one line in the log: { t, route, method, status, upMs, heldMs, totalMs, fault }. `upMs` is the
+// dashboard's own time from the forwarded request to the end of its answer, less the time a long-polling claim waited for a
+// call (`heldMs`, the reply's X-Held-Ms); `fault` is empty for an untouched request.
 import { createServer, request } from "node:http";
 import { appendFileSync } from "node:fs";
 
@@ -27,10 +28,10 @@ export function startProxy(o) {
   const proxy = createServer(async (req, res) => {
     const t0 = Date.now();
     const route = routeOf(req.url ?? "/");
-    const done = (status, fault, upMs) => {
+    const done = (status, fault, upMs, heldMs = 0) => {
       stats.requests++;
       if (fault) stats.faults[fault] = (stats.faults[fault] ?? 0) + 1;
-      log({ t: t0, route, method: req.method, status, upMs, totalMs: Date.now() - t0, fault: fault ?? "" });
+      log({ t: t0, route, method: req.method, status, upMs, heldMs, totalMs: Date.now() - t0, fault: fault ?? "" });
     };
     const reset = (fault, upMs) => { done(0, fault, upMs); req.socket.destroy(); };
     const after = roll(cfg.afterShare);
@@ -49,21 +50,26 @@ export function startProxy(o) {
       const parts = [];
       ur.on("data", (c) => parts.push(c));
       ur.on("end", () => {
-        const upMs = Date.now() - up0;
+        // A long-polling claim waits on purpose; its wait (X-Held-Ms) is not the dashboard's latency.
+        const heldMs = Number(ur.headers["x-held-ms"] ?? 0) || 0;
+        const upMs = Math.max(0, Date.now() - up0 - heldMs);
         const dropAfter = after && roll(cfg.rateReset), failAfter = after && roll(cfg.rate502);
         if (dropAfter) return reset("reset-after", upMs);
         if (failAfter) { res.writeHead(502, { "content-type": "text/plain" }).end("Bad Gateway"); return done(502, "502-after", upMs); }
         const h = { ...ur.headers };
         delete h.connection; delete h["transfer-encoding"];
         res.writeHead(ur.statusCode ?? 502, h).end(Buffer.concat(parts));
-        done(ur.statusCode ?? 502, lat ? "latency" : "", upMs);
+        done(ur.statusCode ?? 502, lat ? "latency" : "", upMs, heldMs);
       });
       ur.on("error", () => { res.destroy(); done(0, "upstream-error", Date.now() - up0); });
     });
     fwd.on("error", () => {
+      if (res.destroyed) return done(0, "client-gone", Date.now() - up0);
       if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" }).end("upstream unreachable");
       done(502, "upstream-down", Date.now() - up0);
     });
+    // The helper gave up (its own timeout): the dashboard sees the connection close, as it would without the proxy.
+    res.on("close", () => { if (!res.writableEnded) fwd.destroy(); });
     fwd.end(body);
   });
   proxy.on("connection", (s) => { sockets.add(s); s.on("close", () => sockets.delete(s)); });
