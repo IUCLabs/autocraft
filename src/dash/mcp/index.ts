@@ -535,7 +535,7 @@ async function listMergeQueue(env: McpEnv, raw: unknown): Promise<ToolResult> {
     batches: page.batches.map((b) => ({ repo: b.repo, branch: b.branch, state: b.state, size: b.size, prs: b.prs.map(item), pr: b.prUrl, summary: b.summary })),
     preapprovedBeforeReview: pending,
   };
-  const header = `${page.total} PR${page.total === 1 ? "" : "s"} in the merge queue; showing ${prs.length}, and ${pending.length} pre-approved before review.${next !== null ? ` More: call list_merge_queue again with cursor "${next}".` : ""}`;
+  const header = `${rowsDone ? `More pre-approved merges: ${pending.length} before review.` : `${page.total} PR${page.total === 1 ? "" : "s"} in the merge queue; showing ${prs.length}, and ${pending.length} pre-approved before review.`}${next !== null ? ` More: call list_merge_queue again with cursor "${next}".` : ""}`;
   return show(header, "merge queue", data);
 }
 
