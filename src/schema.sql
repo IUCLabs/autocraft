@@ -1182,7 +1182,9 @@ CREATE TABLE IF NOT EXISTS merge_batches (
   fork TEXT,                          -- <owner>/<repo> the branch was pushed to; null before the push
   merge_sha TEXT,                     -- merge commit of the batch PR, when the merge command reported it
   build_state TEXT,                   -- batch-build feature: NULL (not built) | pending | passed | failed | skipped
-  build_tries INTEGER NOT NULL DEFAULT 0 -- build tasks queued for the batch
+  build_tries INTEGER NOT NULL DEFAULT 0, -- build tasks queued for the batch
+  ci_reruns INTEGER NOT NULL DEFAULT 0, -- failed runs of the batch PR rerun (once, when no PR was traced)
+  ci_rerun_at TEXT                    -- when that rerun was asked for
 );
 CREATE INDEX IF NOT EXISTS merge_batches_repo ON merge_batches(repo, state);
 CREATE TABLE IF NOT EXISTS merge_batch_prs (

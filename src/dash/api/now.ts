@@ -109,7 +109,7 @@ const SCAN = 100;
 const WRITE_SLACK_MS = 2 * 60_000;
 
 /** Audit actions of a merge batch that are not GitHub writes on an item, with their labels. */
-const BATCH_ACTIONS: Record<string, string> = { "batch-stop": "stopped", "batch-hold": "PR held", "batch-remove": "PR removed", "batch-merged-after-end": "merged after it ended" };
+const BATCH_ACTIONS: Record<string, string> = { "batch-stop": "stopped", "batch-hold": "PR held", "batch-blame": "failure traced to a PR", "batch-rerun": "failed CI runs rerun", "batch-remove": "PR removed", "batch-merged-after-end": "merged after it ended" };
 const BATCH_LABELS: Record<string, string> = { ...BATCH_ACTIONS, "batch-push": "pushed", "batch-pr": "pull request opened", "batch-pr-close": "PR closed" };
 
 const refOf = (target: string | null): { repo: string; number: number } | null => {

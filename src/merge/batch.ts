@@ -5,9 +5,12 @@
 //
 //   autocraft merge-batches --repo R [--limit N]    (the runner's merge step calls runBatches)
 //
-// One run advances every batch of the repo in flight, then starts the next batch when none is left. A failed
-// batch is split in half and each half retried; a single PR that fails goes on hold. When the default branch
-// moves, the batch is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
+// One run advances every batch of the repo in flight, then starts the next batch when none is left. A red batch is
+// worked out without a model, cheapest first: checks that were red on the default branch at the base too blame no PR
+// (the batch is rebuilt on a newer head, or waits); a failure the log traces to members (batch-blame.ts) tests those
+// alone and rebuilds the rest without them; otherwise the failed runs are rerun once (a flake); then the batch is
+// split in half and each half retried. A single PR still red goes on hold. When the default branch moves, the batch
+// is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
 import { ownPrSelect } from "../github/adopt.ts";
 import { baseScopeRepos, scopeRepos } from "../pilot.ts";
 import { isFastTracked, workScores } from "../fasttrack.ts";
@@ -27,7 +30,10 @@ import { rustPlan } from "../worker/rust.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardBatchMerge, guardRepo, liveOf, type GuardedRepo } from "../core/guard.ts";
 import { claimForWork } from "../github/claim.ts";
-import { ghClosePr, ghOpenPr, mergeViaCommand, pushOwnBranch, type Writer } from "../github/write.ts";
+import { ghClosePr, ghOpenPr, ghRerunMainFailed, mergeViaCommand, pushOwnBranch, type Writer } from "../github/write.ts";
+import { readFailure } from "../cifix/logs.ts";
+import type { CiFailure } from "../cifix/types.ts";
+import { failureLocations, MAX_SUSPECTS, suspects } from "./batch-blame.ts";
 import { type Exec, exec, fixupDir } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
 import { setPipelineLogin } from "../github/pipeline-account.ts";
@@ -42,7 +48,7 @@ import { baseRefusal, recordLiveBase } from "./base.ts";
 import { allowFailedArgs, prInfo, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
 import { redMainRepos } from "../mainci/index.ts";
-import { effectiveCi } from "../optional-checks.ts";
+import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, type QueueEntry } from "./queue.ts";
 import { planned } from "../core/select.ts";
 import { envVar } from "../env.ts";
@@ -51,6 +57,10 @@ import { leaseItem } from "../runner/leases.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 
 const ACTOR = "batch";
+/** How long the one rerun of a red batch PR gets to report new results before the batch is split anyway. */
+export const RERUN_WAIT_MS = 45 * 60_000;
+/** Batches in flight per repo at most; a split or a trace starts no more. */
+const MAX_ACTIVE = 8;
 const PR_URL = /^https:\/\/github\.com\/[A-Za-z0-9-]+\/[A-Za-z0-9._-]+\/pull\/(\d+)$/;
 
 export type BatchDeps = {
@@ -135,9 +145,12 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (r.code !== 0) log(`  ${b.branch}: could not close the batch PR: ${oneLine(r.stderr)}`);
   };
 
-  /** Builds a batch of the candidates, in order, from the current head of the default branch; null when no PR could be merged. */
-  async function startBatch(cands: Cand[], max: number, parentId: number | null): Promise<number | null> {
-    const base = await git.fetchMain(ownerOf(repo), repo, branch);
+  /**
+   * Builds a batch of the candidates, in order, from the current head of the default branch (or `onBase`, a head the caller
+   * fetched for several batches that must share it); null when no PR could be merged.
+   */
+  async function startBatch(cands: Cand[], max: number, parentId: number | null, onBase?: string): Promise<number | null> {
+    const base = onBase ?? await git.fetchMain(ownerOf(repo), repo, branch);
     const who = await whoAmI(d.exec);
     const author = await commitIdentity(db, repo, async () => who);
     setPipelineLogin(db, who.login);
@@ -249,10 +262,147 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     log(`  ${b.branch}: ${why}; splitting ${members.length} PRs in half`);
     const mid = Math.ceil(members.length / 2);
     for (const half of [members.slice(0, mid), members.slice(mid)]) {
-      if (activeBatches(db, repo).length >= 8) break;
+      if (activeBatches(db, repo).length >= MAX_ACTIVE) break;
       if (left() <= 0) break;
       await startBatch(asCands(half), left(), b.id);
     }
+  }
+
+  /**
+   * The failure points at `traced` (fewer than all members): each of them is tested alone in a batch of its own, which
+   * holds it only if it is red there too, and the others are rebuilt without them. The batch size stays: the batch
+   * was not too big, one PR broke it.
+   */
+  async function drop(b: BatchRow, members: BatchMember[], traced: Map<number, string>, why: string): Promise<void> {
+    // A control may have ended the batch while the caller's GitHub calls ran.
+    if (!ACTIVE_BATCH.includes(getBatch(db, b.id).state)) return;
+    cancelBuild(db, b, ACTOR);
+    const list = [...traced].map(([n, w]) => `#${n} (${w})`).join("; ");
+    updateBatch(db, b.id, at(), { state: "split", summary: oneLine(`${why}; traced to ${list}: tested alone, the rest rebuilt without`, 400) });
+    await closePr(b, `Closing: the batch failed and its failure points at ${[...traced.keys()].map((n) => `#${n}`).join(", ")}. Those are tested alone; the other PRs are rebuilt without them.`);
+    for (const [n, w] of traced) audit(db, ACTOR, "batch-blame", refOf(n), { run: runId, batch: b.branch, reason: oneLine(w, 200) });
+    s.split.push(b.branch);
+    log(`  ${b.branch}: ${why}; traced to ${list}`);
+    // Every batch started here is built on one head, so a suspect alone is never red from a change the others did not have.
+    const base = await git.fetchMain(ownerOf(repo), repo, branch);
+    // The suspects go first: their tests alone are what the trace asks for. A rest that finds no room returns to the queue
+    // and is batched again later; nothing of it is lost.
+    for (const m of members.filter((x) => traced.has(x.number) && !mergeHeld(db, repo, x.number))) {
+      if (left() <= 0 || activeBatches(db, repo).length >= MAX_ACTIVE) break;
+      await startBatch(asCands([m]), 1, b.id, base);
+    }
+    const rest = members.filter((m) => !traced.has(m.number) && !mergeHeld(db, repo, m.number));
+    if (rest.length && left() > 0 && activeBatches(db, repo).length < MAX_ACTIVE) await startBatch(asCands(rest), left(), b.id, base);
+  }
+
+  /** The members a failure's log text points at, when that is a trace worth following (some, not all, and few). */
+  async function traceOf(b: BatchRow, members: BatchMember[], text: string): Promise<Map<number, string> | null> {
+    if (members.length < 2) return null;
+    try {
+      const found = await suspects(git, b, members, failureLocations(text));
+      return found.size && found.size < members.length && found.size <= MAX_SUSPECTS ? found : null;
+    } catch (e) {
+      log(`  ${b.branch}: the failure could not be traced: ${oneLine(String((e as Error).message ?? e), 120)}`);
+      return null;
+    }
+  }
+
+  /** The failed checks of the batch tip with their log tails, or null when they cannot be read. Read-only. */
+  async function readBatchFailure(b: BatchRow): Promise<CiFailure | null> {
+    const gh = async (args: string[]): Promise<string> => {
+      const r = await d.exec("gh", args);
+      if (r.code !== 0) throw new Error(oneLine(r.stderr || r.stdout || `gh exited ${r.code}`));
+      return r.stdout;
+    };
+    try {
+      const r = await readFailure(gh, repo, b.commit_sha, optionalChecks(db, repo));
+      return r.kind === "failure" ? r.failure : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The gate checks that failed on the default branch at `sha`, from the main CI poll; null when that head was not polled. */
+  function redOnMainAt(sha: string): Set<string> | null {
+    const row = db.prepare("SELECT failing FROM main.main_ci WHERE repo = ? AND head_sha = ?").get(repo, sha) as { failing: string } | undefined;
+    if (!row) return null;
+    try {
+      return new Set((JSON.parse(row.failing) as { name?: string }[]).map((f) => f.name ?? "").filter(Boolean));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Upstream CI failed on the batch PR. In order: checks red on the default branch at the base too blame no PR; a
+   * failure the log traces drops those PRs (tested alone); otherwise the failed runs are rerun once; then the batch fails.
+   */
+  async function red(b: BatchRow, members: BatchMember[], names: string[]): Promise<void> {
+    const optional = new Set(optionalChecks(db, repo));
+    const failing = names.filter((n) => !optional.has(n));
+    const why = `upstream CI failed on the batch PR${failing.length ? `: ${failing.join(", ")}` : ""}`;
+    const atBase = redOnMainAt(b.base_sha);
+    if (atBase && failing.length && failing.every((n) => atBase.has(n))) {
+      const head = await d.mainHead(repo, branch);
+      if (head && head !== b.base_sha) return supersede(b, members, `${failing.join(", ")} failed on ${branch} at the base too; rebuilt on ${short(head)}`);
+      const note = `${failing.join(", ")} failed on ${branch} at the base too; waits for ${branch} to change`;
+      if (b.summary !== note) { updateBatch(db, b.id, at(), { summary: note }); log(`  ${b.branch}: ${note}`); }
+      s.waiting.push(b.branch);
+      return;
+    }
+    const failure = await readBatchFailure(b);
+    if (b.ci_reruns && b.ci_rerun_at) {
+      // Only results from after the rerun say it failed again; older ones are what the rerun replaces. Results that cannot
+      // be read are not fresh either: a GitHub hiccup must not split or hold before the wait is over.
+      const fresh = !!failure && failure.checks.every((c) => !!c.completedAt && Date.parse(c.completedAt) > Date.parse(b.ci_rerun_at!));
+      if (!fresh && d.now().getTime() < Date.parse(b.ci_rerun_at) + RERUN_WAIT_MS) { s.waiting.push(b.branch); return; }
+    }
+    const traced = failure && await traceOf(b, members, failure.checks.flatMap((c) => c.steps.map((x) => x.tail)).join("\n"));
+    // A control may have ended the batch while the log and trace reads ran.
+    const active = (): boolean => ACTIVE_BATCH.includes(getBatch(db, b.id).state);
+    if (!active()) return;
+    if (traced) return drop(b, members, traced, why);
+    if (!b.ci_reruns) {
+      const runs = [...new Set((failure?.checks ?? []).filter((c) => c.conclusion === "failure" && c.runId !== null).map((c) => c.runId!))];
+      const g = runs.length ? grant() : null;
+      if (g) {
+        // GitHub's rollup is red as soon as one job fails, while the run's other jobs go on, and it refuses to rerun the
+        // failed jobs of a run in progress: the one rerun waits until every failed check's run is completed.
+        if (await anyRunInProgress(runs)) {
+          if (!active()) return;
+          const note = `${why}; waiting for the failed CI runs to finish before the one rerun`;
+          if (b.summary !== note) { updateBatch(db, b.id, at(), { summary: oneLine(note, 400) }); log(`  ${b.branch}: ${note}`); }
+          s.waiting.push(b.branch);
+          return;
+        }
+        if (!active()) return;
+        // Recorded before the calls: one rerun per batch, also when this process dies in the middle of them.
+        updateBatch(db, b.id, at(), { ci_reruns: 1, ci_rerun_at: at(), summary: oneLine(`${why}; no PR traced, rerunning the failed runs once`, 400) });
+        let refused = 0;
+        for (const id of runs) if ((await ghRerunMainFailed(w, g, d.exec, { repo, head: b.commit_sha, runId: id }, { batch: b.branch })).code !== 0) refused++;
+        audit(db, ACTOR, "batch-rerun", `${repo}:${b.branch}`, { run: runId, runs, refused });
+        log(`  ${b.branch}: ${why}; no PR traced, reran ${runs.length} failed run${runs.length === 1 ? "" : "s"} once${refused ? ` (${refused} refused)` : ""}`);
+        // Every call refused: no rerun is under way, so there is nothing to wait for.
+        if (runs.length && refused === runs.length) return active() ? fail(b, why) : undefined;
+        s.waiting.push(b.branch);
+        return;
+      }
+    }
+    if (!active()) return;
+    return fail(b, why);
+  }
+
+  /** Whether any of the Actions runs is known to be not completed. A run that cannot be read counts as completed: the rerun is refused if it is not. */
+  async function anyRunInProgress(runs: number[]): Promise<boolean> {
+    for (const id of runs) {
+      try {
+        const r = await d.exec("gh", ["api", `repos/${slugOf(repo)}/actions/runs/${id}`]);
+        if (r.code !== 0) continue;
+        const st = (JSON.parse(r.stdout) as { status?: string }).status;
+        if (st && st !== "completed") return true;
+      } catch { /* unreadable: treated as completed */ }
+    }
+    return false;
   }
 
   /** A push or PR creation failed: the error is kept on the batch, the next try waits longer, and the fifth failure ends the batch so its PRs go back to the queue. */
@@ -362,10 +512,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const live = members.filter((m) => checks.some((c) => c.number === m.number && c.state === "OPEN" && c.head_oid === m.head_oid));
     if (live.length < members.length) return supersede(b, live, "a PR in the batch was closed, merged or pushed to");
     const ci = effectiveCi(db, repo, ch.overall, ch.checks);
-    if (ci === "failure") {
-      const names = ch.checks.filter((c) => c.state === "failure").map((c) => c.name);
-      return fail(b, `upstream CI failed on the batch PR${names.length ? `: ${names.join(", ")}` : ""}`);
-    }
+    if (ci === "failure") return red(b, members, ch.checks.filter((c) => c.state === "failure").map((c) => c.name));
     if (ch.mergeable === "CONFLICTING") return supersede(b, members, `the batch PR conflicts with ${branch}`);
     const moved = await movedAway(b);
     if (moved) return supersede(b, members, moved);
@@ -466,7 +613,10 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
         return;
       }
       updateBatch(db, b.id, at(), { build_state: "failed" });
-      const tail = oneLine(scrub(failureTail(db, task.id, out.step)), 150);
+      const text = scrub(failureTail(db, task.id, out.step));
+      const traced = await traceOf(b, members, text);
+      if (traced) return drop(getBatch(db, b.id), members, traced, `the combined tree failed at ${out.step}`);
+      const tail = oneLine(text, 150);
       return fail(getBatch(db, b.id), `the combined tree failed at ${out.step}${tail ? `: ${tail}` : ""}`);
     }
     // A build-environment error says nothing about the PRs: try again with growing waits, then open the PR anyway; never split or hold.
