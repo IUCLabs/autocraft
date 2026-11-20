@@ -244,6 +244,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["remote_calls", "picked_by", "TEXT COLLATE NOCASE"],
   ["remote_calls", "picked_at", "INTEGER"],
   ["remote_calls", "pick_until", "INTEGER"],
+  ["mcp_tokens", "can_agent", "INTEGER NOT NULL DEFAULT 0"],
+  ["runner_logins", "want_agent", "INTEGER NOT NULL DEFAULT 1"],
+  ["runner_logins", "want_answer", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

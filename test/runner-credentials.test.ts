@@ -1,5 +1,5 @@
 // MCP Connector and Task Runner credentials: the one-time split of older tokens, the claim protocols the server accepts,
-// which routes each kind may use, the device login, and removing a runner.
+// which routes each kind may use, the device login with its scopes, and removing a runner.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import type { RunnersReply } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { connect, splitRunnerTokens } from "../src/db.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
+import { answering } from "../src/dash/mcp/index.ts";
 import { createToken } from "../src/dash/mcp/tokens.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { randomToken, sha256hex } from "../src/dash/server/crypto.ts";
@@ -16,6 +17,7 @@ import { FakeProvider } from "../src/dash/server/provider.ts";
 import { HttpError, RateLimiter } from "../src/dash/server/util.ts";
 import { parseClaim } from "../src/remote/calls.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
+import { setMaintainerWrites } from "../src/settlers.ts";
 import { PROTOCOL_VERSION, ROUTES, type LoginStartReply, type PendingRunnerLogin } from "../src/remote/protocol.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -71,6 +73,7 @@ describe("over HTTP", () => {
     setInferenceMode(db, "user-local", "test");
     addLogin(db, "cli", "maint", "maintainer", null);
     addLogin(db, "cli", "watcher", "viewer", null);
+    addLogin(db, "cli", "boss", "operator", null);
     const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: file, AUTOCRAFT_DEV_PERMS: perms });
     const limiter = new RateLimiter(60, 3600_000);
     const s = await startServer({ config, db, provider: new FakeProvider(perms), feedbackLimiter: limiter, routes: apiRoutes({ limiter }) });
@@ -89,8 +92,8 @@ describe("over HTTP", () => {
   const claimBody = () => ({ requestId: `req-${randomToken(8)}`, protocol: PROTOCOL_VERSION, helperVersion: "1.3.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } });
   const claim = (bearer: string) => post(ROUTES.claim, claimBody(), bearer);
   const poll = async (credential: string) => (await post(ROUTES.loginPoll, {}, credential)).body.state;
-  const start = async (credential: string) => {
-    const r = await post(ROUTES.loginStart, { credentialHash: sha256hex(credential), label: "laptop", machine: { hostname: "box1", platform: "linux", arch: "x64" }, helperVersion: "1.3.0" });
+  const start = async (credential: string, scopes?: { agent?: boolean; answer?: boolean }) => {
+    const r = await post(ROUTES.loginStart, { credentialHash: sha256hex(credential), label: "laptop", machine: { hostname: "box1", platform: "linux", arch: "x64" }, helperVersion: "1.3.0", ...(scopes && { scopes }) });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     return r.body as unknown as LoginStartReply;
   };
@@ -120,7 +123,13 @@ describe("over HTTP", () => {
     };
   }
 
-  test("a connector token cannot claim or report status; a runner credential cannot use /mcp", async () => {
+  const toolNames = async (token: string) => {
+    const r = await post("/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }, token);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return ((r.body.result as { tools: { name: string }[] }).tools).map((t) => t.name);
+  };
+
+  test("a connector token cannot claim or report status; a runner credential uses /mcp only with agent access", async () => {
     const connector = createToken(db, "maint", "agent").token;
     const runner = createToken(db, "maint", "desk", { kind: "runner" }).token;
     const refused = await claim(connector);
@@ -130,7 +139,49 @@ describe("over HTTP", () => {
     assert.equal((await claim(runner)).status, 200);
     const mcp = (token: string) => post("/mcp", { jsonrpc: "2.0", id: 1, method: "ping" }, token);
     assert.equal((await mcp(connector)).status, 200);
-    assert.equal((await mcp(runner)).status, 403);
+    const noAgent = await mcp(runner);
+    assert.equal(noAgent.status, 403);
+    assert.match(String((noAgent.body.error as { message: string }).message), /tick Agent access/);
+  });
+
+  test("a runner's scopes: agent access opens /mcp, answering adds the answer tools, and the owner changes both", async () => {
+    answering.enabled = true;
+    try {
+      const boss = await signedIn("boss");
+      const { token, row } = createToken(db, "boss", "studio", { kind: "runner", canAgent: true });
+      const tools = await toolNames(token);
+      assert.ok(tools.includes("list_inbox"), tools.join());
+      assert.ok(!tools.includes("answer_decision"));
+      const list = await boss<RunnersReply>("POST", "/api/runners/scopes", { id: row.id, agent: true, answer: true });
+      assert.deepEqual(list.runners.filter((r) => r.tokenId === row.id).map((r) => [r.agent, r.answer]), [[true, true]]);
+      assert.equal(list.answering, true);
+      assert.ok((await toolNames(token)).includes("answer_decision"));
+      assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'runner-scopes' AND login = 'boss'").get());
+      await boss("POST", "/api/runners/scopes", { id: row.id, agent: false, answer: false });
+      assert.equal((await post("/mcp", { jsonrpc: "2.0", id: 1, method: "ping" }, token)).status, 403);
+      await (await signedIn("maint"))("POST", "/api/runners/scopes", { id: row.id, agent: true, answer: false }, 404);
+    } finally {
+      answering.enabled = false;
+    }
+  });
+
+  test("approving with answering needs a login that settles decisions", async () => {
+    answering.enabled = true;
+    try {
+      const credential = `acrun_${randomToken(32)}`;
+      const { userCode } = await start(credential, { answer: true });
+      const maint = await signedIn("maint");
+      const card = await maint<PendingRunnerLogin>("GET", `/api/runners/pending?code=${userCode}`);
+      assert.deepEqual(card.scopes, { agent: true, answer: true });
+      await maint("POST", "/api/runners/approve", { code: userCode, agent: true, answer: true }, 403);
+      setMaintainerWrites(db, true);
+      const list = await maint<RunnersReply>("POST", "/api/runners/approve", { code: userCode, agent: true, answer: true });
+      assert.ok(list.runners.some((r) => r.label === "laptop" && r.agent && r.answer));
+      assert.ok((await toolNames(credential)).includes("answer_decision"));
+    } finally {
+      answering.enabled = false;
+      setMaintainerWrites(db, false);
+    }
   });
 
   test("device login: the runner starts, a maintainer looks up the code and approves, the runner polls and claims", async () => {
@@ -146,13 +197,15 @@ describe("over HTTP", () => {
     const maint = await signedIn("maint");
     const card = await maint<PendingRunnerLogin>("GET", `/api/runners/pending?code=${code}`);
     assert.deepEqual([card.label, card.machine.hostname, card.helperVersion, card.ip === card.yourIp], ["laptop", "box1", "1.3.0", true]);
-    const list = await maint<RunnersReply>("POST", "/api/runners/approve", { code: started.userCode, label: "work laptop" });
+    assert.deepEqual(card.scopes, { agent: true, answer: false });
+    const list = await maint<RunnersReply>("POST", "/api/runners/approve", { code: started.userCode, label: "work laptop", agent: false, answer: false });
     const mine = list.runners.find((r) => r.label === "work laptop");
     assert.ok(mine);
     assert.deepEqual(mine.machine, { hostname: "box1", platform: "linux", arch: "x64" });
+    assert.deepEqual([mine.agent, mine.answer], [false, false]);
     assert.equal(await poll(credential), "approved");
     assert.equal((await claim(credential)).status, 200);
-    await maint("POST", "/api/runners/approve", { code: started.userCode }, 404);
+    await maint("POST", "/api/runners/approve", { code: started.userCode, agent: true, answer: false }, 404);
     assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'runner-approve' AND login = 'maint'").get());
   });
 
@@ -162,12 +215,12 @@ describe("over HTTP", () => {
     const a = await start(late);
     db.prepare("UPDATE runner_logins SET expires_at = ? WHERE secret_hash = ?").run(Date.now() - 1, sha256hex(late));
     assert.equal(await poll(late), "expired");
-    await maint("POST", "/api/runners/approve", { code: a.userCode }, 404);
+    await maint("POST", "/api/runners/approve", { code: a.userCode, agent: true, answer: false }, 404);
     const no = `acrun_${randomToken(32)}`;
     const b = await start(no);
     await maint("POST", "/api/runners/deny", { code: b.userCode });
     assert.equal(await poll(no), "denied");
-    await maint("POST", "/api/runners/approve", { code: b.userCode }, 404);
+    await maint("POST", "/api/runners/approve", { code: b.userCode, agent: true, answer: false }, 404);
     assert.equal((await claim(no)).status, 401);
   });
 

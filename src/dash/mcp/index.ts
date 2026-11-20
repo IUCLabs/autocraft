@@ -43,7 +43,7 @@ export type McpEnv = {
   baseUrl: string | null;
   /** Feedback posts per login per hour (maintainers; operators are not limited, as on the dashboard). */
   limiter: RateLimiter;
-  /** The token was made to answer, its login is an operator now and answering is available: the answer tools are offered and allowed. */
+  /** The credential was made to answer, its login settles decisions now and answering is available: the answer tools are offered and allowed. */
   canAnswer: boolean;
   /** Spends one of the token's expensive calls (list_repos, list_fixups, list_merge_queue); the number of seconds to wait when it has none left, else 0. */
   expensive: () => number;
@@ -385,7 +385,7 @@ async function sendFeedback(env: McpEnv, raw: unknown): Promise<ToolResult> {
 }
 
 const NOT_YET = "answering from an agent needs you to sign in to AutoCraft again with GitHub App sign-in, which this server does not offer yet; answer on the dashboard";
-const NO_ANSWER = "this token cannot answer decisions: an operator makes an answering token on the dashboard (user menu, Connect agent)";
+const NO_ANSWER = "this credential cannot answer decisions: on the dashboard's Connect page, make a token that answers decisions, or tick Can answer decisions and approve merges for this Task Runner";
 const PERMISSION_HINT = " (your GitHub permission is read with your newest dashboard session; sign in to the dashboard if you have none)";
 
 /** The one place that refuses the answer tools while answering is not available. */

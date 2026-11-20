@@ -2,12 +2,13 @@ import { GaugeIcon, TerminalWindowIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
-import type { HelperReadiness, Machine, RunnerInfo, UsageWindow } from "../../api/types";
+import type { HelperReadiness, LoginScopes, Machine, RunnerInfo, UsageWindow } from "../../api/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
+import { Switch } from "../../ui/atoms/Switch";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { Block } from "../../ui/molecules/Block";
 import { CheckRow } from "../../ui/molecules/CheckRow";
@@ -42,6 +43,12 @@ const readinessBadge = (h: RunnerInfo): { text: string; tone: Tone } => {
 
 const used = (w: UsageWindow | null | undefined) => (w ? `${Math.round(w.usedPercent)}%` : "–");
 
+const AGENT = "Agent access";
+const ANSWER = "Can answer decisions and approve merges";
+/** Answering works only through agent access: ticking it ticks agent access, and unticking agent access unticks it. */
+const withAgent = (s: LoginScopes, agent: boolean): LoginScopes => ({ agent, answer: agent && s.answer });
+const withAnswer = (s: LoginScopes, answer: boolean): LoginScopes => ({ agent: s.agent || answer, answer });
+
 /** The user's Task Runners, and the approval of a device login (`?runner=CODE`, or a typed code). */
 export function Runners() {
   const [sp, setSp] = useSearchParams();
@@ -57,7 +64,7 @@ export function Runners() {
   return (
     <Block className="mt-4" flush title={<SectionTitle icon={TerminalWindowIcon}>Task Runners</SectionTitle>} aside={data ? String(data.runners.length) : undefined}>
       {code ? (
-        <ApprovalCard key={code} code={code} onDone={() => setCode(null)} />
+        <ApprovalCard key={code} code={code} answering={!!data?.answering} onDone={() => setCode(null)} />
       ) : (
         <form
           className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3"
@@ -78,7 +85,7 @@ export function Runners() {
       {data && data.runners.length > 0 && (
         <ul>
           {data.runners.map((r) => (
-            <RunnerRow key={r.tokenId} r={r} />
+            <RunnerRow key={r.tokenId} r={r} answering={data.answering} />
           ))}
         </ul>
       )}
@@ -86,11 +93,12 @@ export function Runners() {
   );
 }
 
-function RunnerRow({ r }: { r: RunnerInfo }) {
+function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
   const api = useApi();
   const write = useWrite();
   const b = readinessBadge(r);
   const isNew = nowMs() - Date.parse(r.createdAt) < NEW_MS;
+  const setScopes = (s: LoginScopes) => void write.run("scopes", () => api.runners.setScopes(r.tokenId, s));
   return (
     <li className="flex items-start gap-3 border-b border-line px-4 py-2.5 last:border-0">
       <div className="min-w-0 flex-1">
@@ -130,6 +138,18 @@ function RunnerRow({ r }: { r: RunnerInfo }) {
           <span>{r.lastSeen ? <>seen <TimeAgo iso={r.lastSeen} /></> : "never seen"}</span>
           <span>expires {day(r.expiresAt)}</span>
         </div>
+        <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1 text-sm text-ink/80">
+          <span className="flex items-center gap-2">
+            <Switch on={r.agent} onChange={(on) => setScopes(withAgent(r, on))} label={AGENT} busy={write.busy === "scopes"} />
+            {AGENT}
+          </span>
+          {(answering || r.answer) && (
+            <span className="flex items-center gap-2">
+              <Switch on={r.answer} onChange={(on) => setScopes(withAnswer(r, on))} label={ANSWER} busy={write.busy === "scopes"} />
+              {ANSWER}
+            </span>
+          )}
+        </div>
         {r.fresh && r.readiness !== "ready" && r.reason && <p className="mt-1 text-sm text-ink/65">{r.reason}</p>}
         {r.lastError && (
           <p className="mt-1 break-words text-sm text-bad">
@@ -143,12 +163,13 @@ function RunnerRow({ r }: { r: RunnerInfo }) {
   );
 }
 
-function ApprovalCard({ code, onDone }: { code: string; onDone: () => void }) {
+function ApprovalCard({ code, answering, onDone }: { code: string; answering: boolean; onDone: () => void }) {
   const api = useApi();
   const write = useWrite();
   const { data, error } = useQuery(`runner-pending:${code}`, (a) => a.runners.pending(code));
   const [label, setLabel] = useState<string | null>(null);
   const [elsewhere, setElsewhere] = useState(false);
+  const [ticks, setTicks] = useState<LoginScopes | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const shown = data !== undefined;
   useEffect(() => {
@@ -172,9 +193,10 @@ function ApprovalCard({ code, onDone }: { code: string; onDone: () => void }) {
     );
   const differ = data.ip !== data.yourIp;
   const name = label ?? data.label;
+  const scopes = ticks ?? { agent: data.scopes.agent, answer: answering && data.scopes.answer };
   const approve = () =>
     void write.run("approve", async () => {
-      await api.runners.approve(code, name.trim() && name.trim() !== data.label ? name.trim() : undefined);
+      await api.runners.approve(code, name.trim() && name.trim() !== data.label ? name.trim() : undefined, { agent: scopes.agent, answer: answering && scopes.answer });
       onDone();
     });
   const deny = () =>
@@ -210,6 +232,10 @@ function ApprovalCard({ code, onDone }: { code: string; onDone: () => void }) {
           <Input value={name} onChange={(e) => setLabel(e.target.value)} maxLength={60} aria-label="Task Runner label" className="w-full sm:max-w-xs" />
         </dd>
       </dl>
+      <div>
+        <CheckRow checked={scopes.agent} onChange={(on) => setTicks(withAgent(scopes, on))} title={AGENT} />
+        {answering && <CheckRow checked={scopes.answer} onChange={(on) => setTicks(withAnswer(scopes, on))} title={ANSWER} />}
+      </div>
       {differ && <CheckRow checked={elsewhere} onChange={setElsewhere} title="I started this on another machine" />}
       <div className="flex flex-wrap gap-2">
         <Button variant="primary" disabled={differ && !elsewhere} loading={write.busy === "approve"} onClick={approve}>

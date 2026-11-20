@@ -245,9 +245,10 @@ export function createHttpApi(): Api {
         if ((e as { status?: number }).status === 404) return null;
         throw e;
       }),
-      approve: (code, label) => post("/api/runners/approve", label === undefined ? { code } : { code, label }),
+      approve: (code, label, scopes) => post("/api/runners/approve", label === undefined ? { code, ...scopes } : { code, label, ...scopes }),
       deny: (code) => post("/api/runners/deny", { code }),
       revoke: (id) => post("/api/runners/revoke", { id }),
+      setScopes: (id, scopes) => post("/api/runners/scopes", { id, ...scopes }),
     },
     modelQueue: {
       get: () => get("/api/model-queue"),

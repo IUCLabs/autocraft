@@ -11,6 +11,7 @@ import type {
   MySettings,
   MySettingsChange,
   ModelQueue,
+  LoginScopes,
   PendingRunnerLogin,
   RunnersReply,
   DiscordLinkCode,
@@ -311,10 +312,12 @@ export interface Api {
     list(): Promise<RunnersReply>;
     /** A login waiting for approval under this user code, or null when none is (404). */
     pending(code: string): Promise<PendingRunnerLogin | null>;
-    /** `label`: the name the runner is listed under, when the user changed it. */
-    approve(code: string, label?: string): Promise<unknown>;
+    /** `label`: the name the runner is listed under, when the user changed it; `scopes`: the ticks the user approved. */
+    approve(code: string, label: string | undefined, scopes: LoginScopes): Promise<unknown>;
     deny(code: string): Promise<unknown>;
     revoke(id: number): Promise<unknown>;
+    /** Sets one of the user's runners' agent access and answering. */
+    setScopes(id: number, scopes: LoginScopes): Promise<unknown>;
   };
   /** The queued model calls of the user-local inference mode; maintainers and operators pick calls for their own Task Runners. */
   modelQueue: {
