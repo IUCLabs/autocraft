@@ -411,6 +411,33 @@ describe("autorepin", () => {
     assert.equal(s.at("Cargo.toml"), MANIFEST.replace(OLD, NEXT_OLD).trim());
   });
 
+  test("an off given while a try waits on git is not undone by that try: no wait, no lockfile task, no push", async () => {
+    const off = (s: Setup) => requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: null, at: new Date(Date.now() + 1000) });
+    /** Gives `off` while the git fetch that `match` picks out runs. */
+    const offDuring = (s: Setup, match: (args: string[]) => boolean): RepinDeps => {
+      let done = false;
+      return { ...s.deps, exec: async (cmd, args, opts) => {
+        if (!done && args.includes("fetch") && match(args)) { done = true; await off(s); }
+        return s.deps.exec!(cmd, args, opts);
+      } };
+    };
+    // Waiting for `next`: the off comes during the fetch of `next`.
+    const a = setup();
+    nextAt(NEXT_OLD);
+    await set(a, "next");
+    merged(a);
+    await drainRepins(a.w.db, offDuring(a, (x) => x.some((y) => y.includes("refs/heads/next"))));
+    assert.equal(row(a).state, "cancelled");
+    assert.equal(anyRepinDue(a.w.db, new Date(Date.now() + 3600_000)), false);
+    a.w.close();
+    // Merged: the off comes during the fetch of the pull request's head, before the lockfile task.
+    const b = setup();
+    await set(b);
+    merged(b);
+    await drainRepins(b.w.db, offDuring(b, (x) => x.some((y) => y.includes("refs/pull/"))));
+    assert.deepEqual([row(b).state, task(b), b.pushes, b.comments.length], ["cancelled", undefined, 0, 0]);
+  });
+
   test("whoever asked must still have write access when the merge comes", async () => {
     const s = setup();
     await set(s);

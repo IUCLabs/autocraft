@@ -197,6 +197,12 @@ const failed = (why: string): Ended => new Ended("failed", oneLine(why));
 class Retry extends Error {}
 /** The merge is not on the `via` branch yet: looked for again after BRANCH_POLL_MS, without counting a try. */
 class Wait extends Error {}
+/** The row no longer holds the request the step started on (an `off`, or a newer command, came meanwhile): nothing of the step is written. */
+class Superseded extends Error {}
+
+/** True while the row still holds the request `r` was read with: an `off` and a new command both move requested_at, and an end moves the state. */
+const still = (db: DatabaseSync, r: RepinRow): boolean =>
+  !!db.prepare(`SELECT 1 FROM main.autorepins WHERE ${KEY} AND state = ? AND requested_at = ?`).get(...keyOf(r), r.state, r.requested_at);
 
 const KEY = "repo = ? AND number = ? AND ref_repo = ?";
 const keyOf = (r: RepinRow): [string, number, string] => [r.repo, r.number, r.ref_repo];
@@ -354,8 +360,11 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
       if (r.state !== "locking") {
         const scope = outOfBuildScope(db, r.repo, r.number);
         if (scope) throw failed(scope);
+        const patch = await git.diffText(head, tree);
+        // From here to the row's update nothing awaits, so the task is queued only for a request that still stands.
+        if (!still(db, r)) throw new Superseded("the request changed during the try");
         const id = createTask(db, {
-          step: "autorepin", repo: r.repo, number: r.number, headSha: head, requires: { os: "linux", toolchains: ["rust-stable"] }, patch: await git.diffText(head, tree),
+          step: "autorepin", repo: r.repo, number: r.number, headSha: head, requires: { os: "linux", toolchains: ["rust-stable"] }, patch,
           plan: [{ name: "lock", cmd: ["sh", "-c", LOCK_SCRIPT], network: "fetch", timeoutSec: 900, artifacts: [LOCK] }],
         });
         db.prepare(`UPDATE main.autorepins SET state = 'locking', sha = ?, head = ?, to_head = NULL, task_id = ? WHERE ${KEY}`).run(target, head, id, ...keyOf(r));
@@ -380,6 +389,7 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
     // The commit is exactly the rewritten manifests and the lockfile: contents of files that exist, nothing added, removed or re-moded.
     const changes = await git.rawChanges(head, commit);
     if (changes.some((x) => x[2] !== "M" || x[0] !== x[1]) || changes.map((x) => x[3]!).sort().join("\n") !== [...changed].sort().join("\n")) throw failed("the commit would change more than the revs and the lockfile");
+    if (!still(db, r)) throw new Superseded("the request changed before the push");
     // Written before the push, so a head that reaches the mirror before the outcome is recorded is already known as this commit (ownPush in src/preapproval).
     db.prepare(`UPDATE main.autorepins SET head = ?, to_head = ? WHERE ${KEY}`).run(head, commit, ...keyOf(r));
     const push = await pushRepin({ db, login: AUDIT_LOGIN }, g, git, { repo: r.repo, number: r.number, remote: headRepo, branch: pr.headRefName, head, sha: commit }, { on: depRef, rev: target, files: changed, by: r.login });
@@ -465,6 +475,13 @@ export async function drainRepins(db: DatabaseSync, deps: RepinDeps): Promise<nu
         continue;
       } catch (e) {
         if (e instanceof WritePacedError) break;
+        // An `off` or a newer command came while the step awaited GitHub or git: the row is theirs now, so nothing of this
+        // step is written (a Wait or a try would make an `off` row due again). A push that already went out was audited by pushRepin.
+        if (!still(db, r)) {
+          if (!(e instanceof Ended && e.state === "pushed")) stopTask(db, r.task_id);
+          deps.log?.(`autorepin ${refOf(r)}: the request changed during the try; its outcome is not recorded: ${oneLine(String((e as Error)?.message ?? e))}`);
+          continue;
+        }
         if (e instanceof Ended) finish(db, r, e, clock());
         else if (e instanceof Wait) {
           // Not a try: tried_at is set ahead, so the row is due again (repinsDue: a minute after tried_at) in BRANCH_POLL_MS.
