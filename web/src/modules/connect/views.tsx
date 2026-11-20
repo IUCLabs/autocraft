@@ -5,7 +5,6 @@ import type { HelperReadiness, McpToken, RemoteHelper, UsageWindow } from "../..
 import type { ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
-import { Chip } from "../../ui/atoms/Chip";
 import { EmptyState } from "../../ui/atoms/EmptyState";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
@@ -13,6 +12,7 @@ import { Switch } from "../../ui/atoms/Switch";
 import { Th } from "../../ui/atoms/Th";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { Block } from "../../ui/molecules/Block";
+import { CheckRow } from "../../ui/molecules/CheckRow";
 import { CodeBlock } from "../../ui/molecules/CodeBlock";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Page } from "../../ui/organisms/Page";
@@ -268,7 +268,7 @@ function MySettings() {
   };
   const choices = new Set(data.repoChoices);
   // Picks that are no longer available (pipeline off, or no write permission) stay listed so they can be removed.
-  const shown = [...new Set([...data.repoChoices, ...picks])].sort();
+  const shown = [...new Set([...data.repoChoices, ...picks])].sort((x, y) => x.localeCompare(y, undefined, { sensitivity: "base" }));
   const valid = (v: string) => /^\d+$/.test(v) && Number(v) <= 90;
   const save = (next: { fiveHour: string; weekly: string }) => {
     if (!valid(next.fiveHour) || !valid(next.weekly)) {
@@ -344,22 +344,22 @@ function MySettings() {
       </div>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-2">
         <span className="w-44 shrink-0 pt-1.5 text-sm text-ink/80">My repos</span>
-        <div className="flex flex-wrap gap-2" role="group" aria-label="My repos">
-          <Chip active={!picks.length} onClick={() => picks.length && savePicks([])}>
-            All
-          </Chip>
+        <div role="group" aria-label="My repos" className="min-w-0 flex-1 rounded-md border border-line sm:max-w-sm">
+          <CheckRow checked={!picks.length} onChange={() => picks.length && savePicks([])} title="All repos" />
           {shown.map((r) => {
             const on = picks.includes(r);
+            const ok = choices.has(r);
             return (
-              <Chip
+              <CheckRow
                 key={r}
-                active={on}
-                className={choices.has(r) ? undefined : "line-through opacity-60"}
-                title={choices.has(r) ? undefined : "Pipeline off or no write permission"}
-                onClick={() => savePicks(on ? picks.filter((x) => x !== r) : [...picks, r].sort())}
-              >
-                {r}
-              </Chip>
+                checked={on}
+                onChange={() => savePicks(on ? picks.filter((x) => x !== r) : [...picks, r].sort())}
+                title={
+                  <span className={ok ? undefined : "line-through opacity-60"} title={ok ? undefined : "Pipeline off or no write permission"}>
+                    {r}
+                  </span>
+                }
+              />
             );
           })}
         </div>
