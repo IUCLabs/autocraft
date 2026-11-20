@@ -6,10 +6,15 @@ import { Segmented } from "../../ui/molecules/Segmented";
 type Alt = { key: string; label: string; text: string };
 type Step = { label: string; alts: Alt[] };
 
-/** A Task Runner's setup, one command per step (or one per alternative); `origin` is this dashboard. */
-const steps = (origin: string): Step[] => [
+/**
+ * A Task Runner's setup, one command per step (or one per alternative); `origin` is this dashboard. `finish`: the steps left
+ * for a Task Runner that is logged in but has not reported in yet (no download, no login).
+ */
+const steps = (origin: string, finish: boolean): Step[] => [
   // `setup` asks before installing what is missing (bubblewrap, git, tar, the AppArmor rule, Claude Code), then logs in.
-  { label: "Install and set up, then approve the code here", alts: [{ key: "", label: "", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft && ~/.local/bin/autocraft setup ${origin}` }] },
+  finish
+    ? { label: "Install what is missing", alts: [{ key: "", label: "", text: "autocraft setup" }] }
+    : { label: "Install and set up, then approve the code here", alts: [{ key: "", label: "", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft && ~/.local/bin/autocraft setup ${origin}` }] },
   {
     label: "Harness, if setup did not pick one",
     alts: [
@@ -30,12 +35,12 @@ const steps = (origin: string): Step[] => [
 
 const onMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
-/** The setup commands for a new Task Runner, numbered; steps with alternatives pick one with a segmented control. */
-export function RunnerSetup({ className }: { className?: string }) {
+/** The setup commands for a new Task Runner (or, with `finish`, the rest of one), numbered; steps with alternatives pick one with a segmented control. */
+export function RunnerSetup({ className, finish = false }: { className?: string; finish?: boolean }) {
   const [pick, setPick] = useState<Record<string, string>>({ "Harness, if setup did not pick one": onMac ? "mac" : "linux", Run: "service" });
   return (
     <ol className={cn("space-y-2.5 px-3 py-3", className)}>
-      {steps(location.origin).map((s, i) => {
+      {steps(location.origin, finish).map((s, i) => {
         const alt = s.alts.find((a) => a.key === pick[s.label]) ?? s.alts[0];
         return (
           <li key={s.label} className="flex gap-2.5">

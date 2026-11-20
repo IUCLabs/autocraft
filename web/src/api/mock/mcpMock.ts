@@ -25,6 +25,12 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
     { tokenId: 4, label: "mini", slots: 1, busy: 0, lastError: { text: "Review of designcraft#412: the harness exited with code 1", at: at(-26 * MIN) }, readiness: "cooled-off", until: at(5 * 3600_000), reason: "its leases were lost 3 times within 2 hours (no heartbeat, or past the call's time limit)", fresh: true, lastSeen: at(-90_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
       usage: { fiveHour: { usedPercent: 12, resetsAt: at(4 * 3600_000) }, weekly: { usedPercent: 30, resetsAt: at(4 * DAY) }, at: at(-90_000) },
       machine: null, helperVersion: "1.2.0", createdAt: at(-60 * DAY), expiresAt: at(80 * DAY), agent: false, answer: false },
+    // Logged in but never reported in: the Connect page keeps the rest of the setup in view.
+    { tokenId: 8, label: "wsl", slots: null, busy: null, lastError: null, readiness: null, until: null, reason: null, fresh: false, lastSeen: null, harness: null, models: {}, reserve: null, usage: null,
+      machine: { hostname: "david", platform: "linux", arch: "x64" }, helperVersion: "1.3.4", createdAt: at(-20 * MIN), expiresAt: at(90 * DAY), agent: true, answer: false },
+    // Reported in once, then stopped.
+    { tokenId: 9, label: "old-box", slots: 1, busy: 0, lastError: null, readiness: "ready", until: null, reason: null, fresh: false, lastSeen: at(-3 * DAY), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 }, usage: null,
+      machine: { hostname: "old-box", platform: "linux", arch: "x64" }, helperVersion: "1.3.3", createdAt: at(-40 * DAY), expiresAt: at(50 * DAY), agent: true, answer: false },
   ];
   // `?runners=N` keeps the first N, for screenshots of a user with fewer Task Runners.
   const keep = new URLSearchParams(location.search).get("runners");

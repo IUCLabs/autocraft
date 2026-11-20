@@ -61,6 +61,8 @@ export function Runners() {
   const { data, error } = useQuery("runners", (a) => a.runners.list());
   const [adding, setAdding] = useState(false);
   const any = !!data?.runners.length;
+  // A runner that never reported in is logged in but not set up or not started: the rest of the steps stay in view.
+  const unfinished = data?.runners.filter((r) => !r.readiness) ?? [];
   return (
     <Block
       dense
@@ -78,6 +80,15 @@ export function Runners() {
       {code && <ApprovalCard key={code} code={code} answering={!!data?.answering} onDone={closeCode} />}
       <ErrorLine error={error?.message} className="px-3 pt-2" />
       {data && (!any || adding) && <RunnerSetup className={cn(any && "border-b border-line bg-ink/[0.02]")} />}
+      {data && any && !adding && unfinished.length > 0 && (
+        <div className="border-b border-line bg-ink/[0.02]">
+          <p className="px-3 pt-3 text-sm text-ink/80">
+            {unfinished.map((r) => r.label ?? `Runner ${r.tokenId}`).join(", ")} {unfinished.length === 1 ? "is" : "are"} logged in but {unfinished.length === 1 ? "has" : "have"} not reported in yet. Finish the setup on{" "}
+            {unfinished.length === 1 && unfinished[0]!.machine ? <span className="font-medium">{unfinished[0]!.machine.hostname}</span> : "that machine"}:
+          </p>
+          <RunnerSetup finish />
+        </div>
+      )}
       {any && (
         <ul>
           {data.runners.map((r) => (
@@ -148,6 +159,11 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
       {open && (
         <div className="space-y-2 px-3 pb-2.5">
           {r.fresh && r.readiness !== "ready" && r.reason && <p className="text-xs text-ink/65">{r.reason}</p>}
+          {r.readiness && !r.fresh && (
+            <p className="text-xs text-ink/65">
+              Not running. Start it on {r.machine?.hostname ?? "its machine"} with <span className="code">autocraft service install</span> (or <span className="code">autocraft work</span>); <span className="code">autocraft doctor</span> checks the setup and <span className="code">autocraft runner logs</span> shows why it stopped.
+            </p>
+          )}
           <div className="flex flex-col gap-y-2 text-sm text-ink/80 sm:flex-row sm:flex-wrap sm:gap-x-6">
             <span className="flex items-center gap-2">
               <Switch on={r.agent} onChange={(on) => setScopes(withAgent(r, on))} label={AGENT} busy={write.busy === "scopes"} />

@@ -184,7 +184,7 @@ Rate limits: 10 logins started per 10 minutes and 5 pending per client address (
 
 ### Setting up a Task Runner
 
-A Task Runner needs a maintainer or operator login on the dashboard. The Connect page lists the same steps with the server's address filled in.
+A Task Runner needs a maintainer or operator login on the dashboard. The Connect page lists the same steps with the server's address filled in. It shows them while you have no Task Runner, under **Add a Task Runner**, and, without the download and login, while one of your Task Runners is logged in but has never reported in. A Task Runner that reported in once and stopped (Not running) names the commands that start it and show its log in its details.
 
 Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` or `codex`), and a sandbox tool: bubblewrap (`/usr/bin/bwrap`) on Linux and WSL, `sandbox-exec` on macOS. Other systems are refused.
 
