@@ -31,9 +31,13 @@ export function settlerLogins(db: DatabaseSync): Set<string> {
   return new Set((db.prepare(`SELECT login FROM ${SETTLER_LOGINS_SQL}`).all() as { login: string }[]).map((r) => r.login));
 }
 
-/** Values read once per planner pass or response, so a loop over decisions does not query per decision. */
-export type SettleMemo = { operators?: Set<string>; maintainers?: Set<string>; on?: boolean; app: Map<string, boolean>; write: Map<string, boolean> };
+/**
+ * Values read once per planner pass or response, so a loop over decisions does not query per decision. `held` holds `settleKey`s whose
+ * cached write permission still counts past PERM_READ_TTL: the pipeline is reading it again from GitHub and has no newer answer yet.
+ */
+export type SettleMemo = { operators?: Set<string>; maintainers?: Set<string>; on?: boolean; app: Map<string, boolean>; write: Map<string, boolean>; held?: ReadonlySet<string> };
 export const settleMemo = (): SettleMemo => ({ app: new Map(), write: new Map() });
+export const settleKey = (login: string, repo: string): string => `${login}\n${repo}`;
 
 const roles = (db: DatabaseSync, m: SettleMemo): void => {
   if (m.operators) return;
@@ -54,13 +58,13 @@ export function allAppIdentity(db: DatabaseSync, repos: string[], m: SettleMemo 
 
 const WRITE = "('write', 'maintain', 'admin')";
 
-/** A cached write permission younger than PERM_READ_TTL: the pipeline never asks GitHub; the write itself reads the live permission again. */
+/** A cached write permission younger than PERM_READ_TTL, or an older one the memo holds; the write itself reads the live permission again. */
 function cachedWrite(db: DatabaseSync, login: string, repo: string, m: SettleMemo): boolean {
-  const k = `${login}\n${repo}`;
+  const k = settleKey(login, repo);
   let v = m.write.get(k);
   if (v === undefined) {
     const row = db.prepare(`SELECT checked_at FROM main.repo_permissions WHERE login = ? AND repo = ? AND permission IN ${WRITE}`).get(login, repo) as { checked_at: string } | undefined;
-    m.write.set(k, (v = !!row && Date.now() - Date.parse(row.checked_at) < PERM_READ_TTL));
+    m.write.set(k, (v = !!row && (Date.now() - Date.parse(row.checked_at) < PERM_READ_TTL || !!m.held?.has(k))));
   }
   return v;
 }
@@ -99,7 +103,7 @@ export async function requireSettle(db: DatabaseSync, user: Parameters<typeof se
   if (why) throw new HttpError(403, why);
 }
 
-/** The DB-side form for the pipeline: the login's current role, and the cached write permission for a maintainer. Write access is read live again when the write is made. */
+/** The DB-side form for the pipeline: the login's current role, and the cached write permission for a maintainer (or one `m.held` keeps). Write access is read live again when the write is made. */
 export function settlesNow(db: DatabaseSync, login: string | null, repos: string[], m: SettleMemo = settleMemo()): boolean {
   if (!login) return false;
   roles(db, m);

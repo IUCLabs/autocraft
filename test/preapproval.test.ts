@@ -356,6 +356,39 @@ describe("queue items: who may add", () => {
   });
 });
 
+describe("a maintainer's pre-approval after their dashboard session", () => {
+  test("the pipeline reads the write permission again through the app: write keeps it, a failed read keeps it, read cancels it", async () => {
+    const w = fresh().pr(61);
+    w.db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES ('maint', 'maintainer')").run();
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1'), ('github_identity', 'app')").run();
+    const stale = new Date(Date.now() - 11 * 60_000).toISOString();
+    const perm = (permission: string, at: string) =>
+      w.db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES ('maint', 'app', ?, ?)").run(permission, at);
+    perm("write", new Date().toISOString());
+    preapproveMerge(w.db, { repo: "app", number: 61, by: "maint" });
+    // Stands in for appPermission, which writes what GitHub answered to repo_permissions.
+    const answer = (permission: string | null) => async () => {
+      if (permission === null) return { kind: "error" as const, why: "GitHub permission check failed: 502" };
+      perm(permission, new Date().toISOString());
+      return { kind: "ok" as const, permission };
+    };
+    const pass = async (permission: string | null) => {
+      advancePreapprovals(w.db, () => {}, { permission: answer(permission) });
+      await new Promise((r) => setImmediate(r));
+      advancePreapprovals(w.db, () => {}, { permission: answer(permission) });
+    };
+    perm("write", stale);
+    await pass("write");
+    assert.equal(preapprovalOf(w.db, "app", 61)?.state, "review");
+    perm("write", stale);
+    await pass(null);
+    assert.equal(preapprovalOf(w.db, "app", 61)?.state, "review");
+    perm("write", stale);
+    await pass("read");
+    assert.equal(preapprovalOf(w.db, "app", 61)?.state, "cancelled");
+  });
+});
+
 describe("fast track weights", () => {
   test("heavier items go first; equal weights keep the order added", () => {
     const w = fresh().pr(21).pr(22).pr(23);
