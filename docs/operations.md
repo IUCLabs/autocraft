@@ -133,6 +133,7 @@ Feedback (picks and text) is display-only. The pipeline reads answers with `auto
 - **Transport.** One JSON-RPC message per POST, answered with one JSON body (no event stream: `GET` is 405; notifications get 202; batches get 400). The token goes in `Authorization: Bearer`; the session cookie is never accepted here, and a request whose `Origin` or `Sec-Fetch-Site` names another site is refused. Limits: 120 calls a minute per login, and 300 failed authentications a minute per client address.
 - **Tools.** `list_repos` (visible tracked repos with open decisions by kind and fix-ups waiting), `list_inbox` (open decisions, oldest first; `repo`, `kind`, `limit` up to 25, `cursor`), `get_inbox_item` (one decision: question, option keys, summary and recommendation, item text, facts, risks, related items, picks and comments), `send_feedback` (`id`, `option?`, `text?`), `list_merge_queue` (the Queue page's Merge tab: each PR's state, merge path, CI, verify, fast-track weight and place, hold, how it came in and who added it (logins for maintainers and operators only), why it does not merge yet, the next merges with what each waits for, the batches in flight, and pre-approved merges whose PR is no queue row on any page yet, from every visible repo or the one asked for; `repo`, `limit` up to 25 for each list, `cursor` `<queue offset>:<last pre-approval id>` with `x` for a list that is done), and `list_fixups` (open PRs at their current head that the planner holds in the fix-up `hold` bucket with no push of ours under way, with the review's fix list and why the step stopped; viewers get the state only, as on the item page). While answering is available (`answering.enabled`), an answering token of a login that is an operator at the time of the call is also offered `answer_decision` (`id`, `option`, `note?`, `textsHash?` for a duplicate group, `exceptions?` for a batch) and `undo_answer` (`id`); for it, `get_inbox_item` adds `undoable`, the comment the answer would post, and each option's duplicate-group texts with their `textsHash`. Answering is the user's own action and has to execute as that GitHub user, which needs GitHub App user tokens that AutoCraft does not have yet. Until then no token can be made with `answer: true`, the Connect page hides the switch, the answer tools are not listed and the instructions do not mention them; a call to either refuses with a message that the user must sign in again with GitHub App sign-in. The switch is `answering.enabled` in `src/dash/mcp/index.ts`, and the checks below stay ready. Any other token is not offered them and gets an error if it calls them. `list_repos`, `list_fixups` and `list_merge_queue` share a per-login budget of a burst of 20 then 30 a minute. Every result frames GitHub text, and the pipeline's text about it (option labels and what an answer writes included), as untrusted, as the item tools do.
 - **Merge queue.** A token whose login is an operator at the time of the call is also offered `set_weight` and the instructions describe it. `queue_pr` and `cancel_queued` are offered and allowed only to an answering token (`McpEnv.canAnswer`, with `answering.enabled`), because a pre-approved merge is a Merge answer given ahead; a call also refuses unless the user has live write permission on the repo (`queue_pr`). `queue_pr` (`item`, `weight?`) is "Queue items" (`POST /api/queue/add`): a PR is pre-approved at its current head and fast-tracked with the weight (default 5), keeping a heavier weight it has; an issue is fast-tracked and its one open closing PR is queued. `set_weight` (`item`, `weight?` or `remove: true`) changes a fast-tracked item's weight, fast-tracks an item not on the list with that weight without approving its merge, or takes it off; it calls `setFastTrackWeight`, `addFastTrack` and `removeFastTrack` directly (the dashboard's `/api/fast-track` routes call the same functions); it checks the repo is visible first and then decides between adding and changing in the same write, so a `queue_pr` of the same item meanwhile cannot leave its weight in place of the one asked for. `cancel_queued` (`item`) is the item page's cancel of a pre-approved merge (`POST /api/items/<repo>/<n>/preapproval/cancel`); the weight stays. `item` is a GitHub URL, `repo#number` or `owner/repo#number`. The role is read on every call, so a login that stopped being an operator is refused (403) even if its agent still lists the tools. Audit rows are the handlers' own (`preapproval`, `fasttrack-add`, `fasttrack-weight`, `fasttrack-remove`), under the operator's login, with `via: "mcp"` in their details. Batch summaries, which can hold raw push and GitHub errors, go to operators and maintainers only, on the dashboard and in `list_merge_queue`.
+- **Model calls.** In the `user-local` mode every token is offered `list_model_calls` (the Queue page's Model calls view through the same handler, `GET /api/model-queue`: each waiting call's id, items, step, tier, model, estimated cost, minutes waited, why it waits, its pick and whether the user may pick it, with the ready Task Runner counts and the user's picks; viewers get no picker logins, errors or repo-less calls). A login that is a maintainer or operator when the tools are listed is also offered `pick_model_call` and `unpick_model_call` (`id`), the dashboard's pick and unpick with the same refusals (403 for viewers and for ending another user's pick unless an operator, 409 with the reason a call cannot be picked); audited as `remote-pick` and `remote-unpick` with `via: "mcp"`.
 - **Same rules as the dashboard.** The tools call the dashboard's own handlers as the token's user: repo visibility, the decision checks and audit rows are the same. `send_feedback` is the Feedback box (audit `via: "mcp"`; the stored pick or comment carries `via` too, and the item thread marks it "via agent"), so it is display-only until an operator answers or uses the pick; viewers get an error, and maintainers get 60 posts an hour per login, counted together with the dashboard's own feedback. A token has no GitHub token of its own: permission checks use the login's newest live dashboard session, and without one only a recent cached permission counts (a private repo is then hidden and a pick shows as `none`). An answer through `answer_decision` is the operator's answer, made through the same handler as the dashboard's: it needs write, maintain or admin on every repo the decision covers (checked live with the operator's dashboard session, so without a live session it is refused), the duplicate-group texts check and batch exceptions apply, it is audited as `answer` with `source: "dashboard"` and `via: "mcp"`, and the pipeline acts on it like any operator answer. `undo_answer` is the dashboard's Undo (audit `undo` with `via: "mcp"`). Nothing here approves a repo or changes settings, and only `cancel_queued` writes to GitHub itself (it closes the batch PR of a PR it takes out of a batch, as the dashboard's cancel does). A fix-up's result lands on GitHub as the contributor's own commit or suggestion, and the pipeline reviews the new head as usual.
 
 ## User-local inference
@@ -227,36 +228,62 @@ The move (`autocraft migrate`, also run at the first start of 1.3.0, before the 
 
 ### Commands
 
+`autocraft help` prints the commands in the groups below; `autocraft help --all` adds the task commands; `autocraft <group> --help` prints one group.
+
+**Setup**
+
 | Command | What it does |
 |---|---|
 | `login <dashboard URL> [--label X] [--no-wait] [--answer] [--no-agent]`, `login --wait`, `login <dashboard URL> --stdin` | Makes a credential and waits for its approval on the Connect page, or stores one read from stdin (see [Task Runner credentials](#task-runner-credentials)). `--answer` also asks to answer decisions and approve merges; `--no-agent` asks for no Agent access. |
 | `harness claude\|codex ...` | Chooses the harness login (see [Setting up a Task Runner](#setting-up-a-task-runner)). |
-| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16, plus the fast lane for short calls and follow-ups (see [Who gets which call](#who-gets-which-call)); Codex runs one call at a time because its login refreshes in place. Ctrl-C, SIGTERM and SIGHUP stop running calls and give them back; a second signal quits at once. See [Task Runner process](#Task Runner-process). |
+| `doctor` | Checks Node, platform, sandbox (on macOS with the canary), `git` and `tar`, the harness binary, version and login, a harness start inside the sandbox, the server and the tiers. Exit code 1 when a check fails. |
+| `update` | Downloads the server's current Task Runner over this file (checked with `node --check` first); restart `work` or the service afterwards. A version refusal names this command. |
 | `service install [--parallel N]` | Writes and starts a systemd user unit (Linux, `~/.config/systemd/user/autocraft.service`) or a launchd agent (macOS, `~/Library/LaunchAgents/autocraft.plist`) that runs `work` with these arguments and restarts it whenever it ends (systemd `Restart=always`, launchd `KeepAlive`). It keeps `PATH`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR` from the shell it ran in. The log: `journalctl --user -u autocraft -f` (Linux), `$XDG_CACHE_HOME/autocraft-runner/service.log` (macOS). On Linux, when lingering is off, the command prints a line that the service stops at logout and names `loginctl enable-linger`; `doctor` warns the same while a unit is installed. No root. |
 | `service uninstall` / `service status` | Stops and removes the service; prints its state and where its log is. |
-| `update` | Downloads the server's current Task Runner over this file (checked with `node --check` first); restart `work` or the service afterwards. A version refusal names this command. |
-| `migrate` | Moves a 1.2.0 install: directories, credential, binary and service (see [Moving a 1.2.0 runner](#moving-a-120-runner)). |
-| `claim` | Claims one call and prints its lease id. |
-| `run [--detach] [<lease>]` | Runs a claimed lease, or claims one and runs it. `--detach` starts the run in the background and prints the lease id. |
-| `wait <lease>` | Waits for a detached run and prints its result. Returns after at most 9 minutes with exit code 3 while the run still goes; run it again. |
-| `doctor` | Checks Node, platform, sandbox (on macOS with the canary), `git` and `tar`, the harness binary, version and login, a harness start inside the sandbox, the server and the tiers. Exit code 1 when a check fails. |
-| `status` | Prints whether the Task Runner claims now, with plan usage, reserve, pause and hold. Exit code 0 only when `ready`. |
-| `pause-until-reset` | Claims nothing until the plan window resets, whatever the usage. `resume` ends it. |
-| `resume` | Ends a pause, a hold after a provider refusal, and a hold of `work` (a stopped run, failed calls). The usage reading still decides. |
-| `config reserve <5h> <weekly>` | Keeps more of each window free than the server's reserve (percent, 0 to 100). `config reserve off` drops it. |
-| `tool <server> <tool> [<json>] [<lease>]` | One tool call of a lease's server without MCP; prints the result, exit code 1 for an error result. |
-| `mcp <server> <lease>` | Stdio-to-HTTP proxy for one of the lease's MCP servers. |
-| `try <bundle.json> [--slot N]` | Runs a bundle from a file without a server and prints the reply (testing). |
 
-Agent commands call the server's MCP tools (`/mcp`) with the Task Runner's credential, so they need Agent access. Arguments come from each tool's input schema, so a new server tool needs no new Task Runner.
+**Runner**
 
 | Command | What it does |
 |---|---|
-| `tools` | Lists the tools the credential is offered. A tool named like a runner command is marked: reach it with `call`. |
-| `guide` | Prints the server's instructions for an agent. |
-| `help <tool>` | Prints a tool's description and arguments. |
-| `<tool> [args]` | Calls a tool: `--key value`, `--flag` / `--no-flag`, repeated or comma-separated lists, JSON for objects. A tool with one required text argument takes it bare (`autocraft get-inbox-item <id>`). Dashes and underscores in names are alike. `--json` prints the raw result. Exit code 0 done, 1 the tool refused or failed, 2 a wrong command line. |
-| `call <tool> [args]` | The same, for a tool named like a runner command (`status`, `run`, ...). |
+| `runner status` | Prints whether the Task Runner claims now, with plan usage, reserve, pause and hold. Exit code 0 only when `ready`. |
+| `runner logs [-n N] [-f]` | Prints the last `N` lines (default 50) of the service's log, and follows it with `-f`: `journalctl --user -u autocraft` on Linux, `$XDG_CACHE_HOME/autocraft-runner/service.log` on macOS. |
+| `runner pause` | Claims nothing until the plan window resets, whatever the usage. `runner resume` ends it. |
+| `runner resume` | Ends a pause, a hold after a provider refusal, and a hold of `work` (a stopped run, failed calls). The usage reading still decides. |
+| `runner reserve <5h> <weekly>` | Keeps more of each window free than the server's reserve (percent, 0 to 100). `runner reserve off` drops it. |
+
+**Server commands** call the server's MCP tools (`/mcp`) with the Task Runner's credential, so they need Agent access. Each command maps to one tool (`CLI_COMMANDS` in `worker/autocraft.mjs`): its positional words fill the tool's arguments in order, and options of the tool that the command does not name pass through as `--<argument>` (`--key value`, `--flag` / `--no-flag`, repeated or comma-separated lists, JSON for objects), typed by the tool's input schema. When the credential is not offered a command's tool, the command says why in one line. `--json` prints the raw result. Exit code 0 done, 1 the tool refused or failed, 2 a wrong command line.
+
+| Command | Tool | What it does |
+|---|---|---|
+| `inbox [--repo R] [--kind K] [--limit N] [--cursor C]` | `list_inbox` | Open decisions, oldest first. |
+| `inbox show <id>` | `get_inbox_item` | One decision in full. |
+| `inbox feedback <id> --pick <key> --note "..."` | `send_feedback` | Your pick of one option (`option`) and/or a note (`text`); an operator answers. |
+| `queue [--repo R] [--limit N] [--cursor C]` | `list_merge_queue` | The merge queue as on the Queue page. |
+| `queue add <pr> [--weight N]` | `queue_pr` | Pre-approves a PR's merge and fast-tracks it (operators with answering). |
+| `queue weight <item> <N>`, `queue weight <item> --remove` | `set_weight` | Sets an item's fast-track weight, or takes it off the list (operators). |
+| `queue remove <pr>` | `cancel_queued` | Withdraws a PR's pre-approved merge (operators with answering). |
+| `calls` | `list_model_calls` | The waiting model calls as on the Queue page's Model calls view (`user-local` mode). |
+| `calls pick <id>`, `calls unpick <id>` | `pick_model_call`, `unpick_model_call` | "Run on my Task Runner" and its undo (maintainers and operators). |
+| `calls mine` | `my_work` | Today's calls on your machine and your Task Runners. |
+| `repos` | `list_repos` | Tracked repos with open decisions and fix-ups waiting. |
+| `fixups [--repo R] [--limit N]` | `list_fixups` | PRs whose review fixes the pipeline could not apply. |
+| `call [<tool> [args]]` | any | Raw access: alone it lists the tools the credential is offered; `call <tool> --help` prints a tool's description and arguments; a tool with one required text argument takes it bare. `call --guide` prints the server's instructions for an agent. |
+
+`next_task`, `task_status`, `answer_decision` and `undo_answer` have no command (`MCP_ONLY`): the task tools tell an MCP agent to run the Task Runner's own commands, and answering stays on the dashboard until it opens to agents. `call` reaches them. A test (`test/autocraft-cli-layout.test.ts`) fails when a server tool has neither a command nor a place in `MCP_ONLY`.
+
+**Task commands** are what the service and agents run; `help --all` lists them.
+
+| Command | What it does |
+|---|---|
+| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16, plus the fast lane for short calls and follow-ups (see [Who gets which call](#who-gets-which-call)); Codex runs one call at a time because its login refreshes in place. Ctrl-C, SIGTERM and SIGHUP stop running calls and give them back; a second signal quits at once. See [Task Runner process](#Task Runner-process). |
+| `claim` | Claims one call and prints its lease id. |
+| `run [--detach] [<lease>]` | Runs a claimed lease, or claims one and runs it. `--detach` starts the run in the background and prints the lease id. |
+| `wait <lease>` | Waits for a detached run and prints its result. Returns after at most 9 minutes with exit code 3 while the run still goes; run it again. |
+| `try <bundle.json> [--slot N]` | Runs a bundle from a file without a server and prints the reply (testing). |
+| `mcp <server> <lease>` | Stdio-to-HTTP proxy for one of the lease's MCP servers. |
+| `tool <server> <tool> [<json>] [<lease>]` | One tool call of a lease's server without MCP; prints the result, exit code 1 for an error result. |
+| `migrate` | Moves a 1.2.0 install: directories, credential, binary and service (see [Moving a 1.2.0 runner](#moving-a-120-runner)). |
+| `status`, `pause-until-reset`, `resume`, `config reserve ...` | The same as `runner status`, `runner pause`, `runner resume` and `runner reserve`. |
 
 Task Runner state lives in `$XDG_CONFIG_HOME/autocraft-runner` (config, credential and lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-runner` (task directories, run logs, status file). The server's own `~/.config/autocraft` and `~/.cache/autocraft` are separate.
 
@@ -380,7 +407,7 @@ Operators set the cap with `autocraft-server pipeline pick-minutes [<minutes>]`,
 Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}` (any of `reserve`, `repos` and `maxCalls`; the reply adds `repoChoices`), whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.
 
 - Before each claim the Task Runner reads its harness's plan usage and claims only while every 5-hour and weekly window keeps more than the reserve free. Claude: Claude Code's `GET /api/oauth/usage` with the Task Runner's Claude login, no model call. Codex: `account/rateLimits/read` from `codex app-server` with the Task Runner's own `CODEX_HOME`.
-- A local `config reserve` can only raise the server's reserve.
+- A local `runner reserve` can only raise the server's reserve.
 - One usage read runs at a time per machine: the slots of a process share one request, and processes share a lock file and the cached reading in the Task Runner's cache directory. A reading under a minute old is reused. A failed or refused read is shared for 30 seconds at most, or for the provider's `Retry-After` (up to an hour), before the provider is asked again.
 - When a read fails or is refused, the last good reading keeps counting for up to 15 minutes, marked as an earlier reading, while every window has at least 10 points more free than the reserve. Otherwise, and for a missing, unparseable or stale (over 5 minutes) reading or a window kind the Task Runner does not know, the Task Runner holds. A held Task Runner reads again about every 45 seconds, 20% more or less at random so slots do not wake together.
 - A Claude login that expires within the call timeout plus 10 minutes makes the Task Runner report `harness-missing` with "the Claude login expires soon; run claude to refresh it", the same check each call makes before it starts.
@@ -392,7 +419,7 @@ The Task Runner reports its readiness to `POST /api/remote/status` on every chan
 |---|---|
 | `ready` | The Task Runner claims. |
 | `quota-held` | A window is at or below the reserve, its usage could not be read, or the provider refused a run. |
-| `paused` | The user ran `pause-until-reset`. |
+| `paused` | The user ran `runner pause`. |
 | `cooled-off` | The server gives the login no calls after repeated lost leases or failed replies. |
 | `sandbox-failed` | The sandbox check or canary failed. |
 | `version-refused` | The server refused the Task Runner's version. |

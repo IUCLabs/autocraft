@@ -6,12 +6,14 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import * as modelQueue from "../src/dash/api/model-queue.ts";
+import { handleMcp } from "../src/dash/mcp/index.ts";
 import * as userSettings from "../src/dash/api/user-settings.ts";
 import { createToken } from "../src/dash/mcp/tokens.ts";
 import type { Req, Role } from "../src/dash/types.ts";
 import { connect } from "../src/db.ts";
 import { claimCall, dropQueueCache, enqueueCall, type Caller } from "../src/remote/calls.ts";
 import { parseStatus, STATUS_FRESH_MS, storeStatus } from "../src/remote/helpers.ts";
+import { RateLimiter } from "../src/dash/server/util.ts";
 import { setUserMaxCalls } from "../src/remote/max-calls.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
 import { pickCall, setPickMinutes, unpickCall } from "../src/remote/picks.ts";
@@ -161,6 +163,32 @@ describe("picks and Manual only", () => {
     assert.deepEqual(alice.me, { canPick: true, manualOnly: false, picks: 0, pickMax: 2 });
     const bob = await modelQueue.unpick(db, req("bob", "maintainer", { params: { id: String(a) } }));
     assert.equal(bob.calls[0]!.picked, null);
+    clear();
+  });
+
+  test("the MCP model call tools apply the queue page's rules: viewers list without pickers and cannot pick; a pick is audited via mcp", async () => {
+    const a = q();
+    await pickCall(db, user("bob"), a);
+    const b = q();
+    const env = (login: string, role: Role) => ({ db, user: () => user(login, role) as any, baseUrl: null, limiter: new RateLimiter(10, 60_000), canAnswer: false, expensive: () => 0, userLocal: true });
+    const rpc = async (login: string, role: Role, method: string, params?: Record<string, unknown>) => (await handleMcp(env(login, role), { jsonrpc: "2.0", id: 1, method, ...(params && { params }) }))!.result as any;
+    const names = async (login: string, role: Role) => (await rpc(login, role, "tools/list")).tools.map((t: { name: string }) => t.name).filter((n: string) => n.includes("model_call"));
+    assert.deepEqual(await names("eve", "viewer"), ["list_model_calls"]);
+    assert.deepEqual(await names("alice", "maintainer"), ["list_model_calls", "pick_model_call", "unpick_model_call"]);
+    const listed = (await rpc("eve", "viewer", "tools/call", { name: "list_model_calls", arguments: {} })).content[0].text as string;
+    assert.match(listed, /"picked": "a user"/);
+    assert.doesNotMatch(listed, /bob/);
+    const refused = await rpc("eve", "viewer", "tools/call", { name: "pick_model_call", arguments: { id: String(b) } });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /only maintainers and operators/);
+    const taken = await rpc("alice", "maintainer", "tools/call", { name: "pick_model_call", arguments: { id: String(a) } });
+    assert.equal(taken.isError, true);
+    assert.match(taken.content[0].text, /another user picked it/);
+    assert.equal((await rpc("alice", "maintainer", "tools/call", { name: "pick_model_call", arguments: { id: String(b) } })).isError, undefined);
+    assert.equal(pickedBy(b), "alice");
+    assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'remote-pick' AND login = 'alice' AND details LIKE '%\"via\":\"mcp\"%'").get());
+    await rpc("alice", "maintainer", "tools/call", { name: "unpick_model_call", arguments: { id: String(b) } });
+    assert.equal(pickedBy(b), null);
     clear();
   });
 

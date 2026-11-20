@@ -12,6 +12,7 @@ import { decisionPath, githubItemUrl, itemPath } from "../../../web/src/lib/link
 import { KINDS } from "../../decisions.ts";
 import { frame } from "../../itemtools/server/tools.ts";
 import * as dec from "../api/decisions.ts";
+import * as modelQueue from "../api/model-queue.ts";
 import { cancelItemPreapproval } from "../api/operator.ts";
 import { queueAdd, queuePage } from "../api/queue-page.ts";
 import { needVisible, visibleTo } from "../api/visible.ts";
@@ -49,6 +50,8 @@ export type McpEnv = {
   expensive: () => number;
   /** The instance is in the user-local inference mode and one of the login's Task Runners reports in: the task tools are offered. `canWrite` reads the user's live write permission on a repo. */
   run?: { canWrite: (repo: string) => Promise<boolean> };
+  /** The instance is in the user-local inference mode: the model call tools are offered (picks to maintainers and operators). */
+  userLocal?: boolean;
 };
 
 export type Msg = { jsonrpc?: unknown; id?: string | number | null; method?: unknown; params?: Record<string, unknown> };
@@ -87,6 +90,12 @@ const RUN_INSTRUCTIONS = `
 Your user runs AutoCraft's model calls on their machine (the user-local inference mode) with the Task Runner \`autocraft\`, which takes queued calls on its own:
 7. next_task says whether a call your user may take is queued. To have one run now, run \`autocraft run --detach\`, which claims a call and prints its lease id, then \`autocraft wait <lease>\` (run it in the background where your shell has a time limit; it returns after at most 9 minutes, so call it again until it reports the call ended). Then call next_task again. When nothing is queued, try again later. task_status {lease} and my_work report on your user's calls.
 Never read or change the Task Runner's bundle or reply files; the Task Runner handles them.`;
+
+const MODEL_CALL_INSTRUCTIONS = `
+
+Model calls run on users' machines (the user-local inference mode): list_model_calls shows the waiting calls as on the dashboard's Queue page (Model calls), with why each waits.`;
+
+const MODEL_PICK_INSTRUCTIONS = ` pick_model_call reserves a call for your user's own Task Runners, which take it before the queue's order; unpick_model_call ends the pick. Pick only a call your user asked for.`;
 
 // ---- arguments ------------------------------------------------------------
 
@@ -270,6 +279,34 @@ export const QUEUE_APPROVE_TOOLS = [
     description: "Withdraws a PR's pre-approved merge as your user, an operator, before the merge queue has merged it. A PR in an integration batch is taken out of the batch first (its batch PR is closed and the rest rebuilt), unless a merge of the repo is running. Its fast-track weight stays; set_weight with remove: true drops it.",
     inputSchema: { type: "object", additionalProperties: false, required: ["item"], properties: { item: { type: "string", description: ITEM_HELP } } },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+] as const;
+
+/** Offered in the user-local inference mode (McpEnv.userLocal). */
+export const MODEL_CALL_TOOLS = [
+  {
+    name: "list_model_calls",
+    description: "The model calls waiting for a Task Runner, in claim order, as on the dashboard's Queue page (Model calls): each call's id, items, step, tier, model, estimated cost, how long it waited, why it waits, its pick, and whether your user may pick it; with the ready Task Runners and your user's picks.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+    annotations: { readOnlyHint: true },
+  },
+] as const;
+
+const CALL_ID_HELP = "The model call id from list_model_calls.";
+
+/** Offered in the user-local inference mode to maintainers and operators: the Queue page's "Run on my Task Runner". */
+export const MODEL_PICK_TOOLS = [
+  {
+    name: "pick_model_call",
+    description: "Picks a waiting model call for your user's own Task Runners, which take it before the queue's order while the pick counts. Only a call your user may take: not a follow-up, of a tier your user's runners run, on repos your user may write to, below your user's most picks.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: CALL_ID_HELP } } },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  },
+  {
+    name: "unpick_model_call",
+    description: "Ends your user's pick of a model call; an operator may end any user's pick. The call goes back to the queue's order.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", description: CALL_ID_HELP } } },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
 ] as const;
 
@@ -581,6 +618,31 @@ async function listFixups(env: McpEnv, raw: unknown): Promise<ToolResult> {
   return show(`${rows.length}${more ? "+" : ""} pull request${rows.length === 1 ? "" : "s"} wait for a fix-up the pipeline could not make. Once the fixes land on the PR, the pipeline reviews the new head by itself.`, "fix-ups", rows);
 }
 
+const needLocal = (env: McpEnv): void => {
+  if (!env.userLocal) throw new HttpError(403, "model calls run on the server's accounts: the instance is not in the user-local inference mode");
+};
+
+async function listModelCalls(env: McpEnv, raw: unknown): Promise<ToolResult> {
+  needLocal(env);
+  args(raw, {});
+  const q = await modelQueue.get(env.db, reqOf(env.user(false)));
+  const calls = q.calls.map((c) => ({
+    id: String(c.id), items: c.items.map((i) => ({ item: `${i.repo}#${i.number}`, title: i.title })), step: c.kind, tier: c.tier, model: c.model, estCostUsd: c.estCostUsd,
+    waitedMinutes: Math.round(c.waitedMs / 60_000), why: c.why.text, picked: c.picked === null ? null : c.picked.login ?? "a user", pickable: c.pickable,
+    ...(c.followUp && { followUp: true }), ...(c.lastError && { lastError: c.lastError }),
+  }));
+  return show(`${calls.length} model call${calls.length === 1 ? "" : "s"} wait for a Task Runner; ${q.runners.autopilot + q.runners.manual} Task Runner${q.runners.autopilot + q.runners.manual === 1 ? " is" : "s are"} ready.${q.me.canPick ? ` Your user holds ${q.me.picks} of at most ${q.me.pickMax} picks.` : ""}`, "model calls", { calls, runners: q.runners, me: q.me });
+}
+
+/** pick_model_call and unpick_model_call: the dashboard's pick and unpick, with "mcp" in the audit row. */
+async function pickModelCall(env: McpEnv, raw: unknown, pick: boolean): Promise<ToolResult> {
+  needLocal(env);
+  const a = args(raw, { id: "id" }, ["id"]);
+  const req = reqOf(env.user(pick), { method: "POST", params: { id: a.id as string } });
+  await (pick ? modelQueue.pick(env.db, req, "mcp") : modelQueue.unpick(env.db, req, "mcp"));
+  return { text: pick ? `Picked model call ${a.id as string}: your user's Task Runners take it next.` : `Ended the pick of model call ${a.id as string}.` };
+}
+
 const HARNESS_IDS: HarnessId[] = ["claude", "codex"];
 
 const needRun = (env: McpEnv): NonNullable<McpEnv["run"]> => {
@@ -608,7 +670,7 @@ async function nextTask(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const fresh = runners.filter((h) => h.fresh);
   const ready = fresh.find((h) => h.readiness === "ready");
   const busy = fresh.find((h) => h.readiness && h.readiness !== "ready");
-  if (!ready && busy) return { text: `Your user's Task Runner takes no calls now: ${busy.readiness}${busy.reason ? ` (${busy.reason})` : ""}${busy.until ? `, until ${busy.until}` : ""}. Try again after that; \`autocraft status\` shows the details.` };
+  if (!ready && busy) return { text: `Your user's Task Runner takes no calls now: ${busy.readiness}${busy.reason ? ` (${busy.reason})` : ""}${busy.until ? `, until ${busy.until}` : ""}. Try again after that; \`autocraft runner status\` shows the details.` };
   const runner = ready ?? runners[0];
   if (!runner) return { text: "Your user has no Task Runner; they add one with `autocraft login` and approve it on the dashboard's Connect page." };
   const queued = await claimableCalls(env.db, { tokenId: runner.tokenId, login: user.login, role: user.role }, { tiers: o.tiers as Tier[] | undefined, ...(models && { models }) }, run.canWrite);
@@ -663,6 +725,9 @@ async function callTool(env: McpEnv, name: unknown, raw: unknown): Promise<ToolR
       case "queue_pr": return await queuePr(env, raw);
       case "set_weight": return await setWeight(env, raw);
       case "cancel_queued": return await cancelQueued(env, raw);
+      case "list_model_calls": return await listModelCalls(env, raw);
+      case "pick_model_call": return await pickModelCall(env, raw, true);
+      case "unpick_model_call": return await pickModelCall(env, raw, false);
       default: return { text: `unknown tool ${JSON.stringify(name)}`, isError: true };
     }
   } catch (e) {
@@ -703,7 +768,7 @@ export const RUN_TOOLS = [
 ] as const;
 
 /** Whether a tools/call writes (so the server can tell its live watchers). */
-export const writes = (msg: Msg): boolean => msg.method === "tools/call" && ["send_feedback", "answer_decision", "undo_answer", "queue_pr", "set_weight", "cancel_queued"].includes(String(msg.params?.name));
+export const writes = (msg: Msg): boolean => msg.method === "tools/call" && ["send_feedback", "answer_decision", "undo_answer", "queue_pr", "set_weight", "cancel_queued", "pick_model_call", "unpick_model_call"].includes(String(msg.params?.name));
 
 /** One MCP server over JSON-RPC: what initialize reports, the tools it lists and how a tool call runs. */
 export type McpServerDef = { name: string; title: string; instructions?: string; tools: readonly unknown[]; call: (name: unknown, args: unknown) => Promise<ToolResult> };
@@ -736,15 +801,20 @@ export async function mcpReply(server: McpServerDef, msg: Msg): Promise<Reply | 
   }
 }
 
-/** Whether the token's login is an operator now: the queue tools are listed for it (each call checks again). */
-const operatorNow = (env: McpEnv): boolean => env.user(false).role === "operator";
+/** Every tool the server may offer, whoever asks: the CLI maps each one or lists it as MCP-only (test/autocraft-cli-layout.test.ts). */
+export const ALL_TOOL_NAMES: readonly string[] = [...TOOLS, ...ANSWER_TOOLS, ...QUEUE_TOOLS, ...QUEUE_APPROVE_TOOLS, ...RUN_TOOLS, ...MODEL_CALL_TOOLS, ...MODEL_PICK_TOOLS].map((t) => t.name);
 
 /** The reply to one JSON-RPC message, or null for a notification or a response. */
 export function handleMcp(env: McpEnv, msg: Msg): Promise<Reply | null> {
-  const queue = msg.method === "initialize" || msg.method === "tools/list" ? operatorNow(env) : false;
+  // The role decides which tools are listed; each call checks it again.
+  const role = msg.method === "initialize" || msg.method === "tools/list" ? env.user(false).role : null;
+  const queue = role === "operator";
+  const picks = !!env.userLocal && (role === "operator" || role === "maintainer");
   return mcpReply({
     name: "autocraft", title: "AutoCraft",
-    instructions: INSTRUCTIONS + (env.canAnswer ? ANSWER_INSTRUCTIONS : "") + (queue ? QUEUE_INSTRUCTIONS + (env.canAnswer ? QUEUE_APPROVE_INSTRUCTIONS : "") : "") + (env.run ? RUN_INSTRUCTIONS : ""),
-    tools: [...TOOLS, ...(env.canAnswer ? ANSWER_TOOLS : []), ...(queue ? QUEUE_TOOLS : []), ...(queue && env.canAnswer ? QUEUE_APPROVE_TOOLS : []), ...(env.run ? RUN_TOOLS : [])], call: (name, raw) => callTool(env, name, raw),
+    instructions: INSTRUCTIONS + (env.canAnswer ? ANSWER_INSTRUCTIONS : "") + (queue ? QUEUE_INSTRUCTIONS + (env.canAnswer ? QUEUE_APPROVE_INSTRUCTIONS : "") : "") + (env.run ? RUN_INSTRUCTIONS : "")
+      + (env.userLocal ? MODEL_CALL_INSTRUCTIONS + (picks ? MODEL_PICK_INSTRUCTIONS : "") : ""),
+    tools: [...TOOLS, ...(env.canAnswer ? ANSWER_TOOLS : []), ...(queue ? QUEUE_TOOLS : []), ...(queue && env.canAnswer ? QUEUE_APPROVE_TOOLS : []), ...(env.run ? RUN_TOOLS : []),
+      ...(env.userLocal ? MODEL_CALL_TOOLS : []), ...(picks ? MODEL_PICK_TOOLS : [])], call: (name, raw) => callTool(env, name, raw),
   }, msg);
 }

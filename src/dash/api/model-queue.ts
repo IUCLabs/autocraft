@@ -67,12 +67,13 @@ function callId(req: Req): number {
   return id;
 }
 
-export async function pick(db: DatabaseSync, req: Req): Promise<ModelQueue> {
-  await pickCall(db, req.user, callId(req));
+/** `via` names the MCP server in the audit row when an agent picked. */
+export async function pick(db: DatabaseSync, req: Req, via?: "mcp"): Promise<ModelQueue> {
+  await pickCall(db, req.user, callId(req), Date.now(), via);
   return get(db, req);
 }
 
-export async function unpick(db: DatabaseSync, req: Req): Promise<ModelQueue> {
-  unpickCall(db, req.user, callId(req));
+export async function unpick(db: DatabaseSync, req: Req, via?: "mcp"): Promise<ModelQueue> {
+  unpickCall(db, req.user, callId(req), via);
   return get(db, req);
 }
