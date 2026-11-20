@@ -4,7 +4,7 @@
 import { prBuildView } from "../../prbuild/view.ts";
 import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync } from "node:sqlite";
-import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueueOrigin, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
+import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueueOrigin, QueuePage, QueuePendingRow, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
 import { cachedQueue, openViews, type CachedEntry } from "../../core/plan-read.ts";
 import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, parseWeight, removeFastTrack, setFastTrackWeight, WEIGHT_DEFAULT } from "../../fasttrack.ts";
 import { HEAD_CHANGED, preapproveMerge } from "../../preapproval/index.ts";
@@ -146,7 +146,33 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
   out.nextMerges = nextMerges(entries, fast, batchOf, scores);
   out.batches = active.map((b) => toBatch(b, reader, b.prs.flatMap((p) => rowOf.get(`${b.repo}#${p.number}`) ?? [])));
+  out.pending = pendingRows(db, allEntries, (repo) => visibleSet.has(repo) && (reposParam === "pipeline" || reposParam === "all" || repo === reposParam), originOf, fastOf, held);
   return out;
+}
+
+/**
+ * Open PRs queued with Queue items or pre-approved that are no merge queue row yet: no take review at their head, so they wait for
+ * the fix-up or the review first. As with list_merge_queue, they are the operators' own picks, so every visible repo (or the one
+ * asked for) is covered, not only the pipeline's scope. A PR that is a queue row anywhere is left out. Oldest first.
+ */
+function pendingRows(db: DatabaseSync, entries: CachedEntry[], want: (repo: string) => boolean, originOf: (e: Pick<CachedEntry, "repo" | "number" | "decisionId" | "reviewedAt">) => QueueOrigin,
+  fastOf: (repo: string, number: number) => FastPosition | null, held: Set<string>): QueuePendingRow[] {
+  const queued = new Set(entries.map((e) => `${e.repo}#${e.number}`));
+  type P = { repo: string; number: number; state: "fixup" | "review" | "ci"; title: string | null; author: string | null; breakdown: string | null };
+  const rows = db.prepare(`SELECT p.repo, p.number, p.state, i.title, i.author, r.breakdown FROM preapprovals p JOIN main.items i ON i.repo = p.repo AND i.number = p.number
+    LEFT JOIN item_rank r ON r.repo = p.repo AND r.number = p.number
+    WHERE p.state IN ('fixup', 'review', 'ci') AND i.state = 'OPEN' AND i.kind = 'pr' ORDER BY p.id`).all() as P[];
+  const seen = new Set<string>();
+  return rows.flatMap((p) => {
+    const k = `${p.repo}#${p.number}`;
+    if (seen.has(k) || queued.has(k) || !want(p.repo)) return [];
+    seen.add(k);
+    const size = p.breakdown ? ((JSON.parse(p.breakdown) as RankBreakdown).size ?? null) : null;
+    return [{
+      repo: p.repo, number: p.number, title: p.title ?? "", author: p.author ?? "", size, step: p.state,
+      fast: fastOf(p.repo, p.number), held: held.has(k), added: originOf({ repo: p.repo, number: p.number, decisionId: null, reviewedAt: "" }),
+    }];
+  });
 }
 
 /**
@@ -154,7 +180,7 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
  * new head, or a pre-approval after a fix-up), else an operator's Merge answer at the reviewed head, else the take review itself.
  * Operator logins are shown to staff only.
  */
-export function queueOrigins(db: DatabaseSync, staff: boolean): (e: CachedEntry) => QueueOrigin {
+export function queueOrigins(db: DatabaseSync, staff: boolean): (e: Pick<CachedEntry, "repo" | "number" | "decisionId" | "reviewedAt">) => QueueOrigin {
   type Pre = { id: number; repo: string; number: number; by: string; at: string; instructions: string; from_head: string; head: string | null };
   const pre = new Map<string, Pre>();
   for (const p of db.prepare("SELECT id, repo, number, by, at, instructions, from_head, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci', 'queued') ORDER BY id").all() as Pre[]) pre.set(`${p.repo}#${p.number}`, p);

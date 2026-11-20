@@ -10,9 +10,10 @@ import { operatorEditable, splitChanges } from "../src/fixup/patch.ts";
 import { operatorCommentText } from "../src/fixup/template.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { OPERATOR, T0, world, type World } from "./world-db.ts";
-import { queueAdd, queueOrigins } from "../src/dash/api/queue-page.ts";
+import { queueAdd, queueOrigins, queuePage } from "../src/dash/api/queue-page.ts";
 import type { Req } from "../src/dash/types.ts";
 import type { CachedEntry } from "../src/core/plan-read.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 
 let current: World | null = null;
 const fresh = (): World => (current = world().repo());
@@ -313,6 +314,22 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     assert.deepEqual({ ...staff(entry(14)), at: null }, { how: "queued", by: OPERATOR, at: null });
     assert.equal(queueOrigins(w.db, false)(entry(14)).by, null);
     assert.deepEqual(staff(entry(15)), { how: "review", by: null, at: T0 });
+  });
+
+  test("the Merge tab lists a queued PR before its take review, and drops it once the review makes it a queue row", async () => {
+    const w = fresh().pr(16);
+    preapproveMerge(w.db, { repo: "app", number: 16, by: OPERATOR });
+    refreshPlanCache(w.db);
+    const req = { query: new URLSearchParams("tab=merge&repos=all"), user: { login: OPERATOR, role: "operator", canWrite: async () => true } } as unknown as Req;
+    const before = await queuePage(w.db, req);
+    assert.ok(!before.mergeRows.some((r) => r.number === 16));
+    assert.deepEqual(before.pending?.map((p) => [p.number, p.step, p.added.how]), [[16, "review", "queued"]]);
+    w.review(16, { verdict: "take" });
+    settle(w);
+    refreshPlanCache(w.db);
+    const after = await queuePage(w.db, { ...req, query: new URLSearchParams("tab=merge&repos=all") } as Req);
+    assert.ok(after.mergeRows.some((r) => r.number === 16));
+    assert.ok(!after.pending?.some((p) => p.number === 16));
   });
 });
 

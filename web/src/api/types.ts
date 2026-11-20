@@ -1897,6 +1897,22 @@ export interface QueueMergeRow extends QueueRow {
   added?: QueueOrigin;
 }
 
+/**
+ * A PR queued with Queue items or pre-approved that is no merge queue row yet: `fixup` (the operator's fix-up runs first), `review`
+ * (waits for a take review at its head), `ci` (reviewed take; becomes a queue row on the next plan).
+ */
+export interface QueuePendingRow {
+  repo: RepoName;
+  number: number;
+  title: string;
+  author: string;
+  size: "S" | "M" | "L" | "XL" | null;
+  step: "fixup" | "review" | "ci";
+  fast: FastPosition | null;
+  held: boolean;
+  added: QueueOrigin;
+}
+
 /** What a PR waits for before it merges. */
 export type MergeWait = "ready" | "refused" | "ci" | "premerge" | "verify" | "re-review" | "batch-check" | "batch-ci" | "held";
 
@@ -1947,6 +1963,8 @@ export interface QueuePage {
   nextMerges: NextMerge[];
   /** Merge tab only: batches in flight, with their PRs. */
   batches: QueueBatch[];
+  /** Merge tab only: PRs queued or pre-approved that wait for their fix-up or review before they join the queue. */
+  pending?: QueuePendingRow[];
   /** Rows matching the tab, every page. */
   total: number;
   /** `offset` of the next page, or null on the last one. */
