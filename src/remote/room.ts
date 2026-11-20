@@ -18,6 +18,7 @@ import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimRepos } from "./my-repos.ts";
 import { TASK_CHOICES, taskOfStep, userSkips } from "./my-tasks.ts";
+import { itemFilter, type ItemFilter } from "./task-items.ts";
 import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S } from "./protocol.ts";
 
@@ -60,7 +61,7 @@ export function roomCanWrite(db: DatabaseSync, logins: readonly string[], nowMs:
 }
 
 type Helper = { login: string; role: string | null; idle_claim_at: number | null; idle_repos: string | null; slots: number; leased: number; beat: number | null };
-type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string> } };
+type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string>; items: ItemFilter } };
 /**
  * What the room reads of the helpers, once for any number of room questions at one moment: the fresh, ready helpers that are
  * not Manual only and whose users take some task (`ready`; with no task ticked a user takes only picks, as Manual only), those
@@ -87,7 +88,7 @@ function takersOf(db: DatabaseSync, st: RoomState, nowMs: number): NonNullable<R
     list: st.ready.map((h) => {
       let own: string[] | undefined;
       try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
-      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login) } };
+      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login), items: itemFilter(db, h.login) } };
     }),
   };
 }
@@ -99,7 +100,7 @@ export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: numb
   if ((repos !== undefined || step !== undefined) && st.active.length) {
     const t = takersOf(db, st, nowMs);
     const task = step === undefined ? undefined : taskOfStep(step);
-    const fit = t.list.filter(({ active, r }) => active && (repos === undefined ? !(task !== undefined && r.skip.has(task)) : runnerTakes(r, { prompt_id: "", repos, step }, t.canWrite)));
+    const fit = t.list.filter(({ active, r }) => active && (repos === undefined ? !(task !== undefined && r.skip.has(task)) && (r.items === null || r.items.repos.size > 0) : runnerTakes(r, { prompt_id: "", repos, step }, t.canWrite)));
     takers = fit.map((x) => x.h);
     takes = (c) => fit.some(({ r }) => runnerTakes(r, c, t.canWrite));
   }
