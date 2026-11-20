@@ -108,9 +108,12 @@ export class Rig {
   }
   async stopDashboard(signal = "SIGTERM") {
     if (!this.dash || this.dash.exitCode !== null) return;
-    this.dash.kill(signal);
-    await Promise.race([this.dashExit, sleep(15_000).then(() => this.dash.kill("SIGKILL"))]);
-    await this.dashExit;
+    // This process only: by the time the fallback fires, `this.dash` may be the restarted dashboard.
+    const dash = this.dash, exit = this.dashExit;
+    dash.kill(signal);
+    const kill = setTimeout(() => dash.kill("SIGKILL"), 15_000);
+    await exit;
+    clearTimeout(kill);
   }
   async restartDashboard() { this.note("dashboard restart"); await this.stopDashboard(); await this.startDashboard(); this.note("dashboard back"); }
   /** The dashboard is gone for `seconds` (the proxy keeps answering 502). */

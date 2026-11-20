@@ -36,6 +36,7 @@ import { cachedWrite, createSession, deleteSession, loadSession, makeUser, PERM_
 import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg, type Reply as McpReply } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import * as remote from "../../remote/calls.ts";
+import { ClaimWaits, heldMsOf } from "../../remote/claim-wait.ts";
 import { scaled, TIME_SCALE } from "../../remote/time-scale.ts";
 import { isBusy } from "../../db.ts";
 import { inferenceMode } from "../../remote/mode.ts";
@@ -220,6 +221,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // Per helper token, sized for a helper with 16 slots and its fast-lane slot: each idle slot claims every CLAIM_RETRY_S
   // and again at once after a call ends, with retries on errors; status reports come on every change.
   const remoteClaimLimit = new RateLimiter(600, 60_000);
+  const claimWaits = new ClaimWaits(rdb);
   const remoteStatusLimit = new RateLimiter(120, 60_000);
   // Bundle, heartbeat, release and submit of one lease: a heartbeat every 30 seconds and retries.
   const remoteLeaseLimit = new RateLimiter(120, 60_000);
@@ -723,10 +725,14 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         // In the server mode no call is queued for helpers: nothing to take for a while.
         if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login) } satisfies ClaimReply);
         const perm = claimPermission(caller.login, caller.role);
-        const out = await remote.claimCall(db, caller, claim, perm.canWrite);
+        // A held claim whose client leaves stops waiting; a reply already written does not count as leaving.
+        const gone = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) gone.abort(); });
+        const out = await remote.claimCall(db, caller, claim, perm.canWrite, Date.now(), { waits: claimWaits, signal: gone.signal, blocked: () => perm.errors.size > 0 });
         // Calls passed over because GitHub could not confirm the permission: the helper logs why it gets nothing.
         if (!out.lease && out.reason === undefined && perm.errors.size) out.reason = [...perm.errors.values()][0];
-        return reply(200, out);
+        // How long the claim waited for a call, so a latency measurement can leave it out.
+        return reply(200, out, { "x-held-ms": String(heldMsOf(out)) });
       }
       if (path === ROUTES.status) {
         const caller = loadToken(db, bearer);
@@ -937,7 +943,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return sendFile(res, "text/html; charset=utf-8", "no-store", APP_CSP, index);
   }
 
-  return { handle, routes: opts.routes, provider, live, close: () => { clearInterval(maintenance); live.close(); } };
+  // Shutting down answers the held claims at once, each with its own short retry, and holds no new ones.
+  return { handle, routes: opts.routes, provider, live, close: () => { clearInterval(maintenance); claimWaits.close(); live.close(); } };
 }
 
 export async function startServer(opts: AppOptions): Promise<{ server: Server; url: string; app: ReturnType<typeof createApp>; close(): Promise<void> }> {
@@ -957,11 +964,14 @@ export async function startServer(opts: AppOptions): Promise<{ server: Server; u
   return {
     server, app,
     url: `http://${host}:${addr.port}`,
+    // The held claims' replies are written first; connections still open after a short flush wait (SSE streams) are cut.
     close: () => new Promise<void>((resolve) => {
       stopLiveness();
       app.close();
-      server.closeAllConnections();
-      server.close(() => resolve());
+      // A keep-alive connection turns idle only once its reply is out, after close() looked at it.
+      const idle = setInterval(() => server.closeIdleConnections(), 25);
+      const cut = setTimeout(() => server.closeAllConnections(), 500);
+      server.close(() => { clearInterval(idle); clearTimeout(cut); resolve(); });
     }),
   };
 }

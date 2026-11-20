@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // Runs the robustness scenarios (section 4 of the plan) against a scratch instance and prints the acceptance report.
-//   node scripts/loadtest/run.mjs <smoke|1|2|3|4|5|6|all> [--dir <work dir>] [--db <db to copy>] [--time-factor F] [--time-scale S]
+//   node scripts/loadtest/run.mjs <smoke|1|2|3|4|5|6|7|all> [--dir <work dir>] [--db <db to copy>] [--time-factor F] [--time-scale S]
 //                                 [--users N] [--parallel K] [--calls M] [--max-minutes N] [--sequential]
-// `all` runs 1 to 5 side by side, then 6 alone (its latency numbers need the machine to itself). See README.md.
+// `all` runs 1 to 5 side by side, then 6 and 7 each alone at their own scale. See README.md.
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collect, evaluate } from "./report.mjs";
-import { Rig, sleep } from "./rig.mjs";
+import { collect, evaluate, evaluateLongPoll } from "./report.mjs";
+import { MIX, Rig, sleep } from "./rig.mjs";
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : d; };
@@ -42,6 +42,9 @@ const SCENARIOS = {
   // about twice production's. The harness delays are cut instead (time factor) to keep the run short, and the calls arrive
   // over 25 s, as jobs queue them, rather than in one burst.
   6: { title: "50 helpers x 4 slots against 300 mixed calls", users: 50, parallel: 4, calls: 300, rampS: 25, timeFactor: 0.1, timeScale: 0.5, accept: ["noLoss", "latency", "idle"], maxMin: 25 },
+  // Long-polling claims with protocol 4 claimers in this process (no harness: a lease is submitted at once), so the runners
+  // sit in held claims nearly all the time. Production-scale times: calls over 120 s, the restart at 60 s.
+  7: { title: "20 idle runners long-polling, random enqueues, a dashboard restart", users: 20, parallel: 1, calls: 60, spreadS: 120, restartAtS: 60, timeFactor: 1, timeScale: 0.25, longPoll: true, maxMin: 8 },
 };
 
 /** The time scale scenario `key` runs at: --time-scale when given, else the scenario's own, else the default. */
@@ -49,6 +52,7 @@ const scaleOf = (key) => (SCALE_GIVEN ? TIME_SCALE : SCENARIOS[key].timeScale ??
 
 async function run(key) {
   const sp = SCENARIOS[key];
+  if (sp.longPoll) return runLongPoll(key);
   const scale = scaleOf(key);
   const spec = { ...sp, name: `scenario-${key}`, users: Number(opt("users", sp.users)), parallel: Number(opt("parallel", sp.parallel)), calls: Number(opt("calls", sp.calls)), timeFactor: Number(opt("time-factor", sp.timeFactor)) * scale, maxMin: Number(opt("max-minutes", sp.maxMin * Math.max(scale, 0.3))) };
   const dir = opt("dir", join(tmpdir(), `autocraft-loadtest-${Date.now()}`));
@@ -80,6 +84,87 @@ async function run(key) {
   }
 }
 
+/**
+ * One long-polling runner slot: claims with `wait: 25` until `lp.stop`, submits each lease at once, and records every claim
+ * (start, end, HTTP status, lease, reason) in `lp.claims` and each lease's time in `lp.leases`.
+ */
+async function longPollRunner(rig, u, lp) {
+  const base = `http://127.0.0.1:${rig.proxyPort}`;
+  const tiers = { top: "claude-opus-4-5", mid: "claude-sonnet-4-5", small: "claude-haiku-4-5" };
+  const post = (path, bearer, body) => fetch(`${base}${path}`, { method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: lp.abort.signal });
+  for (let n = 1; !lp.stop; n++) {
+    const start = Date.now();
+    let status = 0, reply = null;
+    try {
+      const r = await post("/api/remote/claim", u.token, { requestId: `${u.login}-${n}-${Math.random().toString(36).slice(2, 8)}`, protocol: 4, wait: 25, helperVersion: "1.2.0", harness: "claude", harnessVersion: "2.1.0", tiers });
+      status = r.status;
+      reply = status === 200 ? await r.json() : (await r.arrayBuffer(), null);
+    } catch { /* reset or aborted */ }
+    if (lp.stop) break;
+    const end = Date.now();
+    lp.claims.push({ start, end, status, lease: reply?.lease?.id ?? null, reason: reply?.reason ?? null });
+    if (reply?.lease) {
+      lp.leases.set(reply.lease.id, end);
+      const tier = rig.db.prepare("SELECT tier FROM main.remote_calls WHERE id = ?").get(reply.lease.id)?.tier ?? "small";
+      try { await (await post("/api/remote/submit", reply.lease.secret, { ok: true, text: "ok", model: tiers[tier], usage: { inputTokens: 1, outputTokens: 1 }, durationMs: 1 })).arrayBuffer(); } catch { /* the job emulator requeues a lost lease */ }
+      continue;
+    }
+    await sleep(status === 200 ? reply.retryAfter * 1000 : rig.sc(1000));
+  }
+}
+
+async function runLongPoll(key) {
+  const sp = SCENARIOS[key];
+  const scale = scaleOf(key);
+  const Sc = (ms) => Math.max(1, Math.round(ms * scale));
+  const spec = { ...sp, name: `scenario-${key}`, users: Number(opt("users", sp.users)), calls: Number(opt("calls", sp.calls)) };
+  const dir = opt("dir", join(tmpdir(), `autocraft-loadtest-${Date.now()}`));
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const rig = new Rig({ name: spec.name, dir, users: spec.users, parallel: 1, timeFactor: 1, timeScale: scale, dbFrom: opt("db") });
+  const lp = { claims: [], leases: new Map(), stop: false, abort: new AbortController(), t0: 0, end: 0, stopAt: 0, backAt: 0 };
+  try {
+    await rig.init();
+    lp.t0 = Date.now();
+    const runners = rig.users.map((u) => longPollRunner(rig, u, lp));
+    rig.note(`${spec.users} long-polling runners started`);
+    await sleep(Sc(5000));
+    const during = (async () => {
+      await sleep(Sc(sp.restartAtS * 1000));
+      lp.stopAt = Date.now();
+      await rig.restartDashboard();
+      lp.backAt = Date.now();
+    })().catch((e) => rig.note(`scenario step failed: ${e.message}`));
+    // Random arrivals: exponential gaps around the mean, small and gating calls as jobs queue them between larger ones.
+    const mean = Sc(sp.spreadS * 1000) / spec.calls;
+    for (let i = 0; i < spec.calls; i++) {
+      await sleep(-Math.log(1 - Math.random()) * mean);
+      await rig.enqueue(MIX[i % MIX.length]);
+      if (i === 0) rig.startJobEmulator();
+    }
+    rig.note(`${spec.calls} calls queued over about ${sp.spreadS} production seconds (time scale ${scale})`);
+    await during;
+    const drained = await rig.waitDrained(Number(opt("max-minutes", sp.maxMin)) * 60_000);
+    rig.note(drained ? "queue drained" : `not drained: ${rig.openCalls()} calls still open`);
+    // One more hold, so the runners' empty replies at their deadlines are counted.
+    await sleep(Sc(30_000));
+    lp.end = Date.now();
+    lp.stop = true;
+    lp.abort.abort();
+    await Promise.all(runners);
+    const m = collect(rig);
+    const { lines, checks } = evaluate(rig, spec, m);
+    const lpOut = evaluateLongPoll(rig, spec, lp);
+    lines.push(...lpOut.lines);
+    checks.push(...lpOut.checks);
+    writeFileSync(join(rig.dir, "report.json"), JSON.stringify({ spec: { name: spec.name, title: spec.title }, metrics: { ...m, longPoll: lpOut.metrics }, checks, timeline: rig.events }, null, 1));
+    return { key, lines, checks, dir: rig.dir };
+  } finally {
+    lp.stop = true;
+    lp.abort.abort();
+    await rig.stop();
+  }
+}
+
 /** Runs scenario `key` in a child process (its own time scale) and returns its result. */
 async function runApart(key) {
   const out = join(opt("dir", tmpdir()), `result-${key}-${process.pid}.json`);
@@ -89,13 +174,13 @@ async function runApart(key) {
 }
 
 const started = Date.now();
-const keys = which === "all" ? ["1", "2", "3", "4", "5", "6"] : [which];
-if (!keys.every((k) => SCENARIOS[k])) { console.error(`unknown scenario ${which}; use smoke, 1-6 or all`); process.exit(64); }
+const keys = which === "all" ? ["1", "2", "3", "4", "5", "6", "7"] : [which];
+if (!keys.every((k) => SCENARIOS[k])) { console.error(`unknown scenario ${which}; use smoke, 1-7 or all`); process.exit(64); }
 const results = [];
 // Scenarios at another scale than the rest run apart; the rest share this process.
 const apart = which === "all" ? keys.filter((k) => scaleOf(k) !== TIME_SCALE) : [];
 const here = keys.filter((k) => !apart.includes(k));
-if (which === "all" && !flag("sequential")) results.push(...await Promise.all(here.filter((k) => k !== "6").map((k) => run(k))), ...(here.includes("6") ? [await run("6")] : []));
+if (which === "all" && !flag("sequential")) results.push(...await Promise.all(here.filter((k) => k !== "6" && k !== "7").map((k) => run(k))), ...(here.includes("6") ? [await run("6")] : []), ...(here.includes("7") ? [await run("7")] : []));
 else for (const k of here) results.push(await run(k));
 for (const k of apart) results.push(await runApart(k));
 results.sort((a, b) => a.key.localeCompare(b.key));
