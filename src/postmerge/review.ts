@@ -154,7 +154,7 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
       s.failed.push(refOf(c));
     }
     params.onHandled?.(++handled);
-  }), () => queueRoom(db));
+  }), () => queueRoom(db, undefined, [repo]));
   log(`postmerge ${repo}: ${s.reviewed} reviewed, ${s.findings} findings (${s.defects} defects), ${s.failed.length} without an answer`);
   return s;
 }

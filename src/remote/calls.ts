@@ -275,8 +275,16 @@ type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "parent_id" | "sticky_logi
 };
 
 /** The role rules: maintainers and operators; discord.* calls and calls that name no repo go to operators only. */
-export const roleFits = (role: string, c: Pick<Cand, "prompt_id" | "repos">): boolean =>
+export const roleFits = (role: string, c: { prompt_id: string; repos: readonly string[] }): boolean =>
   (role === "operator" || role === "maintainer") && !((c.prompt_id.startsWith("discord.") || !c.repos.length) && role !== "operator");
+
+/**
+ * Whether a Task Runner may take a call, authorship and picks apart: its user fits the role rules, may write to every repo the
+ * call names (`canWrite`, from the cached permissions as the caller reads them) and takes calls on each of them (`repos`: the
+ * user's My repos narrowed by the runner's own list, null for every repo; claimRepos).
+ */
+export const runnerTakes = (r: { login: string; role: string; repos: ReadonlySet<string> | null }, c: { prompt_id: string; repos: readonly string[] }, canWrite: (login: string, repo: string) => boolean): boolean =>
+  roleFits(r.role, c) && c.repos.every((x) => (!r.repos || r.repos.has(x)) && canWrite(r.login, x));
 
 type IdleHelper = { login: string; role: string; tiers: ReadonlySet<string>; only: ReadonlySet<string> | null };
 
@@ -306,7 +314,7 @@ function idleOthers(db: DatabaseSync, login: string, nowMs: number): (c: Cand) =
     const key = `${c.tier}\n${c.prompt_id.startsWith("discord.")}\n${c.repos.join("\n")}`;
     let logins = takers.get(key);
     if (!logins) {
-      logins = idle.filter((o) => o.tiers.has(c.tier) && (!o.only || c.repos.every((x) => o.only!.has(x))) && roleFits(o.role, c) && c.repos.every((x) => canWrite(o.login, x))).map((o) => o.login.toLowerCase());
+      logins = idle.filter((o) => o.tiers.has(c.tier) && runnerTakes({ login: o.login, role: o.role, repos: o.only }, c, canWrite)).map((o) => o.login.toLowerCase());
       takers.set(key, logins);
     }
     return logins.some((l) => !c.authors.has(l));

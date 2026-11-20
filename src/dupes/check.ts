@@ -113,6 +113,6 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     }
     const todo = r.ok ? (r.rest ?? []) : input;
     c.unanswered += todo.length;
-  }), () => queueRoom(db), { first: true });
+  }), (i) => queueRoom(db, undefined, [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))]), { first: true });
   return c;
 }

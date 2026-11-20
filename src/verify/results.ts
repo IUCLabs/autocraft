@@ -302,7 +302,8 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
   // Rows of one PR (an older head still pending) run one after the other; PRs run side by side.
   const byPr = new Map<string, typeof rows>();
   for (const v of rows) byPr.set(`${v.repo}#${v.number}`, [...(byPr.get(`${v.repo}#${v.number}`) ?? []), v]);
-  await pool([...byPr.values()].map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), () => queueRoom(db), { max: POOL_MAX.verifyCollect });
+  const groups = [...byPr.values()];
+  await pool(groups.map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), (i) => queueRoom(db, undefined, [groups[i]![0]!.repo]), { max: POOL_MAX.verifyCollect });
 
   // Screenshot runs: one read of an empty table while the Screenshots feature has never run.
   s.shots = await collectScreenshots(db, d, log, runId, params.stopping);

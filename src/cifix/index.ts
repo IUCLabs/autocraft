@@ -752,7 +752,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       const release = leaseItem(db, `pr:${repo}#${numberOf(x)}`, log);
       if (!release) return;
       try { await run(x); } finally { release(); }
-    }), () => queueRoom(db), { max: POOL_MAX.cifix });
+    }), () => queueRoom(db, undefined, [repo]), { max: POOL_MAX.cifix });
   };
   // A fix capped or given up at this head: one comment naming the failing checks, then the PR waits on the contributor.
   for (const c of sel.ask) {

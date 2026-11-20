@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef, ModelQueueWhyCode } from "../../web/src/api/types.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
-import { pickerLogins, pickCounts, queueSnapshot, roleFits } from "./calls.ts";
+import { pickerLogins, pickCounts, queueSnapshot, runnerTakes } from "./calls.ts";
 import { gating } from "./claim-class.ts";
 import { cooloffOf } from "./cooloff.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
@@ -63,7 +63,7 @@ export function whyWaiting(c: WhyCall, runners: readonly ReadyRunner[], ahead: n
   if (!forTier.length) return { code: "no-runner", text: `No Task Runner is ready for the ${c.tier} tier` };
   const auto = forTier.filter((r) => !r.manual);
   if (!auto.length) return { code: "manual-only", text: "Every ready Task Runner is Manual only" };
-  const may = auto.filter((r) => roleFits(r.role, { prompt_id: c.promptId, repos: [...c.repos] }) && c.repos.every((x) => canWrite(r.login, x) && (!r.repos || r.repos.has(x))));
+  const may = auto.filter((r) => runnerTakes(r, { prompt_id: c.promptId, repos: c.repos }, canWrite));
   if (!may.length) return { code: "no-repo-access", text: c.repos.length ? "No ready Task Runner's user takes calls on its repo" : "No ready Task Runner's user may take it" };
   if (!may.some((r) => r.free > 0)) return { code: "busy", text: "Every Task Runner that may take it is busy" };
   return { code: "behind", text: ahead === 0 ? "Next in line" : `${ahead} call${ahead === 1 ? "" : "s"} ahead` };
@@ -76,16 +76,20 @@ export type QueuedCall = {
   why: { code: ModelQueueWhyCode; text: string };
 };
 
-/** The queued calls with a live caller in claim order, why each waits (`showPicker`: name the picker), and the ready runners. */
-export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean): { calls: QueuedCall[]; runners: ReadyRunner[] } {
+/**
+ * The queued calls with a live caller in claim order, why each waits (`showPicker`: name the picker), and the ready runners.
+ * Write permission is the one last confirmed, unless `canWriteOf` gives the rule for the runners' logins.
+ */
+export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean, canWriteOf?: (logins: string[]) => (login: string, repo: string) => boolean): { calls: QueuedCall[]; runners: ReadyRunner[] } {
   const snap = queueSnapshot(db, nowMs).filter((r) => r.seen_at >= nowMs - CALLER_STALE_MS);
   const runners = readyRunners(db, nowMs);
   if (!snap.length) return { calls: [], runners };
   const extra = new Map((db.prepare("SELECT id, asked_model, queued_ms, queued_since, error FROM main.remote_calls WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(snap.map((r) => r.id))) as
     { id: number; asked_model: string; queued_ms: number; queued_since: number | null; error: string | null }[]).map((r) => [Number(r.id), r]));
   const writable = new Set<string>();
-  for (const p of db.prepare("SELECT login, repo, permission FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(runners.map((r) => r.login))) as { login: string; repo: string; permission: string }[])
+  if (!canWriteOf) for (const p of db.prepare("SELECT login, repo, permission FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(runners.map((r) => r.login))) as { login: string; repo: string; permission: string }[])
     if (WRITE_PERMISSIONS.has(p.permission)) writable.add(`${p.login.toLowerCase()}\n${p.repo}`);
+  const canWrite = canWriteOf?.(runners.map((r) => r.login)) ?? ((l: string, repo: string) => writable.has(`${l.toLowerCase()}\n${repo}`));
   const fresh = pickerLogins(db, nowMs);
   const ahead = new Map<Tier, number>();
   const calls: QueuedCall[] = [];
@@ -95,7 +99,7 @@ export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean):
     const picked = pickCounts(r, nowMs, (l) => fresh.has(l)) ? r.pickedBy : null;
     const followUp = r.parent_id !== null;
     const n = ahead.get(r.tier) ?? 0;
-    const why = whyWaiting({ tier: r.tier, promptId: r.prompt_id, repos: r.repos, followUp, picked: picked === null ? null : { login: showPicker ? picked : null } }, runners, n, (l, repo) => writable.has(`${l.toLowerCase()}\n${repo}`));
+    const why = whyWaiting({ tier: r.tier, promptId: r.prompt_id, repos: r.repos, followUp, picked: picked === null ? null : { login: showPicker ? picked : null } }, runners, n, canWrite);
     if (!followUp && picked === null) ahead.set(r.tier, n + 1);
     calls.push({
       id: r.id, step: r.step, promptId: r.prompt_id, tier: r.tier, model: x.asked_model, refs: r.refs, repos: r.repos, authors: r.authors,

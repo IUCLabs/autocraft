@@ -197,6 +197,7 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     prepared_at = ?, prepared_head = ?, prepared_discussion = ?, recommend_failures = NULL, recommend_failed_at = NULL, prepare_failed_head = NULL, prepare_requested_at = NULL
     WHERE id = ? AND answer IS NULL AND question = ? AND options = ?`);
   const res: PrepareResult = { stored: 0, failed: 0 };
+  const repoOf = new Map((db.prepare("SELECT id, repo FROM decisions WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as { id: string; repo: string | null }[]).map((r) => [r.id, r.repo]));
   await pool(ids.map((id, k) => async () => {
     if (p.cancelled?.()) return;
     const d = select.get(id) as Row | undefined;
@@ -287,6 +288,6 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
       try { failed.run(head, now(), head, d.id); } catch { /* the next pass tries again */ }
       res.failed++;
     }
-  }), () => queueRoom(db), { first: true });
+  }), (i) => { const repo = repoOf.get(ids[i]!); return queueRoom(db, undefined, repo ? [repo] : undefined); }, { first: true });
   return res;
 }

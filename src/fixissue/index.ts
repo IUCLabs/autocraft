@@ -483,7 +483,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     } catch (e) {
       ilog(`  ${refOf(r)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db), { max: POOL_MAX.fixissue });
+  }), () => queueRoom(db, undefined, [repo]), { max: POOL_MAX.fixissue });
   let handled = 0;
   const stopNew = stopNote(params.stopping, log, `fixissue ${repo}: stopping, no new issues started`);
   await pool(picks.map((c) => async (): Promise<void> => {
@@ -502,7 +502,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     } catch (e) {
       ilog(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db), { max: POOL_MAX.fixissue });
+  }), () => queueRoom(db, undefined, [repo]), { max: POOL_MAX.fixissue });
   await unclaimHeld(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
   return s;
@@ -608,7 +608,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
     } catch (e) {
       ilog(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db), { max: POOL_MAX.fixissueCollect });
+  }), (i) => queueRoom(db, undefined, [rows[i]!.repo]), { max: POOL_MAX.fixissueCollect });
   for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(xOf(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
