@@ -29,6 +29,7 @@ import * as dec from "./decisions.ts";
 import * as conv from "./conversations.ts";
 import * as mcp from "./mcp.ts";
 import * as userSettings from "./user-settings.ts";
+import * as modelQueue from "./model-queue.ts";
 import { HELPERS_PATH } from "../../remote/helpers.ts";
 import * as areas from "./areas.ts";
 import * as security from "./security.ts";
@@ -426,6 +427,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/me/settings", userSettings.settings),
     { method: "PUT", pattern: "/api/me/settings", handler: ok(userSettings.setSettings) },
     get(HELPERS_PATH, userSettings.helpers),
+    get("/api/model-queue", modelQueue.get),
+    post("/api/model-queue/:id/pick", modelQueue.pick),
+    post("/api/model-queue/:id/unpick", modelQueue.unpick),
     get("/api/items/:repo/:n", itemCore),
     get("/api/items/:repo/:n/page", itemPage),
     get("/api/items/:repo/:n/peek", items.peek),
