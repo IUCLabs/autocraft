@@ -101,21 +101,16 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
   const setScopes = (s: LoginScopes) => void write.run("scopes", () => api.runners.setScopes(r.tokenId, s));
   return (
     <li className={cn("border-b border-line last:border-0", open && "bg-ink/[0.02]")}>
-      <button type="button" aria-expanded={open} aria-label={`${name}: details`} onClick={() => setOpen(!open)} className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-ink/[0.03]">
+      <button type="button" aria-expanded={open} aria-label={`${name}: details`} onClick={() => setOpen(!open)} className="flex w-full items-start gap-4 px-3 py-3 text-left hover:bg-ink/[0.03] focus:outline-none focus-visible:bg-ink/[0.04]">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-medium">{name}</span>
+          <div className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium leading-6">{name}</span>
             {isNew && <Badge tone="accent">new</Badge>}
             <Badge tone={b.tone} icon={<span className="inline-block size-1.5 rounded-full bg-current" />}>
               {b.text}
             </Badge>
-            {r.fresh && r.slots !== null && r.busy !== null && (
-              <span className="num ml-auto text-xs text-ink/60" title="Calls running now, of the calls the runner runs at once">
-                {r.busy} of {r.slots} busy
-              </span>
-            )}
           </div>
-          <div className="mt-0.5 text-xs text-ink/55">
+          <div className="mt-1 text-xs leading-5 text-ink/55">
             {dotted([
               r.machine?.hostname,
               r.machine && platform(r.machine.platform),
@@ -129,20 +124,27 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
             ])}
           </div>
           {!r.fresh && (
-            <p className="mt-0.5 text-xs text-ink/65">
+            <p className="mt-1 text-xs leading-5 text-ink/65">
               {r.readiness ? "Stopped." : "Logged in, not started yet."} Start it on {r.machine?.hostname ?? "its machine"}: <span className="code">autocraft work</span> (step 4 below)
             </p>
           )}
           {r.lastError && (
-            <p className={cn("mt-0.5 text-xs text-bad", open ? "break-words" : "truncate")}>
+            <p className={cn("mt-1 text-xs leading-5 text-bad", open ? "break-words" : "truncate")}>
               {r.lastError.text} <TimeAgo iso={r.lastError.at} className="text-ink/55" />
             </p>
           )}
         </div>
-        <CaretDownIcon aria-hidden className={cn("mt-1 shrink-0 text-ink/45 transition-transform duration-fast", open && "rotate-180")} />
+        <span className="flex h-6 shrink-0 items-center gap-3">
+          {r.fresh && r.slots !== null && r.busy !== null && (
+            <span className="num text-xs text-ink/60" title="Calls running now, of the calls the runner runs at once">
+              {r.busy} of {r.slots} busy
+            </span>
+          )}
+          <CaretDownIcon aria-hidden className={cn("text-ink/45 transition-transform duration-fast", open && "rotate-180")} />
+        </span>
       </button>
       {open && (
-        <div className="space-y-2 px-3 pb-2.5">
+        <div className="space-y-3 border-t border-line px-3 py-3">
           {r.fresh && r.readiness !== "ready" && r.reason && <p className="text-xs text-ink/65">{r.reason}</p>}
           <div className="flex flex-col gap-y-2 text-sm text-ink/80 sm:flex-row sm:flex-wrap sm:gap-x-6">
             <span className="flex items-center gap-2">
