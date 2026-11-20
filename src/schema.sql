@@ -596,6 +596,7 @@ CREATE TABLE IF NOT EXISTS autorepins (
   ref_repo TEXT NOT NULL,             -- tracked repo name of the dependency
   ref_number INTEGER NOT NULL,
   login TEXT NOT NULL,                -- who asked; their access is checked again before the push
+  github_id INTEGER NOT NULL,         -- the asker's numeric GitHub id: the login must still be bound to it at the push
   requested_at TEXT NOT NULL,
   state TEXT NOT NULL,                -- waiting (for the merge) | locking (the lockfile task runs) | pushed | failed | cancelled
   sha TEXT,                           -- the merge commit, once read
@@ -608,6 +609,14 @@ CREATE TABLE IF NOT EXISTS autorepins (
   done_at TEXT,
   notice TEXT,                        -- posted | failed | none; null while the comment is still to post
   PRIMARY KEY (repo, number, ref_repo)
+) WITHOUT ROWID;
+-- The latest `autorepin off` per pull request: a command written before it (one carried out late, after retries) sets nothing.
+-- Bookkeeping: no live topic.
+CREATE TABLE IF NOT EXISTS autorepin_offs (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  off_at TEXT NOT NULL,               -- the creation time of the off command's comment
+  PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
 -- A tracked repo the last sync could not read: skipped for the run, retried by the next. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS sync_repo_errors (

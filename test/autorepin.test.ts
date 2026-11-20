@@ -105,6 +105,10 @@ describe("lockRefusal", () => {
     assert.ok(ok(lockOf(OLD)));
     assert.ok(ok(lockOf(SHA).replace('"aa"', '"zz"')));
   });
+  test("refuses a new version of a package the old lockfile has from the same source, a downgrade included", () => {
+    assert.ok(ok(lockOf(SHA).replace('version = "1.0.0"', 'version = "0.9.0"')));
+    assert.ok(ok(lockOf(SHA, `\n[[package]]\nname = "serde"\nversion = "2.0.0"\n${CRATES}\nchecksum = "cc"\n`)));
+  });
   test("reads the lockfile as TOML: a source written another way than Cargo writes it still counts", () => {
     const app = 'name = "app"\nversion = "0.1.0"\n';
     assert.ok(ok(lockOf(SHA).replace(app, `${app}source = "git+https://example.org/foreign#abc" # source\n`)));
@@ -173,7 +177,7 @@ function setup(o: { lock?: boolean; off?: Parameters<World["repo"]>[0] } = {}): 
   return s;
 }
 
-const set = (s: Setup) => requestRepin(s.w.db, { login: OPERATOR, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: { owner: "storytold", name: "libs", number: 12 } });
+const set = (s: Setup) => requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: { owner: "storytold", name: "libs", number: 12 } });
 const merged = (s: Setup, state = "MERGED") => s.w.db.prepare("UPDATE items SET state = ? WHERE repo = 'libs' AND number = 12").run(state);
 const row = (s: Setup) => ({ ...s.w.db.prepare("SELECT state, tries, to_head, result, notice FROM autorepins").get() }) as { state: string; tries: number; to_head: string | null; result: string | null; notice: string | null };
 const task = (s: Setup) => s.w.db.prepare("SELECT id, patch, plan, head_sha FROM build_tasks WHERE step = 'autorepin' ORDER BY id DESC").get() as { id: number; patch: string; plan: string; head_sha: string } | undefined;
@@ -187,15 +191,24 @@ function locked(s: Setup, lock: string | null, state = "done"): void {
   storeArtifact(s.w.db, id, "Cargo.lock", tmp);
 }
 
+/** Delivers a comment on app#1 holding `body` and carries it out; `now`: the comment's text when the runner reads it again. */
+async function comment(s: Setup, body: string, now = body): Promise<void> {
+  const raw = Buffer.from(JSON.stringify({
+    action: "created", repository: { full_name: "storytold/app", name: "app" }, issue: { number: 1, pull_request: { url: "x" } },
+    comment: { id: 5000, body, created_at: new Date().toISOString(), user: { login: OPERATOR, id: 101, type: "User" } },
+  }));
+  handleDelivery(s.w.db, "secret", { event: "issue_comment", signature: signatureOf("secret", raw) }, raw, safeEqual, SLUG);
+  await drainCommands(s.w.db, {
+    querier: s.deps.querier, exec: s.deps.exec, slug: SLUG,
+    permission: async () => ({ kind: "ok", permission: "write" }),
+    comment: async () => ({ kind: "ok", authorId: 101, body: now }),
+  });
+}
+
 describe("autorepin", () => {
   test("a comment sets it, and nothing happens while the dependency's pull request is open", async () => {
     const s = setup();
-    const raw = Buffer.from(JSON.stringify({
-      action: "created", repository: { full_name: "storytold/app", name: "app" }, issue: { number: 1, pull_request: { url: "x" } },
-      comment: { id: 5000, body: `@${SLUG} autorepin storytold/libs#12`, user: { login: OPERATOR, id: 101, type: "User" } },
-    }));
-    handleDelivery(s.w.db, "secret", { event: "issue_comment", signature: signatureOf("secret", raw) }, raw, safeEqual, SLUG);
-    await drainCommands(s.w.db, { querier: s.deps.querier, exec: s.deps.exec, permission: async () => "ok" });
+    await comment(s, `@${SLUG} autorepin storytold/libs#12`);
     assert.equal(s.comments.length, 1);
     assert.match(s.comments[0]!, new RegExp(`@${OPERATOR} Autorepin set: once storytold/libs#12 is merged`));
     assert.equal(row(s).state, "waiting");
@@ -338,7 +351,7 @@ describe("autorepin", () => {
 
   test("is refused on an issue, for a repo that is not tracked, and where pushes are not approved", async () => {
     const s = setup({ off: ["push"] });
-    const ask = (o: Partial<Parameters<typeof requestRepin>[1]>) => requestRepin(s.w.db, { login: OPERATOR, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: { owner: null, name: "libs", number: 12 }, ...o });
+    const ask = (o: Partial<Parameters<typeof requestRepin>[1]>) => requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: { owner: null, name: "libs", number: 12 }, ...o });
     await assert.rejects(ask({ pr: false }), /pull requests/);
     await assert.rejects(ask({ ref: { owner: null, name: "nowhere", number: 1 } }), /not a repository AutoCraft tracks/);
     await assert.rejects(ask({ ref: { owner: "someone-else", name: "libs", number: 12 } }), /not a repository AutoCraft tracks/);
@@ -349,12 +362,12 @@ describe("autorepin", () => {
 
   test("an autorepin command carried out after a later off does not set it again", async () => {
     const s = setup();
-    const ask = (ref: Parameters<typeof requestRepin>[1]["ref"], at: string) => requestRepin(s.w.db, { login: OPERATOR, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref, at: new Date(at) });
+    const ask = (ref: Parameters<typeof requestRepin>[1]["ref"], at: string) => requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref, at: new Date(at) });
     const libs = { owner: null, name: "libs", number: 12 };
     await ask(libs, "2026-02-01T10:00:00Z");
     await ask(null, "2026-02-01T10:10:00Z");
     // The command of 10:05, whose permission read GitHub settled only now.
-    await assert.rejects(ask(libs, "2026-02-01T10:05:00Z"), /later autorepin command/);
+    await assert.rejects(ask(libs, "2026-02-01T10:05:00Z"), /later autorepin/);
     assert.equal(row(s).state, "cancelled");
     await ask(libs, "2026-02-01T10:20:00Z");
     assert.equal(row(s).state, "waiting");
@@ -363,10 +376,29 @@ describe("autorepin", () => {
   test("off drops a waiting autorepin", async () => {
     const s = setup();
     await set(s);
-    await requestRepin(s.w.db, { login: OPERATOR, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: null });
+    await requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: null });
     merged(s);
     assert.equal(await drainRepins(s.w.db, s.deps), 0);
     assert.equal(row(s).state, "cancelled");
     assert.equal(s.comments.length, 0);
+  });
+
+  test("an off given before any autorepin was set still stops an older command carried out later", async () => {
+    const s = setup();
+    const ask = (ref: Parameters<typeof requestRepin>[1]["ref"], at: string) => requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref, at: new Date(at) });
+    const libs = { owner: null, name: "libs", number: 12 };
+    await ask(null, "2026-02-01T10:10:00Z");
+    await assert.rejects(ask(libs, "2026-02-01T10:05:00Z"), /later autorepin off/);
+    assert.equal(s.w.db.prepare("SELECT COUNT(*) AS n FROM autorepins").get()!.n, 0);
+    await ask(libs, "2026-02-01T10:20:00Z");
+    assert.equal(row(s).state, "waiting");
+  });
+
+  test("a comment edited to name another pull request before it is carried out sets nothing", async () => {
+    const s = setup();
+    s.w.db.prepare("INSERT INTO items (repo, number, kind, state, title, created_at, updated_at) VALUES ('libs', 13, 'pr', 'OPEN', 'other change', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')").run();
+    await comment(s, `@${SLUG} autorepin storytold/libs#12`, `@${SLUG} autorepin storytold/libs#13`);
+    assert.equal(s.w.db.prepare("SELECT COUNT(*) AS n FROM autorepins").get()!.n, 0);
+    assert.equal(s.w.db.prepare("SELECT state FROM github_commands").get()!.state, "ignored");
   });
 });

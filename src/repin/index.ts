@@ -11,27 +11,32 @@
 //  - the commit is pushed with a lease on the head it was made on (pushRepin in src/github/write.ts), under the repo's
 //    Pushes approval, after the access of the person who asked is read again.
 // The outcome (pushed, failed with the reason, or dropped because the dependency's pull request closed unmerged) is a
-// comment on the pull request.
+// comment on the pull request, unless the pull request is quiet. Only reasons written here reach the comment; any other
+// error is logged and the comment gives a fixed reason.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { getAccess } from "../access.ts";
 import { absolute } from "../build/artifacts.ts";
-import { createTask } from "../build/tasks.ts";
+import { cancelTask, createTask, getTask, TERMINAL } from "../build/tasks.ts";
 import { guardRepo } from "../core/guard.ts";
 import { audit } from "../dash/audit.ts";
+import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
+import { HttpError } from "../dash/server/util.ts";
 import { ensureAuthorWrites, type PermissionReader } from "../fixup/author-permission.ts";
 import { exec as defaultExec, fixupDir, Git, type Exec } from "../fixup/git.ts";
 import { longLivedOf, pushable } from "../fixup/pushable.ts";
+import { boundAccess } from "../github/commands.ts";
 import { commitIdentity } from "../github/identity.ts";
 import { pipelineAccount } from "../github/pipeline-account.ts";
 import { ghComment, pushRepin, WritePacedError } from "../github/write.ts";
 import type { Querier } from "../mirror.ts";
 import { ownerOf, slugOf } from "../owners.ts";
+import { appPermission } from "../remote/permission.ts";
+import { isQuiet } from "../security/quiet.ts";
 import { settleRefusal } from "../settlers.ts";
 import { fetchScript } from "../worker/rust.ts";
-import { repinsDue, type RepinRow } from "./due.ts";
-import { lockRefusal, repinManifest, type PrRef } from "./manifest.ts";
+import { LOCK_MAX_MS, repinsDue, type RepinRow } from "./due.ts";
+import { lockRefusal, repinManifest, safePath, type PrRef } from "./manifest.ts";
 
 /** Attempts that may end unfinished (GitHub unreadable, the head moved, the lockfile task failed) before the repin is given up. */
 export const MAX_TRIES = 5;
@@ -39,6 +44,8 @@ export const MAX_TRIES = 5;
 const MAX_MANIFESTS = 500;
 const LOCK = "Cargo.lock";
 const AUDIT_LOGIN = "autorepin";
+/** The reason given on GitHub for an attempt that ended on an error this module did not word. */
+const UNEXPECTED = "an unexpected error stopped it (the AutoCraft log has the details)";
 
 /**
  * The lockfile step: the manifests arrive repinned (the task's patch), Cargo brings Cargo.lock in line with them, changing
@@ -75,40 +82,48 @@ const itemOf = (db: DatabaseSync, repo: string, number: number): Item | undefine
 
 // ---- the command ---------------------------------------------------------------
 
+/** A refusal worded for the answer on GitHub. */
+const refused = (why: string): HttpError => new HttpError(409, why);
+
 /**
  * Sets (or with `ref` null, drops) the autorepin of a pull request for the commenter of a command. Who may is the rule of
- * every write a person starts (settleRefusal in src/settlers.ts). Returns what the answer says; throws with the reason when refused.
+ * every write a person starts (settleRefusal in src/settlers.ts). Returns what the answer says; throws an HttpError with the
+ * reason when refused. `at` orders the commands of a pull request: a command older than an `off` or than the command that set
+ * the row sets nothing.
  */
-export async function requestRepin(db: DatabaseSync, o: { login: string; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; /** When the command was given (the comment's time): a command never undoes a later one. */ at?: Date }): Promise<string> {
-  if (!o.pr) throw new Error("autorepin is for pull requests");
+export async function requestRepin(db: DatabaseSync, o: { login: string; githubId: number; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; /** When the command was given (the comment's time). */ at?: Date }): Promise<string> {
+  if (!o.pr) throw refused("autorepin is for pull requests");
   const refusal = await settleRefusal(db, { login: o.login, role: o.role, canWrite: async (r) => r === o.repo && o.canWrite }, [o.repo], `sets autorepin on ${o.repo}`);
-  if (refusal) throw new Error(refusal);
+  if (refusal) throw refused(refusal);
   const at = (o.at ?? new Date()).toISOString();
   const me = itemOf(db, o.repo, o.number);
-  if (me?.kind !== "pr" || me.state !== "OPEN") throw new Error("this pull request is not open");
+  if (me?.kind !== "pr" || me.state !== "OPEN") throw refused("this pull request is not open");
   if (!o.ref) {
-    // The row takes this command's time, so an older `autorepin` command still to be carried out (a retry) does not set it again.
+    // Kept even when nothing waits, so an older `autorepin` command still to be carried out (a retry) does not set it again.
+    db.prepare(`INSERT INTO main.autorepin_offs (repo, number, off_at) VALUES (?, ?, ?)
+      ON CONFLICT (repo, number) DO UPDATE SET off_at = excluded.off_at WHERE excluded.off_at > autorepin_offs.off_at`).run(o.repo, o.number, at);
     const n = db.prepare("UPDATE main.autorepins SET state = 'cancelled', result = NULL, done_at = ?1, requested_at = ?1, notice = 'none' WHERE repo = ?2 AND number = ?3 AND state IN ('waiting', 'locking') AND requested_at <= ?1").run(at, o.repo, o.number).changes;
-    if (!n) throw new Error("no autorepin is waiting on this pull request");
-    audit(db, o.login, "autorepin-off", refOf(o), {});
-    return "Autorepin is off for this pull request";
+    audit(db, o.login, "autorepin-off", refOf(o), { cancelled: Number(n) });
+    return n ? "Autorepin is off for this pull request" : "No autorepin was waiting on this pull request; it stays off";
   }
+  const off = (db.prepare("SELECT off_at FROM main.autorepin_offs WHERE repo = ? AND number = ?").get(o.repo, o.number) as { off_at: string } | undefined)?.off_at;
+  if (off !== undefined && off > at) throw refused("a later autorepin off on this pull request stands");
   const dep = (db.prepare("SELECT name FROM main.tracked_repos WHERE name = ? COLLATE NOCASE").get(o.ref.name) as { name: string } | undefined)?.name;
-  if (!dep || (o.ref.owner !== null && o.ref.owner.toLowerCase() !== ownerOf(dep).toLowerCase())) throw new Error(`${o.ref.owner ? `${o.ref.owner}/` : ""}${o.ref.name} is not a repository AutoCraft tracks`);
+  if (!dep || (o.ref.owner !== null && o.ref.owner.toLowerCase() !== ownerOf(dep).toLowerCase())) throw refused(`${o.ref.owner ? `${o.ref.owner}/` : ""}${o.ref.name} is not a repository AutoCraft tracks`);
   const depRef = `${slugOf(dep)}#${o.ref.number}`;
-  if (dep === o.repo) throw new Error("the pull request to wait for must be in another repository");
+  if (dep === o.repo) throw refused("the pull request to wait for must be in another repository");
   const other = itemOf(db, dep, o.ref.number);
-  if (other?.kind !== "pr") throw new Error(`${depRef} is not a pull request AutoCraft has read`);
-  if (other.state === "CLOSED") throw new Error(`${depRef} was closed without merging`);
+  if (other?.kind !== "pr") throw refused(`${depRef} is not a pull request AutoCraft has read`);
+  if (other.state === "CLOSED") throw refused(`${depRef} was closed without merging`);
   const g = guardRepo(db, o.repo, "push", { operator: o.login }, undefined, o.login);
-  if ("refused" in g) throw new Error(g.refused);
+  if ("refused" in g) throw refused(g.refused);
   // Only over a row of an earlier command: a later `off`, or a later command for the same repository, stands.
-  const set = db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, login, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, 'waiting')
-    ON CONFLICT (repo, number, ref_repo) DO UPDATE SET ref_number = excluded.ref_number, login = excluded.login, requested_at = excluded.requested_at, state = 'waiting',
+  const set = db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, login, github_id, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting')
+    ON CONFLICT (repo, number, ref_repo) DO UPDATE SET ref_number = excluded.ref_number, login = excluded.login, github_id = excluded.github_id, requested_at = excluded.requested_at, state = 'waiting',
       sha = NULL, head = NULL, task_id = NULL, tries = 0, tried_at = NULL, to_head = NULL, result = NULL, done_at = NULL, notice = NULL
       WHERE excluded.requested_at >= autorepins.requested_at`)
-    .run(o.repo, o.number, dep, o.ref.number, o.login, at).changes;
-  if (!set) throw new Error(`a later autorepin command for ${slugOf(dep)} on this pull request stands`);
+    .run(o.repo, o.number, dep, o.ref.number, o.login, o.githubId, at).changes;
+  if (!set) throw refused(`a later autorepin command for ${slugOf(dep)} on this pull request stands`);
   audit(db, o.login, "autorepin-set", refOf(o), { on: depRef });
   return other.state === "MERGED"
     ? `Autorepin set: ${depRef} is already merged, so ${slugOf(dep)} is repinned to its merge commit here now`
@@ -123,7 +138,7 @@ export type RepinDeps = {
   exec?: Exec;
   /** Directory holding one bare cache repository per repo (default: the fix-ups'). */
   root?: string;
-  /** Reads the asker's live permission (default: the conversation cards' read, src/conversations/act.ts). */
+  /** Reads the asker's live write permission (default: through the app installation, as comment commands read it). */
   permission?: (q: Querier, repo: string, login: string) => Promise<"ok" | "no" | "transient">;
   /** Reads a same-repo PR author's permission (default: gh). */
   authorPermission?: PermissionReader;
@@ -145,7 +160,10 @@ class Ended extends Error {
     this.toHead = o.toHead ?? null;
   }
 }
+/** `why` is worded here and safe to post. */
 const failed = (why: string): Ended => new Ended("failed", oneLine(why));
+/** The attempt did not finish and is tried again; the reason is worded here and is the outcome's when the tries run out. */
+class Retry extends Error {}
 
 const KEY = "repo = ? AND number = ? AND ref_repo = ?";
 const keyOf = (r: RepinRow): [string, number, string] => [r.repo, r.number, r.ref_repo];
@@ -159,6 +177,14 @@ function finish(db: DatabaseSync, r: RepinRow, e: Ended, at: Date): void {
 async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> {
   const q = d.querier, run = d.exec ?? defaultExec;
   const dep = slugOf(r.ref_repo), depRef = depRefOf(r);
+  if (r.state === "locking" && r.task_id !== null) {
+    // A task no build worker finished in time ends the autorepin instead of holding it.
+    const t = getTask(db, r.task_id);
+    if (t && !TERMINAL.includes(t.state) && (d.now ?? (() => new Date()))().getTime() - Date.parse(t.queuedAt) > LOCK_MAX_MS) {
+      try { cancelTask(db, t.id, AUDIT_LOGIN); } catch { /* it ended meanwhile */ }
+      throw failed("the lockfile task did not end within 3 hours");
+    }
+  }
   const me = itemOf(db, r.repo, r.number);
   if (me?.kind !== "pr" || me.state !== "OPEN") throw new Ended("cancelled", null, { notice: "none" });
   const other = itemOf(db, r.ref_repo, r.ref_number);
@@ -168,14 +194,14 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   // The merge commit, from GitHub: it must be on the default branch, where the dependency's revs are to come from.
   const m = await q.query(MERGE_QUERY, { owner: ownerOf(r.ref_repo), name: r.ref_repo, n: r.ref_number }) as MergeRead;
   const merged = m.repository?.pullRequest;
-  if (!merged) throw new Error(`GitHub returned no ${depRef}`);
+  if (!merged) throw new Retry(`GitHub returned no ${depRef}`);
   if (merged.state === "CLOSED") throw new Ended("cancelled", `${depRef} was closed without merging, so nothing was repinned`);
-  if (merged.state !== "MERGED") throw new Error(`${depRef} is not merged on GitHub yet`);
+  if (merged.state !== "MERGED") throw new Retry(`${depRef} is not merged on GitHub yet`);
   const main = m.repository?.defaultBranchRef?.name;
-  if (!main) throw new Error(`GitHub returned no default branch for ${dep}`);
+  if (!main) throw new Retry(`GitHub returned no default branch for ${dep}`);
   if (merged.baseRefName !== main) throw failed(`${depRef} was merged into ${merged.baseRefName}, not into ${dep}'s default branch ${main}`);
   const sha = merged.mergeCommit?.oid ?? "";
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`GitHub returned no merge commit for ${depRef}`);
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Retry(`GitHub returned no merge commit for ${depRef}`);
   // The branch as it is now: a default branch rewritten since the merge may no longer hold the commit.
   const root = d.root ?? fixupDir();
   mkdirSync(root, { recursive: true });
@@ -185,14 +211,19 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   const have = (await depGit.git(["cat-file", "-e", `${sha}^{commit}`])).code === 0;
   const on = have ? await depGit.git(["merge-base", "--is-ancestor", sha, tip]) : { code: 1, stderr: "" };
   if (on.code === 1) throw failed(`the merge commit of ${depRef} is no longer on ${dep}'s default branch ${main}`);
-  if (on.code !== 0) throw new Error(`the merge commit of ${depRef} could not be found on ${dep}'s ${main}: ${oneLine(on.stderr)}`);
+  if (on.code !== 0) throw new Error(`the merge commit of ${depRef} could not be looked up on ${dep}'s ${main}: ${oneLine(on.stderr)}`);
 
-  // Whoever asked must still be allowed to, and the repo must still approve pushes.
-  const access = getAccess(db, r.login);
-  if (!access) throw failed(`${r.login} no longer has an AutoCraft login`);
-  const permission = d.permission ?? (await import("../conversations/act.ts")).liveWrite;
+  // Whoever asked must still be allowed to, with the login still bound to the GitHub account that asked, and the repo must
+  // still approve pushes.
+  const permission = d.permission ?? (async (_q: Querier, repo: string, login: string) => {
+    const a = await appPermission(db, login, repo);
+    return a.kind === "ok" ? (WRITE_PERMISSIONS.has(a.permission) ? "ok" as const : "no" as const) : "transient" as const;
+  });
   const p = await permission(q, r.repo, r.login).catch(() => "transient" as const);
-  if (p === "transient") throw new Error(`GitHub could not tell ${r.login}'s access to ${slugOf(r.repo)}`);
+  if (p === "transient") throw new Retry(`GitHub could not tell ${r.login}'s access to ${slugOf(r.repo)}`);
+  const access = boundAccess(db, r);
+  if (!access) throw failed(`${r.login} no longer has an AutoCraft login bound to the GitHub account that asked`);
+  if (access.role !== "operator" && isQuiet(db, r.repo, r.number)) throw failed("the pull request is quiet until its fix is published");
   const refusal = await settleRefusal(db, { login: r.login, role: access.role, canWrite: async (x) => x === r.repo && p === "ok" }, [r.repo], `repins on ${r.repo}`);
   if (refusal) throw failed(refusal);
   const g = guardRepo(db, r.repo, "push", { operator: r.login }, undefined, r.login);
@@ -200,40 +231,53 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
 
   const l = await q.query(PR_QUERY, { owner: ownerOf(r.repo), name: r.repo, n: r.number }) as PrRead;
   const pr = l.repository?.pullRequest;
-  if (!pr) throw new Error(`GitHub returned no ${refOf(r)}`);
+  if (!pr) throw new Retry(`GitHub returned no ${refOf(r)}`);
   if (pr.state !== "OPEN") throw new Ended("cancelled", null, { notice: "none" });
   const head = pr.headRefOid;
-  if (r.state === "locking" && r.head !== head) throw new Error("the head moved while the lockfile was written");
+  if (r.state === "locking" && r.head !== head) throw new Retry("the head moved while the lockfile was written");
   const headRepo = pr.headRepository?.nameWithOwner;
   const writes = headRepo ? await ensureAuthorWrites(db, r.repo, r.number, headRepo, d.authorPermission) : "no";
-  if (writes === "unknown") throw new Error("the author's permission could not be read yet");
+  if (writes === "unknown") throw new Retry("the author's permission could not be read yet");
   if (!headRepo || !pushable(headRepo, r.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, r.repo), !!pr.headRef?.branchProtectionRule, writes === "yes")) {
     throw failed("AutoCraft cannot push to this pull request's branch (a fork that does not allow maintainer edits, or a protected or shared branch)");
   }
 
   const git = new Git(run, root, r.repo);
   const fetched = await git.fetchPr(ownerOf(r.repo), r.repo, r.number);
-  if (fetched !== head) throw new Error(`the fetched head ${short(fetched)} is not the head GitHub reports`);
+  if (fetched !== head) throw new Retry(`the fetched head ${short(fetched)} is not the head GitHub reports`);
   const paths = (await git.must(["ls-tree", "-r", "--name-only", "-z", head])).split("\0").filter(Boolean);
   const manifests = paths.filter((p) => /(^|\/)Cargo\.toml$/.test(p));
   if (manifests.length > MAX_MANIFESTS) throw failed(`the pull request has more than ${MAX_MANIFESTS} Cargo.toml files`);
+  // Only the root Cargo.lock is written by the task; a workspace below the root with its own lockfile would keep a stale one.
+  const nested = paths.find((x) => x !== LOCK && /\/Cargo\.lock$/.test(x));
+  if (nested) throw failed(`${safePath(nested, "a Cargo.lock")} is a lockfile below the repository root, which autorepin does not update`);
   const name = r.ref_repo.toLowerCase();
   const files: { path: string; mode: string; content: string }[] = [];
   let pinned = 0, unpinned = 0;
   for (const path of manifests) {
     const f = await git.file(head, path);
     // Every manifest is read: one that cannot be (a failed read, a link, too large) ends the try, so a repin never covers only some of them.
-    if (!f.ok) throw new Error(`${path}: ${f.reason}`);
+    if (!f.ok) {
+      d.log?.(`autorepin ${refOf(r)}: ${path}: ${oneLine(f.reason)}`);
+      throw new Retry(`${safePath(path, "a Cargo.toml")} could not be read`);
+    }
     // A manifest that never names the repository (a test fixture, say) is not read as TOML at all.
     if (!f.content.toLowerCase().includes(name)) continue;
     const out = repinManifest(f.content, dep, sha);
-    if (!out.ok) throw failed(`${path}: ${out.reason}`);
+    if (!out.ok) {
+      d.log?.(`autorepin ${refOf(r)}: ${path}: ${out.reason}${out.detail ? `: ${oneLine(out.detail)}` : ""}`);
+      throw failed(`${safePath(path, "a Cargo.toml")}: ${out.reason}`);
+    }
     pinned += out.pinned;
     unpinned += out.unpinned;
     if (out.from.length) files.push({ path, mode: f.mode, content: out.text });
   }
   if (!pinned) throw failed(`no Cargo.toml of this pull request pins ${dep} by rev${unpinned ? ` (${unpinned} use a branch, a tag or no rev, which autorepin leaves alone)` : ""}`);
-  if (!files.length) throw new Ended("pushed", `${dep} is already pinned to ${short(sha)}, the merge of ${depRef}; nothing to change`);
+  if (!files.length) {
+    // The head is the commit an earlier try pushed (the outcome was not recorded): keep it, so a merge pre-approved at the old head carries on (ownPush in src/preapproval).
+    if (r.to_head !== null && r.to_head === head) throw new Ended("pushed", `Repinned ${dep} to ${short(sha)}, the merge of ${depRef}, in ${short(head)}`, { toHead: head });
+    throw new Ended("pushed", `${dep} is already pinned to ${short(sha)}, the merge of ${depRef}; nothing to change`);
+  }
 
   const scratch = mkdtempSync(join(root, ".index-"));
   try {
@@ -241,21 +285,24 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
     const changed = files.map((f) => f.path);
     if (paths.includes(LOCK)) {
       const lock = await git.file(head, LOCK);
-      if (!lock.ok) throw failed(lock.reason);
+      if (!lock.ok) {
+        d.log?.(`autorepin ${refOf(r)}: ${LOCK}: ${oneLine(lock.reason)}`);
+        throw failed(`${LOCK} could not be read`);
+      }
       if (r.state !== "locking") {
         const id = createTask(db, {
           step: "autorepin", repo: r.repo, number: r.number, headSha: head, requires: { os: "linux", toolchains: ["rust-stable"] }, patch: await git.diffText(head, tree),
           plan: [{ name: "lock", cmd: ["sh", "-c", LOCK_SCRIPT], network: "fetch", timeoutSec: 900, artifacts: [LOCK] }],
         });
-        db.prepare(`UPDATE main.autorepins SET state = 'locking', sha = ?, head = ?, task_id = ? WHERE ${KEY}`).run(sha, head, id, ...keyOf(r));
+        db.prepare(`UPDATE main.autorepins SET state = 'locking', sha = ?, head = ?, to_head = NULL, task_id = ? WHERE ${KEY}`).run(sha, head, id, ...keyOf(r));
         d.log?.(`autorepin ${refOf(r)}: lockfile task ${id} queued for ${dep} at ${short(sha)}`);
         return;
       }
       const t = db.prepare("SELECT state FROM main.build_tasks WHERE id = ?").get(r.task_id) as { state: string } | undefined;
-      if (t?.state !== "done") throw new Error(`the lockfile task ${t ? t.state : "is gone"}`);
+      if (t?.state !== "done") throw new Retry(`the lockfile task ${t ? t.state : "is gone"}`);
       const art = db.prepare("SELECT file FROM main.build_artifacts WHERE task_id = ? AND name = ?").get(r.task_id, LOCK) as { file: string } | undefined;
       const file = art ? absolute(art.file) : null;
-      if (!file) throw new Error("the lockfile task returned no Cargo.lock");
+      if (!file) throw new Retry("the lockfile task returned no Cargo.lock");
       const after = readFileSync(file, "utf8");
       const no = lockRefusal(lock.content, after, dep, sha);
       if (no) throw failed(no);
@@ -274,7 +321,7 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
     const push = await pushRepin({ db, login: AUDIT_LOGIN }, g, git, { repo: r.repo, number: r.number, remote: headRepo, branch: pr.headRefName, head, sha: commit }, { on: depRef, rev: sha, files: changed, by: r.login });
     if (push.code !== 0) {
       const err = oneLine(push.stderr);
-      if (/stale info|rejected|fetch first/i.test(err)) throw new Error("the branch moved before the push");
+      if (/stale info|rejected|fetch first/i.test(err)) throw new Retry("the branch moved before the push");
       if (/denied|403|permission|not allowed|protected branch|declined|GH013/i.test(err)) throw failed("GitHub refused the push to this pull request's branch");
       throw new Error(`the push failed: ${err}`);
     }
@@ -291,8 +338,13 @@ export function noticeText(r: Pick<RepinRow, "login" | "state" | "result" | "ref
   return r.state === "cancelled" ? `@${r.login} Autorepin is off: ${r.result}.` : `@${r.login} Autorepin of ${slugOf(r.ref_repo)} failed: ${r.result}.`;
 }
 
-/** Posts the outcome. A paced write leaves it for the next drain; any other failure is logged and not retried. */
-async function notify(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<"posted" | "failed" | "paced"> {
+/** Posts the outcome. A paced write leaves it for the next drain; any other failure is logged and not retried. Nothing is posted on a quiet pull request. */
+async function notify(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<"posted" | "failed" | "paced" | "none"> {
+  // A quiet pull request (a security fix not yet published) gets no comment.
+  if (isQuiet(db, r.repo, r.number)) {
+    db.prepare(`UPDATE main.autorepins SET notice = 'none' WHERE ${KEY}`).run(...keyOf(r));
+    return "none";
+  }
   const g = guardRepo(db, r.repo, null, { operator: r.login }, undefined, r.login);
   let notice: "posted" | "failed" = "failed";
   if ("refused" in g) d.log?.(`autorepin ${refOf(r)}: no comment: ${g.refused}`);
@@ -325,11 +377,12 @@ export async function drainRepins(db: DatabaseSync, deps: RepinDeps): Promise<nu
         if (e instanceof WritePacedError) break;
         if (e instanceof Ended) finish(db, r, e, clock());
         else {
-          // Not finished: from the start again after a minute, and given up with the reason after MAX_TRIES.
-          const why = oneLine(String((e as Error)?.message ?? e));
-          deps.log?.(`autorepin ${refOf(r)}: try ${r.tries + 1} of ${MAX_TRIES}: ${why}`);
-          if (r.tries + 1 >= MAX_TRIES) finish(db, r, failed(why), clock());
-          else { db.prepare(`UPDATE main.autorepins SET state = 'waiting', head = NULL, to_head = NULL, task_id = NULL, tries = tries + 1, tried_at = ? WHERE ${KEY}`).run(clock().toISOString(), ...keyOf(r)); continue; }
+          // Not finished: from the start again after a minute, and given up with the reason after MAX_TRIES. Only a reason
+          // worded here (Retry) is posted. head and to_head stay: a push that went out before the error is still known as ours.
+          const raw = oneLine(String((e as Error)?.message ?? e));
+          deps.log?.(`autorepin ${refOf(r)}: try ${r.tries + 1} of ${MAX_TRIES}: ${raw}`);
+          if (r.tries + 1 >= MAX_TRIES) finish(db, r, failed(e instanceof Retry ? raw : UNEXPECTED), clock());
+          else { db.prepare(`UPDATE main.autorepins SET state = 'waiting', task_id = NULL, tries = tries + 1, tried_at = ? WHERE ${KEY}`).run(clock().toISOString(), ...keyOf(r)); continue; }
         }
       }
       ended++;

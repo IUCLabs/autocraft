@@ -378,7 +378,7 @@ async function carryOutRepin(db: DatabaseSync, r: Row, ref: PrRef | null, deps: 
   if (no) { settle(db, r, "refused", no, now, { reply: !quiet }); return "settled"; }
   try {
     const { requestRepin } = await import("../repin/index.ts");
-    const label = await requestRepin(db, { login: r.login, role, canWrite: perm === "ok", repo: r.repo, number: r.number, pr: r.pr === 1, ref, at: new Date(r.created_at) });
+    const label = await requestRepin(db, { login: r.login, githubId: r.github_id, role, canWrite: perm === "ok", repo: r.repo, number: r.number, pr: r.pr === 1, ref, at: new Date(r.created_at) });
     settle(db, r, "done", `${oneLine(label)}.`, now, { reply: !quiet, allowed: true });
   } catch (e) {
     if (!(e instanceof HttpError)) deps.log?.(`github command ${refOf(r)}: ${oneLine(String((e as Error)?.message ?? e))}`);

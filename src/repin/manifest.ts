@@ -47,7 +47,8 @@ function sourcesOn(data: TomlTable, slug: string): TomlTable[] {
 export type Repinned =
   /** `text`: the manifest with every `rev` on the repository set to the commit. `from`: the revs it replaced (none: nothing to change). `unpinned`: sources on the repository without a `rev` (a branch, a tag or the default branch), left as they are. */
   | { ok: true; text: string; from: string[]; pinned: number; unpinned: number }
-  | { ok: false; reason: string };
+  /** `reason` is worded here, safe to post; `detail` (the parser's message) is for the log only. */
+  | { ok: false; reason: string; detail?: string };
 
 /**
  * The manifest with the `rev` of every git source on `slug` (`owner/name`) set to `sha`. Only the rev strings change: the
@@ -56,7 +57,7 @@ export type Repinned =
 export function repinManifest(text: string, slug: string, sha: string): Repinned {
   if (!SHA.test(sha)) return { ok: false, reason: "the commit is not a full commit id" };
   const before = parseToml(text);
-  if (!before.ok) return { ok: false, reason: `the manifest does not parse: ${before.error}` };
+  if (!before.ok) return { ok: false, reason: "the manifest does not parse as TOML", detail: before.error };
   const sources = sourcesOn(before.data, slug);
   const revs = sources.flatMap((t) => (typeof t["rev"] === "string" ? [t["rev"]] : []));
   const unpinned = sources.filter((t) => t["rev"] === undefined).length;
@@ -93,30 +94,38 @@ function lockedPackages(text: string): Locked[] | null {
 
 const CRATES_IO = new Set(["registry+https://github.com/rust-lang/crates.io-index", "sparse+https://index.crates.io/"]);
 
+/** A package name as Cargo writes it, else a neutral word, so a reason never repeats arbitrary file text. */
+export const safeName = (s: string): string => (/^[A-Za-z0-9_-]{1,64}$/.test(s) ? s : "a package");
+/** A repository path of plain characters, else a neutral word. */
+export const safePath = (s: string, what: string): string => (/^[A-Za-z0-9._/-]{1,200}$/.test(s) ? s : what);
+
 /**
  * Why the lockfile `after`, written by Cargo for the repinned manifests, is not accepted in place of `before`, or null.
- * It may add packages from crates.io and from `slug` at `sha`, and drop packages. It may not name another new source,
- * keep a package of `slug` at another commit, or change the checksum of a package it keeps.
+ * Every package of `slug` must be at `sha`, pinned by rev. Any other package must be in `before` with the same name, source,
+ * version and checksum, except a package from crates.io whose name `before` does not have from crates.io: Cargo may add those
+ * for the dependency's new requirements. Packages may be dropped.
  */
 export function lockRefusal(before: string, after: string, slug: string, sha: string): string | null {
   const was = lockedPackages(before), now = lockedPackages(after);
   if (!was || !now) return "the lockfile does not read as a Cargo.lock";
   if (!now.length) return "the new lockfile lists no packages";
-  const key = (p: Locked): string => `${p.name}@${p.version}@${p.source ?? ""}`;
-  const known = new Map(was.map((p) => [key(p), p]));
+  const pair = (p: Locked): string => `${p.name}\0${p.source ?? ""}`;
+  const exact = (p: Locked): string => `${pair(p)}\0${p.version}\0${p.checksum ?? ""}`;
+  const pairs = new Set(was.map(pair)), kept = new Set(was.map(exact));
   const want = slug.toLowerCase();
   for (const p of now) {
+    const name = safeName(p.name);
     const repo = p.source === null ? null : githubSlug(p.source.split("?")[0]!.split("#")[0]!);
     if (p.source !== null && p.source.startsWith("git+") && repo === want) {
       // Cargo writes `git+<url>?rev=<rev of the manifest>#<the commit it resolved to>`.
-      if (!p.source.endsWith(`?rev=${sha}#${sha}`)) return `the new lockfile has ${p.name} from ${slug} at another commit`;
-      continue;
+      if (p.source.endsWith(`?rev=${sha}#${sha}`)) continue;
+      if (!/\?rev=/.test(p.source)) return `the new lockfile has ${name} from ${slug} by branch, tag or default branch; autorepin moves only revs, so pin it by rev to use autorepin`;
+      return `the new lockfile has ${name} from ${slug} at another commit`;
     }
-    const old = known.get(key(p));
-    if (!old) {
-      if (p.source === null) return `the new lockfile adds the local package ${p.name}`;
-      if (!CRATES_IO.has(p.source)) return `the new lockfile adds ${p.name} from a source outside crates.io and ${slug}`;
-    } else if (old.checksum !== p.checksum) return `the new lockfile changes the checksum of ${p.name} ${p.version}`;
+    if (kept.has(exact(p))) continue;
+    if (pairs.has(pair(p))) return `the new lockfile changes the version or checksum of ${name}`;
+    if (p.source === null) return `the new lockfile adds the local package ${name}`;
+    if (!CRATES_IO.has(p.source)) return `the new lockfile adds ${name} from a source outside crates.io and ${slug}`;
   }
   return null;
 }
