@@ -12,6 +12,7 @@ import { byOfJob } from "../core/gates.ts";
 import { featureOn } from "../build/features.ts";
 import { envVar } from "../env.ts";
 import { stageOfStep } from "../stages/registry.ts";
+import { stepDeadlineMin } from "./deadlines.ts";
 
 type Base = { name: string; label: string; help?: string; required?: boolean };
 export type ParamDef =
@@ -239,8 +240,11 @@ export const STEPS: StepDef[] = [
       const { Client } = await import("../mirror.ts");
       // Approval for labelling covers creating the set's labels the repo lacks.
       for (const l of await ensureLabels(new Client(500), repo, true, { db: ctx.db, login: ctx.job.requestedBy }, undefined, byOfJob(ctx.job.requestedBy))) ctx.log(`${repo}: created "${l.name}"`);
-      const r = await applyLabels(ctx.db, new Client(500), repo, { runId, limit: Number(ctx.params.limit), apply: true, login: ctx.job.requestedBy, by: byOfJob(ctx.job.requestedBy), log: ctx.log, onLabeled: ctx.handled });
-      return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed`;
+      // Stop starting batches 5 minutes before the job's deadline so it ends as done; the items left go in the next job.
+      const limit = Number(ctx.params.limit);
+      const stopAt = Date.parse(ctx.job.startedAt) + (stepDeadlineMin("labels-apply", limit) - 5) * 60_000;
+      const r = await applyLabels(ctx.db, new Client(500), repo, { runId, limit, stopAt: Number.isNaN(stopAt) ? undefined : stopAt, apply: true, login: ctx.job.requestedBy, by: byOfJob(ctx.job.requestedBy), log: ctx.log, onLabeled: ctx.handled });
+      return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed${r.stopped ? "; stopped before the time limit, the rest go in the next job" : ""}`;
     },
   },
   {
