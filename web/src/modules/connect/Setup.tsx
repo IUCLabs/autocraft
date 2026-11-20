@@ -27,8 +27,9 @@ const steps = (origin: string, finish: boolean): Step[] => [
   {
     label: "Run",
     alts: [
-      { key: "service", label: "As a service", text: "autocraft service install" },
-      { key: "terminal", label: "Terminal or agent", text: "autocraft work\n\n# or, from an agent\nautocraft run --detach\nautocraft wait <id>" },
+      { key: "terminal", label: "In a terminal", text: "autocraft work\n\n# takes calls until you stop it: Ctrl-C gives running calls back, a second Ctrl-C quits" },
+      { key: "once", label: "One call", text: "autocraft run\n\n# or, from an agent\nautocraft run --detach\nautocraft wait <id>" },
+      { key: "service", label: "Always on", text: "autocraft service install\n\n# starts at login and restarts; autocraft service uninstall removes it" },
     ],
   },
 ];
@@ -37,7 +38,7 @@ const onMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgen
 
 /** The setup commands for a new Task Runner (or, with `finish`, the rest of one), numbered; steps with alternatives pick one with a segmented control. */
 export function RunnerSetup({ className, finish = false }: { className?: string; finish?: boolean }) {
-  const [pick, setPick] = useState<Record<string, string>>({ "Harness, if setup did not pick one": onMac ? "mac" : "linux", Run: "service" });
+  const [pick, setPick] = useState<Record<string, string>>({ "Harness, if setup did not pick one": onMac ? "mac" : "linux", Run: "terminal" });
   return (
     <ol className={cn("space-y-2.5 px-3 py-3", className)}>
       {steps(location.origin, finish).map((s, i) => {

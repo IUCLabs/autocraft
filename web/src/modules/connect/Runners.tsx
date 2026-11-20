@@ -1,6 +1,6 @@
 import { CaretDownIcon, PlusIcon, TerminalWindowIcon, XIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
 import type { HelperReadiness, LoginScopes, RunnerInfo, UsageWindow } from "../../api/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -96,6 +96,12 @@ export function Runners() {
           ))}
         </ul>
       )}
+      {any && (
+        <p className="flex flex-wrap gap-x-4 gap-y-1 border-t border-line px-3 py-2 text-xs">
+          <Link to="/model-queue" className="text-accent-ink hover:underline">Model call queue</Link>
+          <Link to="/agents" className="text-accent-ink hover:underline">Model calls that ran</Link>
+        </p>
+      )}
     </Block>
   );
 }
@@ -161,7 +167,7 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
           {r.fresh && r.readiness !== "ready" && r.reason && <p className="text-xs text-ink/65">{r.reason}</p>}
           {r.readiness && !r.fresh && (
             <p className="text-xs text-ink/65">
-              Not running. Start it on {r.machine?.hostname ?? "its machine"} with <span className="code">autocraft service install</span> (or <span className="code">autocraft work</span>); <span className="code">autocraft doctor</span> checks the setup and <span className="code">autocraft runner logs</span> shows why it stopped.
+              Not running. Start it on {r.machine?.hostname ?? "its machine"} with <span className="code">autocraft work</span> (or, to keep it on, <span className="code">autocraft service install</span>); <span className="code">autocraft doctor</span> checks the setup and <span className="code">autocraft runner logs</span> shows why it stopped.
             </p>
           )}
           <div className="flex flex-col gap-y-2 text-sm text-ink/80 sm:flex-row sm:flex-wrap sm:gap-x-6">
