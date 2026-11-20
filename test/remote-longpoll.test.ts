@@ -1,6 +1,6 @@
 // Long-polling claims (protocol 4): a claim with nothing to take waits for a call queued by another process, answers empty at
 // its deadline (still counting its helper idle), never holds for protocol 3, stops at a cool-off or the user's max calls at
-// once, stops when its client leaves, and is answered cleanly when the dashboard shuts down.
+// once, stops when its client leaves or its credential is removed, and is answered cleanly when the dashboard shuts down.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -32,9 +32,9 @@ describe("long-polling claims", async () => {
   const db = connect(file), remoteDb = connect(file, { busyTimeoutMs: 100 }), other = connect(file);
   setInferenceMode(db, "user-local", "test");
   const tokens: Record<string, { token: string; id: number }> = {};
-  for (const login of ["bob", "carol", "dave", "erin"]) {
+  for (const login of ["bob", "carol", "dave", "erin", "frank"]) {
     addLogin(db, "cli", login, "maintainer", null);
-    const t = createToken(db, login, "runner", false, true);
+    const t = createToken(db, login, "runner", { kind: "runner" });
     tokens[login] = { token: t.token, id: t.row.id };
     db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES (?, 'photocraft', 'write', ?)").run(login, new Date().toISOString());
   }
@@ -127,6 +127,18 @@ describe("long-polling claims", async () => {
     const b = await cooled;
     assert.equal(b.reply.reason, "testing cool-off");
     assert.ok(b.ms < 2500, `answered after ${b.ms} ms of a 5 s hold`);
+  });
+
+  test("a held claim whose credential is removed meanwhile leases nothing", async () => {
+    const r = claim("frank");
+    await sleep(200);
+    other.prepare("DELETE FROM mcp_tokens WHERE id = ?").run(tokens.frank!.id);
+    const id = enqueue();
+    const { reply } = await r;
+    assert.equal(reply.lease, null);
+    assert.match(reply.reason ?? "", /credential was removed/);
+    assert.equal(state(id), "queued");
+    other.prepare("DELETE FROM remote_calls WHERE id = ?").run(id);
   });
 
   test("shutting down answers held claims with a short retry, not a reset", async () => {

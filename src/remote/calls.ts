@@ -378,6 +378,12 @@ function titleOf(promptId: string, refs: ItemRef[]): string {
 const leasedBy = (db: DatabaseSync, login: string): number =>
   Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n);
 
+/** The role of a live Task Runner credential's user, or null when the credential is gone or expired. */
+function runnerRole(db: DatabaseSync, tokenId: number, nowMs: number): Role | null {
+  const r = db.prepare("SELECT a.role FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login WHERE t.id = ? AND t.kind = 'runner' AND t.expires_at > ?").get(tokenId, new Date(nowMs).toISOString()) as { role: Role } | undefined;
+  return r?.role ?? null;
+}
+
 /**
  * Leases the call to the caller if it is still queued and no other user's pick counts for it (a Manual only caller: only
  * its own pick or a follow-up); the pick ends with the lease. The agent run starts now, on no account, with the user and
@@ -395,9 +401,10 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
     const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, root = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?, started_at = NULL, claim_id = ?,
         queued_ms = queued_ms + CASE WHEN queued_since IS NULL THEN 0 ELSE MAX(0, ? - queued_since) END, queued_since = NULL, progress = NULL, error = NULL,
         picked_by = NULL, picked_at = NULL, pick_until = NULL
-      WHERE id = ? AND state = 'queued' AND (picked_by IS NULL OR picked_by = ? OR ${pickLapsedSql}) AND (? = 0 OR parent_id IS NOT NULL OR picked_by = ?) RETURNING ${COLS}`)
+      WHERE id = ? AND state = 'queued' AND (picked_by IS NULL OR picked_by = ? OR ${pickLapsedSql}) AND (? = 0 OR parent_id IS NOT NULL OR picked_by = ?)
+        AND EXISTS (SELECT 1 FROM main.mcp_tokens lt WHERE lt.id = ? AND lt.kind = 'runner' AND lt.expires_at > ?) RETURNING ${COLS}`)
       .get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, claim.root ?? null, sha256hex(secret), nowMs, nowMs, claim.requestId, nowMs, id,
-        caller.login, ...pickLapsedArgs(nowMs), manualOnly(db, caller.login) ? 1 : 0, caller.login) as Row | undefined;
+        caller.login, ...pickLapsedArgs(nowMs), manualOnly(db, caller.login) ? 1 : 0, caller.login, caller.tokenId, new Date(nowMs).toISOString()) as Row | undefined;
     if (!r) {
       db.exec("COMMIT");
       return null;
@@ -653,6 +660,8 @@ function prepareClaim(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: 
   // What the latest full try took, for a quick try's look at the queue.
   let tiers = new Set<Tier>(), repos: ReadonlySet<string> | null = null;
   const attempt: ClaimTry = async (now, { quick, live }) => {
+    // A held claim outlives the route's credential check: a credential removed, expired or demoted meanwhile ends the hold untaken.
+    if (runnerRole(db, caller.tokenId, now) !== caller.role) return { lease: null, retryAfter: CLAIM_RETRY_S, reason: "this Task Runner credential was removed or its user's role changed", reserve: userReserve(db, caller.login) };
     if (quick && !claimOrder(db, caller, tiers, repos, claim.sessions ?? [], now, fast).length) return null;
     const cooled = cooloffOf(db, caller.login, now);
     if (cooled) return { lease: null, retryAfter: Math.ceil((cooled.until - now) / 1000), reason: cooled.reason, until: cooled.until, reserve: userReserve(db, caller.login) };
