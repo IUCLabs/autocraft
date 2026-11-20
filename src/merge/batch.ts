@@ -274,6 +274,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
    * was not too big, one PR broke it.
    */
   async function drop(b: BatchRow, members: BatchMember[], traced: Map<number, string>, why: string): Promise<void> {
+    // A control may have ended the batch while the caller's GitHub calls ran.
+    if (!ACTIVE_BATCH.includes(getBatch(db, b.id).state)) return;
     cancelBuild(db, b, ACTOR);
     const list = [...traced].map(([n, w]) => `#${n} (${w})`).join("; ");
     updateBatch(db, b.id, at(), { state: "split", summary: oneLine(`${why}; traced to ${list}: tested alone, the rest rebuilt without`, 400) });
@@ -356,22 +358,51 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (!fresh && d.now().getTime() < Date.parse(b.ci_rerun_at) + RERUN_WAIT_MS) { s.waiting.push(b.branch); return; }
     }
     const traced = failure && await traceOf(b, members, failure.checks.flatMap((c) => c.steps.map((x) => x.tail)).join("\n"));
+    // A control may have ended the batch while the log and trace reads ran.
+    const active = (): boolean => ACTIVE_BATCH.includes(getBatch(db, b.id).state);
+    if (!active()) return;
     if (traced) return drop(b, members, traced, why);
     if (!b.ci_reruns) {
       const runs = [...new Set((failure?.checks ?? []).filter((c) => c.conclusion === "failure" && c.runId !== null).map((c) => c.runId!))];
       const g = runs.length ? grant() : null;
       if (g) {
+        // GitHub's rollup is red as soon as one job fails, while the run's other jobs go on, and it refuses to rerun the
+        // failed jobs of a run in progress: the one rerun waits until every failed check's run is completed.
+        if (await anyRunInProgress(runs)) {
+          if (!active()) return;
+          const note = `${why}; waiting for the failed CI runs to finish before the one rerun`;
+          if (b.summary !== note) { updateBatch(db, b.id, at(), { summary: oneLine(note, 400) }); log(`  ${b.branch}: ${note}`); }
+          s.waiting.push(b.branch);
+          return;
+        }
+        if (!active()) return;
         // Recorded before the calls: one rerun per batch, also when this process dies in the middle of them.
         updateBatch(db, b.id, at(), { ci_reruns: 1, ci_rerun_at: at(), summary: oneLine(`${why}; no PR traced, rerunning the failed runs once`, 400) });
         let refused = 0;
         for (const id of runs) if ((await ghRerunMainFailed(w, g, d.exec, { repo, head: b.commit_sha, runId: id }, { batch: b.branch })).code !== 0) refused++;
         audit(db, ACTOR, "batch-rerun", `${repo}:${b.branch}`, { run: runId, runs, refused });
         log(`  ${b.branch}: ${why}; no PR traced, reran ${runs.length} failed run${runs.length === 1 ? "" : "s"} once${refused ? ` (${refused} refused)` : ""}`);
+        // Every call refused: no rerun is under way, so there is nothing to wait for.
+        if (runs.length && refused === runs.length) return active() ? fail(b, why) : undefined;
         s.waiting.push(b.branch);
         return;
       }
     }
+    if (!active()) return;
     return fail(b, why);
+  }
+
+  /** Whether any of the Actions runs is known to be not completed. A run that cannot be read counts as completed: the rerun is refused if it is not. */
+  async function anyRunInProgress(runs: number[]): Promise<boolean> {
+    for (const id of runs) {
+      try {
+        const r = await d.exec("gh", ["api", `repos/${slugOf(repo)}/actions/runs/${id}`]);
+        if (r.code !== 0) continue;
+        const st = (JSON.parse(r.stdout) as { status?: string }).status;
+        if (st && st !== "completed") return true;
+      } catch { /* unreadable: treated as completed */ }
+    }
+    return false;
   }
 
   /** A push or PR creation failed: the error is kept on the batch, the next try waits longer, and the fifth failure ends the batch so its PRs go back to the queue. */

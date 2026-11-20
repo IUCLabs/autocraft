@@ -158,6 +158,32 @@ describe("a red batch", () => {
     assert.equal(batchSizeOf(t.w.db, "app"), Math.floor(size / 2));
   });
 
+  test("the rerun waits while a failed check's run is in progress, and a fully refused rerun fails the batch at once", async () => {
+    const t = setup([1]);
+    await t.run();
+    t.red();
+    let status = "in_progress";
+    let refuse = false;
+    const exec = t.deps.exec;
+    t.deps.exec = async (cmd, args, opts) => {
+      if (cmd === "gh" && args[0] === "api" && /actions\/runs\/77$/.test(args[1] ?? "")) {
+        const r = await exec(cmd, args, opts);
+        return { ...r, stdout: JSON.stringify({ ...JSON.parse(r.stdout), status }) };
+      }
+      if (cmd === "gh" && args[0] === "run" && args[1] === "rerun" && refuse) return { code: 1, stdout: "", stderr: "run is in progress" };
+      return exec(cmd, args, opts);
+    };
+    assert.equal((await t.run()).waiting.length, 1);
+    assert.deepEqual(t.reruns, []);
+    assert.deepEqual(t.batches().map((b) => [b.state, b.ci_reruns]), [["open", 0]]);
+    assert.match(t.batches()[0]!.summary!, /waiting for the failed CI runs to finish/);
+    // Completed, but GitHub refuses every rerun call: no wait out of the rerun window.
+    status = "completed";
+    refuse = true;
+    await t.run();
+    assert.deepEqual(t.batches().map((b) => [b.state, b.ci_reruns]), [["failed", 1]]);
+  });
+
   test("a single PR is rerun once before it is held", async () => {
     const t = setup([1]);
     await t.run();

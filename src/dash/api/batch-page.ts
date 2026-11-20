@@ -46,6 +46,8 @@ export function batchDetail(db: DatabaseSync, id: number, staff: boolean): Batch
   const state = b.state as BatchState;
   const ref = `${b.repo}:${b.branch}`;
   const prRef = (n: number) => `${b.repo}#${n}`;
+  // The rerun wrapper audits a batch tip's rerun as `repo:<first 8 of the tip sha>`.
+  const tipRef = `${b.repo}:${b.commit_sha.slice(0, 8)}`;
   const memberRows = membersOf(db, id);
   const nums = memberRows.map((m) => m.number);
   const marks = (xs: unknown[]) => xs.map(() => "?").join(",");
@@ -53,11 +55,12 @@ export function batchDetail(db: DatabaseSync, id: number, staff: boolean): Batch
   // Audit rows about the batch itself (target `repo:branch`), its members (target `repo#n`, details.batch the branch) and its PR.
   const audit = db.prepare(
     `SELECT rowid, at, login, action, target, details FROM main.audit
-      WHERE (target = ? AND action IN ('batch-start', 'batch-build-skip', 'batch-push', 'batch-pr', 'batch-stop', 'batch-end-too-late', 'batch-merged-after-end'))
-         OR (action IN ('batch-remove', 'batch-hold') AND json_extract(details, '$.batch') = ? AND target IN (${marks(nums)}))
-         ${b.pr_number === null ? "" : "OR (target = ? AND action IN ('ci-run-approve', 'ci-rerun'))"}
+      WHERE (target = ? AND action IN ('batch-start', 'batch-build-skip', 'batch-push', 'batch-pr', 'batch-stop', 'batch-rerun', 'batch-end-too-late', 'batch-merged-after-end'))
+         OR (action IN ('batch-remove', 'batch-hold', 'batch-blame') AND json_extract(details, '$.batch') = ? AND target IN (${marks(nums)}))
+         ${b.pr_number === null ? "" : "OR (target = ? AND action = 'ci-run-approve')"}
+         OR (target = ? AND action = 'ci-rerun')
       ORDER BY at, rowid`,
-  ).all(ref, b.branch, ...nums.map(prRef), ...(b.pr_number === null ? [] : [prRef(b.pr_number)])) as AuditRow[];
+  ).all(ref, b.branch, ...nums.map(prRef), ...(b.pr_number === null ? [] : [prRef(b.pr_number)]), tipRef) as AuditRow[];
 
   let buildSkipped: string | null = null;
   const left = new Map<number, { state: BatchMemberState; reason: string }>();
@@ -103,6 +106,15 @@ export function batchDetail(db: DatabaseSync, id: number, staff: boolean): Batch
           ev({ ...base, kind: "failed", summary: `${prRef(num)} failed alone and is on hold`, number: num });
         }
         break;
+      case "batch-blame":
+        if (num !== undefined) ev({ ...base, kind: "failed", summary: `The failure was traced to ${prRef(num)}; it is tested alone and the others are rebuilt without it`, number: num });
+        break;
+      case "batch-rerun": {
+        const runs = Array.isArray(d.runs) ? d.runs.length : 0;
+        const refused = typeof d.refused === "number" ? d.refused : 0;
+        ev({ ...base, kind: "ci", summary: `Failed CI runs rerun once (${plural(runs, "run")}${refused ? `, ${refused} refused` : ""})` });
+        break;
+      }
       case "ci-run-approve": ev({ ...base, kind: "ci", summary: "CI runs approved on the batch PR", by: by(a.login) }); break;
       case "ci-rerun": ev({ ...base, kind: "ci", summary: "Failed CI jobs of the batch PR rerun" }); break;
       case "batch-end-too-late": ev({ ...base, kind: "merged", summary: "Stop came after the batch PR had merged", by: by(a.login) }); break;
