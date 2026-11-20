@@ -77,4 +77,14 @@ export const steps: StepDef[] = [
     params: [{ name: "repo", label: "Repo", kind: "repo", required: true }, { name: "ms", label: "Milliseconds", kind: "int", min: 0, max: 600000, default: 300 }],
     run: async (ctx) => { await sleep(Number(ctx.params.ms)); return "urgent done"; },
   },
+  {
+    name: "test-model",
+    title: "Model repo work",
+    description: "Test step that declares a Claude model (it calls none): user-local jobs of it wait for a Task Runner of the repo.",
+    stage: 6,
+    requires: "operator",
+    models: ["sonnet"],
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }, { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5 }],
+    run: async () => "model repo done",
+  },
 ];

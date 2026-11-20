@@ -5,7 +5,7 @@
 // core) stored as the decision's current version; a group decision gets a summary and a pick only. Our code accepts only a
 // pick that is one of the decision's cores or options.
 import type { DatabaseSync } from "node:sqlite";
-import { queueRoom } from "../agents/call.ts";
+import { NoTakerError, poolRoom } from "../agents/call.ts";
 import { runModelStep, type ClaudeStep } from "../agents/step.ts";
 import { referenceProblems, defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
@@ -248,14 +248,21 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     const semantic = p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`);
     // What the call reads of the discussion, kept with the prepare; the call counts against the decision's daily cap unless an operator asked for it.
     const readKey = (db.prepare(`SELECT ${discussionKeySql("d")} AS k FROM decisions d WHERE d.id = ?`).get(d.id) as { k: string | null }).k ?? "";
-    db.prepare("INSERT INTO main.decision_prepares (decision_id, at, manual) VALUES (?, ?, ?)").run(d.id, now(), d.prepare_requested_at ? 1 : 0);
-    const r = await runModelStep(db, PREPARE, input, {
-      model, checkout: checkout ?? undefined, reference: checkout ? dir : undefined,
-      ctx: { db, subject: { repo, n, d, single }, dir, semantic },
-      usage: { run: p.usageRun, agent: `prepare-${String(k).padStart(3, "0")}`, stage: "decide", model, items: () => 1 },
-      onReply: (reply) => { if (reply.fixTurn) p.log(`decide: ${id}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`); },
-      cancelled: p.cancelled,
-    });
+    const tried = db.prepare("INSERT INTO main.decision_prepares (decision_id, at, manual) VALUES (?, ?, ?)").run(d.id, now(), d.prepare_requested_at ? 1 : 0).lastInsertRowid;
+    let r;
+    try {
+      r = await runModelStep(db, PREPARE, input, {
+        model, checkout: checkout ?? undefined, reference: checkout ? dir : undefined,
+        ctx: { db, subject: { repo, n, d, single }, dir, semantic },
+        usage: { run: p.usageRun, agent: `prepare-${String(k).padStart(3, "0")}`, stage: "decide", model, items: () => 1 },
+        onReply: (reply) => { if (reply.fixTurn) p.log(`decide: ${id}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`); },
+        cancelled: p.cancelled,
+      });
+    } catch (e) {
+      // A call no Task Runner took was not a try: it uses none of the decision's daily cap.
+      if (e instanceof NoTakerError) db.prepare("DELETE FROM main.decision_prepares WHERE rowid = ?").run(tried);
+      throw e;
+    }
     if (!r.ok) {
       if (p.cancelled?.()) return;
       failed.run(head, now(), head, d.id);
@@ -288,6 +295,6 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
       try { failed.run(head, now(), head, d.id); } catch { /* the next pass tries again */ }
       res.failed++;
     }
-  }), (i) => { const repo = repoOf.get(ids[i]!); return queueRoom(db, undefined, repo ? [repo] : undefined); }, { first: true });
+  }), poolRoom(db, (i) => { const repo = repoOf.get(ids[i]!); return repo ? [repo] : undefined; }), { first: true });
   return res;
 }

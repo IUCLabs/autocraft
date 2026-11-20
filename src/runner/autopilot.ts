@@ -51,9 +51,11 @@ import { PIPELINE_DRAIN } from "../core/rules.ts";
 import { DEADLINE_ERROR, enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { inferenceMode } from "../remote/mode.ts";
+import { takerSignature } from "../remote/takers.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
-import { jobBlock, stepParallel, type Active } from "./concurrency.ts";
+import { NO_TAKER_SKIP } from "./leases.ts";
+import { jobBlock, noRunnerFor, stepParallel, untakenTest, type Active, type UntakenTest } from "./concurrency.ts";
 import { knownStep, loadSteps, STEPS, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
 import { refreshOutsideHolds } from "../outside.ts";
@@ -141,6 +143,8 @@ export type PlanCtx = {
   wake?: number[];
   /** Why a stage waits on an outside system (CI, the sandbox), keyed by step; shown on the Pipeline page. */
   notes?: Record<string, string>;
+  /** The pass's reading of the Task Runners (untakenTest); a lane run without it reads them on first use. */
+  untaken?: UntakenTest;
 };
 
 /** Only the repos in scope (pipeline on, narrowed by the pilot) are planned for; a job for another repo is never proposed. */
@@ -174,6 +178,9 @@ function repoAllows(plans: PlanSet, repo: string, want: Want): boolean {
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, audit entries the item-trace bookkeeping and the limits topic (its tables are already read through the jobs topic) do not. */
 export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits", "claims", "conversation-includes", "decision-choices", "decision-snooze", "security", "discord", "discord-links", "downloads", "build-features", "pr-builds", "nightly", "remote-helpers", "remote-queue"].includes(t));
 
+/** User-local mode: the Task Runners that could take calls (takerSignature). Work a pool left for want of a taker waits on it. */
+const takersOf = (db: DatabaseSync): string => (inferenceMode(db) === "user-local" ? takerSignature(db) : "");
+
 /** Sandbox tasks that ended, for lanes that read their results. */
 const tasksSig = (db: DatabaseSync): string =>
   String((db.prepare("SELECT COUNT(*) AS n FROM main.build_tasks WHERE state IN ('done', 'failed', 'cancelled', 'lost')").get() as { n: number }).n);
@@ -204,7 +211,7 @@ const fpKey = (step: string, repo: string | null): string => `pipeline_fp:${step
 /** What the lane's input looked like: the step, its repo, and the counters of the topics it reads. */
 export function fingerprintOf(db: DatabaseSync, lane: Pick<Lane, "topics" | "extra">, step: string, params: Params, seqs: Record<string, number> = readSeqs(db)): string {
   const topics = lane.topics ?? INPUT_TOPICS;
-  return [step, typeof params.repo === "string" ? params.repo : "", ...topics.map((t) => seqs[t] ?? 0), lane.extra?.(db) ?? ""].join("|");
+  return [step, typeof params.repo === "string" ? params.repo : "", ...topics.map((t) => seqs[t] ?? 0), lane.extra?.(db) ?? "", takersOf(db)].join("|");
 }
 
 function fpRecord(db: DatabaseSync, step: string, repo: string | null): FpRecord | null {
@@ -641,11 +648,15 @@ export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now
   return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, reset && reset > day ? reset : day) as { n: number }).n;
 }
 
-/** The part of its `limit` that each queued or running job of the step has not used yet: the day's limit keeps it for them. */
-export function reservedByJobs(db: DatabaseSync, step: string): number {
-  const rows = db.prepare("SELECT params, items FROM jobs WHERE step = ? AND state IN ('queued', 'running')").all(step) as { params: string; items: number | null }[];
+/**
+ * The part of its `limit` that each queued or running job of the step has not used yet: the day's limit keeps it for them.
+ * A queued job that waits for a Task Runner (untakenTest) keeps none.
+ */
+export function reservedByJobs(db: DatabaseSync, step: string, untaken?: UntakenTest): number {
+  const rows = db.prepare("SELECT params, items, state, repo FROM jobs WHERE step = ? AND state IN ('queued', 'running')").all(step) as { params: string; items: number | null; state: string; repo: string | null }[];
   let n = 0;
   for (const r of rows) {
+    if (r.state === "queued" && (untaken ??= untakenTest(db))({ step, repo: r.repo, params: r.params })) continue;
     let limit: unknown;
     try { limit = (JSON.parse(r.params) as { limit?: unknown }).limit; } catch { continue; }
     if (typeof limit === "number") n += Math.max(0, limit - (r.items ?? 0));
@@ -654,11 +665,11 @@ export function reservedByJobs(db: DatabaseSync, step: string): number {
 }
 
 /** The `limit` a job of the step may get (undefined when the step has none), or null when the day's limit leaves less than the step's minimum. `wanted` is a limit asked for (default: the step's). */
-export function jobLimit(db: DatabaseSync, step: StepDef, ms: number = Date.now(), wanted?: number): { limit?: number } | null {
+export function jobLimit(db: DatabaseSync, step: StepDef, ms: number = Date.now(), wanted?: number, untaken?: UntakenTest): { limit?: number } | null {
   const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
   if (!lp || lp.kind !== "int") return {};
   const perDay = limitRow(db, step.name).per_day;
-  const limit = Math.min(wanted ?? lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, step.name, ms) - reservedByJobs(db, step.name));
+  const limit = Math.min(wanted ?? lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, step.name, ms) - reservedByJobs(db, step.name, untaken));
   return limit < lp.min ? null : { limit };
 }
 
@@ -878,6 +889,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   const proposals: Proposal[] = [];
   const t0 = performance.now();
   const ctx = planCtx(db);
+  // One reading of the Task Runners for the pass: which repos' Claude jobs no runner may take.
+  const untaken = (ctx.untaken = untakenTest(db, steps, ms));
   const loadMs = performance.now() - t0;
   const scope = scopeRepos(db);
   const seqs = readSeqs(db);
@@ -906,9 +919,10 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
     if (!step) return null;
     const pending: Active[] = proposals.filter((p) => p.step === stepName).map((p) => ({ id: 0, step: p.step, state: "proposed", repo: typeof p.params.repo === "string" ? p.params.repo : null, number: typeof p.params.number === "number" ? p.params.number : null }));
     const repo0 = typeof params.repo === "string" ? params.repo : null;
-    if (jobBlock(db, steps, { step: stepName, repo: repo0, number: typeof params.number === "number" ? params.number : null }, { extra: pending, precheck })) return null;
+    if (jobBlock(db, steps, { step: stepName, repo: repo0, number: typeof params.number === "number" ? params.number : null }, { extra: pending, precheck, untaken })) return null;
     const reason = pausedWhy(stepName);
     if (reason) { note(stepName, reason); return null; }
+    if (repo0 !== null && untaken({ step: stepName, repo: repo0, params })) { note(stepName, noRunnerFor(repo0)); return null; }
     if (lane) {
       const repo = typeof params.repo === "string" ? params.repo : null;
       const fp = fingerprintOf(db, lane, stepName, params, seqs);
@@ -927,7 +941,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
         if (next > ms) { ctx.wake?.push(next); return null; }
       }
     }
-    if (!limitLeft.has(stepName)) limitLeft.set(stepName, jobLimit(db, step, ms));
+    if (!limitLeft.has(stepName)) limitLeft.set(stepName, jobLimit(db, step, ms, undefined, untaken));
     return limitLeft.get(stepName)!;
   };
 
@@ -977,6 +991,12 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   return { proposals, logs, wakeAt: wakes.length ? Math.min(...wakes) : null, status, timing: { loadMs, lanesMs, cacheMs, ...cache } };
 }
 
+/** The lease keys among a job's skip keys: null for a job from before the keys were recorded. */
+function leaseSkipKeys(keys: string | null): string[] | null {
+  if (!keys) return null;
+  try { return (JSON.parse(keys) as string[]).filter((k) => !k.startsWith(NO_TAKER_SKIP)); } catch { return null; }
+}
+
 /** True when a running job holds a lease on one of the keys a job skipped (a job from before the keys were recorded: on any lease). */
 function skippedLeaseHeld(db: DatabaseSync, keys: string | null): boolean {
   return !!db.prepare(`SELECT 1 FROM work_leases l JOIN jobs j ON j.id = l.job_id WHERE j.state = 'running'${keys ? " AND l.key IN (SELECT value FROM json_each(?))" : ""} LIMIT 1`).get(...(keys ? [keys] : []));
@@ -987,7 +1007,9 @@ function unchangedSinceIdle(db: DatabaseSync, step: string, repo: string | null,
   const last = lastJobEnd(db, step, repo, AUTOPILOT_USER);
   if (!last || last.state !== "done" || !wasIdle(last)) return false;
   // A job that skipped items another job was working retries once no running job holds a lease on any of them. While one does, the step stays parked, so the planner does not queue it in a loop.
-  if (last.lease_skips && !skippedLeaseHeld(db, last.lease_skip_keys)) return false;
+  // Skips for want of a taker do not count: such a step is woken by the taker signature in its fingerprint.
+  const leaseKeys = leaseSkipKeys(last.lease_skip_keys);
+  if (last.lease_skips && leaseKeys?.length !== 0 && !skippedLeaseHeld(db, leaseKeys && JSON.stringify(leaseKeys))) return false;
   const rec = fpRecord(db, step, repo);
   if (!rec || rec.job !== last.id || rec.fp !== fp) return false;
   return !((releasedAt(db, step) ?? "") > last.endedAt);
@@ -1004,6 +1026,7 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
   const reserved: Active[] = [];
   const asActive = (step: string, params: Params, state: string): Active => ({ id: 0, step, state, repo: typeof params.repo === "string" ? params.repo : null, number: typeof params.number === "number" ? params.number : null });
   const steps = await loadSteps();
+  const untaken = untakenTest(db, steps);
   try { applyUsedAnswers(db); } catch (e) { log(`autopilot: answers: ${(e as Error).message}`); }
   // Marks the next planner pass wants: when a wait ends, and why stages are not starting.
   if (opts.wakeAt) setSetting(db, KEY_WAKE_AT, new Date(opts.wakeAt).toISOString());
@@ -1014,12 +1037,12 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
     if (done.has(slot)) continue;
     try {
       // The detection ran a moment ago: a job of the same step and repo may have been queued since.
-      if (jobBlock(db, steps, { step: p.step, repo: typeof p.params.repo === "string" ? p.params.repo : null, number: typeof p.params.number === "number" ? p.params.number : null }, { reserved })) continue;
-      if (p.gate && jobBlock(db, steps, { step: p.gate.step, repo: typeof p.gate.params.repo === "string" ? p.gate.params.repo : null }, { reserved })) continue;
+      if (jobBlock(db, steps, { step: p.step, repo: typeof p.params.repo === "string" ? p.params.repo : null, number: typeof p.params.number === "number" ? p.params.number : null }, { reserved, untaken })) continue;
+      if (p.gate && jobBlock(db, steps, { step: p.gate.step, repo: typeof p.gate.params.repo === "string" ? p.gate.params.repo : null }, { reserved, untaken })) continue;
       // The limit is what is left now, so two proposals of one step cannot both carry the whole remainder.
       const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER, (step, params) => {
         if (typeof params.limit !== "number") return params;
-        const lim = jobLimit(db, step, Date.now(), params.limit);
+        const lim = jobLimit(db, step, Date.now(), params.limit, untaken);
         return lim ? { ...params, ...lim } : null;
       });
       queued.push(job.id);
@@ -1049,7 +1072,7 @@ export async function planAutopilot(db: DatabaseSync, opts: PlanOptions = {}): P
 /** What the planner's marks say about the content stages read and the limits that apply to them. */
 function inputSignature(db: DatabaseSync): string {
   const seqs = readSeqs(db);
-  return [...INPUT_TOPICS.map((t) => seqs[t] ?? 0), limitsSig(db), tasksSig(db)].join(",");
+  return [...INPUT_TOPICS.map((t) => seqs[t] ?? 0), limitsSig(db), tasksSig(db), takersOf(db)].join(",");
 }
 
 /**
@@ -1100,7 +1123,7 @@ export type LaneItem = {
   fast: boolean; rank: number | null; inFlight: boolean;
   /** The next job of the lane covers this item's repo. */
   next: boolean;
-  /** Why the guard would refuse the item's write, or null. */
+  /** Why the guard would refuse the item's write, or why no job of the lane will take its repo now (no Task Runner takes it), or null. */
   blocked: string | null;
   /** The decision the item's action carries out, when its params name one. */
   decisionId?: string;
@@ -1111,17 +1134,24 @@ export type LaneItem = {
  * its candidates, and within a repo the order the planner's own selection (planned, plannedItems) gives. Items of
  * other repos follow. The dashboard's Next page reads this, so it cannot drift from what the autopilot picks.
  */
-export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name" | "perRepo" | "detect">): LaneItem[] {
+export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name" | "perRepo" | "detect" | "steps">): LaneItem[] {
   const kinds = LANE_KINDS[lane.name];
   if (!kinds) return [];
   const plans = plansOf(db, ctx);
   const seen = new Set<string>(), all: LaneItem[] = [];
+  // A repo whose jobs of every step of the lane wait for a Task Runner: the planner proposes none for it.
+  const untaken = (ctx.untaken ??= untakenTest(db)), noRunner = new Map<string, boolean>();
+  const waits = (repo: string): boolean => {
+    let w = noRunner.get(repo);
+    if (w === undefined) noRunner.set(repo, (w = !!lane.steps?.length && lane.steps.every((step) => untaken({ step, repo }))));
+    return w;
+  };
   const add = (f: Planned["facts"] | PlannedItem["facts"], state: string, a: Action) => {
     const ref = `${f.repo}#${f.number}`;
     if (seen.has(ref)) return;
     seen.add(ref);
     const refused = gates(f, wantOf(a), "pipeline");
-    const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "The pipeline is off" ? null : refused;
+    const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "The pipeline is off" ? null : refused ?? (waits(f.repo) ? noRunnerFor(f.repo) : null);
     const fast = (fastScoreOf(db, f.repo, f.number) ?? 0) >= FAST_FLOOR;
     all.push({
       repo: f.repo, number: f.number, kind: "kind" in f ? f.kind : "pr", action: a.kind, bucket: typeof a.params?.bucket === "string" ? a.params.bucket : null,

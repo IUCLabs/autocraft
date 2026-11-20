@@ -1,7 +1,7 @@
 // Referee: Sonnet decides disagreements between Jev and Haiku under the written rules.
 import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { itemRepos, queueRoom } from "../agents/call.ts";
+import { itemRepos, poolRoom, repoBatches } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { type Item } from "./parse.ts";
 import { type Pair, ref } from "./report.ts";
@@ -35,8 +35,7 @@ type RefereeOpts = {
 /** Sends the items to the Sonnet referee and stores one 'sonnet' row per answer in `runId`. Returns the number of answers. */
 export async function refereeItems(db: DatabaseSync, runId: string, items: Item[], opts: RefereeOpts): Promise<number> {
   const perCall = opts.perCall ?? REFEREE.limits.perCall;
-  const chunks: Item[][] = [];
-  for (let i = 0; i < items.length; i += perCall) chunks.push(items.slice(i, i + perCall));
+  const chunks = repoBatches(db, items, perCall, (i) => i.repo);
   const ins = db.prepare(`INSERT OR REPLACE INTO main.classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs)
     VALUES (?, ?, 'sonnet', ?, ?, ?, '[]', ?, ?)`);
   const have = db.prepare(`SELECT 1 FROM classifications WHERE repo = ? AND number = ? AND classifier = 'sonnet' AND run_id = ? AND at >= ?`);
@@ -79,7 +78,7 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
       }
     }
     total += got;
-  }), (i) => queueRoom(db, undefined, itemRepos(chunks[i]!)), { first: true });
+  }), poolRoom(db, (i) => itemRepos(chunks[i]!)), { first: true });
   return total;
 }
 

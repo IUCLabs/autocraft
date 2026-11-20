@@ -3,7 +3,7 @@
 // lint and fallbacks; the runner does the calls, retries, lint and fix turn (askClaude), the Jev reply parse, the
 // usage rows and the error result.
 import type { DatabaseSync } from "node:sqlite";
-import { queueRoom } from "./call.ts";
+import { NoTakerError, poolRoom, repoBatches } from "./call.ts";
 import { jevAvailable } from "./jev.ts";
 import { jevParallel } from "./accounts.ts";
 import { add, askClaude, askJev, pool, saveUsage, type AskOptions, type LintedReply, type Usage } from "../classify/run.ts";
@@ -105,7 +105,9 @@ type Reply = { text: string; usage: Usage; problems?: LintProblem[]; fixTurn?: b
 /**
  * Runs one declared step on `input`: the call, the parse, up to `attempts` calls (a parse error or a failed call repeats
  * the call; a parser that returns `rest` repeats it for the rest only), the usage row, and the error result.
- * Values of every answered attempt are in `values`, in order; `rest` is what no attempt answered.
+ * Values of every answered attempt are in `values`, in order; `rest` is what no attempt answered. A call withdrawn for lack of
+ * a taker (NoTakerError) ends the attempts: with earlier answers they are returned with the rest unanswered, as when the
+ * attempts run out; without, the usage of what ran is saved and the error is thrown.
  */
 export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: ClaudeStep<I, V, C> | JevStep<I, V, C>, input: I, opts: StepOpts<I, C> = {}): Promise<StepResult<I, V>> {
   const reg = step.provider === "jev" ? JEV_PROMPTS[step.id] : CLAUDE_PROMPTS[step.id];
@@ -115,13 +117,18 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
   let usage = zero();
   let todo: I | undefined = input, rest: I | undefined = input;
   let fallback: V | null = null, error = "no answer", sawUsage = false;
-  let ran: string | undefined;
+  let ran: string | undefined, untaken: NoTakerError | undefined;
   for (let attempt = 0; attempt < attempts && todo !== undefined; attempt++) {
     if (opts.cancelled?.()) break;
     if (step.provider === "jev" && !jevAvailable(db)) { error = "jev unavailable"; break; }
     if (attempt > 0 && step.backoffMs) await sleep(step.backoffMs);
     opts.onAttempt?.(todo, attempt);
-    const r = await call(db, step, todo, opts);
+    let r: Reply | null;
+    try { r = await call(db, step, todo, opts); } catch (e) {
+      if (!(e instanceof NoTakerError)) throw e;
+      if (!values.length) untaken = e;
+      break;
+    }
     if (!r) { error = "no answer"; continue; }
     usage = add(usage, r.usage);
     if ("text" in r) opts.onReply?.(r as LintedReply);
@@ -140,7 +147,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     if ("text" in r && r.model) ran = r.model;
     todo = rest = parsed.rest;
   }
-  if (!values.length && fallback !== null) { values.push(fallback); rest = undefined; }
+  if (!untaken && !values.length && fallback !== null) { values.push(fallback); rest = undefined; }
   const ok = values.length > 0;
   if (opts.usage && !(opts.usage.skipWhen?.({ ok }) ?? false) && (sawUsage || opts.usage.withoutUsage)) {
     const u = opts.usage;
@@ -151,6 +158,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     if (u.keepEarlier) db.prepare("UPDATE main.token_usage SET agent = agent || '@' || COALESCE(started_at, '') WHERE run_id = ? AND agent = ?").run(u.run, u.agent);
     saveUsage(db, u.run, u.agent, u.stage, model, items, saved, start, new Date().toISOString());
   }
+  if (untaken) throw untaken;
   const runId = opts.usage?.run;
   if (!ok) return { ok: false, error, usage, runId };
   return { ok: true, value: values[values.length - 1]!, values, ...(rest !== undefined && { rest }), usage, runId, ...(ran && { model: ran }) };
@@ -210,10 +218,12 @@ export type TieredResult<JV, HV> = {
   alone: Set<string>;
   /** Items sent to Haiku. */
   asked: Set<string>;
+  /** Items Haiku was to answer whose batch did not run: no Task Runner may take its repo. */
+  skipped: Set<string>;
 };
 
 export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync, tier: TieredStep<It, JV, HV, C, B>, items: It[], opts: TieredOpts<It, C> = {}): Promise<TieredResult<JV, HV>> {
-  const out: TieredResult<JV, HV> = { jev: new Map(), haiku: new Map(), alone: new Set(), asked: new Set() };
+  const out: TieredResult<JV, HV> = { jev: new Map(), haiku: new Map(), alone: new Set(), asked: new Set(), skipped: new Set() };
   if (jevAvailable(db)) {
     await pool(items.map((x) => async () => {
       if (!jevAvailable(db)) return;
@@ -232,13 +242,14 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
   }
   if (!ask.length || opts.cancelled?.()) return out;
   const per = opts.perCall ?? CLAUDE_PROMPTS[tier.haiku.id].limits.perCall;
-  const batches: It[][] = [];
-  for (let i = 0; i < ask.length; i += per) batches.push(ask.slice(i, i + per));
+  const batches = repoBatches(db, ask, per, tier.repo);
   await pool(batches.map((batch, n) => async () => {
     for (const x of batch) out.asked.add(tier.ref(x));
     const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {
       ctx: opts.ctx, usage: opts.haikuUsage?.(batch, n), cancelled: opts.cancelled });
     if (r.ok) for (const v of r.values) for (const [ref, a] of v) out.haiku.set(ref, a);
-  }), (i) => queueRoom(db, undefined, [...new Set(batches[i]!.map(tier.repo))]), { first: opts.first });
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map(tier.repo))]), { first: opts.first, skipped: (i) => {
+    for (const x of batches[i]!) { out.skipped.add(tier.ref(x)); out.alone.delete(tier.ref(x)); }
+  } });
   return out;
 }

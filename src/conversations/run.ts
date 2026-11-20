@@ -4,7 +4,7 @@ import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { queueRoom } from "../agents/call.ts";
+import { poolRoom, takersFirst } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { CONVERSATION } from "../agents/steps.ts";
@@ -38,7 +38,7 @@ const now = () => new Date().toISOString();
 export async function answerPending(db: DatabaseSync, p: ConversationParams): Promise<number> {
   const model = p.model ?? CONVERSATION_PROMPT.models[0]!;
   let todo = pendingConversations(db);
-  if (p.limit !== undefined) todo = todo.slice(0, Math.max(0, p.limit));
+  if (p.limit !== undefined) todo = takersFirst(db, todo, (c) => [c.repo]).slice(0, Math.max(0, p.limit));
   const checkouts = new Map<string, Promise<string | null>>();
   let answered = 0, handled = 0;
   await pool(todo.map((c, k) => async () => {
@@ -79,7 +79,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
       jobItem(db, repo, n, "no usable reply to a message", p.log);
     }
-  }), (i) => queueRoom(db, undefined, [todo[i]!.repo]), { first: true });
+  }), poolRoom(db, (i) => [todo[i]!.repo]), { first: true });
   return answered;
 }
 

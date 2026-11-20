@@ -3,7 +3,7 @@
 // usage; the runner sets the final state from the exit code.
 import type { DatabaseSync } from "node:sqlite";
 import type { JobUsage } from "../../web/src/api/types.ts";
-import { setCallContext, StoppedError } from "../agents/call.ts";
+import { NoTakerError, setCallContext, StoppedError } from "../agents/call.ts";
 import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
 import { AUTOPILOT_USER, isDraining, isEnabled } from "./autopilot.ts";
@@ -93,9 +93,10 @@ export async function execJob(id: number): Promise<number> {
     console.log(`${new Date().toISOString()} done: ${summary}`);
     return 0;
   } catch (e) {
-    if (e instanceof StoppedError) {
+    if (e instanceof StoppedError || e instanceof NoTakerError) {
       saveUsage();
-      const summary = "stopped: the pipeline was switched off";
+      if (leaseSkips()) db.prepare("UPDATE jobs SET lease_skips = ?, lease_skip_keys = ? WHERE id = ?").run(leaseSkips(), JSON.stringify(leaseSkipKeys()), id);
+      const summary = e instanceof NoTakerError ? `skipped: ${e.message}` : "stopped: the pipeline was switched off";
       db.prepare("UPDATE jobs SET summary = ? WHERE id = ?").run(summary, id);
       console.log(`${new Date().toISOString()} done: ${summary}`);
       return 0;

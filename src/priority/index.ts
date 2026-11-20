@@ -5,6 +5,7 @@
 // while Jev is unavailable (src/agents/jev.ts). The reach is
 // recomputed from the mirror's reach signals on every pass, without a model.
 import type { DatabaseSync } from "node:sqlite";
+import { takersFirst } from "../agents/call.ts";
 import { runTiered } from "../agents/step.ts";
 import { PRIORITY } from "../agents/steps.ts";
 import { type Item, refOf } from "../classify/parse.ts";
@@ -72,14 +73,16 @@ export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): 
   fillEmbedHashes(db);
   const all = dueItems(db);
   const due = all.length;
-  const todo = all.slice(0, opts.limit);
+  const todo = takersFirst(db, all, (x) => [x.repo]).slice(0, opts.limit);
   log(`prioritize: ${due} items due, taking ${todo.length}`);
   const res: PrioritizeResult = { due, sent: 0, jev: 0, haiku: 0, saved: 0, rescored: 0, haikuAlone: 0 };
   for (let i = 0; i < todo.length && !opts.cancelled?.(); i += JEV_CHUNK) {
-    const chunk = todo.slice(i, i + JEV_CHUNK);
+    const all = todo.slice(i, i + JEV_CHUNK);
+    const t = await runTiered(db, PRIORITY, all);
+    // An item whose Haiku batch no Task Runner could take is left for a later pass, unsaved.
+    const chunk = all.filter((x) => !t.skipped.has(refOf(x)));
     res.sent += chunk.length;
     opts.onSent?.(res.sent);
-    const t = await runTiered(db, PRIORITY, chunk);
     const verdicts = new Map<string, Verdict>();
     for (const item of chunk) {
       const ref = refOf(item), v = t.jev.get(ref) ?? null;

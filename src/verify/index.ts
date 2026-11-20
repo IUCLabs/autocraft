@@ -10,7 +10,7 @@
 // verification, sets the state, summary and finished_at, writes the failure summary and cancels the
 // queued tasks of a verification whose PR head moved on (state `stale`).
 import { leaseItem } from "../runner/leases.ts";
-import { queueRoom } from "../agents/call.ts";
+import { poolRoom } from "../agents/call.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { BuildError } from "../build/envs.ts";
@@ -208,7 +208,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
         summary.errors++;
       }
     } finally { release(); }
-  }), () => queueRoom(db, undefined, [repo]), { max: POOL_MAX.verify });
+  }), poolRoom(db, () => [repo]), { max: POOL_MAX.verify });
 
   if (queued) {
     const main = await deps.mainHead(repo, branch);

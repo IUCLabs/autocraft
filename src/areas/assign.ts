@@ -5,6 +5,7 @@
 import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { freeSlots } from "../agents/accounts.ts";
+import { takersFirst } from "../agents/call.ts";
 import { jevAvailable } from "../agents/jev.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { refOf } from "../classify/parse.ts";
@@ -46,18 +47,19 @@ type Due = AreaItem & { head: string | null; version: number };
 /**
  * Open items of repos with an area list that need an answer. Without `rescan`: never asked, or asked against an older
  * list version and unassigned. With `rescan`: also the ones answered "none of these" for the current version.
- * Operator-assigned items are never due.
+ * Operator-assigned items are never due. Items of repos no Task Runner takes come after the rest before the limit (takersFirst).
  */
 export function dueForArea(db: DatabaseSync, opts: { repo?: string; limit: number; rescan?: boolean }): Due[] {
-  return db.prepare(`SELECT i.repo, i.number, i.kind, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body,
+  const due = db.prepare(`SELECT i.repo, i.number, i.kind, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body,
       i.additions + i.deletions AS lines_changed, i.changed_files AS files_changed, i.author_association, i.head_oid AS head, l.v AS version
     FROM items i JOIN tracked_repos t ON t.name = i.repo
     JOIN (SELECT repo, MAX(version) AS v FROM area_lists GROUP BY repo) l ON l.repo = i.repo
     LEFT JOIN item_areas a ON a.repo = i.repo AND a.number = i.number
     WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND (:repo IS NULL OR i.repo = :repo)
       AND (a.number IS NULL OR (a.source <> 'operator' AND (a.list_version <> l.v OR (:rescan AND a.area IS NULL))))
-    ORDER BY t.pipeline DESC, i.updated_at DESC, i.repo, i.number LIMIT :limit`)
-    .all({ repo: opts.repo ?? null, rescan: opts.rescan ? 1 : 0, limit: opts.limit }) as unknown as Due[];
+    ORDER BY t.pipeline DESC, i.updated_at DESC, i.repo, i.number`)
+    .all({ repo: opts.repo ?? null, rescan: opts.rescan ? 1 : 0 }) as unknown as Due[];
+  return takersFirst(db, due, (x) => [x.repo]).slice(0, opts.limit);
 }
 
 export type AssignParams = {
@@ -99,13 +101,13 @@ async function assignRepo(db: DatabaseSync, repo: string, due: Due[], p: AssignP
     // With neither model available there is nothing to ask, so no diff is fetched.
     if (!jevAvailable(db) && freeSlots(db) <= 0 && !p.paths) { p.log?.(`areas: no model available for ${repo}`); break; }
     const chunk = await withPaths(due.slice(i, i + CHUNK), p.paths ?? diffPaths(db));
-    p.onSent?.(chunk.length);
     const t = await runTiered(db, AREAS, chunk, {
       ctx: { repo, areas: list.areas },
       cancelled: p.cancelled,
       jevUsage: (x) => ({ run: p.usageRun, agent: `areas-jev-${refOf(x)}`, stage: "areas", model: "jev-latest", items: () => 1, keepEarlier: true }),
       haikuUsage: (_batch, n) => ({ run: p.usageRun, agent: `areas-haiku-${repo}-${String(n).padStart(3, "0")}`, stage: "areas", keepEarlier: true }),
     });
+    p.onSent?.(chunk.length - t.skipped.size);
     for (const x of chunk) {
       const a = t.jev.get(refOf(x));
       if (a && settles(a.top)) store(x, a.area, "jev", a.top);

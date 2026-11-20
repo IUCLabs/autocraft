@@ -1,0 +1,50 @@
+// User-local mode: the planner proposes no Claude job for a repo that no Task Runner takes and says why; a queued job of such
+// a repo shows the reason and holds neither a repo of step_parallel nor part of the daily limit.
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { SCRATCH } from "./scratch.ts";
+
+process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
+
+const { connect } = await import("../src/db.ts");
+const { enqueue, getJob } = await import("../src/runner/jobs.ts");
+const { setStepParallel } = await import("../src/runner/concurrency.ts");
+const { applyProposals, detectAutopilot, reservedByJobs } = await import("../src/runner/autopilot.ts");
+const { createToken } = await import("../src/dash/mcp/tokens.ts");
+const { parseStatus, storeStatus } = await import("../src/remote/helpers.ts");
+const { setInferenceMode } = await import("../src/remote/mode.ts");
+const { setUserRepos } = await import("../src/remote/my-repos.ts");
+
+mkdirSync(SCRATCH, { recursive: true });
+
+test("a Task Runner that takes only deckcraft: deckcraft is planned, photocraft waits with a reason and blocks nothing", async () => {
+  const db = connect(join(mkdtempSync(join(SCRATCH, "planner-taker-")), "t.db"));
+  setInferenceMode(db, "user-local", "test");
+  for (const r of ["deckcraft", "photocraft"]) db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES (?, 1) ON CONFLICT (name) DO UPDATE SET pipeline = 1").run(r);
+  db.prepare("INSERT INTO access (login, role) VALUES ('olga', 'operator')").run();
+  const token = createToken(db, "olga", "helper", { kind: "runner" }).row.id;
+  storeStatus(db, token, "olga", parseStatus({ slots: 1, busy: 0, readiness: "ready", harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 0, weekly: 0 } }));
+  setUserRepos(db, "olga", ["deckcraft"]);
+  setStepParallel(db, 1, "test");
+
+  const lane = (repos: string[]) => [{ name: "model", steps: ["test-model"], perRepo: true, detect: () => repos.map((repo) => ({ step: "test-model", params: { repo } })) }];
+  const both = await detectAutopilot(db, { lanes: lane(["photocraft", "deckcraft"]) });
+  assert.deepEqual(both.proposals.map((p) => p.params.repo), ["deckcraft"]);
+  const photo = await detectAutopilot(db, { lanes: lane(["photocraft"]) });
+  assert.equal(photo.proposals.length, 0);
+  assert.equal(photo.status?.["test-model"], "No Task Runner takes photocraft");
+
+  // An operator queues photocraft anyway: it stays queued with the reason, and neither holds the step nor its limit.
+  const queued = await enqueue(db, "test-model", { repo: "photocraft", limit: 5 }, "olga");
+  assert.equal(getJob(db, queued.id).waiting, "No Task Runner takes photocraft");
+  assert.equal(reservedByJobs(db, "test-model"), 0);
+  const found = await detectAutopilot(db, { lanes: lane(["deckcraft"]) });
+  const ids = await applyProposals(db, found.proposals, { lanes: lane(["deckcraft"]) });
+  assert.equal(ids.length, 1, "step_parallel 1 is not taken by the photocraft job");
+  assert.equal(getJob(db, ids[0]!).params.repo, "deckcraft");
+  assert.equal(getJob(db, ids[0]!).waiting, null);
+  assert.equal(reservedByJobs(db, "test-model"), 5, "only the deckcraft job keeps its limit");
+});

@@ -10,6 +10,9 @@ const skippedKeys = new Set<string>();
 /** The lease keys this process skipped, at most 500. */
 export const leaseSkipKeys = (): string[] => [...skippedKeys];
 
+/** The prefix of the skip key of a call withdrawn for lack of a taker: no lease; the planner's taker signature wakes the step. */
+export const NO_TAKER_SKIP = "no-taker:";
+
 /** Counts an item left for a later job (like a held lease) so the planner retries it, and logs why. */
 export function skipItem(key: string, log: (line: string) => void, why: string): void {
   skipped++;

@@ -39,6 +39,7 @@ import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg
 import { loadToken, pruneTokens, type McpCaller } from "../mcp/tokens.ts";
 import { sha256hex } from "./crypto.ts";
 import * as remote from "../../remote/calls.ts";
+import { sweepTakers } from "../../remote/takers.ts";
 import { ClaimWaits, heldMsOf } from "../../remote/claim-wait.ts";
 import { scaled, TIME_SCALE } from "../../remote/time-scale.ts";
 import { isBusy } from "../../db.ts";
@@ -287,9 +288,11 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   }
 
   // Ended remote calls, finished check relays and the status of deleted tokens, once a minute; a busy database skips a round.
+  // The same pass withdraws queued calls no Task Runner has been able to take for a while and marks repos without one (takers.ts).
   const maintenance = setInterval(() => {
     try {
       remote.pruneRemote(rdb);
+      sweepTakers(rdb);
     } catch (e) {
       if (!isBusy(e)) console.log(`remote maintenance failed: ${(e as Error).message}`);
     }

@@ -10,6 +10,7 @@ import { connect } from "../db.ts";
 import { localEmbedder, modelName } from "../embed/model.ts";
 import { VectorIndex } from "../embed/vectors.ts";
 import { plannedItems } from "../core/select-items.ts";
+import { queueRoomPass } from "../agents/call.ts";
 import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps, type PairKey } from "./check.ts";
 import { applyDuplicateAnswers, askGroupDecisions } from "./decide.ts";
 import { fillEmbedHashes } from "../itemhash.ts";
@@ -44,10 +45,14 @@ function scanItems(db: DatabaseSync, model: string, max: number): ScanItem[] {
   return plannedItems(db, "dupes", { model }).filter((p) => p.action.params?.scan).slice(0, max).map((p) => get.get(p.facts.repo, p.facts.number) as ScanItem);
 }
 
-/** Unchecked pairs of the items the Plans send to the pair check, most similar first. */
+/**
+ * Unchecked pairs of the items the Plans send to the pair check, most similar first. Pairs of a repo no Task Runner takes are
+ * left out: their Haiku half could not run, so Jev is not asked either and they stay for a later job.
+ */
 function pairsToCheck(db: DatabaseSync, model: string, limit: number): PairKey[] {
   const refs = new Set(plannedItems(db, "dupes", { model }).filter((p) => (p.action.params?.pairs as number) > 0).map((p) => `${p.facts.repo}#${p.facts.number}`));
-  return uncheckedPairs(db, -1).filter((k) => refs.has(`${k.repo}#${k.a}`) || refs.has(`${k.repo}#${k.b}`)).slice(0, limit);
+  const taker = queueRoomPass(db).taker;
+  return uncheckedPairs(db, -1).filter((k) => (refs.has(`${k.repo}#${k.a}`) || refs.has(`${k.repo}#${k.b}`)) && taker([k.repo])).slice(0, limit);
 }
 
 export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: (line: string) => void = console.log, deps?: DupesDeps): Promise<DupesSummary> {

@@ -10,7 +10,7 @@ import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { queueRoom } from "../agents/call.ts";
+import { poolRoom, takersFirst } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
 import { COMPARE_ISSUES, COMPARE_PRS } from "../agents/steps.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
@@ -262,7 +262,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
     });
     s.dropped = asked - calls.length;
   }
-  if (params.limit !== undefined) calls = calls.slice(0, params.limit);
+  if (params.limit !== undefined) calls = takersFirst(db, calls, (c) => [c.repo]).slice(0, params.limit);
   let handled = 0;
   await pool(calls.map((set) => async () => {
     const r = await compareSet(x, set);
@@ -277,7 +277,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
     } else s.compared++;
     for (const m of set.members) jobItem(db, set.repo, m.number, `compared in duplicate set ${set.key}, keep #${r.kept}${r.source === "rule" ? " (by rule)" : ""}`, () => {});
     params.onHandled?.(++handled);
-  }), (i) => queueRoom(db, undefined, [calls[i]!.repo]));
+  }), poolRoom(db, (i) => [calls[i]!.repo]));
   s.asked = askGroupDecisions(db, params.repo, NOW_ISO(d));
   log(`dupe-compare: ${s.compared} compared by a model, ${s.byRule} by rule, ${s.closedWins} won by a closed member, ${s.single} single, ${s.dropped} dropped; ${s.asked.length} decisions asked`);
   return s;
