@@ -277,4 +277,13 @@ describe("over HTTP", () => {
     assert.deepEqual(await post(ROUTES.submit, enc(reply), secret), { status: 200, body: { accepted: true } });
     assert.equal((db.prepare("SELECT reply FROM remote_calls WHERE id = ?").get(call) as { reply: string }).reply, reply.text);
   });
+
+  test("a valid envelope with invalid base64 or gzip gets 400; any other shape is plain JSON", async () => {
+    const bad = await post(ROUTES.loginStart, { encoding: "gzip+base64", body: "!!!not gzip" });
+    assert.equal(bad.status, 400);
+    assert.match(String(bad.body.error), /not valid gzip\+base64/);
+    const plain = await post(ROUTES.loginStart, { encoding: "x", body: "y" });
+    assert.notEqual(plain.status, 415);
+    assert.doesNotMatch(String(plain.body.error), /not valid gzip/);
+  });
 });

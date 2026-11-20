@@ -3604,13 +3604,19 @@ async function cmdWork(argv) {
   /** @param {number | undefined} slot @param {boolean} fastLane */
   const claimLoop = async (slot, fastLane) => {
     let claimId = newClaimId();
+    let blockedRun = 0;
     while (!ac.signal.aborted) {
       if (Date.now() < notBefore) { await pause(notBefore - Date.now()); continue; }
       let r;
-      try { r = await claimOnce(loadConfig(), slot, fastLane, claimId, ac.signal); claimId = newClaimId(); } catch (e) {
+      try { r = await claimOnce(loadConfig(), slot, fastLane, claimId, ac.signal); claimId = newClaimId(); blockedRun = 0; } catch (e) {
         if (ac.signal.aborted) break;
         // A claim lost in transit may have leased a call: the next try sends the same id and gets that lease back.
         if (!transient(e)) claimId = newClaimId();
+        blockedRun = e instanceof ProxyBlocked ? blockedRun + 1 : 0;
+        if (blockedRun >= 10) {
+          if (blockedRun === 10) console.log("the server's replies are blocked by a proxy, or the credential was revoked; run autocraft login if this persists");
+          await pause(REVOKED_RETRY_MS); continue;
+        }
         if (e instanceof HttpError && !(e instanceof ProxyBlocked) && (e.status === 401 || e.status === 403)) {
           // A revoked or expired credential: the process stays up (no restart loop of its service) and looks again now and then.
           const line = `credential revoked or expired (${msg(e)}); run \`autocraft login <server-url>\``;
@@ -4351,6 +4357,9 @@ export function mcpClient(server, credential) {
     session = res.headers.get("mcp-session-id") ?? session;
     const text = await res.text();
     if (!res.ok) {
+      if (res.status >= 400 && res.status < 500 && res.status !== 404 && res.status !== 410 && (/html/i.test(res.headers.get("content-type") ?? "") || /^\s*</.test(text))) {
+        throw new ProxyBlocked("/mcp", res.status, retryAfterMs(res.headers.get("retry-after")));
+      }
       let reason = "";
       try { reason = JSON.parse(text)?.error?.message ?? ""; } catch { reason = text.slice(0, 300); }
       if (res.status === 401) throw new Error(`the server refused the credential (revoked or expired): run \`autocraft login ${server}\``);

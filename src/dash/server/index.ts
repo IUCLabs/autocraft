@@ -176,15 +176,14 @@ const gunzipAsync = promisify(gunzip);
 
 /**
  * readJson for the Task Runner routes: the body may also come as an Envelope (src/remote/protocol.ts ENCODINGS), an object
- * with exactly `encoding` and `body`; its uncompressed body has the same `limit`.
+ * with exactly `encoding` (one of ENCODINGS) and `body` (strings); any other body is plain JSON; its uncompressed body has the same `limit`.
  */
 async function readRemoteJson(req: IncomingMessage, limit: number = BODY_LIMIT): Promise<unknown> {
   const json = await readJson(req, limit);
   if (!json || typeof json !== "object" || Array.isArray(json)) return json;
   const keys = Object.keys(json);
   const env = json as { encoding?: unknown; body?: unknown };
-  if (keys.length !== 2 || typeof env.encoding !== "string" || typeof env.body !== "string") return json;
-  if (!(ENCODINGS as readonly string[]).includes(env.encoding)) throw new HttpError(415, `Unknown body encoding; send one of ${ENCODINGS.join(", ")} or plain JSON`);
+  if (keys.length !== 2 || typeof env.encoding !== "string" || typeof env.body !== "string" || !(ENCODINGS as readonly string[]).includes(env.encoding)) return json;
   let raw: Buffer;
   try {
     raw = await gunzipAsync(Buffer.from(env.body, "base64"), { maxOutputLength: limit });

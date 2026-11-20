@@ -52,6 +52,7 @@ const mayGrantAnswer = (db: DatabaseSync, req: Req): boolean =>
 /** The `agent` and `answer` ticks of a request body, checked; `hadAnswer`: the runner answers already, so keeping it grants nothing. */
 function scopesOf(db: DatabaseSync, req: Req, b: Record<string, unknown>, hadAnswer = false): Scopes {
   if (typeof b.agent !== "boolean" || typeof b.answer !== "boolean") throw new HttpError(400, "agent and answer must be true or false");
+  if (b.agent && req.user.role === "viewer") throw new HttpError(403, "viewers cannot give a Task Runner agent access");
   if (b.answer && !hadAnswer && !mayGrantAnswer(db, req)) {
     throw new HttpError(403, answering.enabled ? "only operators, and maintainers where they may settle decisions, let a Task Runner answer decisions" : "answering from an agent is not available yet");
   }
