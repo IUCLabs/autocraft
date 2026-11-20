@@ -4326,6 +4326,8 @@ class UsageError extends Error {}
 const answerWhy = (has) => (has.has("set_weight")
   ? "this Task Runner cannot approve merges: tick \"Can answer decisions and approve merges\" for it on the Connect page (the server must offer answering)"
   : "only operators, and maintainers who answer decisions (an answering Task Runner while maintainer writes are on), approve merges");
+/** Withdrawing an approved merge stays with operators, also where a maintainer may approve one. @param {Set<string>} has */
+const cancelWhy = (has) => (has.has("set_weight") ? answerWhy(has) : "only operators withdraw an approved merge");
 const LOCAL_WHY = "model calls run on the server's accounts here: the server is not in the user-local inference mode";
 /** @param {Set<string>} has */
 const pickWhy = (has) => (has.has("list_model_calls") ? "only maintainers and operators pick model calls" : LOCAL_WHY);
@@ -4343,7 +4345,7 @@ export const CLI_COMMANDS = [
   { path: ["queue"], tool: "list_merge_queue", usage: "[--repo R] [--limit N] [--cursor C]", summary: "each PR's state, weight and what it waits for" },
   { path: ["queue", "add"], tool: "queue_pr", args: ["item"], usage: "<pr> [--weight N]", summary: "approve a PR's merge ahead and fast-track it", why: answerWhy },
   { path: ["queue", "weight"], tool: "set_weight", args: ["item", "weight"], usage: "<item> <N>", summary: "set an item's fast-track weight; --remove takes it off", why: () => "only operators steer the merge queue" },
-  { path: ["queue", "remove"], tool: "cancel_queued", args: ["item"], usage: "<pr>", summary: "withdraw a PR's approved merge", why: answerWhy },
+  { path: ["queue", "remove"], tool: "cancel_queued", args: ["item"], usage: "<pr>", summary: "withdraw a PR's approved merge", why: cancelWhy },
   { path: ["calls"], tool: "list_model_calls", usage: "", summary: "model calls waiting for a Task Runner, and why each waits", why: () => LOCAL_WHY },
   { path: ["calls", "pick"], tool: "pick_model_call", args: ["id"], usage: "<id>", summary: "reserve a call for your own Task Runners", why: pickWhy },
   { path: ["calls", "unpick"], tool: "unpick_model_call", args: ["id"], usage: "<id>", summary: "end a pick", why: pickWhy },
