@@ -7,7 +7,7 @@ import { mergeDecisionId } from "../core/rules.ts";
 import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
 import { appPermission, type AppPermission } from "../remote/permission.ts";
-import { maintainersSettle, settleKey } from "../settlers.ts";
+import { maintainersSettle, settleKey, settlesNow } from "../settlers.ts";
 
 /** A write permission older than this is read again, so it stays younger than PERM_READ_TTL while GitHub answers. About one read per login and repo per TTL. */
 export const REFRESH_AFTER = PERM_READ_TTL - 2 * 60_000;
@@ -75,4 +75,26 @@ export function refreshSettlers(db: DatabaseSync, log: (line: string) => void = 
     );
   }
   return held;
+}
+
+/**
+ * Whether `login` settles on `repo` with a write permission confirmed now, for a write the pipeline makes on that person's answer without the
+ * user lane (an integration batch's merge). An operator settles; a maintainer needs a write permission checked within PERM_READ_TTL, else it is
+ * read through the GitHub App (`read`, which writes repo_permissions). "unknown" when GitHub could not answer and the last write permission is
+ * younger than HOLD_MAX: the caller waits. Past that, or on a fresh non-write answer, "no".
+ */
+export async function settlesLive(db: DatabaseSync, login: string, repo: string, read: RefreshDeps["permission"] = (d, l, r) => appPermission(d, l, r)): Promise<"yes" | "no" | "unknown"> {
+  const role = (db.prepare("SELECT role FROM main.access WHERE login = ?").get(login) as { role: string } | undefined)?.role;
+  if (role !== "maintainer" || !maintainersSettle(db)) return settlesNow(db, login, [repo]) ? "yes" : "no";
+  const age = (): number => {
+    const row = db.prepare("SELECT permission, checked_at FROM main.repo_permissions WHERE login = ? AND repo = ?").get(login, repo) as { permission: string; checked_at: string } | undefined;
+    return row && WRITE_PERMISSIONS.has(row.permission) ? Date.now() - Date.parse(row.checked_at) : NaN;
+  };
+  const before = age();
+  if (!(before < PERM_READ_TTL)) {
+    let r: AppPermission;
+    try { r = await read(db, login, repo); } catch (e) { r = { kind: "error", why: (e as Error).message }; }
+    if (r.kind !== "ok") return before < HOLD_MAX ? "unknown" : "no";
+  }
+  return settlesNow(db, login, [repo]) ? "yes" : "no";
 }
