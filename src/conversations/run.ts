@@ -79,7 +79,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
       jobItem(db, repo, n, "no usable reply to a message", p.log);
     }
-  }), () => queueRoom(db), { first: true });
+  }), (i) => queueRoom(db, undefined, [todo[i]!.repo]), { first: true });
   return answered;
 }
 

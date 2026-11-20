@@ -65,6 +65,7 @@ export const PRIORITY: TieredStep<Item, JevImpact, HaikuImpactValue> = {
     },
   },
   ref: refOf,
+  repo: (x) => x.repo,
   sure: (v) => v.p >= SURE,
   onJevFailure: "haiku",
 };
@@ -91,6 +92,7 @@ export const AREAS: TieredStep<AreaItem, AreaAnswer, string | null, AreasCtx, Ar
   },
   batch: (items, c) => ({ repo: c.repo, areas: c.areas, items }),
   ref: refOf,
+  repo: (x) => x.repo,
   sure: (a) => settles(a.top),
   onJevFailure: "haiku-when-unavailable",
 };

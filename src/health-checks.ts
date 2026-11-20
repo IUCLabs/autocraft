@@ -17,6 +17,7 @@ import { inferenceMode } from "./remote/mode.ts";
 import { CALLER_STALE_MS } from "./remote/room.ts";
 import { STATUS_FRESH_MS } from "./remote/helpers.ts";
 import { manualSql } from "./remote/manual-only.ts";
+import { queueView } from "./remote/queue-view.ts";
 import { confidentialReadyAt, PRIVATE_STEPS_SQL } from "./build/tasks.ts";
 
 /** Thresholds, in one place. */
@@ -277,8 +278,23 @@ function remoteManualCheck({ db, nowMs }: CheckCtx): Check[] {
     brief: "Model calls wait for a pick: every ready Task Runner is Manual only" }];
 }
 
+/**
+ * User-local mode: calls have waited past remoteQueuedMs and no ready Task Runner's user may take them: the role rules, write
+ * permission as last confirmed or My repos leave every ready runner out (queue-view.ts whyWaiting `no-repo-access`).
+ */
+function remoteNoTakerCheck({ db, nowMs }: CheckCtx): Check[] {
+  if (inferenceMode(db) !== "user-local") return [];
+  const stuck = queueView(db, nowMs, false).calls.filter((c) => c.why.code === "no-repo-access" && c.waitedMs >= THRESHOLDS.remoteQueuedMs);
+  if (!stuck.length) return [ok("remote-no-taker", "/model-queue")];
+  const repos = [...new Set(stuck.flatMap((c) => c.repos))].sort();
+  const n = stuck.length;
+  return [{ id: "remote-no-taker", state: "warn", count: n, since: new Date(nowMs - Math.max(...stuck.map((c) => c.waitedMs))).toISOString(), to: "/model-queue",
+    text: `${n} model call${n === 1 ? " has" : "s have"} waited over ${minutes(THRESHOLDS.remoteQueuedMs)} and no ready Task Runner's user takes calls on ${repos.length ? repos.join(", ") : "calls that name no repo"}`,
+    brief: "Model calls wait that no ready Task Runner may take" }];
+}
+
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck, remoteStarvedCheck, remoteManualCheck];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck, remoteStarvedCheck, remoteManualCheck, remoteNoTakerCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs, probe }));

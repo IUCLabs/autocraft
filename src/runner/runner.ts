@@ -383,15 +383,18 @@ export class Runner {
 
   /**
    * Starts queued jobs: security first (priority 2), then by id. A job whose step calls Claude starts only while the
-   * model queue has room for its class, so processes do not sit waiting for slots, unless no job of its step runs.
+   * model queue has room for its class and its repo (queueRoom; a job without a repo param spans repos and is asked about
+   * none), so processes do not sit waiting for slots, unless no job of its step runs. A start takes one from the room of every
+   * repo of its class counted so far: the Task Runners that serve one repo may serve others.
    */
   private async startJobs(): Promise<void> {
     const steps = await loadSteps();
-    const queued = (this.db.prepare("SELECT id, step, params, requested_by FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string; params: string; requested_by: string }[])
+    const queued = (this.db.prepare("SELECT id, step, params, requested_by, repo FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string; params: string; requested_by: string; repo: string | null }[])
       .sort((a, b) => (steps.get(b.step)?.priority ?? 0) - (steps.get(a.step)?.priority ?? 0) || a.id - b.id);
     // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off. While it drains, nothing new starts.
     const on = isEnabled(this.db), draining = isDraining(this.db);
-    const room = new Map<number, number>();
+    // Room by class, then by the job's repo ("" for a job without one).
+    const room = new Map<number, Map<string, number>>();
     for (const q of queued) {
       if (draining || (q.requested_by === AUTOPILOT_USER && !on)) continue;
       if (this.running.size >= this.o.maxJobs) return;
@@ -404,13 +407,20 @@ export class Runner {
       let claude = false;
       try { claude = usesClaude(modelsOf(step, JSON.parse(q.params) as Params)); } catch { /* params are checked when the job runs */ }
       const cls = step.priority ?? 0;
+      let byRepo = room.get(cls);
+      if (!byRepo) room.set(cls, (byRepo = new Map()));
+      const key = q.repo ?? "";
+      const roomOf = (): number => byRepo.get(key) ?? queueRoom(this.db, cls, q.repo ? [q.repo] : undefined);
       if (claude && !this.db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state = 'running' LIMIT 1").get(step.name)) {
         // Nothing of the step runs: it starts anyway, and takes a slot of the room.
       } else if (claude) {
-        if (!room.has(cls)) room.set(cls, queueRoom(this.db, cls));
-        if (room.get(cls)! <= 0) continue;
+        byRepo.set(key, roomOf());
+        if (byRepo.get(key)! <= 0) continue;
       }
-      if (this.start(q.id, step.name, steps) && claude) room.set(cls, (room.get(cls) ?? queueRoom(this.db, cls)) - 1);
+      if (this.start(q.id, step.name, steps) && claude) {
+        byRepo.set(key, roomOf());
+        for (const [k, n] of byRepo) byRepo.set(k, n - 1);
+      }
     }
   }
 

@@ -8,7 +8,7 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { accountConfigDir, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
+import { accountConfigDir, itemRepos, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
 import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
 import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
@@ -129,12 +129,12 @@ export type PoolOptions = {
 /**
  * Runs the jobs with at most `width` at once. A function instead of a number
  * is asked before each start how many more jobs may start now (for model
- * calls: the free account slots); it is asked again whenever a job ends or
- * after the poll time. When none of the pool's jobs is running, one starts
+ * calls: the room of the model queue), given the index of the job that would
+ * start next; it is asked again whenever a job ends or after the poll time. When none of the pool's jobs is running, one starts
  * regardless, so the call itself waits for a slot or reports that no account is enabled.
  * The first failure is thrown once the running jobs have ended.
  */
-export async function pool<T>(jobs: (() => Promise<T>)[], width: number | (() => number), opts: PoolOptions = {}): Promise<T[]> {
+export async function pool<T>(jobs: (() => Promise<T>)[], width: number | ((next: number) => number), opts: PoolOptions = {}): Promise<T[]> {
   const results: T[] = new Array(jobs.length);
   const running = new Set<Promise<void>>();
   let next = 0, failed: { e: unknown } | null = null;
@@ -146,7 +146,7 @@ export async function pool<T>(jobs: (() => Promise<T>)[], width: number | (() =>
   };
   if (opts.first && jobs.length > 1) await launch();
   while (next < jobs.length && !failed) {
-    const room = typeof width === "number" ? width - running.size : Math.min(width(), (opts.max ?? Infinity) - running.size);
+    const room = typeof width === "number" ? width - running.size : Math.min(width(next), (opts.max ?? Infinity) - running.size);
     if (room > 0 || !running.size) {
       launch();
       continue;
@@ -782,7 +782,7 @@ export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], b
     if (r.ok) for (const verdicts of r.values) for (const v of verdicts) saveVerdict(db, "haiku", runId, v);
     const left = r.ok ? r.rest ?? [] : batch;
     if (left.length) console.error(`haiku batch ${n}: no valid answer for ${left.map(refOf).join(", ")}`);
-  }), () => queueRoom(db), { first: opts.cold });
+  }), (i) => queueRoom(db, undefined, itemRepos(batches[i]!)), { first: opts.cold });
 }
 
 export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = jevParallel(db)): Promise<void> {

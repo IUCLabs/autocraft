@@ -277,7 +277,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
     } else s.compared++;
     for (const m of set.members) jobItem(db, set.repo, m.number, `compared in duplicate set ${set.key}, keep #${r.kept}${r.source === "rule" ? " (by rule)" : ""}`, () => {});
     params.onHandled?.(++handled);
-  }), () => queueRoom(db));
+  }), (i) => queueRoom(db, undefined, [calls[i]!.repo]));
   s.asked = askGroupDecisions(db, params.repo, NOW_ISO(d));
   log(`dupe-compare: ${s.compared} compared by a model, ${s.byRule} by rule, ${s.closedWins} won by a closed member, ${s.single} single, ${s.dropped} dropped; ${s.asked.length} decisions asked`);
   return s;

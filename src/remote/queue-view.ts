@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef, ModelQueueWhyCode } from "../../web/src/api/types.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
-import { pickerLogins, pickCounts, queueSnapshot, roleFits } from "./calls.ts";
+import { pickerLogins, pickCounts, queueSnapshot, runnerTakes } from "./calls.ts";
 import { gating } from "./claim-class.ts";
 import { cooloffOf } from "./cooloff.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
@@ -63,7 +63,7 @@ export function whyWaiting(c: WhyCall, runners: readonly ReadyRunner[], ahead: n
   if (!forTier.length) return { code: "no-runner", text: `No Task Runner is ready for the ${c.tier} tier` };
   const auto = forTier.filter((r) => !r.manual);
   if (!auto.length) return { code: "manual-only", text: "Every ready Task Runner is Manual only" };
-  const may = auto.filter((r) => roleFits(r.role, { prompt_id: c.promptId, repos: [...c.repos] }) && c.repos.every((x) => canWrite(r.login, x) && (!r.repos || r.repos.has(x))));
+  const may = auto.filter((r) => runnerTakes(r, { prompt_id: c.promptId, repos: c.repos }, canWrite));
   if (!may.length) return { code: "no-repo-access", text: c.repos.length ? "No ready Task Runner's user takes calls on its repo" : "No ready Task Runner's user may take it" };
   if (!may.some((r) => r.free > 0)) return { code: "busy", text: "Every Task Runner that may take it is busy" };
   return { code: "behind", text: ahead === 0 ? "Next in line" : `${ahead} call${ahead === 1 ? "" : "s"} ahead` };

@@ -181,6 +181,8 @@ export type TieredStep<It, JV, HV, C = void, B = It[]> = {
   /** The Haiku input for a batch of items (default: the list). */
   batch?: (items: It[], ctx: C) => B;
   ref: (item: It) => string;
+  /** The item's repo: the model queue's room is asked for the repos of the next batch. */
+  repo: (item: It) => string;
   /** Jev's answer settles the item: it is not sent to Haiku. */
   sure: (jev: JV) => boolean;
   /** An item Jev gave no valid answer for goes to Haiku: always, or only when Jev is unavailable (a failure with Jev up leaves the item for the next pass). */
@@ -237,6 +239,6 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
     const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {
       ctx: opts.ctx, usage: opts.haikuUsage?.(batch, n), cancelled: opts.cancelled });
     if (r.ok) for (const v of r.values) for (const [ref, a] of v) out.haiku.set(ref, a);
-  }), () => queueRoom(db), { first: opts.first });
+  }), (i) => queueRoom(db, undefined, [...new Set(batches[i]!.map(tier.repo))]), { first: opts.first });
   return out;
 }

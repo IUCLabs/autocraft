@@ -102,9 +102,24 @@ function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
   return queueOrder(db, nowMs, db.prepare("SELECT id, class AS cls, level, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[]);
 }
 
-/** How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter of the current call's class. In the user-local mode: the free helper slots, minus the queued remote calls that rank at or above the class (src/remote/room.ts). */
-export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass()): number {
-  if (inferenceMode(db) === "user-local") return remoteRoom(db, cls);
+/** The repos of a call's items, for queueRoom. */
+export const itemRepos = (items: readonly { repo: string }[]): string[] => [...new Set(items.map((i) => i.repo))];
+
+/** The repos a call made now names: those of its items (`repos`) and the job's repo param. Unknown (undefined) when neither is given. */
+const callRepos = (repos: readonly string[] | undefined): readonly string[] | undefined => {
+  const job = context?.repo;
+  if (repos === undefined) return job ? [job] : undefined;
+  return job && !repos.includes(job) ? [...repos, job] : repos;
+};
+
+/**
+ * How many more Claude calls a caller may start now: free slots, minus the fresh eligible waiters that rank ahead of a new waiter
+ * of the current call's class. In the user-local mode: the free slots of the Task Runners that may take a call naming the repos
+ * of the next call (`repos`: its items' repos; the job's repo param is added), minus the queued remote calls that rank at or
+ * above the class and that those Task Runners may take (src/remote/room.ts).
+ */
+export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass(), repos?: readonly string[]): number {
+  if (inferenceMode(db) === "user-local") return remoteRoom(db, cls, Date.now(), callRepos(repos));
   const ahead = (db.prepare("SELECT COUNT(*) AS n FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ? AND class >= ?").get(Date.now() - allocation.staleMs, cls) as { n: number }).n;
   return Math.max(0, freeSlots(db) - Number(ahead));
 }
