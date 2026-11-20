@@ -13,7 +13,7 @@ import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
 import { conversationOf, insertTurn, systemBlock } from "../../conversations/store.ts";
 import { blocksFacts, blocksIndex } from "../../review/blockers.ts";
-import { BACKLOG, HANDLED, isBacklog, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
+import { BACKLOG, BACKLOG_KIND, BACKLOG_QUESTION, backlogDecisionId, HANDLED, isBacklog, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
@@ -27,7 +27,8 @@ import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { areaNameOf } from "../../areas/store.ts";
 import { queueSlots } from "../../rank/position.ts";
-import { hiddenRepos, visibleRepos } from "./visible.ts";
+import { hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { backlogHeld } from "../../dupes/held.ts";
 import { filtered, hiddenTest, type HiddenRepos } from "../../hidden-sql.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -88,15 +89,21 @@ async function blockedRepos(req: Req, d: DecisionRow): Promise<string[]> {
   return repos.filter((_, i) => !ok[i]);
 }
 
-/** An operator settles with write access on every repo; a maintainer only under the rule of src/settlers.ts. `own`: the decision's answer must be this login's (undo, retry, reopen), unless an operator asks. */
-async function requireSettler(db: DatabaseSync, req: Req, d: DecisionRow, own = false): Promise<void> {
+/** An operator settles with write access on every repo; a maintainer only under the rule of src/settlers.ts. */
+async function requireRepoSettler(db: DatabaseSync, req: Req, repos: string[]): Promise<void> {
   if (!isOperator(req)) {
-    if (!(await canSettle(db, req.user, reposOf(d)))) throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, settles decisions");
-    if (own && d.answered_by?.toLowerCase() !== req.user.login.toLowerCase()) throw new HttpError(403, "only an operator takes back someone else's answer");
+    if (!(await canSettle(db, req.user, repos))) throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, settles decisions");
     return;
   }
-  const blocked = await blockedRepos(req, d);
+  const ok = await Promise.all(repos.map((r) => req.user.canWrite(r).catch(() => false)));
+  const blocked = repos.filter((_, i) => !ok[i]);
   if (blocked.length) throw new HttpError(403, `no write access to ${blocked.map((r) => slugOf(r)).join(", ")}`);
+}
+
+/** `requireRepoSettler` on the decision's repos. `own`: the decision's answer must be this login's (undo, retry, reopen), unless an operator asks. */
+async function requireSettler(db: DatabaseSync, req: Req, d: DecisionRow, own = false): Promise<void> {
+  await requireRepoSettler(db, req, reposOf(d));
+  if (own && !isOperator(req) && d.answered_by?.toLowerCase() !== req.user.login.toLowerCase()) throw new HttpError(403, "only an operator takes back someone else's answer");
 }
 
 async function requireOperator(req: Req, d: DecisionRow): Promise<void> {
@@ -637,10 +644,12 @@ export async function reprepare(db: DatabaseSync, req: Req): Promise<Decision> {
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
-export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision> {
+/** Null when the answer was a Backlog press on an item with no question: that decision is gone (see `releaseBacklogItem`). */
+export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Decision | null> {
   const d = await needDecision(db, req, req.params.id!);
   await requireSettler(db, req, d, true);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
+  if (d.kind === BACKLOG_KIND) return releaseBacklogItem(db, d, req.user.login, "undo", via);
   if (d.id.includes("~replaced-")) throw new HttpError(409, "a withdrawn question stays closed");
   if (d.applied_at && !directHandled(db, d)) throw new HttpError(409, "the pipeline already acted on this answer");
   inTransaction(db, () => {
@@ -696,15 +705,72 @@ export async function retry(db: DatabaseSync, req: Req): Promise<Decision> {
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
-export async function reopen(db: DatabaseSync, req: Req): Promise<Decision> {
+/** Null for a Backlog press on an item with no question: that decision is gone (see `releaseBacklogItem`). */
+export async function reopen(db: DatabaseSync, req: Req): Promise<Decision | null> {
   const d = await needDecision(db, req, req.params.id!);
   await requireSettler(db, req, d, true);
   if (d.answer !== BACKLOG.key) throw new HttpError(409, "that decision is not in the Backlog");
+  if (d.kind === BACKLOG_KIND) return releaseBacklogItem(db, d, req.user.login, "reopen");
   const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
     WHERE id = ? AND answer = ?`).run(d.id, BACKLOG.key);
   if (r.changes !== 1) throw new HttpError(409, "someone changed this a moment ago");
   audit(db, req.user.login, "reopen", d.id, { answer: d.answer });
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+}
+
+/**
+ * Puts an open item on the Backlog for `login`; the caller has checked that the login settles on the repo. An open question about the
+ * item itself is answered Backlog. Without one a decision of kind `backlog` is written already answered Backlog, so the hold
+ * (src/dupes/held.ts) reads the same answer; it is never asked or prepared. Nothing is written to GitHub.
+ */
+export function backlogItem(db: DatabaseSync, repo: string, n: number, login: string, source: string, via?: string): DecisionRow {
+  const it = db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?").get(repo, n) as { state: string } | undefined;
+  if (!it) throw new HttpError(404, `no item ${slugOf(repo)}#${n}`);
+  if (it.state !== "OPEN") throw new HttpError(409, `${slugOf(repo)}#${n} is not open`);
+  if (backlogHeld(db, repo, n)) throw new HttpError(409, `${slugOf(repo)}#${n} is already in the Backlog`);
+  const open = (db.prepare("SELECT * FROM decisions WHERE repo = ? AND number = ? AND answer IS NULL AND id NOT LIKE '%~replaced-%'").all(repo, n) as DecisionRow[])
+    .map((d) => ({ d, kind: d.kind as DecisionKind, answer: d.answer, askedAt: d.asked_at }));
+  const first = pickDecision(open)?.d;
+  if (first) {
+    applyAnswer(db, first, login, { answer: BACKLOG.key }, source, via);
+    return getDecision(db, first.id)!;
+  }
+  const id = backlogDecisionId(repo, n);
+  const at = new Date().toISOString();
+  inTransaction(db, () => {
+    if (getDecision(db, id)) throw new HttpError(409, `${slugOf(repo)}#${n} is already in the Backlog`);
+    db.prepare("INSERT INTO main.decisions (id, kind, repo, number, question, facts, options, asked_at, asked_by) VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)")
+      .run(id, BACKLOG_KIND, repo, n, BACKLOG_QUESTION, JSON.stringify([BACKLOG]), at, login);
+    // Answered by an update, so the answered_role trigger records the answerer's role.
+    db.prepare("UPDATE main.decisions SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(BACKLOG.key, login, at, id);
+  });
+  audit(db, login, "answer", id, { answer: BACKLOG.key, source, ...(via ? { via } : {}) });
+  if (conversationOf(db, repo, n)) {
+    const operator = !!db.prepare("SELECT 1 FROM access WHERE login = ? AND role = 'operator'").get(login);
+    insertTurn(db, repo, n, { kind: "system", login: "system", body: `${login} put this item on the Backlog`, block: systemBlock(`The ${operator ? "operator" : "maintainer"} ${login} put the item on the Backlog.`) });
+  }
+  return getDecision(db, id)!;
+}
+
+/** POST /api/items/:repo/:n/backlog: `backlogItem` for the requester, who must settle on the repo. */
+export async function backlogItemRoute(db: DatabaseSync, req: Req): Promise<Decision> {
+  const repo = req.params.repo!;
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
+  await needVisible(db, req, repo);
+  await requireRepoSettler(db, req, [repo]);
+  const d = backlogItem(db, repo, n, req.user.login, "dashboard");
+  return await settled(db, req, d.id);
+}
+
+/** Reopen or Undo of a `backlog` decision deletes it with its feedback and claims, so the item counts as never held. */
+function releaseBacklogItem(db: DatabaseSync, d: DecisionRow, login: string, action: "undo" | "reopen", via?: string): null {
+  inTransaction(db, () => {
+    if (db.prepare("DELETE FROM main.decisions WHERE id = ? AND kind = ? AND answer = ?").run(d.id, BACKLOG_KIND, BACKLOG.key).changes !== 1) throw new HttpError(409, "someone changed this a moment ago");
+    for (const t of ["decision_opinions", "decision_comments", "decision_claims"]) db.prepare(`DELETE FROM main.${t} WHERE decision_id = ?`).run(d.id);
+  });
+  audit(db, login, action, d.id, { answer: d.answer, repo: d.repo, number: d.number, ...(via ? { via } : {}) });
+  return null;
 }
 
 /** Operator bulk: answers every open decision in scope (`outsidePilot`, `repo`) with Backlog. Dry run unless `apply` is true. */

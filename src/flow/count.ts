@@ -24,6 +24,7 @@ import { mergeApprovalOf } from "../merge/approval.ts";
 import { pendingDefects } from "../postmerge/select.ts";
 import { trackedNames } from "../repos.ts";
 import { scopeAnswers } from "../review/candidates.ts";
+import { BACKLOG_KIND } from "../decisions.ts";
 
 export type Counts = Record<string, number>;
 export type Refs = Set<string>;
@@ -157,6 +158,13 @@ function decide(c: Ctx): NodeCount {
   }
   const byAnswer = new Map<string, Refs>(SCOPE_ANSWERS.map((a) => [a, new Set()]));
   for (const [r, a] of c.scopeAnswers()) if (openRefs.has(r) && !waiting.has(r) && c.inRepo(r)) byAnswer.get(a)?.add(r);
+  // An item a person put on the Backlog without a question counts there, whatever its scope answer was.
+  for (const b of c.db.prepare(`SELECT repo, number FROM decisions WHERE kind = '${BACKLOG_KIND}' AND answer = 'backlog'`).all() as { repo: string; number: number }[]) {
+    const r = ref(b);
+    if (!openRefs.has(r) || waiting.has(r) || !c.inRepo(r)) continue;
+    for (const set of byAnswer.values()) set.delete(r);
+    byAnswer.get("backlog")!.add(r);
+  }
   const notAsked = dueRefs(c.db, "decide", { bucket: "new", ...(c.repo ? { repo: c.repo } : {}) });
   const members = new Map<string, Refs>([["decide.not-asked", notAsked], ["decide.open", waiting], ...[...byAnswer].map(([k, v]) => [`decide.${k}`, v] as [string, Refs])]);
   const total = [...members.values()].reduce((a, s) => a + s.size, 0);

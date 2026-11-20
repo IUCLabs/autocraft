@@ -95,20 +95,28 @@ export function batchAgain(db: DatabaseSync, by: string, repo: string, n: number
 
 export const commands = {
   item: {
-    summary: "item batch-again REPO NUMBER --by LOGIN: release a PR held by a failed integration batch",
-    run(args: string[]): void {
+    summary: "item batch-again REPO NUMBER --by LOGIN: release a PR held by a failed integration batch | item backlog REPO NUMBER --by LOGIN: put an open item on the Backlog as LOGIN, who must settle on the repo",
+    async run(args: string[]): Promise<void> {
       const [sub, repo, num] = args;
       const by = args[args.indexOf("--by") + 1];
-      if (sub !== "batch-again" || !repo || !/^\d+$/.test(num ?? "") || !args.includes("--by") || !by) {
-        console.error("usage: autocraft-server item batch-again <repo> <number> --by <login>");
+      if ((sub !== "batch-again" && sub !== "backlog") || !repo || !/^\d+$/.test(num ?? "") || !args.includes("--by") || !by) {
+        console.error("usage: autocraft-server item batch-again|backlog <repo> <number> --by <login>");
         process.exit(2);
       }
+      const db = connect();
       try {
-        batchAgain(connect(), by, repo, Number(num));
+        if (sub === "backlog") {
+          const [{ settlesNow }, { backlogItem }] = await Promise.all([import("./settlers.ts"), import("./dash/api/decisions.ts")]);
+          if (!settlesNow(db, by, [repo])) throw new ActionError(403, `${by} does not settle decisions on ${repo}`);
+          const d = backlogItem(db, repo, Number(num), by, "cli");
+          console.log(`${repo}#${num}: on the Backlog (decision ${d.id})`);
+          return;
+        }
+        batchAgain(db, by, repo, Number(num));
         console.log(`${repo}#${num}: released from its failed batch`);
       } catch (e) {
-        if (!(e instanceof ActionError)) throw e;
-        console.error(e.message);
+        if (!(e instanceof ActionError) && typeof (e as { status?: unknown }).status !== "number") throw e;
+        console.error((e as Error).message);
         process.exit(1);
       }
     },

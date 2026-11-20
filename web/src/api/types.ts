@@ -19,7 +19,7 @@ export interface ItemShown {
   title: string | null;
 }
 
-export type DecisionKind = "scope" | "duplicate" | "close" | "merge" | "hold" | "split" | "other";
+export type DecisionKind = "scope" | "duplicate" | "close" | "merge" | "hold" | "split" | "other" | "backlog";
 
 export interface OptionTexts {
   option: string;
@@ -2642,6 +2642,8 @@ export interface ItemPageHeader {
   tier: Tier;
   /** PRs: size from changed lines; null for issues. */
   size: "S" | "M" | "L" | "XL" | null;
+  /** `held`: a Backlog answer holds the item; `canSettle`: the viewer may put it on the Backlog. */
+  backlog: { held: boolean; canSettle: boolean };
 }
 
 export type ItemBarTone = "running" | "queued" | "waiting" | "failed" | "done" | "idle";

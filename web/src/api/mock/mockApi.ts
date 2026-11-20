@@ -125,7 +125,7 @@ export function createMockApi(): Api {
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
     // As on the server: the open list also holds disputed answers.
-    if (status !== "answered" && d.answer && !(status === "open" && d.dispute)) return false;
+    if (status !== "answered" && status !== "backlog" && d.answer && !(status === "open" && d.dispute)) return false;
     if (status === "open" && d.snoozed) return false;
     if (status === "snoozed" && !d.snoozed) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
@@ -142,6 +142,12 @@ export function createMockApi(): Api {
     return true;
   };
 
+  // A `backlog` decision is deleted when its answer is taken back.
+  const dropBacklog = (d: Decision) => {
+    decisions.splice(decisions.indexOf(d), 1);
+    changed();
+    return wait(null, 30);
+  };
   const settle = (d: Decision, answer: string, note: string | null, adoptedOpinion: Decision["adoptedOpinion"], exceptions: Decision["exceptions"] = []) =>
     Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null, undoable: true, exec: null });
 
@@ -207,6 +213,7 @@ export function createMockApi(): Api {
         const d = find(id);
         requireOperator(d);
         if (!d.undoable) throw new Error("already applied");
+        if (d.kind === "backlog") return dropBacklog(d);
         Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [], undoable: false, dispute: null, orphaned: false });
         changed();
         return wait(d, 30);
@@ -215,6 +222,7 @@ export function createMockApi(): Api {
         const d = find(id);
         requireOperator(d);
         if (d.answer !== "backlog") throw new Error("that decision is not in the Backlog");
+        if (d.kind === "backlog") return dropBacklog(d);
         Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [] });
         changed();
         return wait(d, 30);
@@ -273,6 +281,21 @@ export function createMockApi(): Api {
     },
     release: () => wait(undefined, 60),
     stopFix: () => wait(undefined, 60),
+    async backlogItem(repo, number) {
+      const short = shortRepo(repo);
+      if (!settles() || !canAct(me, [short])) throw new Error("not allowed");
+      const mine = decisions.filter((x) => x.repo === short && x.number === number);
+      if (mine.some((x) => x.answer === "backlog")) throw new Error("already in the Backlog");
+      const open = pickDecision(mine.filter((x) => !x.answer));
+      const d = open ?? Object.assign(structuredClone(decisions[0]!), {
+        id: `${short}#${number}:backlog`, kind: "backlog" as const, repo: short, number, items: [], question: "Work on this item?", summary: "", recommended: "", recommendedReason: "",
+        options: [{ key: "backlog", label: "Backlog" }], opinions: [], group: [], risks: [], facts: [], publicText: null, optionTexts: [], askedAt: nowIso(), askedBy: me.login, snoozed: null, dispute: null, queued: null, settling: null,
+      });
+      if (!open) decisions.push(d);
+      settle(d, "backlog", null, null);
+      changed();
+      return wait(d, 30);
+    },
     item: (repo, number) => {
       const it = itemFor(repo, number);
       const postmerge = postmergeFor(number, it.kind, mockRole() !== "viewer");

@@ -9,6 +9,7 @@ import {
   GitMergeIcon,
   ArrowsSplitIcon,
   TargetIcon,
+  ArchiveIcon,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import type { Decision, DecisionKind } from "../../api/types";
@@ -30,6 +31,7 @@ export const KIND_ICON: Record<DecisionKind, PhosphorIcon> = {
   merge: GitMergeIcon,
   split: ArrowsSplitIcon,
   other: QuestionIcon,
+  backlog: ArchiveIcon,
 };
 
 export function KindTag({ kind, batch }: { kind: DecisionKind; batch?: number }) {

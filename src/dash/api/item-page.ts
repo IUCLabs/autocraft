@@ -21,6 +21,8 @@ import { queueSlots } from "../../rank/position.ts";
 import { visibleRepos } from "./visible.ts";
 import { itemReader, statusFor } from "./reader.ts";
 import type { Req } from "../types.ts";
+import { backlogHeld } from "../../dupes/held.ts";
+import { canSettleCached } from "../../settlers.ts";
 
 export type ItemPhase = ItemStatus["phase"];
 export type { ItemStatus };
@@ -46,6 +48,8 @@ export interface GithubSide {
 export interface ItemPageHeader {
   labels: string[]; assignees: string[]; autocraftAssigned: boolean; pipelineOn: boolean; discord: DiscordInfo | null; queue: QueueSlot | null;
   fastTracked: boolean; held: boolean; preapproval: Preapproval | null; releases: ItemReleases; tier: Tier; size: "S" | "M" | "L" | "XL" | null;
+  /** `held`: a Backlog answer holds the item; `canSettle`: the viewer may put it on the Backlog. */
+  backlog: { held: boolean; canSettle: boolean };
 }
 export interface ItemPageData {
   repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string; author: string; stamp: string; header: ItemPageHeader;
@@ -100,13 +104,16 @@ async function stampOf(c: Ctx, req: Req): Promise<string> {
   const { db, repo, n, ref } = c;
   const parts: unknown[] = [fingerprint(c, "page"), c.veiled];
   for (const sql of EXTRA) parts.push(Object.values((db.prepare(sql).get(repo, n) ?? {}) as object));
-  parts.push(queueSlots(db, await visibleRepos(db, req)).get(ref) ?? null, discordOf(db, repo, n), releasesOf(db, repo, n), prBuildOf(c));
+  parts.push(queueSlots(db, await visibleRepos(db, req)).get(ref) ?? null, discordOf(db, repo, n), releasesOf(db, repo, n), prBuildOf(c), backlogOf(c, req));
   return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
 }
 
 // ---- header and status -----------------------------------------------------------------------------------------------
 
-function headerOf(c: Ctx, it: Item, queue: QueueSlot | null): ItemPageHeader {
+const backlogOf = (c: Ctx, req: Req): ItemPageHeader["backlog"] =>
+  ({ held: backlogHeld(c.db, c.repo, c.n), canSettle: canSettleCached(c.db, req.user.login, req.user.role, [c.repo]) });
+
+function headerOf(c: Ctx, it: Item, queue: QueueSlot | null, req: Req): ItemPageHeader {
   const { db, repo, n } = c;
   const lines = it.additions + it.deletions;
   const assignees = arr<string>((db.prepare("SELECT assignees FROM items WHERE repo = ? AND number = ?").get(repo, n) as { assignees: string | null }).assignees).filter((x) => typeof x === "string");
@@ -118,6 +125,7 @@ function headerOf(c: Ctx, it: Item, queue: QueueSlot | null): ItemPageHeader {
     held: db.prepare("SELECT 1 FROM main.merge_holds WHERE repo = ? AND number = ?").get(repo, n) !== undefined,
     preapproval: pre, releases: it.releases, tier: it.tier,
     size: it.kind !== "pr" ? null : lines < 50 ? "S" : lines < 300 ? "M" : lines < 1000 ? "L" : "XL",
+    backlog: backlogOf(c, req),
   };
 }
 
@@ -263,7 +271,7 @@ export async function itemPage(db: DatabaseSync, req: Req): Promise<ItemPageData
   const status = statusOf(c, it);
   return {
     repo: c.repo, number: c.n, kind: it.kind, state: it.state, title: it.title, author: it.author, stamp,
-    header: headerOf(c, it, it.queue ?? null), status, bar: barOf(c, { kind: it.kind, state: it.state, mergedAt: it.mergedAt, pipelineOn: it.pipelineOn === true }, status), costUsd: cost,
+    header: headerOf(c, it, it.queue ?? null, req), status, bar: barOf(c, { kind: it.kind, state: it.state, mergedAt: it.mergedAt, pipelineOn: it.pipelineOn === true }, status), costUsd: cost,
     reviews: it.kind === "pr" ? reviewsOf(c, row.head_oid, ev) : { latest: null, earlier: [] },
     timeline: timelineOf(c, ev, it.kind === "pr" ? preapprovalsOf(db, c.repo, c.n) : []).slice(-200),
     github: githubOf(c, it, ev, row.url ?? "", row.synced_at),

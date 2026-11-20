@@ -16,7 +16,7 @@ export const repoSlug = (repo: string): string => `${ownerOfRepo(repo)}/${shortR
 export const githubItemUrl = (repo: string, number: number, kind?: ItemKind | null): string =>
   `https://github.com/${ownerOfRepo(repo)}/${encodeURIComponent(shortRepo(repo))}/${kind === "pr" ? "pull" : "issues"}/${number}`;
 
-const KIND_ORDER = ["scope", "duplicate", "close", "merge", "hold", "split", "other"];
+const KIND_ORDER = ["scope", "duplicate", "close", "merge", "hold", "split", "other", "backlog"];
 
 /** `/items/<repo>/<n>`; the repo is the short name the dashboard shows. */
 export const itemPath = (repo: string, number: number): string => `/items/${encodeURIComponent(shortRepo(repo))}/${number}`;

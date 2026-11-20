@@ -107,7 +107,7 @@ export function prepareIds(db: DatabaseSync, repos?: string[], nowMs: number = D
   const rows = db.prepare(`SELECT d.id, d.repo, d.asked_at, d.number, d.prepare_requested_at, d.prepared_at, d.prepared_head, d.prepare_failed_head, d.recommend_failures, d.recommend_failed_at, i.kind AS item_kind, i.head_oid, d.kind, d.prepared_discussion, ${prepareStateSql("d")},
       COALESCE(CAST(rk.score / 10000 AS INTEGER), 2) AS band
     FROM decisions d LEFT JOIN items i ON i.repo = d.repo AND i.number = d.number LEFT JOIN item_rank rk ON rk.repo = d.repo AND rk.number = d.number
-    WHERE d.answer IS NULL AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} AND NOT ${lockLiveSql("d")}
+    WHERE d.answer IS NULL AND d.kind <> 'backlog' AND d.repo IS NOT NULL AND d.number IS NOT NULL AND ${openSubjectSql("d", "i")} AND ${pilotSql("i")} AND ${notOwnIntegrationSql("i")} AND NOT ${lockLiveSql("d")}
     ORDER BY d.prepare_requested_at IS NULL, d.prepare_requested_at, d.asked_at, d.id`).all(utcDayStart(nowMs)) as (DueRow & { band: number })[];
   const due = rows.filter((r) => !repos?.length || repos.includes(r.repo)).filter((r) => prepareDue(r, headOf(r), nowMs));
   const level = (r: { band: number; asked_at: string }): number => r.band + Math.min(4, Math.floor(Math.max(0, nowMs - Date.parse(r.asked_at)) / PREPARE_AGING_MS) || 0);
