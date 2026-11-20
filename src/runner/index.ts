@@ -13,6 +13,7 @@ import { isDraining, isEnabled, LimitError, pipelineState, resetLimitCount, setE
 import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { MIN_INTERVAL_KEY, reviewMinInterval, setReviewMinInterval } from "../review/gate.ts";
+import { PICK_MINUTES_KEY, pickMinutes, setPickMinutes } from "../remote/picks.ts";
 import { ParallelError, setStepParallel, stepParallelSetting } from "./concurrency.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
@@ -163,6 +164,7 @@ const PIPELINE_USAGE = `usage: autocraft pipeline on [--if-draining] | off | dra
        autocraft pipeline limit reset <step>|--all
        autocraft pipeline parallel [<N|none>]
        autocraft pipeline review-interval [<minutes>]
+       autocraft pipeline pick-minutes [<minutes>]
        autocraft pipeline resume <fixup|cifix|fixissue|merge>
        autocraft pipeline pilot set <repo#number>... | show | clear`;
 
@@ -199,6 +201,15 @@ async function pipeline(args: string[]): Promise<void> {
       die((e as Error).message);
     }
     console.log(`${MIN_INTERVAL_KEY} ${reviewMinInterval(db)}`);
+    return;
+  } else if (sub === "pick-minutes") {
+    if (rest.length > 1) die(PIPELINE_USAGE);
+    try {
+      if (rest[0] !== undefined) setPickMinutes(db, rest[0], "cli");
+    } catch (e) {
+      die((e as Error).message);
+    }
+    console.log(`${PICK_MINUTES_KEY} ${pickMinutes(db)}`);
     return;
   } else if (sub === "resume") {
     if (rest.length !== 1) die(PIPELINE_USAGE);

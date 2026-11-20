@@ -663,7 +663,8 @@ The dashboard computes the checks below from the database on each request; nothi
 | `worker:<env id>` (`workers` in the endpoint) | an enabled build environment has not reported (`last_seen_at`) for 5 minutes, or never (fail) |
 | `build-queue` | a build task has been queued for over 10 minutes: fail when no enabled environment has reported in 5 minutes, else warn (a security task while no confidential environment is ready counts under `confidential-env` instead) |
 | `remote-calls` | the inference mode is `user-local`, a remote model call has been queued for over 10 minutes, and no helper has claimed any call in that time (warn) |
-| `remote-starved-<tier>` | the inference mode is `user-local`, a helper reported `ready` in the last 6 minutes, and the oldest queued call of the tier has waited over 30 (top), 20 (mid) or 5 (small) minutes (warn) |
+| `remote-starved-<tier>` | the inference mode is `user-local`, a helper that is not Manual only reported `ready` in the last 6 minutes, and the oldest queued call of the tier has waited over 30 (top), 20 (mid) or 5 (small) minutes (warn) |
+| `remote-manual` | the inference mode is `user-local`, every Task Runner that reported `ready` in the last 6 minutes is Manual only, and a model call has waited over 10 minutes (warn) |
 | `confidential-env` | a security fix or a security build task waits and no confidential build environment is ready (warn) |
 | `sync` | no successful `sync_runs` row ended in the last 10 minutes, or the last 3 runs failed (fail) |
 | `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn; fail when more than half of the tracked repos have an error, for example after a token lost access). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |

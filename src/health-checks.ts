@@ -16,6 +16,7 @@ import { unboundLogins } from "./author-ids.ts";
 import { inferenceMode } from "./remote/mode.ts";
 import { CALLER_STALE_MS } from "./remote/room.ts";
 import { STATUS_FRESH_MS } from "./remote/helpers.ts";
+import { manualSql } from "./remote/manual-only.ts";
 import { confidentialReadyAt, PRIVATE_STEPS_SQL } from "./build/tasks.ts";
 
 /** Thresholds, in one place. */
@@ -243,10 +244,13 @@ function remoteCallsCheck({ db, nowMs }: CheckCtx): Check[] {
   return [{ id: "remote-calls", state: "warn", text, brief: "Model calls are waiting and no helper is claiming them", since: new Date(q.oldest ?? cutoff).toISOString(), count: q.n, to: "/pipeline" }];
 }
 
-/** User-local mode: a helper is ready, yet the oldest queued call of a tier has waited past that tier's limit (the helpers' models, reserves or repo choices may not fit it). */
+/**
+ * User-local mode: a helper that takes calls on its own is ready, yet the oldest queued call of a tier has waited past that
+ * tier's limit (the helpers' models, reserves or repo choices may not fit it). Manual only helpers (manual-only.ts) do not count.
+ */
 function remoteStarvedCheck({ db, nowMs }: CheckCtx): Check[] {
   if (inferenceMode(db) !== "user-local") return [];
-  const ready = (db.prepare("SELECT COUNT(*) AS n FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE t.kind = 'runner' AND h.readiness = 'ready' AND h.reported_at >= ?").get(nowMs - STATUS_FRESH_MS) as { n: number }).n;
+  const ready = (db.prepare(`SELECT COUNT(*) AS n FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE t.kind = 'runner' AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).get(nowMs - STATUS_FRESH_MS) as { n: number }).n;
   if (!ready) return [ok("remote-starved", "/pipeline")];
   const out: Check[] = [];
   for (const tier of ["top", "mid", "small"] as const) {
@@ -260,8 +264,21 @@ function remoteStarvedCheck({ db, nowMs }: CheckCtx): Check[] {
   return out.length ? out : [ok("remote-starved", "/pipeline")];
 }
 
+/** User-local mode: calls have waited past remoteQueuedMs while every fresh, ready Task Runner is Manual only: they wait for a person to pick them. */
+function remoteManualCheck({ db, nowMs }: CheckCtx): Check[] {
+  if (inferenceMode(db) !== "user-local") return [];
+  const r = db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(${manualSql("t.login")}), 0) AS manual FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
+    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?`).get(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { n: number; manual: number };
+  if (!r.n || Number(r.manual) < Number(r.n)) return [ok("remote-manual", "/model-queue")];
+  const q = db.prepare("SELECT COUNT(*) AS n, MIN(queued_since) AS oldest FROM main.remote_calls WHERE state = 'queued' AND queued_since < ? AND seen_at >= ?").get(nowMs - THRESHOLDS.remoteQueuedMs, nowMs - CALLER_STALE_MS) as { n: number; oldest: number | null };
+  if (!q.n || q.oldest === null) return [ok("remote-manual", "/model-queue")];
+  return [{ id: "remote-manual", state: "warn", count: q.n, since: new Date(q.oldest).toISOString(), to: "/model-queue",
+    text: `${q.n} model call${q.n === 1 ? " has" : "s have"} waited over ${minutes(THRESHOLDS.remoteQueuedMs)} while every ready Task Runner is Manual only`,
+    brief: "Model calls wait for a pick: every ready Task Runner is Manual only" }];
+}
+
 /** Every check, in the order the lists show them. */
-const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck, remoteStarvedCheck];
+const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck, remoteStarvedCheck, remoteManualCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
   return SOURCES.flatMap((f) => f({ db, nowMs, probe }));

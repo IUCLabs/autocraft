@@ -30,6 +30,7 @@ import * as conv from "./conversations.ts";
 import * as mcp from "./mcp.ts";
 import * as userSettings from "./user-settings.ts";
 import * as runners from "./runners.ts";
+import * as modelQueue from "./model-queue.ts";
 import * as areas from "./areas.ts";
 import * as security from "./security.ts";
 import * as securityPage from "./security-page.ts";
@@ -430,6 +431,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/runners/approve", runners.approve),
     post("/api/runners/deny", runners.deny),
     post("/api/runners/revoke", runners.revoke),
+    get("/api/model-queue", modelQueue.get),
+    post("/api/model-queue/:id/pick", modelQueue.pick),
+    post("/api/model-queue/:id/unpick", modelQueue.unpick),
     get("/api/items/:repo/:n", itemCore),
     get("/api/items/:repo/:n/page", itemPage),
     get("/api/items/:repo/:n/peek", items.peek),

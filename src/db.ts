@@ -251,7 +251,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
 // The trigger clears the hashes of an item whose hashed fields were edited without bringing its own (sync does).
 const ADDED_INDEXES = [
   // Covers the claims' read of the queued remote calls (src/remote/calls.ts queuedCalls) and the room count, so neither walks the overflow pages of each row's bundle.
-  "CREATE INDEX IF NOT EXISTS main.remote_calls_queued ON remote_calls(class, seen_at, level, since, step, repo, prompt_id, tier, parent_id, sticky_login, released_by, released_at) WHERE state = 'queued'",
+  // remote_calls_queued was the same index without the pick columns.
+  "DROP INDEX IF EXISTS main.remote_calls_queued",
+  "CREATE INDEX IF NOT EXISTS main.remote_calls_waiting ON remote_calls(class, seen_at, level, since, step, repo, prompt_id, tier, parent_id, sticky_login, released_by, released_at, picked_by, picked_at, pick_until) WHERE state = 'queued'",
   // One live card per set of choices: a double press cannot run the same choice twice.
   "CREATE UNIQUE INDEX IF NOT EXISTS main.conversation_cards_choice_live ON conversation_cards(choice_id) WHERE choice_id IS NOT NULL AND state IN ('proposed', 'running', 'done')",
   // Records the answerer's role when an answer is written (any writer); cleared with the answerer by an undo.
