@@ -71,7 +71,12 @@ export function Runners() {
           ))}
         </ul>
       )}
-      {data && !any && <p className="px-3 py-3 text-sm text-ink/65">No Task Runner yet: set one up with the steps above.</p>}
+      {data && !any && (
+        <p className="px-3 py-3 text-sm text-ink/65">
+          No Task Runner yet.{" "}
+          <Link to="/connect/setup" className="text-accent-ink hover:underline">Open the Setup guide</Link>
+        </p>
+      )}
       <p className={cn("flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 text-xs", any && "border-t border-line")}>
         <Link to="/model-queue" className="text-accent-ink hover:underline">Model call queue</Link>
         <Link to="/agents" className="text-accent-ink hover:underline">Model calls that ran</Link>

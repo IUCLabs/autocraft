@@ -1,5 +1,6 @@
 import { PlugsConnectedIcon, PlusIcon } from "@phosphor-icons/react";
-import { useRef, useState } from "react";
+import { useState } from "react";
+import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
 import type { McpToken } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
@@ -24,32 +25,38 @@ import { SectionTitle, touch } from "./SectionTitle";
 /** The command that adds the MCP Connector to Claude Code; other clients take the URL and header the same way. */
 const claudeCommand = (url: string, token: string) => `claude mcp add --transport http autocraft ${url} --header "Authorization: Bearer ${token}"`;
 const jsonConfig = (url: string, token: string) => JSON.stringify({ mcpServers: { autocraft: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2);
+/** The Connect page's views, switched with chips as on the merge queue; the setup guide is a view of its own. */
+const TABS = [
+  ["", "Overview"],
+  ["setup", "Setup guide"],
+] as const;
+
 export function ConnectView({ user }: ViewProps) {
+  const { tab = "" } = useParams();
+  const [sp] = useSearchParams();
   const local = user.role !== "viewer" && user.inference === "user-local";
-  const runners = useQuery("runners", (a) => a.runners.list(), { enabled: local });
-  const none = !!runners.data && runners.data.runners.length === 0;
-  // Without a Task Runner the setup guide is shown at once; with one, the header links to it.
-  const [guide, setGuide] = useState(false);
-  const guideRef = useRef<HTMLDivElement>(null);
-  const openGuide = () => {
-    setGuide(!guide);
-    if (!guide) requestAnimationFrame(() => guideRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
-  };
-  const link = local && runners.data && !none && (
-    <button type="button" aria-expanded={guide} onClick={openGuide} className="text-accent-ink hover:underline">
-      {guide ? "Hide the setup guide" : "How to set up a Task Runner"}
-    </button>
-  );
+  if (!TABS.some(([t]) => t === tab) || (tab && !local)) return <Navigate to="/connect" replace />;
   return (
-    <Page title="Connect your Agents" sub={link}>
-      {local && <MySettings />}
-      {local && (none || guide) && (
-        <div ref={guideRef} className="scroll-mt-4">
-          <RunnerGuide />
+    <Page title="Connect your Agents">
+      {local && (
+        <div role="tablist" aria-label="Connect" className="mt-4 flex flex-wrap items-center gap-1">
+          {TABS.map(([t, label]) => (
+            // The device-login link (`?runner=CODE`) stays on the overview, where it is approved.
+            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={t ? `/connect/${t}` : `/connect${sp.size && !tab ? `?${sp}` : ""}`} replace className="chip max-md:h-11">
+              {label}
+            </Link>
+          ))}
         </div>
       )}
-      {local && <Runners />}
-      <Connector user={user} />
+      {tab === "setup" ? (
+        <RunnerGuide />
+      ) : (
+        <>
+          {local && <MySettings />}
+          {local && <Runners />}
+          <Connector user={user} />
+        </>
+      )}
     </Page>
   );
 }
