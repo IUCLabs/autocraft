@@ -7,10 +7,12 @@ Runs user-local helpers against a scratch dashboard with injected faults and loa
 ```sh
 node scripts/loadtest/run.mjs smoke                 # 2 helpers, 20 calls, faults on; about 1 minute
 node scripts/loadtest/run.mjs 1                     # one scenario: 1 to 6
-node scripts/loadtest/run.mjs all                   # 1-5 side by side, then 6 alone; about 4 minutes at the default time scale
+node scripts/loadtest/run.mjs all                   # 1-5 side by side, then 6 alone in its own process; about 2 minutes
 ```
 
 Options: `--dir <work dir>` (default a new directory under the system temp dir; mode 0700), `--db <path>` (copy of a production-like database, taken with `VACUUM INTO`; the source is opened read-only), `--time-scale S` (0.01 to 1, default 0.1, see below), `--time-factor F` (multiplies the fake harness delays, on top of the scale), `--users N`, `--parallel K`, `--calls M`, `--max-minutes N`, `--sequential` (with `all`). Exit code 1 when a line fails.
+
+`RIG_DASH_PROF=<dir>` in the environment writes a CPU profile of each scratch dashboard there (`--cpu-prof`).
 
 Requirements: Node 24, `bwrap` (the helper's own sandbox check), and the repository's dependencies. Run it from the repository root.
 
@@ -38,14 +40,14 @@ Requirements: Node 24, `bwrap` (the helper's own sandbox check), and the reposit
 |---|---|---|
 | 1 | 10% 502, 5% resets, 2% 429 (`Retry-After` 2 s), 0-3 s latency | no finished reply lost |
 | 2 | Dashboard restarted mid-call, then stopped for 5 minutes | no reply lost; no cool-off |
-| 3 | One helper (with its harnesses) frozen with SIGSTOP for 3 minutes, then resumed | no reply lost; no call answered twice |
+| 3 | One helper (with its harnesses) frozen with SIGSTOP for 3 minutes, then resumed | no reply lost; no reply accepted from a requeued lease (the frozen helper's calls run again elsewhere, as they must; its late replies are refused) |
 | 4 | One helper killed with SIGKILL mid-call, restarted 20 s later | no reply lost |
-| 5 | One helper whose harness always fails | only that helper cooled off; the others finish every call |
-| 6 | 50 helpers x 4 slots against 500 mixed calls, real durations | dashboard p99 under 200 ms, no request over 5 s, no SQLite busy lines, gating p95 wait under 60 s |
+| 5 | One helper whose harness always fails (5 slots and the fast lane, so it fails 5 calls in a row before the queue drains) | only that helper cooled off; the others finish every call |
+| 6 | 50 helpers x 4 slots against 300 mixed calls queued over 25 s, at time scale 0.5 (claim, heartbeat and status intervals about twice production's rate) with harness delays cut to 10% | dashboard p99 under 200 ms, no request over 5 s, no SQLite busy lines, gating p95 wait under 60 s |
 
 Every scenario also checks that no helper sat idle for over 90 seconds with calls queued without a reason visible to the user (a cool-off, a readiness other than `ready`, a last error, or a helper that is not running).
 
-Definitions: a lost reply is a call the fake harness answered (ledger) whose call row did not end `done`. Duplicate runs are calls with more than one harness start. Latency is the dashboard's time per request as the proxy sees it, excluding injected delay and faults. SQLite busy errors are lines in the dashboard log matching `SQLITE_BUSY` or `database is locked`. Queue wait is the call's `queued_ms`.
+Definitions: a lost reply is a call the fake harness answered (ledger) whose call row did not end `done`. Duplicate runs are calls with more than one harness start. A reply accepted from a requeued lease is a call two of whose leases ended `submitted` in the helpers' logs. Latency is the dashboard's time per request as the proxy sees it, excluding injected delay and faults. SQLite busy errors are lines in the dashboard log matching `SQLITE_BUSY` or `database is locked`. Queue wait is the call's `queued_ms`.
 
 ## Output
 
@@ -53,7 +55,7 @@ The report prints at the end; each scenario directory also holds `report.json`, 
 
 ## Known limits
 
-- A scaled run multiplies the helpers' claim rate by 1 / scale, so scenario 6 at the default scale 0.1 loads the dashboard about ten times harder than production does; its p99 line can fail there while passing at `--time-scale 1`.
+- A scaled run multiplies the helpers' claim rate by 1 / scale. Scenario 6 therefore runs at its own scale, 0.5, unless `--time-scale` is given; `all` runs it in a separate process, since the driver's server modules read the scale once per process.
 
-- The "idle helper has a reason" line reads the helper status table. Until the Connect page shows slots, busy and last error, a helper that is ready and silent counts as idle without a reason.
-- The rig does not measure the fast lane or the per-user call limit; it runs ordinary helpers, so those arrive as the helper and server tracks land.
+- The "idle helper has a reason" line reads the helper status table: a helper that is ready, holds no lease and reports no last error while calls wait counts as idle without a reason.
+- The helpers run their fast lane, but no line checks it, nor the per-user call limit.

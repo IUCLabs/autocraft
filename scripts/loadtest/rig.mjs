@@ -95,7 +95,7 @@ export class Rig {
       AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: `127.0.0.1:${this.dashPort}`, AUTOCRAFT_DB: this.dbPath, AUTOCRAFT_DEV_PERMS: join(this.dir, "perms.json"), ...this.scaleEnv(),
     };
     writeFileSync(join(this.dir, "perms.json"), "{}");
-    this.dash = spawn(process.execPath, [join(ROOT, "src/cli.ts"), "dash", "serve"], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+    this.dash = spawn(process.execPath, [...(process.env.RIG_DASH_PROF ? ["--cpu-prof", `--cpu-prof-dir=${process.env.RIG_DASH_PROF}`] : []), join(ROOT, "src/cli.ts"), "dash", "serve"], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
     this.dash.stdout.pipe(this.dashLog, { end: false }); this.dash.stderr.pipe(this.dashLog, { end: false });
     const dash = this.dash;
     this.dashExit = new Promise((r) => dash.on("exit", r));
@@ -212,12 +212,17 @@ export class Rig {
   }
 
   /** Queues `n` calls of the mix at once (a queued backlog) and keeps the calls alive like a job process: seen_at and lease expiry. */
-  async enqueueMix(n, { followUps = 0.1 } = {}) {
+  /** Queues `n` calls of the mix; with `rampMs`, spread evenly over that long (jobs queue their calls as they go), else at once. */
+  async enqueueMix(n, { followUps = 0.1, rampMs = 0 } = {}) {
     const pick = () => { let r = Math.random(); for (const k of MIX) { if ((r -= k.share) <= 0) return k; } return MIX[3]; };
     const kinds = Array.from({ length: n }, pick);
-    // A few Opus calls keep their session so a follow-up turn can resume it.
-    for (const k of kinds) await this.enqueue(k.tier === "top" && Math.random() < followUps * 2 ? { ...k, keepSession: true } : k);
     this.startJobEmulator();
+    const t0 = Date.now();
+    for (const [i, k] of kinds.entries()) {
+      if (rampMs > 0) { const due = t0 + (i * rampMs) / n; if (due > Date.now()) await sleep(due - Date.now()); }
+      // A few Opus calls keep their session so a follow-up turn can resume it.
+      await this.enqueue(k.tier === "top" && Math.random() < followUps * 2 ? { ...k, keepSession: true } : k);
+    }
   }
   startJobEmulator() {
     if (this.jobTimer) return;

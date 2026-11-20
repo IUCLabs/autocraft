@@ -404,11 +404,27 @@ type Parsed = Pick<Cand, "refs" | "repos" | "authors">;
 const parsedCalls = new WeakMap<DatabaseSync, Map<number, Parsed>>();
 /** Drops the cached queue order: a call was queued or leased by this process. Other processes' changes show in the signature (count and newest id of the queued calls) or within QUEUE_CACHE_MS. */
 const dropQueueCache = (db: DatabaseSync): void => void queueCaches.delete(db);
+/** The signature of the queued calls as queuedCalls reads it from the table: their count and newest id. */
+const queueSig = (n: number, m: number | null): string => `${n}:${m}`;
+/**
+ * Takes a call this process just leased out of the cached queue order, so a burst of claims does not rebuild the order
+ * after every lease; the signature follows, so the cache stays valid while no other process changed the queue.
+ */
+function takeFromQueueCache(db: DatabaseSync, id: number): void {
+  const c = queueCaches.get(db);
+  if (!c) return;
+  const drop = (l: Cand[]): boolean => { const i = l.findIndex((r) => r.id === id); if (i >= 0) l.splice(i, 1); return i >= 0; };
+  if (!drop(c.followUps) && !drop(c.ordered)) return dropQueueCache(db);
+  let m: number | null = null;
+  for (const r of c.followUps) if (m === null || r.id > m) m = r.id;
+  for (const r of c.ordered) if (m === null || r.id > m) m = r.id;
+  c.sig = queueSig(c.followUps.length + c.ordered.length, m);
+}
 
-/** Every queued call, read once per QUEUE_CACHE_MS: follow-ups by age, the rest in queue order. Callers filter it and must not change it. */
+/** Every queued call, read once per QUEUE_CACHE_MS: follow-ups by age, the rest in queue order. Callers filter it and must not change it; only takeFromQueueCache does. */
 function queuedCalls(db: DatabaseSync, nowMs: number): QueueCache {
   const q = db.prepare("SELECT COUNT(*) AS n, MAX(id) AS m FROM main.remote_calls WHERE state = 'queued'").get() as { n: number; m: number | null };
-  const sig = `${q.n}:${q.m}`;
+  const sig = queueSig(Number(q.n), q.m === null ? null : Number(q.m));
   const hit = queueCaches.get(db);
   if (hit && hit.sig === sig && nowMs >= hit.at && nowMs - hit.at < QUEUE_CACHE_MS) return hit;
   const known = parsedCalls.get(db) ?? new Map<number, Parsed>(), seen = new Map<number, Parsed>();
@@ -542,7 +558,7 @@ async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite
       continue;
     }
     if (!lease) continue;
-    dropQueueCache(db);
+    takeFromQueueCache(db, Number(r.id));
     // The fast lane says nothing about the helper's other slots: only their claims mark it idle or busy.
     if (!fast) db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
     return { lease, reserve: userReserve(db, caller.login) };

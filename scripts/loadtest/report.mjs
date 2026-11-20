@@ -6,6 +6,36 @@ import { MIX, pct } from "./rig.mjs";
 const ms = (v) => (v === null || v === undefined ? "n/a" : `${Math.round(v)} ms`);
 const s = (v) => (v === null || v === undefined ? "n/a" : `${(v / 1000).toFixed(1)} s`);
 
+const OUTCOMES = ["submitted", "lost", "failed", "rejected", "released"];
+
+/**
+ * How each lease a helper ran ended, from its log: `lease <id>[ (fast lane)]: <title>`, then `<outcome>: <title>, …` or
+ * `<outcome>: <title>: …`. A lease id is its call's id. Returns call id -> outcomes, one per lease of the call.
+ */
+export function leaseOutcomes(rig) {
+  /** @type {Map<number, string[]>} */
+  const out = new Map();
+  for (const h of rig.helpers) {
+    if (!h) continue;
+    let text = "";
+    try { text = readFileSync(h.log, "utf8"); } catch { continue; }
+    /** @type {{ id: number, title: string }[]} */
+    const open = [];
+    for (const line of text.split("\n")) {
+      const l = /^lease (\d+)(?: \(fast lane\))?: (.+)$/.exec(line);
+      if (l) { open.push({ id: Number(l[1]), title: l[2] }); continue; }
+      const state = OUTCOMES.find((o) => line.startsWith(`${o}: `));
+      if (!state) continue;
+      const rest = line.slice(state.length + 2);
+      const i = open.findIndex((x) => rest === x.title || rest.startsWith(`${x.title},`) || rest.startsWith(`${x.title}:`));
+      if (i < 0) continue;
+      const [x] = open.splice(i, 1);
+      out.set(x.id, [...(out.get(x.id) ?? []), state]);
+    }
+  }
+  return out;
+}
+
 export function collect(rig) {
   const db = rig.db;
   const rows = new Map(db.prepare("SELECT id, state, tier, prompt_id, queued_ms, attempt, error, token_id, user_login FROM main.remote_calls").all().map((r) => [Number(r.id), r]));
@@ -24,6 +54,10 @@ export function collect(rig) {
     if (starts > 1) m.duplicateRuns.push({ call: c.id, starts });
   }
   m.waits = waits;
+  // A call that ran again after a requeue (a frozen or lost helper) is expected; its earlier lease's reply must be refused.
+  const outcomes = leaseOutcomes(rig);
+  m.acceptedTwice = [...outcomes].filter(([, o]) => o.filter((x) => x === "submitted").length > 1).map(([call, o]) => ({ call, outcomes: o }));
+  m.rerunOutcomes = m.duplicateRuns.map((d) => ({ call: d.call, outcomes: outcomes.get(d.call) ?? [] }));
   // The cool-off is per login: the audit target is the login cooled off.
   m.cooloffs = db.prepare("SELECT at, target FROM main.audit WHERE action = 'remote-cooloff' ORDER BY at").all().map((r) => ({ at: r.at, login: String(r.target) }));
   m.cooloffHelpers = [...new Set(m.cooloffs.flatMap((c) => rig.helpers.flatMap((h, i) => (h && h.login.toLowerCase() === c.login.toLowerCase() ? [i + 1] : []))))];
@@ -54,7 +88,7 @@ export function evaluate(rig, spec, m) {
     add("only the failing helper is cooled off", m.cooloffHelpers.length === 1 && m.cooloffHelpers[0] === bad, `cooled helpers: ${m.cooloffHelpers.join(", ") || "none"} (failing: ${bad})`);
     add("other helpers keep working", m.done > 0 && m.failed === 0, `${m.done} done, ${m.failed} failed for good`);
   }
-  if (num.includes("noDouble")) add("no call run twice after a requeue", m.answeredAgain.length === 0, `${m.answeredAgain.length} answered twice, ${m.duplicateRuns.length} started more than once`);
+  if (num.includes("noDouble")) add("no reply accepted from a requeued lease", m.acceptedTwice.length === 0, `${m.duplicateRuns.length} call(s) ran again after a requeue${m.rerunOutcomes.length ? ` (leases ended ${m.rerunOutcomes.map((r) => `#${r.call} ${r.outcomes.join("/") || "?"}`).join(", ")})` : ""}; ${m.acceptedTwice.length} accepted twice`);
   if (num.includes("latency")) {
     const u = m.proxy.upstream;
     add("dashboard p99 under 200 ms", u.p99 !== null && u.p99 < 200, `p50 ${ms(u.p50)}, p99 ${ms(u.p99)}, max ${ms(u.max)} over ${u.n} requests`);
