@@ -607,7 +607,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   // Items of one PR run one after the other inside one pool item; PRs run side by side.
   const byPr = <T extends { number: number }>(items: T[]): T[][] => [...Map.groupBy(items, (c) => c.number).values()];
   await pool(byPr(picks).map((group) => async () => { for (const c of group) await fixOne(c); }), poolRoom(db, () => [repo]), { max: POOL_MAX.fixup });
-  await pool(byPr(cMerges).map((group) => async () => { for (const c of group) await leased(c, () => mergeConflict(db, conflictRun, c)); }), room, { max: POOL_MAX.fixup });
+  await pool(byPr(cMerges).map((group) => async () => { for (const c of group) await leased(c, () => mergeConflict(db, conflictRun, c)); }), poolRoom(db, () => [repo], { mayNotCall: true }), { max: POOL_MAX.fixup });
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }
