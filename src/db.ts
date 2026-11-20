@@ -249,6 +249,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["mcp_tokens", "can_agent", "INTEGER NOT NULL DEFAULT 0"],
   ["runner_logins", "want_agent", "INTEGER NOT NULL DEFAULT 1"],
   ["runner_logins", "want_answer", "INTEGER NOT NULL DEFAULT 0"],
+  ["github_commands", "ref_repo", "TEXT"],
+  ["github_commands", "ref_number", "INTEGER"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

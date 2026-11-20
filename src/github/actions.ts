@@ -33,6 +33,7 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "ci-rerun": "Reran failed CI jobs",
   "cifix-push": "Pushed",
   "cifix-comment": "Commented",
+  "autorepin-push": "Pushed",
   "postmerge-file": "Opened issue",
   "act-open-issue": "Opened issue",
   "discord-issue-open": "Opened issue",

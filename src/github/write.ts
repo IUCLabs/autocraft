@@ -611,6 +611,17 @@ export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: 
   return pushed(w, g, git, action, refOf(g.repo, g.number), o, `--force-with-lease=refs/heads/${o.branch}:${g.head}`, details, { repo: g.repo, number: g.number });
 }
 
+/**
+ * Pushes an autorepin commit (src/repin) to a PR's branch: `sha` on top of `head`, the head the commit was made on, which git
+ * refuses when the branch has moved. Under a repo grant for pushes, made for the person who asked for the repin.
+ */
+export function pushRepin(w: Writer, g: GuardedRepo, git: Pick<Git, "git">, o: { repo: string; number: number; remote: string; branch: string; head: string; sha: string }, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo);
+  if (g.need !== "push") throw new Error(`a grant for ${g.need ?? "no approval"} does not allow a push`);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+$/.test(o.remote) || o.branch.startsWith("-") || !/^[0-9a-f]{40,64}$/.test(o.sha) || !/^[0-9a-f]{40,64}$/.test(o.head)) throw new Error("the push target is not a repository and branch");
+  return pushed(w, g, git, "autorepin-push", refOf(o.repo, o.number), o, `--force-with-lease=refs/heads/${o.branch}:${o.head}`, { ...details, from: o.head }, { repo: o.repo, number: o.number });
+}
+
 /** Pushes `sha` to `branch` of the pipeline's own fork, replacing the branch. */
 export function pushOwnBranch(w: Writer, g: Grant, git: Pick<Git, "git">, action: string, o: { repo: string; number?: number; remote: string; branch: string; sha: string }, details: Details = {}, /** The push needs the box account whatever the repo's identity (an advisory's private fork, which the app cannot reach). */ asBox = false): Promise<ExecResult> {
   opensOwnPr(g, o.repo);

@@ -340,13 +340,15 @@ function reviewAt(db: DatabaseSync, p: Row, head: string): ReviewRead {
 }
 
 /**
- * "base merge" or "fix-up for the review's fixes" when the pipeline itself pushed `cur` on top of the row's head without adding code a person did not see, else null.
+ * "base merge", "autorepin" or "fix-up for the review's fixes" when the pipeline itself pushed `cur` on top of the row's head without adding code a person did not see, else null.
  * The review's fix-up counts only for a row that began with the operator's own fix-up: a plain Merge answer carried across a base merge never covered model-written code.
  */
 function ownPush(db: DatabaseSync, p: Row, cur: string): string | null {
   if (p.fix_id !== null && db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND COALESCE(source, 'review') = 'review' AND state IN ('pushing', 'pushed')").get(p.repo, p.number, p.head, cur)) return "fix-up for the review's fixes";
   // Only a base merge that left the PR's own diff unchanged continues an answer; a CI fix or a resolved conflict is model-written code nobody saw.
   if (db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND to_head = ? AND state = 'merged' AND own_diff = 'same'").get(p.repo, p.number, p.head, cur)) return "base merge";
+  // An autorepin (src/repin) is no model's code either: the revs of a dependency moved to a merge commit on its default branch, as someone who may queue the PR asked.
+  if (db.prepare("SELECT 1 FROM main.autorepins WHERE repo = ? AND number = ? AND head = ? AND to_head = ? AND state IN ('waiting', 'locking', 'pushed')").get(p.repo, p.number, p.head, cur)) return "autorepin";
   return null;
 }
 

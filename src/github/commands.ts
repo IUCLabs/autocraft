@@ -4,7 +4,12 @@
 //
 // on a pull request or an issue, and the item goes into the merge queue as "Queue items" on the Queue page puts it there
 // (queueAdd: a PR is pre-approved at its current head and fast-tracked; an issue is fast-tracked and its one closing PR queued).
-// The app answers in the same thread with the outcome.
+// The app answers in the same thread with the outcome. A second command, on a pull request only,
+//
+//   @<app-slug> autorepin <pull request>   (also auto-repin; `owner/name#12`, `name#12`, its URL, or `off`)
+//
+// has the pull request's Cargo dependencies on that pull request's repository repinned to its merge commit once it is merged
+// (src/repin/index.ts). The answer says it is set; the outcome is a later comment.
 //
 // The webhook keeps only the fields of github_commands, never the comment's text, and nothing of it reaches a prompt. The runner
 // carries the command out: the commenter must have an AutoCraft login with the GitHub id bound to it, and then queueAdd applies the
@@ -19,6 +24,7 @@ import { audit } from "../dash/audit.ts";
 import { fastPositions } from "../fasttrack.ts";
 import { exec as defaultExec, type Exec } from "../fixup/git.ts";
 import type { Querier } from "../mirror.ts";
+import { parsePrRef, type PrRef } from "../repin/manifest.ts";
 import { ghComment, WritePacedError } from "./write.ts";
 
 /** Comments read for a command: GitHub caps a body at 65536 characters. */
@@ -29,7 +35,7 @@ const EXPIRE_MS = 3600_000;
 const RETRY_MS = 60_000;
 const AUDIT_LOGIN = "github-command";
 
-export type Command = { command: "merge-queue"; weight: number | null };
+export type Command = { command: "merge-queue"; weight: number | null } | { command: "autorepin"; /** The pull request to wait for; null: `off`. */ ref: PrRef | null };
 
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -37,10 +43,12 @@ const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * The command in a comment addressed to the app, or null. The command is a line of its own: `@<slug> merge queue`, with an
  * optional weight (`8` or `weight 8`). Quoted lines (`> ...`) and fenced code are skipped, so quoting a command repeats nothing.
  * A fence closes as CommonMark closes it: the opening character, at least as many of it, and nothing after but spaces.
+ * `@<slug> autorepin <pull request>` names the pull request as `owner/name#12`, `name#12` or its URL; `off` drops it.
  */
 export function parseCommand(body: unknown, slug: string): Command | null {
   if (typeof body !== "string" || !slug) return null;
   const re = new RegExp(`^@${escape(slug)}(?:\\[bot\\])?[\\s,:]+merge[-\\s]?queue(?:\\s+(?:weight\\s+)?(\\d{1,2}))?\\s*[.!]?$`, "i");
+  const repin = new RegExp(`^@${escape(slug)}(?:\\[bot\\])?[\\s,:]+auto[-\\s]?repin\\s+(\\S+)$`, "i");
   let fence: { ch: string; len: number } | null = null;
   for (const raw of body.slice(0, BODY_MAX).split(/\r?\n/)) {
     const line = raw.trim();
@@ -52,6 +60,11 @@ export function parseCommand(body: unknown, slug: string): Command | null {
     if (f) { fence = { ch: f[0]!, len: f.length }; continue; }
     const m = re.exec(line);
     if (m) return { command: "merge-queue", weight: m[1] === undefined ? null : Number(m[1]) };
+    const a = repin.exec(line)?.[1];
+    if (a === undefined) continue;
+    if (a.toLowerCase() === "off") return { command: "autorepin", ref: null };
+    const ref = parsePrRef(a);
+    if (ref) return { command: "autorepin", ref };
   }
   return null;
 }
@@ -75,13 +88,16 @@ export function queueCommand(db: DatabaseSync, repo: string, event: string, payl
   if (!login || !githubId || !commentId || !number) return false;
   const cmd = parseCommand(comment.body, slug);
   if (!cmd) return false;
-  const r = db.prepare(`INSERT OR IGNORE INTO main.github_commands (comment_id, repo, number, pr, command, weight, login, github_id, requested_at, state)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`)
-    .run(commentId, repo, number, issue.pull_request ? 1 : 0, cmd.command, cmd.weight, login, githubId, now.toISOString());
+  const ref = cmd.command === "autorepin" ? cmd.ref : null;
+  const r = db.prepare(`INSERT OR IGNORE INTO main.github_commands (comment_id, repo, number, pr, command, weight, ref_repo, ref_number, login, github_id, requested_at, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`)
+    .run(commentId, repo, number, issue.pull_request ? 1 : 0, cmd.command, cmd.command === "merge-queue" ? cmd.weight : null,
+      ref ? `${ref.owner ? `${ref.owner}/` : ""}${ref.name}` : null, ref ? ref.number : null, login, githubId, now.toISOString());
   return r.changes > 0;
 }
 
-type Row = { comment_id: number; repo: string; number: number; pr: number; command: string; weight: number | null; login: string; github_id: number; requested_at: string; state: string; result: string | null };
+type Row = { comment_id: number; repo: string; number: number; pr: number; command: string; weight: number | null; ref_repo: string | null; ref_number: number | null; login: string; github_id: number; requested_at: string; state: string; result: string | null };
+const COLS = "comment_id, repo, number, pr, command, weight, ref_repo, ref_number, login, github_id, requested_at, state, result";
 
 /** What carries out a queued merge-queue command: the Queue page's queueAdd, as the commenter. `canWrite`: GitHub's answer for `repo`, read just before. Injectable for tests. */
 export type QueueFn = (db: DatabaseSync, o: { login: string; role: Role; canWrite: boolean; repo: string; item: string; weight: number | null }) => Promise<string>;
@@ -137,6 +153,18 @@ async function carryOut(db: DatabaseSync, r: Row, deps: CommandDeps, now: Date, 
   // checks is the one read here.
   const access = knownCommenter(db, r, now);
   if (!access) return "settled";
+  if (r.command === "autorepin") {
+    // Nothing is written at a head here, so no read since the comment is waited for: the push reads the pull request live.
+    try {
+      const { requestRepin } = await import("../repin/index.ts");
+      const ref = r.ref_repo === null || r.ref_number === null ? null : parsePrRef(`${r.ref_repo}#${r.ref_number}`);
+      if (r.ref_repo !== null && !ref) throw new Error("the pull request to wait for could not be read");
+      settle(db, r, "done", `${oneLine(await requestRepin(db, { login: r.login, role: access.role, canWrite: p === "ok", repo: r.repo, number: r.number, pr: r.pr === 1, ref, now }))}.`, now);
+    } catch (e) {
+      settle(db, r, "refused", oneLine(String((e as Error)?.message ?? e)) || "it could not be set", now);
+    }
+    return "settled";
+  }
   // Again after the permission read: a read may have been written meanwhile. The mirror never goes back to a read that started
   // earlier (writePage), so an item that passes here keeps a read from after the comment until queueAdd's pre-approval reads it.
   if (waitsForRead(db, r, now, qp)) return "wait";
@@ -186,8 +214,8 @@ function waitsForRead(db: DatabaseSync, r: Row, now: Date, qp: QueuePage): boole
 }
 
 /** The answer posted on GitHub for a carried-out command. */
-export function answerText(r: { login: string; state: string; result: string | null }): string {
-  return r.state === "done" ? `@${r.login} ${r.result}` : `@${r.login} Not added to the merge queue: ${r.result}.`;
+export function answerText(r: { login: string; state: string; result: string | null; command?: string }): string {
+  return r.state === "done" ? `@${r.login} ${r.result}` : `@${r.login} ${r.command === "autorepin" ? "Autorepin not changed" : "Not added to the merge queue"}: ${r.result}.`;
 }
 
 /** Posts the answer. A paced write leaves it for the next drain; any other failure is recorded (write.ts audits it) and not retried. */
@@ -222,7 +250,7 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
   // Every waiting row is read (an hour's commands at most): rows that wait for a re-read or a retry are passed over without
   // a GitHub call, so they never keep a newer command out. `limit` bounds the rows that call GitHub in one drain. Rows never tried
   // come first, oldest first, then retries by their last try, so due retries cannot fill the limit drain after drain either.
-  const rows = db.prepare(`SELECT comment_id, repo, number, pr, command, weight, login, github_id, requested_at, state, result FROM main.github_commands
+  const rows = db.prepare(`SELECT ${COLS} FROM main.github_commands
     WHERE (state = 'queued' AND (tried_at IS NULL OR tried_at <= ?)) OR (state IN ('done', 'refused') AND reply IS NULL)
     ORDER BY tried_at IS NOT NULL, COALESCE(tried_at, requested_at)`)
     .all(new Date(t0.getTime() - RETRY_MS).toISOString()) as Row[];
@@ -234,9 +262,9 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
     let r = r0;
     if (r.state === "queued") {
       if (now.getTime() - Date.parse(r.requested_at) >= EXPIRE_MS) { settle(db, r, "expired", null, now); continue; }
-      if (r.command !== "merge-queue") { settle(db, r, "ignored", null, now); continue; }
+      if (r.command !== "merge-queue" && r.command !== "autorepin") { settle(db, r, "ignored", null, now); continue; }
       // No GitHub call while an item waits for a read since the comment (see waitsForRead).
-      if (waitsForRead(db, r, now, qp)) continue;
+      if (r.command === "merge-queue" && waitsForRead(db, r, now, qp)) continue;
       calls++;
       const out = await carryOut(db, r, deps, now, qp);
       if (out === "wait") continue;
@@ -246,7 +274,7 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
         continue;
       }
       settled++;
-      r = db.prepare("SELECT comment_id, repo, number, pr, command, weight, login, github_id, requested_at, state, result FROM main.github_commands WHERE comment_id = ?").get(r.comment_id) as Row;
+      r = db.prepare(`SELECT ${COLS} FROM main.github_commands WHERE comment_id = ?`).get(r.comment_id) as Row;
       if (r.state !== "done" && r.state !== "refused") continue;
     } else calls++;
     if ((await answer(db, r, deps)) === "paced") break;

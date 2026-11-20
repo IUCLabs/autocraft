@@ -28,6 +28,7 @@ import { jobBlock } from "./concurrency.ts";
 import { queueRoomPass } from "../agents/call.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
 import { envVar } from "../env.ts";
+import { anyRepinDue } from "../repin/due.ts";
 import { jobRemoteQueue, REMOTE_WAIT_CAP_MS, withdrawJobCalls } from "../remote/calls.ts";
 
 export const logsDir = (): string => envVar("RUNNER_LOGS") ?? join(homedir(), ".cache/autocraft-logs/jobs");
@@ -190,7 +191,9 @@ export class Runner {
     if (this.webhooking || Date.now() - this.webhookAt < WEBHOOK_DRAIN_MS) return;
     this.webhookAt = Date.now();
     const commands = !!this.db.prepare("SELECT 1 FROM main.github_commands WHERE state = 'queued' OR (state IN ('done', 'refused') AND reply IS NULL) LIMIT 1").get();
-    if (!commands && !this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
+    // Autorepins whose pull request was merged or closed, or whose lockfile task ended (src/repin).
+    const repins = anyRepinDue(this.db);
+    if (!commands && !repins && !this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
     this.webhooking = (async () => {
       const { lockHeld, lockPath, fullLockPath, Client, SYNC_RESERVE } = await import("../mirror.ts");
       if (lockHeld(lockPath()) || lockHeld(fullLockPath())) return;
@@ -199,10 +202,17 @@ export class Runner {
       const n = await drainSyncRequests(this.db, c, { limit: 10, log: this.o.log });
       if (n) this.o.log(`webhooks: read ${n} items again`);
       // Commands in comments (`@<app> merge queue`) after the re-reads, so the item is read at its current head.
-      if (!commands) return;
-      const { drainCommands } = await import("../github/commands.ts");
-      const k = await drainCommands(this.db, { querier: c, log: this.o.log });
-      if (k) this.o.log(`webhooks: carried out ${k} commands from comments`);
+      if (commands) {
+        const { drainCommands } = await import("../github/commands.ts");
+        const k = await drainCommands(this.db, { querier: c, log: this.o.log });
+        if (k) this.o.log(`webhooks: carried out ${k} commands from comments`);
+      }
+      // After the commands: an autorepin set on a pull request that is already merged starts in this pass.
+      if (repins || commands) {
+        const { drainRepins } = await import("../repin/index.ts");
+        const k = await drainRepins(this.db, { querier: c, log: this.o.log });
+        if (k) this.o.log(`autorepin: ${k} ended`);
+      }
     })().catch((e) => this.o.log(`webhooks: ${(e as Error).message}`)).finally(() => (this.webhooking = null));
   }
 
