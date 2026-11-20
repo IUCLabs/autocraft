@@ -284,4 +284,19 @@ describe("drainCommands", () => {
     assert.deepEqual(rows(w).map((r) => r.state), ["expired"]);
     assert.equal(gh.posted.length, 0);
   });
+
+  test("the hour can run out while GitHub answers the permission read: then nothing is queued", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue` }));
+    const gh = ghFake();
+    // 59 minutes when the drain starts, 61 once the permission read is back.
+    let at = Date.now() + 59 * 60_000;
+    const permission = async () => { at = Date.now() + 61 * 60_000; return "ok" as const; };
+    w.db.exec("DELETE FROM sync_requests");
+    readAt(w, 1, new Date(Date.now() + 1000));
+    await drainCommands(w.db, { ...deps(w, { exec: gh.exec, now: () => new Date(at) }), permission });
+    assert.deepEqual(rows(w).map((r) => r.state), ["expired"]);
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    assert.equal(gh.posted.length, 0);
+  });
 });

@@ -132,9 +132,11 @@ async function carryOut(db: DatabaseSync, r: Row, deps: CommandDeps, now: Date, 
   const permission = deps.permission ?? (await import("../conversations/act.ts")).liveWrite;
   const p = await permission(deps.querier, r.repo, r.login).catch(() => "transient" as const);
   if (p === "transient") return "retry";
-  // Again after the permission read, which awaited GitHub: a read that started before the comment (a reconcile, say) may have
-  // written an older snapshot meanwhile, which also sets its item's read time back. From here to queueAdd's pre-approval nothing
-  // waits on I/O (the module is loaded, the permission is known), so no other write can come between this check and that one.
+  // The permission read waited on GitHub: the hour may have run out meanwhile, and the outcome is recorded at this time.
+  now = (deps.now ?? (() => new Date()))();
+  if (now.getTime() - Date.parse(r.requested_at) > EXPIRE_MS) { settle(db, r, "expired", null, now); return "settled"; }
+  // Again after the permission read: a read may have been written meanwhile. The mirror never goes back to a read that started
+  // earlier (writePage), so an item that passes here keeps a read from after the comment until queueAdd's pre-approval reads it.
   if (waitsForRead(db, r, now, qp)) return "wait";
   try {
     const label = await (deps.queue ?? queueVia(qp))(db, { login: r.login, role: access.role, canWrite: p === "ok", repo: r.repo, item: refOf(r), weight: r.weight });
