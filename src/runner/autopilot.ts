@@ -706,11 +706,11 @@ export const failureDelayMs = (failures: number): number => Math.min(FAIL_BACKOF
  * Failed autopilot jobs of the step (of the repo, when given) since its last success: when it may run again, else null.
  * An operator release since the last failure ends it. After a single failure, so does a changed input (`fp` given and
  * different from the one the failed job saw); later failures wait out the backoff, because inputs that change every
- * minute would otherwise retry a failing step at once, every time. Jobs a runner restart ended do not count.
+ * minute would otherwise retry a failing step at once, every time. Jobs a runner restart ended, and jobs that failed only because a write was paced (it is retried later anyway), do not count.
  */
 export function failureBackoff(db: DatabaseSync, step: string, ms: number = Date.now(), o: { repo?: string | null; fp?: string } = {}): { until: number; failures: number } | null {
   const rows = db.prepare(`SELECT id, state, ended_at, error FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?) AND requested_by = ? AND state IN ('done', 'failed')
-    AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT 12`).all(step, o.repo ?? null, o.repo ?? null, AUTOPILOT_USER, RUNNER_STOPPED) as { id: number; state: string; ended_at: string | null; error: string | null }[];
+    AND COALESCE(error, '') <> ? AND COALESCE(error, '') NOT LIKE 'write paced:%' ORDER BY id DESC LIMIT 12`).all(step, o.repo ?? null, o.repo ?? null, AUTOPILOT_USER, RUNNER_STOPPED) as { id: number; state: string; ended_at: string | null; error: string | null }[];
   let failures = 0;
   while (failures < rows.length && rows[failures]!.state === "failed") failures++;
   if (!failures || !rows[0]!.ended_at) return null;

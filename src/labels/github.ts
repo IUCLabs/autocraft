@@ -4,7 +4,7 @@ import { CLI_BY, type By } from "../core/gates.ts";
 import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { DatabaseSync } from "node:sqlite";
-import { addLabels, createLabel, type Writer } from "../github/write.ts";
+import { addLabels, createLabel, WritePacedError, type Writer } from "../github/write.ts";
 import { Transient, type Querier } from "../mirror.ts";
 import { approvalOf } from "./approval.ts";
 import { plannedItems } from "../core/select-items.ts";
@@ -62,7 +62,7 @@ export async function ensureLabels(client: Querier, repo: string, apply: boolean
   return missing;
 }
 
-export type ApplyResult = { planned: number; labeled: number; failed: number[]; skipped: number; batches: number; dryRun: boolean; /** True when applyLabels stopped before the last batch because `stopAt` passed. */ stopped?: boolean };
+export type ApplyResult = { planned: number; labeled: number; failed: number[]; skipped: number; batches: number; dryRun: boolean; /** True when applyLabels stopped before the last batch because `stopAt` passed. */ stopped?: boolean; /** True when applyLabels stopped because the GitHub write budget for bulk writes was used up. */ paced?: boolean };
 export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; /** Who asked; default: an operator at the command line. */ by?: By; wait?: Wait; log?: (s: string) => void;
   /** Called with the running count of items labelled, after each batch. */
   onLabeled?: (labeled: number) => void;
@@ -116,7 +116,14 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     }
     const guarded = writable.filter((r) => grants.has(r.number));
     const done: number[] = [];
-    if (guarded.length) done.push(...await mutate(w, client, repo, guarded, idMap, have, wait, o.runId, grants));
+    try {
+      if (guarded.length) done.push(...await mutate(w, client, repo, guarded, idMap, have, wait, o.runId, grants));
+    } catch (e) {
+      if (!(e instanceof WritePacedError)) throw e;
+      res.paced = true;
+      log(`${repo}: ${e.message}`);
+      break;
+    }
     for (const r of guarded) if (!done.includes(r.number)) res.failed.push(r.number);
     const ok = guarded.filter((r) => done.includes(r.number));
     if (ok.length) {
@@ -167,8 +174,8 @@ async function mutate(w: Writer, client: Querier, repo: string, rows: Todo[], id
   try {
     return await run(rows);
   } catch (e) {
-    if (e instanceof Transient || rows.length === 1) {
-      if (e instanceof Transient) throw e;
+    if (e instanceof Transient || e instanceof WritePacedError || rows.length === 1) {
+      if (e instanceof Transient || e instanceof WritePacedError) throw e;
       return [];
     }
     const out: number[] = [];
@@ -176,7 +183,7 @@ async function mutate(w: Writer, client: Querier, repo: string, rows: Todo[], id
       try {
         out.push(...(await run([r])));
       } catch (e2) {
-        if (e2 instanceof Transient) throw e2;
+        if (e2 instanceof Transient || e2 instanceof WritePacedError) throw e2;
       }
     }
     return out;

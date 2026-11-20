@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { SCRATCH } from "./scratch.ts";
 import { connect } from "../src/db.ts";
-import { closeItem, commentOn, PACE_PER_MINUTE, WritePacedError, type Writer } from "../src/github/write.ts";
+import { addLabels, closeItem, commentOn, PACE_PER_MINUTE, WritePacedError, type Writer } from "../src/github/write.ts";
 import type { Grant } from "../src/core/guard.ts";
 import type { Querier } from "../src/mirror.ts";
 
@@ -56,4 +56,16 @@ test("after a secondary-limit failure the key waits until 60 s after it", async 
   await assert.rejects(s.post(), /secondary rate limit/); // waited 10 s, then wrote (and failed again)
   assert.deepEqual(s.sleeps, [10_000]);
   assert.equal(s.rows(), 2);
+});
+
+test("bulk label writes stop at half the hourly budget while other writes continue", async () => {
+  const s = setup("app");
+  for (let i = 0; i < 200; i++) {
+    s.advance(17_000);
+    await s.post();
+  }
+  const g = { scope: "item", repo: "app1", number: 1, as: "app" } as never;
+  const bulk = () => addLabels(s.w, { query: async () => ({ m0: { id: "x" } }) } as unknown as Querier, "app1", [{ number: 1, id: "x", labelIds: ["l"], names: ["a"], g }], (f) => f(), {});
+  await assert.rejects(bulk(), WritePacedError);
+  await s.post();
 });
