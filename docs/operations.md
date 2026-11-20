@@ -171,12 +171,12 @@ Device-style login:
 
 1. `autocraft login <dashboard URL>` makes the credential on the machine and sends only its hash to the server. The server answers with a code (`BCDF-GHJK`, valid 10 minutes, single use) and a link (`<dashboard URL>/connect?runner=<code>`).
 2. The Task Runner prints both and polls until the login is approved, denied or expired.
-3. A maintainer or operator opens the link, or types the code on the Connect page. The card names the label, machine, platform, version and start time, and shows the requesting address next to the browser's address. When they differ, Approve stays disabled until "I started this on another machine" is ticked. Approval adds the Task Runner to the list, marked new, and is audited.
+3. A maintainer or operator opens the link, or types the code on the Connect page. The card names the label, machine, platform, version and start time, and shows the requesting address next to the browser's address. When they differ, Approve stays disabled until "I started this on another machine" is ticked; the server refuses the approval without it (an IPv6 address counts by its /64). Approval adds the Task Runner to the list, marked new, and is audited.
 4. The credential then works as it is.
 
 `autocraft login <dashboard URL> --no-wait` prints the code and link and exits; an agent shows the link to the user, then runs `autocraft login --wait` (at most 9 minutes, exit code 3 while pending). `autocraft login <dashboard URL> --stdin` stores a credential read from stdin, for example one from `autocraft-server remote token <login>`.
 
-Rate limits: 10 logins started per 10 minutes per client address and 200 pending overall; 30 polls a minute per credential; 10 failed code lookups per 10 minutes per login. The credential is stored in `credentials.json` (mode 0600) beside `config.json` in a 0700 directory, so a pasted config leaks nothing.
+Rate limits: 10 logins started per 10 minutes and 5 pending per client address (an IPv6 address counts by its /64), 1000 pending overall; 30 polls a minute per credential; 10 failed code lookups per 10 minutes per login. The credential is stored in `credentials.json` (mode 0600) beside `config.json` in a 0700 directory, so a pasted config leaks nothing.
 
 ### Setting up a Task Runner
 

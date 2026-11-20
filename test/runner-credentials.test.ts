@@ -15,6 +15,7 @@ import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { HttpError, RateLimiter } from "../src/dash/server/util.ts";
 import { parseClaim } from "../src/remote/calls.ts";
+import { addressKey, MAX_PENDING_PER_ADDRESS, startLogin } from "../src/remote/device-login.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
 import { PROTOCOL_VERSION, ROUTES, type LoginStartReply, type PendingRunnerLogin } from "../src/remote/protocol.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -154,6 +155,25 @@ describe("over HTTP", () => {
     assert.equal((await claim(credential)).status, 200);
     await maint("POST", "/api/runners/approve", { code: started.userCode }, 404);
     assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'runner-approve' AND login = 'maint'").get());
+  });
+
+  test("a login from another address is approved only when the approver says they started it elsewhere; pending logins are capped per address", async () => {
+    const maint = await signedIn("maint");
+    const credential = `acrun_${randomToken(32)}`;
+    const started = await start(credential);
+    db.prepare("UPDATE runner_logins SET ip = '2001:db8:1:2::7' WHERE secret_hash = ?").run(sha256hex(credential));
+    await maint("POST", "/api/runners/approve", { code: started.userCode }, 409);
+    assert.equal(await poll(credential), "pending");
+    await maint("POST", "/api/runners/approve", { code: started.userCode, otherMachine: true });
+    assert.equal(await poll(credential), "approved");
+
+    assert.equal(addressKey("2001:DB8:1:2:aa::1"), addressKey("2001:db8:1:2::9"));
+    assert.notEqual(addressKey("2001:db8:1:2::1"), addressKey("2001:db8:1:3::1"));
+    assert.equal(addressKey("::ffff:192.0.2.1"), "192.0.2.1");
+    const login = (ip: string) => startLogin(db, { credentialHash: sha256hex(randomToken(16)), label: "x", machine: { hostname: "h", platform: "linux", arch: "x64" }, helperVersion: "1.3.0" }, ip, "http://x");
+    for (let i = 1; i <= MAX_PENDING_PER_ADDRESS; i++) login(`2001:db8:5:6::${i}`);
+    assert.throws(() => login("2001:db8:5:6:ffff::1"), (e: unknown) => e instanceof HttpError && e.status === 429);
+    login("2001:db8:5:7::1");
   });
 
   test("an expired or denied login cannot be approved", async () => {

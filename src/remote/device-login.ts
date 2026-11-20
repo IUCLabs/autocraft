@@ -13,8 +13,29 @@ import type { LoginPollReply, LoginStart, LoginStartReply, LoginState, Machine, 
 export const CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
 export const LOGIN_TTL_MS = 600_000;
 export const POLL_INTERVAL_S = 5;
-/** Logins waiting for approval across all clients; past this a start is refused until some expire. */
-export const MAX_PENDING = 200;
+/** Logins waiting for approval from one address (an IPv6 address counts by its /64); past this its starts are refused until some expire. */
+export const MAX_PENDING_PER_ADDRESS = 5;
+/** Logins waiting for approval across all clients: a backstop past the per-address cap. */
+export const MAX_PENDING = 1000;
+
+/**
+ * The address a login counts against: an IPv4 address (also IPv4-mapped) as it is, an IPv6 address by its /64, since one
+ * client usually holds a whole /64. Anything else as it is.
+ */
+export function addressKey(ip: string): string {
+  const v4 = /^(?:::ffff:)?(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (v4) return v4[1]!;
+  const addr = ip.split("%")[0]!.toLowerCase();
+  if (!addr.includes(":") || !/^[0-9a-f:.]+$/.test(addr)) return ip;
+  const [head, tail] = addr.split("::") as [string, string | undefined];
+  const groups = (part: string | undefined) => (part ? part.split(":").flatMap((g) => (g.includes(".") ? ["0", "0"] : [g])) : []);
+  const left = groups(head), right = groups(tail);
+  const all = tail === undefined ? left : [...left, ...Array<string>(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right];
+  return `${all.slice(0, 4).map((g) => (Number.parseInt(g || "0", 16) || 0).toString(16)).join(":")}::/64`;
+}
+
+/** Whether two client addresses count as one (addressKey). */
+export const sameAddress = (a: string, b: string): boolean => addressKey(a) === addressKey(b);
 
 const CONTROL = /[\u0000-\u001f\u007f]/;
 const field = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max && !CONTROL.test(v);
@@ -42,8 +63,12 @@ export const showCode = (code: string): string => `${code.slice(0, 4)}-${code.sl
 
 /** Stores a new login and returns what the runner shows; `baseUrl` is the dashboard's origin. */
 export function startLogin(db: DatabaseSync, start: LoginStart, ip: string, baseUrl: string, nowMs: number = Date.now()): LoginStartReply {
-  const pending = (db.prepare("SELECT COUNT(*) AS n FROM main.runner_logins WHERE state = 'pending' AND expires_at > ?").get(nowMs) as { n: number }).n;
-  if (pending >= MAX_PENDING) throw new HttpError(429, "too many Task Runner logins are waiting; try again in a few minutes");
+  const pending = (db.prepare("SELECT ip FROM main.runner_logins WHERE state = 'pending' AND expires_at > ?").all(nowMs) as { ip: string | null }[]);
+  if (pending.length >= MAX_PENDING) throw new HttpError(429, "too many Task Runner logins are waiting; try again in a few minutes");
+  const key = addressKey(ip);
+  if (pending.filter((r) => r.ip !== null && addressKey(r.ip) === key).length >= MAX_PENDING_PER_ADDRESS) {
+    throw new HttpError(429, "too many Task Runner logins from this address are waiting; approve or deny them, or wait a few minutes");
+  }
   if (db.prepare("SELECT 1 FROM main.runner_logins WHERE secret_hash = ? UNION ALL SELECT 1 FROM main.mcp_tokens WHERE token_hash = ?").get(start.credentialHash, start.credentialHash)) {
     throw new HttpError(409, "this credential was already used for a login; make a new one");
   }
@@ -95,9 +120,11 @@ export function pendingLogin(db: DatabaseSync, code: string, yourIp: string, now
 
 /**
  * Approves a waiting login for `login`: inserts its runner credential (at most MCP_TOKENS_PER_LOGIN runners, else 409) and marks
- * the login approved. `rawLabel` replaces the runner's own label when given. Null when no login waits under the code.
+ * the login approved. `rawLabel` replaces the runner's own label when given. A login started from another address than the
+ * approver's (`approverIp`, addressKey) is approved only with `otherMachine`, the approver's statement that they started it
+ * elsewhere; 409 otherwise. Null when no login waits under the code.
  */
-export function approveLogin(db: DatabaseSync, login: string, code: string, rawLabel: unknown, nowMs: number = Date.now()): { row: McpTokenRow; machine: Machine | null; ip: string | null } | null {
+export function approveLogin(db: DatabaseSync, login: string, code: string, rawLabel: unknown, approverIp: string, otherMachine: boolean, nowMs: number = Date.now()): { row: McpTokenRow; machine: Machine | null; ip: string | null } | null {
   const label = rawLabel === undefined ? undefined : cleanLabel(rawLabel);
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -105,6 +132,9 @@ export function approveLogin(db: DatabaseSync, login: string, code: string, rawL
     if (!r) {
       db.exec("ROLLBACK");
       return null;
+    }
+    if (!otherMachine && !sameAddress(r.ip ?? "", approverIp)) {
+      throw new HttpError(409, "this login was started from another address than yours; approve it only if you started it on another machine, and say so (otherMachine)");
     }
     const row = addRunnerToken(db, login, r.secret_hash, label ?? r.label, r.machine);
     db.prepare("UPDATE main.runner_logins SET state = 'approved', login = ?, token_id = ? WHERE id = ?").run(login, row.id, r.id);

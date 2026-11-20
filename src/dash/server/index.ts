@@ -42,7 +42,7 @@ import { scaled, TIME_SCALE } from "../../remote/time-scale.ts";
 import { isBusy } from "../../db.ts";
 import { inferenceMode } from "../../remote/mode.ts";
 import { hasFreshRunner, parseStatus, storeStatus } from "../../remote/helpers.ts";
-import { parseLoginStart, pollLogin, startLogin } from "../../remote/device-login.ts";
+import { addressKey, parseLoginStart, pollLogin, startLogin } from "../../remote/device-login.ts";
 import { ROUTES, type ClaimReply, type LoginPollReply, type LoginStartReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
 import { userReserve } from "../../remote/reserve.ts";
 import { startLiveness } from "../../remote/liveness.ts";
@@ -737,7 +737,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     try {
       if (path === ROUTES.loginStart) {
         const ip = clientIp(req);
-        if (!loginStartLimit.allow(ip)) return reply(429, { error: "too many logins from this address; wait a few minutes" }, { "retry-after": "600" });
+        if (!loginStartLimit.allow(addressKey(ip))) return reply(429, { error: "too many logins from this address; wait a few minutes" }, { "retry-after": "600" });
         const start = parseLoginStart(await readJson(req));
         return reply(200, startLogin(db, start, ip, config.baseUrl ?? `http://${req.headers.host ?? "localhost"}`) satisfies LoginStartReply);
       }

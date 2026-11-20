@@ -102,10 +102,11 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
     runners: {
       list: () => wait({ runners: structuredClone(runners) }),
       pending: (code) => wait(structuredClone(pending.get(norm(code)) ?? null)),
-      async approve(code, label) {
+      async approve(code, label, otherMachine) {
         if (!staff) throw new Error("viewers cannot add Task Runners");
         const p = pending.get(norm(code));
         if (!p) throw new Error("no pending Task Runner login has this code");
+        if (p.ip !== p.yourIp && !otherMachine) throw new Error("this login was started from another address than yours");
         if (runners.length >= 5) throw new Error("you have 5 Task Runners; revoke one first");
         pending.delete(norm(code));
         runners = [{ tokenId: nextRunner++, label: label?.trim() || p.label, slots: null, busy: null, lastError: null, readiness: null, until: null, reason: null, fresh: false, lastSeen: null, harness: null, models: {}, reserve: null, usage: null,

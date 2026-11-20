@@ -311,8 +311,11 @@ export interface Api {
     list(): Promise<RunnersReply>;
     /** A login waiting for approval under this user code, or null when none is (404). */
     pending(code: string): Promise<PendingRunnerLogin | null>;
-    /** `label`: the name the runner is listed under, when the user changed it. */
-    approve(code: string, label?: string): Promise<unknown>;
+    /**
+     * `label`: the name the runner is listed under, when the user changed it. `otherMachine`: the user says they started the
+     * login on another machine; required when it came from another address (409 otherwise).
+     */
+    approve(code: string, label?: string, otherMachine?: boolean): Promise<unknown>;
     deny(code: string): Promise<unknown>;
     revoke(id: number): Promise<unknown>;
   };

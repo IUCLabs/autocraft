@@ -174,7 +174,7 @@ function ApprovalCard({ code, onDone }: { code: string; onDone: () => void }) {
   const name = label ?? data.label;
   const approve = () =>
     void write.run("approve", async () => {
-      await api.runners.approve(code, name.trim() && name.trim() !== data.label ? name.trim() : undefined);
+      await api.runners.approve(code, name.trim() && name.trim() !== data.label ? name.trim() : undefined, differ && elsewhere);
       onDone();
     });
   const deny = () =>

@@ -245,7 +245,7 @@ export function createHttpApi(): Api {
         if ((e as { status?: number }).status === 404) return null;
         throw e;
       }),
-      approve: (code, label) => post("/api/runners/approve", label === undefined ? { code } : { code, label }),
+      approve: (code, label, otherMachine) => post("/api/runners/approve", { code, ...(label !== undefined && { label }), ...(otherMachine && { otherMachine: true }) }),
       deny: (code) => post("/api/runners/deny", { code }),
       revoke: (id) => post("/api/runners/revoke", { id }),
     },

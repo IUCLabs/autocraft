@@ -63,7 +63,8 @@ export function approve(db: DatabaseSync, req: Req): RunnersReply {
   staffOnly(req);
   if (inferenceMode(db) !== "user-local") throw new HttpError(409, "the instance runs model calls on its own accounts; Task Runners take none now");
   const b = body(req);
-  const out = byCode(req, b.code, (code) => approveLogin(db, req.user.login, code, b.label));
+  if (b.otherMachine !== undefined && typeof b.otherMachine !== "boolean") throw new HttpError(400, "otherMachine must be true or false");
+  const out = byCode(req, b.code, (code) => approveLogin(db, req.user.login, code, b.label, req.ip ?? "", b.otherMachine === true));
   audit(db, req.user.login, "runner-approve", req.user.login, { id: out.row.id, label: out.row.label ?? undefined, machine: out.machine ?? undefined, ip: out.ip ?? undefined });
   return list(db, req);
 }
