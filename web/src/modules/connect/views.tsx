@@ -344,7 +344,7 @@ function MySettings() {
       </div>
       <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-2">
         <span className="w-44 shrink-0 pt-1.5 text-sm text-ink/80">My repos</span>
-        <div role="group" aria-label="My repos" className="max-h-[26rem] min-w-0 flex-1 overflow-y-auto rounded-md border border-line sm:max-w-sm">
+        <div role="group" aria-label="My repos" className="min-w-0 flex-1 rounded-md border border-line sm:max-w-sm">
           <CheckRow checked={!picks.length} onChange={() => picks.length && savePicks([])} title="All repos" />
           {shown.map((r) => {
             const on = picks.includes(r);
