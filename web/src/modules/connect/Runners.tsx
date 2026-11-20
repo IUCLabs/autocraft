@@ -1,4 +1,4 @@
-import { CaretDownIcon, PlusIcon, TerminalWindowIcon, XIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, TerminalWindowIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
@@ -16,7 +16,7 @@ import { clock, day, nowMs } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
 import { cn } from "../../ui/cn";
 import { RunnerSetup } from "./Setup";
-import { SectionTitle, touch } from "./SectionTitle";
+import { SectionTitle } from "./SectionTitle";
 
 /** A runner made this recently carries a "new" badge, so one the user did not add stands out. */
 const NEW_MS = 24 * 3600_000;
@@ -59,49 +59,24 @@ export function Runners() {
     setSp(next, { replace: true });
   };
   const { data, error } = useQuery("runners", (a) => a.runners.list());
-  const [adding, setAdding] = useState(false);
   const any = !!data?.runners.length;
-  // A runner that never reported in is logged in but not set up or not started: the rest of the steps stay in view.
-  const unfinished = data?.runners.filter((r) => !r.readiness) ?? [];
+  // One page for everyone: the user's Task Runners (if any), then the same setup steps, always shown.
   return (
-    <Block
-      dense
-      flush
-      className="mt-4"
-      title={<SectionTitle icon={TerminalWindowIcon}>Task Runners</SectionTitle>}
-      aside={
-        any && (
-          <Button size="sm" variant={adding ? "ghost" : "secondary"} icon={adding ? XIcon : PlusIcon} aria-expanded={adding} onClick={() => setAdding(!adding)} className={touch}>
-            {adding ? "Close" : "Add a Task Runner"}
-          </Button>
-        )
-      }
-    >
+    <Block dense flush className="mt-4" title={<SectionTitle icon={TerminalWindowIcon}>Task Runners</SectionTitle>}>
       {code && <ApprovalCard key={code} code={code} answering={!!data?.answering} onDone={closeCode} />}
       <ErrorLine error={error?.message} className="px-3 pt-2" />
-      {data && (!any || adding) && <RunnerSetup className={cn(any && "border-b border-line bg-ink/[0.02]")} />}
-      {data && any && !adding && unfinished.length > 0 && (
-        <div className="border-b border-line bg-ink/[0.02]">
-          <p className="px-3 pt-3 text-sm text-ink/80">
-            {unfinished.map((r) => r.label ?? `Runner ${r.tokenId}`).join(", ")} {unfinished.length === 1 ? "is" : "are"} logged in but {unfinished.length === 1 ? "has" : "have"} not reported in yet. Finish the setup on{" "}
-            {unfinished.length === 1 && unfinished[0]!.machine ? <span className="font-medium">{unfinished[0]!.machine.hostname}</span> : "that machine"}:
-          </p>
-          <RunnerSetup finish />
-        </div>
-      )}
       {any && (
-        <ul>
+        <ul className="border-b border-line">
           {data.runners.map((r) => (
             <RunnerRow key={r.tokenId} r={r} answering={data.answering} />
           ))}
         </ul>
       )}
-      {any && (
-        <p className="flex flex-wrap gap-x-4 gap-y-1 border-t border-line px-3 py-2 text-xs">
-          <Link to="/model-queue" className="text-accent-ink hover:underline">Model call queue</Link>
-          <Link to="/agents" className="text-accent-ink hover:underline">Model calls that ran</Link>
-        </p>
-      )}
+      <RunnerSetup />
+      <p className="flex flex-wrap gap-x-4 gap-y-1 border-t border-line px-3 py-2 text-xs">
+        <Link to="/model-queue" className="text-accent-ink hover:underline">Model call queue</Link>
+        <Link to="/agents" className="text-accent-ink hover:underline">Model calls that ran</Link>
+      </p>
     </Block>
   );
 }
@@ -154,6 +129,11 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
               r.lastSeen ? <>seen <TimeAgo iso={r.lastSeen} /></> : "never seen",
             ])}
           </div>
+          {!r.fresh && (
+            <p className="mt-0.5 text-xs text-ink/65">
+              {r.readiness ? "Stopped." : "Logged in, not started yet."} Start it on {r.machine?.hostname ?? "its machine"}: <span className="code">autocraft work</span> (step 4 below)
+            </p>
+          )}
           {r.lastError && (
             <p className={cn("mt-0.5 text-xs text-bad", open ? "break-words" : "truncate")}>
               {r.lastError.text} <TimeAgo iso={r.lastError.at} className="text-ink/55" />
@@ -165,11 +145,6 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
       {open && (
         <div className="space-y-2 px-3 pb-2.5">
           {r.fresh && r.readiness !== "ready" && r.reason && <p className="text-xs text-ink/65">{r.reason}</p>}
-          {r.readiness && !r.fresh && (
-            <p className="text-xs text-ink/65">
-              Not running. Start it on {r.machine?.hostname ?? "its machine"} with <span className="code">autocraft work</span> (or, to keep it on, <span className="code">autocraft service install</span>); <span className="code">autocraft doctor</span> checks the setup and <span className="code">autocraft runner logs</span> shows why it stopped.
-            </p>
-          )}
           <div className="flex flex-col gap-y-2 text-sm text-ink/80 sm:flex-row sm:flex-wrap sm:gap-x-6">
             <span className="flex items-center gap-2">
               <Switch on={r.agent} onChange={(on) => setScopes(withAgent(r, on))} label={AGENT} busy={write.busy === "scopes"} />

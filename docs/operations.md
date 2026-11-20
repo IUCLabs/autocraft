@@ -184,7 +184,7 @@ Rate limits: 10 logins started per 10 minutes and 5 pending per client address (
 
 ### Setting up a Task Runner
 
-A Task Runner needs a maintainer or operator login on the dashboard. The Connect page lists the same steps with the server's address filled in. It shows them while you have no Task Runner, under **Add a Task Runner**, and, without the download and login, while one of your Task Runners is logged in but has never reported in. A Task Runner that reported in once and stopped (Not running) names the commands that start it and show its log in its details. The Run step defaults to `autocraft work` in a terminal (Ctrl-C stops it); **One call** shows `autocraft run`, **Always on** the service. Below the Task Runners, links lead to the Model call queue and the Model calls page.
+A Task Runner needs a maintainer or operator login on the dashboard. The Connect page lists the same steps with the server's address filled in. It always shows the same steps, below your Task Runners. A Task Runner that is logged in but never reported in, or that stopped (Not running), says in its row to start it with `autocraft work`. The Run step defaults to `autocraft work` in a terminal (Ctrl-C stops it); **One call** shows `autocraft run`, **Always on** the service. Links lead to the Model call queue and the Model calls page.
 
 Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` or `codex`), and a sandbox tool: bubblewrap (`/usr/bin/bwrap`) on Linux and WSL, `sandbox-exec` on macOS. Other systems are refused.
 
