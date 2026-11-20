@@ -49,7 +49,7 @@ const COLUMNS: WorkableColumn[] = [
 const HOW: Record<QueueOrigin["how"], [string, string]> = {
   review: ["Take review", "Came in with a take review; the merge rule or a Merge? answer lets it merge"],
   answer: ["Merge answer", "An operator answered Merge?"],
-  queued: ["Queued", "An operator added it with Queue items"],
+  queued: ["Queued", "Added with Queue items"],
   preapproved: ["Pre-approved", "An operator pre-approved the merge with a fix-up"],
 };
 

@@ -593,7 +593,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/fast-track", operator: true, handler: ok(fastTrackAdd) },
     { method: "POST", pattern: "/api/fast-track/remove", operator: true, handler: ok(fastTrackRemove) },
     { method: "POST", pattern: "/api/fast-track/weight", operator: true, handler: ok(fastTrackWeight) },
-    { method: "POST", pattern: "/api/queue/add", operator: true, handler: ok(queueAdd) },
+    post("/api/queue/add", queueAdd),
     { method: "POST", pattern: "/api/merge/hold", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, true)) },
     { method: "POST", pattern: "/api/merge/release", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, false)) },
     { method: "POST", pattern: "/api/merge/batch-remove", operator: true, handler: ok((db, req) => batchRemovePr(db, req, opts.exec)) },

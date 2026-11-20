@@ -332,6 +332,27 @@ describe("queue items: an issue", () => {
   });
 });
 
+describe("queue items: who may add", () => {
+  test("an operator; a maintainer only with maintainer writes on, the app identity and write access on the repo; never a viewer", async () => {
+    const w = fresh().pr(51).pr(52).pr(53);
+    w.db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES ('maint', 'maintainer'), ('view', 'viewer')").run();
+    const req = (n: number, login: string, role: string, write = true) =>
+      ({ query: new URLSearchParams(), json: { item: `app#${n}` }, user: { login, role, canWrite: async () => write, canRead: async () => true } }) as unknown as Req;
+    await assert.rejects(queueAdd(w.db, req(51, "maint", "maintainer")), (e: Error & { status?: number }) => e.status === 403);
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1')").run();
+    await assert.rejects(queueAdd(w.db, req(51, "maint", "maintainer")), (e: Error & { status?: number }) => e.status === 403);
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('github_identity', 'app')").run();
+    await assert.rejects(queueAdd(w.db, req(51, "maint", "maintainer", false)), (e: Error & { status?: number }) => e.status === 403);
+    await assert.rejects(queueAdd(w.db, req(51, "view", "viewer")), (e: Error & { status?: number }) => e.status === 403);
+    assert.equal(preapprovalOf(w.db, "app", 51), null);
+    await queueAdd(w.db, req(51, "maint", "maintainer"));
+    assert.equal(preapprovalOf(w.db, "app", 51)?.state, "review");
+    assert.equal(preapprovalOf(w.db, "app", 51)?.by, "maint");
+    await queueAdd(w.db, req(52, OPERATOR, "operator"));
+    assert.equal(preapprovalOf(w.db, "app", 52)?.by, OPERATOR);
+  });
+});
+
 describe("fast track weights", () => {
   test("heavier items go first; equal weights keep the order added", () => {
     const w = fresh().pr(21).pr(22).pr(23);

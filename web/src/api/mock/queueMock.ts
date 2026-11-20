@@ -129,7 +129,7 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
         return [...fast];
       },
       async add(item, weight) {
-        need();
+        if (me.role !== "operator" && !(me.role === "maintainer" && me.maintainerWrites)) throw new Error("not allowed");
         // A GitHub link or owner/repo#n becomes repo#n, as the server's parseItemRef reads it.
         const url = /github\.com\/[\w.-]+\/([\w.-]+)\/(?:pull|issues)\/(\d+)/.exec(item);
         const issueLink = /\/issues\/\d+/.test(item);

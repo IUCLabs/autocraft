@@ -1,6 +1,7 @@
 // "Queue items": a button on the Merge queue tab that opens a dialog to add several PRs and issues at once, one GitHub link or id per
 // line. A PR is pre-approved at its current head and fast-tracked with the chosen weight; an issue is fast-tracked, and the one open PR
-// that closes it is queued too. Operators only.
+// that closes it is queued too. For operators, and for maintainers who settle decisions (maintainer writes on, write access to a repo);
+// the server checks each line's repo.
 import { useState } from "react";
 import { CheckCircleIcon, PlusIcon, XCircleIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
@@ -95,7 +96,8 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
 
 export function QueueItems() {
   const [open, setOpen] = useState(false);
-  if (useUser().role !== "operator") return null;
+  const user = useUser();
+  if (!(user.role === "operator" || (user.role === "maintainer" && user.maintainerWrites && user.writeRepos.length > 0))) return null;
   return (
     <>
       <Button className="max-md:h-11" onClick={() => setOpen(true)}>
