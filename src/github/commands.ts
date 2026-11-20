@@ -159,7 +159,7 @@ async function carryOut(db: DatabaseSync, r: Row, deps: CommandDeps, now: Date, 
       const { requestRepin } = await import("../repin/index.ts");
       const ref = r.ref_repo === null || r.ref_number === null ? null : parsePrRef(`${r.ref_repo}#${r.ref_number}`);
       if (r.ref_repo !== null && !ref) throw new Error("the pull request to wait for could not be read");
-      settle(db, r, "done", `${oneLine(await requestRepin(db, { login: r.login, role: access.role, canWrite: p === "ok", repo: r.repo, number: r.number, pr: r.pr === 1, ref, now }))}.`, now);
+      settle(db, r, "done", `${oneLine(await requestRepin(db, { login: r.login, role: access.role, canWrite: p === "ok", repo: r.repo, number: r.number, pr: r.pr === 1, ref, at: new Date(r.requested_at) }))}.`, now);
     } catch (e) {
       settle(db, r, "refused", oneLine(String((e as Error)?.message ?? e)) || "it could not be set", now);
     }

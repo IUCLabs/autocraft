@@ -22,7 +22,19 @@ process.env.AUTOCRAFT_ARTIFACT_DIR = join(SCRATCH, "artifacts");
 
 const SLUG = "autocraft-bot";
 const OLD = "1".repeat(40);
-const SHA = "c".repeat(40);
+/** The dependency's repository as GitHub has it: `main` holds the merge commit SHA; STRAY is a commit no branch of it holds any more. */
+const LIBS_GIT = join(SCRATCH, "libs.git");
+const [SHA, STRAY] = (() => {
+  const work = mkdtempSync(join(SCRATCH, "libs-work-"));
+  git(work, "init", "-q", "-b", "main");
+  git(work, "commit", "-q", "--allow-empty", "-m", "the merge of #12");
+  const sha = git(work, "rev-parse", "HEAD");
+  git(work, "clone", "-q", "--bare", work, LIBS_GIT);
+  git(work, "commit", "-q", "--allow-empty", "-m", "dropped from main since");
+  const stray = git(work, "rev-parse", "HEAD");
+  git(work, "push", "-q", LIBS_GIT, `${stray}:refs/heads/elsewhere`);
+  return [sha, stray];
+})();
 const LIBS = "https://github.com/storytold/libs";
 const MANIFEST = `[workspace]\nmembers = ["app"]\n\n[workspace.dependencies]\ncraft-ui = { git = "${LIBS}", rev = "${OLD}" }\nserde = "1"\n`;
 const CRATES = 'source = "registry+https://github.com/rust-lang/crates.io-index"';
@@ -57,6 +69,26 @@ describe("repinManifest", () => {
     const branch = repinManifest(`[dependencies]\ncraft-ui = { git = "${LIBS}", branch = "wip" }\n`, "storytold/libs", SHA);
     assert.ok(branch.ok && branch.from.length === 0 && branch.pinned === 0 && branch.unpinned === 1);
   });
+  test("a git and rev outside the dependency tables are not a dependency", () => {
+    const text = `[package]
+name = "app"
+
+[package.metadata.release]
+git = "${LIBS}"
+rev = "${OLD}"
+
+[target.'cfg(unix)'.dependencies]
+craft-ui = { git = "${LIBS}", rev = "${OLD}" }
+
+[patch.crates-io]
+craft-io = { git = "${LIBS}", rev = "${OLD}" }
+`;
+    const r = repinManifest(text, "storytold/libs", SHA);
+    // Refused, not rewritten: the metadata's rev is the same text, so the edit cannot leave it alone.
+    assert.ok(!r.ok);
+    const apart = repinManifest(text.replace(`rev = "${OLD}"`, 'rev = "2222222"'), "storytold/libs", SHA);
+    assert.ok(apart.ok && apart.pinned === 2 && apart.text.includes('rev = "2222222"') && !apart.text.includes(OLD));
+  });
   test("is refused when the rewrite would also change another repository's rev", () => {
     const r = repinManifest(`[dependencies]\ncraft-ui = { git = "${LIBS}", rev = "${OLD}" }\nother = { git = "https://github.com/else/where", rev = "${OLD}" }\n`, "storytold/libs", SHA);
     assert.ok(!r.ok);
@@ -73,6 +105,11 @@ describe("lockRefusal", () => {
     assert.ok(ok(lockOf(OLD)));
     assert.ok(ok(lockOf(SHA).replace('"aa"', '"zz"')));
   });
+  test("reads the lockfile as TOML: a source written another way than Cargo writes it still counts", () => {
+    const app = 'name = "app"\nversion = "0.1.0"\n';
+    assert.ok(ok(lockOf(SHA).replace(app, `${app}source = "git+https://example.org/foreign#abc" # source\n`)));
+    assert.ok(ok(`${lockOf(SHA)}\n[[package]]\nname = 1\n`));
+  });
 });
 
 // ---- the whole flow against real git, with GitHub replaced ---------------------
@@ -83,7 +120,7 @@ function git(cwd: string, ...args: string[]): string {
   return r.stdout.trim();
 }
 
-type Setup = { w: World; fork: string; head: string; comments: string[]; pushes: number; live: { head: string; state: string; ref: string; base: string }; deps: RepinDeps; branch: () => string; at: (path: string) => string };
+type Setup = { w: World; fork: string; head: string; comments: string[]; pushes: number; live: { head: string; state: string; ref: string; base: string; sha: string }; deps: RepinDeps; branch: () => string; at: (path: string) => string };
 let current: World | null = null;
 afterEach(() => current?.close());
 
@@ -109,7 +146,7 @@ function setup(o: { lock?: boolean; off?: Parameters<World["repo"]>[0] } = {}): 
   w.db.prepare("INSERT INTO items (repo, number, kind, state, title, created_at, updated_at) VALUES ('libs', 12, 'pr', 'OPEN', 'lib change', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')").run();
 
   const s: Setup = {
-    w, fork, head, comments: [], pushes: 0, live: { head, state: "OPEN", ref: "MERGED", base: "main" },
+    w, fork, head, comments: [], pushes: 0, live: { head, state: "OPEN", ref: "MERGED", base: "main", sha: SHA },
     deps: null as never,
     branch: () => git(fork, "rev-parse", "refs/heads/fix"),
     at: (path) => git(fork, "show", `refs/heads/fix:${path}`),
@@ -117,7 +154,7 @@ function setup(o: { lock?: boolean; off?: Parameters<World["repo"]>[0] } = {}): 
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(q: string) {
-      if (q.includes("mergeCommit")) return { repository: { defaultBranchRef: { name: "main" }, pullRequest: { state: s.live.ref, baseRefName: s.live.base, mergeCommit: s.live.ref === "MERGED" ? { oid: SHA } : null } } };
+      if (q.includes("mergeCommit")) return { repository: { defaultBranchRef: { name: "main" }, pullRequest: { state: s.live.ref, baseRefName: s.live.base, mergeCommit: s.live.ref === "MERGED" ? { oid: s.live.sha } : null } } };
       return { repository: { pullRequest: { state: s.live.state, headRefOid: s.live.head, headRefName: "fix", maintainerCanModify: true, headRepository: { nameWithOwner: "contrib/app" }, headRef: null } } };
     },
   });
@@ -129,7 +166,7 @@ function setup(o: { lock?: boolean; off?: Parameters<World["repo"]>[0] } = {}): 
     }
     if (args.includes("push")) s.pushes++;
     const net = args.some((a) => a.startsWith("https://github.com/"));
-    const local = args.map((a) => (a.startsWith("https://github.com/") ? fork : a)).filter((a, i, all) => !(a === "-c" && all[i + 1] === "protocol.file.allow=never") && a !== "protocol.file.allow=never");
+    const local = args.map((a) => (a.startsWith("https://github.com/storytold/libs") ? LIBS_GIT : a.startsWith("https://github.com/") ? fork : a)).filter((a, i, all) => !(a === "-c" && all[i + 1] === "protocol.file.allow=never") && a !== "protocol.file.allow=never");
     return exec("git", net ? local : args, { ...opts });
   };
   s.deps = { querier, exec: run, root: join(root, "cache"), permission: async () => "ok" };
@@ -279,6 +316,17 @@ describe("autorepin", () => {
     assert.equal(task(s), undefined);
   });
 
+  test("a merge commit the default branch no longer holds is not repinned to", async () => {
+    const s = setup();
+    await set(s);
+    merged(s);
+    s.live.sha = STRAY;
+    await drainRepins(s.w.db, s.deps);
+    assert.equal(row(s).state, "failed");
+    assert.equal(task(s), undefined);
+    assert.match(s.comments[0]!, /no longer on/);
+  });
+
   test("whoever asked must still have write access when the merge comes", async () => {
     const s = setup();
     await set(s);
@@ -297,6 +345,19 @@ describe("autorepin", () => {
     await assert.rejects(ask({ canWrite: false }), /write access/);
     await assert.rejects(ask({}), /not approved/);
     assert.equal(s.w.db.prepare("SELECT COUNT(*) AS n FROM autorepins").get()!.n, 0);
+  });
+
+  test("an autorepin command carried out after a later off does not set it again", async () => {
+    const s = setup();
+    const ask = (ref: Parameters<typeof requestRepin>[1]["ref"], at: string) => requestRepin(s.w.db, { login: OPERATOR, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref, at: new Date(at) });
+    const libs = { owner: null, name: "libs", number: 12 };
+    await ask(libs, "2026-02-01T10:00:00Z");
+    await ask(null, "2026-02-01T10:10:00Z");
+    // The command of 10:05, whose permission read GitHub settled only now.
+    await assert.rejects(ask(libs, "2026-02-01T10:05:00Z"), /later autorepin command/);
+    assert.equal(row(s).state, "cancelled");
+    await ask(libs, "2026-02-01T10:20:00Z");
+    assert.equal(row(s).state, "waiting");
   });
 
   test("off drops a waiting autorepin", async () => {

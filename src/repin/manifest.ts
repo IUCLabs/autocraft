@@ -25,12 +25,21 @@ export function githubSlug(url: string): string | null {
   return m ? `${m[1]}/${m[2]}`.toLowerCase() : null;
 }
 
-/** Every table of the manifest with a `git` source on `slug`: dependencies of every kind, workspace dependencies and `[patch]` entries. */
-function sourcesOn(data: unknown, slug: string, out: TomlTable[] = []): TomlTable[] {
-  if (Array.isArray(data)) for (const x of data) sourcesOn(x, slug, out);
-  else if (isTable(data)) {
-    if (typeof data["git"] === "string" && githubSlug(data["git"]) === slug.toLowerCase()) out.push(data);
-    for (const v of Object.values(data)) sourcesOn(v, slug, out);
+const DEP_TABLES = ["dependencies", "dev-dependencies", "dev_dependencies", "build-dependencies", "build_dependencies"];
+
+/**
+ * Every dependency of the manifest with a `git` source on `slug`: the dependency tables of the package, of each target and of
+ * the workspace, and the `[patch]` entries. No other table counts (`[package.metadata]` may hold a `git` and a `rev` of its own).
+ */
+function sourcesOn(data: TomlTable, slug: string): TomlTable[] {
+  const tables: unknown[] = DEP_TABLES.map((t) => data[t]);
+  if (isTable(data["workspace"])) tables.push(data["workspace"]["dependencies"]);
+  if (isTable(data["target"])) for (const t of Object.values(data["target"])) if (isTable(t)) tables.push(...DEP_TABLES.map((d) => t[d]));
+  if (isTable(data["patch"])) tables.push(...Object.values(data["patch"]));
+  const out: TomlTable[] = [];
+  for (const deps of tables) {
+    if (!isTable(deps)) continue;
+    for (const spec of Object.values(deps)) if (isTable(spec) && typeof spec["git"] === "string" && githubSlug(spec["git"]) === slug.toLowerCase()) out.push(spec);
   }
   return out;
 }
@@ -66,29 +75,20 @@ export function repinManifest(text: string, slug: string, sha: string): Repinned
 
 type Locked = { name: string; version: string; source: string | null; checksum: string | null };
 
-/** The packages of a Cargo.lock; null when a `[[package]]` has no name or version. */
+/** The packages of a Cargo.lock, read as TOML; null when it does not parse or a package's name, version, source or checksum is not what Cargo writes. */
 function lockedPackages(text: string): Locked[] | null {
+  const r = parseToml(text);
+  if (!r.ok) return null;
+  const list = r.data["package"] ?? [];
+  if (!Array.isArray(list)) return null;
   const out: Locked[] = [];
-  let cur: Partial<Locked> | null = null;
-  const close = (): boolean => {
-    if (!cur) return true;
-    if (cur.name === undefined || cur.version === undefined) return false;
-    out.push({ name: cur.name, version: cur.version, source: cur.source ?? null, checksum: cur.checksum ?? null });
-    cur = null;
-    return true;
-  };
-  for (const raw of text.split(/\r?\n/)) {
-    const l = raw.trim();
-    if (l.startsWith("[")) {
-      if (!close()) return null;
-      if (l === "[[package]]") cur = {};
-      continue;
-    }
-    if (!cur) continue;
-    const m = /^(name|version|source|checksum) = "([^"\\]*)"$/.exec(l);
-    if (m) (cur as Record<string, string>)[m[1]!] = m[2]!;
+  for (const p of list) {
+    if (!isTable(p) || typeof p["name"] !== "string" || typeof p["version"] !== "string") return null;
+    const source = p["source"] ?? null, checksum = p["checksum"] ?? null;
+    if ((source !== null && typeof source !== "string") || (checksum !== null && typeof checksum !== "string")) return null;
+    out.push({ name: p["name"], version: p["version"], source, checksum });
   }
-  return close() ? out : null;
+  return out;
 }
 
 const CRATES_IO = new Set(["registry+https://github.com/rust-lang/crates.io-index", "sparse+https://index.crates.io/"]);

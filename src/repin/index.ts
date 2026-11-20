@@ -79,15 +79,16 @@ const itemOf = (db: DatabaseSync, repo: string, number: number): Item | undefine
  * Sets (or with `ref` null, drops) the autorepin of a pull request for the commenter of a command. Who may is the rule of
  * every write a person starts (settleRefusal in src/settlers.ts). Returns what the answer says; throws with the reason when refused.
  */
-export async function requestRepin(db: DatabaseSync, o: { login: string; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; now?: Date }): Promise<string> {
+export async function requestRepin(db: DatabaseSync, o: { login: string; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; /** When the command was given (the comment's time): a command never undoes a later one. */ at?: Date }): Promise<string> {
   if (!o.pr) throw new Error("autorepin is for pull requests");
   const refusal = await settleRefusal(db, { login: o.login, role: o.role, canWrite: async (r) => r === o.repo && o.canWrite }, [o.repo], `sets autorepin on ${o.repo}`);
   if (refusal) throw new Error(refusal);
-  const at = (o.now ?? new Date()).toISOString();
+  const at = (o.at ?? new Date()).toISOString();
   const me = itemOf(db, o.repo, o.number);
   if (me?.kind !== "pr" || me.state !== "OPEN") throw new Error("this pull request is not open");
   if (!o.ref) {
-    const n = db.prepare("UPDATE main.autorepins SET state = 'cancelled', result = NULL, done_at = ?, notice = 'none' WHERE repo = ? AND number = ? AND state IN ('waiting', 'locking')").run(at, o.repo, o.number).changes;
+    // The row takes this command's time, so an older `autorepin` command still to be carried out (a retry) does not set it again.
+    const n = db.prepare("UPDATE main.autorepins SET state = 'cancelled', result = NULL, done_at = ?1, requested_at = ?1, notice = 'none' WHERE repo = ?2 AND number = ?3 AND state IN ('waiting', 'locking') AND requested_at <= ?1").run(at, o.repo, o.number).changes;
     if (!n) throw new Error("no autorepin is waiting on this pull request");
     audit(db, o.login, "autorepin-off", refOf(o), {});
     return "Autorepin is off for this pull request";
@@ -101,10 +102,13 @@ export async function requestRepin(db: DatabaseSync, o: { login: string; role: s
   if (other.state === "CLOSED") throw new Error(`${depRef} was closed without merging`);
   const g = guardRepo(db, o.repo, "push", { operator: o.login }, undefined, o.login);
   if ("refused" in g) throw new Error(g.refused);
-  db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, login, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, 'waiting')
+  // Only over a row of an earlier command: a later `off`, or a later command for the same repository, stands.
+  const set = db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, login, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, 'waiting')
     ON CONFLICT (repo, number, ref_repo) DO UPDATE SET ref_number = excluded.ref_number, login = excluded.login, requested_at = excluded.requested_at, state = 'waiting',
-      sha = NULL, head = NULL, task_id = NULL, tries = 0, tried_at = NULL, to_head = NULL, result = NULL, done_at = NULL, notice = NULL`)
-    .run(o.repo, o.number, dep, o.ref.number, o.login, at);
+      sha = NULL, head = NULL, task_id = NULL, tries = 0, tried_at = NULL, to_head = NULL, result = NULL, done_at = NULL, notice = NULL
+      WHERE excluded.requested_at >= autorepins.requested_at`)
+    .run(o.repo, o.number, dep, o.ref.number, o.login, at).changes;
+  if (!set) throw new Error(`a later autorepin command for ${slugOf(dep)} on this pull request stands`);
   audit(db, o.login, "autorepin-set", refOf(o), { on: depRef });
   return other.state === "MERGED"
     ? `Autorepin set: ${depRef} is already merged, so ${slugOf(dep)} is repinned to its merge commit here now`
@@ -172,6 +176,16 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   if (merged.baseRefName !== main) throw failed(`${depRef} was merged into ${merged.baseRefName}, not into ${dep}'s default branch ${main}`);
   const sha = merged.mergeCommit?.oid ?? "";
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`GitHub returned no merge commit for ${depRef}`);
+  // The branch as it is now: a default branch rewritten since the merge may no longer hold the commit.
+  const root = d.root ?? fixupDir();
+  mkdirSync(root, { recursive: true });
+  const depGit = new Git(run, root, r.ref_repo);
+  const tip = await depGit.fetchBase(ownerOf(r.ref_repo), r.ref_repo, main);
+  // The fetch brought every commit the branch holds: one that is not here is not on it.
+  const have = (await depGit.git(["cat-file", "-e", `${sha}^{commit}`])).code === 0;
+  const on = have ? await depGit.git(["merge-base", "--is-ancestor", sha, tip]) : { code: 1, stderr: "" };
+  if (on.code === 1) throw failed(`the merge commit of ${depRef} is no longer on ${dep}'s default branch ${main}`);
+  if (on.code !== 0) throw new Error(`the merge commit of ${depRef} could not be found on ${dep}'s ${main}: ${oneLine(on.stderr)}`);
 
   // Whoever asked must still be allowed to, and the repo must still approve pushes.
   const access = getAccess(db, r.login);
@@ -197,8 +211,6 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
     throw failed("AutoCraft cannot push to this pull request's branch (a fork that does not allow maintainer edits, or a protected or shared branch)");
   }
 
-  const root = d.root ?? fixupDir();
-  mkdirSync(root, { recursive: true });
   const git = new Git(run, root, r.repo);
   const fetched = await git.fetchPr(ownerOf(r.repo), r.repo, r.number);
   if (fetched !== head) throw new Error(`the fetched head ${short(fetched)} is not the head GitHub reports`);
@@ -210,8 +222,9 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   let pinned = 0, unpinned = 0;
   for (const path of manifests) {
     const f = await git.file(head, path);
+    // Every manifest is read: one that cannot be (a failed read, a link, too large) ends the try, so a repin never covers only some of them.
+    if (!f.ok) throw new Error(`${path}: ${f.reason}`);
     // A manifest that never names the repository (a test fixture, say) is not read as TOML at all.
-    if (!f.ok) { if (f.tooLarge) throw failed(f.reason); continue; }
     if (!f.content.toLowerCase().includes(name)) continue;
     const out = repinManifest(f.content, dep, sha);
     if (!out.ok) throw failed(`${path}: ${out.reason}`);
@@ -267,7 +280,8 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
     }
     throw new Ended("pushed", `Repinned ${dep} to ${short(sha)}, the merge of ${depRef}, in ${short(commit)} (${changed.join(", ")})`, { toHead: commit });
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    // A scratch folder that cannot be removed must not replace the outcome (a push that was made, a task that was queued).
+    try { rmSync(scratch, { recursive: true, force: true }); } catch (e) { d.log?.(`autorepin ${refOf(r)}: scratch folder not removed: ${oneLine(String((e as Error)?.message ?? e))}`); }
   }
 }
 
