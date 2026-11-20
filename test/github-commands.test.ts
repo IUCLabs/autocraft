@@ -157,6 +157,19 @@ describe("drainCommands", () => {
     assert.equal(await drainCommands(w.db, deps(w, { exec: ghFake().exec, now: () => new Date(Date.parse(at) + 2 * 60_000) })), 1, "one millisecond later counts");
   });
 
+  test("an older read written while the permission is read from GitHub makes the command wait instead of queuing that head", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue` }));
+    w.db.exec("DELETE FROM sync_requests");
+    readAt(w, 1, new Date(Date.now() + 1000));
+    // A reconcile that started before the comment lands while the permission read waits on GitHub: it sets the read time back.
+    const permission = async () => { readAt(w, 1, new Date(Date.now() - 60_000)); return "ok" as const; };
+    assert.equal(await drainCommands(w.db, { ...deps(w, { exec: ghFake().exec }), permission }), 0);
+    assert.equal(rows(w)[0]!.state, "queued");
+    assert.equal(preapprovalOf(w.db, "app", 1), null, "the older snapshot is not pre-approved");
+    assert.deepEqual(w.db.prepare("SELECT number FROM sync_requests").all().map((r) => ({ ...r })), [{ number: 1 }], "the item is read again");
+  });
+
   test("on an issue, the PR that closes it must be read after the comment too before it is queued", async () => {
     const w = fresh().issue(3).pr(4);
     w.db.prepare("UPDATE items SET closing_issues = '[3]' WHERE repo = 'app' AND number = 4").run();
