@@ -10,7 +10,7 @@ import type * as H from "../worker/autocraft.mjs";
 const base: H.SetupFacts = {
   platform: "linux", root: false, pkg: "apt", missing: [], sandbox: "ok", sandboxError: "", userns: false, bwrapProfile: false,
   harness: "claude", harnessBin: true, claudeBin: "/home/u/.local/bin/claude", claudeDir: null, otherClaude: null, harnessLogin: "set",
-  loggedIn: true, loggedInTo: "https://artcraft.build", server: null, me: "autocraft",
+  claudeLogin: "config-dir", loggedIn: true, loggedInTo: "https://artcraft.build", server: null, me: "autocraft",
 };
 const steps = (f: Partial<H.SetupFacts>) => helper.setupSteps({ ...base, ...f });
 const ids = (f: Partial<H.SetupFacts>) => steps(f).map((s) => s.id);
@@ -27,9 +27,9 @@ test("Windows gets one step that names WSL and no command", () => {
 });
 
 test("missing packages are installed with the system's package manager, with sudo unless root", () => {
-  assert.equal(steps({ missing: ["bubblewrap", "git"] })[0]!.cmd, "sudo apt-get install -y bubblewrap git");
-  assert.equal(steps({ missing: ["bubblewrap"], pkg: "dnf", root: true })[0]!.cmd, "dnf install -y bubblewrap");
-  assert.equal(steps({ missing: ["bubblewrap"], pkg: "pacman" })[0]!.cmd, "sudo pacman -S --needed --noconfirm bubblewrap");
+  assert.equal(steps({ missing: ["bubblewrap", "git"] })[0]!.cmd, "sudo sh -c 'apt-get update && apt-get install -y bubblewrap git'");
+  assert.equal(steps({ missing: ["bubblewrap"], pkg: "dnf", root: true })[0]!.cmd, "sh -c 'dnf install -y bubblewrap'");
+  assert.equal(steps({ missing: ["bubblewrap"], pkg: "pacman" })[0]!.cmd, "sudo sh -c 'pacman -Sy --needed --noconfirm bubblewrap'");
   // No known package manager: the step names the packages and runs nothing.
   const none = steps({ missing: ["bubblewrap"], pkg: null })[0]!;
   assert.equal(none.cmd, undefined);
@@ -37,19 +37,28 @@ test("missing packages are installed with the system's package manager, with sud
   assert.equal(steps({ platform: "darwin", missing: ["git"], pkg: null })[0]!.cmd, "xcode-select --install");
 });
 
-test("a sandbox blocked by AppArmor gets a bwrap-only profile; another cause or an existing profile only shows the error", () => {
+test("a sandbox blocked by AppArmor gets Ubuntu's bwrap-userns-restrict profile; an existing one is loaded; another cause only shows the error", () => {
   const s = steps({ sandbox: "failed", sandboxError: "bwrap: setting up uid map: Permission denied", userns: true })[0]!;
   assert.equal(s.id, "apparmor");
   assert.match(s.cmd!, /^sudo sh -c '.*' sh 'abi <abi\/4\.0>,' /);
-  assert.match(s.cmd!, /'profile bwrap \/usr\/bin\/bwrap flags=\(unconfined\) \{'/);
+  assert.match(s.cmd!, /'profile bwrap \/usr\/bin\/bwrap flags=\(attach_disconnected,mediate_deleted\) \{'/);
+  assert.match(s.cmd!, /'  audit deny capability,'/);
+  assert.match(s.fix, /any program on this machine/);
+  assert.match(s.fix, /apparmor_parser -R \/etc\/apparmor\.d\/bwrap-userns-restrict/);
   assert.equal(steps({ sandbox: "failed", userns: true, root: true })[0]!.cmd!.startsWith("sh -c "), true);
-  assert.deepEqual(steps({ sandbox: "failed", userns: true, bwrapProfile: true }).map((x) => [x.id, x.cmd]), [["sandbox", undefined]]);
+  assert.deepEqual(steps({ sandbox: "failed", userns: true, bwrapProfile: true }).map((x) => [x.id, x.cmd]), [["sandbox", "sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict"]]);
   assert.deepEqual(steps({ sandbox: "failed", userns: false }).map((x) => [x.id, x.cmd]), [["sandbox", undefined]]);
+});
+
+test("only steps that run sudo or an installer default to no", () => {
+  const no = (f: Partial<H.SetupFacts>) => steps(f).map((x) => [x.id, !!x.defaultNo]);
+  assert.deepEqual(no({ missing: ["git"], sandbox: "failed", userns: true, harnessBin: false }), [["packages", true], ["apparmor", true], ["harness-bin", true]]);
+  assert.deepEqual(no({ platform: "darwin", missing: ["git"], pkg: null, harnessLogin: "available", loggedIn: false, server: "https://a.example" }), [["packages", true], ["harness-login", false], ["login", false]]);
 });
 
 test("a missing claude is installed with the native installer; a snap or VS Code copy is named but not used", () => {
   const s = steps({ harnessBin: false, otherClaude: "VS Code's own Claude Code" })[0]!;
-  assert.equal(s.cmd, "curl -fsSL https://claude.ai/install.sh | bash");
+  assert.equal(s.cmd, `bash -c "$(curl -fsSL https://claude.ai/install.sh)"`);
   assert.match(s.problem, /VS Code's own Claude Code cannot be used/);
   // Codex: the audited versions, no command.
   const c = steps({ harness: "codex", harnessBin: false })[0]!;
@@ -64,6 +73,9 @@ test("the harness login: sign in first, then take over the login of the platform
   assert.equal(steps({ harnessLogin: "available" })[0]!.cmd, "autocraft harness claude --config-dir");
   assert.equal(steps({ harnessLogin: "available", platform: "darwin" })[0]!.cmd, "autocraft harness claude --keychain");
   assert.equal(steps({ harness: "codex", harnessLogin: "none" })[0]!.cmd, "autocraft harness codex");
+  // A stored setup-token, or a config directory on macOS, is replaced by pasting a new token, not by signing in to Claude Code.
+  assert.deepEqual(steps({ harnessLogin: "none", claudeLogin: "token" }).map((s) => [s.id, s.cmd]), [["harness-token", "autocraft harness claude"]]);
+  assert.deepEqual(steps({ harnessLogin: "none", platform: "darwin", pkg: null }).map((s) => [s.id, s.cmd]), [["harness-token", "autocraft harness claude"]]);
   // No harness binary: no login step yet.
   assert.deepEqual(ids({ harnessBin: false, harnessLogin: "none" }), ["harness-bin"]);
 });
@@ -96,16 +108,21 @@ test("setup refuses unknown flags and more than one URL", async () => {
   assert.match(errors.join("\n"), /https/);
 });
 
-// The AppArmor step's command, run against a scratch file instead of /etc/apparmor.d/bwrap, with `true` or `false` as apparmor_parser.
-const profileRun = (parser: "true" | "false", setup?: (file: string) => void) => {
+// The AppArmor step's command, run against scratch files instead of /etc/apparmor.d and the system's copy of the profile,
+// with `true` or `false` as apparmor_parser.
+const profileRun = (parser: "true" | "false", setup?: (file: string) => void, shipped?: string) => {
   const dir = mkdtempSync(join(tmpdir(), "apparmor-")).replace(/\\/g, "/");
-  const file = `${dir}/bwrap`;
+  const src = mkdtempSync(join(tmpdir(), "apparmor-src-")).replace(/\\/g, "/");
+  const file = `${dir}/bwrap-userns-restrict`;
+  if (shipped !== undefined) writeFileSync(`${src}/bwrap-userns-restrict`, shipped);
   setup?.(file);
-  const cmd = steps({ sandbox: "failed", userns: true, root: true })[0]!.cmd!.replaceAll("/etc/apparmor.d/bwrap", file).replace("apparmor_parser", parser);
+  const cmd = steps({ sandbox: "failed", userns: true, root: true })[0]!.cmd!
+    .replaceAll("/etc/apparmor.d/bwrap-userns-restrict", file).replaceAll("/usr/share/apparmor/extra-profiles", src).replace("apparmor_parser", parser);
   const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8" });
   const left = readdirSync(dir);
   const text = existsSync(file) ? readFileSync(file, "utf8") : null;
   rmSync(dir, { recursive: true, force: true });
+  rmSync(src, { recursive: true, force: true });
   return { status: r.status, left, text };
 };
 const shOk = spawnSync("sh", ["-c", "command -v mktemp ln >/dev/null"]).status === 0;
@@ -113,8 +130,12 @@ const shOk = spawnSync("sh", ["-c", "command -v mktemp ln >/dev/null"]).status =
 test("the AppArmor profile is written whole and loaded; one that does not load is removed again", { skip: !shOk && "no sh" }, () => {
   const ok = profileRun("true");
   assert.equal(ok.status, 0);
-  assert.equal(ok.text, "abi <abi/4.0>,\ninclude <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n}\n");
-  assert.deepEqual(ok.left, ["bwrap"]);
+  assert.match(ok.text!, /^abi <abi\/4\.0>,\ninclude <tunables\/global>\nprofile bwrap \/usr\/bin\/bwrap flags=\(attach_disconnected,mediate_deleted\) \{\n  allow capability,\n/);
+  assert.match(ok.text!, /\n  allow pix \/\*\* -> &bwrap\/\/&unpriv_bwrap,\n/);
+  assert.match(ok.text!, /\nprofile unpriv_bwrap flags=\(attach_disconnected,mediate_deleted\) \{\n(  .*\n)*  audit deny capability,\n(  .*\n)*\}\n$/);
+  assert.deepEqual(ok.left, ["bwrap-userns-restrict"]);
+  // The system's own copy is used when it has one.
+  assert.equal(profileRun("true", undefined, "# shipped\n").text, "# shipped\n");
   // The parser refuses it: the profile this run created goes, and no temporary file stays.
   const bad = profileRun("false");
   assert.notEqual(bad.status, 0);
@@ -126,7 +147,7 @@ test("a profile that appeared before the step ran is neither overwritten nor rem
     const r = profileRun(parser, (file) => writeFileSync(file, "# someone else's\n"));
     assert.notEqual(r.status, 0);
     assert.equal(r.text, "# someone else's\n");
-    assert.deepEqual(r.left, ["bwrap"]);
+    assert.deepEqual(r.left, ["bwrap-userns-restrict"]);
   }
 });
 

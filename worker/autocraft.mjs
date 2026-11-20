@@ -3840,32 +3840,62 @@ function sandboxProbe() {
  * @property {"ok" | "failed" | null} sandbox  whether a bubblewrap sandbox starts (null: not tried, bubblewrap is missing or not Linux)
  * @property {string} sandboxError  bubblewrap's error when it does not start
  * @property {boolean} userns  the kernel restricts unprivileged user namespaces through AppArmor (Ubuntu 23.10 on)
- * @property {boolean} bwrapProfile  /etc/apparmor.d/bwrap exists
+ * @property {boolean} bwrapProfile  /etc/apparmor.d/bwrap-userns-restrict exists
  * @property {"claude" | "codex"} harness
  * @property {boolean} harnessBin  the harness binary is found
  * @property {string | null} claudeBin  the Claude Code binary found (also outside PATH, through claudeBin or the environment)
  * @property {string | null} claudeDir  the Claude config directory the runner is set to read, when it is not the default one
  * @property {string | null} otherClaude  a Claude Code binary that is not on PATH and not usable as it is (snap, VS Code's own copy)
  * @property {"set" | "available" | "none"} harnessLogin  the runner has a harness login / one can be taken over (~/.claude, the Keychain) / none
+ * @property {"token" | "config-dir" | "keychain" | null} claudeLogin  the kind of Claude login the runner is set to (a stored setup-token counts as "token" whatever else is set)
  * @property {boolean} loggedIn  the runner has an approved server credential (for `server`, when that is given)
  * @property {string | null} loggedInTo  the dashboard the runner's credential belongs to
  * @property {string | null} server  the dashboard URL given to setup
  * @property {string} me  the shell words that run this runner
  */
 
-/** One step of `setup`: a problem and how to fix it; `cmd` is a shell command, absent when only the user can fix it. */
-/** @typedef {{ id: string, problem: string, fix: string, cmd?: string }} SetupStep */
-
-const PKG_INSTALL = { apt: "apt-get install -y", dnf: "dnf install -y", pacman: "pacman -S --needed --noconfirm", zypper: "zypper --non-interactive install", apk: "apk add" };
-const BWRAP_PROFILE = "/etc/apparmor.d/bwrap";
-const CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash";
 /**
- * Writes the profile lines given as arguments to BWRAP_PROFILE and loads it. The text goes to a temporary file first, which a
- * hard link then makes the profile: `ln` fails when a profile exists (one that appeared meanwhile is never overwritten), and
- * a write that fails never leaves a profile behind. Only a profile this run linked is removed again when it does not load,
- * so the next setup offers it once more.
+ * One step of `setup`: a problem and how to fix it; `cmd` is a shell command, absent when only the user can fix it.
+ * `defaultNo`: the command runs sudo or downloads and runs an installer, so only a typed yes runs it.
+ * @typedef {{ id: string, problem: string, fix: string, cmd?: string, defaultNo?: boolean }} SetupStep
  */
-const APPARMOR_SCRIPT = `set -e; f=${BWRAP_PROFILE}; t=$(mktemp "$f.XXXXXX"); trap 'rm -f "$t"' EXIT; printf '%s\\n' "$@" > "$t"; chmod 644 "$t"; ln "$t" "$f"; apparmor_parser -r "$f" || { rm -f "$f"; exit 1; }`;
+
+/** The install command of each package manager, for the packages given. */
+const PKG_INSTALL = {
+  apt: (/** @type {string} */ p) => `apt-get update && apt-get install -y ${p}`, dnf: (/** @type {string} */ p) => `dnf install -y ${p}`,
+  pacman: (/** @type {string} */ p) => `pacman -Sy --needed --noconfirm ${p}`, zypper: (/** @type {string} */ p) => `zypper --non-interactive install ${p}`,
+  apk: (/** @type {string} */ p) => `apk add ${p}`,
+};
+const BWRAP_PROFILE = "/etc/apparmor.d/bwrap-userns-restrict";
+/** Ubuntu's copy of the profile (apparmor 4.x, package apparmor-profiles); newer releases install it in /etc/apparmor.d themselves. */
+const BWRAP_PROFILE_SHIPPED = "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict";
+/**
+ * Ubuntu's bwrap-userns-restrict profile, written when the system has no copy of it: bubblewrap may create user namespaces
+ * and use capabilities inside them, and everything it starts runs stacked under unpriv_bwrap, which denies every
+ * capability. A process can then get a sandbox through bwrap, but never a privileged namespace of its own.
+ */
+const BWRAP_USERNS_RESTRICT = (() => {
+  const common = ["allow file rwlkm /{**,},", "allow network,", "allow unix,", "allow ptrace,", "allow signal,", "allow mqueue,", "allow io_uring,", "allow userns,", "allow mount,", "allow umount,", "allow pivot_root,", "allow dbus,"];
+  return [
+    "abi <abi/4.0>,",
+    "include <tunables/global>",
+    `profile bwrap ${BWRAP} flags=(attach_disconnected,mediate_deleted) {`,
+    ...["allow capability,", ...common, "allow pix /** -> &bwrap//&unpriv_bwrap,", "include if exists <local/bwrap-userns-restrict>"].map((l) => `  ${l}`),
+    "}",
+    "profile unpriv_bwrap flags=(attach_disconnected,mediate_deleted) {",
+    ...[...common, "allow pix /** -> &unpriv_bwrap,", "audit deny capability,", "include if exists <local/unpriv_bwrap>"].map((l) => `  ${l}`),
+    "}",
+  ];
+})();
+/** The installer is downloaded whole before bash runs it, so a broken download never runs in part. */
+const CLAUDE_INSTALL = `bash -c "$(curl -fsSL https://claude.ai/install.sh)"`;
+/**
+ * Writes BWRAP_PROFILE and loads it: a copy of BWRAP_PROFILE_SHIPPED when the system has it, else the lines given as
+ * arguments. The text goes to a temporary file first, which a hard link then makes the profile: `ln` fails when a profile
+ * exists (one that appeared meanwhile is never overwritten), and a write that fails never leaves a profile behind. Only a
+ * profile this run linked is removed again when it does not load, so the next setup offers it once more.
+ */
+const APPARMOR_SCRIPT = `set -e; f=${BWRAP_PROFILE}; s=${BWRAP_PROFILE_SHIPPED}; t=$(mktemp "$f.XXXXXX"); trap 'rm -f "$t"' EXIT; if [ -r "$s" ]; then cat "$s" > "$t"; else printf '%s\\n' "$@" > "$t"; fi; chmod 644 "$t"; ln "$t" "$f"; apparmor_parser -r "$f" || { rm -f "$f"; exit 1; }`;
 /** @param {string} s */
 const shq = (s) => /^[A-Za-z0-9_./:=@-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -3882,25 +3912,25 @@ export function setupSteps(f) {
   const sudo = f.root ? "" : "sudo ";
   if (f.missing.length) {
     const what = f.missing.join(", ");
-    if (mac) out.push({ id: "packages", problem: `${what} not found`, fix: "Install the Xcode command line tools.", cmd: "xcode-select --install" });
-    else if (f.pkg) out.push({ id: "packages", problem: `${what} not found`, fix: `Install ${f.missing.length > 1 ? "them" : "it"} with ${f.pkg}${sudo ? " (asks for your password)" : ""}.`, cmd: `${sudo}${PKG_INSTALL[f.pkg]} ${f.missing.join(" ")}` });
+    if (mac) out.push({ id: "packages", problem: `${what} not found`, fix: "Install the Xcode command line tools.", cmd: "xcode-select --install", defaultNo: true });
+    else if (f.pkg) out.push({ id: "packages", problem: `${what} not found`, fix: `Install ${f.missing.length > 1 ? "them" : "it"} with ${f.pkg}${sudo ? " (asks for your password)" : ""}.`, cmd: `${sudo}sh -c ${shq(PKG_INSTALL[f.pkg](f.missing.join(" ")))}`, defaultNo: true });
     else out.push({ id: "packages", problem: `${what} not found`, fix: "Install them with your system's package manager." });
   }
   if (linux && f.sandbox === "failed") {
     if (f.userns && !f.bwrapProfile) {
-      const profile = ["abi <abi/4.0>,", "include <tunables/global>", `profile bwrap ${BWRAP} flags=(unconfined) {`, "  userns,", "}"];
       out.push({
         id: "apparmor", problem: `a sandbox does not start: AppArmor restricts unprivileged user namespaces (${f.sandboxError.slice(0, 120)})`,
-        fix: `Allow them for bubblewrap only, with an AppArmor profile at ${BWRAP_PROFILE}.`,
-        cmd: `${sudo}sh -c ${shq(APPARMOR_SCRIPT)} sh ${profile.map(shq).join(" ")}`,
+        fix: `Load Ubuntu's bwrap-userns-restrict AppArmor profile as ${BWRAP_PROFILE} (a copy of ${BWRAP_PROFILE_SHIPPED} when it exists, else the same rules). It lets any program on this machine run ${BWRAP} to create user namespaces; everything bwrap starts runs without capabilities. To undo it: sudo apparmor_parser -R ${BWRAP_PROFILE}, then delete the file.`,
+        cmd: `${sudo}sh -c ${shq(APPARMOR_SCRIPT)} sh ${BWRAP_USERNS_RESTRICT.map(shq).join(" ")}`, defaultNo: true,
       });
-    } else out.push({ id: "sandbox", problem: `a sandbox does not start: ${f.sandboxError.slice(0, 200)}`, fix: "bubblewrap needs unprivileged user namespaces; check the kernel settings (user.max_user_namespaces, kernel.unprivileged_userns_clone) and AppArmor." });
+    } else if (f.userns) out.push({ id: "sandbox", problem: `a sandbox does not start: ${f.sandboxError.slice(0, 200)}`, fix: `${BWRAP_PROFILE} exists but may not be loaded; load it.`, cmd: `${sudo}apparmor_parser -r ${BWRAP_PROFILE}`, defaultNo: true });
+    else out.push({ id: "sandbox", problem: `a sandbox does not start: ${f.sandboxError.slice(0, 200)}`, fix: "bubblewrap needs unprivileged user namespaces; check the kernel settings (user.max_user_namespaces, kernel.unprivileged_userns_clone) and AppArmor." });
   }
   if (!f.harnessBin) {
     if (f.harness === "codex") out.push({ id: "harness-bin", problem: "codex not found on PATH", fix: `Install Codex ${CODEX_AUDITED.map((v) => `${v}.x`).join(" or ")} (npm install -g @openai/codex@<version>), or set codexBin in the config.` });
     else {
       const why = f.otherClaude ? ` (${f.otherClaude} cannot be used: it is not a standalone binary at a fixed path)` : "";
-      out.push({ id: "harness-bin", problem: `claude not found on PATH${why}`, fix: "Install Claude Code with its native installer, into ~/.local/bin (no sudo).", cmd: CLAUDE_INSTALL });
+      out.push({ id: "harness-bin", problem: `claude not found on PATH${why}`, fix: "Download Claude Code's native installer from claude.ai and run it; it installs into ~/.local/bin (no sudo).", cmd: CLAUDE_INSTALL, defaultNo: true });
     }
   } else if (f.harnessLogin === "available") {
     out.push(mac
@@ -3908,6 +3938,12 @@ export function setupSteps(f) {
       : { id: "harness-login", problem: "no harness login chosen", fix: "Use the Claude login in your Claude config directory, read before each call.", cmd: `${f.me} harness claude --config-dir` });
   } else if (f.harnessLogin === "none") {
     if (f.harness === "codex") out.push({ id: "harness-login", problem: "Codex is not logged in for the runner", fix: "Log Codex in to the runner's own CODEX_HOME.", cmd: `${f.me} harness codex` });
+    // A stored setup-token, or a config directory on macOS (which keeps the login in the Keychain), is replaced only by
+    // `harness claude`; signing in to Claude Code again would not change it.
+    else if (f.claudeLogin === "token" || (mac && f.claudeLogin === "config-dir")) out.push({
+      id: "harness-token", problem: f.claudeLogin === "token" ? "the stored Claude setup-token gives no login" : "the runner is set to a Claude config directory, which macOS does not use",
+      fix: "Paste a new token from `claude setup-token`.", cmd: `${f.me} harness claude`,
+    });
     else out.push({ id: "claude-signin", problem: "Claude Code is not signed in", fix: "Start Claude Code, sign in, then type /exit; setup goes on.", cmd: `${f.claudeDir ? `CLAUDE_CONFIG_DIR=${shq(f.claudeDir)} ` : ""}${shq(f.claudeBin ?? "claude")}` });
   }
   if (!f.loggedIn) {
@@ -3941,6 +3977,11 @@ function gitStub() {
  */
 export const appleGitStub = (resolved, toolsInstalled) => resolved === "/usr/bin/git" && !toolsInstalled();
 
+/** Whether Claude Code's Keychain item exists; its secret is not read. */
+function keychainItemExists(item = claudeKeychainItem()) {
+  return process.platform === "darwin" && spawnSync("/usr/bin/security", ["find-generic-password", "-a", item.account, "-s", item.service], { stdio: "ignore", timeout: 20_000 }).status === 0;
+}
+
 /** @param {string | null} server @returns {SetupFacts} */
 function setupFacts(server) {
   const cfg = loadConfig();
@@ -3968,12 +4009,13 @@ function setupFacts(server) {
   // A login chosen before counts only while it still gives a token (its credentials file or Keychain item may be gone).
   if (adapter.id === "codex") harnessLogin = d.loggedIn ? "set" : "none";
   else if (cfg.claudeConfigDir || cfg.claudeAuth === "keychain" || cfg.claudeToken) harnessLogin = d.loggedIn ? "set" : "none";
-  else if (process.platform === "darwin" ? !!keychainCredential() : typeof readClaudeCredentials(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"))?.claudeAiOauth?.accessToken === "string") harnessLogin = "available";
+  else if (process.platform === "darwin" ? keychainItemExists() : typeof readClaudeCredentials(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"))?.claudeAiOauth?.accessToken === "string") harnessLogin = "available";
   return {
     platform: process.platform, root: process.getuid?.() === 0, pkg, missing,
     sandbox: probe ? (probe.ok ? "ok" : "failed") : null, sandboxError: probe?.error ?? "",
     userns: read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1", bwrapProfile: existsSync(BWRAP_PROFILE),
     harness: adapter.id === "codex" ? "codex" : "claude", harnessBin: !!d.bin, otherClaude, harnessLogin,
+    claudeLogin: cfg.claudeToken ? "token" : cfg.claudeConfigDir ? "config-dir" : cfg.claudeAuth === "keychain" ? "keychain" : null,
     claudeBin: adapter.id === "claude" ? d.bin : null,
     claudeDir: cfg.claudeConfigDir && resolve(cfg.claudeConfigDir) !== resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")) ? cfg.claudeConfigDir : null,
     loggedIn: !!cfg.server && !!credentialOf(cfg) && (!server || cfg.server === server), loggedInTo: cfg.server && credentialOf(cfg) ? cfg.server : null, server,
@@ -3981,10 +4023,26 @@ function setupFacts(server) {
   };
 }
 
-/** Asks a yes/no question on the terminal; Enter is yes. @param {string} q */
-async function confirm(q) {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  try { return /^(y|yes|)$/i.test((await new Promise((r) => rl.question(q, r))).trim()); } finally { rl.close(); }
+/**
+ * Asks a yes/no question on the terminal; an empty answer is `dflt`. What was typed before the question shows (answers
+ * typed ahead, input left over from the step before) is read in raw mode and dropped first, so it never answers it.
+ * @param {string} q @param {boolean} dflt
+ */
+async function confirm(q, dflt) {
+  const stdin = process.stdin;
+  const drop = () => {};
+  stdin.setRawMode(true);
+  stdin.on("data", drop);
+  stdin.resume();
+  await sleep(50);
+  stdin.off("data", drop);
+  stdin.pause();
+  stdin.setRawMode(false);
+  const rl = createInterface({ input: stdin, output: process.stdout });
+  try {
+    const a = (await new Promise((r) => rl.question(q, r))).trim();
+    return a ? /^(y|yes)$/i.test(a) : dflt;
+  } finally { rl.close(); }
 }
 
 /**
@@ -4016,7 +4074,7 @@ async function cmdSetup(argv) {
     console.log(`\nmissing: ${step.problem}\n  ${step.fix}`);
     if (!step.cmd) continue;
     console.log(`  $ ${step.cmd}`);
-    if (!yes && !(ask && await confirm("  Run it now? [Y/n] "))) continue;
+    if (!yes && !(ask && await confirm(`  Run it now? ${step.defaultNo ? "[y/N]" : "[Y/n]"} `, !step.defaultNo))) continue;
     const r = spawnSync("sh", ["-c", step.cmd], { stdio: "inherit" });
     if (r.status !== 0) console.log(`  that ended with exit code ${r.status ?? r.signal}`);
   }
