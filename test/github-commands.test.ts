@@ -45,8 +45,13 @@ function ghFake(code = 0) {
 const deps = (w: World, o: Partial<CommandDeps> & { perm?: "ok" | "no" | "transient" } = {}): CommandDeps => ({
   querier: w.gh.querier, permission: async () => o.perm ?? "ok", ...o,
 });
+/** The item was read from GitHub at `at` (as the webhook's re-read or the poll write it). */
+const readAt = (w: World, number: number, at: Date) =>
+  w.db.prepare("INSERT INTO item_reads (repo, number, synced_at) VALUES ('app', ?, ?) ON CONFLICT (repo, number) DO UPDATE SET synced_at = excluded.synced_at").run(number, at.toISOString());
+/** Drains after the re-reads: every commanded item was read just now. */
 const drained = async (w: World, o: Parameters<typeof deps>[1] = {}) => {
   w.db.exec("DELETE FROM sync_requests");
+  for (const { number } of w.db.prepare("SELECT DISTINCT number FROM github_commands").all() as { number: number }[]) readAt(w, number, new Date(Date.now() + 1000));
   return drainCommands(w.db, deps(w, o));
 };
 
@@ -67,6 +72,17 @@ describe("parseCommand", () => {
     assert.equal(parseCommand(`@${SLUG} merge queue`, ""), null);
     assert.equal(parseCommand(null, SLUG), null);
     assert.equal(parseCommand(`@a.b merge queue`, "a-b"), null, "the slug is matched literally");
+  });
+
+  test("a fence closes only with its own character, at least its length and nothing after it", () => {
+    const cmd = `@${SLUG} merge queue`;
+    for (const body of [
+      "````\n```\n" + cmd + "\n````", // a shorter fence inside stays code
+      "```\n~~~\n" + cmd + "\n```", // the other character stays code
+      "```\n``` not a close\n" + cmd + "\n```", // text after the fence is no close
+      "~~~~\n~~~\n" + cmd, // an unclosed fence runs to the end
+    ]) assert.equal(parseCommand(body, SLUG), null, body);
+    for (const body of ["````\ncode\n`````  \n" + cmd, "~~~ js\ncode\n~~~\n" + cmd, "```\n```\n" + cmd]) assert.notEqual(parseCommand(body, SLUG), null, body);
   });
 });
 
@@ -110,12 +126,38 @@ describe("drainCommands", () => {
     assert.equal(gh.posted.length, 1);
   });
 
-  test("the command waits for the item's re-read", async () => {
+  test("the command waits until the item was read from GitHub after the comment, also when the re-read failed and its request is gone", async () => {
     const w = fresh().pr(1);
+    readAt(w, 1, new Date(Date.now() - 60_000));
     deliver(w, payload({ body: `@${SLUG} merge queue` }));
     const gh = ghFake();
-    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 0);
+    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 0, "the re-read is still queued");
+    w.db.exec("DELETE FROM sync_requests");
+    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 0, "the request is gone but the last read is older than the comment");
     assert.equal(rows(w)[0]!.state, "queued");
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    readAt(w, 1, new Date(Date.now() + 1000));
+    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 1, "the poll read it since");
+    assert.equal(preapprovalOf(w.db, "app", 1)?.state, "review");
+  });
+
+  test("commands that wait for a re-read or a permission retry do not keep newer ones out of a drain", async () => {
+    const w = fresh().pr(1).pr(2).pr(3);
+    deliver(w, payload({ body: `@${SLUG} merge queue`, number: 1, comment: 7001 }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, number: 2, comment: 7002 }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, number: 3, comment: 7003 }));
+    w.db.exec("DELETE FROM sync_requests");
+    readAt(w, 2, new Date(Date.now() + 1000));
+    readAt(w, 3, new Date(Date.now() + 1000));
+    // #1 is not read yet; #2's permission cannot be told; with one GitHub call per drain #3 still gets its turn next.
+    const perm = async (_q: unknown, _repo: string, _login: string) => "transient" as const;
+    await drainCommands(w.db, { ...deps(w, { exec: ghFake().exec }), permission: perm, limit: 1 });
+    assert.deepEqual(rows(w).map((r) => r.state), ["queued", "queued", "queued"]);
+    await drainCommands(w.db, { ...deps(w, { exec: ghFake().exec }), limit: 1 });
+    assert.deepEqual(rows(w).map((r) => r.state), ["queued", "queued", "done"], "#2 waits out its retry, #3 is carried out");
+    const later = new Date(Date.now() + 2 * 60_000);
+    await drainCommands(w.db, { ...deps(w, { exec: ghFake().exec }), limit: 1, now: () => later });
+    assert.deepEqual(rows(w).map((r) => r.state), ["queued", "done", "done"], "after the retry wait #2 runs; its expiry still counts from the comment");
   });
 
   test("a stranger, or a login now held by another GitHub account, gets no answer and changes nothing", async () => {
@@ -171,6 +213,8 @@ describe("drainCommands", () => {
     assert.equal(rows(w)[0]!.state, "queued");
     assert.equal(gh.posted.length, 0);
     await drained(w, { exec: gh.exec });
+    assert.equal(rows(w)[0]!.state, "queued", "the retry waits a minute");
+    await drained(w, { exec: gh.exec, now: () => new Date(Date.now() + 2 * 60_000) });
     assert.equal(rows(w)[0]!.state, "refused");
     assert.match(gh.posted[0]!.body, /@op Not added to the merge queue: merging is not approved for app\.$/);
   });

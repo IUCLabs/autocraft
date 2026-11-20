@@ -25,6 +25,8 @@ import { ghComment, WritePacedError } from "./write.ts";
 const BODY_MAX = 65_536;
 /** A command not carried out within this long is dropped unanswered (the runner was down, or GitHub could not tell the permission). */
 const EXPIRE_MS = 3600_000;
+/** A command whose permission read GitHub could not settle is tried again after this long. */
+const RETRY_MS = 60_000;
 const AUDIT_LOGIN = "github-command";
 
 export type Command = { command: "merge-queue"; weight: number | null };
@@ -34,15 +36,20 @@ const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
  * The command in a comment addressed to the app, or null. The command is a line of its own: `@<slug> merge queue`, with an
  * optional weight (`8` or `weight 8`). Quoted lines (`> ...`) and fenced code are skipped, so quoting a command repeats nothing.
+ * A fence closes as CommonMark closes it: the opening character, at least as many of it, and nothing after but spaces.
  */
 export function parseCommand(body: unknown, slug: string): Command | null {
   if (typeof body !== "string" || !slug) return null;
   const re = new RegExp(`^@${escape(slug)}(?:\\[bot\\])?[\\s,:]+merge[-\\s]?queue(?:\\s+(?:weight\\s+)?(\\d{1,2}))?\\s*[.!]?$`, "i");
-  let fenced = false;
+  let fence: { ch: string; len: number } | null = null;
   for (const raw of body.slice(0, BODY_MAX).split(/\r?\n/)) {
     const line = raw.trim();
-    if (/^(```|~~~)/.test(line)) { fenced = !fenced; continue; }
-    if (fenced) continue;
+    const f = /^(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (f && f[0] === fence.ch && f.length >= fence.len && line.slice(f.length).trim() === "") fence = null;
+      continue;
+    }
+    if (f) { fence = { ch: f[0]!, len: f.length }; continue; }
     const m = re.exec(line);
     if (m) return { command: "merge-queue", weight: m[1] === undefined ? null : Number(m[1]) };
   }
@@ -166,22 +173,35 @@ async function answer(db: DatabaseSync, r: Row, deps: CommandDeps): Promise<"pos
  */
 export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promise<number> {
   const clock = deps.now ?? (() => new Date());
+  const t0 = clock();
+  // Every waiting row is read (an hour's commands at most): rows that wait for a re-read or a retry are passed over without
+  // a GitHub call, so they never keep a newer command out. `limit` bounds the rows that call GitHub in one drain.
   const rows = db.prepare(`SELECT comment_id, repo, number, pr, command, weight, login, github_id, requested_at, state, result FROM main.github_commands
-    WHERE state = 'queued' OR (state IN ('done', 'refused') AND reply IS NULL) ORDER BY requested_at LIMIT ?`).all(deps.limit ?? 10) as Row[];
-  let settled = 0;
+    WHERE (state = 'queued' AND (tried_at IS NULL OR tried_at <= ?)) OR (state IN ('done', 'refused') AND reply IS NULL) ORDER BY requested_at`)
+    .all(new Date(t0.getTime() - RETRY_MS).toISOString()) as Row[];
+  const readAt = db.prepare("SELECT synced_at FROM main.item_reads WHERE repo = ? AND number = ?");
+  let settled = 0, calls = 0;
   for (const r0 of rows) {
+    if (calls >= (deps.limit ?? 10)) break;
     const now = clock();
     let r = r0;
     if (r.state === "queued") {
       if (now.getTime() - Date.parse(r.requested_at) > EXPIRE_MS) { settle(db, r, "expired", null, now); continue; }
       if (r.command !== "merge-queue") { settle(db, r, "ignored", null, now); continue; }
-      // The webhook's re-read of the item comes first, so the command sees the item at its current head.
-      if (db.prepare("SELECT 1 FROM main.sync_requests WHERE repo = ? AND number = ?").get(r.repo, r.number)) continue;
-      if (!(await carryOut(db, r, deps, now))) continue;
+      // The item must have been read from GitHub since the comment (the webhook's re-read, or the poll after a failed one), so the
+      // command sees it at its current head. A request row that is gone proves nothing: a failed re-read drops it too.
+      const read = (readAt.get(r.repo, r.number) as { synced_at: string } | undefined)?.synced_at;
+      if (!read || Date.parse(read) < Date.parse(r.requested_at)) continue;
+      calls++;
+      if (!(await carryOut(db, r, deps, now))) {
+        // GitHub could not tell the permission: retried after RETRY_MS; the expiry still counts from requested_at.
+        db.prepare("UPDATE main.github_commands SET tried_at = ? WHERE comment_id = ?").run(now.toISOString(), r.comment_id);
+        continue;
+      }
       settled++;
       r = db.prepare("SELECT comment_id, repo, number, pr, command, weight, login, github_id, requested_at, state, result FROM main.github_commands WHERE comment_id = ?").get(r.comment_id) as Row;
       if (r.state !== "done" && r.state !== "refused") continue;
-    }
+    } else calls++;
     if ((await answer(db, r, deps)) === "paced") break;
   }
   return settled;

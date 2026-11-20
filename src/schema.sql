@@ -578,6 +578,7 @@ CREATE TABLE IF NOT EXISTS github_commands (
   state TEXT NOT NULL,                -- queued | done | refused | ignored (unknown commenter: no answer) | expired
   result TEXT,                        -- what the answer says
   done_at TEXT,
+  tried_at TEXT,                      -- the last try GitHub could not settle the permission for; the next one waits a minute
   reply TEXT                          -- posted | failed; null while the answer is still to post
 );
 -- A tracked repo the last sync could not read: skipped for the run, retried by the next. Bookkeeping: no live topic.
