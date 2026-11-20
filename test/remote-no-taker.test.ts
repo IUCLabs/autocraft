@@ -10,6 +10,7 @@ import { connect } from "../src/db.ts";
 import { computeChecks } from "../src/health-checks.ts";
 import { awaitCall, enqueueCall } from "../src/remote/calls.ts";
 import { parseStatus, STATUS_FRESH_MS, storeStatus } from "../src/remote/helpers.ts";
+import { setManualOnly } from "../src/remote/manual-only.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
 import { NO_TAKER_MS, sweepTakers } from "../src/remote/takers.ts";
 import { leaseSkips } from "../src/runner/leases.ts";
@@ -32,6 +33,8 @@ test("a call whose only taker went stale is withdrawn, its caller skips it, and 
   const sweep = (at: number): number => { db.prepare("UPDATE remote_calls SET seen_at = ? WHERE id = ?").run(at, id); return sweepTakers(db, at); };
   const noTaker = (at: number) => computeChecks(db, at).find((c) => c.id === "remote-no-taker")!;
 
+  // Manual only: dave may still pick the call, so his runner is a taker.
+  setManualOnly(db, "dave", true);
   assert.equal(sweep(t0), 0);
   assert.equal((db.prepare("SELECT no_taker_since AS s FROM remote_calls WHERE id = ?").get(id) as { s: number | null }).s, null, "dave's runner takes it");
 

@@ -1,15 +1,16 @@
 // Takers in the user-local model queue: whether some Task Runner may take calls on a repo now, and what happens when none
-// can. A taker is a fresh, ready Task Runner (helpers.ts) of a user who is not cooled off (cooloff.ts) and not Manual only
-// (manual-only.ts) and who may take the call (runnerTakes: role rules, write permission by the room's rule roomCanWrite, My
-// repos narrowed by the runner's own list), busy or not. The dashboard's minute maintenance runs sweepTakers: a queued call
-// with no taker for NO_TAKER_MS is withdrawn, and pipeline-on repos with no taker are recorded for the remote-no-taker health
-// check. Follow-up turns and calls with a pick that counts keep their own rules (calls.ts awaitCall, picks).
+// can. A taker is a fresh, ready Task Runner (helpers.ts) of a user who is not cooled off (cooloff.ts) and who may take the
+// call (runnerTakes: role rules, write permission by the room's rule roomCanWrite, My repos narrowed by the runner's own
+// list), busy or not. A Manual only user's runner (manual-only.ts) is a taker, since the user may pick the call, though it is
+// no room. hasTaker and takerTest are the one taker rule: pools and the runner's job starts skip work without a taker, the
+// dashboard's minute maintenance runs sweepTakers: a queued call with no taker for NO_TAKER_MS is withdrawn, and pipeline-on
+// repos with no taker are recorded for the remote-no-taker health check. Follow-up turns and calls with a pick that counts
+// keep their own rules (calls.ts awaitCall, picks).
 import type { DatabaseSync } from "node:sqlite";
 import { prep } from "../sql-cache.ts";
 import { NO_TAKER_PREFIX, pickCounts, pickerLogins, queueSnapshot, runnerTakes, withdrawCall } from "./calls.ts";
 import { cooloffOf } from "./cooloff.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
-import { manualSql } from "./manual-only.ts";
 import { inferenceMode } from "./mode.ts";
 import { claimRepos } from "./my-repos.ts";
 import { CALLER_STALE_MS, roomCanWrite } from "./room.ts";
@@ -18,10 +19,25 @@ import { scaled } from "./time-scale.ts";
 /** How long a queued call may have no taker before it is withdrawn, and a pipeline-on repo before the health check warns. */
 export const NO_TAKER_MS = scaled(10 * 60_000);
 
-/** Whether some taker may take a call of `prompt_id` naming `repos` now; the runners and their permissions are read once. */
-export function takerTest(db: DatabaseSync, nowMs: number): (c: { prompt_id: string; repos: readonly string[] }) => boolean {
+/** A call as the taker rule reads it: its prompt (role rules for discord.* calls) and the repos it names. */
+export type TakerCall = { prompt_id: string; repos: readonly string[] };
+
+/**
+ * Whether some taker may take a call now, for many questions at one moment (a pool's round, the runner's pass over queued
+ * jobs, a sweep): the runners, their repos and permissions are read once, on the first question.
+ */
+export function takerTest(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
+  let test: ((c: TakerCall) => boolean) | null = null;
+  return (c) => (test ??= readTakers(db, nowMs))(c);
+}
+
+/** Whether a call naming `repos` has a taker now; unknown repos (undefined: the caller does not know them) always have one. */
+export const hasTaker = (db: DatabaseSync, nowMs: number, repos?: readonly string[]): boolean =>
+  repos === undefined || takerTest(db, nowMs)({ prompt_id: "", repos });
+
+function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
   const rows = (prep(db, `SELECT t.login, a.role, t.idle_repos FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id JOIN main.access a ON a.login = t.login
-    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`)
+    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?`)
     .all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { login: string; role: string; idle_repos: string | null }[])
     .filter((r) => cooloffOf(db, r.login, nowMs) === null);
   if (!rows.length) return () => false;
