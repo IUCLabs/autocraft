@@ -16,15 +16,15 @@ import { SectionTitle } from "./SectionTitle";
 /** A model id as people say it: opus → Opus. */
 const modelName = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
 
-/**
- * Saves of one list run one after another, so the server ends with the latest selection. `confirmed` is the server's last
- * answer; only the latest save sets the list, from its answer or, when it fails, back to `confirmed`.
- */
 /** The item choices of My tasks: fast-tracked items are those added with Queue items, the queue command or the fast-track list. */
 const ITEMS_LABEL: Record<TaskItems, string> = { all: "All items", fast: "Fast-tracked", mine: "Fast-tracked by me" };
 
-type ListSaves = { chain: Promise<unknown>; n: number; confirmed: string[] };
-const listSaves = (): ListSaves => ({ chain: Promise.resolve(), n: 0, confirmed: [] });
+/**
+ * Saves of one setting run one after another, so the server ends with the latest selection. `confirmed` is the server's last
+ * answer; only the latest save sets the control, from its answer or, when it fails, back to `confirmed`.
+ */
+type ListSaves<T = string[]> = { chain: Promise<unknown>; n: number; confirmed: T };
+const listSaves = <T = string[],>(confirmed: T): ListSaves<T> => ({ chain: Promise.resolve(), n: 0, confirmed });
 
 export function MySettings() {
   const api = useApi();
@@ -43,8 +43,9 @@ export function MySettings() {
   // save of the latest change may say Saved, so one that ends after a newer edit or save does not.
   const [saving, setSaving] = useState(0);
   const latest = useRef(0);
-  const repoSaves = useRef(listSaves());
-  const taskSaves = useRef(listSaves());
+  const repoSaves = useRef(listSaves<string[]>([]));
+  const taskSaves = useRef(listSaves<string[]>([]));
+  const itemSaves = useRef(listSaves<TaskItems>("all"));
   const edited = () => {
     latest.current++;
     setSavedAt(null);
@@ -58,6 +59,7 @@ export function MySettings() {
     if (!data) return;
     setManual(data.manualOnly);
     setTaskItems(data.taskItems);
+    itemSaves.current.confirmed = data.taskItems;
     setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
     setPicks(data.repos);
     repoSaves.current.confirmed = data.repos;
@@ -76,7 +78,7 @@ export function MySettings() {
       if (ok && n === latest.current) setSavedAt(Date.now());
     });
   };
-  const saveList = (key: string, s: ListSaves, next: string[], set: (v: string[]) => void, put: () => Promise<string[]>) => {
+  const saveList = <T,>(key: string, s: ListSaves<T>, next: T, set: (v: T) => void, put: () => Promise<T>) => {
     const n = ++s.n;
     set(next);
     saveRun(key, () => {
@@ -130,18 +132,7 @@ export function MySettings() {
       }
     });
   };
-  const saveTaskItems = (v: TaskItems) => {
-    const was = taskItems;
-    setTaskItems(v);
-    saveRun("task-items", async () => {
-      try {
-        setTaskItems((await api.me.settings.put({ taskItems: v })).taskItems);
-      } catch (e) {
-        setTaskItems(was);
-        throw e;
-      }
-    });
-  };
+  const saveTaskItems = (v: TaskItems) => saveList("task-items", itemSaves.current, v, setTaskItems, async () => (await api.me.settings.put({ taskItems: v })).taskItems);
   const field = (key: "fiveHour" | "weekly", short: string, label: string) => (
     <label className="flex items-center gap-1.5">
       <span className="whitespace-nowrap text-ink/60">{short}</span>

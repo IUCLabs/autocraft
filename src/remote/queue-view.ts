@@ -66,7 +66,8 @@ export function whyWaiting(c: WhyCall, runners: readonly ReadyRunner[], ahead: n
   if (!forTier.length) return { code: "no-runner", text: `No Task Runner is ready for the ${c.tier} tier` };
   const auto = forTier.filter((r) => !r.manual);
   if (!auto.length) return { code: "manual-only", text: "Every ready Task Runner is Manual only" };
-  const may = auto.filter((r) => runnerTakes(r, { prompt_id: c.promptId, repos: c.repos }, canWrite));
+  // The items are the last question: here only the role, the repos and write permission.
+  const may = auto.filter((r) => runnerTakes({ ...r, items: null }, { prompt_id: c.promptId, repos: c.repos }, canWrite));
   if (!may.length) return { code: "no-repo-access", text: c.repos.length ? "No ready Task Runner's user takes calls on its repo" : "No ready Task Runner's user may take it" };
   const task = taskOfStep(c.step);
   const takes = may.filter((r) => !r.skip.has(task));

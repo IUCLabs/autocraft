@@ -20,6 +20,7 @@ import { pickCall, setPickMinutes, unpickCall } from "../src/remote/picks.ts";
 import { PROTOCOL_VERSION, type Claim, type Tier } from "../src/remote/protocol.ts";
 import { whyWaiting, type ReadyRunner } from "../src/remote/queue-view.ts";
 import { remoteRoom } from "../src/remote/room.ts";
+import { setUserRepos } from "../src/remote/my-repos.ts";
 import { takerTest } from "../src/remote/takers.ts";
 import { addFastTrack } from "../src/fasttrack.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -234,11 +235,17 @@ describe("picks and Manual only", () => {
     // Only alice's runner is fresh, so the taker rule reads her choice alone.
     db.prepare("UPDATE remote_helpers SET reported_at = ? WHERE login <> 'alice'").run(Date.now() - STATUS_FRESH_MS - 1000);
     assert.equal(takes()({ prompt_id: "review.opus", repos: ["photocraft"], step: "opus-review" }), false, "no fast-tracked item on the repo: no taker before the items are known");
+    assert.equal(await leased("alice"), null, "an idle claim: alice's runner is active");
+    assert.equal(remoteRoom(db, 0), 0, "no open fast-tracked item at all: no room, even for a question about no repo or task");
 
-    q({ ageMs: 60_000, items: at(10) });
-    const bobs = q({ items: at(11) }), mixed = q({ items: [...at(10), ...at(12)] });
     addFastTrack(db, "bob", "photocraft#11");
     addFastTrack(db, "alice", "photocraft#12");
+    assert.ok(remoteRoom(db, 0, Date.now(), undefined, "opus-review") > 0, "room for the task: the fast-tracked items are on a repo alice takes");
+    setUserRepos(db, "alice", ["deckcraft"]);
+    assert.equal(remoteRoom(db, 0, Date.now(), undefined, "opus-review"), 0, "no room once alice takes only a repo without fast-tracked items");
+    setUserRepos(db, "alice", []);
+    q({ ageMs: 60_000, items: at(10) });
+    const bobs = q({ items: at(11) }), mixed = q({ items: [...at(10), ...at(12)] });
     dropQueueCache(db);
     assert.equal(takes()({ prompt_id: "review.opus", repos: ["photocraft"], step: "opus-review" }), true, "the repo now has fast-tracked items");
     assert.equal(takes()({ prompt_id: "review.opus", repos: ["photocraft"], step: "opus-review", refs: at(10) }), false, "but not this item");
@@ -259,6 +266,7 @@ describe("picks and Manual only", () => {
     const c = { tier: "top" as Tier, promptId: "review.opus", step: "opus-review", repos: ["photocraft"], followUp: false, picked: null };
     assert.equal(whyWaiting({ ...c, refs: at(10) }, [r], 0, () => true).code, "items-off");
     assert.equal(whyWaiting({ ...c, refs: at(12) }, [r], 0, () => true).code, "behind");
+    assert.equal(whyWaiting({ ...c, refs: at(10) }, [{ ...r, items: { refs: new Set(), repos: new Set() } }], 0, () => true).code, "items-off", "no fast-tracked item on the repo is still about items, not repo access");
     await put("all");
     assert.equal(db.prepare("SELECT 1 FROM user_settings WHERE login = 'alice' AND key = 'task_items'").get(), undefined, "every item again stores nothing");
     clear();
