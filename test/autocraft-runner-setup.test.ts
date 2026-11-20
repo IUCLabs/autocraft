@@ -6,7 +6,8 @@ import type * as H from "../worker/autocraft.mjs";
 
 const base: H.SetupFacts = {
   platform: "linux", root: false, pkg: "apt", missing: [], sandbox: "ok", sandboxError: "", userns: false, bwrapProfile: false,
-  harness: "claude", harnessBin: true, otherClaude: null, harnessLogin: "set", loggedIn: true, server: null, me: "autocraft",
+  harness: "claude", harnessBin: true, claudeBin: "/home/u/.local/bin/claude", claudeDir: null, otherClaude: null, harnessLogin: "set",
+  loggedIn: true, loggedInTo: "https://artcraft.build", server: null, me: "autocraft",
 };
 const steps = (f: Partial<H.SetupFacts>) => helper.setupSteps({ ...base, ...f });
 const ids = (f: Partial<H.SetupFacts>) => steps(f).map((s) => s.id);
@@ -36,7 +37,8 @@ test("missing packages are installed with the system's package manager, with sud
 test("a sandbox blocked by AppArmor gets a bwrap-only profile; another cause or an existing profile only shows the error", () => {
   const s = steps({ sandbox: "failed", sandboxError: "bwrap: setting up uid map: Permission denied", userns: true })[0]!;
   assert.equal(s.id, "apparmor");
-  assert.match(s.cmd!, /\| sudo tee \/etc\/apparmor\.d\/bwrap >\/dev\/null && sudo apparmor_parser -r \/etc\/apparmor\.d\/bwrap$/);
+  // A profile that does not load is removed again, so a later setup offers it once more.
+  assert.match(s.cmd!, /\| sudo tee \/etc\/apparmor\.d\/bwrap >\/dev\/null && \{ sudo apparmor_parser -r \/etc\/apparmor\.d\/bwrap \|\| \{ sudo rm -f \/etc\/apparmor\.d\/bwrap; false; \}; \}$/);
   assert.match(s.cmd!, /'profile bwrap \/usr\/bin\/bwrap flags=\(unconfined\) \{'/);
   // The printf writes exactly the profile.
   const printf = s.cmd!.split(" | ")[0]!;
@@ -57,7 +59,9 @@ test("a missing claude is installed with the native installer; a snap or VS Code
 });
 
 test("the harness login: sign in first, then take over the login of the platform", () => {
-  assert.deepEqual(steps({ harnessLogin: "none" }).map((s) => [s.id, s.cmd]), [["claude-signin", "claude"]]);
+  assert.deepEqual(steps({ harnessLogin: "none" }).map((s) => [s.id, s.cmd]), [["claude-signin", "/home/u/.local/bin/claude"]]);
+  // A claude outside PATH and a config directory that is not the default one are both used for the sign-in.
+  assert.equal(steps({ harnessLogin: "none", claudeBin: "/opt/my claude/claude", claudeDir: "/data/claude" })[0]!.cmd, "CLAUDE_CONFIG_DIR=/data/claude '/opt/my claude/claude'");
   assert.equal(steps({ harnessLogin: "available" })[0]!.cmd, "autocraft harness claude --config-dir");
   assert.equal(steps({ harnessLogin: "available", platform: "darwin" })[0]!.cmd, "autocraft harness claude --keychain");
   assert.equal(steps({ harness: "codex", harnessLogin: "none" })[0]!.cmd, "autocraft harness codex");
@@ -69,6 +73,11 @@ test("the dashboard login runs only with a URL given to setup, quoted for the sh
   assert.equal(steps({ loggedIn: false, server: "https://artcraft.build" })[0]!.cmd, "autocraft login https://artcraft.build");
   assert.equal(steps({ loggedIn: false })[0]!.cmd, undefined);
   assert.equal(steps({ loggedIn: false, server: "https://x.example/a b" })[0]!.cmd, "autocraft login 'https://x.example/a b'");
+  // Logged in to another dashboard than the one setup was given: offered, and the step says what it replaces.
+  const other = steps({ loggedIn: false, loggedInTo: "https://a.example", server: "https://b.example" })[0]!;
+  assert.equal(other.cmd, "autocraft login https://b.example");
+  assert.match(other.problem, /logged in to https:\/\/a\.example, not to https:\/\/b\.example/);
+  assert.match(other.fix, /replaces the login to https:\/\/a\.example/);
 });
 
 test("steps come in the order they must be fixed", () => {

@@ -35,7 +35,11 @@ export function MySettings() {
   }, [data]);
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
   /** Saves through the shared write state and marks the time it succeeded. */
-  const saveRun = (key: string, f: () => Promise<unknown>) => void write.run(key, f).then((ok) => ok && setSavedAt(Date.now()));
+  const saveRun = (key: string, f: () => Promise<unknown>) => {
+    // A new write clears an earlier "Saved", so a failed one does not show as saved.
+    setSavedAt(null);
+    void write.run(key, f).then((ok) => ok && setSavedAt(Date.now()));
+  };
   const savePicks = (next: string[]) => {
     const was = picks;
     setPicks(next);
@@ -98,6 +102,7 @@ export function MySettings() {
         onChange={(e) => {
           const next = { ...vals, [key]: e.target.value };
           setVals(next);
+          setSavedAt(null);
         }}
         onBlur={() => save(vals)}
         onKeyDown={(e) => {
@@ -146,7 +151,10 @@ export function MySettings() {
             placeholder="None"
             value={maxCalls}
             invalid={!validMax(maxCalls)}
-            onChange={(e) => setMaxCalls(e.target.value)}
+            onChange={(e) => {
+              setMaxCalls(e.target.value);
+              setSavedAt(null);
+            }}
             onBlur={() => saveMax(maxCalls)}
             onKeyDown={(e) => {
               if (e.key === "Enter") saveMax(maxCalls);

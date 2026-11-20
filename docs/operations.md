@@ -213,14 +213,14 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
 | Missing | Command offered |
 |---|---|
 | Windows or another system | None: install and run `autocraft` inside WSL |
-| bubblewrap (Linux), `git`, `tar` | The package manager's install (`apt-get`, `dnf`, `pacman`, `zypper` or `apk`), with `sudo` unless run as root; `xcode-select --install` on macOS |
-| A sandbox that does not start because AppArmor restricts unprivileged user namespaces (`/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is 1, Ubuntu 23.10 and later) | Writes `/etc/apparmor.d/bwrap`, a profile that allows user namespaces for `/usr/bin/bwrap` only, and loads it with `apparmor_parser -r`. When that file already exists, or the cause is another, it only shows bubblewrap's error |
+| bubblewrap (Linux), `git`, `tar`, and `curl` and `bash` when Claude Code must be installed | The package manager's install (`apt-get`, `dnf`, `pacman`, `zypper` or `apk`), with `sudo` unless run as root; `xcode-select --install` on macOS, also when `git` is only the stub `/usr/bin/git` that macOS has without the developer tools (`xcode-select -p` fails) |
+| A sandbox that does not start because AppArmor restricts unprivileged user namespaces (`/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is 1, Ubuntu 23.10 and later) | Writes `/etc/apparmor.d/bwrap`, a profile that allows user namespaces for `/usr/bin/bwrap` only, and loads it with `apparmor_parser -r`; when loading fails, it removes the file again, so the next `setup` offers it again. When that file already exists, or the cause is another, it only shows bubblewrap's error |
 | `claude` on `PATH` | Claude Code's native installer (`curl -fsSL https://claude.ai/install.sh \| bash`, into `~/.local/bin`, no sudo). It says so when it sees the snap `claude-code` or VS Code's own copy of Claude Code (`~/.vscode-server/extensions`): neither is a standalone binary at a fixed path, so neither can be mounted into the sandbox. For Codex it names the audited versions and installs nothing |
-| A Claude login | `claude`, to sign in and `/exit` |
+| A Claude login (none yet, or the chosen one no longer gives a token) | `claude` (the binary setup found, also outside `PATH`; with `CLAUDE_CONFIG_DIR` set when the runner reads another config directory), to sign in and `/exit` |
 | A harness login for the runner | `autocraft harness claude --config-dir` (Linux) or `--keychain` (macOS) when that login exists; `autocraft harness codex` for Codex. A setup-token is not offered: choose it yourself |
-| A dashboard login | `autocraft login <dashboard URL>`, when setup was given the URL |
+| A dashboard login, or a login to another dashboard than the URL setup was given | `autocraft login <dashboard URL>`, when setup was given the URL; it replaces the other login, and the offer says so |
 
-`--yes` runs every command without asking. Without a terminal and without `--yes`, `setup` only lists the commands. When `~/.local/bin` is not on `PATH`, setup looks there too and says to add it to the shell profile.
+`--yes` runs every command without asking. Without a terminal and without `--yes`, `setup` only lists the commands. When `~/.local/bin` is not on `PATH`, setup looks there too and, at the end, says how to add it to the shell profile (`export PATH="$HOME/.local/bin:$PATH"`).
 
 ### Moving a 1.2.0 runner
 

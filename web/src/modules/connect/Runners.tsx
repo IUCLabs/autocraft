@@ -128,11 +128,6 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
               r.lastSeen ? <>seen <TimeAgo iso={r.lastSeen} /></> : "never seen",
             ])}
           </div>
-          {!r.fresh && (
-            <p className="mt-1 text-xs leading-5 text-ink/65">
-              {r.readiness ? "Stopped." : "Logged in, not started yet."} Start it on {r.machine?.hostname ?? "its machine"}: <span className="code">autocraft work</span>
-            </p>
-          )}
           {r.lastError && (
             <p className={cn("mt-1 text-xs leading-5 text-bad", open ? "break-words" : "truncate")}>
               {r.lastError.text} <TimeAgo iso={r.lastError.at} className="text-ink/55" />
@@ -148,6 +143,14 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
           <CaretDownIcon aria-hidden className={cn("text-ink/45 transition-transform duration-fast", open && "rotate-180")} />
         </span>
       </button>
+      {/* Outside the button (whose label replaces its content for screen readers), in a live region that is always there. */}
+      <p role="status" aria-live="polite" className={cn("px-3 text-xs leading-5 text-ink/65", !r.fresh && "-mt-2 pb-3")}>
+        {!r.fresh && (
+          <>
+            {r.readiness ? "Stopped." : "Logged in, not started yet."} Start it on {r.machine?.hostname ?? "its machine"}: <span className="code">autocraft work</span>
+          </>
+        )}
+      </p>
       {open && (
         <div className="space-y-3 border-t border-line px-3 py-3">
           {r.fresh && r.readiness !== "ready" && r.reason && <p className="text-xs text-ink/65">{r.reason}</p>}

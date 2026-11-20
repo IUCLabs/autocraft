@@ -3836,16 +3836,19 @@ function sandboxProbe() {
  * @property {string} platform  process.platform
  * @property {boolean} root  running as root (no sudo needed)
  * @property {"apt" | "dnf" | "pacman" | "zypper" | "apk" | null} pkg  the system's package manager (Linux)
- * @property {string[]} missing  system packages to install: bubblewrap, git, tar
+ * @property {string[]} missing  system packages to install: bubblewrap, git, tar, and curl and bash when Claude Code's installer must run
  * @property {"ok" | "failed" | null} sandbox  whether a bubblewrap sandbox starts (null: not tried, bubblewrap is missing or not Linux)
  * @property {string} sandboxError  bubblewrap's error when it does not start
  * @property {boolean} userns  the kernel restricts unprivileged user namespaces through AppArmor (Ubuntu 23.10 on)
  * @property {boolean} bwrapProfile  /etc/apparmor.d/bwrap exists
  * @property {"claude" | "codex"} harness
  * @property {boolean} harnessBin  the harness binary is found
+ * @property {string | null} claudeBin  the Claude Code binary found (also outside PATH, through claudeBin or the environment)
+ * @property {string | null} claudeDir  the Claude config directory the runner is set to read, when it is not the default one
  * @property {string | null} otherClaude  a Claude Code binary that is not on PATH and not usable as it is (snap, VS Code's own copy)
  * @property {"set" | "available" | "none"} harnessLogin  the runner has a harness login / one can be taken over (~/.claude, the Keychain) / none
- * @property {boolean} loggedIn  the runner has an approved server credential
+ * @property {boolean} loggedIn  the runner has an approved server credential (for `server`, when that is given)
+ * @property {string | null} loggedInTo  the dashboard the runner's credential belongs to
  * @property {string | null} server  the dashboard URL given to setup
  * @property {string} me  the shell words that run this runner
  */
@@ -3882,7 +3885,8 @@ export function setupSteps(f) {
       out.push({
         id: "apparmor", problem: `a sandbox does not start: AppArmor restricts unprivileged user namespaces (${f.sandboxError.slice(0, 120)})`,
         fix: `Allow them for bubblewrap only, with an AppArmor profile at ${BWRAP_PROFILE}.`,
-        cmd: `printf '%s\\n' ${profile.map(shq).join(" ")} | ${sudo}tee ${BWRAP_PROFILE} >/dev/null && ${sudo}apparmor_parser -r ${BWRAP_PROFILE}`,
+        // A profile that does not load is removed again, so the next setup offers it once more.
+        cmd: `printf '%s\\n' ${profile.map(shq).join(" ")} | ${sudo}tee ${BWRAP_PROFILE} >/dev/null && { ${sudo}apparmor_parser -r ${BWRAP_PROFILE} || { ${sudo}rm -f ${BWRAP_PROFILE}; false; }; }`,
       });
     } else out.push({ id: "sandbox", problem: `a sandbox does not start: ${f.sandboxError.slice(0, 200)}`, fix: "bubblewrap needs unprivileged user namespaces; check the kernel settings (user.max_user_namespaces, kernel.unprivileged_userns_clone) and AppArmor." });
   }
@@ -3898,10 +3902,11 @@ export function setupSteps(f) {
       : { id: "harness-login", problem: "no harness login chosen", fix: "Use the Claude login in your Claude config directory, read before each call.", cmd: `${f.me} harness claude --config-dir` });
   } else if (f.harnessLogin === "none") {
     if (f.harness === "codex") out.push({ id: "harness-login", problem: "Codex is not logged in for the runner", fix: "Log Codex in to the runner's own CODEX_HOME.", cmd: `${f.me} harness codex` });
-    else out.push({ id: "claude-signin", problem: "Claude Code is not signed in", fix: "Start Claude Code, sign in, then type /exit; setup goes on.", cmd: "claude" });
+    else out.push({ id: "claude-signin", problem: "Claude Code is not signed in", fix: "Start Claude Code, sign in, then type /exit; setup goes on.", cmd: `${f.claudeDir ? `CLAUDE_CONFIG_DIR=${shq(f.claudeDir)} ` : ""}${shq(f.claudeBin ?? "claude")}` });
   }
   if (!f.loggedIn) {
-    if (f.server) out.push({ id: "login", problem: "not logged in to a dashboard", fix: `Log in to ${f.server}, then approve the code on its Connect page.`, cmd: `${f.me} login ${shq(f.server)}` });
+    const other = f.server && f.loggedInTo && f.loggedInTo !== f.server;
+    if (f.server) out.push({ id: "login", problem: other ? `logged in to ${f.loggedInTo}, not to ${f.server}` : "not logged in to a dashboard", fix: `Log in to ${f.server}${other ? ` (this replaces the login to ${f.loggedInTo})` : ""}, then approve the code on its Connect page.`, cmd: `${f.me} login ${shq(f.server)}` });
     else out.push({ id: "login", problem: "not logged in to a dashboard", fix: "Run `autocraft setup <dashboard URL>`, or `autocraft login <dashboard URL>`." });
   }
   return out;
@@ -3912,18 +3917,29 @@ function onPath(bin) {
   return (process.env.PATH ?? "").split(delimiter).filter(Boolean).some((d) => { try { accessSync(join(d, bin), constants.X_OK); return true; } catch { return false; } });
 }
 
+/**
+ * macOS without the developer tools still has /usr/bin/git, a stub that only offers to install them: it counts as missing.
+ */
+function gitStub() {
+  if (process.platform !== "darwin") return false;
+  const git = (process.env.PATH ?? "").split(delimiter).map((p) => join(p, "git")).find((f) => { try { accessSync(f, constants.X_OK); return true; } catch { return false; } });
+  return git === "/usr/bin/git" && spawnSync("xcode-select", ["-p"], { encoding: "utf8", timeout: 10_000 }).status !== 0;
+}
+
 /** @param {string | null} server @returns {SetupFacts} */
 function setupFacts(server) {
   const cfg = loadConfig();
   const linux = process.platform === "linux";
   const pkgs = /** @type {const} */ (["apt", "dnf", "pacman", "zypper", "apk"]);
   const pkg = linux ? pkgs.find((p) => onPath(p === "apt" ? "apt-get" : p)) ?? null : null;
-  const missing = [...(linux && !existsSync(BWRAP) ? ["bubblewrap"] : []), ...["git", "tar"].filter((t) => !onPath(t))];
+  const adapter = adapterOf(cfg);
+  const d = adapter.detect(cfg);
+  // Claude Code's installer needs curl and bash; macOS has both.
+  const installer = linux && adapter.id === "claude" && !d.bin ? ["curl", "bash"] : [];
+  const missing = [...(linux && !existsSync(BWRAP) ? ["bubblewrap"] : []), ...["git", "tar", ...installer].filter((t) => !onPath(t) || (t === "git" && gitStub()))];
   const probe = linux && existsSync(BWRAP) ? sandboxProbe() : null;
   /** @param {string} f */
   const read = (f) => { try { return readFileSync(f, "utf8").trim(); } catch { return ""; } };
-  const adapter = adapterOf(cfg);
-  const d = adapter.detect(cfg);
   let otherClaude = null;
   if (adapter.id === "claude" && !d.bin) {
     if (existsSync("/snap/bin/claude-code")) otherClaude = "the snap claude-code";
@@ -3934,15 +3950,18 @@ function setupFacts(server) {
   }
   /** @type {SetupFacts["harnessLogin"]} */
   let harnessLogin = "none";
+  // A login chosen before counts only while it still gives a token (its credentials file or Keychain item may be gone).
   if (adapter.id === "codex") harnessLogin = d.loggedIn ? "set" : "none";
-  else if (cfg.claudeConfigDir || cfg.claudeAuth === "keychain" || cfg.claudeToken) harnessLogin = "set";
+  else if (cfg.claudeConfigDir || cfg.claudeAuth === "keychain" || cfg.claudeToken) harnessLogin = d.loggedIn ? "set" : "none";
   else if (process.platform === "darwin" ? !!keychainCredential() : typeof readClaudeCredentials(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"))?.claudeAiOauth?.accessToken === "string") harnessLogin = "available";
   return {
     platform: process.platform, root: process.getuid?.() === 0, pkg, missing,
     sandbox: probe ? (probe.ok ? "ok" : "failed") : null, sandboxError: probe?.error ?? "",
     userns: read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1", bwrapProfile: existsSync(BWRAP_PROFILE),
     harness: adapter.id === "codex" ? "codex" : "claude", harnessBin: !!d.bin, otherClaude, harnessLogin,
-    loggedIn: !!cfg.server && !!credentialOf(cfg), server,
+    claudeBin: adapter.id === "claude" ? d.bin : null,
+    claudeDir: cfg.claudeConfigDir && resolve(cfg.claudeConfigDir) !== resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")) ? cfg.claudeConfigDir : null,
+    loggedIn: !!cfg.server && !!credentialOf(cfg) && (!server || cfg.server === server), loggedInTo: cfg.server && credentialOf(cfg) ? cfg.server : null, server,
     me: `${shq(process.execPath)} ${shq(realpathSync(self))}`,
   };
 }
@@ -3988,7 +4007,7 @@ async function cmdSetup(argv) {
   }
   if (!listed) console.log("nothing is missing");
   else if (!yes && !ask) console.log("\nNo terminal to ask on: run the commands above yourself, or `autocraft setup --yes` to run them.");
-  if (!pathHad && existsSync(join(local, "claude"))) console.log(`\nnote: ${local} is not on your PATH; add it in your shell's profile so claude and autocraft are found.`);
+  if (!pathHad) console.log(`\nnote: ${local} is not on your PATH; add it in your shell's profile (for example: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc) so autocraft and claude are found.`);
   console.log("");
   return cmdDoctor();
 }
