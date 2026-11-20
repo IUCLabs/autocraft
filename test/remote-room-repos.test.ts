@@ -55,6 +55,9 @@ test("room is counted per repo: runners with disjoint repos, a call nobody may t
   assert.equal(room([]), 1, "a maintainer's runner takes no call without a repo");
   db.prepare("UPDATE remote_calls SET state = 'failed' WHERE id = ?").run(photo);
   assert.equal(room(["photocraft"]), 1);
+  db.prepare("UPDATE repo_permissions SET checked_at = ? WHERE login = 'dave' AND repo = 'deckcraft'").run(new Date(Date.now() - 3600_000).toISOString());
+  assert.equal(room(["deckcraft"]), 2, "a read permission confirmed an hour ago no longer leaves dave out");
+  perm("dave", "deckcraft", "read");
   assert.equal(room(["photocraft", "deckcraft"]), 0, "nobody takes a call on both");
 
   // A job's repo param is added to the repos a pool names.

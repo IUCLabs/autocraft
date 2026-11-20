@@ -25,7 +25,7 @@ import { advanceScanTests } from "../security/scantest.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
 import { jobBlock } from "./concurrency.ts";
-import { queueRoom } from "../agents/call.ts";
+import { queueRoomPass } from "../agents/call.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
 import { envVar } from "../env.ts";
 import { jobRemoteQueue, REMOTE_WAIT_CAP_MS, withdrawJobCalls } from "../remote/calls.ts";
@@ -383,7 +383,7 @@ export class Runner {
 
   /**
    * Starts queued jobs: security first (priority 2), then by id. A job whose step calls Claude starts only while the
-   * model queue has room for its class and its repo (queueRoom; a job without a repo param spans repos and is asked about
+   * model queue has room for its class and its repo (queueRoomPass; a job without a repo param spans repos and is asked about
    * none), so processes do not sit waiting for slots, unless no job of its step runs. A start takes one from the room of every
    * repo of its class counted so far: the Task Runners that serve one repo may serve others.
    */
@@ -395,6 +395,7 @@ export class Runner {
     const on = isEnabled(this.db), draining = isDraining(this.db);
     // Room by class, then by the job's repo ("" for a job without one).
     const room = new Map<number, Map<string, number>>();
+    const roomFor = queueRoomPass(this.db);
     for (const q of queued) {
       if (draining || (q.requested_by === AUTOPILOT_USER && !on)) continue;
       if (this.running.size >= this.o.maxJobs) return;
@@ -410,7 +411,7 @@ export class Runner {
       let byRepo = room.get(cls);
       if (!byRepo) room.set(cls, (byRepo = new Map()));
       const key = q.repo ?? "";
-      const roomOf = (): number => byRepo.get(key) ?? queueRoom(this.db, cls, q.repo ? [q.repo] : undefined);
+      const roomOf = (): number => byRepo.get(key) ?? roomFor(cls, q.repo ? [q.repo] : undefined);
       if (claude && !this.db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state = 'running' LIMIT 1").get(step.name)) {
         // Nothing of the step runs: it starts anyway, and takes a slot of the room.
       } else if (claude) {

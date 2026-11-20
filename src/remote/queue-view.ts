@@ -76,16 +76,20 @@ export type QueuedCall = {
   why: { code: ModelQueueWhyCode; text: string };
 };
 
-/** The queued calls with a live caller in claim order, why each waits (`showPicker`: name the picker), and the ready runners. */
-export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean): { calls: QueuedCall[]; runners: ReadyRunner[] } {
+/**
+ * The queued calls with a live caller in claim order, why each waits (`showPicker`: name the picker), and the ready runners.
+ * Write permission is the one last confirmed, unless `canWriteOf` gives the rule for the runners' logins.
+ */
+export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean, canWriteOf?: (logins: string[]) => (login: string, repo: string) => boolean): { calls: QueuedCall[]; runners: ReadyRunner[] } {
   const snap = queueSnapshot(db, nowMs).filter((r) => r.seen_at >= nowMs - CALLER_STALE_MS);
   const runners = readyRunners(db, nowMs);
   if (!snap.length) return { calls: [], runners };
   const extra = new Map((db.prepare("SELECT id, asked_model, queued_ms, queued_since, error FROM main.remote_calls WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(snap.map((r) => r.id))) as
     { id: number; asked_model: string; queued_ms: number; queued_since: number | null; error: string | null }[]).map((r) => [Number(r.id), r]));
   const writable = new Set<string>();
-  for (const p of db.prepare("SELECT login, repo, permission FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(runners.map((r) => r.login))) as { login: string; repo: string; permission: string }[])
+  if (!canWriteOf) for (const p of db.prepare("SELECT login, repo, permission FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(runners.map((r) => r.login))) as { login: string; repo: string; permission: string }[])
     if (WRITE_PERMISSIONS.has(p.permission)) writable.add(`${p.login.toLowerCase()}\n${p.repo}`);
+  const canWrite = canWriteOf?.(runners.map((r) => r.login)) ?? ((l: string, repo: string) => writable.has(`${l.toLowerCase()}\n${repo}`));
   const fresh = pickerLogins(db, nowMs);
   const ahead = new Map<Tier, number>();
   const calls: QueuedCall[] = [];
@@ -95,7 +99,7 @@ export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean):
     const picked = pickCounts(r, nowMs, (l) => fresh.has(l)) ? r.pickedBy : null;
     const followUp = r.parent_id !== null;
     const n = ahead.get(r.tier) ?? 0;
-    const why = whyWaiting({ tier: r.tier, promptId: r.prompt_id, repos: r.repos, followUp, picked: picked === null ? null : { login: showPicker ? picked : null } }, runners, n, (l, repo) => writable.has(`${l.toLowerCase()}\n${repo}`));
+    const why = whyWaiting({ tier: r.tier, promptId: r.prompt_id, repos: r.repos, followUp, picked: picked === null ? null : { login: showPicker ? picked : null } }, runners, n, canWrite);
     if (!followUp && picked === null) ahead.set(r.tier, n + 1);
     calls.push({
       id: r.id, step: r.step, promptId: r.prompt_id, tier: r.tier, model: x.asked_model, refs: r.refs, repos: r.repos, authors: r.authors,

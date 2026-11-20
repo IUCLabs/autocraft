@@ -14,7 +14,7 @@ import { readAppSecrets } from "./github/install-token.ts";
 import { PROBE_HEADERS } from "./health.ts";
 import { unboundLogins } from "./author-ids.ts";
 import { inferenceMode } from "./remote/mode.ts";
-import { CALLER_STALE_MS } from "./remote/room.ts";
+import { CALLER_STALE_MS, roomCanWrite } from "./remote/room.ts";
 import { STATUS_FRESH_MS } from "./remote/helpers.ts";
 import { manualSql } from "./remote/manual-only.ts";
 import { queueView } from "./remote/queue-view.ts";
@@ -280,11 +280,12 @@ function remoteManualCheck({ db, nowMs }: CheckCtx): Check[] {
 
 /**
  * User-local mode: calls have waited past remoteQueuedMs and no ready Task Runner's user may take them: the role rules, write
- * permission as last confirmed or My repos leave every ready runner out (queue-view.ts whyWaiting `no-repo-access`).
+ * permission or My repos leave every ready runner out (queue-view.ts whyWaiting `no-repo-access`). Permission goes by the
+ * room's rule (roomCanWrite), so a login whose permission is not freshly known counts as able to take the call.
  */
 function remoteNoTakerCheck({ db, nowMs }: CheckCtx): Check[] {
   if (inferenceMode(db) !== "user-local") return [];
-  const stuck = queueView(db, nowMs, false).calls.filter((c) => c.why.code === "no-repo-access" && c.waitedMs >= THRESHOLDS.remoteQueuedMs);
+  const stuck = queueView(db, nowMs, false, (logins) => roomCanWrite(db, logins, nowMs)).calls.filter((c) => c.why.code === "no-repo-access" && c.waitedMs >= THRESHOLDS.remoteQueuedMs);
   if (!stuck.length) return [ok("remote-no-taker", "/model-queue")];
   const repos = [...new Set(stuck.flatMap((c) => c.repos))].sort();
   const n = stuck.length;

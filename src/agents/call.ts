@@ -7,7 +7,7 @@ import { insertRun, onRunEnd, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 import { levelBand } from "../rank/level.ts";
 import { inferenceMode } from "../remote/mode.ts";
-import { remoteRoom } from "../remote/room.ts";
+import { remoteRoom, roomOf, roomState, type RoomState } from "../remote/room.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
 export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
@@ -122,6 +122,14 @@ export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass(), rep
   if (inferenceMode(db) === "user-local") return remoteRoom(db, cls, Date.now(), callRepos(repos));
   const ahead = (db.prepare("SELECT COUNT(*) AS n FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ? AND class >= ?").get(Date.now() - allocation.staleMs, cls) as { n: number }).n;
   return Math.max(0, freeSlots(db) - Number(ahead));
+}
+
+/** queueRoom for many questions at one moment (the runner's pass over queued jobs): in the user-local mode the helpers, their permissions and repos are read once. */
+export function queueRoomPass(db: DatabaseSync): (cls: 0 | 1 | 2, repos?: readonly string[]) => number {
+  if (inferenceMode(db) !== "user-local") return (cls, repos) => queueRoom(db, cls, repos);
+  const nowMs = Date.now();
+  let st: RoomState | undefined;
+  return (cls, repos) => roomOf(db, (st ??= roomState(db, nowMs)), cls, nowMs, callRepos(repos));
 }
 
 export type Started = { runId: number; configDir: string; accountId: string };
