@@ -205,6 +205,18 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
  * the way a carried answer does, so the PR merges only after a sure take review, a clean pre-merge review and green CI there;
  * a take-fix review, a defect or a red head asks the Merge? question instead. Throws when it cannot start.
  */
+/** Why a PR in a NOT_REVIEWABLE plan state gets no code review, in words a commenter can act on. */
+function notReviewableWhy(state: string, label: string | null): string {
+  switch (state) {
+    case "backlog": return "it is in the backlog";
+    case "duplicate": return "it is held as a duplicate";
+    case "draft": return "it is a draft";
+    case "scope": return "its scope question is still open";
+    case "label-not-reviewed": return label ? `its label "${label}" does not get a code review` : "its classification has not settled yet; try again later";
+    default: return state;
+  }
+}
+
 /** Why a pre-approval pinned to a head (a comment's) was refused: the PR has another head now. */
 export const HEAD_CHANGED = "the PR changed after your comment; comment again";
 
@@ -218,7 +230,7 @@ export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: num
   const fact = loadPrFact(db, repo, number);
   const planState = fact ? decidePr(fact).state : null;
   if (!planState || planState === "out-of-scope" || planState === "integration") throw new Error(`${ref} is outside the pipeline's scope`);
-  if (NOT_REVIEWABLE.includes(planState)) throw new Error(`${ref} cannot be reviewed (${planState}): answer its open question first`);
+  if (NOT_REVIEWABLE.includes(planState)) throw new Error(`${ref} cannot be reviewed yet: ${notReviewableWhy(planState, fact?.label ?? null)}`);
   const head = it.head_oid;
   if (!head) throw new Error(`${ref} has no head commit in the mirror yet`);
   if (o.head !== undefined && head !== o.head) throw new Error(HEAD_CHANGED);
