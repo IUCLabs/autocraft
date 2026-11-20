@@ -1,6 +1,6 @@
 import type { Api } from "./client";
 import { requestProject, SCOPE_HEADER } from "./scope";
-import type { ConversationCard, DecisionFilter, ItemFilter, MySettings, MySettingsChange, User } from "./types";
+import type { ConversationCard, DecisionFilter, ItemFilter, MySettings, MySettingsChange, PendingRunnerLogin, User } from "./types";
 
 /** Query string from the set fields; booleans as 1 / 0. */
 function qs(f: object): string {
@@ -53,7 +53,7 @@ export function createHttpApi(): Api {
       } catch {
         /* not JSON: keep the status line */
       }
-      throw new Error(msg);
+      throw Object.assign(new Error(msg), { status: r.status });
     }
     if (r.status === 204) return undefined as T;
     return (await r.json()) as T;
@@ -236,11 +236,23 @@ export function createHttpApi(): Api {
     },
     mcp: {
       tokens: () => get("/api/mcp/tokens"),
-      create: (label, answer = false, run = false) => post("/api/mcp/tokens", { label, answer, run }),
+      create: (label, answer = false) => post("/api/mcp/tokens", { label, answer }),
       revoke: (id) => post("/api/mcp/tokens/revoke", { id }),
     },
-    remote: {
-      helpers: () => get("/api/remote/helpers"),
+    runners: {
+      list: () => get("/api/runners"),
+      pending: (code) => get<PendingRunnerLogin>(`/api/runners/pending?code=${encodeURIComponent(code)}`).catch((e: unknown) => {
+        if ((e as { status?: number }).status === 404) return null;
+        throw e;
+      }),
+      approve: (code, label) => post("/api/runners/approve", label === undefined ? { code } : { code, label }),
+      deny: (code) => post("/api/runners/deny", { code }),
+      revoke: (id) => post("/api/runners/revoke", { id }),
+    },
+    modelQueue: {
+      get: () => get("/api/model-queue"),
+      pick: (id) => post(`/api/model-queue/${encodeURIComponent(String(id))}/pick`, {}),
+      unpick: (id) => post(`/api/model-queue/${encodeURIComponent(String(id))}/unpick`, {}),
     },
     access: {
       overview: () => get("/api/access"),

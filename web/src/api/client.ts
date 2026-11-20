@@ -10,7 +10,9 @@ import type {
   InferenceTier,
   MySettings,
   MySettingsChange,
-  RemoteHelper,
+  ModelQueue,
+  PendingRunnerLogin,
+  RunnersReply,
   DiscordLinkCode,
   DiscordSetup,
   Home,
@@ -297,16 +299,29 @@ export interface Api {
     get(): Promise<InferenceSettings>;
     put(body: { mode?: InferenceMode; models?: Record<InferenceTier, string[]>; /** A tier to its lowest effort, or null for none. */ minEffort?: Partial<Record<InferenceTier, InferenceEffort | null>> }): Promise<InferenceSettings>;
   };
-  /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
+  /** The signed-in user's own MCP Connector tokens: maintainers and operators make them; anyone lists and revokes their own. */
   mcp: {
     tokens(): Promise<McpTokens>;
-    /** `answer`: operators only; the token's agent may also answer decisions, and it lasts 7 days. */
-    create(label: string, answer?: boolean, run?: boolean): Promise<McpTokenCreated>;
+    /** `answer`: the token's agent may also answer decisions (operators, and maintainers who settle), and it lasts 7 days. */
+    create(label: string, answer?: boolean): Promise<McpTokenCreated>;
     revoke(id: number): Promise<McpTokens>;
   };
-  /** The signed-in user's helpers in the user-local inference mode. */
-  remote: {
-    helpers(): Promise<{ helpers: RemoteHelper[] }>;
+  /** The signed-in user's Task Runners in the user-local inference mode, and the device logins they approve. */
+  runners: {
+    list(): Promise<RunnersReply>;
+    /** A login waiting for approval under this user code, or null when none is (404). */
+    pending(code: string): Promise<PendingRunnerLogin | null>;
+    /** `label`: the name the runner is listed under, when the user changed it. */
+    approve(code: string, label?: string): Promise<unknown>;
+    deny(code: string): Promise<unknown>;
+    revoke(id: number): Promise<unknown>;
+  };
+  /** The queued model calls of the user-local inference mode; maintainers and operators pick calls for their own Task Runners. */
+  modelQueue: {
+    get(): Promise<ModelQueue>;
+    pick(id: number): Promise<unknown>;
+    /** The user's own pick; operators clear anyone's. */
+    unpick(id: number): Promise<unknown>;
   };
   /** Operator only. */
   access: {
