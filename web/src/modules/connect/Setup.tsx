@@ -1,19 +1,20 @@
+import { ListNumbersIcon } from "@phosphor-icons/react";
 import { useState } from "react";
 import { cn } from "../../ui/cn";
 import { CodeBlock } from "../../ui/molecules/CodeBlock";
 import { Segmented } from "../../ui/molecules/Segmented";
+import { Block } from "../../ui/molecules/Block";
+import { SectionTitle } from "./SectionTitle";
 
 type Alt = { key: string; label: string; text: string };
 type Step = { label: string; alts: Alt[] };
 
-const HARNESS = "Harness, if setup did not pick one";
-
-/** A Task Runner's setup, one command per step (or one per alternative); `origin` is this dashboard. */
+/** A Task Runner's setup, one command per step (or one per alternative); `origin` is this dashboard. The same for everyone, always. */
 const steps = (origin: string): Step[] => [
-  // `setup` offers to install what the machine lacks, asking first, then logs in to this dashboard.
+  // `setup` asks before installing what is missing (bubblewrap, git, tar, the AppArmor rule, Claude Code), then logs in.
   { label: "Install and set up, then approve the code here", alts: [{ key: "", label: "", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft && ~/.local/bin/autocraft setup ${origin}` }] },
   {
-    label: HARNESS,
+    label: "Harness, if setup did not pick one",
     alts: [
       { key: "linux", label: "Linux login", text: "autocraft harness claude --config-dir" },
       { key: "mac", label: "macOS login", text: "autocraft harness claude --keychain" },
@@ -24,18 +25,18 @@ const steps = (origin: string): Step[] => [
   {
     label: "Run",
     alts: [
-      { key: "terminal", label: "In a terminal", text: "autocraft work" },
-      { key: "once", label: "One call", text: "autocraft run" },
-      { key: "service", label: "Always on", text: "autocraft service install" },
+      { key: "terminal", label: "In a terminal", text: "autocraft work\n\n# takes calls until you stop it: Ctrl-C gives running calls back, a second Ctrl-C quits" },
+      { key: "once", label: "One call", text: "autocraft run\n\n# or, from an agent\nautocraft run --detach\nautocraft wait <id>" },
+      { key: "service", label: "Always on", text: "autocraft service install\n\n# starts at login and restarts; autocraft service uninstall removes it" },
     ],
   },
 ];
 
 const onMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
 
-/** The setup commands for a new Task Runner, numbered; steps with alternatives pick one with a segmented control. */
+/** The setup commands of a Task Runner, numbered; steps with alternatives pick one with a segmented control. */
 export function RunnerSetup({ className }: { className?: string }) {
-  const [pick, setPick] = useState<Record<string, string>>({ [HARNESS]: onMac ? "mac" : "linux", Run: "terminal" });
+  const [pick, setPick] = useState<Record<string, string>>({ "Harness, if setup did not pick one": onMac ? "mac" : "linux", Run: "terminal" });
   return (
     <ol className={cn("space-y-2.5 px-3 py-3", className)}>
       {steps(location.origin).map((s, i) => {
@@ -54,5 +55,14 @@ export function RunnerSetup({ className }: { className?: string }) {
         );
       })}
     </ol>
+  );
+}
+
+/** The setup guide as a block of its own, below the Task Runners: the same for everyone, always. */
+export function RunnerGuide() {
+  return (
+    <Block dense flush className="mt-4" title={<SectionTitle icon={ListNumbersIcon}>Set up a Task Runner</SectionTitle>}>
+      <RunnerSetup />
+    </Block>
   );
 }

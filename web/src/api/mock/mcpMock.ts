@@ -28,7 +28,7 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
   ];
   // `?states=1` adds a runner that never reported in and one that stopped; left out by default, so the five-runner limit leaves room to approve a login.
   if (new URLSearchParams(location.search).get("states") === "1") runners.push(
-    // Logged in but never reported in.
+    // Logged in but never reported in: its row says to start it.
     { tokenId: 8, label: "wsl", slots: null, busy: null, lastError: null, readiness: null, until: null, reason: null, fresh: false, lastSeen: null, harness: null, models: {}, reserve: null, usage: null,
       machine: { hostname: "desktop", platform: "linux", arch: "x64" }, helperVersion: "1.3.4", createdAt: at(-20 * MIN), expiresAt: at(90 * DAY), agent: true, answer: false },
     // Reported in once, then stopped.
