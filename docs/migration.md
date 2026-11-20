@@ -16,7 +16,7 @@ RUN="-v DATA:/data -v CONFIG:/config --env-file container.env"
 | `AUTOCRAFT_DISCORD_TOKEN_FILE`, `AUTOCRAFT_DISCORD_KEY_FILE`, `AUTOCRAFT_IMAGE_TOKEN_FILE` | Each names a file. Copy the file to `/config` (step 6) and set the variable to the new path. |
 | `AUTOCRAFT_ARTIFACT_DIR`, `AUTOCRAFT_SNAPSHOT_DIR` | Leave unset: the code then uses `artifacts` and `item-snapshot` beside the database, in `/data` (step 5). |
 | `AUTOCRAFT_MERGE_CMD`, `AUTOCRAFT_EXTRA_STEPS` | Name a program or module of the old host. The image has neither; leave them unset unless a derived image adds it. |
-| `AUTOCRAFT_WORKER_SSH`, `AUTOCRAFT_BRANCH`, `AUTOCRAFT_ROOT`, `AUTOCRAFT_UNITS`, `AUTOCRAFT_RUNNER_UNIT`, `AUTOCRAFT_TIMER`, `AUTOCRAFT_SUDO`, `AUTOCRAFT_HEALTH_URL`, `AUTOCRAFT_ENV_FILE`, `AUTOCRAFT_KEEP_RELEASES` | Drop. Only `deploy/hook.sh` reads them; it runs `autocraft worker update-code`, which needs `ssh` and a bare repository, and the image has neither. Update a worker's code by hand (see Build worker in the VPS section). |
+| `AUTOCRAFT_WORKER_SSH`, `AUTOCRAFT_BRANCH`, `AUTOCRAFT_ROOT`, `AUTOCRAFT_UNITS`, `AUTOCRAFT_RUNNER_UNIT`, `AUTOCRAFT_TIMER`, `AUTOCRAFT_SUDO`, `AUTOCRAFT_HEALTH_URL`, `AUTOCRAFT_ENV_FILE`, `AUTOCRAFT_KEEP_RELEASES` | Drop. Only `deploy/hook.sh` reads them; it runs `autocraft-server worker update-code`, which needs `ssh` and a bare repository, and the image has neither. Update a worker's code by hand (see Build worker in the VPS section). |
 
 Also check the old `PATH` for wrappers (for example a `gh` wrapper that picks an account by directory): the image has the plain `gh`, which uses the one `GH_TOKEN`.
 
@@ -41,7 +41,7 @@ Steps marked **admin** need a person with access to the secrets or to DNS and th
 
 ## Cut-over
 
-1. **Pipeline off.** On the old host: `autocraft pipeline off`. Wait until the runner has no running job (`autocraft pipeline status`, or the jobs list on the dashboard). `pipeline off` holds only automatic jobs: jobs queued by a user or the CLI stay queued and would start on the new runner. List them with `autocraft runner jobs --state queued` and cancel each with `autocraft runner cancel <id>`. Check that the list is empty before the final backup. Also check that `worker_update_pending` is not set: `autocraft worker status` lists a pending update. A pending update makes the runner call `ssh`, which the image does not have (`src/build/worker-update.ts:119-142`); finish it on the old host first.
+1. **Pipeline off.** On the old host: `autocraft-server pipeline off`. Wait until the runner has no running job (`autocraft-server pipeline status`, or the jobs list on the dashboard). `pipeline off` holds only automatic jobs: jobs queued by a user or the CLI stay queued and would start on the new runner. List them with `autocraft-server runner jobs --state queued` and cancel each with `autocraft-server runner cancel <id>`. Check that the list is empty before the final backup. Also check that `worker_update_pending` is not set: `autocraft-server worker status` lists a pending update. A pending update makes the runner call `ssh`, which the image does not have (`src/build/worker-update.ts:119-142`); finish it on the old host first.
 2. **Final backup.** `deploy/backup.sh predeploy` (with the systemd settings loaded). It writes `<database dir>/backups/predeploy-<UTC time>.db.zst` from a consistent snapshot and checks its integrity. Keep the file name.
 3. **Stop the old services**: the runner, the dashboard, the sync and backup timers. Nothing may write to the old database from now on. Do not delete anything on the old host.
 4. **Create the volumes** and make `/data` and `/config` writable by uid 10001. With Docker, named volumes take that ownership from the image. In Kubernetes, `fsGroup: 10001` does it.
@@ -72,7 +72,7 @@ Steps marked **admin** need a person with access to the secrets or to DNS and th
    docker run --rm -v DATA:/data IMAGE reference list
    ```
 
-   The file counts and sizes must equal the old host's `autocraft reference list`. To copy `artifacts/` as it is:
+   The file counts and sizes must equal the old host's `autocraft-server reference list`. To copy `artifacts/` as it is:
 
    ```
    tar -cf - -C <root>/data artifacts | docker run -i --rm -v DATA:/data --entrypoint tar IMAGE -xf - -C /data
@@ -154,7 +154,7 @@ Do this if a check in step 9 or the first jobs after step 11 fail.
 1. Pipeline off on the new instance, then stop and keep (do not remove) its containers and volumes: the new instance stays off from now on, so only one runner ever writes a database.
 2. Point DNS and the proxy back, and revert the OAuth app's callback URL and, if you changed them, the GitHub App's callback and setup URLs to the old origin.
 3. Start the old services on the old database: the dashboard, then the runner, then the timers. The old database is the state of step 2; the new instance's changes since then are not carried back. Users whose GitHub tokens were refreshed on the new instance sign in again, and so do Claude accounts without a long-lived `oauth-token` (a refreshed login on the new instance can invalidate the old one). Check the Accounts page on the old host before turning the pipeline on. If the pipeline made changes on GitHub in between, the next sync reads them.
-4. `autocraft pipeline on` on the old host when the checks pass there.
+4. `autocraft-server pipeline on` on the old host when the checks pass there.
 
 A second attempt starts from the cut-over again with a fresh final backup (the old host's pipeline off, the new volumes emptied).
 

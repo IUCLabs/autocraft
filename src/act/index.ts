@@ -15,8 +15,8 @@
 // operator's answer counts (actionable()), and only in repos an operator
 // approved for comments. No model calls.
 //
-//   autocraft act --repo R [--limit N] [--apply]
-//   autocraft comment-approval [--repo R]
+//   autocraft-server act --repo R [--limit N] [--apply]
+//   autocraft-server comment-approval [--repo R]
 import { OPERATOR_MODELS } from "../prompts/index.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";

@@ -7,8 +7,8 @@
 //   code   a compile, test, lint or format failure: recorded as needs-fix for the fix PR step (`onCodeVerdict`).
 // The log is untrusted text: it only reaches a model that has no tools, and what is stored or posted is scrubbed.
 //
-//   autocraft main-fix --repo R [--apply]
-//   autocraft main-fix-approval [--repo R]
+//   autocraft-server main-fix --repo R [--apply]
+//   autocraft-server main-fix-approval [--repo R]
 import { leaseItem } from "../runner/leases.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardRepo } from "../core/guard.ts";

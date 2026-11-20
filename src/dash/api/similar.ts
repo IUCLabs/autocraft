@@ -1,5 +1,5 @@
 // Similar items and semantic search over the item embeddings that
-// `autocraft embed` writes. The vectors live in memory (src/embed/vectors.ts);
+// `autocraft-server embed` writes. The vectors live in memory (src/embed/vectors.ts);
 // the query text of a search, and an item that has no vector yet, are embedded
 // here with the same model.
 import type { DatabaseSync } from "node:sqlite";
@@ -72,7 +72,7 @@ async function embedOne(index: VectorIndex, text: string, role: "item" | "query"
 
 async function needVectors(db: DatabaseSync, index: VectorIndex): Promise<void> {
   await index.ready(db);
-  if (!index.size) throw new HttpError(503, "No item embeddings yet: run autocraft embed.");
+  if (!index.size) throw new HttpError(503, "No item embeddings yet: run autocraft-server embed.");
 }
 
 export async function similar(db: DatabaseSync, req: Req, index: VectorIndex, gate?: Semaphore): Promise<SimilarHit[]> {

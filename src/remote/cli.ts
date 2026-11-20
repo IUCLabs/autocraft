@@ -1,5 +1,5 @@
-// `autocraft inference [server|user-local]`: shows or sets the inference mode (src/remote/mode.ts). `autocraft remote cooloff clear <login>`: ends the cool-off of a login's helpers (src/remote/cooloff.ts).
-// `autocraft remote token <login>`: makes a Task Runner credential for a maintainer or operator and prints only the credential,
+// `autocraft-server inference [server|user-local]`: shows or sets the inference mode (src/remote/mode.ts). `autocraft-server remote cooloff clear <login>`: ends the cool-off of a login's helpers (src/remote/cooloff.ts).
+// `autocraft-server remote token <login>`: makes a Task Runner credential for a maintainer or operator and prints only the credential,
 // so it can be piped into `autocraft login --stdin` on the same host without anyone seeing it (no device login needed).
 import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
@@ -18,7 +18,7 @@ export const commands = {
         return;
       }
       if (!isInferenceMode(want) || args.length > 1) {
-        console.error("usage: autocraft inference [server|user-local]");
+        console.error("usage: autocraft-server inference [server|user-local]");
         process.exit(1);
       }
       console.log(setInferenceMode(db, want, "cli") ? `inference: ${want}` : `inference was already ${want}`);
@@ -29,7 +29,7 @@ export const commands = {
     run(args: string[]): void {
       if (args[0] === "token") return makeToken(args.slice(1));
       if (args[0] !== "cooloff" || args[1] !== "clear" || !args[2] || args.length > 3) {
-        console.error("usage: autocraft remote cooloff clear <login>");
+        console.error("usage: autocraft-server remote cooloff clear <login>");
         process.exit(1);
       }
       console.log(clearCooloff(connect(), args[2], "cli") ? `cleared the cool-off of ${args[2]}` : `${args[2]} is not cooling off`);
@@ -37,7 +37,7 @@ export const commands = {
   },
 };
 
-const TOKEN_USAGE = "usage: autocraft remote token <login> [--label <text>] | autocraft login --stdin <dashboard url>   (stdout must not be a terminal)";
+const TOKEN_USAGE = "usage: autocraft-server remote token <login> [--label <text>] | autocraft login --stdin <dashboard url>   (stdout must not be a terminal)";
 
 function makeToken(args: string[]): void {
   const login = args[0];

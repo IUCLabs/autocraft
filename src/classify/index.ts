@@ -1,4 +1,4 @@
-// autocraft classify | classify current | classify-sample | classify-referee | classify-compare
+// autocraft-server classify | classify current | classify-sample | classify-referee | classify-compare
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -30,7 +30,7 @@ function need(f: Record<string, string>, name: string): string {
   return f[name]!;
 }
 
-// autocraft classify current [<run>]: shows the current run, or makes <run> the current one.
+// autocraft-server classify current [<run>]: shows the current run, or makes <run> the current one.
 function current(args: string[]): void {
   const db = connect();
   const [run] = args;

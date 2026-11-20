@@ -2,29 +2,29 @@
 
 Local mirror of every storytold issue and PR, the triage pipeline's state, and the backlog dashboard.
 
-- `autocraft sync` fills a SQLite mirror (`~/.local/share/autocraft/mirror.db`, or `$AUTOCRAFT_DB`) from GitHub GraphQL. Agents and scripts query the mirror instead of calling `gh`.
-- `autocraft whitelist` shows and edits which contributors' PRs may merge on green CI without a decision.
-- `autocraft decide` turns items that need a maintainer's scope call into dashboard decisions, each with an AI summary (`docs/pipeline.md`, Decide).
-- `autocraft labels ensure|plan|apply --repo R` is the pipeline's Label stage: puts each item's settled type label and flags on GitHub. `plan` and dry runs only read; `apply --apply` writes, and only for repos an operator approved on the dashboard Repos page. See docs/pipeline.md.
-- `autocraft dash serve` serves the dashboard.
-- `autocraft runner serve` runs the pipeline: while the pipeline is On (switch on the dashboard's Pipeline page, or `autocraft pipeline on`), it queues and runs the steps that have work, within each stage's daily limit. Turning it Off cancels queued automatic jobs; running ones end at their next model call (queued calls are withdrawn) and their GitHub writes are refused. `autocraft pipeline drain` also cancels queued automatic jobs and starts and plans nothing new, while jobs already running finish and keep their writes and their queued and leased model and helper calls (the dashboard shows Draining; `pipeline on` ends it). `pipeline drain` is refused while the pipeline is Off. A deploy runs `pipeline drain`, waits for the running jobs, deploys, then runs `pipeline on --if-draining`, which switches on only a pipeline that is still draining, so an operator's Off stays Off.
-- `autocraft opus-review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `autocraft checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, Review.
-- `autocraft merge --repo R [--limit N] [--apply]` merges the repo's queued PRs that may merge, through the built-in `autocraft safe-merge` (`$AUTOCRAFT_MERGE_CMD` overrides it with another command that takes `OWNER/REPO PR --squash|--merge --head <sha>` and refuses when the head differs), and asks a Merge? decision for the other taken PRs; without `--apply` it is a dry run. `autocraft queue [--repo R]` prints the merge queue. The runner's `merge` step and the autopilot merge only in repos an operator approved for merging on the Repos page. See docs/pipeline.md, Merge queue.
-- Runner steps (`autocraft runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `opus-review`, `checks` and `merge` (operator only, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
+- `autocraft-server sync` fills a SQLite mirror (`~/.local/share/autocraft/mirror.db`, or `$AUTOCRAFT_DB`) from GitHub GraphQL. Agents and scripts query the mirror instead of calling `gh`.
+- `autocraft-server whitelist` shows and edits which contributors' PRs may merge on green CI without a decision.
+- `autocraft-server decide` turns items that need a maintainer's scope call into dashboard decisions, each with an AI summary (`docs/pipeline.md`, Decide).
+- `autocraft-server labels ensure|plan|apply --repo R` is the pipeline's Label stage: puts each item's settled type label and flags on GitHub. `plan` and dry runs only read; `apply --apply` writes, and only for repos an operator approved on the dashboard Repos page. See docs/pipeline.md.
+- `autocraft-server dash serve` serves the dashboard.
+- `autocraft-server runner serve` runs the pipeline: while the pipeline is On (switch on the dashboard's Pipeline page, or `autocraft-server pipeline on`), it queues and runs the steps that have work, within each stage's daily limit. Turning it Off cancels queued automatic jobs; running ones end at their next model call (queued calls are withdrawn) and their GitHub writes are refused. `autocraft-server pipeline drain` also cancels queued automatic jobs and starts and plans nothing new, while jobs already running finish and keep their writes and their queued and leased model and helper calls (the dashboard shows Draining; `pipeline on` ends it). `pipeline drain` is refused while the pipeline is Off. A deploy runs `pipeline drain`, waits for the running jobs, deploys, then runs `pipeline on --if-draining`, which switches on only a pipeline that is still draining, so an operator's Off stays Off.
+- `autocraft-server opus-review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `autocraft-server checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, Review.
+- `autocraft-server merge --repo R [--limit N] [--apply]` merges the repo's queued PRs that may merge, through the built-in `autocraft-server safe-merge` (`$AUTOCRAFT_MERGE_CMD` overrides it with another command that takes `OWNER/REPO PR --squash|--merge --head <sha>` and refuses when the head differs), and asks a Merge? decision for the other taken PRs; without `--apply` it is a dry run. `autocraft-server queue [--repo R]` prints the merge queue. The runner's `merge` step and the autopilot merge only in repos an operator approved for merging on the Repos page. See docs/pipeline.md, Merge queue.
+- Runner steps (`autocraft-server runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `opus-review`, `checks` and `merge` (operator only, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
 
 ### Sync
 
-`autocraft sync` (every minute) runs one org-wide GitHub search for items updated since the newest `updatedAt` stored (`org_high_water`) minus 10 minutes, up to the run's start. The search returns at most 1,000 results, so a window with more matches is cut into `updated:A..B` slices, halving until each fits. A one-second slice with more than 1,000 matches is read by listing every tracked repo down to that second (with a logged warning); until the run finishes, neither `org_high_water` nor a repo's `high_water` moves. GitHub's search index can lag, so once an hour (`search_catchup_at`) the same search also re-reads the 6 hours before `org_high_water`, sliced the same way. `org_high_water` moves to the newest `updatedAt` seen, not to the start time. An item whose stored row equals what GitHub returned is not written again. Items of untracked repos are dropped before anything else is done with them. Per-repo passes run only for the first sync, for a repo that was just tracked (tracking clears its `high_water` and `synced_at`) and for `--per-repo`, `--all` and `--repo`.
+`autocraft-server sync` (every minute) runs one org-wide GitHub search for items updated since the newest `updatedAt` stored (`org_high_water`) minus 10 minutes, up to the run's start. The search returns at most 1,000 results, so a window with more matches is cut into `updated:A..B` slices, halving until each fits. A one-second slice with more than 1,000 matches is read by listing every tracked repo down to that second (with a logged warning); until the run finishes, neither `org_high_water` nor a repo's `high_water` moves. GitHub's search index can lag, so once an hour (`search_catchup_at`) the same search also re-reads the 6 hours before `org_high_water`, sliced the same way. `org_high_water` moves to the newest `updatedAt` seen, not to the start time. An item whose stored row equals what GitHub returned is not written again. Items of untracked repos are dropped before anything else is done with them. Per-repo passes run only for the first sync, for a repo that was just tracked (tracking clears its `high_water` and `synced_at`) and for `--per-repo`, `--all` and `--repo`.
 
 Once a day per tracked repo the runner lists the repo's open issues and PRs (`reconcileTick` in `src/runner/runner.ts`). Mirror rows still `OPEN` that GitHub does not list as open are read one by one: closed or merged ones are updated, and ones GitHub no longer finds (deleted) or reports in another repo (transferred) are set to `CLOSED` and written to the audit log as `item-gone`. Every 5 minutes the runner takes the repo with the oldest `repos.reconciled_at`, if that is over 24 hours old, of the repos the sync has read in full. It reconciles one repo at a time, with the pipeline off too, and gives way to the minute sync: before each request it waits while the minute sync or a full re-sync holds its lock, and below 1,000 rate-limit points it waits for the reset. A failed reconcile is recorded like a failed sync and still moves `reconciled_at`, so the repo does not stay first.
 
-`autocraft sync --full` re-reads every item of every tracked repo. It has its own lock (`sync-full-<db>.lock`), so the minute sync keeps running; before each request it waits while a minute sync runs, and it sleeps until the rate limit resets when fewer than 2,500 points are left (`--keep N`). It records the last finished repo (`full_sync_cursor` in `settings`) and a stopped run continues after it; `--restart` starts over.
+`autocraft-server sync --full` re-reads every item of every tracked repo. It has its own lock (`sync-full-<db>.lock`), so the minute sync keeps running; before each request it waits while a minute sync runs, and it sleeps until the rate limit resets when fewer than 2,500 points are left (`--keep N`). It records the last finished repo (`full_sync_cursor` in `settings`) and a stopped run continues after it; `--restart` starts over.
 
 Each run stores `sync_points_last_run` (a full run: `sync_full_points_last_run`) and `sync_rate_remaining` in `settings`.
 
 #### Tracked repos
 
-`autocraft repos track <name>` tracks a storytold repo; `autocraft repos track <owner/name>` tracks one of another owner. The name keeps the casing given, and sync compares names case-sensitively, so use the casing GitHub shows.
+`autocraft-server repos track <name>` tracks a storytold repo; `autocraft-server repos track <owner/name>` tracks one of another owner. The name keeps the casing given, and sync compares names case-sensitively, so use the casing GitHub shows.
 
 - Repo names are unique across owners. Tracking `owner/name` is refused when the name is known under another owner, or when it is new and storytold has a repo of that name. A known bare name means its recorded owner.
 - The repo must exist and be readable. With the GitHub App identity, the app's installation must cover it.
@@ -51,7 +51,7 @@ TypeScript on Node 24, run directly (type stripping, no build step): `node src/c
 
 ## Dashboard server
 
-`autocraft dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Roles are `operator` (answers decisions, manages the whitelist, repos and access), `maintainer` (reads everything except accounts and access, and gives opinions and comments) and `viewer` (read-only, without prompts, logs or notes). Add the first operator from a shell: `autocraft access add <login> --operator`. Then manage the list on the Access page or with `autocraft access list|add|remove|role`.
+`autocraft-server dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Roles are `operator` (answers decisions, manages the whitelist, repos and access), `maintainer` (reads everything except accounts and access, and gives opinions and comments) and `viewer` (read-only, without prompts, logs or notes). Add the first operator from a shell: `autocraft-server access add <login> --operator`. Then manage the list on the Access page or with `autocraft-server access list|add|remove|role`.
 
 The frontend is the React app in `web/`. Build it before serving: `pnpm -C web install && pnpm -C web build` (writes `web/dist`). Without a build the server answers app pages with a 503 that says so. `VITE_MOCK=1 pnpm -C web build` builds a mockup on fake data that runs without the server.
 
@@ -62,7 +62,7 @@ The frontend is the React app in `web/`. Build it before serving: `pnpm -C web i
 | `AUTOCRAFT_DB` | SQLite database path (the mirror database). |
 | `AUTOCRAFT_REVIEW_BOTS` | Comma-separated logins of review bots whose comments never make a review stale, besides accounts of type Bot or ending in `[bot]`. Default `coderabbitai,dependabot,renovate`. Read by `sync` (when it stores a comment), the database backfill and the runner, so set it for all three alike. |
 | `AUTOCRAFT_WEB_DIST` | Directory of the built frontend. Default `web/dist` in the repo. |
-| `AUTOCRAFT_SECRETS_FILE` | JSON file with `github_client_id`, `github_client_secret` and `session_key` (at least 32 characters, random). Must be mode 0600; the server refuses to start if it is missing, incomplete, or readable by group or others. Registering the GitHub App from the dashboard (GitHub App page, operators only) adds `github_app_id`, `github_app_slug`, `github_app_private_key`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret` and `github_app_owner` (`{"login", "type"}`, the user or organization that owns the app). The GitHub App page's Remove button deletes every `github_app_*` key through the same atomic write (refused while the GitHub identity is the GitHub App) and links to the app's GitHub settings page, where the operator deletes the app. The dashboard rewrites this file itself for that: it writes a temporary file beside it and renames it over the file (a symlink stays a symlink), so the directory must be writable by the server user. Registration checks this first and refuses to start when it cannot write. The server reads the app's keys again whenever the file changes, so registering or removing the app needs no restart. Whether GitHub reads, writes and dashboard sign-in use the box account or the GitHub App is one instance-wide setting (GitHub App page, or `autocraft identity [box|app]`); switching ends every dashboard session and takes effect in the runner and the dashboard at their next GitHub call, without a restart. Under `box`, every `gh` and `git` call uses the server user's own `gh` login. Under `app`, every read (GraphQL, REST, git fetch over HTTPS, the image proxy, repository checks when tracking) runs with an installation token of the owner it concerns (the first tracked repo's owner when a read names none) and never sees the box account's credentials; the `gh` login of the server user is not needed. A read for which no installation token can be minted fails with an error naming the owner. The GitHub rate figures shown on the Pipeline page and used by the sync's reserve are those of the token in use. Permission checks of a signed-in person use that person's own token in both modes. |
+| `AUTOCRAFT_SECRETS_FILE` | JSON file with `github_client_id`, `github_client_secret` and `session_key` (at least 32 characters, random). Must be mode 0600; the server refuses to start if it is missing, incomplete, or readable by group or others. Registering the GitHub App from the dashboard (GitHub App page, operators only) adds `github_app_id`, `github_app_slug`, `github_app_private_key`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret` and `github_app_owner` (`{"login", "type"}`, the user or organization that owns the app). The GitHub App page's Remove button deletes every `github_app_*` key through the same atomic write (refused while the GitHub identity is the GitHub App) and links to the app's GitHub settings page, where the operator deletes the app. The dashboard rewrites this file itself for that: it writes a temporary file beside it and renames it over the file (a symlink stays a symlink), so the directory must be writable by the server user. Registration checks this first and refuses to start when it cannot write. The server reads the app's keys again whenever the file changes, so registering or removing the app needs no restart. Whether GitHub reads, writes and dashboard sign-in use the box account or the GitHub App is one instance-wide setting (GitHub App page, or `autocraft-server identity [box|app]`); switching ends every dashboard session and takes effect in the runner and the dashboard at their next GitHub call, without a restart. Under `box`, every `gh` and `git` call uses the server user's own `gh` login. Under `app`, every read (GraphQL, REST, git fetch over HTTPS, the image proxy, repository checks when tracking) runs with an installation token of the owner it concerns (the first tracked repo's owner when a read names none) and never sees the box account's credentials; the `gh` login of the server user is not needed. A read for which no installation token can be minted fails with an error naming the owner. The GitHub rate figures shown on the Pipeline page and used by the sync's reserve are those of the token in use. Permission checks of a signed-in person use that person's own token in both modes. |
 | `AUTOCRAFT_GITHUB_APP_NAME` | Name suggested on the registration form. Default `AutoCraft`; at most 34 letters, digits, spaces, dashes or underscores. |
 | `AUTOCRAFT_TRUST_PROXY` | The number of trusted proxies in front of the server (0 to 9, default 0), for the client address of the rate limits. Each proxy is assumed to append the address it was reached from to `X-Forwarded-For`, so the client is that many entries from the end; with 0 the socket address counts. A proxy that replaces the header with a CDN's client-address header counts as one, and must then refuse connections that do not come from the CDN. |
 | `AUTOCRAFT_IMG_CACHE` | Disk cache of the image proxy. Default `$XDG_CACHE_HOME/autocraft/img` (`~/.cache/...`); empty for no disk cache. |
@@ -115,18 +115,21 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `GET /api/accounts` (Claude accounts with label, slots in use and usage; maintainers and viewers see enabled ones only), `/api/agents?state=&step=&account=&repo=&cursor=&limit=` (agent runs, newest first, keyset cursor; `state=running` lists every active run), `/api/agents/<id>` (with prompt, output, cost and tool uses; texts for ten years), `/api/rates?window=24h\|7d` (items moved and agent runs per stage, account usage over time) | anyone signed in |
 | `PUT /api/accounts/<id>` `{label?, enabled?, maxConcurrent?}` | operator; audited as `account-change` |
 | `POST /api/accounts/<id>/token`, `/token/code` `{code}`, `/token/cancel`, `/token/remove` (long-lived token of an account; the value is never returned) | operator; audited as `account-token-start`, `-code`, `-cancel`, `-set`, `-remove` |
-| `GET /api/mcp/tokens` (the caller's own agent tokens, never their values); `POST /api/mcp/tokens/revoke` `{id}` | anyone signed in, own tokens only; revoke audited as `mcp-token-revoke` |
-| `POST /api/mcp/tokens` `{label?, answer?, run?}` (a new agent token, its value returned this once; at most 5 per login; `answer: true` makes an answering token that lasts 7 days, operators only; `run: true` makes a token for a user-local helper, see [User-local inference](#user-local-inference)) | maintainers and operators; audited as `mcp-token-create`; viewers get 403 |
+| `GET /api/mcp/tokens` (the caller's own MCP Connector tokens, never their values); `POST /api/mcp/tokens/revoke` `{id}` | anyone signed in, own tokens only; revoke audited as `mcp-token-revoke` |
+| `POST /api/mcp/tokens` `{label?, answer?}` (a new MCP Connector token, its value returned this once; at most 5 per login; `answer: true` makes an answering token that lasts 7 days, operators only; `run: true` is refused with 400, since a Task Runner makes its own credential, see [Task Runner credentials](#task-runner-credentials)) | maintainers and operators; audited as `mcp-token-create`; viewers get 403 |
+| `GET /api/runners` (the caller's own Task Runners with machine, version, readiness, slots, usage and last error); `GET /api/runners/pending?code=` (the login waiting for approval); `POST /api/runners/approve` `{code, label?}`, `/deny` `{code}`; `POST /api/runners/revoke` `{id}` | maintainers and operators approve and deny (viewers get 403); anyone removes their own; audited as `runner-approve`, `runner-deny`, `runner-revoke` (operator-only audit rows) |
+| `GET /api/model-queue` (queued model calls, the Task Runner counts and the caller's picks); `POST /api/model-queue/<id>/pick`, `/unpick` | anyone signed in reads, with fewer fields for viewers; maintainers and operators pick; audited as `remote-pick`, `remote-unpick` |
+| `PUT /api/me/settings` `{reserve?, repos?, maxCalls?, manualOnly?}` | maintainers and operators; audited as `usage-reserve`, `my-repos`, `max-calls`, `manual-only` |
 | `POST /api/signout` | anyone signed in |
-| `GET /api/similar/<repo>/<n>?limit=` (nearest items across the tracked repos, with score; default 10, at most 50), `/api/search?q=&mode=semantic` (search by meaning, same hits plus a score) | anyone signed in; 503 until `autocraft embed` has run |
+| `GET /api/similar/<repo>/<n>?limit=` (nearest items across the tracked repos, with score; default 10, at most 50), `/api/search?q=&mode=semantic` (search by meaning, same hits plus a score) | anyone signed in; 503 until `autocraft-server embed` has run |
 
-Feedback (picks and text) is display-only. The pipeline reads answers with `autocraft decisions list --actionable` (one JSON object per line: option keys of unapplied answers by a current operator), which never includes them.
+Feedback (picks and text) is display-only. The pipeline reads answers with `autocraft-server decisions list --actionable` (one JSON object per line: option keys of unapplied answers by a current operator), which never includes them.
 
-### Inbox MCP server
+### MCP Connector
 
-`POST /mcp` on the dashboard's origin is an [MCP](https://modelcontextprotocol.io) server for contributors' own agents (Claude Code or any client that speaks Streamable HTTP). It lists what the pipeline could not settle on its own and takes feedback back, so a contributor can work the Inbox from the agent they already use, on their own machine and their own model usage. The code is `src/dash/mcp/`.
+`POST /mcp` on the dashboard's origin is an [MCP](https://modelcontextprotocol.io) server named `autocraft` (title AutoCraft) for contributors' own agents (Claude Code or any client that speaks Streamable HTTP). It lists what the pipeline could not settle on its own and takes feedback back, so a contributor can work the Inbox from the agent they already use, on their own machine and their own model usage. The code is `src/dash/mcp/`.
 
-- **Tokens.** A maintainer or operator makes an agent token on the Connect agent page (`/connect`, opened from the user menu), which shows it once with the `claude mcp add --transport http ... --header "Authorization: Bearer <token>"` command and a JSON config for other clients. Tokens are `acmcp_` plus 32 random bytes, stored as a SHA-256 hash in `mcp_tokens`, valid for 90 days, at most 5 per login, and revocable by their owner. An operator can tick **Can answer decisions** to make an answering token (`can_answer`), which lasts 7 days, the longest an operator's dashboard session lasts. A token counts only while its login is on the access list, and its role is read from the list on every call; removing a login deletes its tokens, ending a session of a login (Access page) deletes that login's tokens, and a role change away from operator deletes its answering tokens. Operators list and revoke any login's tokens on the Access page (`POST /api/access/tokens/revoke` `{id}`, audited as `mcp-token-revoke`; token audit rows are operator-only). A token has no GitHub token of its own: without a live dashboard session of its login, only recently cached permissions count.
+- **Tokens.** A maintainer or operator makes a Connector token in the MCP Connector block of the Connect page (`/connect`, opened from the user menu), which shows it once with the `claude mcp add --transport http ... --header "Authorization: Bearer <token>"` command and a JSON config for other clients. Connector tokens are `acmcp_` plus 32 random bytes, stored as a SHA-256 hash in `mcp_tokens` (`kind` `connector`), valid for 90 days, at most 5 per login, and revocable by their owner. A Task Runner credential (`acrun_`) is refused on `/mcp` with 403. Client configs that call the server `autocraft-inbox` keep working: the name exists only in the client, and their tools keep the prefix `mcp__autocraft-inbox__`. An operator can tick **Can answer decisions** to make an answering token (`can_answer`), which lasts 7 days, the longest an operator's dashboard session lasts. A token counts only while its login is on the access list, and its role is read from the list on every call; removing a login deletes its tokens, ending a session of a login (Access page) deletes that login's tokens, and a role change away from operator deletes its answering tokens. Operators list and revoke any login's tokens on the Access page (`POST /api/access/tokens/revoke` `{id}`, audited as `mcp-token-revoke`; token audit rows are operator-only). A token has no GitHub token of its own: without a live dashboard session of its login, only recently cached permissions count.
 - **Transport.** One JSON-RPC message per POST, answered with one JSON body (no event stream: `GET` is 405; notifications get 202; batches get 400). The token goes in `Authorization: Bearer`; the session cookie is never accepted here, and a request whose `Origin` or `Sec-Fetch-Site` names another site is refused. Limits: 120 calls a minute per login, and 300 failed authentications a minute per client address.
 - **Tools.** `list_repos` (visible tracked repos with open decisions by kind and fix-ups waiting), `list_inbox` (open decisions, oldest first; `repo`, `kind`, `limit` up to 25, `cursor`), `get_inbox_item` (one decision: question, option keys, summary and recommendation, item text, facts, risks, related items, picks and comments), `send_feedback` (`id`, `option?`, `text?`), `list_merge_queue` (the Queue page's Merge tab: each PR's state, merge path, CI, verify, fast-track weight and place, hold, how it came in and who added it (logins for maintainers and operators only), why it does not merge yet, the next merges with what each waits for, the batches in flight, and pre-approved merges whose PR is no queue row on any page yet, from every visible repo or the one asked for; `repo`, `limit` up to 25 for each list, `cursor` `<queue offset>:<last pre-approval id>` with `x` for a list that is done), and `list_fixups` (open PRs at their current head that the planner holds in the fix-up `hold` bucket with no push of ours under way, with the review's fix list and why the step stopped; viewers get the state only, as on the item page). While answering is available (`answering.enabled`), an answering token of a login that is an operator at the time of the call is also offered `answer_decision` (`id`, `option`, `note?`, `textsHash?` for a duplicate group, `exceptions?` for a batch) and `undo_answer` (`id`); for it, `get_inbox_item` adds `undoable`, the comment the answer would post, and each option's duplicate-group texts with their `textsHash`. Answering is the user's own action and has to execute as that GitHub user, which needs GitHub App user tokens that AutoCraft does not have yet. Until then no token can be made with `answer: true`, the Connect page hides the switch, the answer tools are not listed and the instructions do not mention them; a call to either refuses with a message that the user must sign in again with GitHub App sign-in. The switch is `answering.enabled` in `src/dash/mcp/index.ts`, and the checks below stay ready. Any other token is not offered them and gets an error if it calls them. `list_repos`, `list_fixups` and `list_merge_queue` share a per-login budget of a burst of 20 then 30 a minute. Every result frames GitHub text, and the pipeline's text about it (option labels and what an answer writes included), as untrusted, as the item tools do.
 - **Merge queue.** A token whose login is an operator at the time of the call is also offered `set_weight` and the instructions describe it. `queue_pr` and `cancel_queued` are offered and allowed only to an answering token (`McpEnv.canAnswer`, with `answering.enabled`), because a pre-approved merge is a Merge answer given ahead; a call also refuses unless the user has live write permission on the repo (`queue_pr`). `queue_pr` (`item`, `weight?`) is "Queue items" (`POST /api/queue/add`): a PR is pre-approved at its current head and fast-tracked with the weight (default 5), keeping a heavier weight it has; an issue is fast-tracked and its one open closing PR is queued. `set_weight` (`item`, `weight?` or `remove: true`) changes a fast-tracked item's weight, fast-tracks an item not on the list with that weight without approving its merge, or takes it off; it calls `setFastTrackWeight`, `addFastTrack` and `removeFastTrack` directly (the dashboard's `/api/fast-track` routes call the same functions); it checks the repo is visible first and then decides between adding and changing in the same write, so a `queue_pr` of the same item meanwhile cannot leave its weight in place of the one asked for. `cancel_queued` (`item`) is the item page's cancel of a pre-approved merge (`POST /api/items/<repo>/<n>/preapproval/cancel`); the weight stays. `item` is a GitHub URL, `repo#number` or `owner/repo#number`. The role is read on every call, so a login that stopped being an operator is refused (403) even if its agent still lists the tools. Audit rows are the handlers' own (`preapproval`, `fasttrack-add`, `fasttrack-weight`, `fasttrack-remove`), under the operator's login, with `via: "mcp"` in their details. Batch summaries, which can hold raw push and GitHub errors, go to operators and maintainers only, on the dashboard and in `list_merge_queue`.
@@ -134,56 +137,107 @@ Feedback (picks and text) is display-only. The pipeline reads answers with `auto
 
 ## User-local inference
 
-In the `user-local` inference mode, model calls do not run on this host. Each call is queued, and a maintainer's or operator's helper (`autocraft-task`) claims it, runs the harness on that person's machine under their own Claude Code or Codex subscription, and submits the reply. The planner, gates, Jev calls, embeddings, GitHub writes and builds stay on the server. The code is `src/remote/` (wire format in `protocol.ts`) and `worker/autocraft-task.mjs` (the helper, served by the dashboard at `/worker/autocraft-task.mjs`).
+In the `user-local` inference mode, model calls do not run on this host. Each call is queued, and a maintainer's or operator's Task Runner (the `autocraft` command) claims it, runs the harness on that person's machine under their own Claude Code or Codex subscription, and submits the reply. The planner, gates, Jev calls, embeddings, GitHub writes and builds stay on the server. The code is `src/remote/` (wire format in `protocol.ts`) and `worker/autocraft.mjs` (the Task Runner, served by the dashboard at `/worker/autocraft.mjs`). The server admin CLI is `autocraft-server`; the MCP server name and the Task Runner command are both `autocraft`.
 
 ### Switching the mode
 
 | How | What |
 |---|---|
 | Dashboard | **Inference** page (Settings): the mode, the accepted model families per tier and the lowest effort per tier |
-| CLI | `autocraft inference` shows the mode; `autocraft inference user-local` or `autocraft inference server` sets it (audit `inference`) |
+| CLI | `autocraft-server inference` shows the mode; `autocraft-server inference user-local` or `autocraft-server inference server` sets it (audit `inference`) |
 | API | `GET`/`PUT /api/settings/inference`, body `{mode?, models?, minEffort?}`; operators only |
 
-- **Mode.** In `server` mode a claim returns no lease and asks the helper to retry in 300 seconds. The Accounts page is hidden while the mode is `user-local`.
-- **Accepted models.** `models` maps a tier (`top`, `mid`, `small`) to 1 to 10 lowercase model families. Defaults: `top` accepts `opus` and `astra` (Codex's top family; change it if your Codex catalogue differs), `mid` accepts `sonnet`, `small` accepts `haiku`. A helper declares a model per tier; the server accepts the tier only when the model belongs to an accepted family, and refuses a reply from a model of another family (the call goes back to the queue). Changes are audited as `remote-models`.
-- **Effort floor.** `minEffort` maps a tier to `low`, `medium`, `high`, `xhigh` or `max`, or to `null` to remove it. A helper declares the highest effort it passes to its harness for each tier and gets a tier's calls only when that meets the floor. Codex stops at `xhigh`, so there `xhigh` meets a `max` floor. A helper that declares no effort (an older one) meets no floor.
+- **Mode.** In `server` mode a claim returns no lease and asks the Task Runner to retry in 300 seconds. The Accounts page is hidden while the mode is `user-local`.
+- **Accepted models.** `models` maps a tier (`top`, `mid`, `small`) to 1 to 10 lowercase model families. Defaults: `top` accepts `opus` and `astra` (Codex's top family; change it if your Codex catalogue differs), `mid` accepts `sonnet`, `small` accepts `haiku`. A Task Runner declares a model per tier; the server accepts the tier only when the model belongs to an accepted family, and refuses a reply from a model of another family (the call goes back to the queue). Changes are audited as `remote-models`.
+- **Effort floor.** `minEffort` maps a tier to `low`, `medium`, `high`, `xhigh` or `max`, or to `null` to remove it. A Task Runner declares the highest effort it passes to its harness for each tier and gets a tier's calls only when that meets the floor. Codex stops at `xhigh`, so there `xhigh` meets a `max` floor. A Task Runner that declares no effort (an older one) meets no floor.
 
-### Setting up a helper
+### Task Runner credentials
 
-Each helper needs an agent token with **Can run tasks** (Connect page; `POST /api/mcp/tokens` with `run: true`; maintainers and operators only). The Connect page lists the same steps with the server's address filled in.
+A Task Runner has its own credential, separate from MCP Connector tokens.
+
+| | MCP Connector token | Task Runner credential |
+|---|---|---|
+| Prefix | `acmcp_` | `acrun_` |
+| Made by | The Connect page's MCP Connector block (the value is shown once) | The Task Runner itself, with `autocraft login` and an approval on the Connect page; no secret travels from the server |
+| Valid for | 90 days (7 for an answering token) | 90 days, extended on every use |
+| Limit | 5 per login | 5 per login |
+| `/mcp` | Yes | 403 |
+| `/api/remote/*` (claims, status, leases) | 403 "MCP Connector tokens cannot run tasks" | Yes |
+| Dashboard `/api/*` | Never (session cookie only) | Never |
+
+Removing a login, or ending its sessions on the Access page, ends both kinds. Revoking a Task Runner (Connect page, or an operator on the Access page) deletes its credential: a lease it holds goes back to the queue without using an attempt, its next heartbeat gets 410, and its claims get 401. The Task Runner then logs that the credential was revoked or expired, asks for `autocraft login` and checks again every 10 minutes.
+
+Device-style login:
+
+1. `autocraft login <dashboard URL>` makes the credential on the machine and sends only its hash to the server. The server answers with a code (`BCDF-GHJK`, valid 10 minutes, single use) and a link (`<dashboard URL>/connect?runner=<code>`).
+2. The Task Runner prints both and polls until the login is approved, denied or expired.
+3. A maintainer or operator opens the link, or types the code on the Connect page. The card names the label, machine, platform, version and start time, and shows the requesting address next to the browser's address. When they differ, Approve stays disabled until "I started this on another machine" is ticked. Approval adds the Task Runner to the list, marked new, and is audited.
+4. The credential then works as it is.
+
+`autocraft login <dashboard URL> --no-wait` prints the code and link and exits; an agent shows the link to the user, then runs `autocraft login --wait` (at most 9 minutes, exit code 3 while pending). `autocraft login <dashboard URL> --stdin` stores a credential read from stdin, for example one from `autocraft-server remote token <login>`.
+
+Rate limits: 10 logins started per 10 minutes per client address and 200 pending overall; 30 polls a minute per credential; 10 failed code lookups per 10 minutes per login. The credential is stored in `credentials.json` (mode 0600) beside `config.json` in a 0700 directory, so a pasted config leaks nothing.
+
+### Setting up a Task Runner
+
+A Task Runner needs a maintainer or operator login on the dashboard. The Connect page lists the same steps with the server's address filled in.
 
 Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` or `codex`), and a sandbox tool: bubblewrap (`/usr/bin/bwrap`) on Linux and WSL, `sandbox-exec` on macOS. Other systems are refused.
 
-1. Install the helper:
+1. Install the Task Runner:
    ```sh
-   mkdir -p ~/.local/bin && curl -fsSL <dashboard URL>/worker/autocraft-task.mjs -o ~/.local/bin/autocraft-task && chmod +x ~/.local/bin/autocraft-task
+   mkdir -p ~/.local/bin && curl -fsSL <dashboard URL>/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft
    ```
-2. Log in with the agent token on stdin: `autocraft-task login <dashboard URL>`. The URL must be `https` (`http` only for localhost).
+2. Log in: `autocraft login <dashboard URL>`, then approve the code on the Connect page. The URL must be `https` (`http` only for localhost).
 3. Choose how the harness signs in:
 
    | Command | Harness login |
    |---|---|
-   | `autocraft-task harness claude --config-dir [<dir>]` | The login of a Claude config directory (default `$CLAUDE_CONFIG_DIR` or `~/.claude`), read before each call. Linux only. |
-   | `autocraft-task harness claude --keychain` | Claude Code's own login from the macOS Keychain, read before each call and never refreshed by the helper: use Claude Code now and then, or store a setup-token. macOS only. |
-   | `claude setup-token`, then `autocraft-task harness claude` (token on stdin) | A long-lived token. It may not be allowed to read plan usage; the helper then holds (see [Usage reserve](#usage-reserve-and-readiness)). |
-   | `autocraft-task harness codex [--device-auth]` | Logs Codex in to the helper's own `CODEX_HOME`, a login separate from `~/.codex`, so refreshes never invalidate your own session. `--device-auth` is for a machine without a browser. |
+   | `autocraft harness claude --config-dir [<dir>]` | The login of a Claude config directory (default `$CLAUDE_CONFIG_DIR` or `~/.claude`), read before each call. Linux only. |
+   | `autocraft harness claude --keychain` | Claude Code's own login from the macOS Keychain, read before each call and never refreshed by the Task Runner: use Claude Code now and then, or store a setup-token. macOS only. |
+   | `claude setup-token`, then `autocraft harness claude` (token on stdin) | A long-lived token. It may not be allowed to read plan usage; the Task Runner then holds (see [Usage reserve](#usage-reserve-and-readiness)). |
+   | `autocraft harness codex [--device-auth]` | Logs Codex in to the Task Runner's own `CODEX_HOME`, a login separate from `~/.codex`, so refreshes never invalidate your own session. `--device-auth` is for a machine without a browser. |
 
-4. Models. Claude defaults to `opus`, `sonnet` and `haiku` for the three tiers. Codex has no defaults: add `"tiers": {"top": "...", "mid": "...", "small": "..."}` to `$XDG_CONFIG_HOME/autocraft-task/config.json` (mode 0600; default `~/.config/autocraft-task/config.json`). The config also takes `repos` (claim only calls on these repos), `claudeBin`, `codexBin` and `treeCacheGb` (the tree cache cap, default 20).
-5. Run `autocraft-task doctor`, then `autocraft-task work`, or `autocraft-task service install [--parallel N]` to keep it running.
+4. Models. Claude defaults to `opus`, `sonnet` and `haiku` for the three tiers. Codex has no defaults: add `"tiers": {"top": "...", "mid": "...", "small": "..."}` to `$XDG_CONFIG_HOME/autocraft-runner/config.json` (mode 0600; default `~/.config/autocraft-runner/config.json`). The config also takes `repos` (claim only calls on these repos), `claudeBin`, `codexBin` and `treeCacheGb` (the tree cache cap, default 20). `AUTOCRAFT_RUNNER_CLAUDE_BIN` and `AUTOCRAFT_RUNNER_CODEX_BIN` override the binaries.
+5. Run `autocraft doctor`, then `autocraft work`, or `autocraft service install [--parallel N]` to keep it running.
+
+### Moving a 1.2.0 runner
+
+A 1.2.0 runner is installed as `autocraft-task`. Move it with:
+
+```sh
+autocraft-task update && autocraft-task migrate
+```
+
+With only `autocraft-task update`, the move happens at the next restart of the running `work` process or service; 1.2.0 keeps working meanwhile, because the server still accepts protocol 3. From 1.3.0 on, `update` runs the move itself.
+
+The move (`autocraft migrate`, also run at the first start of 1.3.0, before the first claim, under a lock file) does this, and on a failure logs it, keeps the old setup running and retries at most daily:
+
+| Step | Result |
+|---|---|
+| Directories | The files of `~/.config/autocraft-task` and `~/.cache/autocraft-task` move to `$XDG_CONFIG_HOME/autocraft-runner` and `$XDG_CACHE_HOME/autocraft-runner` (the directory itself is renamed when the target does not exist), with a symlink at the old path. It waits while another `work` process holds a slot. The old `agentToken` moves into `credentials.json`. |
+| Binary | An installed `autocraft-task` becomes `autocraft`, with `autocraft-task` left as a symlink to it. A checkout (a `worker/autocraft-task.mjs` that is a shim) stays as it is. |
+| Linux service | `autocraft-task.service` gets an `autocraft.service` with the same `work` arguments and environment. When the move runs inside the old unit, the old unit is disabled and removed and the new one starts; run by hand, the units switch only while the old service is idle, else at its next restart. |
+| macOS service | The `autocraft` launchd agent is bootstrapped, then `autocraft-task` is booted out. |
+
+`autocraft-task` stays as an alias for one release, and the server serves the same file at `/worker/autocraft-task.mjs` so that 1.2.0's `update` works. If the server has not been updated yet, the move waits and retries.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
-| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16, plus the fast lane for short calls and follow-ups (see [Who gets which call](#who-gets-which-call)); Codex runs one call at a time because its login refreshes in place. Ctrl-C, SIGTERM and SIGHUP stop running calls and give them back; a second signal quits at once. See [Helper process](#helper-process). |
-| `service install [--parallel N]` | Writes and starts a systemd user unit (Linux, `~/.config/systemd/user/autocraft-task.service`) or a launchd agent (macOS, `~/Library/LaunchAgents/autocraft-task.plist`) that runs `work` with these arguments and restarts it whenever it ends (systemd `Restart=always`, launchd `KeepAlive`). It keeps `PATH`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR` from the shell it ran in. The log: `journalctl --user -u autocraft-task -f` (Linux), `$XDG_CACHE_HOME/autocraft-task/service.log` (macOS). On Linux, `loginctl enable-linger` keeps it running while the user is logged out. No root. |
+| `login <dashboard URL> [--label X] [--no-wait]`, `login --wait`, `login <dashboard URL> --stdin` | Makes a credential and waits for its approval on the Connect page, or stores one read from stdin (see [Task Runner credentials](#task-runner-credentials)). |
+| `harness claude\|codex ...` | Chooses the harness login (see [Setting up a Task Runner](#setting-up-a-task-runner)). |
+| `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16, plus the fast lane for short calls and follow-ups (see [Who gets which call](#who-gets-which-call)); Codex runs one call at a time because its login refreshes in place. Ctrl-C, SIGTERM and SIGHUP stop running calls and give them back; a second signal quits at once. See [Task Runner process](#Task Runner-process). |
+| `service install [--parallel N]` | Writes and starts a systemd user unit (Linux, `~/.config/systemd/user/autocraft.service`) or a launchd agent (macOS, `~/Library/LaunchAgents/autocraft.plist`) that runs `work` with these arguments and restarts it whenever it ends (systemd `Restart=always`, launchd `KeepAlive`). It keeps `PATH`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR` from the shell it ran in. The log: `journalctl --user -u autocraft -f` (Linux), `$XDG_CACHE_HOME/autocraft-runner/service.log` (macOS). On Linux, `loginctl enable-linger` keeps it running while the user is logged out. No root. |
 | `service uninstall` / `service status` | Stops and removes the service; prints its state and where its log is. |
-| `update` | Downloads the server's current helper over this file (checked with `node --check` first); restart `work` or the service afterwards. A version refusal names this command. |
+| `update` | Downloads the server's current Task Runner over this file (checked with `node --check` first); restart `work` or the service afterwards. A version refusal names this command. |
+| `migrate` | Moves a 1.2.0 install: directories, credential, binary and service (see [Moving a 1.2.0 runner](#moving-a-120-runner)). |
 | `claim` | Claims one call and prints its lease id. |
 | `run [--detach] [<lease>]` | Runs a claimed lease, or claims one and runs it. `--detach` starts the run in the background and prints the lease id. |
 | `wait <lease>` | Waits for a detached run and prints its result. Returns after at most 9 minutes with exit code 3 while the run still goes; run it again. |
 | `doctor` | Checks Node, platform, sandbox (on macOS with the canary), `git` and `tar`, the harness binary, version and login, a harness start inside the sandbox, the server and the tiers. Exit code 1 when a check fails. |
-| `status` | Prints whether the helper claims now, with plan usage, reserve, pause and hold. Exit code 0 only when `ready`. |
+| `status` | Prints whether the Task Runner claims now, with plan usage, reserve, pause and hold. Exit code 0 only when `ready`. |
 | `pause-until-reset` | Claims nothing until the plan window resets, whatever the usage. `resume` ends it. |
 | `resume` | Ends a pause, a hold after a provider refusal, and a hold of `work` (a stopped run, failed calls). The usage reading still decides. |
 | `config reserve <5h> <weekly>` | Keeps more of each window free than the server's reserve (percent, 0 to 100). `config reserve off` drops it. |
@@ -191,19 +245,19 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
 | `mcp <server> <lease>` | Stdio-to-HTTP proxy for one of the lease's MCP servers. |
 | `try <bundle.json> [--slot N]` | Runs a bundle from a file without a server and prints the reply (testing). |
 
-Helper state lives in `$XDG_CONFIG_HOME/autocraft-task` (config, lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-task` (task directories, run logs, status file).
+Task Runner state lives in `$XDG_CONFIG_HOME/autocraft-runner` (config, credential and lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-runner` (task directories, run logs, status file). The server's own `~/.config/autocraft` and `~/.cache/autocraft` are separate.
 
-### Helper process
+### Task Runner process
 
 - **Retries.** The claim and every lease request (bundle, tarball, heartbeat, release, submit) are retried after a 408, 429 or 5xx, a network error, a request timeout or a cut-off reply, with exponential backoff from 1 to 30 seconds, jitter, and at least the server's `Retry-After`. A 410 or another 4xx is final. A claim is tried up to 5 times within 60 seconds with the same `requestId`, and after a failure in transit the next claim a minute later sends that `requestId` again, so a claim whose reply was lost gets its lease back. Lease requests are retried until 90 seconds before the lease's deadline on the server. A finished reply's submit is retried until the server answers it, up to 30 minutes past that deadline, since the server moves its deadlines past a dashboard outage; a reply whose submit failed is never sent as a failure. A tool call from inside the sandbox is retried for 3 minutes.
-- **Heartbeats.** One every 30 seconds from the claim on, each retried until the next is due. The phase is `preparing` while the helper fetches the bundle and sets up the files, and `running` from the harness's spawn, sent at once; the harness's timer starts there too. A 410 stops the run (`lost`).
+- **Heartbeats.** One every 30 seconds from the claim on, each retried until the next is due. The phase is `preparing` while the Task Runner fetches the bundle and sets up the files, and `running` from the harness's spawn, sent at once; the harness's timer starts there too. A 410 stops the run (`lost`).
 - **Preparation.** Anything that fails before the harness spawns (bundle, files, git, tarball, disk, login) gives the call back without using an attempt. Preparation stops 12 minutes after the claim, so its release still reaches the server before the 15-minute cap.
 - **Start.** `work` gives back, with a reason, every lease on the machine whose run process is dead (a crash, a kill, a reboot), and a lease claimed and never started once it is 5 minutes old.
-- **Stop from a run.** A run that finds the helper cannot take calls (helper older than the server requires, sandbox missing, harness binary or login missing, harness version not audited) gives its call back and holds the helper's claims; calls running in other slots finish. The hold shows as the readiness with the run's reason. A helper that is too old holds until it is restarted; the others are checked again after 10 minutes. A login that cannot be read is read again after 2 seconds, and if still missing holds for 30 seconds only: Claude Code rewrites its credentials file in place, and a Keychain read can fail once.
+- **Stop from a run.** A run that finds the Task Runner cannot take calls (Task Runner older than the server requires, sandbox missing, harness binary or login missing, harness version not audited) gives its call back and holds the Task Runner's claims; calls running in other slots finish. The hold shows as the readiness with the run's reason. A Task Runner that is too old holds until it is restarted; the others are checked again after 10 minutes. A login that cannot be read is read again after 2 seconds, and if still missing holds for 30 seconds only: Claude Code rewrites its credentials file in place, and a Keychain read can fail once.
 - **Failed calls.** After a call fails or is given back, `work` waits 1, 2, 5 and then 10 minutes before its next claim, by the number of such calls in a row. After 5 in a row it reports `failing` with the last error until the wait ends; then it claims again if its usage and harness checks pass. A submitted call resets the count.
-- **Disk.** One git fetch per bare repo at a time across the user's helper processes (a lock file beside the repo). `git gc --auto` runs after a fetch at most once a day per repo. Bare repos unused for 7 days are removed. Cached trees unused for 3 days are removed, then the least recently used ones while the cache is over `treeCacheGb` (default 20 GB); a tree used in the last 6 hours stays, since a running call may have it mounted. Pruning runs before a call, at most every 10 minutes.
-- **Memory.** Of the harness's output the helper keeps only what it reads (the result, usage, session, and each tool use's stored arguments and result size) and the last 4,000 bytes of plain-text lines, which go into the error line with stderr.
-- **macOS orphans.** The harness runs in its own process group, recorded beside its slot. A helper that crashed leaves that file; the next process to take the slot stops the group first (only while its leader is gone or has the recorded start time).
+- **Disk.** One git fetch per bare repo at a time across the user's Task Runner processes (a lock file beside the repo). `git gc --auto` runs after a fetch at most once a day per repo. Bare repos unused for 7 days are removed. Cached trees unused for 3 days are removed, then the least recently used ones while the cache is over `treeCacheGb` (default 20 GB); a tree used in the last 6 hours stays, since a running call may have it mounted. Pruning runs before a call, at most every 10 minutes.
+- **Memory.** Of the harness's output the Task Runner keeps only what it reads (the result, usage, session, and each tool use's stored arguments and result size) and the last 4,000 bytes of plain-text lines, which go into the error line with stderr.
+- **macOS orphans.** The harness runs in its own process group, recorded beside its slot. A Task Runner that crashed leaves that file; the next process to take the slot stops the group first (only while its leader is gone or has the recorded start time).
 
 ### Sandbox
 
@@ -211,7 +265,7 @@ The harness never runs outside a sandbox that shows it only the call's own files
 
 - **Linux and WSL.** bubblewrap with every namespace unshared and the network shared, an empty home, the harness binary and every mount read-only, and a temporary work directory. The credential reaches the harness through its environment only, never through arguments.
 - **macOS.** `sandbox-exec` with a per-slot profile: the harness reads its slot and the files of its install, writes its temporary directory and nothing else. `sandbox-exec` cannot remap paths, so each slot (up to 16, one per parallel call) has its own root, which the claim reports to the server.
-- **Canary (macOS).** Before the first claim, and in `doctor`, the helper runs a Node probe inside the profile, in a scratch slot of its own process. It must read its slot and write its temporary directory, and must fail to read a file planted in the home, list the home, `~/.ssh` and the Keychains, and write the home or the slot. A failed canary makes the helper `sandbox-failed`, and it claims nothing; the canary runs again 10 minutes later.
+- **Canary (macOS).** Before the first claim, and in `doctor`, the Task Runner runs a Node probe inside the profile, in a scratch slot of its own process. It must read its slot and write its temporary directory, and must fail to read a file planted in the home, list the home, `~/.ssh` and the Keychains, and write the home or the slot. A failed canary makes the Task Runner `sandbox-failed`, and it claims nothing; the canary runs again 10 minutes later.
 - **Instruction files.** `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` and `.claude` directories are removed from every checkout before a run.
 
 ### Who gets which call
@@ -219,120 +273,155 @@ The harness never runs outside a sandbox that shows it only the call's own files
 A call goes to a maintainer or operator whose cached GitHub permission is `write` or better on every repo the call names. The permission is read through the GitHub App's installation (the collaborator permission endpoint, cached 60 s per login and repo), so it needs no dashboard session; without an installed app for the repo's owner it comes from the login's live session. That also covers reading a private repo. In addition:
 
 - Calls that name no repo, and `discord.*` calls, go to operators only.
-- My repos. Each user may pick repos on the Connect page (`PUT /api/me/settings` with `{repos: [...]}`, tracked repo names, audit `my-repos`; empty means every repo). The picker lists the repos with the pipeline on where the user has write permission. Their helpers then take only calls whose repos are all picked, and a helper's own `repos` list can narrow the picks but not widen them; calls that name no repo are not filtered. The per-repo Pipeline switch stays the operators' control: a picked repo with the pipeline off has no calls.
+- My repos. Each user may pick repos on the Connect page (`PUT /api/me/settings` with `{repos: [...]}`, tracked repo names, audit `my-repos`; empty means every repo). The picker lists the repos with the pipeline on where the user has write permission. Their Task Runners then take only calls whose repos are all picked, and a Task Runner's own `repos` list can narrow the picks but not widen them; calls that name no repo are not filtered. The per-repo Pipeline switch stays the operators' control: a picked repo with the pipeline off has no calls.
 - Security calls (`security.verify`, `security.fixcheck`) follow the same rules as other calls: write permission on the repo, and the author preference below.
-- Author preference. For prompts that judge an item (reviews, the pre- and post-merge reviews, fix-up and fix-issue checks, decision prepares, conversation turns, verify compare, classify, duplicate compares and the two security prompts), an author or co-author of an item of the call (a `Co-authored-by` trailer counts) is passed over while another eligible helper has asked for work in the last 45 seconds and could take it (tier, repos, role, write permission and not an author). With no such helper, the author takes the call.
-- A follow-up turn of a session is offered only to the login that holds the session, first to the helper that names the session in its claim. It waits while the helper that ran the parent call (its agent token) runs a lease with a heartbeat in the last 90 seconds, up to 15 minutes; with no such lease it waits 2 minutes. Then the call is withdrawn and the caller starts a fresh one (or skips the turn).
-- Max calls at once. Each user may set the most calls all their helpers hold leases on together (Connect page, My settings; `PUT /api/me/settings` with `{maxCalls: 1-64}` or `{maxCalls: null}` for no limit, audit `max-calls`). At the limit a claim returns no lease and the reason. A follow-up of the user's own sessions still gets a lease one past the limit, so a session can finish.
+- Author preference. For prompts that judge an item (reviews, the pre- and post-merge reviews, fix-up and fix-issue checks, decision prepares, conversation turns, verify compare, classify, duplicate compares and the two security prompts), an author or co-author of an item of the call (a `Co-authored-by` trailer counts) is passed over while another eligible Task Runner has asked for work in the last 45 seconds and could take it (tier, repos, role, write permission and not an author). With no such Task Runner, the author takes the call.
+- A follow-up turn of a session is offered only to the login that holds the session, first to the Task Runner that names the session in its claim. It waits while the Task Runner that ran the parent call (its credential) runs a lease with a heartbeat in the last 90 seconds, up to 15 minutes; with no such lease it waits 2 minutes. Then the call is withdrawn and the caller starts a fresh one (or skips the turn).
+- Max calls at once. Each user may set the most calls all their Task Runners hold leases on together (Connect page, My settings; `PUT /api/me/settings` with `{maxCalls: 1-64}` or `{maxCalls: null}` for no limit, audit `max-calls`). At the limit a claim returns no lease and the reason. A follow-up of the user's own sessions still gets a lease one past the limit, so a session can finish.
 - A call the login released is not offered to it again for 10 minutes.
-- A claim from a helper older than 1.2.0, or of another protocol version than 3, is refused with 409.
+- A claim from a Task Runner older than 1.2.0, or of a protocol version other than 3 or 4, is refused with 409. Version 3 has no `wait` and is answered at once.
 
 **Claim order.** A claim takes the first call it may take in this order:
 
-1. Follow-up turns of the sessions the helper names in its claim, oldest first.
-2. Gating calls: lint checks (`lint.*` prompts) and, for their own helper, the fix turns, check reminders and resumes above.
-3. The rest by step class (security, then fix-up, review and decide steps, then the others), fewest running calls of the repo, the item's priority raised by time waited, fewest running calls of the step, oldest. A small-tier call ranks one class higher for every 2 minutes it has waited, up to the top step class, so a long Opus backlog cannot hold it.
+1. Follow-up turns of the sessions the Task Runner names in its claim, oldest first.
+2. The user's own picks that are live (see [Model call queue](#model-call-queue)), oldest pick first; the fast lane takes only the picks that fit it.
+3. Gating calls: lint checks (`lint.*` prompts) and, for their own Task Runner, the fix turns, check reminders and resumes above.
+4. The rest, without the live picks of other users, by step class (security, then fix-up, review and decide steps, then the others), fewest running calls of the repo, the item's priority raised by time waited, fewest running calls of the step, oldest. A small-tier call ranks one class higher for every 2 minutes it has waited, up to the top step class, so a long Opus backlog cannot hold it.
 
-**Fast lane.** Beside its `--parallel N` slots the helper runs one more slot, whose claims say `fastLane: true`. A fast-lane claim gets only follow-ups of the helper's sessions, gating calls and small-tier calls, so these never wait for a long run to end. The helper reports `slots` as N + 1. Codex, which runs one call at a time, has no fast lane; on macOS the fast lane holds a slot of its own, so `--parallel 16` has none.
+**Fast lane.** Beside its `--parallel N` slots the Task Runner runs one more slot, whose claims say `fastLane: true`. A fast-lane claim gets only follow-ups of the Task Runner's sessions, gating calls and small-tier calls, so these never wait for a long run to end. The Task Runner reports `slots` as N + 1. Codex, which runs one call at a time, has no fast lane; on macOS the fast lane holds a slot of its own, so `--parallel 16` has none.
 
 ### Leases
 
 | Event | Rule |
 |---|---|
-| Claim | The caller's call is leased to the helper; the agent run records the user, harness and the model the helper declared for the tier. The reply carries a lease id and a lease secret. A claim repeated with the same `requestId` within 5 minutes gets the same reply, the same lease and secret included; the replies are kept in the dashboard process's memory only. After a dashboard restart a repeated claim returns the lease it took to the queue without using an attempt, and is answered afresh. |
-| Heartbeat | The helper sends one every 30 seconds from the claim on, with its phase (`preparing` or `running`) and latest progress line. The first `running` heartbeat starts the call's time limit. |
+| Claim | The caller's call is leased to the Task Runner; the agent run records the user, harness and the model the Task Runner declared for the tier. The reply carries a lease id and a lease secret. A claim repeated with the same `requestId` within 5 minutes gets the same reply, the same lease and secret included; the replies are kept in the dashboard process's memory only. After a dashboard restart a repeated claim returns the lease it took to the queue without using an attempt, and is answered afresh. |
+| Heartbeat | The Task Runner sends one every 30 seconds from the claim on, with its phase (`preparing` or `running`) and latest progress line. The first `running` heartbeat starts the call's time limit. |
 | Expiry | A lease ends when it has had no heartbeat for 2 minutes, is still preparing 15 minutes after the claim, or is still running 2 minutes after the call's time limit. The call goes back to the queue with its next attempt, or fails when the prompt's attempts are used up. |
-| Dashboard outage | Helpers reach the server only through the dashboard, which stamps every 5 seconds that it serves. A lease ends only while the stamp is fresh (at most 15 seconds old), and for lack of heartbeats only when the dashboard served for the whole 2 minutes. When the dashboard comes back after a gap, every lease's heartbeat, claim and run start move forward by the gap. |
-| Release | A helper that cannot prepare or start a call (version, platform, missing login, bundle or checkout errors, quota refusal) gives the lease back with a reason. The call returns to the queue without using an attempt and is not offered to that login for 10 minutes. |
+| Dashboard outage | Task Runners reach the server only through the dashboard, which stamps every 5 seconds that it serves. A lease ends only while the stamp is fresh (at most 15 seconds old), and for lack of heartbeats only when the dashboard served for the whole 2 minutes. When the dashboard comes back after a gap, every lease's heartbeat, claim and run start move forward by the gap. |
+| Release | A Task Runner that cannot prepare or start a call (version, platform, missing login, bundle or checkout errors, quota refusal) gives the lease back with a reason. The call returns to the queue without using an attempt and is not offered to that login for 10 minutes. |
 | Submit | A failed reply (`ok: false`, error `helper: <error>`) or a reply from another model family than claimed sends the call back to the queue with its next attempt, not offered to that login for 10 minutes; it fails when the prompt's attempts are used up. A submit repeated after an accepted one is accepted again. |
 | Ended lease | Every lease route answers 410 for a secret whose lease was submitted, failed, expired, released or sent back to the queue (the secret hashes are kept 24 hours), and 401 only for a secret never issued; a 410 does not count toward the failed-authentication limit. |
 | Caller gone | A queued or leased call whose job stopped polling for 5 minutes fails. |
-| Waiting | The runner leaves at most 12 hours of queue time out of a job's deadline and no-progress stop; a call still queued after that is withdrawn ("no helper took the call in time") and the job stops. |
+| Waiting | The runner leaves at most 12 hours of queue time out of a job's deadline and no-progress stop; a call still queued after that is withdrawn ("no Task Runner took the call in time") and the job stops. |
 
 Ended calls are kept 24 hours for task status and follow-ups; the dashboard deletes older ones once a minute.
 
-**Limits.** Per helper token: 600 claims and 120 status reports a minute. Per lease: 120 bundle, heartbeat, release and submit requests a minute, and 300 tool calls. Failed authentications count against the client address (300 a minute, shared with `/mcp`). Beyond a limit the answer is 429 with `Retry-After`. When the database stays locked for 2 seconds, a helper route answers 503 with `Retry-After: 5`.
+**Limits.** Per Task Runner token: 600 claims and 120 status reports a minute. Per lease: 120 bundle, heartbeat, release and submit requests a minute, and 300 tool calls. Failed authentications count against the client address (300 a minute, shared with `/mcp`). Beyond a limit the answer is 429 with `Retry-After`. When the database stays locked for 2 seconds, a Task Runner route answers 503 with `Retry-After: 5`.
 
-**Cool-off.** Cool-off applies to a login, across all its helpers and tokens:
+**Cool-off.** Cool-off applies to a login, across all its Task Runners and tokens:
 
 | Cause | Cool-off |
 |---|---|
 | Leases of the login end by expiry 3 times within 2 hours (each token counts at most once in 10 minutes; a lease that never had a heartbeat does not count, since its claim's reply was likely lost) | 6 hours |
-| The login's helpers send 5 failed replies in a row within 30 minutes (an accepted reply ends the run) | 1 hour |
+| The login's Task Runners send 5 failed replies in a row within 30 minutes (an accepted reply ends the run) | 1 hour |
 
-While it lasts, the login's claims return no lease, a reason and the end time, and its helpers report `cooled-off` (audit `remote-cooloff`). Revoking or replacing a token does not end it. An operator clears it with `autocraft remote cooloff clear <login>` (audit `remote-cooloff-clear`).
+While it lasts, the login's claims return no lease, a reason and the end time, and its Task Runners report `cooled-off` (audit `remote-cooloff`). Revoking or replacing a token does not end it. An operator clears it with `autocraft-server remote cooloff clear <login>` (audit `remote-cooloff-clear`).
+
+### Long polling
+
+A claim that finds no call it may take is held open instead of answered empty. The Task Runner sends `wait: 25` (protocol 4); the server holds the request for up to 25 seconds, never past the end of a cool-off, and answers as soon as a call the Task Runner may take is queued. An empty reply after a hold has `retryAfter: 1`; other empty replies keep the usual retry interval. Task Runners on protocol 3 are answered at once.
+
+- A held claim runs the same checks as any claim each time it is tried: cool-off, Max calls at once, tiers, repos, picks and Manual only. At a limit, the usual reason reply goes out at once.
+- The server wakes held claims when a call is queued or changes state, one claim at a time in arrival order, and tries each claim again every 5 seconds and at its deadline. The deadline try records that the Task Runner is idle, so it still counts as idle for the planner's room and the author preference.
+- A Task Runner that disconnects drops its held claim. A claim repeated with the same `requestId` while held joins the same wait. When the dashboard stops, held claims are answered empty with a short `retryAfter`.
+- A reverse proxy in front of the dashboard must allow responses that take 30 seconds: set no response timeout under 35 seconds.
+
+### Model call queue
+
+The Queue view (Model calls page, `/model-queue`; Reports hub) lists the queued model calls in `user-local` mode: the items a call names, the step, tier, model, estimated cost (median of the prompt's last 60 finished runs), the time waited and why it waits. The reasons are: picked by a user, waiting for the Task Runner that holds its session, no Task Runner ready for the tier, every ready Task Runner Manual only, every Task Runner that may take it busy, no ready Task Runner whose user may take calls on the repo, or the number of calls ahead.
+
+| Role | Sees |
+|---|---|
+| Viewer | Item, step, tier, estimated cost, wait and reason, whether a call is picked (not by whom), and the number of Manual only Task Runners. Hidden repos and calls that name no repo are left out. Never prompts, output, progress or errors. |
+| Maintainer | Also who picked a call, which logins are Manual only, and the last attempt's error. |
+| Operator | Also clears anyone's pick. |
+
+**Run on my Task Runner.** A maintainer or operator can reserve a queued call for their own Task Runners.
+
+| Rule | Detail |
+|---|---|
+| Who | `user-local` mode, not in a cool-off, at least one fresh Task Runner whose models cover the tier, a role that fits the call, and write permission on every repo of the call. My repos does not limit picks. |
+| What | Queued calls with a live caller. Not follow-up turns, not calls that judge the user's own items, not calls another user has picked. |
+| How many | At most the user's Task Runner slots without the fast lane, and 8. |
+| Expiry | A pick lasts `remote_pick_minutes` (default 15; 0 means no cap). It also stops counting when none of the user's Task Runners is fresh. The user can unpick; operators clear any pick. A call released by the user, or no longer open to them, loses its pick at the next claim. |
+| Claim order | Follow-ups of the Task Runner's own sessions, then the user's live picks, oldest first, then the normal order without other users' live picks. |
+| Limits | Picks count toward Max calls at once, cool-offs, the release skip and attempts. Draining the pipeline leaves picks alone. A withdrawn call loses its pick. |
+
+Operators set the cap with `autocraft-server pipeline pick-minutes [<minutes>]`, which shows it without an argument (audit `remote-pick-minutes`). A pick is a wait on a person, registered in the pipeline's waits.
+
+**Manual only.** The Manual only switch (Connect page, My settings; `PUT /api/me/settings` with `{manualOnly}`, audit `manual-only`) makes the user's Task Runners take only their own picks and follow-ups of their own sessions. Their slots do not count in the planner's room, and `remote-starved` does not count them as ready. When every ready Task Runner is Manual only, unpicked calls wait with no fallback; the 12-hour queue cap still withdraws them, and the `remote-manual` health check warns after 10 minutes.
 
 ### Test time scale
 
-`AUTOCRAFT_REMOTE_TIME_SCALE` (a number from 0.01 to 1; unset means 1) is for the load rig (`scripts/loadtest`) only. When set below 1, the dashboard, the job processes and the helpers multiply every user-local time window by it: lease and heartbeat windows, the sticky follow-up wait, caller and status freshness, the liveness stamp, cool-off and drop windows, claim retry intervals, the helper's heartbeat, retry, outage and failure-backoff times. Protocol constants keep their production values; the scale applies where they are used. Every process of one instance (dashboard, job processes, helpers) must run with the same value. The dashboard logs a warning at start when the variable is set and refuses to start when it is outside 0.01 to 1. Never set it in production.
+`AUTOCRAFT_REMOTE_TIME_SCALE` (a number from 0.01 to 1; unset means 1) is for the load rig (`scripts/loadtest`) only. When set below 1, the dashboard, the job processes and the Task Runners multiply every user-local time window by it: lease and heartbeat windows, the sticky follow-up wait, caller and status freshness, the liveness stamp, cool-off and drop windows, claim retry intervals, the Task Runner's heartbeat, retry, outage and failure-backoff times. Protocol constants keep their production values; the scale applies where they are used. Every process of one instance (dashboard, job processes, Task Runners) must run with the same value. The dashboard logs a warning at start when the variable is set and refuses to start when it is outside 0.01 to 1. Never set it in production.
 
 ### Usage reserve and readiness
 
 Each maintainer and operator sets their own reserve on the Connect page: `GET`/`PUT /api/me/settings` with `{reserve: {fiveHour, weekly}}` (any of `reserve`, `repos` and `maxCalls`; the reply adds `repoChoices`), whole percents from 0 to 90, default 20. A viewer gets 403; a change is audited as `usage-reserve`. Every claim and status reply carries it.
 
-- Before each claim the helper reads its harness's plan usage and claims only while every 5-hour and weekly window keeps more than the reserve free. Claude: Claude Code's `GET /api/oauth/usage` with the helper's Claude login, no model call. Codex: `account/rateLimits/read` from `codex app-server` with the helper's own `CODEX_HOME`.
+- Before each claim the Task Runner reads its harness's plan usage and claims only while every 5-hour and weekly window keeps more than the reserve free. Claude: Claude Code's `GET /api/oauth/usage` with the Task Runner's Claude login, no model call. Codex: `account/rateLimits/read` from `codex app-server` with the Task Runner's own `CODEX_HOME`.
 - A local `config reserve` can only raise the server's reserve.
-- One usage read runs at a time per machine: the slots of a process share one request, and processes share a lock file and the cached reading in the helper's cache directory. A reading under a minute old is reused. A failed or refused read is shared for 30 seconds at most, or for the provider's `Retry-After` (up to an hour), before the provider is asked again.
-- When a read fails or is refused, the last good reading keeps counting for up to 15 minutes, marked as an earlier reading, while every window has at least 10 points more free than the reserve. Otherwise, and for a missing, unparseable or stale (over 5 minutes) reading or a window kind the helper does not know, the helper holds. A held helper reads again about every 45 seconds, 20% more or less at random so slots do not wake together.
-- A Claude login that expires within the call timeout plus 10 minutes makes the helper report `harness-missing` with "the Claude login expires soon; run claude to refresh it", the same check each call makes before it starts.
-- A run the provider refuses for its limit goes back to the queue without using an attempt. The helper holds until the reset the provider named (at most 7 days). A clock time without a time zone holds until a later reading shows headroom.
+- One usage read runs at a time per machine: the slots of a process share one request, and processes share a lock file and the cached reading in the Task Runner's cache directory. A reading under a minute old is reused. A failed or refused read is shared for 30 seconds at most, or for the provider's `Retry-After` (up to an hour), before the provider is asked again.
+- When a read fails or is refused, the last good reading keeps counting for up to 15 minutes, marked as an earlier reading, while every window has at least 10 points more free than the reserve. Otherwise, and for a missing, unparseable or stale (over 5 minutes) reading or a window kind the Task Runner does not know, the Task Runner holds. A held Task Runner reads again about every 45 seconds, 20% more or less at random so slots do not wake together.
+- A Claude login that expires within the call timeout plus 10 minutes makes the Task Runner report `harness-missing` with "the Claude login expires soon; run claude to refresh it", the same check each call makes before it starts.
+- A run the provider refuses for its limit goes back to the queue without using an attempt. The Task Runner holds until the reset the provider named (at most 7 days). A clock time without a time zone holds until a later reading shows headroom.
 
-The helper reports its readiness to `POST /api/remote/status` on every change and at least every 5 minutes, and keeps it in a 0600 status file in its cache directory. Each report also carries its `slots` (the `--parallel` slots and the fast lane), how many are `busy`, and its last error (a server request that failed after its retries, or a failed call's reason; a later success of the same kind clears it); the Connect page shows them per helper. A report is retried up to 4 times within a minute. The helper logs the first server failure and the recovery, one line each.
+The Task Runner reports its readiness to `POST /api/remote/status` on every change and at least every 5 minutes, and keeps it in a 0600 status file in its cache directory. Each report also carries its `slots` (the `--parallel` slots and the fast lane), how many are `busy`, and its last error (a server request that failed after its retries, or a failed call's reason; a later success of the same kind clears it); the Connect page shows them per Task Runner. A report is retried up to 4 times within a minute. The Task Runner logs the first server failure and the recovery, one line each.
 
 | Readiness | Meaning |
 |---|---|
-| `ready` | The helper claims. |
+| `ready` | The Task Runner claims. |
 | `quota-held` | A window is at or below the reserve, its usage could not be read, or the provider refused a run. |
 | `paused` | The user ran `pause-until-reset`. |
 | `cooled-off` | The server gives the login no calls after repeated lost leases or failed replies. |
 | `sandbox-failed` | The sandbox check or canary failed. |
-| `version-refused` | The server refused the helper's version. |
+| `version-refused` | The server refused the Task Runner's version. |
 | `harness-missing` | The harness or its login is missing, no model is set for any tier, the harness version is not audited (Codex), or the Claude login expires soon. |
-| `failing` | The helper's last 5 calls failed or were given back in a row; it claims again at the time shown if its checks pass. |
+| `failing` | The Task Runner's last 5 calls failed or were given back in a row; it claims again at the time shown if its checks pass. |
 
-The planner's room is the free slots of the helpers whose last status is `ready` and at most 6 minutes old and that are active (their last claim found nothing within 45 seconds, or a lease of theirs heartbeat within 90 seconds): each such helper's reported slots less the leases its token holds, without the fast lane (taken to be present when a helper reports 2 or more slots), since the planner does not know whether its next calls are small-tier or gating, for each user at most what their Max calls at once leaves. The queued calls that rank at or above the caller's class in the claim order take room first. `GET /api/remote/helpers` and `my_work` list the user's own helpers with their last status. The `remote-helpers` live topic follows statuses and leases.
+The planner's room is the free slots of the Task Runners whose last status is `ready` and at most 6 minutes old and that are active (their last claim found nothing within 45 seconds, or a lease of theirs heartbeat within 90 seconds): each such Task Runner's reported slots less the leases its token holds, without the fast lane (taken to be present when a Task Runner reports 2 or more slots), since the planner does not know whether its next calls are small-tier or gating, for each user at most what their Max calls at once leaves. The queued calls that rank at or above the caller's class in the claim order take room first. `GET /api/runners` and `my_work` list the user's own Task Runners with their last status. The `remote-Task Runners` live topic follows statuses and leases.
 
 ### Per-call tools
 
 A call's bundle lists the servers it may use: `items` (search and read the synced items), `reference` (the repo's reference documentation, where one exists) and `build` (the `check` build tool). Each is served only while the call's lease is live and only to a call whose bundle lists it.
 
 - **HTTP routes.** `POST /api/remote/tool/<server>/<tool>` with the lease secret as bearer token and the tool's arguments as JSON body. The reply is an MCP `tools/call` result. A long call (`check`) sends whitespace before the JSON while it runs.
-- **MCP.** `POST /mcp/task/<server>` is a Streamable HTTP MCP server with only that server's tools. Claude gets it through the bundle's MCP config. Codex gets it through its configuration. An agent can use `autocraft-task mcp` or `autocraft-task tool` instead.
+- **MCP.** `POST /mcp/task/<server>` is a Streamable HTTP MCP server with only that server's tools. Claude gets it through the bundle's MCP config. Codex gets it through its configuration. An agent can use `autocraft mcp` or `autocraft tool` instead.
 - **Reference cap.** One lease may read 60 reference passages in all (`reference_search` and `reference_around` together); past that, results are cut with a note.
-- **Reference index.** `reference_search` reads the repo's search index as built; a repo without one returns no passages. `autocraft reference import` builds it, and `autocraft reference index <repo>` builds or refreshes it (the dashboard never builds one: embedding a manual takes minutes of CPU). Searches keep the vectors of up to 4 repos in memory, score them in a worker thread (reloaded when the index file changes) and run at most 4 at a time.
+- **Reference index.** `reference_search` reads the repo's search index as built; a repo without one returns no passages. `autocraft-server reference import` builds it, and `autocraft-server reference index <repo>` builds or refreshes it (the dashboard never builds one: embedding a manual takes minutes of CPU). Searches keep the vectors of up to 4 repos in memory, score them in a worker thread (reloaded when the index file changes) and run at most 4 at a time.
 - **Check relay.** `check` runs in the job process that waits for the call, which keeps the call's count, time limit and run set. The dashboard queues the request and polls for the result; a request still waiting when the lease ends is refused.
-- **Checkouts.** Public repos are fetched by the helper from GitHub at the call's commit. Private repos and workspace entries come from `GET /api/remote/tarball?repo=&sha=` with the lease secret: 20 requests a minute per lease, at most 4 `git archive` at once, and each archive is cached on disk per repo and commit (2 GB in all, least recently used removed first) in `archives/` beside the diff cache.
+- **Checkouts.** Public repos are fetched by the Task Runner from GitHub at the call's commit. Private repos and workspace entries come from `GET /api/remote/tarball?repo=&sha=` with the lease secret: 20 requests a minute per lease, at most 4 `git archive` at once, and each archive is cached on disk per repo and commit (2 GB in all, least recently used removed first) in `archives/` beside the diff cache.
 
 ### Task tools for an agent
 
-A token with **Can run tasks** is also offered `next_task`, `task_status` and `my_work` on the inbox MCP server (`POST /mcp`) while the mode is `user-local`; in `server` mode they are not listed. `next_task` (`harness?`, `tiers?`) counts the queued calls the token's login may claim, with the same filters as a claim (accepted tiers, write permission on every repo, no judging of the login's own items), without leasing any. It returns the loop for the agent to run (`autocraft-task run --detach`, then `autocraft-task wait <lease>`, repeat) and never a lease secret. `task_status` (`lease`: the id the helper printed) gives the state and error of a call the login holds or held; another login's call answers 404. `my_work` lists today's (UTC) model calls that ran for the login with prompt, items, state, tokens and cost. The instructions tell the agent never to read or change the helper's bundle or reply files. `next_task` says when the user's helper is held.
+A Connector token is also offered `next_task`, `task_status` and `my_work` on the MCP server (`POST /mcp`) while the mode is `user-local` and its login has a fresh Task Runner; in `server` mode they are not listed. `next_task` (`harness?`, `tiers?`) counts the queued calls the login's Task Runners may claim, with the same filters as a claim (accepted tiers, write permission on every repo, no judging of the login's own items), without leasing any. It returns the loop for the agent to run (`autocraft run --detach`, then `autocraft wait <lease>`, repeat) and never a lease secret. `task_status` (`lease`: the id the Task Runner printed) gives the state and error of a call the login holds or held; another login's call answers 404. `my_work` lists today's (UTC) model calls that ran for the login with prompt, items, state, tokens and cost. The instructions tell the agent never to read or change the Task Runner's bundle or reply files. `next_task` says when the user's Task Runner is held.
 
 ### What is recorded
 
-Each call is one agent run, shown on the Agents page and the item timeline. A user-local run records the user, the harness, the model the helper reported (a full id, which may differ from the alias claimed), tokens (input, output, cache read and write, per model when subagents ran), the harness's cost at list price when it reports one, turns, and every tool use (name, arguments, result size, timing). No Claude account is recorded. Progress lines from the helper show on running calls.
+Each call is one agent run, shown on the Agents page and the item timeline. A user-local run records the user, the harness, the model the Task Runner reported (a full id, which may differ from the alias claimed), tokens (input, output, cache read and write, per model when subagents ran), the harness's cost at list price when it reports one, turns, and every tool use (name, arguments, result size, timing). No Claude account is recorded. Progress lines from the Task Runner show on running calls.
 
 ### Health check
 
-The `remote-calls` check (see [Health checks](#health-checks)) warns when a model call has waited over 10 minutes and no helper has claimed any call in that time. The `remote-starved-<tier>` checks warn when a helper is ready but the oldest queued call of a tier has waited longer than 30 (top), 20 (mid) or 5 (small) minutes.
+The `remote-calls` check (see [Health checks](#health-checks)) warns when a model call has waited over 10 minutes and no Task Runner has claimed any call in that time. The `remote-manual` check warns when a model call has waited over 10 minutes and every ready Task Runner is Manual only (it links to the model call queue). The `remote-starved-<tier>` checks warn when a Task Runner is ready but the oldest queued call of a tier has waited longer than 30 (top), 20 (mid) or 5 (small) minutes.
 
 ### Codex versions and guards
 
-Codex's own sandbox does not keep its shell tool away from its login on Linux, so the helper turns the shell off, with browser, computer use, apps, plugins, hooks, image generation, subagents and web search, and gives the model the helper's read-only file tools instead. It binds a separate `CODEX_HOME`, runs one call at a time, removes `AGENTS.md`, `AGENTS.override.md`, `.env` and `config.toml` from that home before each run, and passes no user config.
+Codex's own sandbox does not keep its shell tool away from its login on Linux, so the Task Runner turns the shell off, with browser, computer use, apps, plugins, hooks, image generation, subagents and web search, and gives the model the Task Runner's read-only file tools instead. It binds a separate `CODEX_HOME`, runs one call at a time, removes `AGENTS.md`, `AGENTS.override.md`, `.env` and `config.toml` from that home before each run, and passes no user config.
 
-- **Version allowlist.** Only Codex versions listed in `CODEX_AUDITED` in the helper (now `0.170.x`) run calls. Any other version is refused: `doctor` fails, the helper reports `version-refused` and releases calls it claimed.
-- **Stream guard.** The run stops at the first tool item in Codex's JSON stream that is not an MCP call to the call's own servers or the helper's file tools.
+- **Version allowlist.** Only Codex versions listed in `CODEX_AUDITED` in the Task Runner (now `0.170.x`) run calls. Any other version is refused: `doctor` fails, the Task Runner reports `version-refused` and releases calls it claimed.
+- **Stream guard.** The run stops at the first tool item in Codex's JSON stream that is not an MCP call to the call's own servers or the Task Runner's file tools.
 - **Rollout check.** After the run, the thread's rollout file must hold no tool call except those MCP tools and `view_image`. A missing rollout fails the call. When either guard trips, the reply is not submitted.
 
 ## Pipeline runner
 
-`autocraft runner serve` is the only process that runs pipeline steps (how the parts fit together: [docs/pipeline.md](docs/pipeline.md#architecture)). It polls the `jobs` table every 2 seconds, runs each job in a child process (`autocraft runner exec <id>`) with its output in a log file, stops jobs whose cancel was requested, and, while the pipeline is On, queues the jobs the stages need (see [docs/pipeline.md](docs/pipeline.md#on-and-off)). Every 20 seconds it also refreshes the flowchart counts (`flow_summary`) of repos whose data changed. On start it marks jobs that an earlier runner left running as failed. A lock file keeps a second runner on the same database from starting.
+`autocraft-server runner serve` is the only process that runs pipeline steps (how the parts fit together: [docs/pipeline.md](docs/pipeline.md#architecture)). It polls the `jobs` table every 2 seconds, runs each job in a child process (`autocraft-server runner exec <id>`) with its output in a log file, stops jobs whose cancel was requested, and, while the pipeline is On, queues the jobs the stages need (see [docs/pipeline.md](docs/pipeline.md#on-and-off)). Every 20 seconds it also refreshes the flowchart counts (`flow_summary`) of repos whose data changed. On start it marks jobs that an earlier runner left running as failed. A lock file keeps a second runner on the same database from starting.
 
 It reads the same variables as the CLI (`AUTOCRAFT_DB` and the rest), plus:
 
 | Variable | Meaning |
 |---|---|
 | `AUTOCRAFT_RUNNER_LOGS` | Directory of the per-job log files. Default `~/.cache/autocraft-logs/jobs`. The dashboard reads each job's log from the path recorded in its row, so it must run as a user who can read this directory. |
-| `AUTOCRAFT_RUNNER_JOBS` | Most jobs running at once. Default 32. A job whose step calls Claude also waits for a free account slot before it starts. Jobs of one step run together only for different repos, within the `step_parallel` setting (`autocraft pipeline parallel [N|none]`, default 1). |
+| `AUTOCRAFT_RUNNER_JOBS` | Most jobs running at once. Default 32. A job whose step calls Claude also waits for a free account slot before it starts. Jobs of one step run together only for different repos, within the `step_parallel` setting (`autocraft-server pipeline parallel [N|none]`, default 1). |
 | `AUTOCRAFT_RUNNER_POLL_MS` | Poll interval. Default 2000. |
 | `AUTOCRAFT_CALL_IDLE_MIN` | Minutes a Claude call may produce no output (no assistant text, tool use, tool result or progress line) before its process group is stopped (SIGTERM, then SIGKILL after 10 s) and the call fails with `no output for <n> min; stopped`. Default 15. Time spent inside a pending build-tool call (it waits on a worker, up to 45 minutes in all) does not count. |
 | `AUTOCRAFT_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/autocraft-logs`. |
@@ -342,7 +431,7 @@ The classify steps call `jev` and `claude`, so the runner's `PATH` must reach th
 
 To run it as a systemd user service, fill in the placeholders of `deploy/craft-runner.service`, copy it to `~/.config/systemd/user/`, and run `systemctl --user daemon-reload && systemctl --user enable --now craft-runner`. Stopping the service stops running jobs; they show as failed and can be started again.
 
-From a shell: `autocraft pipeline on [--if-draining]|off|drain|status` flips the switch and `pipeline limit <step> --per-day N|none` sets a stage's daily limit (both recorded as `cli`). `autocraft runner steps` lists steps and their params, `runner enqueue <step> [--<param> <value> ...]` queues a job by hand for debugging (recorded as `cli`), `runner jobs [--state S]` lists jobs, `runner cancel <id>` cancels one.
+From a shell: `autocraft-server pipeline on [--if-draining]|off|drain|status` flips the switch and `pipeline limit <step> --per-day N|none` sets a stage's daily limit (both recorded as `cli`). `autocraft-server runner steps` lists steps and their params, `runner enqueue <step> [--<param> <value> ...]` queues a job by hand for debugging (recorded as `cli`), `runner jobs [--state S]` lists jobs, `runner cancel <id>` cancels one.
 
 ### Build environments and the worker API
 
@@ -370,15 +459,15 @@ Every call carries `Authorization: Bearer <worker key>`, which identifies the en
 Operators manage environments on the Build environments page (`/envs`) or from a shell (recorded as `cli`). A worker key is written to a file with mode 0600 and printed only with `--print`:
 
 ```
-autocraft envs list
-autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N [--confidential yes|no] (--out FILE | --print)
-autocraft envs set <id> [--label TEXT] [--enabled yes|no] [--slots N] [--confidential yes|no]
-autocraft envs rotate-key <id> (--out FILE | --print)
-autocraft tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
-autocraft tasks show <id>
-autocraft tasks cancel <id>
-autocraft tasks mem [--days N]
-autocraft tasks enqueue-test --env-requires linux --repo NAME --sha SHA
+autocraft-server envs list
+autocraft-server envs add <id> --label TEXT --kind local-sandbox|remote --slots N [--confidential yes|no] (--out FILE | --print)
+autocraft-server envs set <id> [--label TEXT] [--enabled yes|no] [--slots N] [--confidential yes|no]
+autocraft-server envs rotate-key <id> (--out FILE | --print)
+autocraft-server tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
+autocraft-server tasks show <id>
+autocraft-server tasks cancel <id>
+autocraft-server tasks mem [--days N]
+autocraft-server tasks enqueue-test --env-requires linux --repo NAME --sha SHA
 ```
 
 **Confidential environments.** The build tasks of a security fix (its rounds and its model's checks) and of a scan test hold an undisclosed fix or test. Only an environment an operator marked confidential (the Confidential box on the Build environments page, or `--confidential yes`) takes them; the worker cannot report itself as one. A confidential environment takes no task that builds PR code (PR builds, integration batches, and every task for a PR or issue). A confidential environment is ready from its worker's first call after the flag, or the environment, was turned on; label, slot and key changes do not affect it. Until one is ready, a security fix waits before its model call (the finding's note reads "Waiting for a confidential build environment."; it continues on its own once one is ready), private tasks stay queued with the same text, the `confidential-env` health check warns, and the 4-hour build limit of a round or scan test starts only once one is ready. Run a confidential environment on its own host and user, apart from the workers that build PRs.
@@ -400,7 +489,7 @@ Claude calls run under accounts that an operator enabled. Which accounts exist o
 
 Example: `AUTOCRAFT_ACCOUNTS=/path/to/accounts.json`, `AUTOCRAFT_USAGE_DIR=/path/to/usage`, `AUTOCRAFT_ACCOUNTS_ROOT=/path/to/accounts`.
 
-Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `autocraft accounts list` and `autocraft accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (1 to 100; recorded as `cli`). Jev has no accounts; its calls at once are the `jev_parallel` setting (default 4), changed with `autocraft accounts jev [N]`. Claude calls in flight are limited only by the accounts' free slots; waiting calls take freed slots by priority class (security, then the path to merge, then the rest). An operator can also give an account a long-lived token (*Long-lived token* on the Accounts page, stored as `oauth-token` in the account's config directory, mode 0600): calls on that account use it instead of the login's short-lived token, so sandboxed calls never wait for a token refresh. Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
+Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `autocraft-server accounts list` and `autocraft-server accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (1 to 100; recorded as `cli`). Jev has no accounts; its calls at once are the `jev_parallel` setting (default 4), changed with `autocraft-server accounts jev [N]`. Claude calls in flight are limited only by the accounts' free slots; waiting calls take freed slots by priority class (security, then the path to merge, then the rest). An operator can also give an account a long-lived token (*Long-lived token* on the Accounts page, stored as `oauth-token` in the account's config directory, mode 0600): calls on that account use it instead of the login's short-lived token, so sandboxed calls never wait for a token refresh. Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
 
 ### Adding a step
 
@@ -448,7 +537,7 @@ Playwright is not a dependency of the repo; the header of `scripts/flowchart-sho
 A worker runs untrusted build tasks for the coordinator (the runner process). It holds no GitHub token, no Claude login and no database access: it downloads public source tarballs anonymously, runs each plan step in a fresh container, and sends logs, results and artifacts back, all of which the coordinator treats as untrusted data.
 
 ```
-autocraft worker serve [--config FILE]     # default: $AUTOCRAFT_WORKER_CONFIG
+autocraft-server worker serve [--config FILE]     # default: $AUTOCRAFT_WORKER_CONFIG
 ```
 
 ### Local sandbox user
@@ -528,7 +617,7 @@ A task may carry `warm: { key, role }` (`key` is the repo name, `[a-z0-9-]`, up 
 
 With several build machines, each worker's warm dirs exist only on its own disk. A snapshot store on a separate machine (the cache node) lets every worker start PR builds warm.
 
-Run it with `autocraft worker store serve --config FILE` (or `$AUTOCRAFT_STORE_CONFIG`). Config keys: `dir` (absolute, required), `readKey` and `writeKey` (required, at least 16 characters, different), `listen` (default `127.0.0.1:8990`), `maxGb` (200; least recently read snapshots are removed above it), `maxUploadGb` (20; larger bodies are refused), `requestTimeoutSec` (3600; the longest an upload may take) and `idleTimeoutSec` (120; a connection silent for that long is closed). It speaks plain HTTP: the transport must be TLS (a proxy in front) or a private cluster network. Keep the config file mode 0600.
+Run it with `autocraft-server worker store serve --config FILE` (or `$AUTOCRAFT_STORE_CONFIG`). Config keys: `dir` (absolute, required), `readKey` and `writeKey` (required, at least 16 characters, different), `listen` (default `127.0.0.1:8990`), `maxGb` (200; least recently read snapshots are removed above it), `maxUploadGb` (20; larger bodies are refused), `requestTimeoutSec` (3600; the longest an upload may take) and `idleTimeoutSec` (120; a connection silent for that long is closed). It speaks plain HTTP: the transport must be TLS (a proxy in front) or a private cluster network. Keep the config file mode 0600.
 
 API, all with `Authorization: Bearer <key>`:
 
@@ -540,7 +629,7 @@ API, all with `Authorization: Bearer <key>`:
 
 #### Signing
 
-The cache node is not trusted for content. A worker that uploads signs `(key, commit, sha256, stored, bytes)` with an Ed25519 private key; the store keeps the signature in the record. Every worker that downloads verifies it with the public keys in its config and refuses unsigned snapshots and bad signatures. `stored` is the time of the main build. Generate a key pair with `autocraft worker store keygen --private FILE --public FILE` (the private key file is created mode 0600 and never overwritten). The store itself needs neither key.
+The cache node is not trusted for content. A worker that uploads signs `(key, commit, sha256, stored, bytes)` with an Ed25519 private key; the store keeps the signature in the record. Every worker that downloads verifies it with the public keys in its config and refuses unsigned snapshots and bad signatures. `stored` is the time of the main build. Generate a key pair with `autocraft-server worker store keygen --private FILE --public FILE` (the private key file is created mode 0600 and never overwritten). The store itself needs neither key.
 
 #### Worker config
 
@@ -587,7 +676,7 @@ One image runs the dashboard, the runner and the one-shot sync and backup comman
 
 ```
 docker build -f deploy/container/Dockerfile -t autocraft .
-docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://autocraft.example.com autocraft dashboard
+docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://autocraft.example.com autocraft-server dashboard
 ```
 
 The image is built on Docker Hardened Images for Node 26 on Debian 13: the shell-less runtime variant receives a prepared file tree with `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It contains `gh` (pinned by checksum; authenticate with the `GH_TOKEN` environment variable) but not `jev`; while it is missing, Haiku does Jev's work (the runner records the outage "not installed" and checks the `PATH` on every pass), and a derived image that adds `jev` restores it. `--build-arg SOURCE_COMMIT=<sha>` records the commit the dashboard shows (the image has no `.git`). `tini` is PID 1 and reaps the jobs' child processes.
@@ -596,9 +685,9 @@ The first argument picks the process, exactly as the systemd units start them:
 
 | Command | Runs | Systemd unit |
 |---|---|---|
-| `dashboard` (default) | `autocraft dash serve` | `autocraft-dashboard` |
-| `runner` | `autocraft runner serve` (also the worker API) | `autocraft-runner` |
-| `sync [args]` | `autocraft sync`, one-shot | `autocraft-sync` |
+| `dashboard` (default) | `autocraft-server dash serve` | `autocraft-dashboard` |
+| `runner` | `autocraft-server runner serve` (also the worker API) | `autocraft-runner` |
+| `sync [args]` | `autocraft-server sync`, one-shot | `autocraft-sync` |
 | `backup [PREFIX [KEEP]]` | `deploy/backup.sh`, one-shot, default prefix `daily` | `autocraft-backup` |
 | anything else | passed to the `autocraft` CLI, for example `pipeline status` | |
 
@@ -715,7 +804,7 @@ The manifest holds no secret values. Before the first start:
 
 ## Similar items and semantic search
 
-`autocraft embed [--all] [--threads N] [--batch N]` embeds every tracked item whose text changed since its last embedding (`--all`: every tracked item) into `item_embeddings`, and removes vectors of items that left the mirror or the tracked repos. Each batch commits on its own, so an interrupted run continues where it stopped. The dashboard reads the table for "Similar items" on the Item page and for the search box's meaning toggle; it embeds search queries, and items without a vector yet, itself.
+`autocraft-server embed [--all] [--threads N] [--batch N]` embeds every tracked item whose text changed since its last embedding (`--all`: every tracked item) into `item_embeddings`, and removes vectors of items that left the mirror or the tracked repos. Each batch commits on its own, so an interrupted run continues where it stopped. The dashboard reads the table for "Similar items" on the Item page and for the search box's meaning toggle; it embeds search queries, and items without a vector yet, itself.
 
 - Model: [bge-small-en-v1.5](https://huggingface.co/BAAI/bge-small-en-v1.5) (384 dimensions, int8 ONNX from `Xenova/bge-small-en-v1.5`), run on the CPU through `@huggingface/transformers`. The first use downloads it (34 MB) from Hugging Face.
 - Text: the title, a newline, then the first 1,000 characters of the body with HTML comments, code blocks, images, URLs and Markdown markup removed (`src/embed/text.ts`); at most 256 tokens. Its hash decides whether an item is embedded again.
@@ -735,8 +824,8 @@ AutoCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APAC
 
 A repo can have private reference documentation: plain-text pages (`.txt`, `.md`), the images they name (`.png`, `.jpg`, `.gif`, `.webp`, `.svg`; a page names one as an `[image: images/<file>]` line) and the source PDF, in `<data dir>/reference/<repo>/` (the directory of the mirror database). The calls that judge reference-app behaviour (`review.opus`, `dupes.compare-prs.opus`, `decide.prepare`, `conversation.turn`) get the folder read-only at `/reference` when it exists.
 
-- Import: `tar -cf - -C <dir> . | autocraft reference import <repo> [--replace]`. The archive may hold plain files only, at most one sub-directory level, names of `[A-Za-z0-9._-]`, 1 GB in total. It is extracted beside the folder and renamed into place; the import is audited as `reference-import`.
-- List: `autocraft reference list` (repo, file count, size).
+- Import: `tar -cf - -C <dir> . | autocraft-server reference import <repo> [--replace]`. The archive may hold plain files only, at most one sub-directory level, names of `[A-Za-z0-9._-]`, 1 GB in total. It is extracted beside the folder and renamed into place; the import is audited as `reference-import`.
+- List: `autocraft-server reference list` (repo, file count, size).
 - `node scripts/reference-split.mjs <pdftotext -layout output> <out-dir>` writes one file per page (`p0001.txt` is PDF page 1) and an `index.txt` of page headings.
 - The content is never quoted, cited, named or posted: not in reviews, comments, decisions, the repository or commits.
 

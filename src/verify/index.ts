@@ -4,7 +4,7 @@
 // our code turns a valid choice into build tasks. Pass or fail comes from the
 // tasks' exit codes, never from a model. Reads GitHub; never writes to it.
 //
-//   autocraft verify --repo R [--limit N] [--dry-run]
+//   autocraft-server verify --repo R [--limit N] [--dry-run]
 //
 // Part 2 (results) belongs in ./results.ts: it reads the finished tasks of each `planned` or `running`
 // verification, sets the state, summary and finished_at, writes the failure summary and cancels the

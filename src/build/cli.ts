@@ -1,4 +1,4 @@
-// autocraft envs list | add | set | rotate-key, autocraft tasks list | show | cancel | enqueue-test
+// autocraft-server envs list | add | set | rotate-key, autocraft-server tasks list | show | cancel | enqueue-test
 // Recorded as `cli`: only someone with a shell on the host can run these. Worker keys go to a
 // file (mode 0600) and are printed only with --print. Text a worker sent is shown with control
 // characters removed, so it cannot drive the terminal.
@@ -10,15 +10,15 @@ import { trackedNames } from "../repos.ts";
 import { BuildError, createEnv, KINDS, listEnvs, rotateKey, updateEnv } from "./envs.ts";
 import { cancelTask, createTask, getTaskDetail, listTasks, memorySummary } from "./tasks.ts";
 
-const USAGE = `usage: autocraft envs list
-       autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N [--confidential yes|no] (--out FILE | --print)
-       autocraft envs set <id> [--label TEXT] [--enabled yes|no] [--slots N] [--confidential yes|no]
-       autocraft envs rotate-key <id> (--out FILE | --print)
-       autocraft tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
-       autocraft tasks show <id>
-       autocraft tasks cancel <id>
-       autocraft tasks mem [--days N]
-       autocraft tasks enqueue-test --env-requires linux --repo NAME --sha SHA`;
+const USAGE = `usage: autocraft-server envs list
+       autocraft-server envs add <id> --label TEXT --kind local-sandbox|remote --slots N [--confidential yes|no] (--out FILE | --print)
+       autocraft-server envs set <id> [--label TEXT] [--enabled yes|no] [--slots N] [--confidential yes|no]
+       autocraft-server envs rotate-key <id> (--out FILE | --print)
+       autocraft-server tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
+       autocraft-server tasks show <id>
+       autocraft-server tasks cancel <id>
+       autocraft-server tasks mem [--days N]
+       autocraft-server tasks enqueue-test --env-requires linux --repo NAME --sha SHA`;
 
 function die(msg: string): never {
   console.error(msg);

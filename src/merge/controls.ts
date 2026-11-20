@@ -1,7 +1,7 @@
 // Operator merge controls: hold or release a PR's merge, remove a PR from its integration batch, stop a batch.
 //
-//   autocraft merge-hold <repo#n>       autocraft merge-release <repo#n>
-//   autocraft batch-remove <repo#n>     autocraft batch-stop <id>
+//   autocraft-server merge-hold <repo#n>       autocraft-server merge-release <repo#n>
+//   autocraft-server batch-remove <repo#n>     autocraft-server batch-stop <id>
 //
 // Hold and release change local tables only. Remove and stop close the batch's integration PR through
 // src/github/write.ts (audited, on the GitHub activity page); the exec that runs `gh` is injectable.

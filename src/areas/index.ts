@@ -1,4 +1,4 @@
-// CLI: `autocraft areas list|propose|accept|edit|rescan|suggest --repo R`. Runs the steps in this process,
+// CLI: `autocraft-server areas list|propose|accept|edit|rescan|suggest --repo R`. Runs the steps in this process,
 // like the other stage commands; the dashboard queues the same steps as jobs.
 import { connect } from "../db.ts";
 import { assignAreas } from "./assign.ts";
@@ -32,7 +32,7 @@ function editOf(words: string[]): AreaEdit {
     case "remove": if (a) return { op, name: a }; break;
     case "describe": if (a && b) return { op, name: a, description: b }; break;
   }
-  throw new Error(`usage: autocraft areas --repo R ${USAGE}`);
+  throw new Error(`usage: autocraft-server areas --repo R ${USAGE}`);
 }
 
 export const commands = {
@@ -41,7 +41,7 @@ export const commands = {
     async run(args: string[]): Promise<void> {
       const repo = flag(args, "--repo"), words = positional(args);
       const what = words.shift();
-      if (!repo || !what) throw new Error(`usage: autocraft areas --repo R ${USAGE}`);
+      if (!repo || !what) throw new Error(`usage: autocraft-server areas --repo R ${USAGE}`);
       const db = connect();
       const usageRun = `areas-cli-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
       switch (what) {
@@ -89,7 +89,7 @@ export const commands = {
           break;
         }
         default:
-          throw new Error(`usage: autocraft areas --repo R ${USAGE}`);
+          throw new Error(`usage: autocraft-server areas --repo R ${USAGE}`);
       }
     },
   },

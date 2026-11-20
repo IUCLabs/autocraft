@@ -1,4 +1,4 @@
-// `autocraft github-app register`: prints the dashboard page that registers the
+// `autocraft-server github-app register`: prints the dashboard page that registers the
 // GitHub App. The page does the work (it posts the manifest from the operator's
 // browser and keeps the app's keys in the secrets file), so the keys never pass
 // through the terminal.
@@ -14,7 +14,7 @@ export const commands = {
     summary: "github-app register: print the page that registers the GitHub App",
     run: (args: string[]) => {
       if (args[0] !== "register") {
-        console.error("usage: autocraft github-app register");
+        console.error("usage: autocraft-server github-app register");
         process.exit(1);
       }
       console.log(`Open this page in a browser, signed in as an operator:\n${registerUrl()}`);

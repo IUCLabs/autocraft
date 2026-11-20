@@ -1,4 +1,4 @@
-// `autocraft worker serve`: runs build tasks of the coordinator in containers.
+// `autocraft-server worker serve`: runs build tasks of the coordinator in containers.
 import { mkdirSync, readFileSync } from "node:fs";
 import { detectCapabilities, loadWorkerConfig, readKey } from "./config.ts";
 import { WorkerApi } from "./client.ts";
@@ -11,11 +11,11 @@ export { rustPlan, hasCargoLock } from "./rust.ts";
 export type { Capabilities, TaskStep, ClaimedTask } from "./types.ts";
 import { envVar } from "../env.ts";
 
-const USAGE = `usage: autocraft worker serve [--config FILE]   (default: $AUTOCRAFT_WORKER_CONFIG)
-       autocraft worker store serve [--config FILE]   (default: $AUTOCRAFT_STORE_CONFIG)
-       autocraft worker store keygen --private FILE --public FILE
-       autocraft worker update-code --sha SHA --ssh USER@HOST --key FILE --git-dir BARE_REPO
-       autocraft worker status`;
+const USAGE = `usage: autocraft-server worker serve [--config FILE]   (default: $AUTOCRAFT_WORKER_CONFIG)
+       autocraft-server worker store serve [--config FILE]   (default: $AUTOCRAFT_STORE_CONFIG)
+       autocraft-server worker store keygen --private FILE --public FILE
+       autocraft-server worker update-code --sha SHA --ssh USER@HOST --key FILE --git-dir BARE_REPO
+       autocraft-server worker status`;
 
 /** Updates the sandbox worker now, or records the update when its tasks are still running. */
 async function updateCode(args: string[]): Promise<void> {

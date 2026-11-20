@@ -1,4 +1,4 @@
-// `autocraft runner serve`: the only process that runs pipeline steps. It
+// `autocraft-server runner serve`: the only process that runs pipeline steps. It
 // polls the jobs table, runs each job in its own child process (`autocraft
 // runner exec <id>`, its own process group, output to a per-job log file),
 // stops jobs whose cancel was requested, runs the autopilot (queues jobs while the

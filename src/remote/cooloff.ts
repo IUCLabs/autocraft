@@ -1,6 +1,6 @@
 // Cool-off of the user-local mode, per login: a login whose helpers keep losing leases (no heartbeat, past a time limit) or
 // keep failing calls (`ok: false` replies in a row) gets no calls for a while, so a broken helper stops holding and failing
-// calls other helpers could run. Revoking a token does not end it; an operator does (`autocraft remote cooloff clear`).
+// calls other helpers could run. Revoking a token does not end it; an operator does (`autocraft-server remote cooloff clear`).
 import type { DatabaseSync } from "node:sqlite";
 import { scaled } from "./time-scale.ts";
 import { audit } from "../dash/audit.ts";

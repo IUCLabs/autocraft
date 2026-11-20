@@ -2,7 +2,7 @@
 // review (event COMMENT: never an approval or a change request) in repos approved for
 // comments. One review per PR: a later Opus review at a new head edits it.
 //
-//   autocraft review-post --repo R [--limit N] [--apply]
+//   autocraft-server review-post --repo R [--limit N] [--apply]
 //
 // Without --apply it is a dry run: it reads the local tables only and lists what would be posted.
 import type { DatabaseSync } from "node:sqlite";
