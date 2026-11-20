@@ -35,7 +35,18 @@ export function ConnectView({ user }: ViewProps) {
   const { tab = "" } = useParams();
   const [sp] = useSearchParams();
   const local = user.role !== "viewer" && user.inference === "user-local";
+  const runners = useQuery("runners", (a) => a.runners.list(), { enabled: local });
   if (!TABS.some(([t]) => t === tab) || (tab && !local)) return <Navigate to="/connect" replace />;
+  if (local && !runners.data && !runners.error) return <Page title="Connect your Agents"><></></Page>;
+  // No Task Runner yet: the setup guide and the MCP Connector, nothing else; a login waiting for approval (`?runner=CODE`) still shows its card.
+  if (local && runners.data?.runners.length === 0 && !sp.get("runner")) {
+    return (
+      <Page title="Connect your Agents">
+        <RunnerGuide />
+        <Connector user={user} />
+      </Page>
+    );
+  }
   return (
     <Page title="Connect your Agents">
       {local && (
