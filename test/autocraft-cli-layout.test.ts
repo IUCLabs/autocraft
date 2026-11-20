@@ -8,7 +8,7 @@ import type { AddressInfo } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALL_TOOL_NAMES, QUEUE_TOOLS, TOOLS } from "../src/dash/mcp/index.ts";
+import { ALL_TOOL_NAMES, QUEUE_APPROVE_TOOLS, QUEUE_TOOLS, TOOLS } from "../src/dash/mcp/index.ts";
 import { CLI_COMMANDS, MCP_ONLY } from "../worker/autocraft.mjs";
 
 const WORKER = new URL("../worker/autocraft.mjs", import.meta.url).pathname;
@@ -40,7 +40,7 @@ async function cli(url: string | null, args: string[]) {
 test("commands send their tool with positional and renamed arguments; a tool the credential lacks gets one line", async () => {
   const calls: { name: string; arguments: unknown }[] = [];
   // An operator without answering: the queue tools but not queue_pr.
-  const tools = [...TOOLS, ...QUEUE_TOOLS];
+  let tools: { name: string }[] = [...TOOLS, ...QUEUE_TOOLS];
   const server = createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
@@ -69,6 +69,11 @@ test("commands send their tool with positional and renamed arguments; a tool the
     const add = await cli(url, ["queue", "add", "designcraft#5"]);
     assert.equal(add.code, 1);
     assert.match(add.err, /^autocraft queue add: this Task Runner cannot approve merges/);
+    assert.match((await cli(url, ["queue", "remove", "designcraft#5"])).err, /^autocraft queue remove: this Task Runner cannot approve merges/);
+    // A maintainer's answering token: queue_pr only. Withdrawing stays with operators, and the line says so.
+    tools = [...TOOLS, ...QUEUE_APPROVE_TOOLS.filter((t) => t.name === "queue_pr")];
+    assert.match((await cli(url, ["queue", "remove", "designcraft#5"])).err, /^autocraft queue remove: only operators withdraw an approved merge/);
+    tools = [...TOOLS, ...QUEUE_TOOLS];
     assert.equal((await cli(url, ["queue", "weight", "designcraft#5", "7", "8"])).code, 2);
     assert.equal((await cli(url, ["inbox", "nope"])).code, 2);
     assert.equal(calls.length, 4);
