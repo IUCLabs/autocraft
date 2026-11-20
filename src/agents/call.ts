@@ -109,12 +109,16 @@ function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
 }
 
 /**
- * Splits `items` into batches of at most `size` that each hold one repo's items, so any user who may take that repo can take
- * the call (a mixed batch waits for a user who may take every repo in it). Items keep their order within a repo; batches are
- * in the order of their first item.
+ * Splits `items` into batches of at most `size`. In the user-local mode each batch holds one repo's items, so any user who may
+ * take that repo can take the call (a mixed batch waits for a user who may take every repo in it); items keep their order
+ * within a repo and batches are in the order of their first item. In the server-account mode batches are plain runs of `size`.
  */
-export function repoBatches<T>(items: readonly T[], size: number, repoOf: (x: T) => string): T[][] {
+export function repoBatches<T>(db: DatabaseSync, items: readonly T[], size: number, repoOf: (x: T) => string): T[][] {
   const out: T[][] = [];
+  if (inferenceMode(db) !== "user-local") {
+    for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+    return out;
+  }
   const open = new Map<string, T[]>();
   for (const x of items) {
     const repo = repoOf(x);

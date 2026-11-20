@@ -67,14 +67,17 @@ function store(db: DatabaseSync, k: PairKey, jev: number | null, haiku: PairVerd
     WHERE repo = ? AND a = ? AND b = ? AND a_hash = ? AND b_hash = ?`).run(jev, haiku, verdict, canonical, at, k.repo, k.a, k.b, k.a_hash, k.b_hash);
 }
 
-/** Checks the pairs and stores each answered one. `onHandled` gets the running count of pairs sent to a model. */
+/**
+ * Checks the pairs and stores each answered one. `onHandled` gets the running count of pairs sent to a model; pairs of a Haiku
+ * batch the pool skipped (no Task Runner took it) are taken off again, so a job whose only work was skipped counts as idle.
+ */
 export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckDeps, onHandled?: (n: number) => void): Promise<CheckCounts> {
   const c: CheckCounts = { checked: 0, jev: 0, haiku: 0, haikuAlone: 0, verdicts: {}, unanswered: 0 };
   const jevP = new Map<string, number | null>();
   /** Pairs Jev could not be asked because it is unavailable. */
   const alone = new Set<string>();
   const pairs = new Map(keys.map((k) => [pairRef(k.repo, k.a, k.b), { k, pair: pairInput(db, k) }]));
-  let handled = 0;
+  let handled = 0, skipped = 0;
   await pool([...pairs.entries()].map(([ref, e]) => async () => {
     const usable = deps.jevUsable?.() ?? true;
     const p = usable ? await deps.jev(e.pair) : null;
@@ -95,7 +98,7 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     if (v) done(ref, null, v);
     else second.push(ref);
   }
-  const batches = repoBatches(second, HAIKU.limits.perCall, (r) => pairs.get(r)!.pair.repo);
+  const batches = repoBatches(db, second, HAIKU.limits.perCall, (r) => pairs.get(r)!.pair.repo);
   await pool(batches.map((batch) => async () => {
     // One entry per batch pair; a pair without a valid answer stays in `rest` and is asked again.
     const input = batch.map((r) => pairs.get(r)!.pair);
@@ -112,6 +115,10 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     }
     const todo = r.ok ? (r.rest ?? []) : input;
     c.unanswered += todo.length;
-  }), poolRoom(db, (i) => [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))]), { first: true });
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))]), { first: true, skipped: (i) => {
+    c.unanswered += batches[i]!.length;
+    skipped += batches[i]!.length;
+  } });
+  if (skipped) onHandled?.(handled - skipped);
   return c;
 }

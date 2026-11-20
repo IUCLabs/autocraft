@@ -234,7 +234,7 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
   }
   if (!ask.length || opts.cancelled?.()) return out;
   const per = opts.perCall ?? CLAUDE_PROMPTS[tier.haiku.id].limits.perCall;
-  const batches = repoBatches(ask, per, tier.repo);
+  const batches = repoBatches(db, ask, per, tier.repo);
   await pool(batches.map((batch, n) => async () => {
     for (const x of batch) out.asked.add(tier.ref(x));
     const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {

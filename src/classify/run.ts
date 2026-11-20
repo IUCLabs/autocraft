@@ -805,12 +805,12 @@ export const add = (a: Usage, b: Usage): Usage => {
 
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
-/** The Haiku batches of `items`: one repo's items each (repoBatches). */
-export const haikuBatches = (items: readonly Item[], batchSize: number = HAIKU.limits.perCall): Item[][] => repoBatches(items, batchSize, (i) => i.repo);
+/** The Haiku batches of `items` (repoBatches: one repo's items each in the user-local mode). */
+export const haikuBatches = (db: DatabaseSync, items: readonly Item[], batchSize: number = HAIKU.limits.perCall): Item[][] => repoBatches(db, items, batchSize, (i) => i.repo);
 
 /** Classifies the items in Haiku batches; returns how many items were in batches that ran (a batch no Task Runner may take does not). */
 export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<number> {
-  const batches = haikuBatches(items, batchSize);
+  const batches = haikuBatches(db, items, batchSize);
   let skipped = 0;
   await pool(batches.map((batch, n) => async () => {
     const r = await runModelStep(db, CLASSIFY_HAIKU, batch, { model, usage: { run: runId, agent: `haiku-${String(n).padStart(2, "0")}`, stage: "classify" } });
