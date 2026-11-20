@@ -418,7 +418,7 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
     }
     const r = prep(db, `UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, root = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?, started_at = NULL, claim_id = ?,
         queued_ms = queued_ms + CASE WHEN queued_since IS NULL THEN 0 ELSE MAX(0, ? - queued_since) END, queued_since = NULL, progress = NULL, error = NULL,
-        picked_by = NULL, picked_at = NULL, pick_until = NULL
+        picked_by = NULL, picked_at = NULL, pick_until = NULL, no_taker_since = NULL
       WHERE id = ? AND state = 'queued' AND (picked_by IS NULL OR picked_by = ? OR ${pickLapsedSql}) AND (? = 0 OR parent_id IS NOT NULL OR picked_by = ?)
         AND EXISTS (SELECT 1 FROM main.mcp_tokens lt WHERE lt.id = ? AND lt.kind = 'runner' AND lt.expires_at > ?) RETURNING ${COLS}`)
       .get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, claim.root ?? null, sha256hex(secret), nowMs, nowMs, claim.requestId, nowMs, id,
