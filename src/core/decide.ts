@@ -389,7 +389,10 @@ export function decidePr(f: PrFacts): Plan {
   const merged = f.ghState === "MERGED" || mergedByUs;
   // A review older than a comment or review by someone else, or at another head, leaves the PR out of the queue until it is reviewed again.
   const inQueue = takeReview && (merged || (open && !r.stale && r.head === f.head));
-  const reviewable = !f.draft && !!f.head && !!f.label && REVIEW_LABELS.includes(f.label)
+  // A person's live pre-approved merge lifts the label gate: they said merge it, so the review, pre-merge review and CI it still needs
+  // run whatever the label is (or before the classification settles). A scope question or answer still gates it.
+  const labelOk = !!f.operator?.preapproved || (!!f.label && REVIEW_LABELS.includes(f.label));
+  const reviewable = !f.draft && !!f.head && labelOk
     && (f.scopeAnswer !== null ? KEEP_IN_CORE.includes(f.scopeAnswer) : !f.needsDecisionFlag);
 
   const actions: Action[] = [...extra];
@@ -403,7 +406,7 @@ export function decidePr(f: PrFacts): Plan {
   else if (f.draft) state = "draft";
   else if (r && r.head === f.head && !r.stale && r.verdict === "hold") state = "opus-hold";
   else if (r && r.head === f.head && !r.stale && r.verdict === "close") state = "opus-close";
-  else if (!f.label || !REVIEW_LABELS.includes(f.label)) state = "label-not-reviewed";
+  else if (!labelOk) state = "label-not-reviewed";
   else if (!reviewable) state = "scope";
   else state = r ? "review-stale" : "not-reviewed";
 

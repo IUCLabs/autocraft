@@ -28,21 +28,23 @@ export function queuedOperatorFix(db: DatabaseSync, repo: string, number: number
   return r ? { id: r.id, head: r.from_head, instructions: r.instructions, by: r.by, preapprovalId: r.preapproval_id } : null;
 }
 
-export type OperatorWork = { fixHeads: Set<string>; hold: boolean; /** The pushed head of a pre-approved merge waiting for its pre-merge review (state `ci`). */ premergeHeads: Set<string> };
+export type OperatorWork = { fixHeads: Set<string>; hold: boolean; /** The pushed head of a pre-approved merge waiting for its pre-merge review (state `ci`). */ premergeHeads: Set<string>; /** A pre-approved merge is live (fixup, review, ci or queued). */ preapproved: boolean };
 
-/** Per PR ("repo#n"): the heads with an operator fix-up still to work, whether a pre-approved merge is before its merge answer, and the heads due a pre-merge review. Small tables, read once per pass. */
+/** Per PR ("repo#n"): the heads with an operator fix-up still to work, whether a pre-approved merge is before its merge answer or live at all, and the heads due a pre-merge review. Small tables, read once per pass. */
 export function operatorWork(db: DatabaseSync, repo?: string): Map<string, OperatorWork> {
   const out = new Map<string, OperatorWork>();
   const get = (r: string, n: number): OperatorWork => {
     const k = `${r}#${n}`;
     let w = out.get(k);
-    if (!w) out.set(k, (w = { fixHeads: new Set(), hold: false, premergeHeads: new Set() }));
+    if (!w) out.set(k, (w = { fixHeads: new Set(), hold: false, premergeHeads: new Set(), preapproved: false }));
     return w;
   };
   const q = (sql: string) => db.prepare(`${sql}${repo ? " AND repo = ?" : ""}`).all(...(repo ? [repo] : []));
   for (const o of db.prepare(`SELECT repo, number, from_head FROM operator_fixups o WHERE state = 'queued' AND ${BY_SETTLES} AND NOT ${ENDED_SQL}${repo ? " AND repo = ?" : ""}`).all(...ENDED_STATES, ...(repo ? [repo] : [])) as { repo: string; number: number; from_head: string }[]) get(o.repo, o.number).fixHeads.add(o.from_head);
-  for (const p of q("SELECT repo, number, state, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci')") as { repo: string; number: number; state: string; head: string | null }[]) {
+  for (const p of q("SELECT repo, number, state, head FROM preapprovals WHERE state IN ('fixup', 'review', 'ci', 'queued')") as { repo: string; number: number; state: string; head: string | null }[]) {
     const w = get(p.repo, p.number);
+    w.preapproved = true;
+    if (p.state === "queued") continue;
     w.hold = true;
     if (p.state === "ci" && p.head) w.premergeHeads.add(p.head);
   }

@@ -312,7 +312,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     // An author whose permission has not been read yet counts as able to write: the job that pushes reads it first.
     base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived, false, sameRepo(r.head_repo, r.repo) && authorWrites(db, r.repo, r.number) !== "no");
     const ow = operator.get(ref);
-    if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold, premerge: !!head && ow.premergeHeads.has(head) };
+    if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold, premerge: !!head && ow.premergeHeads.has(head), preapproved: ow.preapproved };
     // A fix-up request holds the PR's merge only while the planner can work it: same head, pushable, approved, not conflicting, not a draft, tries left.
     if (base.operator?.fix && !base.heldBacklog && !base.draft && base.mergeable !== "CONFLICTING" && base.pushable && base.repoFacts.pushApproved && operatorTriesLeft(db, r.repo, r.number)) base.operator.hold = true;
     if (ow && r.state === "OPEN" && head) {

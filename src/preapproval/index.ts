@@ -42,8 +42,8 @@ export type PipelineStep = Extract<Step, { kind: "review" | "fixup" }>;
 const ACTOR = "pipeline";
 export const INSTRUCTIONS_MAX = 1500;
 const ACTIVE = ["fixup", "review", "ci", "queued"] as const;
-/** Plan states in which the PR gets no review, so a pre-approved merge cannot go on. */
-const NOT_REVIEWABLE = ["out-of-scope", "integration", "backlog", "duplicate", "draft", "label-not-reviewed", "scope"];
+/** Plan states in which the PR gets no review, so a pre-approved merge cannot go on. A label never stops one: a live pre-approval lifts the label gate (src/core/decide.ts). */
+const NOT_REVIEWABLE = ["out-of-scope", "integration", "backlog", "duplicate", "draft", "scope"];
 const iso = () => new Date().toISOString();
 const short = (sha: string | null) => (sha ?? "").slice(0, 7);
 const oneLine = (s: string, n = 200) => s.replace(/\s+/g, " ").trim().slice(0, n);
@@ -53,6 +53,11 @@ type PrRow = { state: string; head_oid: string | null; kind: string; head_repo: 
 
 const prRow = (db: DatabaseSync, repo: string, n: number): PrRow | undefined =>
   db.prepare("SELECT state, head_oid, kind, head_repo, head_ref FROM items WHERE repo = ? AND number = ?").get(repo, n) as PrRow | undefined;
+
+/** The PR's plan state as it would be with a live pre-approved merge, which lifts the label gate: what a new pre-approval can count on. */
+function preapprovedState(f: PrFacts | null): string | null {
+  return f ? decidePr({ ...f, operator: { fix: null, hold: false, premerge: false, ...f.operator, preapproved: true } }).state : null;
+}
 
 const toView = (r: Row): Preapproval => ({ id: r.id, by: r.by, at: r.at, instructions: r.instructions, state: r.state, fromHead: r.from_head, head: r.head, reason: r.reason, updatedAt: r.updated_at });
 
@@ -153,7 +158,7 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
   }
   // The fix-up step and the review of its push only see PRs the planner works: out of scope, integration and unreviewable PRs would wait for ever.
   const fact = loadPrFact(db, repo, number);
-  const planState = fact ? decidePr(fact).state : null;
+  const planState = step.merge === true ? preapprovedState(fact) : fact ? decidePr(fact).state : null;
   if (!planState || planState === "out-of-scope" || planState === "integration") throw new Error(`${ref} is outside the pipeline's scope: no fix-up runs on it`);
   if (step.merge === true && NOT_REVIEWABLE.filter((x) => x !== "scope").includes(planState)) throw new Error(`${ref} cannot be reviewed (${planState}): a merge after the fix-up could not follow`);
   const instructions = step.instructions.trim();
@@ -200,19 +205,13 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
   return { label: merge ? "Queued the fix-up; the PR merges if its review says take and CI is green" : "Queued the fix-up" };
 }
 
-/**
- * "Queue items" (a PR line): an operator's Merge answer given ahead, with no fix-up. A row starts in `review` at the current head,
- * the way a carried answer does, so the PR merges only after a sure take review, a clean pre-merge review and green CI there;
- * a take-fix review, a defect or a red head asks the Merge? question instead. Throws when it cannot start.
- */
 /** Why a PR in a NOT_REVIEWABLE plan state gets no code review, in words a commenter can act on. */
-function notReviewableWhy(state: string, label: string | null): string {
+function notReviewableWhy(state: string, scopeAnswer: string | null): string {
   switch (state) {
     case "backlog": return "it is in the backlog";
     case "duplicate": return "it is held as a duplicate";
     case "draft": return "it is a draft";
-    case "scope": return "its scope question is still open";
-    case "label-not-reviewed": return label ? `its label "${label}" does not get a code review` : "its classification has not settled yet; try again later";
+    case "scope": return scopeAnswer === null ? "its scope question is still open" : `its scope answer (${scopeAnswer}) keeps it out of core`;
     default: return state;
   }
 }
@@ -220,7 +219,14 @@ function notReviewableWhy(state: string, label: string | null): string {
 /** Why a pre-approval pinned to a head (a comment's) was refused: the PR has another head now. */
 export const HEAD_CHANGED = "the PR changed after your comment; comment again";
 
-/** `head`, when given, is the only head it may pre-approve: the head the person saw (a command's comment-time head). */
+/**
+ * "Queue items" (a PR line): an operator's Merge answer given ahead, with no fix-up. A row starts in `review` at the current head,
+ * the way a carried answer does, so the PR merges only after a sure take review, a clean pre-merge review and green CI there;
+ * a take-fix review, a defect or a red head asks the Merge? question instead. Throws when it cannot start.
+ *
+ * The PR's label does not matter (the pre-approval lifts the label gate); a draft, the backlog, a duplicate hold or a scope question still refuse it.
+ * `head`, when given, is the only head it may pre-approve: the head the person saw (a command's comment-time head).
+ */
 export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: number; by: string; via?: string; head?: string }): { label: string } {
   const { repo, number, by, via } = o;
   const ref = `${repo}#${number}`;
@@ -228,9 +234,9 @@ export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: num
   if (!it || it.kind !== "pr") throw new Error(`${ref} is not a pull request`);
   if (it.state !== "OPEN") throw new Error(`${ref} is not open`);
   const fact = loadPrFact(db, repo, number);
-  const planState = fact ? decidePr(fact).state : null;
+  const planState = preapprovedState(fact);
   if (!planState || planState === "out-of-scope" || planState === "integration") throw new Error(`${ref} is outside the pipeline's scope`);
-  if (NOT_REVIEWABLE.includes(planState)) throw new Error(`${ref} cannot be reviewed yet: ${notReviewableWhy(planState, fact?.label ?? null)}`);
+  if (NOT_REVIEWABLE.includes(planState)) throw new Error(`${ref} cannot be reviewed yet: ${notReviewableWhy(planState, fact?.scopeAnswer ?? null)}`);
   const head = it.head_oid;
   if (!head) throw new Error(`${ref} has no head commit in the mirror yet`);
   if (o.head !== undefined && head !== o.head) throw new Error(HEAD_CHANGED);

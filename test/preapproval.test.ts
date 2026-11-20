@@ -305,6 +305,27 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     assert.equal(reviewHolds(w.db)("app", 13, "sha13")?.kind, "ci");
   });
 
+  test("the label does not stop it: a plugin candidate or an unclassified PR is reviewed, and a label settled later does not flip it out", () => {
+    const w = fresh().pr(16, { label: "plugin candidate" }).pr(17).pr(18, { label: "plugin candidate", flags: ["needs decision"] });
+    w.db.prepare("DELETE FROM classifications WHERE number = 17").run();
+    for (const n of [16, 17]) {
+      assert.equal(w.prPlan(n).state, "label-not-reviewed");
+      preapproveMerge(w.db, { repo: "app", number: n, by: OPERATOR });
+      settle(w);
+      assert.equal(preapprovalOf(w.db, "app", n)?.state, "review");
+      assert.ok(kindsOf(w, n).includes("review:"), kindsOf(w, n).join());
+    }
+    // An open scope question still refuses it, also behind a label that gets no review.
+    assert.throws(() => preapproveMerge(w.db, { repo: "app", number: 18, by: OPERATOR }), /scope question is still open/);
+    w.db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 17, 'jev', 'r1', ?, 'plugin candidate', '[]', '{\"top\":0.95}')").run(T0);
+    w.review(17, { head: "sha17" });
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 17)?.state, "ci");
+    w.premerge(17, "clean");
+    settle(w);
+    assert.equal(preapprovalOf(w.db, "app", 17)?.state, "queued");
+  });
+
   test("the queue row says who added the PR and how; viewers see no login", () => {
     const w = fresh().pr(14).pr(15);
     preapproveMerge(w.db, { repo: "app", number: 14, by: OPERATOR });

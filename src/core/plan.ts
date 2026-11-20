@@ -22,7 +22,7 @@ export const OTHER_PR_STATES = [
   "opus-hold", // the review at the head says hold
   "opus-close", // the review at the head says close
   "review-stale", // reviewed, but the head moved or the discussion moved on: due a new review
-  "label-not-reviewed", // its settled label is not one that gets a code review
+  "label-not-reviewed", // its settled label is not one that gets a code review, and no pre-approved merge lifts that
   "scope", // waits for a scope answer (or the answer keeps it out of core)
   "not-reviewed", // no review yet: due a review
   "closed", // closed or merged on GitHub, outside the merge queue (post-merge review only)
@@ -240,8 +240,9 @@ export type PrFacts = {
    * An operator's fix-up (src/preapproval): `fix` is the queued one for the current head with the tries the PR's operator fix-ups used;
    * `hold` is true while a pre-approved merge waits for its fix-up, review or CI (or an operator fix-up request is still worked), so nothing merges or asks Merge? meanwhile.
    * `premerge` is true when the PR's pre-approved merge waits for the pre-merge review of this head.
+   * `preapproved` is true while a person's pre-approved merge is live (fix-up, review, ci or queued): the PR's label does not gate its review.
    */
-  operator?: { fix: { attempts: number } | null; hold: boolean; premerge: boolean };
+  operator?: { fix: { attempts: number } | null; hold: boolean; premerge: boolean; preapproved: boolean };
   /** Stored model patches at the reviewed head whose lint task is queued, oldest first: `ended` once the task has a final state. A CI fix's source is `review`. */
   lint: LintFact[];
   /** CI fix state at the reviewed head, loaded while CI fails. */
