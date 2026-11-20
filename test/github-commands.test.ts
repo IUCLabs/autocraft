@@ -136,8 +136,12 @@ describe("drainCommands", () => {
     assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 0, "the request is gone but the last read is older than the comment");
     assert.equal(rows(w)[0]!.state, "queued");
     assert.equal(preapprovalOf(w.db, "app", 1), null);
+    assert.deepEqual(w.db.prepare("SELECT number FROM sync_requests").all().map((r) => ({ ...r })), [{ number: 1 }], "the command asks for a new read");
+    w.db.exec("DELETE FROM sync_requests");
     readAt(w, 1, new Date(Date.now() + 1000));
-    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 1, "the poll read it since");
+    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 0, "it looks again a minute after asking");
+    const later = new Date(Date.now() + 2 * 60_000);
+    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec, now: () => later })), 1, "the new read came after the comment");
     assert.equal(preapprovalOf(w.db, "app", 1)?.state, "review");
   });
 

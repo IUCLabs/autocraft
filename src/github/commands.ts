@@ -191,7 +191,16 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
       // The item must have been read from GitHub since the comment (the webhook's re-read, or the poll after a failed one), so the
       // command sees it at its current head. A request row that is gone proves nothing: a failed re-read drops it too.
       const read = (readAt.get(r.repo, r.number) as { synced_at: string } | undefined)?.synced_at;
-      if (!read || Date.parse(read) < Date.parse(r.requested_at)) continue;
+      if (!read || Date.parse(read) < Date.parse(r.requested_at)) {
+        // No read since the comment and none queued (the re-read failed, or started within the comment's second): ask for one,
+        // at most once a minute (tried_at), so the command does not wait for a poll that may never read the item again.
+        if (!db.prepare("SELECT 1 FROM main.sync_requests WHERE repo = ? AND number = ?").get(r.repo, r.number)) {
+          db.prepare("INSERT INTO main.sync_requests (repo, number, event, requested_at) VALUES (?, ?, 'issue_comment', ?) ON CONFLICT (repo, number) DO NOTHING")
+            .run(r.repo, r.number, now.toISOString().replace(/\.\d+Z$/, "Z"));
+          db.prepare("UPDATE main.github_commands SET tried_at = ? WHERE comment_id = ?").run(now.toISOString(), r.comment_id);
+        }
+        continue;
+      }
       calls++;
       if (!(await carryOut(db, r, deps, now))) {
         // GitHub could not tell the permission: retried after RETRY_MS; the expiry still counts from requested_at.
