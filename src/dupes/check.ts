@@ -2,7 +2,7 @@
 // pairs Jev is not sure about, and for every pair while Jev is unavailable.
 import type { DatabaseSync } from "node:sqlite";
 import { jevParallel } from "../agents/accounts.ts";
-import { poolRoom } from "../agents/call.ts";
+import { poolRoom, repoBatches } from "../agents/call.ts";
 import { jevAvailable } from "../agents/jev.ts";
 import { askClaude, pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
@@ -95,8 +95,7 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     if (v) done(ref, null, v);
     else second.push(ref);
   }
-  const batches: string[][] = [];
-  for (let i = 0; i < second.length; i += HAIKU.limits.perCall) batches.push(second.slice(i, i + HAIKU.limits.perCall));
+  const batches = repoBatches(second, HAIKU.limits.perCall, (r) => pairs.get(r)!.pair.repo);
   await pool(batches.map((batch) => async () => {
     // One entry per batch pair; a pair without a valid answer stays in `rest` and is asked again.
     const input = batch.map((r) => pairs.get(r)!.pair);

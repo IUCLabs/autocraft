@@ -8,7 +8,7 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { accountConfigDir, itemRepos, poolRoom, startClaudeRun, type PoolRoom, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
+import { accountConfigDir, itemRepos, poolRoom, repoBatches, startClaudeRun, type PoolRoom, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
 import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
 import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
@@ -802,8 +802,7 @@ export const add = (a: Usage, b: Usage): Usage => {
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
 export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<void> {
-  const batches: Item[][] = [];
-  for (let i = 0; i < items.length; i += batchSize) batches.push(items.slice(i, i + batchSize));
+  const batches = repoBatches(items, batchSize, (i) => i.repo);
   await pool(batches.map((batch, n) => async () => {
     const r = await runModelStep(db, CLASSIFY_HAIKU, batch, { model, usage: { run: runId, agent: `haiku-${String(n).padStart(2, "0")}`, stage: "classify" } });
     if (r.ok) for (const verdicts of r.values) for (const v of verdicts) saveVerdict(db, "haiku", runId, v);

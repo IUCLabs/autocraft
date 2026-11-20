@@ -3,7 +3,7 @@
 // lint and fallbacks; the runner does the calls, retries, lint and fix turn (askClaude), the Jev reply parse, the
 // usage rows and the error result.
 import type { DatabaseSync } from "node:sqlite";
-import { poolRoom } from "./call.ts";
+import { poolRoom, repoBatches } from "./call.ts";
 import { jevAvailable } from "./jev.ts";
 import { jevParallel } from "./accounts.ts";
 import { add, askClaude, askJev, pool, saveUsage, type AskOptions, type LintedReply, type Usage } from "../classify/run.ts";
@@ -232,8 +232,7 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
   }
   if (!ask.length || opts.cancelled?.()) return out;
   const per = opts.perCall ?? CLAUDE_PROMPTS[tier.haiku.id].limits.perCall;
-  const batches: It[][] = [];
-  for (let i = 0; i < ask.length; i += per) batches.push(ask.slice(i, i + per));
+  const batches = repoBatches(ask, per, tier.repo);
   await pool(batches.map((batch, n) => async () => {
     for (const x of batch) out.asked.add(tier.ref(x));
     const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { poolRoom } from "../src/agents/call.ts";
+import { poolRoom, repoBatches } from "../src/agents/call.ts";
 import { pool } from "../src/classify/run.ts";
 import { createToken } from "../src/dash/mcp/tokens.ts";
 import { connect } from "../src/db.ts";
@@ -28,4 +28,9 @@ test("a pool skips a unit nobody may take and runs the later ones", async () => 
   const started: number[] = [];
   await pool(repos.map((_, i) => async () => { started.push(i); }), poolRoom(db, (i) => [repos[i]!]), { first: true, pollMs: 5 });
   assert.deepEqual(started, [1, 2], "the deckcraft units ran; the photocraft unit never started and the pool ended");
+});
+
+test("batches hold one repo's items, at most the batch size each, in the order of their first item", () => {
+  const items = ["deck:1", "photo:1", "deck:2", "deck:3", "photo:2", "deck:4", "design:1"].map((x) => ({ repo: x.split(":")[0]!, id: x }));
+  assert.deepEqual(repoBatches(items, 2, (x) => x.repo).map((b) => b.map((x) => x.id)), [["deck:1", "deck:2"], ["photo:1", "photo:2"], ["deck:3", "deck:4"], ["design:1"]]);
 });

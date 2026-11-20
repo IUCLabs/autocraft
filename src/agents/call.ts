@@ -102,6 +102,23 @@ function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
   return queueOrder(db, nowMs, db.prepare("SELECT id, class AS cls, level, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[]);
 }
 
+/**
+ * Splits `items` into batches of at most `size` that each hold one repo's items, so any user who may take that repo can take
+ * the call (a mixed batch waits for a user who may take every repo in it). Items keep their order within a repo; batches are
+ * in the order of their first item.
+ */
+export function repoBatches<T>(items: readonly T[], size: number, repoOf: (x: T) => string): T[][] {
+  const out: T[][] = [];
+  const open = new Map<string, T[]>();
+  for (const x of items) {
+    const repo = repoOf(x);
+    let b = open.get(repo);
+    if (!b || b.length >= size) { open.set(repo, (b = [])); out.push(b); }
+    b.push(x);
+  }
+  return out;
+}
+
 /** The repos of a call's items, for queueRoom. */
 export const itemRepos = (items: readonly { repo: string }[]): string[] => [...new Set(items.map((i) => i.repo))];
 
