@@ -13,6 +13,9 @@ export const MAINTAINER_WRITES_KEY = "maintainer_writes";
 export const maintainerWritesOn = (db: DatabaseSync): boolean =>
   (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(MAINTAINER_WRITES_KEY) as { value: string } | undefined)?.value === "1";
 
+/** Maintainers settle now where they have write access: `maintainer_writes` on and the app's identity (which is instance-wide, as `allAppIdentity` reads it). */
+export const maintainersSettle = (db: DatabaseSync): boolean => maintainerWritesOn(db) && githubIdentity(db) === "app";
+
 export function setMaintainerWrites(db: DatabaseSync, on: boolean): boolean {
   if (maintainerWritesOn(db) === on) return false;
   if (on) db.prepare("INSERT INTO main.settings (key, value) VALUES (?, '1') ON CONFLICT (key) DO UPDATE SET value = '1'").run(MAINTAINER_WRITES_KEY);
