@@ -1,23 +1,29 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-/** Runs a write and keeps its error message for display. */
-export function useWrite() {
+/**
+ * Runs a write and keeps its error message for display. `latestOnly`: when writes overlap, only the latest one started sets or
+ * clears the error and the busy key, so an older write that fails after a newer one started does not leave its error behind.
+ */
+export function useWrite({ latestOnly = false }: { latestOnly?: boolean } = {}) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const seq = useRef(0);
   const run = useCallback(async (key: string, f: () => Promise<unknown>) => {
+    const n = ++seq.current;
+    const mine = () => !latestOnly || n === seq.current;
     setBusy(key);
     setError(null);
     try {
       await f();
       return true;
     } catch (e) {
-      setError((e as Error).message);
+      if (mine()) setError((e as Error).message);
       return false;
     } finally {
-      setBusy(null);
+      if (mine()) setBusy(null);
     }
-  }, []);
+  }, [latestOnly]);
   return { busy, error, setError, run };
 }
 

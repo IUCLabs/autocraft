@@ -6,17 +6,29 @@ import { Input } from "../../ui/atoms/Input";
 import { Switch } from "../../ui/atoms/Switch";
 import { Block } from "../../ui/molecules/Block";
 import { CheckRow } from "../../ui/molecules/CheckRow";
+import { TipLines, Tooltip } from "../../ui/atoms/Tooltip";
 import { useWrite } from "../../lib/hooks";
 import { Fold } from "./Fold";
 import { SectionTitle } from "./SectionTitle";
 
+/** A model id as people say it: opus → Opus. */
+const modelName = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
+
+/**
+ * Saves of one list run one after another, so the server ends with the latest selection. `confirmed` is the server's last
+ * answer; only the latest save sets the list, from its answer or, when it fails, back to `confirmed`.
+ */
+type ListSaves = { chain: Promise<unknown>; n: number; confirmed: string[] };
+const listSaves = (): ListSaves => ({ chain: Promise.resolve(), n: 0, confirmed: [] });
+
 export function MySettings() {
   const api = useApi();
-  const write = useWrite();
+  const write = useWrite({ latestOnly: true });
   const { data, error } = useQuery("my-settings", (a) => a.me.settings.get());
   const [vals, setVals] = useState<{ fiveHour: string; weekly: string } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [picks, setPicks] = useState<string[]>([]);
+  const [tasks, setTasks] = useState<string[]>([]);
   const [maxCalls, setMaxCalls] = useState("");
   const [manual, setManual] = useState(false);
   // When the last change was saved: the header says "Saved" for a few seconds after each save.
@@ -25,6 +37,8 @@ export function MySettings() {
   // save of the latest change may say Saved, so one that ends after a newer edit or save does not.
   const [saving, setSaving] = useState(0);
   const latest = useRef(0);
+  const repoSaves = useRef(listSaves());
+  const taskSaves = useRef(listSaves());
   const edited = () => {
     latest.current++;
     setSavedAt(null);
@@ -39,6 +53,9 @@ export function MySettings() {
     setManual(data.manualOnly);
     setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
     setPicks(data.repos);
+    repoSaves.current.confirmed = data.repos;
+    setTasks(data.tasks);
+    taskSaves.current.confirmed = data.tasks;
     setMaxCalls(data.maxCalls === null ? "" : String(data.maxCalls));
   }, [data]);
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
@@ -52,18 +69,24 @@ export function MySettings() {
       if (ok && n === latest.current) setSavedAt(Date.now());
     });
   };
-  const savePicks = (next: string[]) => {
-    const was = picks;
-    setPicks(next);
-    saveRun("repos", async () => {
-      try {
-        setPicks((await api.me.settings.put({ repos: next })).repos);
-      } catch (e) {
-        setPicks(was);
-        throw e;
-      }
+  const saveList = (key: string, s: ListSaves, next: string[], set: (v: string[]) => void, put: () => Promise<string[]>) => {
+    const n = ++s.n;
+    set(next);
+    saveRun(key, () => {
+      const run = s.chain.then(async () => {
+        try {
+          s.confirmed = await put();
+        } finally {
+          if (n === s.n) set(s.confirmed);
+        }
+      });
+      s.chain = run.catch(() => undefined);
+      return run;
     });
   };
+  const savePicks = (next: string[]) => saveList("repos", repoSaves.current, next, setPicks, async () => (await api.me.settings.put({ repos: next })).repos);
+  const saveTasks = (next: string[]) => saveList("tasks", taskSaves.current, next, setTasks, async () => (await api.me.settings.put({ tasks: next })).tasks);
+  const allTasks = data.taskChoices.map((t) => t.id);
   const choices = new Set(data.repoChoices);
   // Picks that are no longer available (pipeline off, or no write permission) stay listed so they can be removed.
   const shown = [...new Set([...data.repoChoices, ...picks])].sort((x, y) => x.localeCompare(y, undefined, { sensitivity: "base" }));
@@ -199,6 +222,28 @@ export function MySettings() {
                     }
                   />
                 </div>
+              );
+            })}
+          </div>
+        </div>
+      </Fold>
+      <Fold className="mt-1" title="My tasks" summary={tasks.length === allTasks.length ? "All tasks" : `${tasks.length} of ${allTasks.length} tasks`}>
+        <div role="group" aria-label="My tasks" className="mt-1 rounded-md border border-line p-1 sm:max-w-3xl">
+          <CheckRow checked={tasks.length === allTasks.length} onChange={(on) => saveTasks(on ? allTasks : [])} title="All tasks" />
+          <div className="sm:columns-2 sm:gap-x-1 lg:columns-3">
+            {data.taskChoices.map((t) => {
+              const on = tasks.includes(t.id);
+              return (
+                <Tooltip key={t.id} side="right" align="start" title={t.title} content={<TipLines lines={[t.about, t.models.length > 0 && `Models: ${t.models.map(modelName).join(", ")}`]} />}>
+                  <div className="break-inside-avoid">
+                    <CheckRow
+                      checked={on}
+                      onChange={() => saveTasks(on ? tasks.filter((x) => x !== t.id) : allTasks.filter((x) => x === t.id || tasks.includes(x)))}
+                      title={t.title}
+                      description={`${t.about}${t.models.length ? ` Models: ${t.models.map(modelName).join(", ")}.` : ""}`}
+                    />
+                  </div>
+                </Tooltip>
               );
             })}
           </div>

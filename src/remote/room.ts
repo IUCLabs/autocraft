@@ -17,6 +17,7 @@ import { STATUS_FRESH_MS } from "./helpers.ts";
 import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimRepos } from "./my-repos.ts";
+import { TASK_CHOICES, taskOfStep, userSkips } from "./my-tasks.ts";
 import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S } from "./protocol.ts";
 
@@ -32,7 +33,7 @@ const LIVE_LEASE_MS = 3 * scaled(HEARTBEAT_S * 1000);
 
 /**
  * Room for calls of class `cls` that name `repos` (undefined: any repo, every helper counts; empty: no repo, which only
- * operators take). A helper's fast-lane slot takes only small-tier and gating calls, and the planner does not
+ * operators take) and are of `step` (only helpers whose users take its task count; undefined: every task). A helper's fast-lane slot takes only small-tier and gating calls, and the planner does not
  * know which calls it is about to make, so the fast lane is not room. The status names no fast lane: a helper reporting 2
  * or more slots is taken to run one (work adds it to `--parallel N`, except for a harness that runs one call at a time,
  * which reports 1, and on macOS at `--parallel 16`, which this undercounts by one). A lease in the fast lane is not told
@@ -43,8 +44,8 @@ const LIVE_LEASE_MS = 3 * scaled(HEARTBEAT_S * 1000);
  * lately still gets calls; the claim then checks the permission itself. The helper's repos are those of its last idle claim
  * (`idle_repos`) narrowed by the user's current My repos.
  */
-export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.now(), repos?: readonly string[]): number {
-  return roomOf(db, roomState(db, nowMs), cls, nowMs, repos);
+export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.now(), repos?: readonly string[], step?: string): number {
+  return roomOf(db, roomState(db, nowMs), cls, nowMs, repos, step);
 }
 
 /**
@@ -59,19 +60,21 @@ export function roomCanWrite(db: DatabaseSync, logins: readonly string[], nowMs:
 }
 
 type Helper = { login: string; role: string | null; idle_claim_at: number | null; idle_repos: string | null; slots: number; leased: number; beat: number | null };
-type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null } };
+type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string> } };
 /**
  * What the room reads of the helpers, once for any number of room questions at one moment: the fresh, ready helpers that are
- * not Manual only (`ready`), those of them that are active, and on first use their permissions, repos and users' caps.
+ * not Manual only and whose users take some task (`ready`; with no task ticked a user takes only picks, as Manual only), those
+ * of them that are active, and on first use their permissions, repos and users' caps.
  */
 export type RoomState = { ready: Helper[]; active: Helper[]; takers?: { list: Taker[]; canWrite: (login: string, repo: string) => boolean }; left: Map<string, number> };
 
 export function roomState(db: DatabaseSync, nowMs: number = Date.now()): RoomState {
-  const rows = prep(db, `SELECT t.login, a.role, t.idle_claim_at, t.idle_repos, COALESCE(h.slots, 1) AS slots,
+  const rows = (prep(db, `SELECT t.login, a.role, t.idle_claim_at, t.idle_repos, COALESCE(h.slots, 1) AS slots,
       (SELECT COUNT(*) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS leased,
       (SELECT MAX(c.heartbeat_at) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS beat
     FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
-    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as Helper[];
+    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as Helper[])
+    .filter((h) => userSkips(db, h.login).size < TASK_CHOICES.length);
   return { ready: rows, active: rows.filter((h) => isActive(h, nowMs)), left: new Map() };
 }
 
@@ -84,18 +87,19 @@ function takersOf(db: DatabaseSync, st: RoomState, nowMs: number): NonNullable<R
     list: st.ready.map((h) => {
       let own: string[] | undefined;
       try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
-      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own) } };
+      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login) } };
     }),
   };
 }
 
-/** Room for class `cls` and `repos` (see remoteRoom) from a state read at `nowMs`. */
-export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: number, repos?: readonly string[]): number {
+/** Room for class `cls`, `repos` and `step` (see remoteRoom) from a state read at `nowMs`. `step` left out: every task counts. */
+export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: number, repos?: readonly string[], step?: string): number {
   let takers = st.active;
-  let takes: (c: { prompt_id: string; repos: readonly string[] }) => boolean = () => true;
-  if (repos !== undefined && st.active.length) {
+  let takes: (c: { prompt_id: string; repos: readonly string[]; step?: string }) => boolean = () => true;
+  if ((repos !== undefined || step !== undefined) && st.active.length) {
     const t = takersOf(db, st, nowMs);
-    const fit = t.list.filter(({ active, r }) => active && runnerTakes(r, { prompt_id: "", repos }, t.canWrite));
+    const task = step === undefined ? undefined : taskOfStep(step);
+    const fit = t.list.filter(({ active, r }) => active && (repos === undefined ? !(task !== undefined && r.skip.has(task)) : runnerTakes(r, { prompt_id: "", repos, step }, t.canWrite)));
     takers = fit.map((x) => x.h);
     takes = (c) => fit.some(({ r }) => runnerTakes(r, c, t.canWrite));
   }

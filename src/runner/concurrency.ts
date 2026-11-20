@@ -4,6 +4,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { inferenceMode } from "../remote/mode.ts";
+import { taskOfStep, TASK_CHOICES } from "../remote/my-tasks.ts";
 import { takerTest } from "../remote/takers.ts";
 import { knownStep, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 
@@ -48,19 +49,25 @@ export function activeJobs(db: DatabaseSync, states: ("queued" | "running")[] = 
 /** A job or proposal as untakenTest reads it: `params` as an object or the stored JSON. */
 export type JobOfRepo = { step: string; repo: string | null; params?: Params | string | null };
 
-/** Whether a job waits for a Task Runner: see untakenTest. */
-export type UntakenTest = (j: JobOfRepo) => boolean;
+/** Why a job waits for a Task Runner, or null when it does not: see untakenTest. */
+export type UntakenTest = (j: JobOfRepo) => string | null;
 
 /** The reason a job of `repo` waits: shown for the step, the lane's items and the queued job. */
 export const noRunnerFor = (repo: string): string => `No Task Runner takes ${repo}`;
+/** The reason a job of `step` on `repo` waits when Task Runners take the repo but none takes the step's task (My tasks). */
+export const noRunnerForTask = (repo: string, step: string): string => {
+  const task = taskOfStep(step);
+  return `No Task Runner takes ${TASK_CHOICES.find((t) => t.id === task)?.title ?? task} tasks on ${repo}`;
+};
 
 /**
- * Whether a job waits for a Task Runner: in the user-local mode, a job of a step that calls Claude, for a repo no Task Runner
- * may take now (src/remote/takers.ts, the rule the runner's job starts and the pools use). The runners are read once, on the
- * first such job, so one test serves a whole pass. Never in the server-account mode, nor for a job with no repo.
+ * Why a job waits for a Task Runner, or null: in the user-local mode, a job of a step that calls Claude, for a repo no Task
+ * Runner may take now or whose step's task none of those takes (src/remote/takers.ts, the rule the runner's job starts and the
+ * pools use). The runners are read once, on the first such job, so one test serves a whole pass. Never in the server-account
+ * mode, nor for a job with no repo.
  */
 export function untakenTest(db: DatabaseSync, steps?: Map<string, StepDef>, nowMs: number = Date.now()): UntakenTest {
-  if (inferenceMode(db) !== "user-local") return () => false;
+  if (inferenceMode(db) !== "user-local") return () => null;
   const takes = takerTest(db, nowMs);
   const claude = (j: JobOfRepo): boolean => {
     let params: Params = {};
@@ -68,7 +75,10 @@ export function untakenTest(db: DatabaseSync, steps?: Map<string, StepDef>, nowM
     else if (j.params) params = j.params;
     return usesClaude(modelsOf(steps?.get(j.step) ?? knownStep(j.step), params));
   };
-  return (j) => j.repo !== null && claude(j) && !takes({ prompt_id: "", repos: [j.repo] });
+  return (j) => {
+    if (j.repo === null || !claude(j) || takes({ prompt_id: "", repos: [j.repo], step: j.step })) return null;
+    return takes({ prompt_id: "", repos: [j.repo] }) ? noRunnerForTask(j.repo, j.step) : noRunnerFor(j.repo);
+  };
 }
 
 /** Two jobs of one step do the same work: the same repo (and finding), or one of them is not about a single repo. */

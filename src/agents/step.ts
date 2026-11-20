@@ -248,7 +248,7 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
     const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {
       ctx: opts.ctx, usage: opts.haikuUsage?.(batch, n), cancelled: opts.cancelled });
     if (r.ok) for (const v of r.values) for (const [ref, a] of v) out.haiku.set(ref, a);
-  }), poolRoom(db, (i) => [...new Set(batches[i]!.map(tier.repo))]), { first: opts.first, skipped: (i) => {
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map(tier.repo))], { promptId: tier.haiku.id }), { first: opts.first, skipped: (i) => {
     for (const x of batches[i]!) { out.skipped.add(tier.ref(x)); out.alone.delete(tier.ref(x)); }
   } });
   return out;

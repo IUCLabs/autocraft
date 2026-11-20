@@ -22,6 +22,7 @@ import { dashboardAlive } from "./liveness.ts";
 import { acceptedModels, familyOf, isEffort, isTier, meetsEffort, minEfforts, TIERS } from "./mode.ts";
 import { ACCEPTED_PROTOCOLS, CLAIM_ID_TTL_S, HEARTBEAT_S, PREPARE_MAX_S, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { claimRepos } from "./my-repos.ts";
+import { taskOfStep, userSkips } from "./my-tasks.ts";
 import { MAX_CALLS_KEY, MAX_CALLS_MAX, userMaxCalls } from "./max-calls.ts";
 import { claimClass, gating } from "./claim-class.ts";
 import { holdMs, Ticket, type ClaimTry, type ClaimWaits, type EmptyReply } from "./claim-wait.ts";
@@ -284,12 +285,13 @@ export const roleFits = (role: string, c: { prompt_id: string; repos: readonly s
 /**
  * Whether a Task Runner may take a call, authorship and picks apart: its user fits the role rules, may write to every repo the
  * call names (`canWrite`, from the cached permissions as the caller reads them) and takes calls on each of them (`repos`: the
- * user's My repos narrowed by the runner's own list, null for every repo; claimRepos).
+ * user's My repos narrowed by the runner's own list, null for every repo; claimRepos) and the call's task (`skip`: the tasks
+ * the user unticked, my-tasks.ts; a call without a `step` is a question about repos alone).
  */
-export const runnerTakes = (r: { login: string; role: string; repos: ReadonlySet<string> | null }, c: { prompt_id: string; repos: readonly string[] }, canWrite: (login: string, repo: string) => boolean): boolean =>
-  roleFits(r.role, c) && c.repos.every((x) => (!r.repos || r.repos.has(x)) && canWrite(r.login, x));
+export const runnerTakes = (r: { login: string; role: string; repos: ReadonlySet<string> | null; skip?: ReadonlySet<string> }, c: { prompt_id: string; repos: readonly string[]; step?: string }, canWrite: (login: string, repo: string) => boolean): boolean =>
+  roleFits(r.role, c) && !(c.step !== undefined && r.skip?.has(taskOfStep(c.step))) && c.repos.every((x) => (!r.repos || r.repos.has(x)) && canWrite(r.login, x));
 
-type IdleHelper = { login: string; role: string; tiers: ReadonlySet<string>; only: ReadonlySet<string> | null };
+type IdleHelper = { login: string; role: string; tiers: ReadonlySet<string>; only: ReadonlySet<string> | null; skip: ReadonlySet<string> };
 
 /**
  * Whether a login other than the caller could take a call now: its helper's last claim found nothing within IDLE_FRESH_MS
@@ -310,14 +312,14 @@ function idleOthers(db: DatabaseSync, login: string, nowMs: number): (c: Cand) =
       idle = (prep(db, `SELECT t.login, a.role, t.idle_tiers, t.idle_repos FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login
           WHERE t.kind = 'runner' AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
         { login: string; role: string; idle_tiers: string | null; idle_repos: string | null }[])
-        .map((o) => ({ login: o.login, role: o.role, tiers: new Set(o.idle_tiers ? JSON.parse(o.idle_tiers) as string[] : []), only: o.idle_repos ? new Set(JSON.parse(o.idle_repos) as string[]) : null }));
+        .map((o) => ({ login: o.login, role: o.role, tiers: new Set(o.idle_tiers ? JSON.parse(o.idle_tiers) as string[] : []), only: o.idle_repos ? new Set(JSON.parse(o.idle_repos) as string[]) : null, skip: userSkips(db, o.login) }));
       for (const p of prep(db, "SELECT login, repo, permission, checked_at FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(idle.map((o) => o.login))) as { login: string; repo: string; permission: string; checked_at: string }[])
         if (WRITE_PERMISSIONS.has(p.permission) && nowMs - Date.parse(p.checked_at) < PERM_READ_TTL) writable.add(`${p.login.toLowerCase()}\n${p.repo}`);
     }
-    const key = `${c.tier}\n${c.prompt_id.startsWith("discord.")}\n${c.repos.join("\n")}`;
+    const key = `${c.tier}\n${c.prompt_id.startsWith("discord.")}\n${taskOfStep(c.step)}\n${c.repos.join("\n")}`;
     let logins = takers.get(key);
     if (!logins) {
-      logins = idle.filter((o) => o.tiers.has(c.tier) && runnerTakes({ login: o.login, role: o.role, repos: o.only }, c, canWrite)).map((o) => o.login.toLowerCase());
+      logins = idle.filter((o) => o.tiers.has(c.tier) && runnerTakes({ login: o.login, role: o.role, repos: o.only, skip: o.skip }, c, canWrite)).map((o) => o.login.toLowerCase());
       takers.set(key, logins);
     }
     return logins.some((l) => !c.authors.has(l));
@@ -517,7 +519,8 @@ export function queueSnapshot(db: DatabaseSync, nowMs: number): readonly Readonl
  * The queued calls a claim could take in the order it takes them, before eligibility: follow-up turns of the sessions its
  * helper holds first, then the user's own live picks (picks.ts) oldest first, then the model queue's order with gating and
  * long-waiting small calls raised (claimClass) and without other users' live picks, filtered by tiers and repos (claimRepos:
- * every repo a call names must be in the set; picks do not go by it). A fast-lane claim gets only what fastLaneFits. A Manual
+ * every repo a call names must be in the set; picks do not go by it); the queue's order also by the user's tasks
+ * (my-tasks.ts), which picks and follow-ups do not go by. A fast-lane claim gets only what fastLaneFits. A Manual
  * only user (manual-only.ts) gets no calls from the queue's order. The caller's pick of a call it released or whose role
  * rules it no longer fits ends here; one it may not take for another reason ends in eligible.
  */
@@ -540,7 +543,8 @@ function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, 
   }
   mine.sort((a, b) => a.pickedAt! - b.pickedAt! || a.id - b.id);
   if (manualOnly(db, caller.login)) return [...followUps, ...mine];
-  return [...followUps, ...mine, ...q.ordered.filter((r) => fits(r) && !(r.pickedBy !== null && counts(r)) && (!fastLane || fastLaneFits(r)))];
+  const skip = userSkips(db, caller.login);
+  return [...followUps, ...mine, ...q.ordered.filter((r) => fits(r) && !skip.has(taskOfStep(r.step)) && !(r.pickedBy !== null && counts(r)) && (!fastLane || fastLaneFits(r)))];
 }
 
 // ---- picks ("Run on my Task Runner", picks.ts) ----------------------------------------

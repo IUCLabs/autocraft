@@ -73,7 +73,7 @@ export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): 
   fillEmbedHashes(db);
   const all = dueItems(db);
   const due = all.length;
-  const todo = takersFirst(db, all, (x) => [x.repo]).slice(0, opts.limit);
+  const todo = takersFirst(db, all, (x) => [x.repo], "priority.haiku").slice(0, opts.limit);
   log(`prioritize: ${due} items due, taking ${todo.length}`);
   const res: PrioritizeResult = { due, sent: 0, jev: 0, haiku: 0, saved: 0, rescored: 0, haikuAlone: 0 };
   for (let i = 0; i < todo.length && !opts.cancelled?.(); i += JEV_CHUNK) {

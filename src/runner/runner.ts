@@ -411,8 +411,9 @@ export class Runner {
    * Starts queued jobs: security first (priority 2), then by id. A job whose step calls Claude starts only while the
    * model queue has room for its class and its repo (queueRoomPass; a job without a repo param spans repos and is asked about
    * none), so processes do not sit waiting for slots, unless no job of its step runs. Such a job with a repo starts only while
-   * a Task Runner that may take its repo is connected and ready (busy or not); a job no Task Runner may take waits queued. A
-   * start takes one from the room of every repo of its class counted so far: the Task Runners that serve one repo may serve others.
+   * a Task Runner that may take its repo and its step's task is connected and ready (busy or not); a job no Task Runner may take
+   * waits queued. The room is read once per pass, so a start takes one from every room counted so far, and a room first read
+   * later in the pass starts with the pass's starts taken off: the Task Runners that serve one repo or task may serve others.
    */
   private async startJobs(): Promise<void> {
     const steps = await loadSteps();
@@ -420,9 +421,10 @@ export class Runner {
       .sort((a, b) => (steps.get(b.step)?.priority ?? 0) - (steps.get(a.step)?.priority ?? 0) || a.id - b.id);
     // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off. While it drains, nothing new starts.
     const on = isEnabled(this.db), draining = isDraining(this.db);
-    // Room by class, then by the job's repo ("" for a job without one).
+    // Room by class, then by the job's step and repo ("" for a job without one): a runner counts only for the tasks it takes.
     const room = new Map<number, Map<string, number>>();
     const pass = queueRoomPass(this.db);
+    let started = 0;
     for (const q of queued) {
       if (draining || (q.requested_by === AUTOPILOT_USER && !on)) continue;
       if (this.running.size >= this.o.maxJobs) return;
@@ -437,9 +439,9 @@ export class Runner {
       const cls = step.priority ?? 0;
       let byRepo = room.get(cls);
       if (!byRepo) room.set(cls, (byRepo = new Map()));
-      const key = q.repo ?? "";
-      const roomOf = (): number => byRepo.get(key) ?? pass.room(cls, q.repo ? [q.repo] : undefined);
-      if (claude && q.repo && !pass.taker([q.repo])) continue;
+      const key = `${q.step}\n${q.repo ?? ""}`;
+      const roomOf = (): number => byRepo.get(key) ?? pass.room(cls, q.repo ? [q.repo] : undefined, q.step) - started;
+      if (claude && q.repo && !pass.taker([q.repo], q.step)) continue;
       if (claude && !this.db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state = 'running' LIMIT 1").get(step.name)) {
         // Nothing of the step runs: it starts anyway, and takes a slot of the room.
       } else if (claude) {
@@ -448,7 +450,8 @@ export class Runner {
       }
       if (this.start(q.id, step.name, steps) && claude) {
         byRepo.set(key, roomOf());
-        for (const [k, n] of byRepo) byRepo.set(k, n - 1);
+        started++;
+        for (const m of room.values()) for (const [k, n] of m) m.set(k, n - 1);
       }
     }
   }

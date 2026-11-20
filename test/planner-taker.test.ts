@@ -11,12 +11,13 @@ process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", i
 
 const { connect } = await import("../src/db.ts");
 const { enqueue, getJob } = await import("../src/runner/jobs.ts");
-const { setStepParallel } = await import("../src/runner/concurrency.ts");
+const { noRunnerFor, noRunnerForTask, setStepParallel } = await import("../src/runner/concurrency.ts");
 const { applyProposals, detectAutopilot, reservedByJobs } = await import("../src/runner/autopilot.ts");
 const { createToken } = await import("../src/dash/mcp/tokens.ts");
 const { parseStatus, storeStatus } = await import("../src/remote/helpers.ts");
 const { setInferenceMode } = await import("../src/remote/mode.ts");
 const { setUserRepos } = await import("../src/remote/my-repos.ts");
+const { setUserTasks, taskOfStep, TASK_CHOICES } = await import("../src/remote/my-tasks.ts");
 
 mkdirSync(SCRATCH, { recursive: true });
 
@@ -47,4 +48,23 @@ test("a Task Runner that takes only deckcraft: deckcraft is planned, photocraft 
   assert.equal(getJob(db, ids[0]!).params.repo, "deckcraft");
   assert.equal(getJob(db, ids[0]!).waiting, null);
   assert.equal(reservedByJobs(db, "test-model"), 5, "only the deckcraft job keeps its limit");
+});
+
+test("a Task Runner whose user unticked the step's task: nothing is planned, a queued job waits with the task as the reason", async () => {
+  const db = connect(join(mkdtempSync(join(SCRATCH, "planner-taker-task-")), "t.db"));
+  setInferenceMode(db, "user-local", "test");
+  db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('deckcraft', 1) ON CONFLICT (name) DO UPDATE SET pipeline = 1").run();
+  db.prepare("INSERT INTO access (login, role) VALUES ('olga', 'operator')").run();
+  const token = createToken(db, "olga", "helper", { kind: "runner" }).row.id;
+  storeStatus(db, token, "olga", parseStatus({ slots: 1, busy: 0, readiness: "ready", harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 0, weekly: 0 } }));
+  setUserTasks(db, "olga", TASK_CHOICES.map((t) => t.id).filter((t) => t !== taskOfStep("test-model")));
+
+  const lane = [{ name: "model", steps: ["test-model"], perRepo: true, detect: () => [{ step: "test-model", params: { repo: "deckcraft" } }] }];
+  const found = await detectAutopilot(db, { lanes: lane });
+  assert.equal(found.proposals.length, 0);
+  assert.equal(found.status?.["test-model"], noRunnerForTask("deckcraft", "test-model"));
+  assert.notEqual(noRunnerForTask("deckcraft", "test-model"), noRunnerFor("deckcraft"), "the runner takes the repo: the reason names the task");
+  const queued = await enqueue(db, "test-model", { repo: "deckcraft", limit: 5 }, "olga");
+  assert.equal(getJob(db, queued.id).waiting, noRunnerForTask("deckcraft", "test-model"));
+  assert.equal(reservedByJobs(db, "test-model"), 0);
 });

@@ -55,7 +55,7 @@ import { takerSignature } from "../remote/takers.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
 import { NO_TAKER_SKIP } from "./leases.ts";
-import { jobBlock, noRunnerFor, stepParallel, untakenTest, type Active, type UntakenTest } from "./concurrency.ts";
+import { jobBlock, stepParallel, untakenTest, type Active, type UntakenTest } from "./concurrency.ts";
 import { knownStep, loadSteps, STEPS, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
 import { refreshOutsideHolds } from "../outside.ts";
@@ -922,7 +922,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
     if (jobBlock(db, steps, { step: stepName, repo: repo0, number: typeof params.number === "number" ? params.number : null }, { extra: pending, precheck, untaken })) return null;
     const reason = pausedWhy(stepName);
     if (reason) { note(stepName, reason); return null; }
-    if (repo0 !== null && untaken({ step: stepName, repo: repo0, params })) { note(stepName, noRunnerFor(repo0)); return null; }
+    const waits = repo0 === null ? null : untaken({ step: stepName, repo: repo0, params });
+    if (waits !== null) { note(stepName, waits); return null; }
     if (lane) {
       const repo = typeof params.repo === "string" ? params.repo : null;
       const fp = fingerprintOf(db, lane, stepName, params, seqs);
@@ -1140,10 +1141,14 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
   const plans = plansOf(db, ctx);
   const seen = new Set<string>(), all: LaneItem[] = [];
   // A repo whose jobs of every step of the lane wait for a Task Runner: the planner proposes none for it.
-  const untaken = (ctx.untaken ??= untakenTest(db)), noRunner = new Map<string, boolean>();
-  const waits = (repo: string): boolean => {
+  const untaken = (ctx.untaken ??= untakenTest(db)), noRunner = new Map<string, string | null>();
+  // Why the repo's jobs wait (the first step's reason), or null when some step of the lane has a taker.
+  const waits = (repo: string): string | null => {
     let w = noRunner.get(repo);
-    if (w === undefined) noRunner.set(repo, (w = !!lane.steps?.length && lane.steps.every((step) => untaken({ step, repo }))));
+    if (w === undefined) {
+      const why = lane.steps?.map((step) => untaken({ step, repo })) ?? [];
+      noRunner.set(repo, (w = why.length > 0 && why.every((x) => x !== null) ? why[0]! : null));
+    }
     return w;
   };
   const add = (f: Planned["facts"] | PlannedItem["facts"], state: string, a: Action) => {
@@ -1151,7 +1156,7 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
     if (seen.has(ref)) return;
     seen.add(ref);
     const refused = gates(f, wantOf(a), "pipeline");
-    const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "The pipeline is off" ? null : refused ?? (waits(f.repo) ? noRunnerFor(f.repo) : null);
+    const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "The pipeline is off" ? null : refused ?? waits(f.repo);
     const fast = (fastScoreOf(db, f.repo, f.number) ?? 0) >= FAST_FLOOR;
     all.push({
       repo: f.repo, number: f.number, kind: "kind" in f ? f.kind : "pr", action: a.kind, bucket: typeof a.params?.bucket === "string" ? a.params.bucket : null,
