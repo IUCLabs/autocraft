@@ -109,7 +109,7 @@ export const ENCODINGS = /** @type {const} */ (["gzip+base64"]);
  */
 /** @typedef {{ ok: true, reserve: Reserve, encodings?: Encoding[] }} StatusReply */
 /** @typedef {{ hostname: string, platform: string, arch: string }} Machine */
-/** @typedef {{ credentialHash: string, label: string, machine: Machine, helperVersion: string }} LoginStart */
+/** @typedef {{ credentialHash: string, label: string, machine: Machine, helperVersion: string, scopes?: { agent?: boolean, answer?: boolean } }} LoginStart */
 /** @typedef {{ userCode: string, verifyUrl: string, interval: number, expiresIn: number }} LoginStartReply */
 /** @typedef {"pending" | "approved" | "denied" | "expired"} LoginState */
 /** @typedef {{ state: LoginState }} LoginPollReply */
@@ -3251,7 +3251,7 @@ async function cmdLogin(argv) {
   const p = { server, credential: newCredential(), label: name };
   // Kept before the server hears of it, so a login cut off here leaves nothing usable behind on the server.
   saveCredentials({ ...loadCredentials(), pending: p });
-  /** @type {LoginStart & { scopes: { agent: boolean, answer: boolean } }} */
+  /** @type {LoginStart} */
   const body = { credentialHash: credentialHash(p.credential), label: name, machine: machine(), helperVersion: HELPER_VERSION, scopes: { agent: !flags.has("--no-agent"), answer: flags.has("--answer") } };
   /** @type {LoginStartReply} */
   let r;
@@ -4588,7 +4588,7 @@ Agent commands (the server's tools for you, with this machine's login; needs Age
   guide                       the server's instructions: how to use the tools
   help <tool>                 a tool's description and arguments
   <tool> [args]               call a tool: --key value, --flag / --no-flag, repeated or comma-separated lists, JSON objects;
-                              a tool with one required text argument takes it bare, e.g. \`autocraft get-item designcraft#12\`
+                              a tool with one required text argument takes it bare, e.g. \`autocraft get-inbox-item <id>\`
   call <tool> [args]          the same, for a tool named like a runner command above (status, run, ...)
   Add --json for the raw result. Exit 0 done, 1 the tool refused or failed, 2 wrong command line.
 

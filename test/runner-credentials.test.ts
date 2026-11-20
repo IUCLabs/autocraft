@@ -216,9 +216,9 @@ describe("over HTTP", () => {
     const credential = `acrun_${randomToken(32)}`;
     const started = await start(credential);
     db.prepare("UPDATE runner_logins SET ip = '2001:db8:1:2::7' WHERE secret_hash = ?").run(sha256hex(credential));
-    await maint("POST", "/api/runners/approve", { code: started.userCode }, 409);
+    await maint("POST", "/api/runners/approve", { code: started.userCode, agent: true, answer: false }, 409);
     assert.equal(await poll(credential), "pending");
-    await maint("POST", "/api/runners/approve", { code: started.userCode, otherMachine: true });
+    await maint("POST", "/api/runners/approve", { code: started.userCode, agent: true, answer: false, otherMachine: true });
     assert.equal(await poll(credential), "approved");
 
     assert.equal(addressKey("2001:DB8:1:2:aa::1"), addressKey("2001:db8:1:2::9"));

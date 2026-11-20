@@ -229,7 +229,7 @@ The move (`autocraft migrate`, also run at the first start of 1.3.0, before the 
 
 | Command | What it does |
 |---|---|
-| `login <dashboard URL> [--label X] [--no-wait]`, `login --wait`, `login <dashboard URL> --stdin` | Makes a credential and waits for its approval on the Connect page, or stores one read from stdin (see [Task Runner credentials](#task-runner-credentials)). |
+| `login <dashboard URL> [--label X] [--no-wait] [--answer] [--no-agent]`, `login --wait`, `login <dashboard URL> --stdin` | Makes a credential and waits for its approval on the Connect page, or stores one read from stdin (see [Task Runner credentials](#task-runner-credentials)). `--answer` also asks to answer decisions and approve merges; `--no-agent` asks for no Agent access. |
 | `harness claude\|codex ...` | Chooses the harness login (see [Setting up a Task Runner](#setting-up-a-task-runner)). |
 | `work [--parallel N]` | Claims, runs and submits in a loop. `N` is 1 to 16, plus the fast lane for short calls and follow-ups (see [Who gets which call](#who-gets-which-call)); Codex runs one call at a time because its login refreshes in place. Ctrl-C, SIGTERM and SIGHUP stop running calls and give them back; a second signal quits at once. See [Task Runner process](#Task Runner-process). |
 | `service install [--parallel N]` | Writes and starts a systemd user unit (Linux, `~/.config/systemd/user/autocraft.service`) or a launchd agent (macOS, `~/Library/LaunchAgents/autocraft.plist`) that runs `work` with these arguments and restarts it whenever it ends (systemd `Restart=always`, launchd `KeepAlive`). It keeps `PATH`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR` from the shell it ran in. The log: `journalctl --user -u autocraft -f` (Linux), `$XDG_CACHE_HOME/autocraft-runner/service.log` (macOS). On Linux, `loginctl enable-linger` keeps it running while the user is logged out. No root. |
@@ -247,6 +247,16 @@ The move (`autocraft migrate`, also run at the first start of 1.3.0, before the 
 | `tool <server> <tool> [<json>] [<lease>]` | One tool call of a lease's server without MCP; prints the result, exit code 1 for an error result. |
 | `mcp <server> <lease>` | Stdio-to-HTTP proxy for one of the lease's MCP servers. |
 | `try <bundle.json> [--slot N]` | Runs a bundle from a file without a server and prints the reply (testing). |
+
+Agent commands call the server's MCP tools (`/mcp`) with the Task Runner's credential, so they need Agent access. Arguments come from each tool's input schema, so a new server tool needs no new Task Runner.
+
+| Command | What it does |
+|---|---|
+| `tools` | Lists the tools the credential is offered. A tool named like a runner command is marked: reach it with `call`. |
+| `guide` | Prints the server's instructions for an agent. |
+| `help <tool>` | Prints a tool's description and arguments. |
+| `<tool> [args]` | Calls a tool: `--key value`, `--flag` / `--no-flag`, repeated or comma-separated lists, JSON for objects. A tool with one required text argument takes it bare (`autocraft get-inbox-item <id>`). Dashes and underscores in names are alike. `--json` prints the raw result. Exit code 0 done, 1 the tool refused or failed, 2 a wrong command line. |
+| `call <tool> [args]` | The same, for a tool named like a runner command (`status`, `run`, ...). |
 
 Task Runner state lives in `$XDG_CONFIG_HOME/autocraft-runner` (config, credential and lease secrets, 0600) and `$XDG_CACHE_HOME/autocraft-runner` (task directories, run logs, status file). The server's own `~/.config/autocraft` and `~/.cache/autocraft` are separate.
 
@@ -333,7 +343,7 @@ A claim that finds no call it may take is held open instead of answered empty. T
 
 A CDN or web application firewall in front of the dashboard should skip its content rules (managed rule sets, bot checks, challenges) for `/api/remote/*` and `/mcp`. Both carry authenticated machine traffic: model replies, progress lines and tool arguments, which content rules may take for an attack. Keep its rate limits above the request limits under Leases.
 
-- **Encoded bodies.** Claim and status replies list `encodings: ["gzip+base64"]`. Task Runners from 1.3.1 on then send every POST body as `{"encoding": "gzip+base64", "body": "<base64 of the gzipped JSON>"}`, so content rules never see model text. The server accepts plain JSON too (1.2.0 and 1.3.0). The uncompressed body has the route's size limit (413 above it). Tool calls the harness makes from inside the sandbox (`/mcp/task/*`, `autocraft tool`) stay plain JSON.
+- **Encoded bodies.** Claim and status replies list `encodings: ["gzip+base64"]`. Task Runners from 1.3.1 on then send every POST body as `{"encoding": "gzip+base64", "body": "<base64 of the gzipped JSON>"}`, so content rules never see model text. The server accepts plain JSON too (1.2.0 and 1.3.0). The uncompressed body has the route's size limit (413 above it). Tool calls stay plain JSON: the harness's from inside the sandbox (`/mcp/task/*`, `autocraft tool`) and the agent commands' (`/mcp`).
 - **Proxy blocks.** An HTML reply with a 4xx status other than 404 comes from the proxy, not the server. The Task Runner retries it like an outage (a reply until 30 minutes past the lease's deadline) and logs `blocked by a proxy in front of the server (HTTP 403, HTML reply)`; it never takes it for a revoked credential. If the block persists, the lease ends as lost, the call goes back to the queue, and it fails at its attempt limit; the same call lost again does not add to the login's cool-off.
 
 ### Model call queue
