@@ -548,7 +548,7 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   error TEXT
 );
 CREATE INDEX IF NOT EXISTS sync_runs_started ON sync_runs(started_at);
--- When AutoCraft last read an item from GitHub (poll or webhook re-read). Bookkeeping: no live topic.
+-- When AutoCraft last read an item from GitHub (poll or webhook re-read): when that read started, before its first request, never later. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS item_reads (
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,

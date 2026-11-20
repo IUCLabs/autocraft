@@ -110,8 +110,9 @@ export async function drainSyncRequests(db: DatabaseSync, client: Querier, opts:
     // Never wait out a rate limit here; the poll has its own handling.
     if (client.remaining !== null && client.remaining < (opts.reserve ?? 1000)) break;
     try {
+      const sentAt = new Date();
       const data = await client.query(ONE_QUERY, { owner: ownerOf(r.repo), name: r.repo, number: r.number });
-      if (!writeItemNode(db, r.repo, data.repository?.issueOrPullRequest)) { gone(); continue; }
+      if (!writeItemNode(db, r.repo, data.repository?.issueOrPullRequest, sentAt)) { gone(); continue; }
       gone();
       done++;
     } catch (e) {

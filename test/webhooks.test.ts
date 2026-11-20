@@ -61,6 +61,22 @@ test("the drain re-reads a queued item, sets synced_at and clears the request", 
   assert.deepEqual(queued(db), []);
 });
 
+test("synced_at is when the re-read was sent, not when its answer was written", async () => {
+  const db = scratch();
+  deliver(db, "issues", { repository: { full_name: "storytold/a", name: "a" }, issue: { number: 5 } });
+  const node = {
+    __typename: "Issue", repository: { name: "a", owner: { login: "storytold" } }, number: 5, title: "t", body: "", url: "u", author: { login: "x" },
+    authorAssociation: "NONE", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-11-02T10:00:00Z", closedAt: null, state: "OPEN",
+    labels: { nodes: [] }, assignees: { nodes: [] }, commentCount: { totalCount: 0 }, stateReason: null, comments: { nodes: [] },
+  };
+  let sent = 0;
+  // GitHub takes more than a second to answer: a comment made meanwhile is newer than this read.
+  const c = { spent: 0, remaining: 4000 as number | null, async query() { sent = Date.now(); await new Promise((r) => setTimeout(r, 1100)); return { repository: { issueOrPullRequest: node } }; } };
+  assert.equal(await drainSyncRequests(db, c), 1);
+  const at = (db.prepare("SELECT synced_at FROM item_reads WHERE repo = 'a' AND number = 5").get() as { synced_at: string }).synced_at;
+  assert.ok(Date.parse(at) <= sent, `${at} is not after the request went out`);
+});
+
 test("a request that fails for a reason other than a transient one is dropped so the queue moves on", async () => {
   const db = scratch();
   for (const n of [1, 2]) deliver(db, "issues", { repository: { full_name: "storytold/a", name: "a" }, issue: { number: n } });
