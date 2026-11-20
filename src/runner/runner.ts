@@ -29,6 +29,7 @@ import { jobBlock } from "./concurrency.ts";
 import { queueRoomPass } from "../agents/call.ts";
 import { stepDeadlineMin, stepNoProgressMin } from "./deadlines.ts";
 import { envVar } from "../env.ts";
+import { anyRepinDue } from "../repin/due.ts";
 import { jobRemoteQueue, REMOTE_WAIT_CAP_MS, withdrawJobCalls } from "../remote/calls.ts";
 
 export const logsDir = (): string => envVar("RUNNER_LOGS") ?? join(homedir(), ".cache/autocraft-logs/jobs");
@@ -103,6 +104,8 @@ export class Runner {
   private flowAt = 0;
   private webhookAt = 0;
   private webhooking: Promise<void> | null = null;
+  /** The autorepin drain (src/repin), apart from the webhook pass so its git work never delays re-reads and comment commands. */
+  private repinning: Promise<void> | null = null;
   private webhookClient: import("../mirror.ts").Client | null = null;
   private reconcileAt = 0;
   private reconciling: Promise<void> | null = null;
@@ -191,7 +194,9 @@ export class Runner {
     if (this.webhooking || Date.now() - this.webhookAt < WEBHOOK_DRAIN_MS) return;
     this.webhookAt = Date.now();
     const commands = !!this.db.prepare(`SELECT 1 FROM main.github_commands WHERE ${COMMAND_WORK_SQL} LIMIT 1`).get();
-    if (!commands && !this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
+    // Autorepins whose pull request was merged or closed, or whose lockfile task ended (src/repin).
+    const repins = !this.repinning && anyRepinDue(this.db);
+    if (!commands && !repins && !this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
     this.webhooking = (async () => {
       const { lockHeld, lockPath, fullLockPath, Client, SYNC_RESERVE } = await import("../mirror.ts");
       if (lockHeld(lockPath()) || lockHeld(fullLockPath())) return;
@@ -200,9 +205,19 @@ export class Runner {
       const n = await drainSyncRequests(this.db, c, { limit: 10, log: this.o.log });
       if (n) this.o.log(`webhooks: read ${n} items again`);
       // Commands in comments (`@<app> merge queue`) after the re-reads, so the item is read at its current head.
-      if (!commands) return;
-      const k = await drainCommands(this.db, { querier: c, log: this.o.log });
-      if (k) this.o.log(`webhooks: carried out ${k} commands from comments`);
+      if (commands) {
+        const k = await drainCommands(this.db, { querier: c, log: this.o.log });
+        if (k) this.o.log(`webhooks: carried out ${k} commands from comments`);
+      }
+      // Started after the commands, so an autorepin set on a pull request that is already merged starts in this pass, and not
+      // waited for: the next pass's re-reads and commands do not wait on its git work.
+      if ((repins || commands) && !this.repinning) {
+        this.repinning = (async () => {
+          const { drainRepins } = await import("../repin/index.ts");
+          const k = await drainRepins(this.db, { querier: c, log: this.o.log });
+          if (k) this.o.log(`autorepin: ${k} ended`);
+        })().catch((e) => this.o.log(`autorepin: ${(e as Error).message}`)).finally(() => (this.repinning = null));
+      }
     })().catch((e) => this.o.log(`webhooks: ${(e as Error).message}`)).finally(() => (this.webhooking = null));
   }
 

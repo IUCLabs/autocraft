@@ -563,14 +563,14 @@ CREATE TABLE IF NOT EXISTS sync_requests (
   requested_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
--- Commands a person wrote to the GitHub App in a comment (`@<app> merge queue`, src/github/commands.ts), for the runner to
+-- Commands a person wrote to the GitHub App in a comment (`@<app> merge queue`, `@<app> autorepin <pr>`, src/github/commands.ts), for the runner to
 -- carry out and answer. Only these fields of the delivery are kept, never the comment's text. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS github_commands (
   comment_id INTEGER PRIMARY KEY,     -- GitHub's id of the comment: a redelivery adds nothing
   repo TEXT NOT NULL,
   number INTEGER NOT NULL,
   pr INTEGER NOT NULL,                -- 1: the comment is on a pull request
-  command TEXT NOT NULL,              -- merge-queue
+  command TEXT NOT NULL,              -- merge-queue | autorepin
   weight INTEGER,                     -- the fast-track weight given, or null for the default
   login TEXT NOT NULL,                -- the commenter, as GitHub sent it
   github_id INTEGER NOT NULL,         -- the commenter's numeric GitHub id
@@ -582,9 +582,42 @@ CREATE TABLE IF NOT EXISTS github_commands (
   tried_at TEXT,                      -- the last try that waited on GitHub (a re-read or a read that failed); the next one waits a minute
   retries INTEGER NOT NULL DEFAULT 0, -- tries GitHub could not settle (permission, comment or head read)
   allowed INTEGER,                    -- 1: the commenter may queue on the repo, so the answer needs no comment approval
-  reply TEXT                          -- posted | failed | none (no answer is given); null while the answer is still to post
+  reply TEXT,                         -- posted | failed | none (no answer is given); null while the answer is still to post
+  ref_repo TEXT,                      -- autorepin: the repository of the pull request it names, as written (`owner/name` or `name`); null with ref_number: autorepin off
+  ref_number INTEGER
 );
 CREATE INDEX IF NOT EXISTS github_commands_state ON github_commands(state, reply);
+-- Autorepin (src/repin): once the pull request `ref_repo#ref_number` is merged, the pull request `repo#number` gets a commit that
+-- sets the `rev` of its Cargo dependencies on `ref_repo` to that merge commit. One row per pull request and dependency repository;
+-- a new command for the same pair replaces it. Bookkeeping: no live topic.
+CREATE TABLE IF NOT EXISTS autorepins (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  ref_repo TEXT NOT NULL,             -- tracked repo name of the dependency
+  ref_number INTEGER NOT NULL,
+  login TEXT NOT NULL,                -- who asked; their access is checked again before the push
+  github_id INTEGER NOT NULL,         -- the asker's numeric GitHub id: the login must still be bound to it at the push
+  requested_at TEXT NOT NULL,
+  state TEXT NOT NULL,                -- waiting (for the merge) | locking (the lockfile task runs) | pushed | failed | cancelled
+  sha TEXT,                           -- the merge commit, once read
+  head TEXT,                          -- the PR head the task works on (locking) and the commit was made on (pushed)
+  task_id INTEGER,                    -- locking: the build task that writes Cargo.lock
+  tries INTEGER NOT NULL DEFAULT 0,   -- attempts that did not finish (GitHub unreadable, the head moved, the task failed)
+  tried_at TEXT,                      -- the last such attempt; the next one waits a minute
+  to_head TEXT,                       -- the commit pushed, written right before the push (pushed with null: nothing needed changing)
+  result TEXT,                        -- what the comment on the pull request says
+  done_at TEXT,
+  notice TEXT,                        -- posted | failed | none; null while the comment is still to post
+  PRIMARY KEY (repo, number, ref_repo)
+) WITHOUT ROWID;
+-- The latest `autorepin off` per pull request: a command written before it (one carried out late, after retries) sets nothing.
+-- Bookkeeping: no live topic.
+CREATE TABLE IF NOT EXISTS autorepin_offs (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  off_at TEXT NOT NULL,               -- the creation time of the off command's comment
+  PRIMARY KEY (repo, number)
+) WITHOUT ROWID;
 -- A tracked repo the last sync could not read: skipped for the run, retried by the next. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS sync_repo_errors (
   repo TEXT PRIMARY KEY,
