@@ -10,7 +10,7 @@
     "node": ">=24"
   },
   "bin": {
-    "autocraft": "src/cli.ts",
+    "autocraft-server": "src/cli.ts",
     "craft-auto": "src/cli.ts"
   },
   "scripts": {

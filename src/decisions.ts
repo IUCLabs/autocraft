@@ -484,7 +484,7 @@ export const commands = {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log("usage: autocraft decisions list|show|ask|backlog|withdraw|answer|retry|test-repo ...");
+        console.log("usage: autocraft-server decisions list|show|ask|backlog|withdraw|answer|retry|test-repo ...");
         process.exit(sub ? 1 : 0);
       }
       return fn(rest);

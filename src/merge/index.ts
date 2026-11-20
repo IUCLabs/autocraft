@@ -2,7 +2,7 @@
 // at a time, through the configured merge command, and asks a "Merge this PR?"
 // decision for taken PRs the merge rule doesn't cover. No model calls.
 //
-//   autocraft merge --repo R [--limit N] [--apply]
+//   autocraft-server merge --repo R [--limit N] [--apply]
 //
 // Without --apply it is a dry run: it reads the local tables only, calls
 // nothing and writes nothing.
@@ -46,7 +46,7 @@ import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, s
 import { ownerOf } from "../owners.ts";
 import { readEnvFor } from "../github/read.ts";
 
-/** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
+/** Name of the built-in guarded merge (`autocraft-server safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
 
 /** `--allow-failed` for each optional check of the repo, only for the built-in command (another command may not know the flag). */
@@ -108,7 +108,7 @@ export async function spawnRun(cmd: string, args: string[], env?: Record<string,
   });
 }
 
-/** Runs the merge command; the built-in name runs `autocraft safe-merge` from this checkout. */
+/** Runs the merge command; the built-in name runs `autocraft-server safe-merge` from this checkout. */
 export function mergeRun(cmd: string, args: string[], env?: Record<string, string>): Promise<CommandResult> {
   // With `env` (a user's token set) the child gets exactly that environment: no box token is left in it.
   return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { ...env, [MERGE_RECORDED_ENV]: "1" }, !!env) : spawnRun(cmd, args, env, !!env);

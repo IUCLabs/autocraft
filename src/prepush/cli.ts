@@ -1,7 +1,7 @@
 // Operator tool: lint a PR's current head (optionally with a patch applied) on a build worker and print what the
 // pipeline's lint check would see. Writes nothing to GitHub.
 //
-//   autocraft lint REPO#N [--patch FILE] [--tests]
+//   autocraft-server lint REPO#N [--patch FILE] [--tests]
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getTask, logTail, TERMINAL } from "../build/tasks.ts";

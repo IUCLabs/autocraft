@@ -131,9 +131,9 @@ export function startDiscord(db: DatabaseSync, signal: AbortSignal, log: (l: str
   void gw.run(signal).catch((e: Error) => log(`runner: Discord stopped: ${e.message}`));
 }
 
-const USAGE = `usage: autocraft discord forget --message <message link or id> | --user <user id>
-       autocraft discord channels
-       autocraft discord watch <channel id> | unwatch <channel id>`;
+const USAGE = `usage: autocraft-server discord forget --message <message link or id> | --user <user id>
+       autocraft-server discord channels
+       autocraft-server discord watch <channel id> | unwatch <channel id>`;
 
 function die(msg: string): never {
   console.error(msg);

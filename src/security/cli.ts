@@ -1,4 +1,4 @@
-// `autocraft security`: drive the security deep scan from a session. Starting and stopping scans and acting on findings
+// `autocraft-server security`: drive the security deep scan from a session. Starting and stopping scans and acting on findings
 // are refused unless the repo is a test repo and --as names an operator, like `decisions answer`; list and show only read.
 import type { DatabaseSync } from "node:sqlite";
 import type { FindingAction } from "../../web/src/api/types.ts";
@@ -8,12 +8,12 @@ import { scopeToTracked } from "../repos.ts";
 import { actOnFindingAs, continueScanAs, SecurityError, startScanAs, stopScanAs, type AuditExtra } from "./actions.ts";
 import { activeScan, findingRow, overview, reconcileFindings, reconcileScans, scanRow, toFinding } from "./store.ts";
 
-const USAGE = `usage: autocraft security scan REPO --as LOGIN (--cap USD | --no-cap)
-       autocraft security continue REPO SCAN_ID --as LOGIN (--cap USD | --no-cap)
-       autocraft security stop SCAN_ID --as LOGIN
-       autocraft security list REPO
-       autocraft security show REPO N
-       autocraft security act REPO N fix|dismiss|backlog|reopen|land|advisory|publish --as LOGIN [--reason TEXT] [--cve]`;
+const USAGE = `usage: autocraft-server security scan REPO --as LOGIN (--cap USD | --no-cap)
+       autocraft-server security continue REPO SCAN_ID --as LOGIN (--cap USD | --no-cap)
+       autocraft-server security stop SCAN_ID --as LOGIN
+       autocraft-server security list REPO
+       autocraft-server security show REPO N
+       autocraft-server security act REPO N fix|dismiss|backlog|reopen|land|advisory|publish --as LOGIN [--reason TEXT] [--cve]`;
 const ACTIONS = ["fix", "dismiss", "backlog", "reopen", "land", "advisory", "publish"];
 const FROM_SESSION: AuditExtra = { source: "cli", via: "session" };
 

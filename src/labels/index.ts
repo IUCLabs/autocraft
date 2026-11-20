@@ -1,4 +1,4 @@
-// autocraft labels ensure|plan|apply: the pipeline's Label stage (docs/pipeline.md, Label).
+// autocraft-server labels ensure|plan|apply: the pipeline's Label stage (docs/pipeline.md, Label).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,7 +8,7 @@ import { approvalOf } from "./approval.ts";
 import { applyLabels, ensureLabels, LabelsError } from "./github.ts";
 import { countPlan, planCsv, planLabels } from "./plan.ts";
 
-const USAGE = `usage: autocraft labels <command> --repo NAME [options]
+const USAGE = `usage: autocraft-server labels <command> --repo NAME [options]
   ensure --repo R [--apply]                       create the missing labels of the set (dry run without --apply)
   plan   --repo R [--run RUN] [--csv FILE|-]      labels to add per open item; counts on stdout, CSV to FILE
   apply  --repo R --run RUN [--limit N] [--apply] add the planned labels; dry run without --apply;

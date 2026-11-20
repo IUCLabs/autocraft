@@ -189,7 +189,7 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
         return r.started;
       }
       const c = r.wait;
-      if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `autocraft accounts set <id> --enabled yes`");
+      if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `autocraft-server accounts set <id> --enabled yes`");
       if (maxWaitMs !== undefined && Date.now() - began >= maxWaitMs) throw new WaitLimitError("no Claude account slot became free in time");
       if (Date.now() - lastLog >= allocation.logEveryMs) {
         lastLog = Date.now();

@@ -5,7 +5,7 @@
 // pipeline switch, approvals, daily limits and merge gates apply as before. A row of an item that is closed or merged
 // stays in the table but is ignored: lists and positions count open items only.
 //
-//   autocraft fasttrack add <url|repo#n> [--weight N] | weight <url|repo#n> <N> | remove <url|repo#n> | list
+//   autocraft-server fasttrack add <url|repo#n> [--weight N] | weight <url|repo#n> <N> | remove <url|repo#n> | list
 import type { DatabaseSync } from "node:sqlite";
 import { ownerOf } from "./owners.ts";
 import { audit } from "./dash/audit.ts";

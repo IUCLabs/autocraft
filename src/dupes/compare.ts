@@ -5,7 +5,7 @@
 // no valid answer the canonical rule decides (source "rule"). Reads GitHub (live
 // state, diffs); never writes to it.
 //
-//   autocraft dupe-compare [--limit N] [--dry-run]
+//   autocraft-server dupe-compare [--limit N] [--dry-run]
 import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
@@ -310,7 +310,7 @@ export const commands = {
       if (args[0] === "again") {
         const m = /^([\w.-]+)#(\d+)$/.exec(args[1] ?? "");
         const by = args[2] === "--by" && args[3] ? args[3] : "cli";
-        if (!m || args.length !== (args[2] ? 4 : 2)) throw new Error("usage: autocraft dupe-compare again <repo>#<number> [--by <login>]");
+        if (!m || args.length !== (args[2] ? 4 : 2)) throw new Error("usage: autocraft-server dupe-compare again <repo>#<number> [--by <login>]");
         const n = compareAgain(db, by, m[1]!, Number(m[2]));
         console.log(n ? `${args[1]}: ${n} comparison${n === 1 ? "" : "s"} marked; the next dupe-compare step compares again` : `${args[1]}: no stored comparison includes it`);
         return;

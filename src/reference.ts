@@ -1,6 +1,6 @@
 // Private per-repo reference documentation: plain-text pages, their images and the source PDF in `<data dir>/reference/<repo>/`, mounted
 // read-only at /reference for the calls that judge reference-app behaviour. Operators import it with
-// `autocraft reference import`; nothing in it is ever quoted, cited or posted.
+// `autocraft-server reference import`; nothing in it is ever quoted, cited or posted.
 import { execFileSync } from "node:child_process";
 import { chmodSync, createWriteStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { Transform } from "node:stream";
@@ -138,7 +138,7 @@ async function saveStdin(file: string): Promise<void> {
   await pipeline(process.stdin, cap, createWriteStream(file));
 }
 
-const USAGE = "usage: autocraft reference import <repo> [--replace]   (tar stream of .txt/.md/.pdf and image files on stdin)\n       autocraft reference list\n       autocraft reference index <repo>\n       autocraft reference search <repo> <query...>";
+const USAGE = "usage: autocraft-server reference import <repo> [--replace]   (tar stream of .txt/.md/.pdf and image files on stdin)\n       autocraft-server reference list\n       autocraft-server reference index <repo>\n       autocraft-server reference search <repo> <query...>";
 
 export const commands = {
   reference: {

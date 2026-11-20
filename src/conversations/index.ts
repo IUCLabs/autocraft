@@ -1,4 +1,4 @@
-// autocraft conversation show|say|do: the operator's conversation actions from the shell.
+// autocraft-server conversation show|say|do: the operator's conversation actions from the shell.
 import { parseRef } from "../classify/parse.ts";
 import { getAccess } from "../access.ts";
 import { connect } from "../db.ts";
@@ -6,7 +6,7 @@ import { doCard } from "./act.ts";
 import { githubDiff, runConversations } from "./run.ts";
 import { ConversationError, addOperatorMessage, turnsOf } from "./store.ts";
 
-const USAGE = "usage: autocraft conversation show <repo>#<n> | say <repo>#<n> <text> [--by LOGIN] [--now] | do <card-id> --by LOGIN";
+const USAGE = "usage: autocraft-server conversation show <repo>#<n> | say <repo>#<n> <text> [--by LOGIN] [--now] | do <card-id> --by LOGIN";
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);

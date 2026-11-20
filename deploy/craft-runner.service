@@ -1,4 +1,4 @@
-# systemd user unit for the pipeline runner (`autocraft runner serve`).
+# systemd user unit for the pipeline runner (`autocraft-server runner serve`).
 # Replace the @...@ placeholders, copy to ~/.config/systemd/user/, then:
 #   systemctl --user daemon-reload && systemctl --user enable --now craft-runner
 # Logs of the runner itself: journalctl --user -u craft-runner

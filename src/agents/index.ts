@@ -1,13 +1,13 @@
-// autocraft accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N | on | off] | pause [show | --five-hour N --weekly N]
+// autocraft-server accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N | on | off] | pause [show | --five-hour N --weekly N]
 import { connect } from "../db.ts";
 import { jevEnabled, jevOutage, setJevEnabled } from "./jev.ts";
 import { AccountError, jevParallel, listAccounts, setJevParallel, setUsagePause, updateAccount, usagePause } from "./accounts.ts";
 
-const USAGE = `usage: autocraft accounts list
-       autocraft accounts set <id> [--label <text>] [--enabled yes|no] [--max-concurrent <N>]   (N from 1 to 100)
-       autocraft accounts jev [<N> | on | off]   Jev calls at once (1 to 100), or switch Jev on or off; shows the setting and whether Jev is in use
-       autocraft accounts pause [show]   usage levels (%) at which an account stops taking calls
-       autocraft accounts pause --five-hour <N> --weekly <N>   set them (each 1 to 100)`;
+const USAGE = `usage: autocraft-server accounts list
+       autocraft-server accounts set <id> [--label <text>] [--enabled yes|no] [--max-concurrent <N>]   (N from 1 to 100)
+       autocraft-server accounts jev [<N> | on | off]   Jev calls at once (1 to 100), or switch Jev on or off; shows the setting and whether Jev is in use
+       autocraft-server accounts pause [show]   usage levels (%) at which an account stops taking calls
+       autocraft-server accounts pause --five-hour <N> --weekly <N>   set them (each 1 to 100)`;
 
 function die(msg: string): never {
   console.error(msg);

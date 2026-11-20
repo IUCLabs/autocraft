@@ -1,4 +1,4 @@
-# systemd user unit for a build worker (`autocraft worker serve`).
+# systemd user unit for a build worker (`autocraft-server worker serve`).
 # Install as the user that runs the sandbox (rootless Podman), then:
 #   mkdir -p ~/.config/systemd/user && cp craft-worker.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now craft-worker

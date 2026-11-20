@@ -1,4 +1,4 @@
-// autocraft prioritize [--limit N]: priority level (P0-P4) of open items and their reach (src/priority/score.ts).
+// autocraft-server prioritize [--limit N]: priority level (P0-P4) of open items and their reach (src/priority/score.ts).
 //
 // Jev classifies the impact of each item whose text has no priority row at its
 // current hash; Haiku decides where Jev is under 90 % sure, and for every item

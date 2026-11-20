@@ -3,7 +3,7 @@
 // green (or skipped/neutral), and no maintainer's "changes requested" review
 // stands; the merge is pinned to the head that was checked.
 //
-//   autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]... [--head SHA]
+//   autocraft-server safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]... [--head SHA]
 //
 // --head SHA is the head the caller reviewed: the merge refuses when GitHub's head is another one.
 //
@@ -166,7 +166,7 @@ export async function safeMerge(
   return { merged: true, message: `${repo}#${pr} ${line} (head ${head.slice(0, 9)}, ${v.statusCheckRollup.length} checks green${accepted.length ? `; accepted failed optional checks: ${accepted.join(", ")}` : ""})` };
 }
 
-const USAGE = "usage: autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]... [--head SHA]";
+const USAGE = "usage: autocraft-server safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]... [--head SHA]";
 
 export function parseSafeMergeArgs(args: string[]): { repo: string; pr: string; method: Method; allow: string[]; allowFailed: string[]; head?: string } | null {
   if (args.length < 3) return null;

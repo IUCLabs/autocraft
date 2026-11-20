@@ -22,7 +22,7 @@ On one VPS, `deploy/compose/compose.yaml` runs the same three processes (dashboa
 
 - **Proxy.** Any TLS reverse proxy on the VPS forwards the origin to `127.0.0.1:3005`, the only published port. It must pass `Host`, set `X-Forwarded-For` and not buffer `GET /api/live`.
 - **DNS.** Point the origin's record at the VPS. If the origin stays the same, the GitHub App's callback, setup and webhook URLs and the OAuth callback URL stay as they are.
-- **Build workers.** None on the VPS. A separate build box reaches the worker API (8981) through a TLS proxy on its own hostname that accepts only its address, never through the dashboard's site. Register it with `autocraft envs add <id> --label TEXT --kind remote --slots N --print` (the full command with the key handling is under "Build workers" in the migration runbook). Disable the old install's `local-sandbox` environments (`envs set <id> --enabled no`), or their health checks fail.
+- **Build workers.** None on the VPS. A separate build box reaches the worker API (8981) through a TLS proxy on its own hostname that accepts only its address, never through the dashboard's site. Register it with `autocraft-server envs add <id> --label TEXT --kind remote --slots N --print` (the full command with the key handling is under "Build workers" in the migration runbook). Disable the old install's `local-sandbox` environments (`envs set <id> --enabled no`), or their health checks fail.
 - **`jev`.** Not in the image. Haiku does the classify, priority, duplicate and signal work through the Claude accounts until a derived image adds it.
 - **Backups.** The daily snapshot sits on the VPS disk. Copy it, and `/config`, off the VPS on a schedule.
 
@@ -30,7 +30,7 @@ On one VPS, `deploy/compose/compose.yaml` runs the same three processes (dashboa
 
 | Process | Command | What it does |
 |---|---|---|
-| Dashboard | `dashboard` | Serves the web app and the API over plain HTTP on 3005. Handles GitHub sign-in, the access list and the inbox MCP endpoint (`POST /mcp`). |
+| Dashboard | `dashboard` | Serves the web app and the API over plain HTTP on 3005. Handles GitHub sign-in, the access list and the MCP Connector endpoint (`POST /mcp`) and the Task Runner API (`/api/remote/*`). |
 | Runner | `runner` | Runs the pipeline jobs, including the sandboxed Claude calls, and serves the worker API on 8981. |
 | Periodic | `sync` every minute, `backup daily 7` once a day | Mirrors GitHub into the database; writes the daily database snapshot. `deploy/k8s/autocraft.yaml` runs both in one looping container. |
 
@@ -128,7 +128,7 @@ Sign-in and the GitHub App are tied to the public origin. Do these in order. `AU
 4. Make the team instance sign in through the GitHub App, so that it does not depend on one person's OAuth app. The order matters:
    1. Register the GitHub App from the dashboard's GitHub App page (operators only) while the GitHub identity is the box account, or reuse the existing app and make sure its keys are in `secrets.json`.
    2. Install the app on the organization, grant the repositories, and test it: the GitHub App page shows the installation and its repositories.
-   3. Only then set the GitHub identity to "GitHub App" on the GitHub App page (operators only; `autocraft identity app` does the same). It is refused unless the app is registered and its installation covers every tracked repo, and the refusal lists the repos that are not covered. Switching ends every dashboard session, so everyone signs in again through the GitHub App. To go back, choose "Box account" (the app cannot be removed while the identity is the GitHub App).
+   3. Only then set the GitHub identity to "GitHub App" on the GitHub App page (operators only; `autocraft-server identity app` does the same). It is refused unless the app is registered and its installation covers every tracked repo, and the refusal lists the repos that are not covered. Switching ends every dashboard session, so everyone signs in again through the GitHub App. To go back, choose "Box account" (the app cannot be removed while the identity is the GitHub App).
    4. Keep the OAuth app until everyone has signed in once through the GitHub App.
 5. Session cookies (`__Host-craft_session`) belong to the exact host, so a new domain gives every user a new sign-in. Sessions live in the database and expire on their own: 14 days of inactivity, at most 30 days after sign-in, and 7 days at most for operators.
 6. Agent (MCP) tokens are bearer tokens stored as hashes in the database and are not tied to a host. They keep working on the new origin as long as the database carries over (they do not depend on `session_key`). Each user changes the URL in their agent's configuration (`claude mcp add --transport http ... https://new.example.com/mcp --header "Authorization: Bearer <token>"`); the token itself stays. Tokens last 90 days (7 days for an answering token).
@@ -138,7 +138,7 @@ Check after the move: sign in, open the GitHub App page, and confirm the item pa
 
 ## Open items
 
-- Warm snapshot store. With more than one build machine, run `autocraft worker store serve` on a cache node (behind TLS or on the cluster network) and generate a signing key pair (`autocraft worker store keygen`), set `warmStore` in the worker configs (public key for all, write key and private key only for the trusted main-build workers). See `docs/operations.md` (Shared warm snapshot store). Not set up yet.
+- Warm snapshot store. With more than one build machine, run `autocraft-server worker store serve` on a cache node (behind TLS or on the cluster network) and generate a signing key pair (`autocraft-server worker store keygen`), set `warmStore` in the worker configs (public key for all, write key and private key only for the trusted main-build workers). See `docs/operations.md` (Shared warm snapshot store). Not set up yet.
 - Build pods or build boxes. The manifest has no build workers. Untrusted builds can run in separate pods or on separate boxes that call the worker API; this is not decided, and with boxes the worker API needs a TLS route.
 - Registry. Where the image is pushed, who can push, and the pull credential in the cluster.
 - Secret management. Today `secrets.json` is copied to the config volume by hand and `GH_TOKEN` comes from a Kubernetes Secret. Whether a secret manager replaces either is not decided.

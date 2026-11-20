@@ -3,7 +3,7 @@
 // the batch lands), pushed to the pipeline account's fork, opened as a PR at once and merged through the merge
 // command once upstream CI on the batch PR is green. Upstream CI is the only check of the combined tree.
 //
-//   autocraft merge-batches --repo R [--limit N]    (the runner's merge step calls runBatches)
+//   autocraft-server merge-batches --repo R [--limit N]    (the runner's merge step calls runBatches)
 //
 // One run advances every batch of the repo in flight, then starts the next batch when none is left. A red batch is
 // worked out without a model, cheapest first: checks that were red on the default branch at the base too blame no PR

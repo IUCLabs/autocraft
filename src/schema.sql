@@ -1,4 +1,4 @@
--- Mirror tables: written only by `autocraft sync`, overwritten from GitHub.
+-- Mirror tables: written only by `autocraft-server sync`, overwritten from GitHub.
 
 CREATE TABLE IF NOT EXISTS repos (
   name TEXT PRIMARY KEY,              -- "photocraft"; unique across owners
@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS decision_prepares (decision_id TEXT NOT NULL, at TEXT
 CREATE INDEX IF NOT EXISTS decision_prepares_decision ON decision_prepares(decision_id, at);
 
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
--- whitelist rule defaults; editable with `autocraft whitelist rule`
+-- whitelist rule defaults; editable with `autocraft-server whitelist rule`
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merged', '5');
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merge_rate', '0.6');
 
@@ -486,7 +486,7 @@ SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
 INSERT OR IGNORE INTO settings VALUES ('tracked_seeded', '1');
 
 -- Pipeline jobs: the only channel from the dashboard to the runner
--- (`autocraft runner serve`). The dashboard inserts requests and cancel
+-- (`autocraft-server runner serve`). The dashboard inserts requests and cancel
 -- marks; the runner claims, runs and finishes jobs. Steps are defined in code
 -- (src/runner/steps.ts); params are validated against the step's schema
 -- before a row is written.
@@ -527,7 +527,7 @@ INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
   ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
   ('labels-apply', NULL), ('merge', 10), ('act', 20), ('fixup', 20), ('verify', 30), ('opus-review', 40);
 
--- One row per `autocraft sync` run, kept for two days, for the Pipeline page.
+-- One row per `autocraft-server sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (
   started_at TEXT NOT NULL,
   ended_at TEXT,
@@ -572,7 +572,7 @@ CREATE TABLE IF NOT EXISTS review_gates (
 );
 
 -- CI and merge state of open PRs at their head commit, for review candidates.
--- Written by `autocraft checks` and the Review stage; sync never touches it.
+-- Written by `autocraft-server checks` and the Review stage; sync never touches it.
 CREATE TABLE IF NOT EXISTS pr_checks (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   head_oid TEXT NOT NULL,
@@ -688,7 +688,7 @@ CREATE INDEX IF NOT EXISTS items_state_updated ON items(state, updated_at);
 CREATE INDEX IF NOT EXISTS items_author_nocase ON items(author COLLATE NOCASE);
 
 -- Sentence embeddings of tracked items, for similar items and semantic search.
--- Written by `autocraft embed` (src/embed/); the dashboard only reads them.
+-- Written by `autocraft-server embed` (src/embed/); the dashboard only reads them.
 CREATE TABLE IF NOT EXISTS item_embeddings (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   model TEXT NOT NULL,                -- embedder id: "<model>:<dtype>:<max tokens>"; another model's rows count as missing
@@ -1717,7 +1717,7 @@ CREATE INDEX IF NOT EXISTS push_outcomes_to ON push_outcomes(repo, to_oid);
 CREATE INDEX IF NOT EXISTS push_outcomes_stage ON push_outcomes(stage, id);
 
 -- Circuit breaker: a stage that stopped itself. One row per stage; active = 1 while tripped, and only an operator clears it
--- (autocraft pipeline resume <stage>, or the Resume button on the Pipeline page). Pushes and merges from before cleared_at
+-- (autocraft-server pipeline resume <stage>, or the Resume button on the Pipeline page). Pushes and merges from before cleared_at
 -- do not count towards the next trip. evidence: JSON of refs (repo#number and commits).
 CREATE TABLE IF NOT EXISTS stage_trips (
   stage TEXT PRIMARY KEY,             -- fixup | cifix | fixissue | merge

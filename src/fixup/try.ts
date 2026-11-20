@@ -1,4 +1,4 @@
-// Operator tool: `autocraft fixup try REPO#N` runs the fix-up patch step for one PR as the stage does (the same sandboxed
+// Operator tool: `autocraft-server fixup try REPO#N` runs the fix-up patch step for one PR as the stage does (the same sandboxed
 // model call with the check tool, then apply, validate, the Opus patch check and the lint task) and prints what happened.
 // It stores no fixups row, records no check or audit row and writes nothing to GitHub; model usage, model_checks and the
 // worker tasks are recorded as for any run. The pipeline setting and the stage's limits do not apply.
