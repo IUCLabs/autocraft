@@ -8,6 +8,7 @@ import { scrubError } from "./text.ts";
 import { levelBand } from "../rank/level.ts";
 import { inferenceMode } from "../remote/mode.ts";
 import { remoteRoom, roomOf, roomState, type RoomState } from "../remote/room.ts";
+import { takerTest } from "../remote/takers.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
 export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
@@ -107,6 +108,23 @@ function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
   return queueOrder(db, nowMs, db.prepare("SELECT id, class AS cls, level, step, repo, since FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ?").all(nowMs - allocation.staleMs) as Waiter[]);
 }
 
+/**
+ * Splits `items` into batches of at most `size` that each hold one repo's items, so any user who may take that repo can take
+ * the call (a mixed batch waits for a user who may take every repo in it). Items keep their order within a repo; batches are
+ * in the order of their first item.
+ */
+export function repoBatches<T>(items: readonly T[], size: number, repoOf: (x: T) => string): T[][] {
+  const out: T[][] = [];
+  const open = new Map<string, T[]>();
+  for (const x of items) {
+    const repo = repoOf(x);
+    let b = open.get(repo);
+    if (!b || b.length >= size) { open.set(repo, (b = [])); out.push(b); }
+    b.push(x);
+  }
+  return out;
+}
+
 /** The repos of a call's items, for queueRoom. */
 export const itemRepos = (items: readonly { repo: string }[]): string[] => [...new Set(items.map((i) => i.repo))];
 
@@ -129,12 +147,56 @@ export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass(), rep
   return Math.max(0, freeSlots(db) - Number(ahead));
 }
 
-/** queueRoom for many questions at one moment (the runner's pass over queued jobs): in the user-local mode the helpers, their permissions and repos are read once. */
-export function queueRoomPass(db: DatabaseSync): (cls: 0 | 1 | 2, repos?: readonly string[]) => number {
-  if (inferenceMode(db) !== "user-local") return (cls, repos) => queueRoom(db, cls, repos);
+/** Room questions answered from one reading of the helpers (queueRoomPass). */
+export type RoomPass = {
+  room(cls: 0 | 1 | 2, repos?: readonly string[]): number;
+  /** Whether a call naming `repos` has a taker (src/remote/takers.ts; always in the server-account mode). */
+  taker(repos?: readonly string[]): boolean;
+};
+
+/** queueRoom for many questions at one moment (the runner's pass over queued jobs, a pool's round): in the user-local mode the helpers, their permissions and repos are read once. */
+export function queueRoomPass(db: DatabaseSync): RoomPass {
+  if (inferenceMode(db) !== "user-local") return { room: (cls, repos) => queueRoom(db, cls, repos), taker: () => true };
   const nowMs = Date.now();
   let st: RoomState | undefined;
-  return (cls, repos) => roomOf(db, (st ??= roomState(db, nowMs)), cls, nowMs, callRepos(repos));
+  const state = (): RoomState => (st ??= roomState(db, nowMs));
+  // The taker rule of src/remote/takers.ts, read once per pass; unknown repos always have a taker.
+  const takes = takerTest(db, nowMs);
+  return {
+    room: (cls, repos) => roomOf(db, state(), cls, nowMs, callRepos(repos)),
+    taker: (repos) => { const r = callRepos(repos); return r === undefined || takes({ prompt_id: "", repos: r }); },
+  };
+}
+
+/** The model queue's room for a pool's units by index (classify/run.ts pool): answers are kept for one round of the pool's scheduling. */
+export type PoolRoom = { round(): void; room(i: number): number; taker(i: number): boolean };
+
+/**
+ * PoolRoom for units whose calls name `reposOf(i)` (the job's repo param is added), in the current call's class. `mayNotCall`:
+ * a unit may finish without a model call (collecting build results), so every unit counts as having a taker and a unit of a
+ * repo no Task Runner takes still starts when none of the pool's units runs.
+ */
+export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly string[] | undefined, opts: { mayNotCall?: boolean } = {}): PoolRoom {
+  const cls = currentClass();
+  let pass: RoomPass | null = null;
+  const rooms = new Map<string, number>(), takers = new Map<string, boolean>();
+  const keyOf = (r: readonly string[] | undefined): string => (r === undefined ? "\0" : [...r].sort().join("\n"));
+  return {
+    round: () => { pass = null; rooms.clear(); takers.clear(); },
+    room: (i) => {
+      const r = reposOf(i), k = keyOf(r);
+      let n = rooms.get(k);
+      if (n === undefined) rooms.set(k, (n = (pass ??= queueRoomPass(db)).room(cls, r)));
+      return n;
+    },
+    taker: (i) => {
+      if (opts.mayNotCall) return true;
+      const r = reposOf(i), k = keyOf(r);
+      let t = takers.get(k);
+      if (t === undefined) takers.set(k, (t = (pass ??= queueRoomPass(db)).taker(r)));
+      return t;
+    },
+  };
 }
 
 export type Started = { runId: number; configDir: string; accountId: string };

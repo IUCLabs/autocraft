@@ -9,7 +9,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { prep } from "../sql-cache.ts";
 import { NO_TAKER_PREFIX, pickCounts, pickerLogins, queueSnapshot, runnerTakes, withdrawCall } from "./calls.ts";
-import { cooloffOf } from "./cooloff.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
 import { inferenceMode } from "./mode.ts";
 import { claimRepos } from "./my-repos.ts";
@@ -35,11 +34,27 @@ export function takerTest(db: DatabaseSync, nowMs: number): (c: TakerCall) => bo
 export const hasTaker = (db: DatabaseSync, nowMs: number, repos?: readonly string[]): boolean =>
   repos === undefined || takerTest(db, nowMs)({ prompt_id: "", repos });
 
+/** SQL on a runner token `t` joined to its status `h`: the runner may be a taker (fresh, ready, its user not cooling off). Bind takerArgs. */
+const TAKER_SQL = `t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?
+  AND NOT EXISTS (SELECT 1 FROM main.remote_cooloffs co WHERE co.login = t.login AND co.until > ?)`;
+const takerArgs = (nowMs: number): [string, number, number] => [new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS, nowMs];
+
+/**
+ * The runners the taker rule reads, in a form that changes only when they or what decides their repos change: each one's
+ * login, role, My repos and own repo list. The planner adds it to its input, so work left for want of a taker is planned
+ * again when one connects or comes back, without every status report waking the planner. Write permission is not in it.
+ */
+export function takerSignature(db: DatabaseSync, nowMs: number = Date.now()): string {
+  const r = prep(db, `SELECT group_concat(k, ';') AS s FROM (SELECT DISTINCT lower(t.login) || ':' || COALESCE(a.role, '') || ':' || COALESCE(us.value, '') || ':' || COALESCE(t.idle_repos, '') AS k
+      FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
+      LEFT JOIN main.user_settings us ON us.login = t.login AND us.key = 'repos'
+      WHERE ${TAKER_SQL} ORDER BY k)`).get(...takerArgs(nowMs)) as { s: string | null };
+  return r.s ?? "";
+}
+
 function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
-  const rows = (prep(db, `SELECT t.login, a.role, t.idle_repos FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id JOIN main.access a ON a.login = t.login
-    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?`)
-    .all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { login: string; role: string; idle_repos: string | null }[])
-    .filter((r) => cooloffOf(db, r.login, nowMs) === null);
+  const rows = prep(db, `SELECT t.login, a.role, t.idle_repos FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id JOIN main.access a ON a.login = t.login
+    WHERE ${TAKER_SQL}`).all(...takerArgs(nowMs)) as { login: string; role: string; idle_repos: string | null }[];
   if (!rows.length) return () => false;
   const canWrite = roomCanWrite(db, rows.map((r) => r.login), nowMs);
   const runners = rows.map((h) => {

@@ -3,7 +3,7 @@
 // lint and fallbacks; the runner does the calls, retries, lint and fix turn (askClaude), the Jev reply parse, the
 // usage rows and the error result.
 import type { DatabaseSync } from "node:sqlite";
-import { queueRoom } from "./call.ts";
+import { poolRoom, repoBatches } from "./call.ts";
 import { jevAvailable } from "./jev.ts";
 import { jevParallel } from "./accounts.ts";
 import { add, askClaude, askJev, pool, saveUsage, type AskOptions, type LintedReply, type Usage } from "../classify/run.ts";
@@ -210,10 +210,12 @@ export type TieredResult<JV, HV> = {
   alone: Set<string>;
   /** Items sent to Haiku. */
   asked: Set<string>;
+  /** Items Haiku was to answer whose batch did not run: no Task Runner may take its repo. */
+  skipped: Set<string>;
 };
 
 export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync, tier: TieredStep<It, JV, HV, C, B>, items: It[], opts: TieredOpts<It, C> = {}): Promise<TieredResult<JV, HV>> {
-  const out: TieredResult<JV, HV> = { jev: new Map(), haiku: new Map(), alone: new Set(), asked: new Set() };
+  const out: TieredResult<JV, HV> = { jev: new Map(), haiku: new Map(), alone: new Set(), asked: new Set(), skipped: new Set() };
   if (jevAvailable(db)) {
     await pool(items.map((x) => async () => {
       if (!jevAvailable(db)) return;
@@ -232,13 +234,14 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
   }
   if (!ask.length || opts.cancelled?.()) return out;
   const per = opts.perCall ?? CLAUDE_PROMPTS[tier.haiku.id].limits.perCall;
-  const batches: It[][] = [];
-  for (let i = 0; i < ask.length; i += per) batches.push(ask.slice(i, i + per));
+  const batches = repoBatches(ask, per, tier.repo);
   await pool(batches.map((batch, n) => async () => {
     for (const x of batch) out.asked.add(tier.ref(x));
     const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {
       ctx: opts.ctx, usage: opts.haikuUsage?.(batch, n), cancelled: opts.cancelled });
     if (r.ok) for (const v of r.values) for (const [ref, a] of v) out.haiku.set(ref, a);
-  }), (i) => queueRoom(db, undefined, [...new Set(batches[i]!.map(tier.repo))]), { first: opts.first });
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map(tier.repo))]), { first: opts.first, skipped: (i) => {
+    for (const x of batches[i]!) { out.skipped.add(tier.ref(x)); out.alone.delete(tier.ref(x)); }
+  } });
   return out;
 }

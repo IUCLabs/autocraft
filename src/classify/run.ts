@@ -8,7 +8,7 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { accountConfigDir, itemRepos, NoTakerError, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
+import { accountConfigDir, itemRepos, NoTakerError, poolRoom, repoBatches, startClaudeRun, type PoolRoom, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
 import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
 import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
@@ -124,38 +124,68 @@ export type PoolOptions = {
   pollMs?: number;
   /** Upper bound on running jobs, also when `width` is a function. */
   max?: number;
+  /** Told the index of each job a PoolRoom left unstarted (no Task Runner may take it) when the pool ends, and of each job whose model call was withdrawn for lack of a taker (NoTakerError). */
+  skipped?: (i: number) => void;
 };
 
 /**
- * Runs the jobs with at most `width` at once. A function instead of a number
- * is asked before each start how many more jobs may start now (for model
- * calls: the room of the model queue), given the index of the job that would
- * start next; it is asked again whenever a job ends or after the poll time. When none of the pool's jobs is running, one starts
- * regardless, so the call itself waits for a slot or reports that no account is enabled.
- * A job whose model call no Task Runner could take (NoTakerError) is skipped; the others go on.
+ * Runs the jobs with at most `width` at once. A function instead of a number is asked before each start how many more jobs
+ * may start now, given the index of the job that would start next; it is asked again whenever a job ends or after the poll
+ * time. When none of the pool's jobs is running, one starts regardless, so the call itself waits for a slot or reports that no
+ * account is enabled.
+ *
+ * A PoolRoom (poolRoom: the model queue's room for each job's repos) starts the first job in order that has room, so a job
+ * whose repos have no room does not hold back later ones. When none has room and none runs, the first job whose repos have a
+ * Task Runner that may take them starts regardless; jobs no Task Runner may take never start, and once only they are left the
+ * pool ends without them (a later pass picks them again). With `first`, the first job that has such a Task Runner runs alone first.
+ * A job whose model call was withdrawn because no Task Runner could take it (NoTakerError) is skipped the same way; the others go on.
+ *
  * The first failure is thrown once the running jobs have ended.
  */
-export async function pool<T>(jobs: (() => Promise<T>)[], width: number | ((next: number) => number), opts: PoolOptions = {}): Promise<T[]> {
+export async function pool<T>(jobs: (() => Promise<T>)[], width: number | ((next: number) => number) | PoolRoom, opts: PoolOptions = {}): Promise<T[]> {
   const results: T[] = new Array(jobs.length);
   const running = new Set<Promise<void>>();
-  let next = 0, failed: { e: unknown } | null = null;
-  const launch = (): Promise<void> => {
-    const i = next++;
-    const p: Promise<void> = jobs[i]!().then((r) => void (results[i] = r), (e) => void (e instanceof NoTakerError || (failed ??= { e }))).finally(() => running.delete(p));
+  // Indices of the jobs not started yet, in order; a PoolRoom may start them out of order.
+  const pending = jobs.map((_, i) => i);
+  let failed: { e: unknown } | null = null;
+  const launch = (i: number): Promise<void> => {
+    pending.splice(pending.indexOf(i), 1);
+    const p: Promise<void> = jobs[i]!().then((r) => void (results[i] = r), (e) => void (e instanceof NoTakerError ? opts.skipped?.(i) : (failed ??= { e }))).finally(() => running.delete(p));
     running.add(p);
     return p;
   };
-  if (opts.first && jobs.length > 1) await launch();
-  while (next < jobs.length && !failed) {
-    const room = typeof width === "number" ? width - running.size : Math.min(width(next), (opts.max ?? Infinity) - running.size);
-    if (room > 0 || !running.size) {
-      launch();
-      continue;
+  const roomy = typeof width === "object" ? width : null;
+  const takenBy = (i: number): boolean => !roomy || roomy.taker(i);
+  if (opts.first && jobs.length > 1) {
+    roomy?.round();
+    const i = pending.find(takenBy);
+    if (i === undefined) { for (const x of pending) opts.skipped?.(x); return results; }
+    await launch(i);
+  }
+  while (pending.length && !failed) {
+    const free = (opts.max ?? Infinity) - running.size;
+    if (typeof width === "object") {
+      width.round();
+      const i = free > 0 ? pending.find((x) => width.room(x) > 0) : undefined;
+      if (i !== undefined) { launch(i); continue; }
+      if (!running.size) {
+        const any = pending.find(takenBy);
+        if (any === undefined) break;
+        launch(any);
+        continue;
+      }
+    } else {
+      const room = typeof width === "number" ? width - running.size : Math.min(width(pending[0]!), free);
+      if (room > 0 || !running.size) {
+        launch(pending[0]!);
+        continue;
+      }
     }
     await Promise.race([...running, new Promise((r) => setTimeout(r, opts.pollMs ?? POOL_POLL_MS))]);
   }
   await Promise.all(running);
   if (failed) throw (failed as { e: unknown }).e;
+  for (const x of pending) opts.skipped?.(x);
   return results;
 }
 
@@ -775,15 +805,20 @@ export const add = (a: Usage, b: Usage): Usage => {
 
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
-export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<void> {
-  const batches: Item[][] = [];
-  for (let i = 0; i < items.length; i += batchSize) batches.push(items.slice(i, i + batchSize));
+/** The Haiku batches of `items`: one repo's items each (repoBatches). */
+export const haikuBatches = (items: readonly Item[], batchSize: number = HAIKU.limits.perCall): Item[][] => repoBatches(items, batchSize, (i) => i.repo);
+
+/** Classifies the items in Haiku batches; returns how many items were in batches that ran (a batch no Task Runner may take does not). */
+export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<number> {
+  const batches = haikuBatches(items, batchSize);
+  let skipped = 0;
   await pool(batches.map((batch, n) => async () => {
     const r = await runModelStep(db, CLASSIFY_HAIKU, batch, { model, usage: { run: runId, agent: `haiku-${String(n).padStart(2, "0")}`, stage: "classify" } });
     if (r.ok) for (const verdicts of r.values) for (const v of verdicts) saveVerdict(db, "haiku", runId, v);
     const left = r.ok ? r.rest ?? [] : batch;
     if (left.length) console.error(`haiku batch ${n}: no valid answer for ${left.map(refOf).join(", ")}`);
-  }), (i) => queueRoom(db, undefined, itemRepos(batches[i]!)), { first: opts.cold });
+  }), poolRoom(db, (i) => itemRepos(batches[i]!)), { first: opts.cold, skipped: (i) => void (skipped += batches[i]!.length) });
+  return items.length - skipped;
 }
 
 export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = jevParallel(db)): Promise<void> {
