@@ -30,7 +30,7 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
   if (new URLSearchParams(location.search).get("states") === "1") runners.push(
     // Logged in but never reported in.
     { tokenId: 8, label: "wsl", slots: null, busy: null, lastError: null, readiness: null, until: null, reason: null, fresh: false, lastSeen: null, harness: null, models: {}, reserve: null, usage: null,
-      machine: { hostname: "laptop", platform: "linux", arch: "x64" }, helperVersion: "1.3.4", createdAt: at(-20 * MIN), expiresAt: at(90 * DAY), agent: true, answer: false },
+      machine: { hostname: "desktop", platform: "linux", arch: "x64" }, helperVersion: "1.3.4", createdAt: at(-20 * MIN), expiresAt: at(90 * DAY), agent: true, answer: false },
     // Reported in once, then stopped.
     { tokenId: 9, label: "old-box", slots: 1, busy: 0, lastError: null, readiness: "ready", until: null, reason: null, fresh: false, lastSeen: at(-3 * DAY), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 }, usage: null,
       machine: { hostname: "old-box", platform: "linux", arch: "x64" }, helperVersion: "1.3.3", createdAt: at(-40 * DAY), expiresAt: at(50 * DAY), agent: true, answer: false }
