@@ -57,7 +57,7 @@ describe("per-lease tools of remote calls", () => {
     writeFileSync(join(ref, "layers.md"), `# Layers\n\n${Array.from({ length: 10 }, (_, i) => `Layer note ${i}. ${"filler ".repeat(100)}`).join("\n\n")}`);
     await buildReferenceIndex("photocraft", { embedder: fake });
     addLogin(db, "cli", "bob", "maintainer", null);
-    const caller: Caller = { tokenId: createToken(db, "bob", "helper", false, true).row.id, login: "bob", role: "maintainer" };
+    const caller: Caller = { tokenId: createToken(db, "bob", "helper", { kind: "runner" }).row.id, login: "bob", role: "maintainer" };
     const items = [{ repo: "photocraft", number: 7 }];
     const common = { promptId: "review.opus", promptVersion: "1", tier: "top" as const, effort: "medium", askedModel: "opus", items, level: 2, maxAttempts: 1 };
     const ids = {

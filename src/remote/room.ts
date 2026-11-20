@@ -34,7 +34,7 @@ export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.n
       (SELECT COUNT(*) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS leased,
       (SELECT MAX(c.heartbeat_at) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS beat
     FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
-    WHERE t.can_run = 1 AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as
+    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as
     { login: string; idle_claim_at: number | null; slots: number; leased: number; beat: number | null }[];
   const free = new Map<string, number>();
   for (const h of helpers) {

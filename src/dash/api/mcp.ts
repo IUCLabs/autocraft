@@ -1,8 +1,8 @@
-// The signed-in user's own agent tokens for the Inbox MCP server (src/dash/mcp/). Maintainers and operators make
-// them (a viewer writes nothing, this included). A token acts with its login's current role, read on every call, so
-// a token whose login became a viewer only reads; anyone may list and revoke their own. Only an operator, or a maintainer while `maintainer_writes` is on, makes an
-// answering token (`answer: true`): its agent may also answer decisions and undo answers, and it lasts 7 days. A running token
-// (`run: true`) lets the user's helper claim model calls in the user-local inference mode (src/remote/).
+// The signed-in user's own MCP Connector tokens (src/dash/mcp/). Maintainers and operators make them (a viewer writes
+// nothing, this included). A token acts with its login's current role, read on every call, so a token whose login became a
+// viewer only reads; anyone may list and revoke their own. Only an operator, or a maintainer while `maintainer_writes` is on,
+// makes an answering token (`answer: true`): its agent may also answer decisions and undo answers, and it lasts 7 days.
+// Task Runner credentials come from a device login instead (runners.ts).
 import { maintainerWritesOn } from "../../settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { McpTokenCreated, McpTokens } from "../../../web/src/api/types.ts";
@@ -19,25 +19,24 @@ const body = (req: Req): Record<string, unknown> => {
   return b as Record<string, unknown>;
 };
 
-export const tokens = (db: DatabaseSync, req: Req): McpTokens => ({ tokens: listTokens(db, req.user.login), max: MCP_TOKENS_PER_LOGIN, path: "/mcp", answering: answering.enabled });
+export const tokens = (db: DatabaseSync, req: Req): McpTokens => ({ tokens: listTokens(db, req.user.login, "connector"), max: MCP_TOKENS_PER_LOGIN, path: "/mcp", answering: answering.enabled });
 
 export function create(db: DatabaseSync, req: Req): McpTokenCreated {
   if (req.user.role === "viewer") throw new HttpError(403, "viewers cannot make agent tokens");
   const b = body(req);
   if (b.answer !== undefined && typeof b.answer !== "boolean") throw new HttpError(400, "answer must be true or false");
   if (b.answer === true && !answering.enabled) throw new HttpError(403, "answering from an agent is not available yet");
-  if (b.run !== undefined && typeof b.run !== "boolean") throw new HttpError(400, "run must be true or false");
+  if (b.run === true) throw new HttpError(400, "a Task Runner gets its credential with `autocraft login`, approved on the Connect page");
   if (b.answer === true && req.user.role !== "operator" && !(req.user.role === "maintainer" && maintainerWritesOn(db))) throw new HttpError(403, "only operators, and maintainers where they may settle decisions, make tokens that answer decisions");
-  // A running token's helper claims model calls of the user-local mode; maintainers and operators (the only ones who get here) may make one.
-  const { token, row } = createToken(db, req.user.login, b.label, b.answer === true, b.run === true);
-  audit(db, req.user.login, "mcp-token-create", req.user.login, { id: row.id, label: row.label ?? undefined, ...(row.canAnswer ? { canAnswer: true } : {}), ...(row.canRun ? { canRun: true } : {}) });
+  const { token, row } = createToken(db, req.user.login, b.label, { canAnswer: b.answer === true });
+  audit(db, req.user.login, "mcp-token-create", req.user.login, { id: row.id, label: row.label ?? undefined, ...(row.canAnswer ? { canAnswer: true } : {}) });
   return { ...tokens(db, req), token, id: row.id };
 }
 
 export function revoke(db: DatabaseSync, req: Req): McpTokens {
   const id = body(req).id;
   if (!Number.isInteger(id)) throw new HttpError(400, "id must be a token id");
-  if (!revokeToken(db, req.user.login, id as number)) throw new HttpError(404, "you have no such token");
+  if (!revokeToken(db, req.user.login, id as number, "connector")) throw new HttpError(404, "you have no such token");
   audit(db, req.user.login, "mcp-token-revoke", req.user.login, { id });
   return tokens(db, req);
 }

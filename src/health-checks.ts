@@ -246,7 +246,7 @@ function remoteCallsCheck({ db, nowMs }: CheckCtx): Check[] {
 /** User-local mode: a helper is ready, yet the oldest queued call of a tier has waited past that tier's limit (the helpers' models, reserves or repo choices may not fit it). */
 function remoteStarvedCheck({ db, nowMs }: CheckCtx): Check[] {
   if (inferenceMode(db) !== "user-local") return [];
-  const ready = (db.prepare("SELECT COUNT(*) AS n FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE t.can_run = 1 AND h.readiness = 'ready' AND h.reported_at >= ?").get(nowMs - STATUS_FRESH_MS) as { n: number }).n;
+  const ready = (db.prepare("SELECT COUNT(*) AS n FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE t.kind = 'runner' AND h.readiness = 'ready' AND h.reported_at >= ?").get(nowMs - STATUS_FRESH_MS) as { n: number }).n;
   if (!ready) return [ok("remote-starved", "/pipeline")];
   const out: Check[] = [];
   for (const tier of ["top", "mid", "small"] as const) {

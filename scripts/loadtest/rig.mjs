@@ -129,7 +129,7 @@ export class Rig {
     for (let i = 0; i < this.o.users; i++) {
       const login = `rig-user-${String(i + 1).padStart(2, "0")}`;
       this.db.prepare("INSERT OR REPLACE INTO main.access (login, role, added_by, added_at) VALUES (?, 'maintainer', 'rig', ?)").run(login, now);
-      const { token, row } = tokens.createToken(this.db, login, "rig", false, true);
+      const { token, row } = tokens.createToken(this.db, login, "rig", { kind: "runner" });
       this.users.push({ login, token, tokenId: row.id });
     }
     this.refreshPermissions();

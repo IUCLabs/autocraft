@@ -20,7 +20,7 @@ try {
   const perm = db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES (?, ?, ?, ?)");
   const caller = (login: string): Caller => {
     db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES (?, 'maintainer')").run(login);
-    return { tokenId: createToken(db, login, "helper", false, true).row.id, login, role: "maintainer" };
+    return { tokenId: createToken(db, login, "helper", { kind: "runner" }).row.id, login, role: "maintainer" };
   };
   // "author" wrote every PR; the idle helpers asked for top-tier work. Only the last of them may write, so an author's claim
   // looks through the others for every call before it gives way.
