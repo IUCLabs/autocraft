@@ -635,7 +635,7 @@ export type Hold = { waits: ClaimWaits; signal: AbortSignal; blocked: () => bool
 async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number, hold?: Hold & { ms: number; ticket: Ticket }): Promise<ClaimReply> {
   const c = prepareClaim(db, caller, claim, canWrite, nowMs);
   if ("reply" in c) return c.reply;
-  const live = hold?.ticket.live ?? (() => true);
+  const live = hold ? () => !hold.ticket.gone && !hold.waits.closed : () => true;
   const first = await c.attempt(nowMs, { quick: false, live });
   if (first) return first;
   c.idle(nowMs);

@@ -18,6 +18,7 @@ const { FakeProvider } = await import("../src/dash/server/provider.ts");
 const { RateLimiter } = await import("../src/dash/server/util.ts");
 const { connect } = await import("../src/db.ts");
 const { CLAIM_RETRY_S, enqueueCall } = await import("../src/remote/calls.ts");
+const { ClaimWaits, Ticket } = await import("../src/remote/claim-wait.ts");
 const { setUserMaxCalls } = await import("../src/remote/max-calls.ts");
 const { setInferenceMode } = await import("../src/remote/mode.ts");
 const { ROUTES } = await import("../src/remote/protocol.ts");
@@ -139,6 +140,25 @@ describe("long-polling claims", async () => {
     assert.match(reply.reason ?? "", /credential was removed/);
     assert.equal(state(id), "queued");
     other.prepare("DELETE FROM remote_calls WHERE id = ?").run(id);
+  });
+
+  test("a try in flight when shutdown answers its claim leases nothing", async () => {
+    const waits = new ClaimWaits(remoteDb, { tickMs: 10, retryMs: 60_000 });
+    let release!: () => void, started!: () => void;
+    const gate = new Promise<void>((r) => { release = r; }), inTry = new Promise<void>((r) => { started = r; });
+    let leased: boolean | null = null;
+    const empty = () => ({ lease: null, retryAfter: CLAIM_RETRY_S }) as never;
+    const reply = waits.hold(new Ticket(new AbortController().signal), Date.now() + 60_000, {
+      attempt: async (_now, { live }) => { started(); await gate; leased = live(); return null; },
+      idle: () => {}, empty, blocked: () => false,
+    });
+    await inTry;
+    waits.close();
+    assert.equal((await reply).lease, null);
+    release();
+    await sleep(20);
+    assert.equal(leased, false);
+    assert.equal(new Ticket(AbortSignal.abort()).gone, true, "a claim whose client left before it was held is gone");
   });
 
   test("shutting down answers held claims with a short retry, not a reset", async () => {

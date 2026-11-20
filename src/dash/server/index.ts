@@ -752,13 +752,15 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const caller = runner();
         if (!caller) return;
         if (!remoteClaimLimit.allow(String(caller.tokenId))) return tooMany();
+        // A held claim whose client leaves stops waiting; a reply already written does not count as leaving. Listened for
+        // before the body is read, so a client that leaves while it is sent is never held.
+        const gone = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) gone.abort(); });
+        if (req.socket.destroyed) gone.abort();
         const claim = remote.parseClaim(await readJson(req));
         // In the server mode no call is queued for helpers: nothing to take for a while.
         if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login) } satisfies ClaimReply);
         const perm = claimPermission(caller.login, caller.role);
-        // A held claim whose client leaves stops waiting; a reply already written does not count as leaving.
-        const gone = new AbortController();
-        res.once("close", () => { if (!res.writableEnded) gone.abort(); });
         const out = await remote.claimCall(db, caller, claim, perm.canWrite, Date.now(), { waits: claimWaits, signal: gone.signal, blocked: () => perm.errors.size > 0 });
         // Calls passed over because GitHub could not confirm the permission: the helper logs why it gets nothing.
         if (!out.lease && out.reason === undefined && perm.errors.size) out.reason = [...perm.errors.values()][0];

@@ -32,9 +32,11 @@ export class Ticket {
   #gone = false;
   /** Called once when the last request leaves before the claim is answered. */
   onGone: (() => void) | null = null;
-  constructor(signal: AbortSignal) { this.attach(signal); }
+  constructor(signal: AbortSignal) {
+    if (signal.aborted) this.#gone = true;
+    else this.attach(signal);
+  }
   get gone(): boolean { return this.#gone; }
-  readonly live = (): boolean => !this.#gone;
   /** Another request with the same request id waits for this claim's reply. */
   attach(signal: AbortSignal): void {
     if (this.#gone || signal.aborted) return;
@@ -151,7 +153,8 @@ export class ClaimWaits {
         w.seq = seq;
         if (full) w.nextTry = now + this.#retryMs;
         try {
-          const r = await w.attempt(now, { quick: !full, live: w.ticket.live });
+          // A claim answered meanwhile (its client left, or shutdown answered it) must not lease the call it found.
+          const r = await w.attempt(now, { quick: !full, live: () => !w.ticket.gone && !w.done && !this.#closed });
           if (w.done) continue;
           if (r) this.#settle(w, r);
           else if (w.blocked()) this.#settle(w, w.empty(now, false));
