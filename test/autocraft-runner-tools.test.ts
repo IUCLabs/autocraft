@@ -69,14 +69,13 @@ async function cli(url: string | null, args: string[]) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-test("tools lists names with the first description line and marks runner-command names", async () => {
+test("call alone lists tool names with the first description line", async () => {
   const f = await fake();
   try {
-    const r = await cli(f.url, ["tools"]);
+    const r = await cli(f.url, ["call"]);
     assert.equal(r.code, 0);
     assert.match(r.out, /^get_item +One item\.$/m);
     assert.doesNotMatch(r.out, /More text/);
-    assert.match(r.out, /^status .*autocraft call status/m);
     assert.deepEqual(f.seen[0], { method: "initialize", auth: "Bearer acrun_test", accept: "application/json, text/event-stream", params: f.seen[0].params });
   } finally { f.close(); }
 });
@@ -84,10 +83,10 @@ test("tools lists names with the first description line and marks runner-command
 test("a tool call types its arguments from the schema, takes the one required string positionally, and --json prints the raw result", async () => {
   const f = await fake();
   try {
-    const r = await cli(f.url, ["list-inbox", "--limit", "5", "--kind=pr", "--mine", "--repos", "a/b,c/d", "--repos", "e/f", "--filter", '{"x":1}']);
+    const r = await cli(f.url, ["call", "list-inbox", "--limit", "5", "--kind=pr", "--mine", "--repos", "a/b,c/d", "--repos", "e/f", "--filter", '{"x":1}']);
     assert.equal(r.code, 0, r.err);
     assert.equal(r.out.trim(), `called list_inbox ${JSON.stringify({ limit: 5, kind: "pr", mine: true, repos: ["a/b", "c/d", "e/f"], filter: { x: 1 } })}`);
-    const p = await cli(f.url, ["get-item", "designcraft#12", "--json"]);
+    const p = await cli(f.url, ["call", "get_item", "designcraft#12", "--json"]);
     assert.equal(p.code, 0, p.err);
     assert.deepEqual(JSON.parse(p.out), { content: [{ type: "text", text: 'called get_item {"item":"designcraft#12"}' }] });
     const s = await cli(f.url, ["call", "status"]);
@@ -98,7 +97,7 @@ test("a tool call types its arguments from the schema, takes the one required st
 test("an event-stream reply is read", async () => {
   const f = await fake({ sse: true });
   try {
-    const r = await cli(f.url, ["guide"]);
+    const r = await cli(f.url, ["call", "--guide"]);
     assert.equal(r.code, 0, r.err);
     assert.equal(r.out.trim(), "Read the inbox first.");
   } finally { f.close(); }
@@ -107,7 +106,7 @@ test("an event-stream reply is read", async () => {
 test("a 403 says the runner has no agent access", async () => {
   const f = await fake({ status: 403 });
   try {
-    const r = await cli(f.url, ["tools"]);
+    const r = await cli(f.url, ["call"]);
     assert.equal(r.code, 1);
     assert.match(r.err, /no agent access/);
   } finally { f.close(); }
@@ -116,16 +115,16 @@ test("a 403 says the runner has no agent access", async () => {
 test("wrong arguments exit 2 and name the valid options", async () => {
   const f = await fake();
   try {
-    for (const args of [["list-inbox", "--nope"], ["list-inbox", "--limit", "x"], ["list-inbox", "--limit", "99"], ["list-inbox", "--kind", "bug"], ["get-item"], ["no-such-tool"]]) {
+    for (const args of [["call", "list-inbox", "--nope"], ["call", "list-inbox", "--limit", "x"], ["call", "list-inbox", "--limit", "99"], ["call", "list-inbox", "--kind", "bug"], ["call", "get-item"], ["call", "no-such-tool"], ["no-such-command"]]) {
       const r = await cli(f.url, args);
       assert.equal(r.code, 2, `${args.join(" ")}: ${r.err}`);
     }
-    assert.match((await cli(f.url, ["list-inbox", "--nope"])).err, /valid: --limit, --kind, --mine, --repos, --filter/);
+    assert.match((await cli(f.url, ["call", "list-inbox", "--nope"])).err, /valid: --limit, --kind, --mine, --repos, --filter/);
   } finally { f.close(); }
 });
 
 test("without a login the command says to log in", async () => {
-  const r = await cli(null, ["tools"]);
+  const r = await cli(null, ["call"]);
   assert.equal(r.code, 1);
   assert.match(r.err, /autocraft login/);
 });

@@ -699,7 +699,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && (caller.role === "operator" || (caller.role === "maintainer" && maintainerWritesOn(db))),
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
       // The task tools are offered while one of the login's Task Runners reports in; they never lease.
-      ...(inferenceMode(db) === "user-local" && hasFreshRunner(db, caller.login) && { run: { canWrite: claimPermission(caller.login, caller.role).canWrite } }),
+      ...(inferenceMode(db) === "user-local" && { userLocal: true, ...(hasFreshRunner(db, caller.login) && { run: { canWrite: claimPermission(caller.login, caller.role).canWrite } }) }),
     }, m);
     if (mcpWrites(m)) live.poke();
     // A notification or a response from the client: accepted, nothing to say.

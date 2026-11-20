@@ -124,7 +124,7 @@ function readCall(db: DatabaseSync, id: number): (PickCall & { state: string; re
 const targetOf = (refs: ItemRef[]): string | null => (refs.length ? `${refs[0]!.repo}#${refs[0]!.number}` : null);
 
 /** Picks a queued call for the user's runners (compare and set: only a call no other user's pick counts for); audited. */
-export async function pickCall(db: DatabaseSync, user: Picker, id: number, nowMs: number = Date.now()): Promise<void> {
+export async function pickCall(db: DatabaseSync, user: Picker, id: number, nowMs: number = Date.now(), via?: string): Promise<void> {
   const c = readCall(db, id);
   if (!c) throw new HttpError(404, "no such model call");
   if (c.state !== "queued") throw new HttpError(409, "the call is no longer queued");
@@ -152,11 +152,11 @@ export async function pickCall(db: DatabaseSync, user: Picker, id: number, nowMs
   }
   if (changed !== 1) throw new HttpError(409, "another user picked it, or it is no longer queued");
   dropQueueCache(db);
-  audit(db, user.login, "remote-pick", targetOf(c.refs), { id, promptId: c.promptId, ...(cap !== null && { until: new Date(nowMs + cap).toISOString() }) });
+  audit(db, user.login, "remote-pick", targetOf(c.refs), { id, promptId: c.promptId, ...(cap !== null && { until: new Date(nowMs + cap).toISOString() }), ...(via && { via }) });
 }
 
 /** Ends a pick: the user's own, or any for an operator; audited. */
-export function unpickCall(db: DatabaseSync, user: Pick<Picker, "login" | "role">, id: number): void {
+export function unpickCall(db: DatabaseSync, user: Pick<Picker, "login" | "role">, id: number, via?: string): void {
   if (user.role !== "maintainer" && user.role !== "operator") throw new HttpError(403, "only maintainers and operators pick calls");
   const c = readCall(db, id);
   if (!c) throw new HttpError(404, "no such model call");
@@ -164,5 +164,5 @@ export function unpickCall(db: DatabaseSync, user: Pick<Picker, "login" | "role"
   const own = c.pickedBy === user.login.toLowerCase();
   if (!own && user.role !== "operator") throw new HttpError(403, "only operators end another user's pick");
   if (!clearPick(db, id, c.pickedBy)) throw new HttpError(409, "the call has no pick");
-  audit(db, user.login, "remote-unpick", targetOf(c.refs), { id, promptId: c.promptId, ...(!own && { picker: c.pickedBy }) });
+  audit(db, user.login, "remote-unpick", targetOf(c.refs), { id, promptId: c.promptId, ...(!own && { picker: c.pickedBy }), ...(via && { via }) });
 }

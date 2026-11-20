@@ -14,19 +14,18 @@
 //   autocraft harness claude [--keychain]  a `claude setup-token` token on stdin, or (macOS) Claude Code's own login from the Keychain
 //   autocraft harness claude --config-dir [<dir>]  the login of a Claude config directory, read at each call (Linux)
 //   autocraft harness codex [--device-auth]  logs Codex in to the runner's own CODEX_HOME
+//   autocraft doctor                  checks platform, sandbox, harness, login and server
+//   autocraft update                  replaces this file with the server's current runner
+//   autocraft service install | uninstall | status  runs `work` as a systemd user unit or launchd agent
+//   autocraft runner status | logs | pause | resume | reserve  readiness and plan usage, the service log, pausing, the usage reserve
+//   autocraft inbox | queue | calls | repos | fixups ...  the server's tools as commands (MCP over HTTP); `call <tool>` reaches any tool
+//   autocraft work [--parallel N]     claims, runs and submits in a loop
 //   autocraft claim                   claims one call; prints its lease id
 //   autocraft run [--detach] [<lease>]  runs a claimed lease (claims one when none is given)
 //   autocraft wait <lease>            waits for a detached run (at most 9 minutes)
-//   autocraft work [--parallel N]     claims, runs and submits in a loop
-//   autocraft doctor                  checks platform, sandbox, harness, login and server
 //   autocraft try <bundle.json>       runs a bundle from a file without a server (testing)
 //   autocraft mcp <server> <lease>    stdio-to-HTTP proxy for one of the lease's MCP servers
 //   autocraft tool <server> <tool> [<json>] [<lease>]  one tool call without MCP; prints the result
-//   autocraft status                  whether the runner takes calls now, with the plan usage behind it
-//   autocraft pause-until-reset       takes no call until the plan window resets (or `resume`)
-//   autocraft resume                  ends a pause, and a hold after the provider refused a run
-//   autocraft config reserve <5h> <weekly>  raises the usage reserve the server sets (percent kept free)
-//   autocraft tools | guide | help <tool> | <tool> [args] | call <tool> [args]  the server's agent tools (MCP over HTTP)
 //   autocraft migrate                 moves an autocraft-task 1.2.0 install over (directories, credential, binary, service)
 
 import { spawn, spawnSync } from "node:child_process";
@@ -42,7 +41,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.3.2";
+export const HELPER_VERSION = "1.3.3";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
@@ -2082,7 +2081,7 @@ export function quotaReadiness({ pause, park, verdict, readingAt, now = Date.now
   if (pause && pause.until !== null && now >= pause.until) { dropPause = true; pause = null; }
   if (park && (park.until !== null ? now >= park.until : verdict.ok && readingAt !== null && readingAt > park.at)) { dropPark = true; park = null; }
   const drops = { ...(dropPause && { dropPause }), ...(dropPark && { dropPark }) };
-  if (pause) return { readiness: "paused", until: pause.until, reason: pause.until === null ? "by the user, until `autocraft resume`" : "by the user, until the plan window resets", ...drops };
+  if (pause) return { readiness: "paused", until: pause.until, reason: pause.until === null ? "by the user, until `autocraft runner resume`" : "by the user, until the plan window resets", ...drops };
   if (park) return { readiness: "quota-held", until: park.until, reason: park.reason, ...drops };
   if (!verdict.ok) return { readiness: "quota-held", until: verdict.until, reason: verdict.reason, ...drops };
   return { readiness: "ready", until: null, ...drops };
@@ -3676,7 +3675,7 @@ async function cmdStatus() {
   if (u) console.log(`usage: ${win("5-hour", u.fiveHour)}; ${win("weekly", u.weekly)} (read ${clock(Date.parse(u.at))})`);
   const server = s.serverReserve;
   console.log(`reserve kept free: 5-hour ${st.reserve.fiveHour}%, weekly ${st.reserve.weekly}% (server ${server ? `${server.fiveHour}%/${server.weekly}%` : "not heard yet, default 20%/20%"}${cfg.reserve ? `, local ${cfg.reserve.fiveHour}%/${cfg.reserve.weekly}%` : ""})`);
-  if (c.pause) console.log(`paused ${c.pause.until === null ? "until `autocraft resume`" : `until ${clock(c.pause.until)}`}`);
+  if (c.pause) console.log(`paused ${c.pause.until === null ? "until `autocraft runner resume`" : `until ${clock(c.pause.until)}`}`);
   if (c.park) console.log(`held after a refusal ${c.park.until === null ? "until a usage reading shows headroom" : `until ${clock(c.park.until)}`}: ${c.park.reason}`);
   console.log(`status file: ${helperStatusFile()}`);
   return st.readiness === "ready" ? 0 : 3;
@@ -3691,7 +3690,7 @@ async function cmdPause() {
   const until = st.readiness === "quota-held" && st.until !== null ? st.until : st.readiness === "paused" ? (readControl().pause?.until ?? null) : fiveHour ?? null;
   writeControl({ ...readControl(), pause: { until, at: Date.now() } });
   await checkReady(cfg);
-  console.log(until === null ? "paused until `autocraft resume` (no reset time is known)" : `paused until ${clock(until)}, or \`autocraft resume\``);
+  console.log(until === null ? "paused until `autocraft runner resume` (no reset time is known)" : `paused until ${clock(until)}, or \`autocraft runner resume\``);
 }
 
 /** Ends a pause, a hold after a provider's refusal, and a `work` process's hold; the usage still decides. */
@@ -3705,11 +3704,11 @@ async function cmdResume() {
 
 /** @param {string[]} argv */
 async function cmdConfig(argv) {
-  if (argv[0] !== "reserve") throw new Error("usage: autocraft config reserve <5h> <weekly> | off");
+  if (argv[0] !== "reserve") throw new UsageError("usage: autocraft runner reserve <5h> <weekly> | off");
   const { reserve: _r, ...rest } = loadConfig();
   if (argv[1] === "off") { saveConfig(rest); console.log("the server's reserve applies"); return; }
   const n = argv.slice(1, 3).map((v) => (/^\d{1,3}$/.test(v ?? "") ? Number(v) : NaN));
-  if (n.length !== 2 || !n.every((v) => v >= 0 && v <= 100)) throw new Error("usage: autocraft config reserve <5h> <weekly>  (percent of each window kept free, 0 to 100), or off");
+  if (n.length !== 2 || !n.every((v) => v >= 0 && v <= 100)) throw new UsageError("usage: autocraft runner reserve <5h> <weekly>  (percent of each window kept free, 0 to 100), or off");
   const local = { fiveHour: /** @type {number} */ (n[0]), weekly: /** @type {number} */ (n[1]) };
   saveConfig({ ...rest, reserve: local });
   const server = readHelperStatus().serverReserve;
@@ -4316,14 +4315,51 @@ function migrateAtStart() {
 }
 
 // ---------------------------------------------------------------------------
-// Agent commands: the server's MCP tools (/mcp, Streamable HTTP, JSON-RPC) as command-line commands, with the runner's own
-// credential. Arguments come from each tool's inputSchema, so a new server tool needs no change here.
+// Server commands: the server's MCP tools (/mcp, Streamable HTTP, JSON-RPC) behind command groups (inbox, queue, calls, ...),
+// with the runner's own credential. CLI_COMMANDS maps each command to its tool; `call` reaches any tool by its name.
+// Arguments are typed by the tool's inputSchema.
 
 /** A wrong command line: exit code 2. */
 class UsageError extends Error {}
 
-/** Runner commands: a tool of the same name is reached with `autocraft call <tool>`. */
-const RUNNER_COMMANDS = new Set(["login", "harness", "claim", "run", "wait", "work", "service", "doctor", "try", "mcp", "tool", "status", "pause-until-reset", "resume", "config", "update", "migrate", "version", "help", "tools", "guide", "call"]);
+/** @param {Set<string>} has */
+const answerWhy = (has) => (has.has("set_weight")
+  ? "this Task Runner cannot approve merges: tick \"Can answer decisions and approve merges\" for it on the Connect page (the server must offer answering)"
+  : "only operators steer the merge queue");
+const LOCAL_WHY = "model calls run on the server's accounts here: the server is not in the user-local inference mode";
+/** @param {Set<string>} has */
+const pickWhy = (has) => (has.has("list_model_calls") ? "only maintainers and operators pick model calls" : LOCAL_WHY);
+
+/**
+ * A server command. `args`: the tool arguments its positional words fill, in order; `flags`: CLI flag → tool argument;
+ * `why`: one line on why the credential is not offered the tool. Options not named here pass through as `--<argument>`.
+ * @typedef {{ path: string[], tool: string, usage: string, summary: string, args?: string[], flags?: Record<string, string>, why?: (has: Set<string>) => string }} CliCommand
+ */
+/** @type {readonly CliCommand[]} */
+export const CLI_COMMANDS = [
+  { path: ["inbox"], tool: "list_inbox", usage: "[--repo R] [--kind K] [--limit N] [--cursor C]", summary: "open decisions, oldest first" },
+  { path: ["inbox", "show"], tool: "get_inbox_item", args: ["id"], usage: "<id>", summary: "one decision: question, options, summary, item text, feedback" },
+  { path: ["inbox", "feedback"], tool: "send_feedback", args: ["id"], flags: { pick: "option", note: "text" }, usage: "<id> --pick <key> --note \"...\"", summary: "your pick of one option and/or a note; an operator answers" },
+  { path: ["queue"], tool: "list_merge_queue", usage: "[--repo R] [--limit N] [--cursor C]", summary: "each PR's state, weight and what it waits for" },
+  { path: ["queue", "add"], tool: "queue_pr", args: ["item"], usage: "<pr> [--weight N]", summary: "approve a PR's merge ahead and fast-track it", why: answerWhy },
+  { path: ["queue", "weight"], tool: "set_weight", args: ["item", "weight"], usage: "<item> <N>", summary: "set an item's fast-track weight; --remove takes it off", why: () => "only operators steer the merge queue" },
+  { path: ["queue", "remove"], tool: "cancel_queued", args: ["item"], usage: "<pr>", summary: "withdraw a PR's approved merge", why: answerWhy },
+  { path: ["calls"], tool: "list_model_calls", usage: "", summary: "model calls waiting for a Task Runner, and why each waits", why: () => LOCAL_WHY },
+  { path: ["calls", "pick"], tool: "pick_model_call", args: ["id"], usage: "<id>", summary: "reserve a call for your own Task Runners", why: pickWhy },
+  { path: ["calls", "unpick"], tool: "unpick_model_call", args: ["id"], usage: "<id>", summary: "end a pick", why: pickWhy },
+  { path: ["calls", "mine"], tool: "my_work", usage: "", summary: "today's calls on your machine, and your Task Runners", why: () => "needs one of your Task Runners reporting in, while the server is in the user-local inference mode" },
+  { path: ["repos"], tool: "list_repos", usage: "", summary: "tracked repositories with their open decisions and fix-ups" },
+  { path: ["fixups"], tool: "list_fixups", usage: "[--repo R] [--limit N]", summary: "PRs whose review fixes the pipeline could not apply" },
+];
+
+/**
+ * Server tools without a command: the task tools tell an MCP agent to run this runner's own commands, and answering is
+ * the operator's call on the dashboard until it opens to agents. `autocraft call <tool>` still reaches each one.
+ */
+export const MCP_ONLY = ["next_task", "task_status", "answer_decision", "undo_answer"];
+
+const SERVER_GROUPS = new Set(CLI_COMMANDS.map((c) => c.path[0]));
+
 const MCP_PROTOCOL = "2025-06-18";
 /** Tool names compare with dashes and underscores alike. @param {string} s */
 const toolKey = (s) => s.replace(/-/g, "_");
@@ -4415,27 +4451,22 @@ const firstLine = (s) => (String(s ?? "").split("\n").find((l) => l.trim()) ?? "
 /** The tool named `name` (dashes or underscores). @param {any[]} tools @param {string} name */
 function findTool(tools, name) {
   const t = tools.find((x) => toolKey(x.name) === toolKey(name));
-  if (!t) throw new UsageError(`no tool ${name}: \`autocraft tools\` lists them (a tool you cannot use is not listed)`);
+  if (!t) throw new UsageError(`no tool ${name}: \`autocraft call\` lists them (a tool you cannot use is not listed)`);
   return t;
 }
 
-/** `tools`: every tool, one line each. */
-async function cmdTools() {
-  const { client } = await agentSession();
-  const tools = await client.tools();
-  const w = Math.max(0, ...tools.map((t) => t.name.length));
-  for (const t of tools) {
-    const shadowed = RUNNER_COMMANDS.has(t.name) || RUNNER_COMMANDS.has(t.name.replace(/_/g, "-"));
-    console.log(`${t.name.padEnd(w)}  ${firstLine(t.description).slice(0, 110)}${shadowed ? "  [runner command of the same name: use `autocraft call " + t.name + "`]" : ""}`);
-  }
-  return 0;
-}
+/** The command of a tool, as a command line without arguments. @param {string} name */
+const commandOf = (name) => {
+  const c = CLI_COMMANDS.find((x) => x.tool === name);
+  return c ? `autocraft ${[...c.path, c.usage].filter(Boolean).join(" ")}` : null;
+};
 
-/** `help <tool>`: the description and the arguments of its schema. @param {any} tool */
+/** `call <tool> --help`: the description and the arguments of its schema. @param {any} tool */
 function toolHelp(tool) {
   const props = tool.inputSchema?.properties ?? {};
   const required = new Set(tool.inputSchema?.required ?? []);
-  const lines = [`autocraft ${tool.name.replace(/_/g, "-")} [args]`, "", String(tool.description ?? "").trim(), ""];
+  const cmd = commandOf(tool.name);
+  const lines = [`autocraft call ${tool.name} [args]${cmd ? `  (command: ${cmd})` : ""}`, "", String(tool.description ?? "").trim(), ""];
   const names = Object.keys(props);
   lines.push(names.length ? "Arguments:" : "No arguments.");
   for (const k of names) {
@@ -4449,7 +4480,7 @@ function toolHelp(tool) {
     lines.push(`  --${k.replace(/_/g, "-")}${t === "boolean" ? "/--no-" + k.replace(/_/g, "-") : ""}  (${bits.join("; ")})${required.has(k) ? " required" : ""}${p.description ? ": " + String(p.description).replace(/\s+/g, " ").trim() : ""}`);
   }
   const pos = positionalOf(tool.inputSchema);
-  if (pos) lines.push("", `${pos} may be given without its flag: autocraft ${tool.name.replace(/_/g, "-")} <${pos}>`);
+  if (pos) lines.push("", `${pos} may be given without its flag: autocraft call ${tool.name} <${pos}>`);
   lines.push("", "Add --json to print the raw result.");
   return lines.join("\n");
 }
@@ -4461,14 +4492,22 @@ function positionalOf(schema) {
 }
 
 /**
- * Tool arguments from a command line, typed by the tool's schema.
- * @param {any} tool @param {string[]} argv
+ * Tool arguments from a command line, typed by the tool's schema. `cmd` is the server command it runs for: its positional
+ * words fill `cmd.args` in order and its flags name tool arguments; without it the one required string argument may be
+ * positional (`call`).
+ * @param {any} tool @param {string[]} argv @param {CliCommand} [cmd]
  * @returns {{ args: Record<string, unknown>, json: boolean }}
  */
-export function parseToolArgs(tool, argv) {
+export function parseToolArgs(tool, argv, cmd) {
   const props = tool.inputSchema?.properties ?? {};
+  const flags = cmd?.flags ?? {};
+  const shownAs = new Map(Object.entries(flags).map(([f, k]) => [k, f]));
   const byFlag = new Map(Object.keys(props).map((k) => [toolKey(k), k]));
-  const valid = () => Object.keys(props).map((k) => `--${k.replace(/_/g, "-")}`).join(", ") || "(none)";
+  for (const [f, k] of Object.entries(flags)) byFlag.set(toolKey(f), k);
+  const name = cmd ? cmd.path.join(" ") : tool.name;
+  const flagOf = (/** @type {string} */ k) => `--${(shownAs.get(k) ?? k).replace(/_/g, "-")}`;
+  const valid = () => Object.keys(props).filter((k) => !cmd?.args?.includes(k)).map(flagOf).join(", ") || "(none)";
+  const usage = cmd ? `usage: autocraft ${[...cmd.path, cmd.usage].filter(Boolean).join(" ")}` : null;
   /** @type {Record<string, unknown>} */
   const args = {};
   let json = false;
@@ -4477,7 +4516,7 @@ export function parseToolArgs(tool, argv) {
   /** @param {string} key @param {string} raw */
   const typed = (key, raw) => {
     const p = props[key], t = typeOf(p);
-    const bad = (/** @type {string} */ why) => new UsageError(`--${key.replace(/_/g, "-")}: ${why}`);
+    const bad = (/** @type {string} */ why) => new UsageError(`${cmd?.args?.includes(key) ? `<${key}>` : flagOf(key)}: ${why}`);
     /** @param {any} spec @param {string} v */
     const one = (spec, v) => {
       const st = typeOf(spec);
@@ -4509,16 +4548,16 @@ export function parseToolArgs(tool, argv) {
     const a = argv[i];
     if (a === "--") { positional.push(...argv.slice(i + 1)); break; }
     if (a === "--json") { json = true; continue; }
-    if (!a.startsWith("--") || a === "--") { positional.push(a); continue; }
+    if (!a.startsWith("--")) { positional.push(a); continue; }
     const eq = a.indexOf("=");
-    let name = a.slice(2, eq < 0 ? undefined : eq);
+    let flag = a.slice(2, eq < 0 ? undefined : eq);
     let inline = eq < 0 ? undefined : a.slice(eq + 1);
-    let key = byFlag.get(toolKey(name));
-    if (!key && name.startsWith("no-") && inline === undefined) {
-      const k = byFlag.get(toolKey(name.slice(3)));
+    let key = byFlag.get(toolKey(flag));
+    if (!key && flag.startsWith("no-") && inline === undefined) {
+      const k = byFlag.get(toolKey(flag.slice(3)));
       if (k && typeOf(props[k]) === "boolean") { args[k] = false; continue; }
     }
-    if (!key) throw new UsageError(`unknown option ${a.slice(0, eq < 0 ? undefined : eq)} for ${tool.name}; valid: ${valid()}`);
+    if (!key) throw new UsageError(`unknown option ${a.slice(0, eq < 0 ? undefined : eq)} for ${name}; valid: ${valid()}`);
     const t = typeOf(props[key]);
     if (t === "boolean") {
       if (inline === undefined && /^(true|false)$/.test(argv[i + 1] ?? "")) inline = argv[++i];
@@ -4526,30 +4565,33 @@ export function parseToolArgs(tool, argv) {
       continue;
     }
     if (inline === undefined) {
-      if (i + 1 >= argv.length) throw new UsageError(`--${name} needs a value`);
+      if (i + 1 >= argv.length) throw new UsageError(`--${flag} needs a value`);
       inline = argv[++i];
     }
     const v = typed(key, inline);
     args[key] = t === "array" ? [...(Array.isArray(args[key]) ? /** @type {unknown[]} */ (args[key]) : []), ...v] : v;
   }
-  if (positional.length) {
+  if (cmd) {
+    const names = cmd.args ?? [];
+    if (positional.length > names.length) throw new UsageError(`${name} takes ${names.length ? names.map((k) => `<${k}>`).join(" ") : "no argument"}; quote a value with spaces (${usage})`);
+    positional.forEach((v, i) => {
+      const k = /** @type {string} */ (names[i]);
+      if (args[k] !== undefined) throw new UsageError(`${name}: <${k}> is given twice`);
+      args[k] = typed(k, v);
+    });
+  } else if (positional.length) {
     const pos = positionalOf(tool.inputSchema);
     if (!pos || args[pos] !== undefined) throw new UsageError(`${tool.name} takes no positional argument${pos ? ` besides --${pos.replace(/_/g, "-")}` : ""}; valid options: ${valid()}`);
     if (positional.length > 1) throw new UsageError(`${tool.name} takes one positional argument (${pos}); quote a value with spaces`);
     args[pos] = positional[0];
   }
   const missing = (tool.inputSchema?.required ?? []).filter((/** @type {string} */ k) => args[k] === undefined);
-  if (missing.length) throw new UsageError(`${tool.name} needs ${missing.map((/** @type {string} */ k) => `--${k.replace(/_/g, "-")}`).join(", ")}; see \`autocraft help ${tool.name}\``);
+  if (missing.length) throw new UsageError(usage ?? `${tool.name} needs ${missing.map((/** @type {string} */ k) => `--${k.replace(/_/g, "-")}`).join(", ")}; see \`autocraft call ${tool.name} --help\``);
   return { args, json };
 }
 
-/** `<tool> [args]` and `call <tool> [args]`. @param {string} name @param {string[]} argv */
-async function cmdAgentTool(name, argv) {
-  const { client } = await agentSession();
-  const tool = findTool(await client.tools(), name);
-  if (argv.includes("--help")) { console.log(toolHelp(tool)); return 0; }
-  const { args, json } = parseToolArgs(tool, argv);
-  const r = await client.call(tool.name, args);
+/** Prints a tool's result; the exit code. @param {Awaited<ReturnType<ReturnType<typeof mcpClient>["call"]>>} r @param {boolean} json */
+function printResult(r, json) {
   if (json) console.log(JSON.stringify(r, null, 2));
   else {
     const text = (r?.content ?? []).map((c) => c.text ?? "").join("\n") || (r?.structuredContent !== undefined ? JSON.stringify(r.structuredContent, null, 2) : "");
@@ -4558,65 +4600,178 @@ async function cmdAgentTool(name, argv) {
   return r?.isError ? 1 : 0;
 }
 
-/** `help <tool>`; `help` alone prints the usage. @param {string[]} argv */
-async function cmdHelp(argv) {
-  if (!argv[0]) { console.log(USAGE); return 0; }
+/** `inbox`, `queue`, `calls`, `repos`, `fixups` and their subcommands. @param {string} group @param {string[]} argv */
+async function cmdServer(group, argv) {
+  if (argv.includes("--help") || argv.includes("-h")) { console.log(groupHelp(group)); return 0; }
+  const sub = CLI_COMMANDS.find((c) => c.path[0] === group && c.path[1] !== undefined && c.path[1] === argv[0]);
+  const cmd = sub ?? /** @type {CliCommand} */ (CLI_COMMANDS.find((c) => c.path.length === 1 && c.path[0] === group));
+  if (!sub && argv[0] !== undefined && !argv[0].startsWith("-") && CLI_COMMANDS.some((c) => c.path[0] === group && c.path.length > 1)) {
+    throw new UsageError(`no command ${group} ${argv[0]}: \`autocraft ${group} --help\` lists them`);
+  }
   const { client } = await agentSession();
-  console.log(toolHelp(findTool(await client.tools(), argv[0])));
-  return 0;
+  const tools = await client.tools();
+  const tool = tools.find((t) => t.name === cmd.tool);
+  if (!tool) {
+    const has = new Set(tools.map((t) => String(t.name)));
+    console.error(`autocraft ${cmd.path.join(" ")}: ${cmd.why ? cmd.why(has) : `the server does not offer ${cmd.tool} to this credential`}`);
+    return 1;
+  }
+  const { args, json } = parseToolArgs(tool, sub ? argv.slice(1) : argv, cmd);
+  return printResult(await client.call(tool.name, args), json);
 }
 
-/** `guide`: the server's instructions for an agent. */
-async function cmdGuide() {
-  const { init } = await agentSession();
-  console.log(init.instructions ?? "the server gives no instructions");
-  return 0;
+/** `call`: lists the tools; `call --guide`: the server's instructions; `call <tool> [args]`: calls it. @param {string[]} argv */
+async function cmdCall(argv) {
+  const { client, init } = await agentSession();
+  if (argv[0] === "--guide") { console.log(init.instructions ?? "the server gives no instructions"); return 0; }
+  const tools = await client.tools();
+  if (argv[0] === undefined) {
+    const w = Math.max(0, ...tools.map((t) => t.name.length));
+    for (const t of tools) console.log(`${t.name.padEnd(w)}  ${firstLine(t.description).slice(0, 110)}`);
+    return 0;
+  }
+  if (argv[0].startsWith("-")) throw new UsageError("usage: autocraft call [<tool> [args] | --guide]");
+  const tool = findTool(tools, argv[0]);
+  if (argv.includes("--help")) { console.log(toolHelp(tool)); return 0; }
+  const { args, json } = parseToolArgs(tool, argv.slice(1));
+  return printResult(await client.call(tool.name, args), json);
 }
 
-const USAGE = `autocraft ${HELPER_VERSION}: the AutoCraft Task Runner runs AutoCraft model calls under your own harness subscription.
+/** `runner status | logs | pause | resume | reserve`. @param {string[]} argv */
+async function cmdRunner(argv) {
+  const [action, ...rest] = argv;
+  switch (action) {
+    case "status": return await cmdStatus();
+    case "logs": return cmdLogs(rest);
+    case "pause": await cmdPause(); return 0;
+    case "resume": await cmdResume(); return 0;
+    case "reserve": await cmdConfig(["reserve", ...rest]); return 0;
+    case undefined: case "--help": case "-h": console.log(groupHelp("runner")); return 0;
+    default: throw new UsageError(`no command runner ${action}: \`autocraft runner --help\` lists them`);
+  }
+}
 
-  login <server-url> [--label <name>] [--no-wait]
-                              make a credential and wait for its approval on the dashboard (it prints the link);
-                              --no-wait returns at once, \`login --wait\` then waits (at most 9 minutes)
-  login <server-url> [--answer] [--no-agent]
-                              --answer also asks to answer decisions and approve merges; --no-agent asks for no agent access
-  login <server-url> --stdin  store a Task Runner credential read from stdin
-  harness claude [--keychain] store a \`claude setup-token\` token (read from stdin); on macOS
-                              --keychain uses your Claude Code login from the Keychain instead
-  harness claude --config-dir [<dir>]  use the login of a Claude config directory (default $CLAUDE_CONFIG_DIR or ~/.claude; Linux)
-  harness codex [--device-auth]  log Codex in to the runner's own CODEX_HOME (not your ~/.codex)
-  claim                       claim one call; prints its lease id
-  run [--detach] [<lease>]    run a claimed lease, or claim and run one
-  wait <lease>                wait for a detached run (returns after at most 9 minutes)
-  work [--parallel N]         claim, run and submit in a loop
-  service install [--parallel N] | uninstall | status
-                              run \`work\` as a systemd user unit (Linux) or launchd agent (macOS) that restarts whenever it ends
-  doctor                      check platform, sandbox (on macOS with a canary), harness, login and server
-  try <bundle.json> [--slot N]  run a bundle from a file without a server and print the reply (testing)
-  mcp <server-name> <lease>   stdio-to-HTTP proxy for one of the lease's MCP servers
-  tool <server-name> <tool> [<json>] [<lease>]
-                              one tool call without MCP; prints the result
-  update                      replace this file with the current runner from the server you logged in to
-  migrate                     move an autocraft-task install over: directories, credential, binary and service
-  status                      whether the runner claims now, with the plan usage, reserve and pause behind it
-  pause-until-reset           claim nothing until the plan window resets, even when usage recovers
-  resume                      end a pause, and a hold after the provider refused a run for its limit
-  config reserve <5h> <weekly>  keep more of each plan window free than the server's reserve (percent); \`off\` drops it
+/** `runner logs [-n N] [-f]`: the service's log, from the journal (Linux) or its log file (macOS). @param {string[]} argv */
+function cmdLogs(argv) {
+  let lines = 50, follow = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "-f" || a === "--follow") follow = true;
+    else if ((a === "-n" || a === "--lines") && /^\d{1,6}$/.test(argv[i + 1] ?? "")) lines = Number(argv[++i]);
+    else throw new UsageError("usage: autocraft runner logs [-n N] [-f]");
+  }
+  const tailArgs = ["-n", String(lines), ...(follow ? ["-f"] : [])];
+  /** @type {[string, string[]]} */
+  let run;
+  if (process.platform === "linux") run = ["journalctl", ["--user", "-u", SERVICE_NAME, "--no-pager", ...tailArgs]];
+  else if (process.platform === "darwin") {
+    const log = join(cacheDir(), "service.log");
+    if (!existsSync(log)) throw new Error(`no service log at ${log}: the runner logs there once \`autocraft service install\` runs it`);
+    run = ["tail", [...tailArgs, log]];
+  } else throw new Error("runner logs reads the service's log on Linux and macOS");
+  const r = spawnSync(run[0], run[1], { stdio: "inherit" });
+  if (r.error) throw new Error(`${run[0]}: ${msg(r.error)}`);
+  return r.status ?? 1;
+}
 
-Agent commands (the server's tools for you, with this machine's login; needs Agent access on the dashboard's Connect page):
-  tools                       list the tools
-  guide                       the server's instructions: how to use the tools
-  help <tool>                 a tool's description and arguments
-  <tool> [args]               call a tool: --key value, --flag / --no-flag, repeated or comma-separated lists, JSON objects;
-                              a tool with one required text argument takes it bare, e.g. \`autocraft get-inbox-item <id>\`
-  call <tool> [args]          the same, for a tool named like a runner command above (status, run, ...)
-  Add --json for the raw result. Exit 0 done, 1 the tool refused or failed, 2 wrong command line.
+/** @typedef {[string, string]} HelpLine  command, what it does */
 
-The runner claims only while every plan window keeps more than the reserve free (set per user on the
+/** @type {HelpLine[]} */
+const SETUP_HELP = [
+  ["autocraft login <url> [--label X] [--answer] [--no-agent] [--no-wait]", "make a credential and wait for its approval on the dashboard"],
+  ["autocraft login --wait", "wait for a login started with --no-wait (at most 9 minutes)"],
+  ["autocraft login <url> --stdin", "store a Task Runner credential read from stdin"],
+  ["autocraft harness claude [--keychain]", "store a `claude setup-token` token from stdin; --keychain: Claude Code's login (macOS)"],
+  ["autocraft harness claude --config-dir [<dir>]", "use a Claude config directory's login (default ~/.claude; Linux)"],
+  ["autocraft harness codex [--device-auth]", "log Codex in to the runner's own CODEX_HOME (not your ~/.codex)"],
+  ["autocraft doctor", "check platform, sandbox, harness, login and server"],
+  ["autocraft update", "replace this file with the server's current runner"],
+  ["autocraft service install [--parallel N] | uninstall | status", "run `work` as a systemd user unit (Linux) or launchd agent (macOS)"],
+];
+
+/** @type {HelpLine[]} */
+const RUNNER_HELP = [
+  ["autocraft runner status", "whether the runner claims now, with plan usage, reserve and pause"],
+  ["autocraft runner logs [-n N] [-f]", "the service's log (journalctl on Linux, service.log on macOS)"],
+  ["autocraft runner pause | resume", "claim nothing until the plan window resets; resume ends a pause or a hold"],
+  ["autocraft runner reserve <5h> <weekly> | off", "keep more of each plan window free than the server's reserve (percent)"],
+];
+
+/** @type {HelpLine[]} */
+const CALL_HELP = [
+  ["autocraft call [<tool> [args] | --guide]", "raw access to any server tool: alone it lists them; `call <tool> --help` shows its arguments; --guide prints the server's instructions"],
+];
+
+/** @type {HelpLine[]} */
+const TASK_HELP = [
+  ["autocraft work [--parallel N]", "claim, run and submit in a loop (what the service runs)"],
+  ["autocraft claim", "claim one call; prints its lease id"],
+  ["autocraft run [--detach] [<lease>]", "run a claimed lease, or claim and run one"],
+  ["autocraft wait <lease>", "wait for a detached run (returns after at most 9 minutes)"],
+  ["autocraft try <bundle.json> [--slot N]", "run a bundle from a file without a server and print the reply (testing)"],
+  ["autocraft mcp <server-name> <lease>", "stdio-to-HTTP proxy for one of the lease's MCP servers"],
+  ["autocraft tool <server-name> <tool> [<json>] [<lease>]", "one tool call of a lease's server without MCP; prints the result"],
+  ["autocraft migrate", "move an autocraft-task install over"],
+  ["autocraft status | pause-until-reset | resume", "runner status, pause and resume"],
+  ["autocraft config reserve <5h> <weekly> | off", "runner reserve"],
+];
+
+const GROUP_TITLES = /** @type {const} */ ({ inbox: "Inbox", queue: "Merge queue", calls: "Model calls" });
+
+/** @param {string} group @returns {HelpLine[]} */
+const serverHelp = (group) => CLI_COMMANDS.filter((c) => c.path[0] === group).map((c) => [`autocraft ${[...c.path, c.usage].filter(Boolean).join(" ")}`, c.summary]);
+
+/** The help sections in order. @param {boolean} all @returns {[string, HelpLine[]][]} */
+const helpSections = (all) => [
+  ["Setup", SETUP_HELP], ["Runner", RUNNER_HELP],
+  ...Object.entries(GROUP_TITLES).map(([g, title]) => /** @type {[string, HelpLine[]]} */ ([title, serverHelp(g)])),
+  ["Other", [...serverHelp("repos"), ...serverHelp("fixups"), ...CALL_HELP]],
+  ...(all ? [/** @type {[string, HelpLine[]]} */ (["Task commands (used by the service and by agents)", TASK_HELP])] : []),
+];
+
+const HELP_COLUMN = 46, HELP_WIDTH = 120;
+/** `s` in lines of at most `width` characters, broken at spaces. @param {string} s @param {number} width */
+const wrap = (s, width) => s.split(" ").reduce((/** @type {string[]} */ out, w) => {
+  const last = out[out.length - 1];
+  if (last !== undefined && last.length + 1 + w.length <= width) out[out.length - 1] = `${last} ${w}`;
+  else out.push(w);
+  return out;
+}, []);
+/** @param {string} title @param {HelpLine[]} lines */
+const section = (title, lines) => [title, ...lines.map(([c, s]) => {
+  const pad = `\n  ${" ".repeat(HELP_COLUMN)}`;
+  const text = wrap(s, HELP_WIDTH - HELP_COLUMN - 2).join(pad);
+  return c.length < HELP_COLUMN ? `  ${c.padEnd(HELP_COLUMN)}${text}` : `  ${c}${pad}${text}`;
+})].join("\n");
+
+const SERVER_NOTE = `Inbox, merge queue, model call and other server commands need Agent access for this Task Runner (the dashboard's Connect page).
+Options of a command's tool that are not shown pass through as --<argument>; \`autocraft call <tool> --help\` lists them.
+Add --json for the raw result. Exit 0 done, 1 refused or failed, 2 wrong command line.`;
+
+/** `help [--all]`: the groups and two lines; `--all` adds the task commands and the details. @param {boolean} all */
+function helpText(all) {
+  const intro = `autocraft ${HELPER_VERSION}: the AutoCraft Task Runner runs AutoCraft model calls under your own harness subscription,
+and gives you AutoCraft's inbox, merge queue and model calls on the command line.`;
+  const sections = helpSections(all).map(([t, l]) => section(t, l));
+  if (!all) return [intro, ...sections, "Server commands need Agent access for this Task Runner (Connect page).\n--json prints the raw result; `autocraft help --all` lists everything."].join("\n\n");
+  return [intro, ...sections,
+    `login --answer also asks to answer decisions and approve merges; --no-agent asks for no agent access.
+${SERVER_NOTE}`,
+    `The runner claims only while every plan window keeps more than the reserve free (set per user on the
 dashboard, default 20%), and holds whenever it cannot read the usage.
 
 Config: ${"$XDG_CONFIG_HOME"}/autocraft-runner/config.json, the credential in credentials.json beside it (mode 0600);
-"tiers" maps top/mid/small to models (Claude defaults to opus, sonnet and haiku; Codex has no defaults).`;
+"tiers" maps top/mid/small to models (Claude defaults to opus, sonnet and haiku; Codex has no defaults).`,
+  ].join("\n\n");
+}
+
+/** `<group> --help` and `help <group>`. @param {string} group */
+function groupHelp(group) {
+  if (group === "runner") return section("Runner", RUNNER_HELP);
+  if (group in GROUP_TITLES) return `${section(GROUP_TITLES[/** @type {keyof typeof GROUP_TITLES} */ (group)], serverHelp(group))}\n\n${SERVER_NOTE}`;
+  if (group === "repos" || group === "fixups" || group === "call") return `${section("Other", [...serverHelp("repos"), ...serverHelp("fixups"), ...CALL_HELP])}\n\n${SERVER_NOTE}`;
+  return helpText(false);
+}
 
 /** The command that replaces this runner; version refusals print it. */
 const UPDATE_COMMAND = `node ${realpathSync(fileURLToPath(import.meta.url))} update`;
@@ -4664,23 +4819,22 @@ export async function main(argv) {
       case "try": return await cmdTry(rest);
       case "mcp": return await cmdMcp(rest);
       case "tool": return await cmdTool(rest);
+      case "runner": return await cmdRunner(rest);
+      case "update": return await cmdUpdate();
+      case "migrate": return cmdMigrate();
+      case "version": case "--version": console.log(HELPER_VERSION); return 0;
+      case "call": return await cmdCall(rest);
+      // Kept for scripts and agents: `runner status`, `runner pause`, `runner resume` and `runner reserve`.
       case "status": return await cmdStatus();
       case "pause-until-reset": await cmdPause(); return 0;
       case "resume": await cmdResume(); return 0;
       case "config": await cmdConfig(rest); return 0;
-      case "update": return await cmdUpdate();
-      case "migrate": return cmdMigrate();
-      case "version": case "--version": console.log(HELPER_VERSION); return 0;
-      case "tools": return await cmdTools();
-      case "guide": return await cmdGuide();
-      case "help": return await cmdHelp(rest);
-      case "call":
-        if (!rest[0]) throw new UsageError("usage: autocraft call <tool> [args]");
-        return await cmdAgentTool(rest[0], rest.slice(1));
+      case undefined: case "help": case "--help": case "-h":
+        console.log(rest[0] && !rest[0].startsWith("-") ? groupHelp(rest[0]) : helpText(rest.includes("--all")));
+        return 0;
       default:
-        if (cmd === undefined || cmd === "--help") { console.log(USAGE); return 0; }
-        if (cmd.startsWith("-")) { console.log(USAGE); return 64; }
-        return await cmdAgentTool(cmd, rest);
+        if (SERVER_GROUPS.has(cmd)) return await cmdServer(cmd, rest);
+        throw new UsageError(`no command ${cmd}: \`autocraft help\` lists them`);
     }
   } catch (e) {
     console.error(`autocraft: ${msg(e)}`);
