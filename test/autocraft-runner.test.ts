@@ -26,6 +26,7 @@ void [
 test("the runner speaks the server's protocol version and routes", () => {
   assert.equal(helper.PROTOCOL_VERSION, protocol.PROTOCOL_VERSION);
   assert.deepEqual(helper.ROUTES, protocol.ROUTES);
+  assert.deepEqual(helper.ENCODINGS, protocol.ENCODINGS);
   assert.deepEqual([helper.HEARTBEAT_S, helper.PREPARE_MAX_S, helper.CLAIM_ID_TTL_S], [protocol.HEARTBEAT_S, protocol.PREPARE_MAX_S, protocol.CLAIM_ID_TTL_S]);
 });
 

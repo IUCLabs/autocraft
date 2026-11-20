@@ -38,9 +38,10 @@ import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.3.0";
+export const HELPER_VERSION = "1.3.1";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
@@ -82,7 +83,11 @@ export const ROUTES = {
  * @property {number} [wait]  protocol 4: seconds the server may hold the claim open when nothing is queued (0 to 30)
  */
 /** @typedef {{ fiveHour: number, weekly: number }} Reserve  percent of each plan window kept free */
-/** @typedef {{ lease: null, retryAfter: number, reserve: Reserve, reason?: string, until?: number } | { lease: { id: number, secret: string, title: string, requiredHelper: string }, reserve: Reserve }} ClaimReply */
+/** Body encodings besides plain JSON; a server lists the ones it accepts in its claim and status replies. */
+export const ENCODINGS = /** @type {const} */ (["gzip+base64"]);
+/** @typedef {(typeof ENCODINGS)[number]} Encoding */
+/** @typedef {{ encoding: Encoding, body: string }} Envelope  `body`: base64 of the gzip of the plain JSON body */
+/** @typedef {{ lease: null, retryAfter: number, reserve: Reserve, reason?: string, until?: number, encodings?: Encoding[] } | { lease: { id: number, secret: string, title: string, requiredHelper: string }, reserve: Reserve, encodings?: Encoding[] }} ClaimReply */
 /** @typedef {"ready" | "quota-held" | "paused" | "cooled-off" | "sandbox-failed" | "version-refused" | "harness-missing" | "failing"} Readiness */
 /** @typedef {{ usedPercent: number, resetsAt: string | null }} UsageWindow */
 /** @typedef {{ fiveHour: UsageWindow | null, weekly: UsageWindow | null, at: string }} UsageReading */
@@ -101,7 +106,7 @@ export const ROUTES = {
  * @property {string} [helperVersion]
  * @property {Machine} [machine]
  */
-/** @typedef {{ ok: true, reserve: Reserve }} StatusReply */
+/** @typedef {{ ok: true, reserve: Reserve, encodings?: Encoding[] }} StatusReply */
 /** @typedef {{ hostname: string, platform: string, arch: string }} Machine */
 /** @typedef {{ credentialHash: string, label: string, machine: Machine, helperVersion: string }} LoginStart */
 /** @typedef {{ userCode: string, verifyUrl: string, interval: number, expiresIn: number }} LoginStartReply */
@@ -1829,6 +1834,18 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * An HTML reply with a 4xx status other than 404 and 410: a CDN, web application firewall or other proxy in front of the
+ * server refused the request (the server answers JSON). Retried like a network error, never taken for a refused credential.
+ */
+export class ProxyBlocked extends HttpError {
+  /** @param {string} route @param {number} status @param {number | null} retryAfterMs */
+  constructor(route, status, retryAfterMs) {
+    super(route, status, "", retryAfterMs);
+    this.message = `${route}: blocked by a proxy in front of the server (HTTP ${status}, HTML reply)`;
+  }
+}
+
 /** A Retry-After header as milliseconds (delta seconds or an HTTP date); null when absent or unreadable. @param {string | null} v */
 export function retryAfterMs(v, now = Date.now()) {
   if (!v) return null;
@@ -1840,12 +1857,13 @@ export function retryAfterMs(v, now = Date.now()) {
 const NET_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "ENETDOWN", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
 
 /**
- * Whether one request's error is worth trying again: 408, 429, 5xx, a network error (reset, refused, DNS), a request timeout
- * or a reply cut off. A 410, any other 4xx and the caller's own abort are final.
+ * Whether one request's error is worth trying again: 408, 429, 5xx, a proxy's refusal (ProxyBlocked), a network error (reset,
+ * refused, DNS), a request timeout or a reply cut off. A 410, any other 4xx and the caller's own abort are final.
  * @param {unknown} e @param {AbortSignal} [signal]
  */
 export function transient(e, signal) {
   if (signal?.aborted || e instanceof Gone) return false;
+  if (e instanceof ProxyBlocked) return true;
   if (e instanceof HttpError) return e.status === 408 || e.status === 429 || e.status >= 500;
   if (!e || typeof e !== "object") return false;
   // fetch rejects with a TypeError ("fetch failed", "terminated" for a body cut off); JSON.parse of a cut-off body with a SyntaxError.
@@ -1880,7 +1898,20 @@ export async function withRetry(fn, o) {
 }
 
 /**
- * One request; `body` makes it a POST, a null `bearer` sends no credential. Throws Gone on 410, HttpError on any other non-2xx.
+ * Servers whose latest claim or status reply listed the `gzip+base64` encoding: POST bodies to them go as an Envelope, so
+ * a CDN or web application firewall in front of the server never matches its content rules against model text.
+ * @type {Set<string>}
+ */
+const envelopeServers = new Set();
+
+/** A JSON body as an Envelope. @param {unknown} body @returns {Envelope} */
+export function envelope(body) {
+  return { encoding: "gzip+base64", body: gzipSync(JSON.stringify(body)).toString("base64") };
+}
+
+/**
+ * One request; `body` makes it a POST, a null `bearer` sends no credential. Throws Gone on 410, ProxyBlocked on an HTML 4xx,
+ * HttpError on any other non-2xx. A claim or status reply tells whether later bodies to `server` go as an Envelope.
  * @param {string} server @param {string} route @param {string | null} bearer @param {unknown} [body] @param {{ signal?: AbortSignal, timeoutMs?: number }} [o]
  * @returns {Promise<any>}
  */
@@ -1889,13 +1920,23 @@ export async function api(server, route, bearer, body, o = {}) {
   const res = await fetch(`${server}${route}`, {
     method: body === undefined ? "GET" : "POST",
     headers: { ...(bearer !== null && { Authorization: `Bearer ${bearer}` }), ...(body !== undefined && { "Content-Type": "application/json" }) },
-    ...(body !== undefined && { body: JSON.stringify(body) }),
+    ...(body !== undefined && { body: JSON.stringify(envelopeServers.has(server) ? envelope(body) : body) }),
     signal: o.signal ? AbortSignal.any([o.signal, timeout]) : timeout,
   });
   if (res.status === 410) throw new Gone("the lease is gone");
   const text = await res.text();
-  if (!res.ok) throw new HttpError(route, res.status, text, retryAfterMs(res.headers.get("retry-after")));
-  return text.trim() ? JSON.parse(text) : {};
+  if (!res.ok) {
+    const after = retryAfterMs(res.headers.get("retry-after"));
+    const html = /html/i.test(res.headers.get("content-type") ?? "") || /^\s*</.test(text);
+    if (html && res.status >= 400 && res.status < 500 && res.status !== 404) throw new ProxyBlocked(route, res.status, after);
+    throw new HttpError(route, res.status, text, after);
+  }
+  const out = text.trim() ? JSON.parse(text) : {};
+  if (route === ROUTES.claim || route === ROUTES.status) {
+    if (Array.isArray(out?.encodings) && out.encodings.includes("gzip+base64")) envelopeServers.add(server);
+    else envelopeServers.delete(server);
+  }
+  return out;
 }
 
 /** The server ends a lease this long after the call's time limit, or after its last heartbeat (docs/operations.md, Leases). */
@@ -2956,7 +2997,13 @@ async function runLease(cfg, id, opt = {}) {
     let s;
     // A finished reply is never turned into a failure: the same body is retried until the server answers it (accepted, 410
     // or another final 4xx), through an outage of the server up to SUBMIT_OUTAGE_MS past the lease's deadline.
-    try { s = await withRetry(() => api(lease.server, ROUTES.submit, lease.secret, body), { deadline: deadline() + SUBMIT_OUTAGE_MS }); } catch (e) { return undelivered("the reply", e); }
+    // A proxy's refusal is said once and retried like an outage.
+    let blockedSaid = false;
+    const submit = () => api(lease.server, ROUTES.submit, lease.secret, body).catch((e) => {
+      if (e instanceof ProxyBlocked && !blockedSaid) { blockedSaid = true; console.log(`${lease.title}: ${msg(e)}; retrying the reply`); }
+      throw e;
+    });
+    try { s = await withRetry(submit, { deadline: deadline() + SUBMIT_OUTAGE_MS }); } catch (e) { return undelivered("the reply", e); }
     if (!s.accepted) return end("failed", `rejected: ${lease.title}: ${s.reason ?? "no reason given"}`);
     clearError("call");
     return end("submitted", `submitted: ${lease.title}, ${kTokens(tokensOf(usage))} tokens`);
@@ -3563,7 +3610,7 @@ async function cmdWork(argv) {
         if (ac.signal.aborted) break;
         // A claim lost in transit may have leased a call: the next try sends the same id and gets that lease back.
         if (!transient(e)) claimId = newClaimId();
-        if (e instanceof HttpError && (e.status === 401 || e.status === 403)) {
+        if (e instanceof HttpError && !(e instanceof ProxyBlocked) && (e.status === 401 || e.status === 403)) {
           // A revoked or expired credential: the process stays up (no restart loop of its service) and looks again now and then.
           const line = `credential revoked or expired (${msg(e)}); run \`autocraft login <server-url>\``;
           if (line !== heldSaid) { console.log(`not claiming: ${line}; checking again every ${Math.round(REVOKED_RETRY_MS / 60_000)} min`); heldSaid = line; idleSaid = ""; }

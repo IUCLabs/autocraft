@@ -246,11 +246,12 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   kind TEXT NOT NULL DEFAULT 'connector', -- connector | runner
   machine TEXT                        -- runner: JSON { hostname, platform, arch } the runner sent at login
 );
--- Leases that ended without a release or a reply (lost heartbeat, past a time limit), at most one per token in 10 minutes,
--- newest 2 hours kept; counted per login toward its cool-off (src/remote/cooloff.ts).
+-- Leases that ended without a release or a reply (lost heartbeat, past a time limit), at most one per token in 10 minutes
+-- and one per call and login in 2 hours, newest 2 hours kept; counted per login toward its cool-off (src/remote/cooloff.ts).
 CREATE TABLE IF NOT EXISTS remote_lease_drops (
   token_id INTEGER NOT NULL, at INTEGER NOT NULL,
-  login TEXT COLLATE NOCASE
+  login TEXT COLLATE NOCASE,
+  call_id INTEGER                     -- remote_calls.id of the lost lease
 );
 CREATE INDEX IF NOT EXISTS remote_lease_drops_token ON remote_lease_drops(token_id, at);
 -- The cool-off of a login's helpers in the user-local inference mode (src/remote/cooloff.ts): no calls until `until`.

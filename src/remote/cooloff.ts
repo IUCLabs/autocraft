@@ -28,10 +28,15 @@ function coolOff(db: DatabaseSync, login: string, until: number, reason: string)
   audit(db, login, "remote-cooloff", login, { until, reason });
 }
 
-/** Records a lost lease of `tokenId`, held by `login`; the DROP_LIMIT-th drop of the login within the window starts the cool-off. */
-export function noteDrop(db: DatabaseSync, tokenId: number, login: string, nowMs: number): void {
+/**
+ * Records a lost lease of call `callId`, held by `tokenId` of `login`; the DROP_LIMIT-th drop of the login within the window
+ * starts the cool-off. The same call lost again within the window counts once: a call that cannot be delivered (a proxy
+ * refusing its reply) says nothing more about the helper, and it fails on its own at its attempt limit.
+ */
+export function noteDrop(db: DatabaseSync, tokenId: number, login: string, callId: number, nowMs: number): void {
   if (db.prepare("SELECT 1 FROM main.remote_lease_drops WHERE token_id = ? AND at > ?").get(tokenId, nowMs - DROP_DEDUPE_MS)) return;
-  db.prepare("INSERT INTO main.remote_lease_drops (token_id, login, at) VALUES (?, ?, ?)").run(tokenId, login, nowMs);
+  if (db.prepare("SELECT 1 FROM main.remote_lease_drops WHERE login = ? AND call_id = ? AND at >= ?").get(login, callId, nowMs - DROP_WINDOW_MS)) return;
+  db.prepare("INSERT INTO main.remote_lease_drops (token_id, login, call_id, at) VALUES (?, ?, ?, ?)").run(tokenId, login, callId, nowMs);
   const n = Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_lease_drops WHERE login = ? AND at >= ?").get(login, nowMs - DROP_WINDOW_MS) as { n: number }).n);
   if (n >= DROP_LIMIT) coolOff(db, login, nowMs + COOLOFF_MS, DROP_REASON);
 }

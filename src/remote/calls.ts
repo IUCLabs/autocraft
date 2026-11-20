@@ -181,7 +181,7 @@ export function expireLeases(db: DatabaseSync, nowMs: number = Date.now(), id?: 
       // A lost lease counts toward its login's cool-off (cooloff.ts), and uses an attempt like a failed call. A lease that never
       // had a heartbeat does not count: the helper most likely never got the claim's reply.
       const beaten = Number(r.heartbeat_at) > Number(r.leased_at);
-      if (requeue(db, r, why, nowMs) && beaten && r.token_id !== null && r.user_login !== null) noteDrop(db, Number(r.token_id), r.user_login, nowMs);
+      if (requeue(db, r, why, nowMs) && beaten && r.token_id !== null && r.user_login !== null) noteDrop(db, Number(r.token_id), r.user_login, Number(r.id), nowMs);
     }
   }
   const gone = db.prepare(`SELECT id FROM main.remote_calls WHERE state IN ('queued', 'leased') AND seen_at < ?${one}`).all(nowMs - CALLER_GONE_MS, ...(id === undefined ? [] : [id])) as { id: number }[];

@@ -312,7 +312,7 @@ Ended calls are kept 24 hours for task status and follow-ups; the dashboard dele
 
 | Cause | Cool-off |
 |---|---|
-| Leases of the login end by expiry 3 times within 2 hours (each token counts at most once in 10 minutes; a lease that never had a heartbeat does not count, since its claim's reply was likely lost) | 6 hours |
+| Leases of the login end by expiry 3 times within 2 hours (each token counts at most once in 10 minutes and each call once in 2 hours; a lease that never had a heartbeat does not count, since its claim's reply was likely lost) | 6 hours |
 | The login's Task Runners send 5 failed replies in a row within 30 minutes (an accepted reply ends the run) | 1 hour |
 
 While it lasts, the login's claims return no lease, a reason and the end time, and its Task Runners report `cooled-off` (audit `remote-cooloff`). Revoking or replacing a token does not end it. An operator clears it with `autocraft-server remote cooloff clear <login>` (audit `remote-cooloff-clear`).
@@ -325,6 +325,13 @@ A claim that finds no call it may take is held open instead of answered empty. T
 - The server wakes held claims when a call is queued or changes state, one claim at a time in arrival order, and tries each claim again every 5 seconds and at its deadline. The deadline try records that the Task Runner is idle, so it still counts as idle for the planner's room and the author preference.
 - A Task Runner that disconnects drops its held claim. A claim repeated with the same `requestId` while held joins the same wait. When the dashboard stops, held claims are answered empty with a short `retryAfter`.
 - A reverse proxy in front of the dashboard must allow responses that take 30 seconds: set no response timeout under 35 seconds.
+
+### CDN or web application firewall
+
+A CDN or web application firewall in front of the dashboard should skip its content rules (managed rule sets, bot checks, challenges) for `/api/remote/*` and `/mcp`. Both carry authenticated machine traffic: model replies, progress lines and tool arguments, which content rules may take for an attack. Keep its rate limits above the request limits under Leases.
+
+- **Encoded bodies.** Claim and status replies list `encodings: ["gzip+base64"]`. Task Runners from 1.3.1 on then send every POST body as `{"encoding": "gzip+base64", "body": "<base64 of the gzipped JSON>"}`, so content rules never see model text. The server accepts plain JSON too (1.2.0 and 1.3.0). The uncompressed body has the route's size limit (413 above it). Tool calls the harness makes from inside the sandbox (`/mcp/task/*`, `autocraft tool`) stay plain JSON.
+- **Proxy blocks.** An HTML reply with a 4xx status other than 404 comes from the proxy, not the server. The Task Runner retries it like an outage (a reply until 30 minutes past the lease's deadline) and logs `blocked by a proxy in front of the server (HTTP 403, HTML reply)`; it never takes it for a revoked credential. If the block persists, the lease ends as lost, the call goes back to the queue, and it fails at its attempt limit; the same call lost again does not add to the login's cool-off.
 
 ### Model call queue
 

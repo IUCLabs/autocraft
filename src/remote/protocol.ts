@@ -91,9 +91,19 @@ export const CLAIM_ID_TTL_S = 300;
  */
 export type Reserve = { fiveHour: number; weekly: number };
 
+/**
+ * Body encodings the server accepts on every POST route of the Task Runner, besides plain JSON. `gzip+base64`: the body is
+ * `Envelope`, whose `body` is base64 of the gzip of the plain JSON body, sent as application/json. A CDN or web application
+ * firewall in front of the dashboard then never sees model text, which its content rules may take for an attack. The
+ * uncompressed body has the route's size limit (413 above it).
+ */
+export const ENCODINGS = ["gzip+base64"] as const;
+export type Encoding = (typeof ENCODINGS)[number];
+export type Envelope = { encoding: Encoding; body: string };
+
 export type ClaimReply =
-  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number; reserve: Reserve; /** Present while the token gets no calls: why (repeated lost leases, the user's limit of calls at once), and with a cool-off when it may claim again (ms since epoch). `retryAfter` then runs to `until`. */ reason?: string; until?: number }
-  | { lease: { id: number; secret: string; /** One line: prompt id and the item, e.g. "review.opus on designcraft#1502". */ title: string; requiredHelper: string }; reserve: Reserve };
+  | { lease: null; /** Seconds to wait before the next claim when nothing is queued. */ retryAfter: number; reserve: Reserve; /** Present while the token gets no calls: why (repeated lost leases, the user's limit of calls at once), and with a cool-off when it may claim again (ms since epoch). `retryAfter` then runs to `until`. */ reason?: string; until?: number; /** The body encodings the server accepts (ENCODINGS); absent from a server that takes plain JSON only. */ encodings?: Encoding[] }
+  | { lease: { id: number; secret: string; /** One line: prompt id and the item, e.g. "review.opus on designcraft#1502". */ title: string; requiredHelper: string }; reserve: Reserve; encodings?: Encoding[] };
 
 /**
  * Whether a helper takes calls now. `ready`: it claims. `quota-held`: a plan window is at or below the reserve, its usage
@@ -137,7 +147,7 @@ export type HelperStatus = {
   machine?: Machine;
 };
 /** The user's reserve, so a helper knows it before its first claim. */
-export type StatusReply = { ok: true; reserve: Reserve };
+export type StatusReply = { ok: true; reserve: Reserve; /** As in ClaimReply. */ encodings?: Encoding[] };
 
 /** One of the user's helpers (Task Runner credentials), for the Connect page and my_work: the session route GET /api/runners replies with these and more per runner. */
 export type HelperInfo = {

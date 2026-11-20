@@ -124,7 +124,7 @@ describe("user-local remote calls", () => {
     assert.match(runs[1]!.error, /lease expired/);
   });
 
-  test("three lost leases of one login within two hours cool its helpers off for six hours; its next claim says why and until when; an operator clears it", async () => {
+  test("three lost leases of distinct calls of one login within two hours cool its helpers off for six hours; its next claim says why and until when; an operator clears it", async () => {
     db.prepare("INSERT INTO access (login, role) VALUES ('erin', 'maintainer')").run();
     // A token's drops count once in 10 minutes: three helpers of the same user each lose one.
     const tokens = [1, 2, 3].map(() => createToken(db, "erin", "helper", { kind: "runner" }).row.id);
@@ -144,12 +144,20 @@ describe("user-local remote calls", () => {
     const again = (await mine())!;
     assert.equal(again.id, lease!.id, "a lost lease is not a failed call: the call goes back to the queue");
     lose(again.id, t0 + 1000);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM remote_lease_drops WHERE login = 'erin'").get()!.n, 1, "the same call lost again counts once");
     erin = { ...erin, tokenId: tokens[2]! };
     assert.equal(await ask, null, "the call used its attempts");
+    const take = async () => { for (let i = 0; i < 200; i++) { const l = await mine(); if (l) return l; await sleep(5); } throw new Error("no lease"); };
+    // A second call, lost twice: one more drop.
     const ask2 = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
-    let third = null;
-    for (let i = 0; i < 200 && !third; i++) { third = await mine(); if (!third) await sleep(5); }
-    lose(third!.id, t0 + 2000);
+    const second = await take();
+    lose(second.id, t0 + 1500);
+    assert.equal((await claimCall(db, erin, claim(), canWrite, t0 + 1600)).lease?.id, second.id, "two drops: no cool-off yet");
+    lose(second.id, t0 + 1700);
+    assert.equal(await ask2, null);
+    erin = { ...erin, tokenId: tokens[1]! };
+    const ask3 = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
+    lose((await take()).id, t0 + 2000);
     const reply = await claimCall(db, erin, claim(), canWrite, t0 + 3000);
     assert.equal(reply.lease, null);
     assert.equal(reply.lease === null && reply.until, t0 + 2000 + 6 * 3600_000);
@@ -158,7 +166,7 @@ describe("user-local remote calls", () => {
     assert.equal(clearCooloff(db, "erin", "test"), true);
     assert.ok((await claimCall(db, erin, claim(), canWrite, t0 + 3000)).lease, "the call is back in the queue for the cleared helper");
     withdrawCall(db, (db.prepare("SELECT id FROM remote_calls WHERE state IN ('queued','leased') ORDER BY id DESC LIMIT 1").get() as { id: number }).id, "test over");
-    await ask2;
+    await ask3;
   });
 
   test("a claim whose declared effort is below a tier's minimum gets nothing, and the refusal names the families and the floor", async () => {
