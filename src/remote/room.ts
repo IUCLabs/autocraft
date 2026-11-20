@@ -17,6 +17,7 @@ import { STATUS_FRESH_MS } from "./helpers.ts";
 import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimRepos } from "./my-repos.ts";
+import { userSkips } from "./my-tasks.ts";
 import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S } from "./protocol.ts";
 
@@ -59,7 +60,7 @@ export function roomCanWrite(db: DatabaseSync, logins: readonly string[], nowMs:
 }
 
 type Helper = { login: string; role: string | null; idle_claim_at: number | null; idle_repos: string | null; slots: number; leased: number; beat: number | null };
-type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null } };
+type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string> } };
 /**
  * What the room reads of the helpers, once for any number of room questions at one moment: the fresh, ready helpers that are
  * not Manual only (`ready`), those of them that are active, and on first use their permissions, repos and users' caps.
@@ -84,7 +85,7 @@ function takersOf(db: DatabaseSync, st: RoomState, nowMs: number): NonNullable<R
     list: st.ready.map((h) => {
       let own: string[] | undefined;
       try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
-      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own) } };
+      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login) } };
     }),
   };
 }
@@ -92,7 +93,7 @@ function takersOf(db: DatabaseSync, st: RoomState, nowMs: number): NonNullable<R
 /** Room for class `cls` and `repos` (see remoteRoom) from a state read at `nowMs`. */
 export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: number, repos?: readonly string[]): number {
   let takers = st.active;
-  let takes: (c: { prompt_id: string; repos: readonly string[] }) => boolean = () => true;
+  let takes: (c: { prompt_id: string; repos: readonly string[]; step?: string }) => boolean = () => true;
   if (repos !== undefined && st.active.length) {
     const t = takersOf(db, st, nowMs);
     const fit = t.list.filter(({ active, r }) => active && runnerTakes(r, { prompt_id: "", repos }, t.canWrite));

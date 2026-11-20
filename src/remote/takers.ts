@@ -14,6 +14,7 @@ import { NO_TAKER_PREFIX, pickCounts, pickerLogins, queueSnapshot, runnerTakes, 
 import { STATUS_FRESH_MS } from "./helpers.ts";
 import { inferenceMode } from "./mode.ts";
 import { claimRepos } from "./my-repos.ts";
+import { SKIP_TASKS_KEY, TASK_CHOICES, taskOfStep, userSkips } from "./my-tasks.ts";
 import { CALLER_STALE_MS, roomCanWrite } from "./room.ts";
 import { scaled } from "./time-scale.ts";
 
@@ -21,7 +22,8 @@ import { scaled } from "./time-scale.ts";
 export const NO_TAKER_MS = scaled(10 * 60_000);
 
 /** A call as the taker rule reads it: its prompt (role rules for discord.* calls) and the repos it names. */
-export type TakerCall = { prompt_id: string; repos: readonly string[] };
+/** `step`: the call's step, for the takers' tasks (my-tasks.ts); left out, the question is about repos alone. */
+export type TakerCall = { prompt_id: string; repos: readonly string[]; step?: string };
 
 /**
  * Whether some taker may take a call now, for many questions at one moment (a pool's round, the runner's pass over queued
@@ -44,9 +46,10 @@ const takerArgs = (nowMs: number): [string, number, number] => [new Date(nowMs).
  * oldest check among their cached non-write permissions that still count (roomCanWrite), so it changes when that one expires.
  */
 export function takerSignature(db: DatabaseSync, nowMs: number = Date.now()): string {
-  const r = prep(db, `SELECT group_concat(k, ';') AS s FROM (SELECT DISTINCT lower(t.login) || ':' || COALESCE(a.role, '') || ':' || COALESCE(us.value, '') || ':' || COALESCE(t.idle_repos, '') AS k
+  const r = prep(db, `SELECT group_concat(k, ';') AS s FROM (SELECT DISTINCT lower(t.login) || ':' || COALESCE(a.role, '') || ':' || COALESCE(us.value, '') || ':' || COALESCE(t.idle_repos, '') || ':' || COALESCE(sk.value, '') AS k
       FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
       LEFT JOIN main.user_settings us ON us.login = t.login AND us.key = 'repos'
+      LEFT JOIN main.user_settings sk ON sk.login = t.login AND sk.key = '${SKIP_TASKS_KEY}'
       WHERE ${TAKER_SQL} ORDER BY k)`).get(...takerArgs(nowMs)) as { s: string | null };
   if (!r.s) return "";
   const denied = prep(db, `SELECT MIN(p.checked_at) AS at FROM main.repo_permissions p WHERE p.permission NOT IN (SELECT value FROM json_each(?)) AND p.checked_at > ?
@@ -63,14 +66,16 @@ function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean 
   const runners = rows.map((h) => {
     let own: string[] | undefined;
     try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
-    return { login: h.login, role: h.role, repos: claimRepos(db, h.login, own) };
+    return { login: h.login, role: h.role, repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login) };
   });
   return (c) => runners.some((r) => runnerTakes(r, c, canWrite));
 }
 
-/** The error of a call withdrawn for lack of a taker: its caller skips the work (NoTakerError). */
-export const noTakerReason = (repos: readonly string[]): string =>
-  `${NO_TAKER_PREFIX} ${repos.length ? `on ${repos.join(", ")}` : "that name no repo"}`;
+/** The error of a call withdrawn for lack of a taker: its caller skips the work (NoTakerError). `step`: a taker may take calls on its repos, but none takes its task. */
+export const noTakerReason = (repos: readonly string[], step?: string): string => {
+  const task = step === undefined ? undefined : taskOfStep(step);
+  return `${NO_TAKER_PREFIX} ${task !== undefined ? `of the ${TASK_CHOICES.find((t) => t.id === task)?.title ?? task} task (My tasks)` : repos.length ? `on ${repos.join(", ")}` : "that name no repo"}`;
+};
 
 /**
  * One maintenance pass at `nowMs`. Each pipeline-on repo with no taker keeps the time it was first seen so
@@ -101,7 +106,7 @@ export function sweepTakers(db: DatabaseSync, nowMs: number = Date.now()): numbe
     if (own || takes(c)) {
       if (since !== undefined) set.run(null, c.id);
     } else if (since === undefined) set.run(nowMs, c.id);
-    else if (since <= nowMs - NO_TAKER_MS && withdrawCall(db, c.id, noTakerReason(c.repos), ["queued"], nowMs)) withdrawn++;
+    else if (since <= nowMs - NO_TAKER_MS && withdrawCall(db, c.id, takes({ prompt_id: c.prompt_id, repos: c.repos }) ? noTakerReason(c.repos, c.step) : noTakerReason(c.repos), ["queued"], nowMs)) withdrawn++;
   }
   return withdrawn;
 }

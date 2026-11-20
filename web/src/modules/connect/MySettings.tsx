@@ -17,6 +17,7 @@ export function MySettings() {
   const [vals, setVals] = useState<{ fiveHour: string; weekly: string } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [picks, setPicks] = useState<string[]>([]);
+  const [tasks, setTasks] = useState<string[]>([]);
   const [maxCalls, setMaxCalls] = useState("");
   const [manual, setManual] = useState(false);
   // When the last change was saved: the header says "Saved" for a few seconds after each save.
@@ -39,6 +40,7 @@ export function MySettings() {
     setManual(data.manualOnly);
     setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
     setPicks(data.repos);
+    setTasks(data.tasks);
     setMaxCalls(data.maxCalls === null ? "" : String(data.maxCalls));
   }, [data]);
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
@@ -64,6 +66,19 @@ export function MySettings() {
       }
     });
   };
+  const saveTasks = (next: string[]) => {
+    const was = tasks;
+    setTasks(next);
+    saveRun("tasks", async () => {
+      try {
+        setTasks((await api.me.settings.put({ tasks: next })).tasks);
+      } catch (e) {
+        setTasks(was);
+        throw e;
+      }
+    });
+  };
+  const allTasks = data.taskChoices.map((t) => t.id);
   const choices = new Set(data.repoChoices);
   // Picks that are no longer available (pipeline off, or no write permission) stay listed so they can be removed.
   const shown = [...new Set([...data.repoChoices, ...picks])].sort((x, y) => x.localeCompare(y, undefined, { sensitivity: "base" }));
@@ -198,6 +213,23 @@ export function MySettings() {
                       </span>
                     }
                   />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </Fold>
+      <Fold className="mt-1" title="My tasks" summary={tasks.length === allTasks.length ? "All tasks" : `${tasks.length} of ${allTasks.length} tasks`}>
+        <div role="group" aria-label="My tasks" className="mt-1 rounded-md border border-line p-1 sm:max-w-3xl">
+          <p className="px-2 pb-1 pt-1.5 text-xs text-ink/60">The work your Task Runners take from the queue. Calls you pick yourself and follow-ups of your runners' sessions run either way.</p>
+          <CheckRow checked={tasks.length === allTasks.length} onChange={() => tasks.length !== allTasks.length && saveTasks(allTasks)} title="All tasks" />
+          {!tasks.length && <p role="status" className="px-2 pb-1 text-xs text-warn">No task ticked: your Task Runners take only the calls you pick.</p>}
+          <div className="sm:columns-2 sm:gap-x-1 lg:columns-3">
+            {data.taskChoices.map((t) => {
+              const on = tasks.includes(t.id);
+              return (
+                <div key={t.id} className="break-inside-avoid">
+                  <CheckRow checked={on} onChange={() => saveTasks(on ? tasks.filter((x) => x !== t.id) : allTasks.filter((x) => x === t.id || tasks.includes(x)))} title={t.title} />
                 </div>
               );
             })}

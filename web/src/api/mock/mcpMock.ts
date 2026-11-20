@@ -6,9 +6,16 @@ const DAY = 86_400_000;
 const MIN = 60_000;
 
 /** The Connect page and the model call queue, in memory; the server's rules (five tokens per kind, own tokens and runners only, pick limits) apply. */
+/** The task choices as the server lists them (src/remote/my-tasks.ts TASK_CHOICES). */
+const TASKS = [
+  { id: "dupes", title: "Duplicates" }, { id: "classify", title: "Classify" }, { id: "priority", title: "Priority" }, { id: "decide", title: "Decide" },
+  { id: "review", title: "Review" }, { id: "fix", title: "Fix" }, { id: "fixup", title: "Fix-up" }, { id: "verify", title: "Verify" },
+  { id: "merge", title: "Merge queue" }, { id: "postmerge", title: "Post-merge review" }, { id: "other", title: "Other (security, Discord)" },
+];
+
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference" | "runners" | "modelQueue"> & { meSettings: Api["me"]["settings"] } {
   let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] }, minEffort: { top: "high" } };
-  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, maxCalls: null, manualOnly: false, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "iconcraft", "pdfcraft", "photocraft", "Sheetcraft", "wordcraft"] };
+  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, maxCalls: null, manualOnly: false, tasks: TASKS.map((t) => t.id), taskChoices: TASKS, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "iconcraft", "pdfcraft", "photocraft", "Sheetcraft", "wordcraft"] };
   const at = (ms: number) => new Date(NOW + ms).toISOString();
   const wait = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 60));
 
@@ -106,7 +113,7 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
         if (me.role === "viewer") throw new Error("viewers have no settings");
         const ok = (n: number) => Number.isInteger(n) && n >= 0 && n <= 90;
         if (body.reserve && (!ok(body.reserve.fiveHour) || !ok(body.reserve.weekly))) throw new Error("keep-free values are whole numbers from 0 to 90");
-        settings = { ...settings, ...structuredClone(body), ...(body.repos && { repos: [...new Set(body.repos)].sort() }) };
+        settings = { ...settings, ...structuredClone(body), ...(body.repos && { repos: [...new Set(body.repos)].sort() }), ...(body.tasks && { tasks: TASKS.map((t) => t.id).filter((id) => body.tasks!.includes(id)) }) };
         changed();
         return wait(structuredClone(settings));
       },

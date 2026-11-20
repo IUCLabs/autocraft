@@ -192,9 +192,37 @@ describe("picks and Manual only", () => {
     clear();
   });
 
+  test("My tasks: unticked tasks are left in the queue for others; a pick and every task again still run", async () => {
+    const all = (await userSettings.settings(db, req("alice", "maintainer"))).taskChoices.map((t) => t.id);
+    assert.deepEqual((await userSettings.settings(db, req("alice", "maintainer"))).tasks, all, "every task is ticked by default");
+    const put = (tasks: unknown) => userSettings.setSettings(db, req("alice", "maintainer", { json: { tasks } }));
+    await assert.rejects(put(["review", "nope"]), /unknown task: nope/);
+    assert.deepEqual((await put(all.filter((t) => t !== "review"))).tasks, all.filter((t) => t !== "review"));
+    const step = (id: number, s: string) => db.prepare("UPDATE remote_calls SET step = ? WHERE id = ?").run(s, id);
+    const review = q({ ageMs: 60_000 }), fix = q();
+    step(review, "opus-review");
+    step(fix, "fixissue");
+    dropQueueCache(db);
+    assert.equal(await leased("alice"), fix, "the older review is passed over");
+    assert.equal(await leased("alice"), null);
+    assert.equal(await leased("bob"), review, "another user who takes reviews gets it");
+    const picked = q();
+    step(picked, "opus-review");
+    dropQueueCache(db);
+    await pickCall(db, user("alice"), picked);
+    assert.equal(await leased("alice"), picked, "a call alice picked runs although she unticked its task");
+    const later = q();
+    step(later, "opus-review");
+    dropQueueCache(db);
+    await put(all);
+    assert.equal(db.prepare("SELECT 1 FROM user_settings WHERE login = 'alice' AND key = 'skip_tasks'").get(), undefined, "every task ticked again stores nothing");
+    assert.equal(await leased("alice"), later);
+    clear();
+  });
+
   test("why a call waits", () => {
-    const r = (o: Partial<ReadyRunner> = {}): ReadyRunner => ({ login: "bob", role: "maintainer", manual: false, tiers: new Set<Tier>(["top"]), free: 1, repos: null, ...o });
-    const c = { tier: "top" as Tier, promptId: "review.opus", repos: ["photocraft"], followUp: false, picked: null };
+    const r = (o: Partial<ReadyRunner> = {}): ReadyRunner => ({ login: "bob", role: "maintainer", manual: false, tiers: new Set<Tier>(["top"]), free: 1, repos: null, skip: new Set<string>(), ...o });
+    const c = { tier: "top" as Tier, promptId: "review.opus", step: "opus-review", repos: ["photocraft"], followUp: false, picked: null };
     const write = () => true;
     assert.equal(whyWaiting({ ...c, picked: { login: "bob" } }, [r()], 0, write).text, "Picked by bob");
     assert.equal(whyWaiting({ ...c, followUp: true }, [r()], 0, write).code, "session");
@@ -202,6 +230,8 @@ describe("picks and Manual only", () => {
     assert.equal(whyWaiting(c, [r({ manual: true })], 0, write).code, "manual-only");
     assert.equal(whyWaiting(c, [r()], 0, () => false).code, "no-repo-access");
     assert.equal(whyWaiting({ ...c, repos: [] }, [r()], 0, write).code, "no-repo-access", "a repo-less call goes to operators only");
+    assert.equal(whyWaiting(c, [r({ skip: new Set(["review"]) })], 0, write).code, "task-off");
+    assert.equal(whyWaiting(c, [r({ skip: new Set(["review"]) }), r({ free: 0 })], 0, write).code, "busy", "the free runner does not take reviews");
     assert.equal(whyWaiting(c, [r({ free: 0 }), r({ manual: true })], 0, write).code, "busy");
     assert.deepEqual(whyWaiting(c, [r()], 3, write), { code: "behind", text: "3 calls ahead" });
   });

@@ -11,11 +11,12 @@ import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { acceptedModels, familyOf, isTier } from "./mode.ts";
 import { claimRepos } from "./my-repos.ts";
+import { taskOfStep, TASK_CHOICES, userSkips } from "./my-tasks.ts";
 import type { Tier } from "./protocol.ts";
 import { CALLER_STALE_MS } from "./room.ts";
 
 /** A fresh, ready Task Runner of a user who is not cooled off. `free`: slots without the fast lane its token does not use, within the user's Max calls at once. */
-export type ReadyRunner = { login: string; role: string; manual: boolean; tiers: ReadonlySet<Tier>; free: number; repos: ReadonlySet<string> | null };
+export type ReadyRunner = { login: string; role: string; manual: boolean; tiers: ReadonlySet<Tier>; free: number; repos: ReadonlySet<string> | null; skip: ReadonlySet<string> };
 
 export function readyRunners(db: DatabaseSync, nowMs: number): ReadyRunner[] {
   const rows = db.prepare(`SELECT t.id, t.login, a.role, h.models, COALESCE(h.slots, 1) AS slots, ${manualSql("t.login")} AS manual,
@@ -43,18 +44,18 @@ export function readyRunners(db: DatabaseSync, nowMs: number): ReadyRunner[] {
     const tiers = new Set<Tier>();
     for (const [t, m] of Object.entries(models)) if (isTier(t) && typeof m === "string" && familyOf(m, accepted[t]) !== null) tiers.add(t);
     const slots = Number(r.slots) - (Number(r.slots) >= 2 ? 1 : 0);
-    out.push({ login: r.login, role: r.role, manual: Number(r.manual) === 1, tiers, free: Math.min(left(r.login), Math.max(0, slots - Number(r.leased))), repos: claimRepos(db, r.login, undefined) });
+    out.push({ login: r.login, role: r.role, manual: Number(r.manual) === 1, tiers, free: Math.min(left(r.login), Math.max(0, slots - Number(r.leased))), repos: claimRepos(db, r.login, undefined), skip: userSkips(db, r.login) });
   }
   return out;
 }
 
 /** What whyWaiting reads of a queued call. `picked`: its live pick (login null when the viewer may not see it). */
-export type WhyCall = { tier: Tier; promptId: string; repos: readonly string[]; followUp: boolean; picked: { login: string | null } | null };
+export type WhyCall = { tier: Tier; promptId: string; step: string; repos: readonly string[]; followUp: boolean; picked: { login: string | null } | null };
 
 /**
  * Why a queued call waits, most specific first: its pick; the runner that holds its session; no ready runner for its tier;
  * every such runner Manual only; no such runner's user may take it (role rules, write permission as last confirmed, My
- * repos); every runner that may take it busy; else the calls ahead of it.
+ * repos); none of them takes its task (my-tasks.ts); every runner that may take it busy; else the calls ahead of it.
  */
 export function whyWaiting(c: WhyCall, runners: readonly ReadyRunner[], ahead: number, canWrite: (login: string, repo: string) => boolean): { code: ModelQueueWhyCode; text: string } {
   if (c.picked) return { code: "picked", text: c.picked.login ? `Picked by ${c.picked.login}` : "Picked by a user" };
@@ -65,7 +66,10 @@ export function whyWaiting(c: WhyCall, runners: readonly ReadyRunner[], ahead: n
   if (!auto.length) return { code: "manual-only", text: "Every ready Task Runner is Manual only" };
   const may = auto.filter((r) => runnerTakes(r, { prompt_id: c.promptId, repos: c.repos }, canWrite));
   if (!may.length) return { code: "no-repo-access", text: c.repos.length ? "No ready Task Runner's user takes calls on its repo" : "No ready Task Runner's user may take it" };
-  if (!may.some((r) => r.free > 0)) return { code: "busy", text: "Every Task Runner that may take it is busy" };
+  const task = taskOfStep(c.step);
+  const takes = may.filter((r) => !r.skip.has(task));
+  if (!takes.length) return { code: "task-off", text: `No ready Task Runner's user takes ${TASK_CHOICES.find((t) => t.id === task)?.title ?? task} tasks` };
+  if (!takes.some((r) => r.free > 0)) return { code: "busy", text: "Every Task Runner that may take it is busy" };
   return { code: "behind", text: ahead === 0 ? "Next in line" : `${ahead} call${ahead === 1 ? "" : "s"} ahead` };
 }
 
@@ -99,7 +103,7 @@ export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean, 
     const picked = pickCounts(r, nowMs, (l) => fresh.has(l)) ? r.pickedBy : null;
     const followUp = r.parent_id !== null;
     const n = ahead.get(r.tier) ?? 0;
-    const why = whyWaiting({ tier: r.tier, promptId: r.prompt_id, repos: r.repos, followUp, picked: picked === null ? null : { login: showPicker ? picked : null } }, runners, n, canWrite);
+    const why = whyWaiting({ tier: r.tier, promptId: r.prompt_id, step: r.step, repos: r.repos, followUp, picked: picked === null ? null : { login: showPicker ? picked : null } }, runners, n, canWrite);
     if (!followUp && picked === null) ahead.set(r.tier, n + 1);
     calls.push({
       id: r.id, step: r.step, promptId: r.prompt_id, tier: r.tier, model: x.asked_model, refs: r.refs, repos: r.repos, authors: r.authors,
