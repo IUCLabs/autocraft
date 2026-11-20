@@ -58,7 +58,7 @@ const job = (id: number, step: string, state: Job["state"], startMin: number | n
   id, step, params: {}, requestedBy: "ochre-fox", requestedAt: iso((startMin ?? 0) + 1), state,
   startedAt: startMin === null ? null : iso(startMin), endedAt: state === "running" || state === "queued" ? null : iso((startMin ?? 0) - minutes),
   progress: null, summary: null, error: null, cancelRequested: false, usage: null,
-  models: step.startsWith("classify") ? ["jev", "haiku"] : step === "opus-review" ? ["opus"] : step === "decide" ? ["opus"] : [], accounts: state === "queued" ? [] : step === "opus-review" || step === "decide" || step.startsWith("classify") ? ["Account B"] : [], ...extra,
+  models: step.startsWith("classify") ? ["jev", "haiku"] : step === "opus-review" ? ["opus"] : step === "decide" ? ["opus"] : [], accounts: state === "queued" ? [] : step === "opus-review" || step === "decide" || step.startsWith("classify") ? ["Account B"] : [], waiting: null, ...extra,
 });
 
 const pr = (repo: string, number: number, title: string) => ({ repo, number, kind: "pr" as const, state: "open" as const, title });
@@ -72,6 +72,7 @@ function seed(): Job[] {
   return [
     job(49, "merge-ask", "done", 3, 1, { summary: "Asked Merge? on 1 PR" }),
     job(50, "labels-apply", "done", 6, 1, { params: { repo: "designcraft" }, summary: "designcraft: labelled 7 items" }),
+    job(51, "opus-review", "queued", null, 0, { params: { repo: "photocraft", limit: 5 }, waiting: "No Task Runner takes photocraft" }),
     job(48, "classify-new", "queued", null, 0, { params: { limit: 200 }, requestedBy: "pipeline" }),
     job(47, "classify-new", "running", 9, 0, { params: { limit: 200 }, requestedBy: "pipeline", progress: "Jev: 120 of 164 items", usage: { calls: 120, input: 98_400, output: 6_100, costUsd: null } }),
     job(46, "embed", "done", 25, 2, { params: { scope: "changed" }, requestedBy: "pipeline", summary: "embedded new and changed items" }),
@@ -98,7 +99,7 @@ export const mockSwitch = { draining: MOCK_DRAIN };
 export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pipeline"> {
   const jobs = seed();
   const steps = structuredClone(STEPS);
-  let next = 49;
+  let next = 52;
   const judgement = { judgementModel: "opus", judgementModels: ["opus", "sonnet"] };
   const flag = { enabled: !MOCK_DRAIN, draining: MOCK_DRAIN, changedBy: "ochre-fox" as string | null, changedAt: iso(300) as string | null };
   const limits: StageLimit[] = [
