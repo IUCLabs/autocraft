@@ -3,7 +3,7 @@
 // the delta since the head it reviewed before. Reads GitHub (diffs); never writes to it.
 import type { DatabaseSync } from "node:sqlite";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { currentJobId, queueRoom } from "../agents/call.ts";
+import { currentJobId, poolRoom } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { REVIEW_OPUS } from "../agents/steps.ts";
@@ -326,7 +326,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       summary.missing.push(refOf(c));
     }
     params.onHandled?.(++handled);
-  }), (i) => queueRoom(db, undefined, [cands[i]!.repo]));
+  }), poolRoom(db, (i) => [cands[i]!.repo]));
   log(`opus-review ${repo}: ${summary.reviewed} reviewed (${Object.entries(summary.verdicts).map(([v, k]) => `${k} ${v}`).join(", ")}); ${summary.skipped.length} without a diff, ${summary.missing.length} without an answer`);
   return summary;
 }

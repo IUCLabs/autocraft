@@ -2,7 +2,7 @@
 // without a person, and lists defects and minor findings. One call per PR head. Reads GitHub (the diff); writes only to
 // the local database. What the findings do to the PR is the merge queue (src/merge/queue.ts) and the fix-up route.
 import type { DatabaseSync } from "node:sqlite";
-import { queueRoom } from "../agents/call.ts";
+import { poolRoom } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { PREMERGE_OPUS } from "../agents/steps.ts";
@@ -144,7 +144,7 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
       } else fail("retry: no valid reply from the model");
     }
     params.onHandled?.(++handled);
-  }), () => queueRoom(db, undefined, [repo]));
+  }), poolRoom(db, () => [repo]));
   log(`premerge ${repo}: ${s.reviewed} reviewed, ${s.findings} findings (${s.defects} defects), ${s.failed.length} without an answer, ${s.moved.length} moved`);
   return s;
 }

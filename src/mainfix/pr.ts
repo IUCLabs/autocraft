@@ -35,7 +35,7 @@ import type { FixRow } from "./index.ts";
 import { optionalChecks } from "../optional-checks.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
-import { isHalt, queueRoom } from "../agents/call.ts";
+import { isHalt, poolRoom } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 
 export const PR_ACTOR = "main-fix";
@@ -319,7 +319,7 @@ export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ open
         const o = await attempt(c, stored.length ? stored : now, () => onHandled?.(), ledger);
         if (o !== "waiting") out[o]++;
       } finally { release(); }
-    }), () => queueRoom(c.db, undefined, [c.repo]), { max: POOL_MAX.mainfix });
+    }), poolRoom(c.db, () => [c.repo]), { max: POOL_MAX.mainfix });
   } finally {
     ledger.release();
   }

@@ -7,7 +7,7 @@ import { insertRun, onRunEnd, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 import { levelBand } from "../rank/level.ts";
 import { inferenceMode } from "../remote/mode.ts";
-import { remoteRoom, roomOf, roomState, type RoomState } from "../remote/room.ts";
+import { hasTaker, remoteRoom, roomOf, roomState, type RoomState } from "../remote/room.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
 export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
@@ -124,12 +124,46 @@ export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass(), rep
   return Math.max(0, freeSlots(db) - Number(ahead));
 }
 
-/** queueRoom for many questions at one moment (the runner's pass over queued jobs): in the user-local mode the helpers, their permissions and repos are read once. */
-export function queueRoomPass(db: DatabaseSync): (cls: 0 | 1 | 2, repos?: readonly string[]) => number {
-  if (inferenceMode(db) !== "user-local") return (cls, repos) => queueRoom(db, cls, repos);
+/** Room questions answered from one reading of the helpers (queueRoomPass). */
+export type RoomPass = {
+  room(cls: 0 | 1 | 2, repos?: readonly string[]): number;
+  /** Whether a Task Runner that may take a call naming `repos` is connected and ready, busy or not (always in the server-account mode). */
+  taker(repos?: readonly string[]): boolean;
+};
+
+/** queueRoom for many questions at one moment (the runner's pass over queued jobs, a pool's round): in the user-local mode the helpers, their permissions and repos are read once. */
+export function queueRoomPass(db: DatabaseSync): RoomPass {
+  if (inferenceMode(db) !== "user-local") return { room: (cls, repos) => queueRoom(db, cls, repos), taker: () => true };
   const nowMs = Date.now();
   let st: RoomState | undefined;
-  return (cls, repos) => roomOf(db, (st ??= roomState(db, nowMs)), cls, nowMs, callRepos(repos));
+  const state = (): RoomState => (st ??= roomState(db, nowMs));
+  return { room: (cls, repos) => roomOf(db, state(), cls, nowMs, callRepos(repos)), taker: (repos) => hasTaker(db, state(), nowMs, callRepos(repos)) };
+}
+
+/** The model queue's room for a pool's units by index (classify/run.ts pool): answers are kept for one round of the pool's scheduling. */
+export type PoolRoom = { round(): void; room(i: number): number; taker(i: number): boolean };
+
+/** PoolRoom for units whose calls name `reposOf(i)` (the job's repo param is added), in the current call's class. */
+export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly string[] | undefined): PoolRoom {
+  const cls = currentClass();
+  let pass: RoomPass | null = null;
+  const rooms = new Map<string, number>(), takers = new Map<string, boolean>();
+  const keyOf = (r: readonly string[] | undefined): string => (r === undefined ? "\0" : [...r].sort().join("\n"));
+  return {
+    round: () => { pass = null; rooms.clear(); takers.clear(); },
+    room: (i) => {
+      const r = reposOf(i), k = keyOf(r);
+      let n = rooms.get(k);
+      if (n === undefined) rooms.set(k, (n = (pass ??= queueRoomPass(db)).room(cls, r)));
+      return n;
+    },
+    taker: (i) => {
+      const r = reposOf(i), k = keyOf(r);
+      let t = takers.get(k);
+      if (t === undefined) takers.set(k, (t = (pass ??= queueRoomPass(db)).taker(r)));
+      return t;
+    },
+  };
 }
 
 export type Started = { runId: number; configDir: string; accountId: string };

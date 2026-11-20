@@ -59,9 +59,12 @@ export function roomCanWrite(db: DatabaseSync, logins: readonly string[], nowMs:
 }
 
 type Helper = { login: string; role: string | null; idle_claim_at: number | null; idle_repos: string | null; slots: number; leased: number; beat: number | null };
-type Taker = { h: Helper; r: { login: string; role: string; repos: ReadonlySet<string> | null } };
-/** What the room reads of the helpers, once for any number of room questions at one moment: the active helpers, and on first use their permissions, repos and users' caps. */
-export type RoomState = { active: Helper[]; takers?: { list: Taker[]; canWrite: (login: string, repo: string) => boolean }; left: Map<string, number> };
+type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null } };
+/**
+ * What the room reads of the helpers, once for any number of room questions at one moment: the fresh, ready helpers that are
+ * not Manual only (`ready`), those of them that are active, and on first use their permissions, repos and users' caps.
+ */
+export type RoomState = { ready: Helper[]; active: Helper[]; takers?: { list: Taker[]; canWrite: (login: string, repo: string) => boolean }; left: Map<string, number> };
 
 export function roomState(db: DatabaseSync, nowMs: number = Date.now()): RoomState {
   const rows = prep(db, `SELECT t.login, a.role, t.idle_claim_at, t.idle_repos, COALESCE(h.slots, 1) AS slots,
@@ -69,7 +72,32 @@ export function roomState(db: DatabaseSync, nowMs: number = Date.now()): RoomSta
       (SELECT MAX(c.heartbeat_at) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS beat
     FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
     WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as Helper[];
-  return { active: rows.filter((h) => (h.beat !== null && Number(h.beat) >= nowMs - LIVE_LEASE_MS) || (h.idle_claim_at !== null && Number(h.idle_claim_at) >= nowMs - IDLE_FRESH_MS)), left: new Map() };
+  return { ready: rows, active: rows.filter((h) => isActive(h, nowMs)), left: new Map() };
+}
+
+const isActive = (h: Helper, nowMs: number): boolean =>
+  (h.beat !== null && Number(h.beat) >= nowMs - LIVE_LEASE_MS) || (h.idle_claim_at !== null && Number(h.idle_claim_at) >= nowMs - IDLE_FRESH_MS);
+
+function takersOf(db: DatabaseSync, st: RoomState, nowMs: number): NonNullable<RoomState["takers"]> {
+  return st.takers ??= {
+    canWrite: roomCanWrite(db, st.ready.map((h) => h.login), nowMs),
+    list: st.ready.map((h) => {
+      let own: string[] | undefined;
+      try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
+      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own) } };
+    }),
+  };
+}
+
+/**
+ * Whether a call naming `repos` has a taker: a fresh, ready helper that is not Manual only and may take it (runnerTakes,
+ * roomCanWrite), busy or not. Unknown repos (undefined) always have one.
+ */
+export function hasTaker(db: DatabaseSync, st: RoomState, nowMs: number, repos?: readonly string[]): boolean {
+  if (repos === undefined) return true;
+  if (!st.ready.length) return false;
+  const t = takersOf(db, st, nowMs);
+  return t.list.some(({ r }) => runnerTakes(r, { prompt_id: "", repos }, t.canWrite));
 }
 
 /** Room for class `cls` and `repos` (see remoteRoom) from a state read at `nowMs`. */
@@ -77,15 +105,8 @@ export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: numb
   let takers = st.active;
   let takes: (c: { prompt_id: string; repos: readonly string[] }) => boolean = () => true;
   if (repos !== undefined && st.active.length) {
-    const t = st.takers ??= {
-      canWrite: roomCanWrite(db, st.active.map((h) => h.login), nowMs),
-      list: st.active.map((h) => {
-        let own: string[] | undefined;
-        try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
-        return { h, r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own) } };
-      }),
-    };
-    const fit = t.list.filter(({ r }) => runnerTakes(r, { prompt_id: "", repos }, t.canWrite));
+    const t = takersOf(db, st, nowMs);
+    const fit = t.list.filter(({ active, r }) => active && runnerTakes(r, { prompt_id: "", repos }, t.canWrite));
     takers = fit.map((x) => x.h);
     takes = (c) => fit.some(({ r }) => runnerTakes(r, c, t.canWrite));
   }

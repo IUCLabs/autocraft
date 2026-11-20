@@ -2,7 +2,7 @@
 // pairs Jev is not sure about, and for every pair while Jev is unavailable.
 import type { DatabaseSync } from "node:sqlite";
 import { jevParallel } from "../agents/accounts.ts";
-import { queueRoom } from "../agents/call.ts";
+import { poolRoom } from "../agents/call.ts";
 import { jevAvailable } from "../agents/jev.ts";
 import { askClaude, pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
@@ -113,6 +113,6 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     }
     const todo = r.ok ? (r.rest ?? []) : input;
     c.unanswered += todo.length;
-  }), (i) => queueRoom(db, undefined, [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))]), { first: true });
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))]), { first: true });
   return c;
 }

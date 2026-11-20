@@ -8,7 +8,7 @@ import type { BuildTask, TaskResult, TaskStep } from "../../web/src/api/types.ts
 import { BuildError } from "../build/envs.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { add, askClaude, POOL_MAX, pool, saveUsage, type Usage } from "../classify/run.ts";
-import { queueRoom } from "../agents/call.ts";
+import { poolRoom } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { cloneTask } from "./tasks.ts";
@@ -303,7 +303,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
   const byPr = new Map<string, typeof rows>();
   for (const v of rows) byPr.set(`${v.repo}#${v.number}`, [...(byPr.get(`${v.repo}#${v.number}`) ?? []), v]);
   const groups = [...byPr.values()];
-  await pool(groups.map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), (i) => queueRoom(db, undefined, [groups[i]![0]!.repo]), { max: POOL_MAX.verifyCollect });
+  await pool(groups.map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), poolRoom(db, (i) => [groups[i]![0]!.repo]), { max: POOL_MAX.verifyCollect });
 
   // Screenshot runs: one read of an empty table while the Screenshots feature has never run.
   s.shots = await collectScreenshots(db, d, log, runId, params.stopping);

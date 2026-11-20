@@ -57,7 +57,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
 import { leaseItem } from "../runner/leases.ts";
-import { isHalt, queueRoom } from "../agents/call.ts";
+import { isHalt, poolRoom } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
 
@@ -363,7 +363,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     if (!release) return;
     try { await fn(); } finally { release(); }
   };
-  const room = () => queueRoom(db, undefined, [repo]);
+  const room = poolRoom(db, () => [repo]);
   await pool(asks.map((c) => () => leased(c, () => askOne(c))), room);
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
@@ -606,7 +606,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   };
   // Items of one PR run one after the other inside one pool item; PRs run side by side.
   const byPr = <T extends { number: number }>(items: T[]): T[][] => [...Map.groupBy(items, (c) => c.number).values()];
-  await pool(byPr(picks).map((group) => async () => { for (const c of group) await fixOne(c); }), () => queueRoom(db, undefined, [repo]), { max: POOL_MAX.fixup });
+  await pool(byPr(picks).map((group) => async () => { for (const c of group) await fixOne(c); }), poolRoom(db, () => [repo]), { max: POOL_MAX.fixup });
   await pool(byPr(cMerges).map((group) => async () => { for (const c of group) await leased(c, () => mergeConflict(db, conflictRun, c)); }), room, { max: POOL_MAX.fixup });
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;

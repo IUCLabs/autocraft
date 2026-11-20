@@ -22,7 +22,7 @@ import { leaseItem } from "../runner/leases.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
 import { POOL_MAX, pool, type Usage } from "../classify/run.ts";
-import { queueRoom } from "../agents/call.ts";
+import { poolRoom } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
 import { textStep } from "../agents/steps.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
@@ -483,7 +483,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     } catch (e) {
       ilog(`  ${refOf(r)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db, undefined, [repo]), { max: POOL_MAX.fixissue });
+  }), poolRoom(db, () => [repo]), { max: POOL_MAX.fixissue });
   let handled = 0;
   const stopNew = stopNote(params.stopping, log, `fixissue ${repo}: stopping, no new issues started`);
   await pool(picks.map((c) => async (): Promise<void> => {
@@ -502,7 +502,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     } catch (e) {
       ilog(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), () => queueRoom(db, undefined, [repo]), { max: POOL_MAX.fixissue });
+  }), poolRoom(db, () => [repo]), { max: POOL_MAX.fixissue });
   await unclaimHeld(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
   return s;
@@ -608,7 +608,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
     } catch (e) {
       ilog(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), (i) => queueRoom(db, undefined, [rows[i]!.repo]), { max: POOL_MAX.fixissueCollect });
+  }), poolRoom(db, (i) => [rows[i]!.repo]), { max: POOL_MAX.fixissueCollect });
   for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(xOf(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
