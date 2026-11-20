@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -55,6 +55,26 @@ test("a restart of the old unit moves the runner over: directories, credential, 
     assert.ok(calls.indexOf("--user enable autocraft") < calls.indexOf("--user start autocraft"));
     assert.ok(calls.indexOf("--user start autocraft") < calls.indexOf("--user disable autocraft-task"));
     assert.equal(calls.at(-1), "--user --no-block stop autocraft-task");
+    assert.ok(!existsSync(join(h.cfg, "autocraft-task.migrate.lock")), "the lock is gone before the old unit's stop ends the process");
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+    rmSync(h.dir, { recursive: true, force: true });
+  }
+});
+
+test("a lock of a dead process is taken over, and none is left after the migration", () => {
+  const h = legacyHome(() => SHIM);
+  const saved = { ...process.env };
+  Object.assign(process.env, h.procEnv);
+  try {
+    const dead = spawnSync("true").pid;
+    const lock = join(h.cfg, "autocraft-task.migrate.lock");
+    writeFileSync(lock, String(dead));
+    const r = helper.migrateLegacy({ manual: true });
+    assert.ok(!r.lines.some((l) => l.includes("another process")));
+    assert.ok(lstatSync(join(h.cfg, "autocraft-task")).isSymbolicLink());
+    assert.ok(!existsSync(lock));
   } finally {
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
     Object.assign(process.env, saved);

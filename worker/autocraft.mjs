@@ -42,7 +42,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.3.1";
+export const HELPER_VERSION = "1.3.2";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
@@ -3816,6 +3816,7 @@ async function cmdDoctor() {
   }
   const tiers = Object.entries({ ...adapter.defaultTiers, ...cfg.tiers });
   check(tiers.length > 0, tiers.length ? `tiers: ${tiers.map(([t, m]) => `${t}=${m}`).join(", ")}` : `no tiers set: add "tiers" with ${adapter.id} model ids to the config`);
+  if (!mac && existsSync(systemdUnitFile(SERVICE_NAME)) && lingerOff()) console.log(`warn ${LINGER_HINT}`);
   return bad ? 1 : 0;
 }
 
@@ -3985,6 +3986,14 @@ ${Object.entries(s.env).map(([k, v]) => `    <key>${k}</key>${x(v)}`).join("\n")
 `;
 }
 
+const LINGER_HINT = "The service stops when you log out. To keep it running: loginctl enable-linger";
+
+/** True when systemd reports lingering off for this user; false when it is on or `loginctl` is missing or fails. */
+function lingerOff() {
+  const r = spawnSync("loginctl", ["show-user", userInfo().username, "--property=Linger", "--value"], { encoding: "utf8", timeout: 10_000 });
+  return r.status === 0 && r.stdout.trim() === "no";
+}
+
 /** `service install [--parallel N] | uninstall | status`. @param {string[]} argv */
 async function cmdService(argv) {
   const [action, ...rest] = argv;
@@ -4022,7 +4031,7 @@ async function cmdService(argv) {
     }
     console.log(`installed ${file}: \`autocraft ${run.slice(2).join(" ")}\` runs ${mac ? "at login" : "with your user session"} and restarts whenever it ends`);
     console.log(logLine);
-    if (!mac) console.log("to keep it running while you are logged out: loginctl enable-linger");
+    if (!mac && lingerOff()) console.log(LINGER_HINT);
     return 0;
   }
   if (action === "uninstall") {
@@ -4240,7 +4249,8 @@ export function migrateLegacy(o = {}) {
       if (mac) {
         must("/bin/launchctl", ["bootstrap", `gui/${userInfo().uid}`, newFile]);
         rmSync(oldFile, { force: true });
-        // Last: from inside the old agent this stops this process.
+        // Last: from inside the old agent this stops this process, so the lock goes first.
+        unlock();
         if (!stopped) sys("/bin/launchctl", ["bootout", job]);
       } else {
         // The old unit stays installed and enabled until the new one has started, so a failed start leaves a working runner.
@@ -4258,7 +4268,8 @@ export function migrateLegacy(o = {}) {
         sys("systemctl", ["--user", "disable", LEGACY_SERVICE]);
         rmSync(oldFile, { force: true });
         sys("systemctl", ["--user", "daemon-reload"]);
-        // Last: from inside the old unit this stops this process, which holds no lease yet.
+        // Last: from inside the old unit this stops this process, which holds no lease yet. The stop skips the `finally` below.
+        unlock();
         if (inUnit) sys("systemctl", ["--user", "--no-block", "stop", LEGACY_SERVICE]);
       }
       switched = inUnit;
