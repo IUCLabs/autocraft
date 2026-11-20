@@ -145,6 +145,34 @@ describe("drainCommands", () => {
     assert.equal(preapprovalOf(w.db, "app", 1)?.state, "review");
   });
 
+  test("a read stamped at the comment's own instant does not count: it may have started before it", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue` }));
+    w.db.exec("DELETE FROM sync_requests");
+    const at = (w.db.prepare("SELECT requested_at FROM github_commands").get() as { requested_at: string }).requested_at;
+    readAt(w, 1, new Date(at));
+    assert.equal(await drainCommands(w.db, deps(w, { exec: ghFake().exec })), 0);
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    readAt(w, 1, new Date(Date.parse(at) + 1));
+    assert.equal(await drainCommands(w.db, deps(w, { exec: ghFake().exec, now: () => new Date(Date.parse(at) + 2 * 60_000) })), 1, "one millisecond later counts");
+  });
+
+  test("on an issue, the PR that closes it must be read after the comment too before it is queued", async () => {
+    const w = fresh().issue(3).pr(4);
+    w.db.prepare("UPDATE items SET closing_issues = '[3]' WHERE repo = 'app' AND number = 4").run();
+    readAt(w, 4, new Date(Date.now() - 60_000));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, number: 3, pr: false }));
+    w.db.exec("DELETE FROM sync_requests");
+    readAt(w, 3, new Date(Date.now() + 1000));
+    assert.equal(await drainCommands(w.db, deps(w, { exec: ghFake().exec })), 0, "the issue is fresh, its closing PR is not");
+    assert.deepEqual(w.db.prepare("SELECT number FROM sync_requests").all().map((r) => ({ ...r })), [{ number: 4 }], "the PR is read again");
+    assert.equal(preapprovalOf(w.db, "app", 4), null);
+    readAt(w, 4, new Date(Date.now() + 1000));
+    w.db.exec("DELETE FROM sync_requests");
+    assert.equal(await drainCommands(w.db, deps(w, { exec: ghFake().exec, now: () => new Date(Date.now() + 2 * 60_000) })), 1);
+    assert.equal(preapprovalOf(w.db, "app", 4)?.state, "review");
+  });
+
   test("commands that wait for a re-read or a permission retry do not keep newer ones out of a drain", async () => {
     const w = fresh().pr(1).pr(2).pr(3);
     deliver(w, payload({ body: `@${SLUG} merge queue`, number: 1, comment: 7001 }));

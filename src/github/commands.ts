@@ -188,17 +188,24 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
     if (r.state === "queued") {
       if (now.getTime() - Date.parse(r.requested_at) > EXPIRE_MS) { settle(db, r, "expired", null, now); continue; }
       if (r.command !== "merge-queue") { settle(db, r, "ignored", null, now); continue; }
-      // The item must have been read from GitHub since the comment (the webhook's re-read, or the poll after a failed one), so the
-      // command sees it at its current head. A request row that is gone proves nothing: a failed re-read drops it too.
-      const read = (readAt.get(r.repo, r.number) as { synced_at: string } | undefined)?.synced_at;
-      if (!read || Date.parse(read) < Date.parse(r.requested_at)) {
-        // No read since the comment and none queued (the re-read failed, or started within the comment's second): ask for one,
-        // at most once a minute (tried_at), so the command does not wait for a poll that may never read the item again.
-        if (!db.prepare("SELECT 1 FROM main.sync_requests WHERE repo = ? AND number = ?").get(r.repo, r.number)) {
+      // Every item the command may pre-approve must have been read from GitHub since the comment (the webhook's re-read, or the
+      // poll after a failed one), so it is queued at its current head: the item, and for an issue the open PRs that close it (queueAdd
+      // queues the sole one). A request row that is gone proves nothing: a failed re-read drops it too. A read must have started
+      // strictly after the comment: `synced_at` is cut to the second, so one in the same instant may have started before it.
+      const { openPrsClosing } = await import("../dash/api/queue-page.ts");
+      const stale = [r.number, ...(r.pr ? [] : openPrsClosing(db, r.repo, r.number))].filter((n) => {
+        const read = (readAt.get(r.repo, n) as { synced_at: string } | undefined)?.synced_at;
+        return !read || Date.parse(read) <= Date.parse(r.requested_at);
+      });
+      if (stale.length) {
+        // No read since the comment (the re-read failed, or started within the comment's second): ask for one of each item that has
+        // none queued, at most once a minute (tried_at), so the command does not wait for a poll that may never read them again.
+        const ask = stale.filter((n) => !db.prepare("SELECT 1 FROM main.sync_requests WHERE repo = ? AND number = ?").get(r.repo, n));
+        for (const n of ask) {
           db.prepare("INSERT INTO main.sync_requests (repo, number, event, requested_at) VALUES (?, ?, 'issue_comment', ?) ON CONFLICT (repo, number) DO NOTHING")
-            .run(r.repo, r.number, now.toISOString().replace(/\.\d+Z$/, "Z"));
-          db.prepare("UPDATE main.github_commands SET tried_at = ? WHERE comment_id = ?").run(now.toISOString(), r.comment_id);
+            .run(r.repo, n, now.toISOString().replace(/\.\d+Z$/, "Z"));
         }
+        if (ask.length) db.prepare("UPDATE main.github_commands SET tried_at = ? WHERE comment_id = ?").run(now.toISOString(), r.comment_id);
         continue;
       }
       calls++;

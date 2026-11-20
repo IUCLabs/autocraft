@@ -261,7 +261,7 @@ async function markFast(db: DatabaseSync, by: string, repo: string, number: numb
 }
 
 /** The open PRs of `repo` that close issue `issue` when they merge (GitHub's closing references, from the mirror). */
-function openPrsClosing(db: DatabaseSync, repo: string, issue: number): number[] {
+export function openPrsClosing(db: DatabaseSync, repo: string, issue: number): number[] {
   const rows = db.prepare("SELECT number, closing_issues FROM main.items INDEXED BY items_closing WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND closing_issues IS NOT NULL AND closing_issues <> '[]'").all(repo) as { number: number; closing_issues: string }[];
   return rows
     .filter((p) => {
