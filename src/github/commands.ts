@@ -204,7 +204,8 @@ type PrNode = {
  * A PR's head now and whether it changed after `since` (a comment's creation time). GitHub keeps no push time for a commit, so three
  * signals are read: a force push (HeadRefForcePushedEvent, stamped by GitHub), a commit dated later (the committer date, which the
  * pusher sets, so a back-dated commit passes this one) and the head's first check suite created later (stamped by GitHub when a
- * push starts CI; a merge needs green CI at the head, so the head of a mergeable PR has one).
+ * push starts CI; a merge needs green CI at the head, so the head of a mergeable PR has one). Throws while the head has no check
+ * suite and no other signal shows a change: the push time cannot be told yet.
  */
 export async function prSince(q: Querier, repo: string, number: number, since: string): Promise<PrNow | null> {
   const data = await q.query(PR_SINCE, { owner: ownerOf(repo), name: repo, number }) as { repository?: { pullRequest?: PrNode | null } | null };
@@ -215,10 +216,12 @@ export async function prSince(q: Querier, repo: string, number: number, since: s
   const commits = pr.commits.nodes.flatMap((n) => (n ? [n.commit] : []));
   const head = commits.find((c) => c.oid === pr.headRefOid);
   const suites = (head?.checkSuites?.nodes ?? []).flatMap((s) => (s ? [Date.parse(s.createdAt)] : []));
-  const changed = pr.timelineItems.nodes.some((n) => after(n?.createdAt))
-    || commits.some((c) => after(c.committedDate))
-    || (suites.length > 0 && Math.min(...suites) > t);
-  return { head: pr.headRefOid, opened: pr.createdAt, changed };
+  const changed = pr.timelineItems.nodes.some((n) => after(n?.createdAt)) || commits.some((c) => after(c.committedDate));
+  if (changed) return { head: pr.headRefOid, opened: pr.createdAt, changed };
+  // Without a check suite the head's push time is unknown: a back-dated commit pushed after the comment would pass the other
+  // signals, so the command waits (tried again) until CI has registered the head.
+  if (!suites.length) throw new Error("the head has no check suite yet");
+  return { head: pr.headRefOid, opened: pr.createdAt, changed: Math.min(...suites) > t };
 }
 
 /** Settles a command. `reply`: the app answers in the thread; `allowed`: the commenter may queue there, so the answer needs no comment approval. */

@@ -461,7 +461,7 @@ describe("comment-time checks", () => {
     assert.match(gh.posted[0]!.body, /@op Not added to the merge queue: it could not be queued\.$/);
   });
 
-  test("prSince sees a force push, a later commit or a later first check suite on the head", async () => {
+  test("prSince sees a force push, a later commit or a later first check suite on the head; a head without a check suite is unknown", async () => {
     const since = "2026-01-01T12:00:00Z", before = "2026-01-01T11:00:00Z", after = "2026-01-01T13:00:00Z";
     const answer = (o: { push?: string; date?: string; suites?: string[] }) => validating({
       spent: 0, remaining: 5000,
@@ -472,10 +472,10 @@ describe("comment-time checks", () => {
     });
     const changed = async (o: Parameters<typeof answer>[0]) => (await prSince(answer(o), "app", 1, since))?.changed;
     assert.equal(await changed({ suites: [before, after] }), false);
-    assert.equal(await changed({}), false);
+    await assert.rejects(changed({}), /no check suite/, "a back-dated push before CI registers it cannot be told from no push");
     assert.equal(await changed({ push: after }), true);
     assert.equal(await changed({ push: before, date: after }), true);
     assert.equal(await changed({ suites: [after] }), true);
-    assert.deepEqual(await prSince(answer({}), "app", 1, since), { head: "h1", opened: before, changed: false });
+    assert.deepEqual(await prSince(answer({ suites: [before] }), "app", 1, since), { head: "h1", opened: before, changed: false });
   });
 });
