@@ -89,7 +89,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["next-page", ["plans", "jobs", "settings", "repos", "items", "ranks", "fasttrack", "usage", "accounts", "stages", "tasks"]],
   ["batch:", ["queue", "tasks", "items", "checks", "access"]],
   ["queue-batches:", ["queue", "tasks", "items"]],
-  ["queue-page:", ["queue", "fasttrack", "ranks", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos", "pr-builds", "build-features"]],
+  ["queue-page:", ["queue", "preapprovals", "plans", "fasttrack", "ranks", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos", "pr-builds", "build-features"]],
   ["fast-track", ["fasttrack", "items"]],
   ["merge-held", ["queue"]],
   ["accounts", ["accounts", "settings"]],

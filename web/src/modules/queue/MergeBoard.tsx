@@ -1,8 +1,9 @@
 // The merge queue, on the Merge queue tab: every PR with a take or take-fix review as one Workable table, grouped by the step it waits on,
-// in the order a PR passes them; integration batches are groups of their own, then the stopped PRs.
+// in the order a PR passes them; integration batches are groups of their own, then the stopped PRs. PRs queued with Queue items or
+// pre-approved that have no take review yet come first, in a Queued group, so what was queued shows at once.
 import { Fragment, useEffect, useMemo } from "react";
 import { useApi } from "../../api/client";
-import type { FastPosition, NextMerge, QueueBatch, QueueOrigin, QueueRow, QueueState } from "../../api/types";
+import type { FastPosition, NextMerge, QueueBatch, QueueOrigin, QueuePendingRow, QueueRow, QueueState } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -54,8 +55,8 @@ const HOW: Record<QueueOrigin["how"], [string, string]> = {
 };
 
 /** How the PR came into the queue, by whom and when. */
-function Added({ r }: { r: Row }) {
-  const o = r.added ?? { how: "review", by: null, at: r.reviewedAt };
+function Added({ r }: { r: { added?: QueueOrigin; reviewedAt?: string } }) {
+  const o = r.added ?? { how: "review", by: null, at: r.reviewedAt ?? null };
   const [label, hint] = HOW[o.how];
   return (
     <span className="block text-xs leading-snug" title={hint}>
@@ -108,6 +109,41 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
         ),
         added: <Added r={r} />,
         actions: <RowMenu repo={r.repo} number={r.number} fast={fast} held={!!r.held} pr inBatch={r.batch !== undefined} backlog={r.state !== "held-backlog"} />,
+      }}
+    />
+  );
+}
+
+/** The Queued group: queued or pre-approved PRs before their take review. */
+const QUEUED = { id: "queued", label: "Queued", dot: "bg-ink/40" };
+
+const PENDING_STEP: Record<QueuePendingRow["step"], string> = {
+  fixup: "Fix-up first",
+  review: "Waiting for review",
+  ci: "Reviewed: take",
+};
+
+function PendingRow({ r }: { r: QueuePendingRow }) {
+  const linked = useIsLinked(r.repo, r.number);
+  const label = PENDING_STEP[r.step];
+  return (
+    <WorkableRow
+      item={{ repo: r.repo, number: r.number, kind: "pr", state: "open", title: r.title }}
+      dataItem={`${r.repo}:${r.number}`}
+      highlight={linked}
+      mark={<FastMark fast={r.fast} />}
+      cells={{
+        step: (
+          <span className="flex flex-wrap items-center gap-1">
+            <Badge tone="neutral">{label}</Badge>
+            {r.held && <Badge tone="warn">Held</Badge>}
+          </span>
+        ),
+        ...checkCells(null),
+        size: r.size ? <Size size={r.size} /> : null,
+        author: <span className="block truncate text-xs text-ink/70">{r.author || "unknown"}</span>,
+        added: <Added r={r} />,
+        actions: <RowMenu repo={r.repo} number={r.number} fast={r.fast} held={r.held} pr inBatch={false} backlog />,
       }}
     />
   );
@@ -174,11 +210,12 @@ export function MergeBoard({ repo }: { repo: string | null }) {
     // PRs in "Next merges" first, in merge order.
     const pos = (r: Row) => next.get(key(r))?.position ?? Infinity;
     for (const l of steps.values()) l.sort((a, b) => pos(a) - pos(b));
-    return { steps, batches, blocked, next, loaded: !!first };
+    return { steps, batches, blocked, next, pending: first?.pending ?? [], loaded: !!first };
   }, [pages]);
 
   const inBatches = q.batches.reduce((s, b) => s + b.rows.length, 0);
   const counts = [
+    { id: QUEUED.id, label: QUEUED.label, n: q.pending.length, tone: QUEUED.dot },
     ...STEPS.map((s) => ({ id: s.id, label: s.label, n: (q.steps.get(s.id)?.length ?? 0) + (s.id === "batch" ? inBatches : 0), tone: s.dot })),
     { id: "stopped", label: "Stopped", n: q.blocked.length, tone: "bg-bad" },
   ];
@@ -189,13 +226,20 @@ export function MergeBoard({ repo }: { repo: string | null }) {
       <ErrorLine error={error?.message} className="mt-3" />
       {q.loaded && (
         <p className="mt-4 text-sm text-ink/60">
-          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} with a take review, by the step each waits on, in the order a PR passes them.
+          <span className="num font-medium text-ink">{num(total)}</span> PR{total === 1 ? "" : "s"} queued or with a take review, by the step each waits on, in the order a PR passes them.
         </p>
       )}
       <FlowBar counts={counts} total={total} />
       {q.loaded && (
         <WorkableTable columns={COLUMNS} label="Merge queue" closes className="mt-5">
           {total === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue.</p>}
+          {q.pending.length > 0 && (
+            <WorkableGroup id={`mq-${QUEUED.id}`} title={QUEUED.label} count={q.pending.length} dot={QUEUED.dot}>
+              {q.pending.map((r) => (
+                <PendingRow key={key(r)} r={r} />
+              ))}
+            </WorkableGroup>
+          )}
           {STEPS.map((s) => {
             const rows = q.steps.get(s.id)!;
             const batchGroups =
