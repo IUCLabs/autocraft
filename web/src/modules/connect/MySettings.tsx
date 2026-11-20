@@ -30,6 +30,9 @@ export function MySettings() {
   // save of the latest change may say Saved, so one that ends after a newer edit or save does not.
   const [saving, setSaving] = useState(0);
   const latest = useRef(0);
+  // Task saves run one after another, so the server ends with the latest selection. `confirmed` is the server's last answer;
+  // only the latest save sets the boxes from its answer, or back to `confirmed` when it fails.
+  const taskSaves = useRef({ chain: Promise.resolve() as Promise<unknown>, n: 0, confirmed: [] as string[] });
   const edited = () => {
     latest.current++;
     setSavedAt(null);
@@ -45,6 +48,7 @@ export function MySettings() {
     setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
     setPicks(data.repos);
     setTasks(data.tasks);
+    taskSaves.current.confirmed = data.tasks;
     setMaxCalls(data.maxCalls === null ? "" : String(data.maxCalls));
   }, [data]);
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
@@ -71,15 +75,18 @@ export function MySettings() {
     });
   };
   const saveTasks = (next: string[]) => {
-    const was = tasks;
+    const s = taskSaves.current, n = ++s.n;
     setTasks(next);
-    saveRun("tasks", async () => {
-      try {
-        setTasks((await api.me.settings.put({ tasks: next })).tasks);
-      } catch (e) {
-        setTasks(was);
-        throw e;
-      }
+    saveRun("tasks", () => {
+      const run = s.chain.then(async () => {
+        try {
+          s.confirmed = (await api.me.settings.put({ tasks: next })).tasks;
+        } finally {
+          if (n === s.n) setTasks(s.confirmed);
+        }
+      });
+      s.chain = run.catch(() => undefined);
+      return run;
     });
   };
   const allTasks = data.taskChoices.map((t) => t.id);

@@ -146,16 +146,19 @@ const callRepos = (repos: readonly string[] | undefined): readonly string[] | un
  * above the class and that those Task Runners may take (src/remote/room.ts).
  */
 export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass(), repos?: readonly string[]): number {
-  if (inferenceMode(db) === "user-local") return remoteRoom(db, cls, Date.now(), callRepos(repos));
+  if (inferenceMode(db) === "user-local") return remoteRoom(db, cls, Date.now(), callRepos(repos), context?.step);
   const ahead = (db.prepare("SELECT COUNT(*) AS n FROM model_waits WHERE provider = 'claude' AND eligible = 1 AND seen_at >= ? AND class >= ?").get(Date.now() - allocation.staleMs, cls) as { n: number }).n;
   return Math.max(0, freeSlots(db) - Number(ahead));
 }
 
-/** Room questions answered from one reading of the helpers (queueRoomPass). */
+/**
+ * Room questions answered from one reading of the helpers (queueRoomPass). `step`: the step of the calls asked about, for the
+ * tasks the runners take (src/remote/my-tasks.ts); left out, the current job's step (none outside a job: every task counts).
+ */
 export type RoomPass = {
-  room(cls: 0 | 1 | 2, repos?: readonly string[]): number;
+  room(cls: 0 | 1 | 2, repos?: readonly string[], step?: string): number;
   /** Whether a call naming `repos` has a taker (src/remote/takers.ts; always in the server-account mode). A call naming no repo (none given and no job repo) has one only in an operator's Task Runner, as the sweep reads it. */
-  taker(repos?: readonly string[]): boolean;
+  taker(repos?: readonly string[], step?: string): boolean;
 };
 
 /** queueRoom for many questions at one moment (the runner's pass over queued jobs, a pool's round): in the user-local mode the helpers, their permissions and repos are read once. */
@@ -167,8 +170,8 @@ export function queueRoomPass(db: DatabaseSync): RoomPass {
   // The taker rule of src/remote/takers.ts, read once per pass.
   const takes = takerTest(db, nowMs);
   return {
-    room: (cls, repos) => roomOf(db, state(), cls, nowMs, callRepos(repos)),
-    taker: (repos) => takes({ prompt_id: "", repos: callRepos(repos) ?? [] }),
+    room: (cls, repos, step = context?.step) => roomOf(db, state(), cls, nowMs, callRepos(repos), step),
+    taker: (repos, step = context?.step) => takes({ prompt_id: "", repos: callRepos(repos) ?? [], step }),
   };
 }
 

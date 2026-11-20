@@ -17,7 +17,7 @@ import { STATUS_FRESH_MS } from "./helpers.ts";
 import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimRepos } from "./my-repos.ts";
-import { userSkips } from "./my-tasks.ts";
+import { taskOfStep, userSkips } from "./my-tasks.ts";
 import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S } from "./protocol.ts";
 
@@ -33,7 +33,7 @@ const LIVE_LEASE_MS = 3 * scaled(HEARTBEAT_S * 1000);
 
 /**
  * Room for calls of class `cls` that name `repos` (undefined: any repo, every helper counts; empty: no repo, which only
- * operators take). A helper's fast-lane slot takes only small-tier and gating calls, and the planner does not
+ * operators take) and are of `step` (only helpers whose users take its task count; undefined: every task). A helper's fast-lane slot takes only small-tier and gating calls, and the planner does not
  * know which calls it is about to make, so the fast lane is not room. The status names no fast lane: a helper reporting 2
  * or more slots is taken to run one (work adds it to `--parallel N`, except for a harness that runs one call at a time,
  * which reports 1, and on macOS at `--parallel 16`, which this undercounts by one). A lease in the fast lane is not told
@@ -44,8 +44,8 @@ const LIVE_LEASE_MS = 3 * scaled(HEARTBEAT_S * 1000);
  * lately still gets calls; the claim then checks the permission itself. The helper's repos are those of its last idle claim
  * (`idle_repos`) narrowed by the user's current My repos.
  */
-export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.now(), repos?: readonly string[]): number {
-  return roomOf(db, roomState(db, nowMs), cls, nowMs, repos);
+export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.now(), repos?: readonly string[], step?: string): number {
+  return roomOf(db, roomState(db, nowMs), cls, nowMs, repos, step);
 }
 
 /**
@@ -90,13 +90,14 @@ function takersOf(db: DatabaseSync, st: RoomState, nowMs: number): NonNullable<R
   };
 }
 
-/** Room for class `cls` and `repos` (see remoteRoom) from a state read at `nowMs`. */
-export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: number, repos?: readonly string[]): number {
+/** Room for class `cls`, `repos` and `step` (see remoteRoom) from a state read at `nowMs`. `step` left out: every task counts. */
+export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: number, repos?: readonly string[], step?: string): number {
   let takers = st.active;
   let takes: (c: { prompt_id: string; repos: readonly string[]; step?: string }) => boolean = () => true;
-  if (repos !== undefined && st.active.length) {
+  if ((repos !== undefined || step !== undefined) && st.active.length) {
     const t = takersOf(db, st, nowMs);
-    const fit = t.list.filter(({ active, r }) => active && runnerTakes(r, { prompt_id: "", repos }, t.canWrite));
+    const task = step === undefined ? undefined : taskOfStep(step);
+    const fit = t.list.filter(({ active, r }) => active && (repos === undefined ? !(task !== undefined && r.skip.has(task)) : runnerTakes(r, { prompt_id: "", repos, step }, t.canWrite)));
     takers = fit.map((x) => x.h);
     takes = (c) => fit.some(({ r }) => runnerTakes(r, c, t.canWrite));
   }

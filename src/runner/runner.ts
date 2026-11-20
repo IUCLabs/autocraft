@@ -420,7 +420,7 @@ export class Runner {
       .sort((a, b) => (steps.get(b.step)?.priority ?? 0) - (steps.get(a.step)?.priority ?? 0) || a.id - b.id);
     // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off. While it drains, nothing new starts.
     const on = isEnabled(this.db), draining = isDraining(this.db);
-    // Room by class, then by the job's repo ("" for a job without one).
+    // Room by class, then by the job's step and repo ("" for a job without one): a runner counts only for the tasks it takes.
     const room = new Map<number, Map<string, number>>();
     const pass = queueRoomPass(this.db);
     for (const q of queued) {
@@ -437,9 +437,9 @@ export class Runner {
       const cls = step.priority ?? 0;
       let byRepo = room.get(cls);
       if (!byRepo) room.set(cls, (byRepo = new Map()));
-      const key = q.repo ?? "";
-      const roomOf = (): number => byRepo.get(key) ?? pass.room(cls, q.repo ? [q.repo] : undefined);
-      if (claude && q.repo && !pass.taker([q.repo])) continue;
+      const key = `${q.step}\n${q.repo ?? ""}`;
+      const roomOf = (): number => byRepo.get(key) ?? pass.room(cls, q.repo ? [q.repo] : undefined, q.step);
+      if (claude && q.repo && !pass.taker([q.repo], q.step)) continue;
       if (claude && !this.db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state = 'running' LIMIT 1").get(step.name)) {
         // Nothing of the step runs: it starts anyway, and takes a slot of the room.
       } else if (claude) {

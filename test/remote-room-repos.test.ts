@@ -11,6 +11,7 @@ import { enqueueCall } from "../src/remote/calls.ts";
 import { parseStatus, storeStatus } from "../src/remote/helpers.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
 import { setUserRepos } from "../src/remote/my-repos.ts";
+import { setUserTasks, TASK_CHOICES } from "../src/remote/my-tasks.ts";
 import { remoteRoom } from "../src/remote/room.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -71,6 +72,26 @@ test("room is counted per repo: runners with disjoint repos, a call nobody may t
     job("deckcraft");
     assert.equal(queueRoom(db, 0), 0, "olga no longer takes deckcraft, and dave's runner is not active");
     assert.equal(queueRoom(db, 0, ["designcraft"]), 0, "a call of a deckcraft job names deckcraft too");
+  } finally {
+    setCallContext(null);
+  }
+});
+
+test("room counts only the runners whose users take the call's task (My tasks)", () => {
+  const db = connect(join(mkdtempSync(join(SCRATCH, "remote-room-tasks-")), "t.db"));
+  setInferenceMode(db, "user-local", "test");
+  db.prepare("INSERT INTO access (login, role) VALUES ('olga', 'operator')").run();
+  const id = createToken(db, "olga", "helper", { kind: "runner" }).row.id;
+  storeStatus(db, id, "olga", parseStatus({ slots: 1, busy: 0, readiness: "ready", harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 0, weekly: 0 } }));
+  db.prepare("UPDATE mcp_tokens SET idle_claim_at = ? WHERE id = ?").run(Date.now(), id);
+  setUserTasks(db, "olga", TASK_CHOICES.map((t) => t.id).filter((t) => t !== "review"));
+  const room = (repos: string[] | undefined, step: string) => remoteRoom(db, 0, Date.now(), repos, step);
+  assert.ok(room(["deckcraft"], "fixissue") > 0);
+  assert.equal(room(["deckcraft"], "opus-review"), 0, "the only runner's user unticked Review");
+  assert.equal(room(undefined, "opus-review"), 0, "with no repo named as well");
+  setCallContext({ jobId: 1, step: "opus-review", stage: 5, repo: "deckcraft", cancelled: () => false });
+  try {
+    assert.equal(queueRoom(db, 0, ["deckcraft"]), 0, "a review job's calls get no room");
   } finally {
     setCallContext(null);
   }

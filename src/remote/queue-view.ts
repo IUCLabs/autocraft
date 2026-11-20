@@ -104,7 +104,8 @@ export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean, 
     const followUp = r.parent_id !== null;
     const n = ahead.get(r.tier) ?? 0;
     const why = whyWaiting({ tier: r.tier, promptId: r.prompt_id, step: r.step, repos: r.repos, followUp, picked: picked === null ? null : { login: showPicker ? picked : null } }, runners, n, canWrite);
-    if (!followUp && picked === null) ahead.set(r.tier, n + 1);
+    // A call of a task no ready runner takes is passed over, so it is no call ahead of the next.
+    if (!followUp && picked === null && why.code !== "task-off") ahead.set(r.tier, n + 1);
     calls.push({
       id: r.id, step: r.step, promptId: r.prompt_id, tier: r.tier, model: x.asked_model, refs: r.refs, repos: r.repos, authors: r.authors,
       waitedMs: Number(x.queued_ms) + (x.queued_since === null ? 0 : Math.max(0, nowMs - Number(x.queued_since))), followUp, gating: gating(r),

@@ -11,7 +11,7 @@ import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDe
 import { shownLookup } from "../dash/api/shown.ts";
 import { blankIfHidden } from "../dash/api/visible.ts";
 import { withdrawJobCalls } from "../remote/calls.ts";
-import { noRunnerFor, untakenTest, type UntakenTest } from "./concurrency.ts";
+import { untakenTest, type UntakenTest } from "./concurrency.ts";
 
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
 /** Error text of jobs ended by a runner stop or restart; the autopilot does not count them as failures. */
@@ -58,7 +58,7 @@ export function toJob(r: JobRow, accounts: string[] = [], waiting: string | null
 export function toJobs(db: DatabaseSync, rows: JobRow[]): Job[] {
   const labels = accountLabelsByJob(db, rows.map((r) => r.id));
   let untaken: UntakenTest | undefined;
-  return rows.map((r) => toJob(r, labels.get(r.id), r.state === "queued" && r.repo !== null && (untaken ??= untakenTest(db))(r) ? noRunnerFor(r.repo) : null));
+  return rows.map((r) => toJob(r, labels.get(r.id), r.state === "queued" ? (untaken ??= untakenTest(db))(r) : null));
 }
 
 export function jobRow(db: DatabaseSync, id: number): JobRow | undefined {
