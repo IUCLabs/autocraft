@@ -122,7 +122,8 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   // Tabs come from the stored next step; the text is veiled afterwards, so a quiet pull request stays in its tab.
   const tabOf = new Map(work.map((w) => [w, tabOfNext(w.next)]));
   const veilNext = (w: QueueWorkRow): QueueWorkRow => (veiledFor(reader, w.repo, w.number) ? { ...w, next: "" } : w);
-  const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOf.get(w) === t).length);
+  const pending = pendingRows(db, entries, inScope, originOf, fastOf, held);
+  const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length + pending.length : work.filter((w) => tabOf.get(w) === t).length);
   const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
 
   const out: QueuePage = { tab, repos: reposParam, counts, rows: [], mergeRows: [], nextMerges: [], batches: [], total: 0, next: null };
@@ -146,16 +147,16 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
   out.nextMerges = nextMerges(entries, fast, batchOf, scores);
   out.batches = active.map((b) => toBatch(b, reader, b.prs.flatMap((p) => rowOf.get(`${b.repo}#${p.number}`) ?? [])));
-  out.pending = pendingRows(db, allEntries, (repo) => visibleSet.has(repo) && (reposParam === "pipeline" || reposParam === "all" || repo === reposParam), originOf, fastOf, held);
+  out.pending = pending;
   return out;
 }
 
 /**
  * Open PRs queued with Queue items or pre-approved that are no merge queue row yet: no take review at their head, so they wait for
- * the fix-up or the review first. As with list_merge_queue, they are the operators' own picks, so every visible repo (or the one
- * asked for) is covered, not only the pipeline's scope. A PR that is a queue row anywhere is left out. Oldest first.
+ * the fix-up or the review first. `entries` are the queue rows the view shows and `want` is the view's scope, so a PR is in exactly one
+ * group. Oldest first.
  */
-function pendingRows(db: DatabaseSync, entries: CachedEntry[], want: (repo: string) => boolean, originOf: (e: Pick<CachedEntry, "repo" | "number" | "decisionId" | "reviewedAt">) => QueueOrigin,
+function pendingRows(db: DatabaseSync, entries: CachedEntry[], want: (repo: string, number: number) => boolean, originOf: (e: Pick<CachedEntry, "repo" | "number" | "decisionId" | "reviewedAt">) => QueueOrigin,
   fastOf: (repo: string, number: number) => FastPosition | null, held: Set<string>): QueuePendingRow[] {
   const queued = new Set(entries.map((e) => `${e.repo}#${e.number}`));
   type P = { repo: string; number: number; state: "fixup" | "review" | "ci"; title: string | null; author: string | null; breakdown: string | null };
@@ -165,7 +166,7 @@ function pendingRows(db: DatabaseSync, entries: CachedEntry[], want: (repo: stri
   const seen = new Set<string>();
   return rows.flatMap((p) => {
     const k = `${p.repo}#${p.number}`;
-    if (seen.has(k) || queued.has(k) || !want(p.repo)) return [];
+    if (seen.has(k) || queued.has(k) || !want(p.repo, p.number)) return [];
     seen.add(k);
     const size = p.breakdown ? ((JSON.parse(p.breakdown) as RankBreakdown).size ?? null) : null;
     return [{

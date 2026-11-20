@@ -1,7 +1,7 @@
 // Fake Queue page: the work and merge fixtures behind one repo filter, with in-memory fast track, holds and batch controls.
 import type { Api } from "../client";
 import { slotsOfRows } from "./queueSlotMock";
-import type { FastPosition, MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueueOrigin, QueuePage, QueueRow, QueueTab, QueueWorkRow, User } from "../types";
+import type { FastPosition, MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueueOrigin, QueuePage, QueuePendingRow, QueueRow, QueueTab, QueueWorkRow, User } from "../types";
 import { PIPELINE_REPOS, queueBatchList, queueList } from "./queueFixtures";
 import { FAST_TRACK_SEED, workList } from "./workFixtures";
 
@@ -89,7 +89,16 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
         .filter((r) => !seen.has(key(r)) && !!seen.add(key(r)))
         .map((r): QueueMergeRow => ({ ...r, state: inBatch.has(key(r)) ? r.state : r.state === "in-batch" || r.state === "batch-checking" ? "ready" : r.state, fast: pos(r), held: held.has(key(r)), added: originOf(r) }))
         .filter((r) => r.state !== "merged" && inScope(r.repo, r.number));
-      const count = (t: QueueTab) => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOf(w.next) === t).length);
+      // Queued with Queue items, no take review yet: the first two PRs of the work list that are no queue row.
+      const queuedKeys = new Set(entries.map(key));
+      const pending: QueuePendingRow[] = work
+        .filter((w) => w.kind === "pr" && !queuedKeys.has(key(w)))
+        .slice(0, 2)
+        .map((w, i) => ({
+          repo: w.repo, number: w.number, title: w.title, author: "contributor", size: w.size, step: i === 0 ? "fixup" : "review", fast: w.fast, held: w.held,
+          added: { how: "queued", by: "operator", at: new Date(Date.now() - 3600_000).toISOString() },
+        }));
+      const count = (t: QueueTab) => (t === "all" ? work.length : t === "merge" ? entries.length + pending.length : work.filter((w) => tabOf(w.next) === t).length);
       const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
       const out: QueuePage = { tab, repos, counts, rows: [], mergeRows: [], nextMerges: [], batches: [], total: 0, next: null };
       const offset = f.offset ?? 0, limit = f.limit ?? 100;
@@ -104,6 +113,7 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
       out.mergeRows = free.slice(offset, offset + limit);
       out.total = free.length;
       out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
+      out.pending = pending;
       out.batches = batches.map((b) => ({ ...b, prs: b.prs.map((p): QueueMergeRow => ({ ...p, fast: pos(p), held: held.has(key(p)), added: originOf(p) })) }));
       const batchOf = new Map(batches.flatMap((b) => b.prs.map((p) => [key(p), { id: b.id, branch: b.branch }] as const)));
       const items = entries.flatMap((e) => {

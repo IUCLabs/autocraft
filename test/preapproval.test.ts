@@ -324,6 +324,7 @@ describe("add to merge queue (a pre-approved merge without a fix-up)", () => {
     const before = await queuePage(w.db, req);
     assert.ok(!before.mergeRows.some((r) => r.number === 16));
     assert.deepEqual(before.pending?.map((p) => [p.number, p.step, p.added.how]), [[16, "review", "queued"]]);
+    assert.equal(before.counts.merge, before.mergeRows.length + 1);
     w.review(16, { verdict: "take" });
     settle(w);
     refreshPlanCache(w.db);

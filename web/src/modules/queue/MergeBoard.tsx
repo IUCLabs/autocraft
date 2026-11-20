@@ -1,6 +1,6 @@
 // The merge queue, on the Merge queue tab: every PR with a take or take-fix review as one Workable table, grouped by the step it waits on,
 // in the order a PR passes them; integration batches are groups of their own, then the stopped PRs. PRs queued with Queue items or
-// pre-approved that have no take review yet come first, in a Review group, so what was queued shows at once.
+// pre-approved that have no take review yet come first, in a Queued group, so what was queued shows at once.
 import { Fragment, useEffect, useMemo } from "react";
 import { useApi } from "../../api/client";
 import type { FastPosition, NextMerge, QueueBatch, QueueOrigin, QueuePendingRow, QueueRow, QueueState } from "../../api/types";
@@ -114,18 +114,18 @@ function PrRow({ r, next }: { r: Row; next: Next }) {
   );
 }
 
-/** The Review group: queued or pre-approved PRs before their take review. */
-const REVIEW = { id: "review", label: "Review", hint: "Queued or pre-approved; joins the queue once the review of its head says take", dot: "bg-ink/40" };
+/** The Queued group: queued or pre-approved PRs before their take review. */
+const QUEUED = { id: "queued", label: "Queued", dot: "bg-ink/40" };
 
-const PENDING_STEP: Record<QueuePendingRow["step"], [string, string]> = {
-  fixup: ["Fix-up first", "The operator's fix-up runs, then the review of the pushed head"],
-  review: ["Waiting for review", "Waits for the review of its head to say take"],
-  ci: ["Reviewed: take", "Joins the merge queue on the next plan"],
+const PENDING_STEP: Record<QueuePendingRow["step"], string> = {
+  fixup: "Fix-up first",
+  review: "Waiting for review",
+  ci: "Reviewed: take",
 };
 
 function PendingRow({ r }: { r: QueuePendingRow }) {
   const linked = useIsLinked(r.repo, r.number);
-  const [label, hint] = PENDING_STEP[r.step];
+  const label = PENDING_STEP[r.step];
   return (
     <WorkableRow
       item={{ repo: r.repo, number: r.number, kind: "pr", state: "open", title: r.title }}
@@ -135,9 +135,7 @@ function PendingRow({ r }: { r: QueuePendingRow }) {
       cells={{
         step: (
           <span className="flex flex-wrap items-center gap-1">
-            <span title={hint}>
-              <Badge tone="neutral">{label}</Badge>
-            </span>
+            <Badge tone="neutral">{label}</Badge>
             {r.held && <Badge tone="warn">Held</Badge>}
           </span>
         ),
@@ -217,7 +215,7 @@ export function MergeBoard({ repo }: { repo: string | null }) {
 
   const inBatches = q.batches.reduce((s, b) => s + b.rows.length, 0);
   const counts = [
-    { id: REVIEW.id, label: REVIEW.label, n: q.pending.length, tone: REVIEW.dot },
+    { id: QUEUED.id, label: QUEUED.label, n: q.pending.length, tone: QUEUED.dot },
     ...STEPS.map((s) => ({ id: s.id, label: s.label, n: (q.steps.get(s.id)?.length ?? 0) + (s.id === "batch" ? inBatches : 0), tone: s.dot })),
     { id: "stopped", label: "Stopped", n: q.blocked.length, tone: "bg-bad" },
   ];
@@ -236,7 +234,7 @@ export function MergeBoard({ repo }: { repo: string | null }) {
         <WorkableTable columns={COLUMNS} label="Merge queue" closes className="mt-5">
           {total === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue.</p>}
           {q.pending.length > 0 && (
-            <WorkableGroup id={`mq-${REVIEW.id}`} title={REVIEW.label} count={q.pending.length} hint={REVIEW.hint} dot={REVIEW.dot}>
+            <WorkableGroup id={`mq-${QUEUED.id}`} title={QUEUED.label} count={q.pending.length} dot={QUEUED.dot}>
               {q.pending.map((r) => (
                 <PendingRow key={key(r)} r={r} />
               ))}
