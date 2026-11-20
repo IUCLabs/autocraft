@@ -7,6 +7,7 @@ import { Switch } from "../../ui/atoms/Switch";
 import { Block } from "../../ui/molecules/Block";
 import { CheckRow } from "../../ui/molecules/CheckRow";
 import { useWrite } from "../../lib/hooks";
+import { Fold } from "./Fold";
 import { SectionTitle } from "./SectionTitle";
 
 export function MySettings() {
@@ -74,9 +75,9 @@ export function MySettings() {
       }
     });
   };
-  const field = (key: "fiveHour" | "weekly", label: string) => (
-    <label className="flex items-center gap-2 text-sm">
-      <span className="w-44 shrink-0 text-ink/80">{label}</span>
+  const field = (key: "fiveHour" | "weekly", short: string, label: string) => (
+    <label className="flex items-center gap-1.5">
+      <span className="whitespace-nowrap text-ink/60">{short}</span>
       <Input
         type="number"
         inputMode="numeric"
@@ -94,18 +95,24 @@ export function MySettings() {
           if (e.key === "Enter") save(vals);
         }}
         aria-label={label}
-        className="w-20"
+        className="w-14 text-right"
       />
       <span className="text-ink/55">%</span>
     </label>
   );
+  const item = "flex items-center gap-3 max-sm:justify-between";
   return (
-    <Block className="mt-4" title={<SectionTitle icon={SlidersHorizontalIcon}>My settings</SectionTitle>}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-6">
-        {field("fiveHour", "Keep free: 5-hour window")}
-        {field("weekly", "Keep free: weekly")}
-        <label className="flex items-center gap-2 text-sm">
-          <span className="w-44 shrink-0 text-ink/80">Max calls at once</span>
+    <Block dense className="mt-4" title={<SectionTitle icon={SlidersHorizontalIcon}>My settings</SectionTitle>}>
+      <div className="flex flex-col gap-2 text-sm sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-8">
+        <div className={item}>
+          <span className="whitespace-nowrap text-ink/80">Keep free</span>
+          <span className="flex items-center gap-3">
+            {field("fiveHour", "5h", "Keep free: 5-hour window")}
+            {field("weekly", "week", "Keep free: weekly")}
+          </span>
+        </div>
+        <label className={item}>
+          <span className="text-ink/80">Max calls at once</span>
           <Input
             type="number"
             inputMode="numeric"
@@ -121,36 +128,38 @@ export function MySettings() {
               if (e.key === "Enter") saveMax(maxCalls);
             }}
             aria-label="Max calls at once"
-            className="w-20"
+            className="w-20 text-right"
           />
         </label>
-        <span className="flex items-center gap-2 text-sm">
-          <span className="w-44 shrink-0 text-ink/80">Manual only</span>
+        <span className={item}>
+          <span className="text-ink/80">Manual only</span>
           <Switch on={manual} onChange={saveManual} label="Manual only" busy={write.busy === "manual-only"} />
         </span>
       </div>
-      <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:gap-2">
-        <span className="w-44 shrink-0 pt-1.5 text-sm text-ink/80">My repos</span>
-        <div role="group" aria-label="My repos" className="min-w-0 flex-1 rounded-md border border-line sm:max-w-sm">
+      <Fold className="mt-2" title="My repos" summary={picks.length ? `${picks.length} of ${shown.length} repos` : "All repos"}>
+        <div role="group" aria-label="My repos" className="mt-1 rounded-md border border-line p-1 sm:max-w-3xl">
           <CheckRow checked={!picks.length} onChange={() => picks.length && savePicks([])} title="All repos" />
-          {shown.map((r) => {
-            const on = picks.includes(r);
-            const ok = choices.has(r);
-            return (
-              <CheckRow
-                key={r}
-                checked={on}
-                onChange={() => savePicks(on ? picks.filter((x) => x !== r) : [...picks, r].sort())}
-                title={
-                  <span className={ok ? undefined : "line-through opacity-60"} title={ok ? undefined : "Pipeline off or no write permission"}>
-                    {r}
-                  </span>
-                }
-              />
-            );
-          })}
+          <div className="sm:columns-2 sm:gap-x-1 lg:columns-3">
+            {shown.map((r) => {
+              const on = picks.includes(r);
+              const ok = choices.has(r);
+              return (
+                <div key={r} className="break-inside-avoid">
+                  <CheckRow
+                    checked={on}
+                    onChange={() => savePicks(on ? picks.filter((x) => x !== r) : [...picks, r].sort())}
+                    title={
+                      <span className={ok ? undefined : "line-through opacity-60"} title={ok ? undefined : "Pipeline off or no write permission"}>
+                        {r}
+                      </span>
+                    }
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      </Fold>
       <ErrorLine error={problem ?? write.error} className="mt-2" />
     </Block>
   );
