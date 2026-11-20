@@ -54,8 +54,13 @@ export class NoAccountError extends Error {}
 export class CancelledError extends Error {}
 /** The pipeline was switched off: the job ends as done, not failed. */
 export class StoppedError extends Error {}
-/** True for an error that ends a step's work without a failure row. */
-export const isHalt = (e: unknown): boolean => e instanceof CancelledError || e instanceof StoppedError;
+/**
+ * A user-local call was withdrawn because no Task Runner could take it (src/remote/takers.ts): the unit of work that made it
+ * is skipped and left for a later pass, with no failure counted (pool skips it; a job it ends finishes as done).
+ */
+export class NoTakerError extends Error {}
+/** True for an error that ends a step's work, or a unit of it (NoTakerError), without a failure row. */
+export const isHalt = (e: unknown): boolean => e instanceof CancelledError || e instanceof StoppedError || e instanceof NoTakerError;
 
 /** Queue class of a call outside a job, from the step its prompt belongs to (inside a job the step's priority is used). */
 const classOfStep = (step: string): 0 | 1 | 2 =>

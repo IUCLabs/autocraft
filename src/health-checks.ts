@@ -14,10 +14,10 @@ import { readAppSecrets } from "./github/install-token.ts";
 import { PROBE_HEADERS } from "./health.ts";
 import { unboundLogins } from "./author-ids.ts";
 import { inferenceMode } from "./remote/mode.ts";
-import { CALLER_STALE_MS, roomCanWrite } from "./remote/room.ts";
+import { CALLER_STALE_MS } from "./remote/room.ts";
+import { NO_TAKER_MS } from "./remote/takers.ts";
 import { STATUS_FRESH_MS } from "./remote/helpers.ts";
 import { manualSql } from "./remote/manual-only.ts";
-import { queueView } from "./remote/queue-view.ts";
 import { confidentialReadyAt, PRIVATE_STEPS_SQL } from "./build/tasks.ts";
 
 /** Thresholds, in one place. */
@@ -279,19 +279,18 @@ function remoteManualCheck({ db, nowMs }: CheckCtx): Check[] {
 }
 
 /**
- * User-local mode: calls have waited past remoteQueuedMs and no ready Task Runner's user may take them: the role rules, write
- * permission or My repos leave every ready runner out (queue-view.ts whyWaiting `no-repo-access`). Permission goes by the
- * room's rule (roomCanWrite), so a login whose permission is not freshly known counts as able to take the call.
+ * User-local mode: pipeline-on repos that no Task Runner has been able to take calls on for NO_TAKER_MS (src/remote/takers.ts:
+ * the dashboard's minute maintenance keeps the marks). Their queued calls are withdrawn and their work waits, often with
+ * nothing queued at all, so the check goes by repo.
  */
 function remoteNoTakerCheck({ db, nowMs }: CheckCtx): Check[] {
   if (inferenceMode(db) !== "user-local") return [];
-  const stuck = queueView(db, nowMs, false, (logins) => roomCanWrite(db, logins, nowMs)).calls.filter((c) => c.why.code === "no-repo-access" && c.waitedMs >= THRESHOLDS.remoteQueuedMs);
-  if (!stuck.length) return [ok("remote-no-taker", "/model-queue")];
-  const repos = [...new Set(stuck.flatMap((c) => c.repos))].sort();
-  const n = stuck.length;
-  return [{ id: "remote-no-taker", state: "warn", count: n, since: new Date(nowMs - Math.max(...stuck.map((c) => c.waitedMs))).toISOString(), to: "/model-queue",
-    text: `${n} model call${n === 1 ? " has" : "s have"} waited over ${minutes(THRESHOLDS.remoteQueuedMs)} and no ready Task Runner's user takes calls on ${repos.length ? repos.join(", ") : "calls that name no repo"}`,
-    brief: "Model calls wait that no ready Task Runner may take" }];
+  const rows = db.prepare("SELECT n.repo, n.since FROM main.remote_no_taker n JOIN main.tracked_repos r ON r.name = n.repo AND r.pipeline = 1 WHERE n.since <= ? ORDER BY n.repo").all(nowMs - NO_TAKER_MS) as { repo: string; since: number }[];
+  if (!rows.length) return [ok("remote-no-taker", "/model-queue")];
+  const n = rows.length;
+  return [{ id: "remote-no-taker", state: "warn", count: n, since: new Date(Math.min(...rows.map((r) => Number(r.since)))).toISOString(), to: "/model-queue",
+    text: `No ready Task Runner has been able to take calls on ${clip(rows.map((r) => r.repo).join(", "), 120)} for over ${minutes(NO_TAKER_MS)}: their model work waits`,
+    brief: "Some repos have no Task Runner that may take their model calls" }];
 }
 
 /** Every check, in the order the lists show them. */

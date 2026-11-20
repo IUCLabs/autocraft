@@ -257,6 +257,12 @@ CREATE TABLE IF NOT EXISTS remote_lease_drops (
   call_id INTEGER                     -- remote_calls.id of the lost lease
 );
 CREATE INDEX IF NOT EXISTS remote_lease_drops_token ON remote_lease_drops(token_id, at);
+-- Pipeline-on repos that no Task Runner may take calls on in the user-local inference mode, since when (src/remote/takers.ts):
+-- the dashboard's minute maintenance keeps them, the remote-no-taker health check reads them.
+CREATE TABLE IF NOT EXISTS remote_no_taker (
+  repo TEXT PRIMARY KEY,
+  since INTEGER NOT NULL              -- ms since epoch
+) WITHOUT ROWID;
 -- The cool-off of a login's helpers in the user-local inference mode (src/remote/cooloff.ts): no calls until `until`.
 CREATE TABLE IF NOT EXISTS remote_cooloffs (
   login TEXT PRIMARY KEY COLLATE NOCASE,
@@ -834,7 +840,8 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   authors TEXT,                       -- JSON: lowercase logins that authored or co-authored an item of the call, read when it was queued (author preference)
   picked_by TEXT COLLATE NOCASE,      -- a user picked the queued call for their own Task Runners ("Run on my Task Runner"); cleared on requeue and unlease
   picked_at INTEGER,
-  pick_until INTEGER                  -- the pick counts until then
+  pick_until INTEGER,                 -- the pick counts until then
+  no_taker_since INTEGER              -- while queued: since when no Task Runner may take it (src/remote/takers.ts); withdrawn after a while
 );
 CREATE INDEX IF NOT EXISTS remote_calls_state ON remote_calls(state, tier);
 CREATE INDEX IF NOT EXISTS remote_calls_ended ON remote_calls(state, ended_at);

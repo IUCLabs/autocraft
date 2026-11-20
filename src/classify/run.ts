@@ -8,7 +8,7 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { accountConfigDir, itemRepos, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
+import { accountConfigDir, itemRepos, NoTakerError, queueRoom, startClaudeRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
 import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
 import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
@@ -132,6 +132,7 @@ export type PoolOptions = {
  * calls: the room of the model queue), given the index of the job that would
  * start next; it is asked again whenever a job ends or after the poll time. When none of the pool's jobs is running, one starts
  * regardless, so the call itself waits for a slot or reports that no account is enabled.
+ * A job whose model call no Task Runner could take (NoTakerError) is skipped; the others go on.
  * The first failure is thrown once the running jobs have ended.
  */
 export async function pool<T>(jobs: (() => Promise<T>)[], width: number | ((next: number) => number), opts: PoolOptions = {}): Promise<T[]> {
@@ -140,7 +141,7 @@ export async function pool<T>(jobs: (() => Promise<T>)[], width: number | ((next
   let next = 0, failed: { e: unknown } | null = null;
   const launch = (): Promise<void> => {
     const i = next++;
-    const p: Promise<void> = jobs[i]!().then((r) => void (results[i] = r), (e) => void (failed ??= { e })).finally(() => running.delete(p));
+    const p: Promise<void> = jobs[i]!().then((r) => void (results[i] = r), (e) => void (e instanceof NoTakerError || (failed ??= { e }))).finally(() => running.delete(p));
     running.add(p);
     return p;
   };

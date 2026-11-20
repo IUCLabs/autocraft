@@ -1,0 +1,73 @@
+// Takers in the user-local model queue: whether some Task Runner may take calls on a repo now, and what happens when none
+// can. A taker is a fresh, ready Task Runner (helpers.ts) of a user who is not cooled off (cooloff.ts) and not Manual only
+// (manual-only.ts) and who may take the call (runnerTakes: role rules, write permission by the room's rule roomCanWrite, My
+// repos narrowed by the runner's own list), busy or not. The dashboard's minute maintenance runs sweepTakers: a queued call
+// with no taker for NO_TAKER_MS is withdrawn, and pipeline-on repos with no taker are recorded for the remote-no-taker health
+// check. Follow-up turns and calls with a pick that counts keep their own rules (calls.ts awaitCall, picks).
+import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
+import { NO_TAKER_PREFIX, pickCounts, pickerLogins, queueSnapshot, runnerTakes, withdrawCall } from "./calls.ts";
+import { cooloffOf } from "./cooloff.ts";
+import { STATUS_FRESH_MS } from "./helpers.ts";
+import { manualSql } from "./manual-only.ts";
+import { inferenceMode } from "./mode.ts";
+import { claimRepos } from "./my-repos.ts";
+import { CALLER_STALE_MS, roomCanWrite } from "./room.ts";
+import { scaled } from "./time-scale.ts";
+
+/** How long a queued call may have no taker before it is withdrawn, and a pipeline-on repo before the health check warns. */
+export const NO_TAKER_MS = scaled(10 * 60_000);
+
+/** Whether some taker may take a call of `prompt_id` naming `repos` now; the runners and their permissions are read once. */
+export function takerTest(db: DatabaseSync, nowMs: number): (c: { prompt_id: string; repos: readonly string[] }) => boolean {
+  const rows = (prep(db, `SELECT t.login, a.role, t.idle_repos FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id JOIN main.access a ON a.login = t.login
+    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`)
+    .all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { login: string; role: string; idle_repos: string | null }[])
+    .filter((r) => cooloffOf(db, r.login, nowMs) === null);
+  if (!rows.length) return () => false;
+  const canWrite = roomCanWrite(db, rows.map((r) => r.login), nowMs);
+  const runners = rows.map((h) => {
+    let own: string[] | undefined;
+    try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
+    return { login: h.login, role: h.role, repos: claimRepos(db, h.login, own) };
+  });
+  return (c) => runners.some((r) => runnerTakes(r, c, canWrite));
+}
+
+/** The error of a call withdrawn for lack of a taker: its caller skips the work (NoTakerError). */
+export const noTakerReason = (repos: readonly string[]): string =>
+  `${NO_TAKER_PREFIX} ${repos.length ? `on ${repos.join(", ")}` : "that name no repo"}`;
+
+/**
+ * One maintenance pass at `nowMs`. Each pipeline-on repo with no taker keeps the time it was first seen so
+ * (remote_no_taker); one with a taker loses it. Each queued call with a live caller that is no follow-up and has no pick
+ * that counts gets the same mark (no_taker_since), and is withdrawn once the mark is NO_TAKER_MS old. Returns the number of
+ * calls withdrawn. Outside the user-local mode the repo marks are cleared.
+ */
+export function sweepTakers(db: DatabaseSync, nowMs: number = Date.now()): number {
+  if (inferenceMode(db) !== "user-local") {
+    prep(db, "DELETE FROM main.remote_no_taker").run();
+    return 0;
+  }
+  const takes = takerTest(db, nowMs);
+  const repos = (prep(db, "SELECT name FROM main.tracked_repos WHERE pipeline = 1").all() as { name: string }[]).map((r) => r.name);
+  const untaken = repos.filter((repo) => !takes({ prompt_id: "", repos: [repo] }));
+  prep(db, "DELETE FROM main.remote_no_taker WHERE repo NOT IN (SELECT value FROM json_each(?))").run(JSON.stringify(untaken));
+  const mark = prep(db, "INSERT OR IGNORE INTO main.remote_no_taker (repo, since) VALUES (?, ?)");
+  for (const repo of untaken) mark.run(repo, nowMs);
+
+  const marked = new Map((prep(db, "SELECT id, no_taker_since FROM main.remote_calls WHERE state = 'queued' AND no_taker_since IS NOT NULL").all() as { id: number; no_taker_since: number }[])
+    .map((r) => [Number(r.id), Number(r.no_taker_since)]));
+  const set = prep(db, "UPDATE main.remote_calls SET no_taker_since = ? WHERE id = ? AND state = 'queued'");
+  let pickers: Set<string> | null = null;
+  let withdrawn = 0;
+  for (const c of queueSnapshot(db, nowMs)) {
+    const since = marked.get(c.id);
+    const own = c.parent_id !== null || c.seen_at < nowMs - CALLER_STALE_MS || pickCounts(c, nowMs, (who) => (pickers ??= pickerLogins(db, nowMs)).has(who));
+    if (own || takes(c)) {
+      if (since !== undefined) set.run(null, c.id);
+    } else if (since === undefined) set.run(nowMs, c.id);
+    else if (since <= nowMs - NO_TAKER_MS && withdrawCall(db, c.id, noTakerReason(c.repos), ["queued"], nowMs)) withdrawn++;
+  }
+  return withdrawn;
+}

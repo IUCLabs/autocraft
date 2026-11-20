@@ -5,7 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { prep } from "../sql-cache.ts";
 import type { ItemRef } from "../../web/src/api/types.ts";
-import { allocation, callQueue, queueOrder, stepOf, throwIfHalted, WaitLimitError, type Waiter } from "../agents/call.ts";
+import { allocation, callQueue, NoTakerError, queueOrder, stepOf, throwIfHalted, WaitLimitError, type Waiter } from "../agents/call.ts";
 import { finishRun, insertRun, packPrompt, setRunProgress } from "../agents/runs.ts";
 import { saveRemoteTools } from "../agents/tools.ts";
 import { scrubError } from "../agents/text.ts";
@@ -33,6 +33,7 @@ import { manualOnly, manualSql } from "./manual-only.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
 import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 import { endChecks, serveChecks } from "./check-relay.ts";
+import { skipItem } from "../runner/leases.ts";
 import type { CheckTool } from "../checktool/index.ts";
 
 /** A lease with no heartbeat for this long, while the dashboard was serving (liveness.ts), goes back to the queue. */
@@ -62,6 +63,8 @@ export const RELEASE_SKIP_MS = scaled(10 * 60_000);
  * (no eligible helper: the only maintainers authored the item), and the job is stopped so it no longer holds its item.
  */
 export const REMOTE_WAIT_CAP_MS = 12 * 3600_000;
+/** The start of the error of a call withdrawn because no Task Runner could take it (takers.ts sweepTakers). */
+export const NO_TAKER_PREFIX = "no Task Runner can take calls";
 /** Ended calls are kept this long (task status, follow-up lookups), then deleted. */
 const KEEP_MS = 24 * 3600_000;
 const LEASE_PREFIX = "aclease_";
@@ -866,7 +869,8 @@ const runsLiveLease = (db: DatabaseSync, parentId: number, nowMs: number): boole
  * Waits for the call's result, polling its row like the model queue polls (allocation.pollMs). Each poll ends a lost lease
  * (expireLeases). A queued call is withdrawn when the job is cancelled or the pipeline is switched off (the halt is thrown),
  * after `maxWaitMs` in the queue (WaitLimitError), and, for a follow-up, after STICKY_MS while its session's login runs no live
- * lease, else after STICKY_CAP_MS. The helper's progress lines go to `onProgress`.
+ * lease, else after STICKY_CAP_MS. A call the dashboard withdrew because no Task Runner could take it (takers.ts) throws a
+ * NoTakerError and counts as a skipped item (skipItem), so the planner runs the step again. The helper's progress lines go to `onProgress`.
  * While the call is leased, each poll runs the `check` requests the dashboard relayed for it on `check` (src/remote/check-relay.ts).
  */
 export async function awaitCall(db: DatabaseSync, id: number, opts: { onProgress?: (line: string) => void; maxWaitMs?: number; log?: (line: string) => void; check?: Pick<CheckTool, "run"> } = {}): Promise<Outcome> {
@@ -896,6 +900,11 @@ async function pollCall(db: DatabaseSync, id: number, opts: { onProgress?: (line
       // The raw reply is not kept: the agent run stores the scrubbed copy.
       prep(db, "UPDATE main.remote_calls SET reply = NULL WHERE id = ?").run(id);
       return { state: "done", text: r.reply ?? "", usage: { ...storedTokens(stored), cost: costUsd }, byModel: stored.byModel ?? null, costUsd, turns: r.turns, sessionId: r.session_id, runId: r.run_id };
+    }
+    if (r.state === "failed" && r.error?.startsWith(NO_TAKER_PREFIX)) {
+      const repos = [...new Set([...(JSON.parse(r.items) as ItemRef[]).map((i) => i.repo), ...(r.repo ? [r.repo] : [])])];
+      skipItem(`no-taker:${repos.join(",")}`, log, r.error);
+      throw new NoTakerError(r.error);
     }
     if (r.state === "failed") return { state: "failed", error: r.error ?? "failed", tokens: r.usage ? storedTokens(JSON.parse(r.usage)) : null, runId: r.run_id };
     if (r.state === "queued") {
