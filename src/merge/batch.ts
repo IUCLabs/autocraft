@@ -15,6 +15,8 @@ import { ownPrSelect } from "../github/adopt.ts";
 import { baseScopeRepos, scopeRepos } from "../pilot.ts";
 import { isFastTracked, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
+import { holdMerge } from "./controls.ts";
+import { settlesLive, type RefreshDeps } from "../preapproval/permissions.ts";
 import { markMerged } from "../mirror.ts";
 import { closeMergedQuestions } from "./withdraw.ts";
 import { mkdirSync } from "node:fs";
@@ -75,6 +77,8 @@ export type BatchDeps = {
   now: () => Date;
   /** Directory holding one bare cache repository per repo. */
   root: string;
+  /** Reads a maintainer's write permission through the GitHub App (default `appPermission`). */
+  permission?: RefreshDeps["permission"];
 };
 
 export type BatchParams = {
@@ -146,6 +150,31 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   };
 
   /**
+   * Members that merge on a Merge answer (path operator) whose answerer no longer settles on the repo. The batch PR is merged without the user
+   * lane, so a maintainer's write permission is read now (settlesLive) rather than trusted from the cache. `unsure`: GitHub could not answer for one.
+   */
+  async function answersGone(members: { number: number; head: string }[], q: QueueEntry[]): Promise<{ gone: { number: number; why: string }[]; unsure: boolean }> {
+    const gone: { number: number; why: string }[] = [];
+    let unsure = false;
+    for (const m of members) {
+      const e = q.find((x) => x.number === m.number && x.head === m.head);
+      if (e?.path !== "operator" || !e.decisionId) continue;
+      const login = (db.prepare("SELECT answered_by FROM main.decisions WHERE id = ? AND answer = 'merge'").get(e.decisionId) as { answered_by: string | null } | undefined)?.answered_by;
+      if (!login) continue;
+      const v = await settlesLive(db, login, repo, d.permission);
+      if (v === "unknown") unsure = true;
+      if (v === "no") gone.push({ number: m.number, why: `${login} no longer settles decisions on ${repo}, so their Merge answer no longer counts` });
+    }
+    return { gone, unsure };
+  }
+  /** Holds a PR whose Merge answer stopped counting, as Remove from batch does, so the next run does not batch it again; an operator releases it. */
+  const holdGone = (x: { number: number; why: string }, batch: string | null) => {
+    holdMerge(db, ACTOR, repo, x.number, { ...(batch ? { batch } : {}), reason: x.why });
+    if (batch) audit(db, ACTOR, "batch-remove", refOf(x.number), { run: runId, batch, reason: x.why });
+    log(`  ${refOf(x.number)}: held: ${x.why}`);
+  };
+
+  /**
    * Builds a batch of the candidates, in order, from the current head of the default branch (or `onBase`, a head the caller
    * fetched for several batches that must share it); null when no PR could be merged.
    */
@@ -156,6 +185,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     setPipelineLogin(db, who.login);
     const chain: { cand: Cand; commit: string }[] = [];
     let cur = base;
+    const q = buildQueue(db, { repo, merged: "exclude" });
     for (const c of cands) {
       if (chain.length && !admits(chain.map((x) => x.cand), c, max)) continue;
       const sha = await git.fetchPr(ownerOf(repo), repo, c.number);
@@ -172,6 +202,9 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (baseWhy) { log(`  ${refOf(c.number)}: left out: ${baseWhy}`); continue; }
       const g = await guard(db, { repo, number: c.number }, { kind: "merge", head: c.head, batch: true }, by, liveRead);
       if ("refused" in g) { log(`  ${refOf(c.number)}: left out: ${g.refused}`); continue; }
+      const answers = await answersGone([c], q);
+      if (answers.gone.length) { holdGone(answers.gone[0]!, null); continue; }
+      if (answers.unsure) { log(`  ${refOf(c.number)}: left out: GitHub could not confirm the write permission of who answered Merge`); continue; }
       const tree = await git.mergeTree(cur, sha);
       if (!tree) { log(`  ${refOf(c.number)}: conflicts with the batch so far; waits for the next one`); continue; }
       cur = await git.mergeCommit(tree, [cur, sha], `Merge pull request #${c.number}`, { name: author.name, email: author.email });
@@ -552,6 +585,14 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (gate.blocked) return supersede(b, members.filter((x) => x !== m), `a PR in the batch has a review: ${gate.blocked}`);
       if (gate.moved) return supersede(b, members.filter((x) => x !== m), "a PR in the batch has new comments or reviews to be reviewed first");
     }
+    // A member merging on a maintainer's Merge answer: that maintainer must still have write access, read now.
+    const answers = await answersGone(members.map((m) => ({ number: m.number, head: m.head_oid })), q);
+    if (answers.gone.length) {
+      if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; left alone`); return; }
+      for (const x of answers.gone) holdGone(x, b.branch);
+      return supersede(b, members.filter((m) => !answers.gone.some((x) => x.number === m.number)), `${answers.gone.map((x) => refOf(x.number)).join(", ")} left the batch: ${answers.gone[0]!.why}`);
+    }
+    if (answers.unsure) { log(`  ${b.branch}: GitHub could not confirm the write permission of who answered Merge for a PR in it; not merged this pass`); s.waiting.push(b.branch); return; }
     // Holds and controls may have changed during the calls above: look again right before merging.
     if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; not merged`); return; }
     if (members.some((m) => mergeHeld(db, repo, m.number))) { log(`  ${b.branch}: a PR in the batch was held meanwhile; not merged`); s.waiting.push(b.branch); return; }

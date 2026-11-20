@@ -357,8 +357,8 @@ describe("queue items: who may add", () => {
 });
 
 describe("a maintainer's pre-approval after their dashboard session", () => {
-  test("the pipeline reads the write permission again through the app: write keeps it, a failed read keeps it, read cancels it", async () => {
-    const w = fresh().pr(61);
+  test("the pipeline reads the write permission again through the app: write keeps it, a failed read keeps it for an hour, read cancels it", async () => {
+    const w = fresh().pr(61).pr(62);
     w.db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES ('maint', 'maintainer')").run();
     w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1'), ('github_identity', 'app')").run();
     const stale = new Date(Date.now() - 11 * 60_000).toISOString();
@@ -386,6 +386,12 @@ describe("a maintainer's pre-approval after their dashboard session", () => {
     perm("write", stale);
     await pass("read");
     assert.equal(preapprovalOf(w.db, "app", 61)?.state, "cancelled");
+    // A write permission GitHub last confirmed over an hour ago no longer counts while the reads fail.
+    perm("write", new Date().toISOString());
+    preapproveMerge(w.db, { repo: "app", number: 62, by: "maint" });
+    perm("write", new Date(Date.now() - 61 * 60_000).toISOString());
+    await pass(null);
+    assert.equal(preapprovalOf(w.db, "app", 62)?.state, "cancelled");
   });
 });
 
