@@ -12,3 +12,7 @@ process.on("exit", () => rmSync(SCRATCH, { recursive: true, force: true }));
 // The diff cache defaults to one shared directory under the home: test processes running at once would read, write and
 // drop (dropCachedDiff) each other's diffs for the same fixture heads (app#3@sha3). A test may still point it elsewhere.
 process.env.AUTOCRAFT_DIFF_CACHE = join(SCRATCH, "diffs");
+// The sandbox checkout root, its sibling `sessions` (per-call session stores) and the generated agents-*.json files, and the
+// fixed model-call working directory, all default to directories under ~/.cache/autocraft. A test may still point them elsewhere.
+process.env.AUTOCRAFT_CHECKOUT_DIR = join(SCRATCH, "checkouts");
+process.env.AUTOCRAFT_CLAUDE_CWD = join(SCRATCH, "claude-cwd");
