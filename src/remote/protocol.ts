@@ -8,13 +8,16 @@ export const PROTOCOL_VERSION = 4;
 /** The protocol versions the server answers. 3 is a helper without long-polling claims (no `Claim.wait`); its claims are answered at once. */
 export const ACCEPTED_PROTOCOLS: readonly number[] = [3, 4];
 
-/** API routes on the dashboard origin. Agent-token routes take `Authorization: Bearer <agent token>`; lease routes take `Authorization: Bearer <lease secret>`. */
+/**
+ * API routes on the dashboard origin. Runner routes take `Authorization: Bearer <Task Runner credential>` (an MCP Connector
+ * token is refused with 403); lease routes take `Authorization: Bearer <lease secret>`.
+ */
 export const ROUTES = {
-  /** Agent token. Body `Claim`, reply `ClaimReply`. */
+  /** Runner credential. Body `Claim`, reply `ClaimReply`. */
   claim: "/api/remote/claim",
   /** Lease secret. Reply `TaskBundle`. */
   bundle: "/api/remote/bundle",
-  /** Agent token. Body `HelperStatus`, reply `StatusReply`: the helper's readiness, sent on every change and at least every STATUS_EVERY_S while it runs. */
+  /** Runner credential. Body `HelperStatus`, reply `StatusReply`: the helper's readiness, sent on every change and at least every STATUS_EVERY_S while it runs. */
   status: "/api/remote/status",
   /** Lease secret. Body `Heartbeat`, reply `{ ok: true }`, or 410 when the lease is gone (expired, cancelled, re-queued). Every lease route answers 410 for an ended lease, never 401. */
   heartbeat: "/api/remote/heartbeat",
@@ -271,6 +274,6 @@ export type LoginStartReply = {
   /** Seconds until the login expires unapproved. */
   expiresIn: number;
 };
-/** `approved`: the credential works on the agent-token routes as it is. `denied` and `expired` are final; the runner starts a new login. */
+/** `approved`: the credential works on the runner routes as it is. `denied` and `expired` are final; the runner starts a new login. */
 export type LoginState = "pending" | "approved" | "denied" | "expired";
 export type LoginPollReply = { state: LoginState };

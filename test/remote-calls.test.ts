@@ -37,7 +37,7 @@ describe("user-local remote calls", () => {
   const callers: Record<string, Caller> = {};
   for (const login of ["alice", "bob", "carol", "dave"]) {
     db.prepare("INSERT INTO access (login, role) VALUES (?, 'maintainer')").run(login);
-    callers[login] = { tokenId: createToken(db, login, "helper", false, true).row.id, login, role: "maintainer" };
+    callers[login] = { tokenId: createToken(db, login, "helper", { kind: "runner" }).row.id, login, role: "maintainer" };
   }
   let claims = 0;
   /** A claim body with its own request id: a repeated id gets the first claim's reply. */
@@ -127,7 +127,7 @@ describe("user-local remote calls", () => {
   test("three lost leases of one login within two hours cool its helpers off for six hours; its next claim says why and until when; an operator clears it", async () => {
     db.prepare("INSERT INTO access (login, role) VALUES ('erin', 'maintainer')").run();
     // A token's drops count once in 10 minutes: three helpers of the same user each lose one.
-    const tokens = [1, 2, 3].map(() => createToken(db, "erin", "helper", false, true).row.id);
+    const tokens = [1, 2, 3].map(() => createToken(db, "erin", "helper", { kind: "runner" }).row.id);
     let erin: Caller = { tokenId: tokens[0]!, login: "erin", role: "maintainer" };
     const mine = async () => (await claimCall(db, erin, claim(), canWrite)).lease;
     const lose = (id: number, now: number) => {
@@ -179,7 +179,7 @@ describe("user-local remote calls", () => {
     const env = (login: string, run = true): McpEnv => ({
       db, baseUrl: null, limiter: new RateLimiter(10, 60_000), canAnswer: false, expensive: () => 0,
       user: () => ({ login, role: "maintainer" }) as unknown as User,
-      ...(run && { run: { tokenId: callers[login]!.tokenId, canWrite } }),
+      ...(run && { run: { canWrite } }),
     });
     const call = async (e: McpEnv, name: string, args: unknown = {}) => {
       const r = (await handleMcp(e, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }))!.result as { content: { text: string }[]; isError?: boolean };
@@ -187,7 +187,7 @@ describe("user-local remote calls", () => {
     };
     const names = async (e: McpEnv) => ((await handleMcp(e, { jsonrpc: "2.0", id: 1, method: "tools/list" }))!.result as { tools: { name: string }[] }).tools.map((t) => t.name);
     assert.ok((await names(env("bob"))).includes("next_task"));
-    assert.ok(!(await names(env("bob", false))).includes("next_task"), "not offered without can_run in user-local mode");
+    assert.ok(!(await names(env("bob", false))).includes("next_task"), "not offered without a Task Runner that reports in");
     const ask = askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
     while (!db.prepare("SELECT 1 FROM remote_calls WHERE state = 'queued'").get()) await sleep(5);
     idle("bob");
@@ -197,7 +197,7 @@ describe("user-local remote calls", () => {
     assert.match((await call(env("bob"), "next_task", { models: { top: "claude-opus-4-5" } })).text, /^1 call is queued/);
     const queued = await call(env("bob"), "next_task");
     assert.match(queued.text, /^1 call is queued/);
-    assert.match(queued.text, /autocraft-task run --detach/);
+    assert.match(queued.text, /autocraft run --detach/);
     assert.ok(db.prepare("SELECT 1 FROM remote_calls WHERE state = 'queued'").get(), "next_task leases nothing");
     const lease = (await leaseFor("bob"))!;
     assert.match((await call(env("bob"), "task_status", { lease: String(lease.id) })).text, /: leased$/);

@@ -208,14 +208,14 @@ export function liveLease(db: DatabaseSync, secret: string | undefined, nowMs: n
   const found = db.prepare("SELECT id FROM main.remote_calls WHERE lease_secret_hash = ? AND state = 'leased'").get(hash) as { id: number } | undefined;
   if (!found) return null;
   expireLeases(db, nowMs, Number(found.id));
-  // The lease lives only while the token that claimed it may still run tasks and its login is still a maintainer or operator.
+  // The lease lives only while the Task Runner credential that claimed it lives and its login is still a maintainer or operator.
   const r = db.prepare(`SELECT c.id, c.job_id, c.run_id, c.user_login, c.prompt_id, c.items, c.repo, c.root, a.login AS ok FROM main.remote_calls c
-      LEFT JOIN main.mcp_tokens t ON t.id = c.token_id AND t.can_run = 1 AND t.expires_at > ?
+      LEFT JOIN main.mcp_tokens t ON t.id = c.token_id AND t.kind = 'runner' AND t.expires_at > ?
       LEFT JOIN main.access a ON a.login = t.login AND a.role IN ('maintainer', 'operator')
     WHERE c.id = ? AND c.lease_secret_hash = ? AND c.state = 'leased'`).get(new Date(nowMs).toISOString(), found.id, hash) as
     { id: number; job_id: number | null; run_id: number | null; user_login: string; prompt_id: string; items: string; repo: string | null; root: string | null; ok: string | null } | undefined;
   if (r && r.ok === null) {
-    unlease(db, { id: Number(r.id), runId: r.run_id, hash }, "returned to the queue: the token that claimed it may no longer run tasks", nowMs);
+    unlease(db, { id: Number(r.id), runId: r.run_id, hash }, "returned to the queue: the Task Runner that claimed it was removed or may no longer run tasks", nowMs);
     return null;
   }
   return r ? { id: Number(r.id), jobId: r.job_id, runId: r.run_id, login: r.user_login, promptId: r.prompt_id, items: JSON.parse(r.items) as ItemRef[], repo: r.repo, root: r.root } : null;
@@ -286,7 +286,7 @@ function idleOthers(db: DatabaseSync, login: string, nowMs: number): (c: Cand) =
   return (c) => {
     if (!idle) {
       idle = (db.prepare(`SELECT t.login, a.role, t.idle_tiers, t.idle_repos FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login
-          WHERE t.can_run = 1 AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
+          WHERE t.kind = 'runner' AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
         { login: string; role: string; idle_tiers: string | null; idle_repos: string | null }[])
         .map((o) => ({ login: o.login, role: o.role, tiers: new Set(o.idle_tiers ? JSON.parse(o.idle_tiers) as string[] : []), only: o.idle_repos ? new Set(JSON.parse(o.idle_repos) as string[]) : null }));
       for (const p of db.prepare("SELECT login, repo, permission, checked_at FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(idle.map((o) => o.login))) as { login: string; repo: string; permission: string; checked_at: string }[])

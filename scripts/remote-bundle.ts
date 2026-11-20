@@ -28,7 +28,7 @@ const setup = opt("--setup");
 if (db && setup) {
   db.prepare("INSERT OR IGNORE INTO main.access (login, role, added_by, added_at) VALUES (?, 'operator', 'remote-bundle', ?)").run(setup, new Date().toISOString());
   (await import("../src/remote/mode.ts")).setInferenceMode(db, "user-local", "remote-bundle");
-  const { token } = (await import("../src/dash/mcp/tokens.ts")).createToken(db, setup, "remote-bundle", false, true);
+  const { token } = (await import("../src/dash/mcp/tokens.ts")).createToken(db, setup, "remote-bundle", { kind: "runner" });
   console.log(token);
   process.exit(0);
 }

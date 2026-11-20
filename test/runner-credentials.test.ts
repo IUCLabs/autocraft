@@ -1,15 +1,27 @@
-// MCP Connector and Task Runner credentials: the one-time split of older tokens, and the claim protocols the server accepts.
+// MCP Connector and Task Runner credentials: the one-time split of older tokens, the claim protocols the server accepts,
+// which routes each kind may use, the device login, and removing a runner.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, before, describe, test } from "node:test";
+import type { RunnersReply } from "../web/src/api/types.ts";
+import { addLogin } from "../src/access.ts";
 import { connect, splitRunnerTokens } from "../src/db.ts";
-import { HttpError } from "../src/dash/server/util.ts";
+import { apiRoutes } from "../src/dash/api/index.ts";
+import { createToken } from "../src/dash/mcp/tokens.ts";
+import { loadConfig } from "../src/dash/server/config.ts";
+import { randomToken, sha256hex } from "../src/dash/server/crypto.ts";
+import { startServer } from "../src/dash/server/index.ts";
+import { FakeProvider } from "../src/dash/server/provider.ts";
+import { HttpError, RateLimiter } from "../src/dash/server/util.ts";
 import { parseClaim } from "../src/remote/calls.ts";
+import { setInferenceMode } from "../src/remote/mode.ts";
+import { PROTOCOL_VERSION, ROUTES, type LoginStartReply, type PendingRunnerLogin } from "../src/remote/protocol.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "runner-credentials-"));
+after(() => rmSync(dir, { recursive: true, force: true }));
 
 test("older tokens a helper used become runners, the others connectors, and can_run follows the kind", () => {
   const db = connect(join(dir, "split.db"));
@@ -47,4 +59,132 @@ test("a claim keeps the helper's protocol; only protocol 4 carries a wait", () =
   assert.throws(() => parseClaim({ ...base, protocol: 4, wait: 31 }), (e) => e instanceof HttpError && e.status === 400);
   assert.throws(() => parseClaim({ ...base, protocol: 4, wait: 2.5 }), (e) => e instanceof HttpError && e.status === 400);
   assert.throws(() => parseClaim({ ...base, protocol: 5 }), (e) => e instanceof HttpError && e.status === 409);
+});
+
+describe("over HTTP", () => {
+  const file = join(dir, "http.db"), perms = join(dir, "perms.json");
+  writeFileSync(perms, "{}");
+  const db = connect(file);
+  let base = "";
+  let close: () => Promise<void>;
+  before(async () => {
+    setInferenceMode(db, "user-local", "test");
+    addLogin(db, "cli", "maint", "maintainer", null);
+    addLogin(db, "cli", "watcher", "viewer", null);
+    const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: file, AUTOCRAFT_DEV_PERMS: perms });
+    const limiter = new RateLimiter(60, 3600_000);
+    const s = await startServer({ config, db, provider: new FakeProvider(perms), feedbackLimiter: limiter, routes: apiRoutes({ limiter }) });
+    base = s.url;
+    close = s.close;
+  });
+  after(async () => {
+    await close();
+    db.close();
+  });
+
+  const post = async (path: string, body: unknown, bearer?: string) => {
+    const r = await fetch(new URL(path, base), { method: "POST", headers: { "content-type": "application/json", ...(bearer && { authorization: `Bearer ${bearer}` }) }, body: JSON.stringify(body) });
+    return { status: r.status, body: await r.json() as Record<string, unknown> };
+  };
+  const claimBody = () => ({ requestId: `req-${randomToken(8)}`, protocol: PROTOCOL_VERSION, helperVersion: "1.3.0", harness: "claude", harnessVersion: "2.1", tiers: { top: "opus" } });
+  const claim = (bearer: string) => post(ROUTES.claim, claimBody(), bearer);
+  const poll = async (credential: string) => (await post(ROUTES.loginPoll, {}, credential)).body.state;
+  const start = async (credential: string) => {
+    const r = await post(ROUTES.loginStart, { credentialHash: sha256hex(credential), label: "laptop", machine: { hostname: "box1", platform: "linux", arch: "x64" }, helperVersion: "1.3.0" });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return r.body as unknown as LoginStartReply;
+  };
+
+  async function signedIn(login: string) {
+    const jar = new Map<string, string>();
+    let csrf = "";
+    const req = async (method: string, path: string, body?: unknown) => {
+      const headers: Record<string, string> = { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json", "x-csrf-token": csrf };
+      if (body !== undefined) headers["content-type"] = "application/json";
+      const r = await fetch(new URL(path, base), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
+      for (const c of r.headers.getSetCookie()) {
+        const [kv] = c.split(";");
+        jar.set(kv!.slice(0, kv!.indexOf("=")), kv!.slice(kv!.indexOf("=") + 1));
+      }
+      return r;
+    };
+    const signin = await req("GET", "/auth/signin?return_to=/");
+    const auth = await req("GET", `${signin.headers.get("location")}&login=${login}`);
+    await req("GET", auth.headers.get("location")!);
+    csrf = (await req("GET", "/api/me")).headers.get("x-csrf-token") ?? "";
+    return async <T>(method: string, path: string, body?: unknown, status = 200): Promise<T> => {
+      const r = await req(method, path, body);
+      const text = await r.text();
+      assert.equal(r.status, status, `${method} ${path}: ${text}`);
+      return JSON.parse(text) as T;
+    };
+  }
+
+  test("a connector token cannot claim or report status; a runner credential cannot use /mcp", async () => {
+    const connector = createToken(db, "maint", "agent").token;
+    const runner = createToken(db, "maint", "desk", { kind: "runner" }).token;
+    const refused = await claim(connector);
+    assert.equal(refused.status, 403);
+    assert.match(String(refused.body.error), /MCP Connector tokens cannot run tasks/);
+    assert.equal((await post(ROUTES.status, {}, connector)).status, 403);
+    assert.equal((await claim(runner)).status, 200);
+    const mcp = (token: string) => post("/mcp", { jsonrpc: "2.0", id: 1, method: "ping" }, token);
+    assert.equal((await mcp(connector)).status, 200);
+    assert.equal((await mcp(runner)).status, 403);
+  });
+
+  test("device login: the runner starts, a maintainer looks up the code and approves, the runner polls and claims", async () => {
+    const credential = `acrun_${randomToken(32)}`;
+    assert.equal((await post(ROUTES.loginPoll, {}, credential)).status, 401, "no login yet");
+    const started = await start(credential);
+    assert.match(started.userCode, /^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/);
+    assert.ok(started.verifyUrl.endsWith(`/connect?runner=${started.userCode}`));
+    assert.equal(await poll(credential), "pending");
+    assert.equal((await claim(credential)).status, 401, "not approved yet");
+    const code = started.userCode.replace("-", "").toLowerCase();
+    await (await signedIn("watcher"))("GET", `/api/runners/pending?code=${code}`, undefined, 403);
+    const maint = await signedIn("maint");
+    const card = await maint<PendingRunnerLogin>("GET", `/api/runners/pending?code=${code}`);
+    assert.deepEqual([card.label, card.machine.hostname, card.helperVersion, card.ip === card.yourIp], ["laptop", "box1", "1.3.0", true]);
+    const list = await maint<RunnersReply>("POST", "/api/runners/approve", { code: started.userCode, label: "work laptop" });
+    const mine = list.runners.find((r) => r.label === "work laptop");
+    assert.ok(mine);
+    assert.deepEqual(mine.machine, { hostname: "box1", platform: "linux", arch: "x64" });
+    assert.equal(await poll(credential), "approved");
+    assert.equal((await claim(credential)).status, 200);
+    await maint("POST", "/api/runners/approve", { code: started.userCode }, 404);
+    assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'runner-approve' AND login = 'maint'").get());
+  });
+
+  test("an expired or denied login cannot be approved", async () => {
+    const maint = await signedIn("maint");
+    const late = `acrun_${randomToken(32)}`;
+    const a = await start(late);
+    db.prepare("UPDATE runner_logins SET expires_at = ? WHERE secret_hash = ?").run(Date.now() - 1, sha256hex(late));
+    assert.equal(await poll(late), "expired");
+    await maint("POST", "/api/runners/approve", { code: a.userCode }, 404);
+    const no = `acrun_${randomToken(32)}`;
+    const b = await start(no);
+    await maint("POST", "/api/runners/deny", { code: b.userCode });
+    assert.equal(await poll(no), "denied");
+    await maint("POST", "/api/runners/approve", { code: b.userCode }, 404);
+    assert.equal((await claim(no)).status, 401);
+  });
+
+  test("removing a runner sends its live lease back to the queue without using an attempt", async () => {
+    const maint = await signedIn("maint");
+    const { token, row } = createToken(db, "maint", "old box", { kind: "runner" });
+    const secret = `aclease_${randomToken(32)}`;
+    const now = Date.now();
+    const call = Number((db.prepare(`INSERT INTO remote_calls (step, stage, prompt_id, prompt_version, tier, effort, asked_model, bundle, state, since, seen_at, max_attempts, timeout_ms,
+        user_login, lease_secret_hash, token_id, leased_at, heartbeat_at) VALUES ('review', 0, 'p', '1', 'top', 'high', 'opus', '{}', 'leased', ?, ?, 3, 600000, 'maint', ?, ?, ?, ?) RETURNING id`)
+      .get(now, now, sha256hex(secret), row.id, now, now) as { id: number }).id);
+    const beat = () => post(ROUTES.heartbeat, {}, secret);
+    assert.equal((await beat()).status, 200);
+    await maint("POST", "/api/runners/revoke", { id: row.id });
+    assert.equal((await beat()).status, 410);
+    const after = db.prepare("SELECT state, attempt, token_id FROM remote_calls WHERE id = ?").get(call) as { state: string; attempt: number; token_id: number | null };
+    assert.deepEqual([after.state, after.attempt, after.token_id], ["queued", 1, null]);
+    assert.equal((await claim(token)).status, 401);
+  });
 });

@@ -30,6 +30,8 @@ export type Req = {
   /** The one repo a `scoped` route's list is narrowed to (`x-autocraft-scope`), null on every other route; only ever hides more, see visibleRepos. */
   scope?: string | null;
   csrf: string;                     // the session's CSRF token
+  /** The client address as the per-address limits see it (trusted proxy depth applied); absent outside the HTTP server. */
+  ip?: string;
   nonce: string;                    // put on every <script> and <style> as nonce="..."
 };
 

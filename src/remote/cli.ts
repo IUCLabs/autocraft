@@ -1,6 +1,6 @@
 // `autocraft inference [server|user-local]`: shows or sets the inference mode (src/remote/mode.ts). `autocraft remote cooloff clear <login>`: ends the cool-off of a login's helpers (src/remote/cooloff.ts).
-// `autocraft remote token <login>`: makes a running agent token for a maintainer or operator and prints only the token, so it
-// can be piped into `autocraft-task login` on the same host without anyone seeing it.
+// `autocraft remote token <login>`: makes a Task Runner credential for a maintainer or operator and prints only the credential,
+// so it can be piped into `autocraft login --stdin` on the same host without anyone seeing it (no device login needed).
 import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
 import { createToken, MCP_TOKENS_PER_LOGIN } from "../dash/mcp/tokens.ts";
@@ -25,7 +25,7 @@ export const commands = {
     },
   },
   remote: {
-    summary: "remote cooloff clear <login>: lets the login's helpers claim calls again after a cool-off; remote token <login> [--label <text>]: a running agent token on stdout, for piping into autocraft-task login",
+    summary: "remote cooloff clear <login>: lets the login's helpers claim calls again after a cool-off; remote token <login> [--label <text>]: a Task Runner credential on stdout, for piping into autocraft login --stdin",
     run(args: string[]): void {
       if (args[0] === "token") return makeToken(args.slice(1));
       if (args[0] !== "cooloff" || args[1] !== "clear" || !args[2] || args.length > 3) {
@@ -37,12 +37,12 @@ export const commands = {
   },
 };
 
-const TOKEN_USAGE = "usage: autocraft remote token <login> [--label <text>] | autocraft-task login <dashboard url>   (stdout must not be a terminal)";
+const TOKEN_USAGE = "usage: autocraft remote token <login> [--label <text>] | autocraft login --stdin <dashboard url>   (stdout must not be a terminal)";
 
 function makeToken(args: string[]): void {
   const login = args[0];
   const at = args.indexOf("--label");
-  const label = at > 0 ? args[at + 1] : "helper";
+  const label = at > 0 ? args[at + 1] : "Task Runner";
   if (!login || login.startsWith("-") || (at > 0 && !label) || args.length !== (at > 0 ? 3 : 1)) {
     console.error(TOKEN_USAGE);
     process.exit(1);
@@ -60,13 +60,13 @@ function makeToken(args: string[]): void {
   }
   let made: ReturnType<typeof createToken>;
   try {
-    made = createToken(db, login, label, false, true);
+    made = createToken(db, login, label, { kind: "runner" });
   } catch (e) {
-    console.error(`refused: ${(e as Error).message} (at most ${MCP_TOKENS_PER_LOGIN} per login; revoke one on the Connect page)`);
+    console.error(`refused: ${(e as Error).message} (at most ${MCP_TOKENS_PER_LOGIN} Task Runners per login; remove one on the Connect page)`);
     process.exit(1);
   }
   const { token, row } = made;
-  audit(db, "cli", "mcp-token-create", login, { id: row.id, label: row.label ?? undefined, canRun: true, via: "cli" });
+  audit(db, "cli", "runner-approve", login, { id: row.id, label: row.label ?? undefined, via: "cli" });
   process.stdout.write(`${token}\n`);
-  console.error(`made running token ${row.id} (${row.label ?? "no label"}) for ${login}; revoke it on the Connect page`);
+  console.error(`made Task Runner credential ${row.id} (${row.label ?? "no label"}) for ${login}; remove it on the Connect page`);
 }

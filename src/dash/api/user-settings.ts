@@ -1,11 +1,10 @@
-// The signed-in user's own settings (GET and PUT /api/me/settings) and their user-local helpers (GET /api/remote/helpers).
+// The signed-in user's own settings (GET and PUT /api/me/settings); their Task Runners are listed by GET /api/runners (runners.ts).
 // Maintainers and operators set their own settings; a viewer writes nothing.
 import type { DatabaseSync } from "node:sqlite";
 import { pipelineRepos } from "../../pilot.ts";
-import { listHelpers } from "../../remote/helpers.ts";
 import { parseMaxCalls, setUserMaxCalls, userMaxCalls } from "../../remote/max-calls.ts";
 import { parseRepos, setUserRepos, userRepos } from "../../remote/my-repos.ts";
-import type { HelperInfo, UserSettingsReply } from "../../remote/protocol.ts";
+import type { UserSettingsReply } from "../../remote/protocol.ts";
 import { parseReserve, setUserReserve, userReserve } from "../../remote/reserve.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -38,5 +37,3 @@ export async function setSettings(db: DatabaseSync, req: Req): Promise<UserSetti
   if (maxCalls !== undefined) setUserMaxCalls(db, req.user.login, maxCalls);
   return settings(db, req);
 }
-
-export const helpers = (db: DatabaseSync, req: Req): { helpers: HelperInfo[] } => ({ helpers: listHelpers(db, req.user.login) });

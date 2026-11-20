@@ -26,7 +26,7 @@ test("a helper route answers 503 with Retry-After while the database is locked, 
   const db = connect(file), remoteDb = connect(file, { busyTimeoutMs: 100 }), other = connect(file);
   setInferenceMode(db, "user-local", "test");
   addLogin(db, "cli", "bob", "maintainer", null);
-  const { token } = createToken(db, "bob", "helper", false, true);
+  const { token } = createToken(db, "bob", "helper", { kind: "runner" });
   const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: file, AUTOCRAFT_DEV_PERMS: perms });
   const limiter = new RateLimiter(60, 3600_000);
   const s = await startServer({ config, db, remoteDb, provider: new FakeProvider(perms), feedbackLimiter: limiter, routes: apiRoutes({ limiter }) });
