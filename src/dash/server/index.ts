@@ -56,7 +56,7 @@ const BODY_LIMIT = 64 * 1024;
 const SUBMIT_BODY_LIMIT = 8 * 1024 * 1024;
 /** A task tool call: a `check` call carries the whole patch, as the local bridge allows. */
 const TOOL_BODY_LIMIT = 2 * 1024 * 1024;
-const HELPER_FILE = new URL("../../../worker/autocraft-task.mjs", import.meta.url);
+const HELPER_FILE = new URL("../../../worker/autocraft.mjs", import.meta.url);
 const PUBLIC_FILES = new Set(["/artcraft-mark.svg", "/artcraft-mark.png"]);
 const FILE_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", svg: "image/svg+xml",

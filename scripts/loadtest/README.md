@@ -23,7 +23,7 @@ Requirements: Node 24, `bwrap` (the helper's own sandbox check), and the reposit
 | `proxy.mjs` | Fault-injection HTTP proxy between helpers and dashboard. Rates of 502, connection reset, 429 with `Retry-After`, added latency, and a "down" switch that closes the listener. Faults are "before" (the dashboard never sees the request) or "after" (the dashboard acted, the helper never learns). Runtime control on a second port: `GET /state`, `POST /set {rate502, rateReset, rate429, retryAfter, latMin, latMax, afterShare}`, `POST /down?s=N`, `POST /up`. Logs one JSON line per request with the dashboard's own time (`upMs`). Also runs standalone. |
 | `fake-harness.mjs` | The `claude` stand-in. Reads a `RIG {nonce, delayMs, ledger}` line from the prompt, reports `start` and `answered` per nonce to the rig's ledger, sleeps, answers in stream-json. The helper bind-mounts it into its sandbox. |
 | `preload.mjs` | Loaded into each helper (`NODE_OPTIONS=--import`). Answers the plan-usage endpoint locally and blocks every other non-loopback request. |
-| `rig.mjs` | The instance: scratch dashboard (`AUTOCRAFT_DEV_AUTH=1`, own database and home), users and agent tokens that can run tasks, helpers (`worker/autocraft-task.mjs work --parallel K`, each in its own process group, own config and cache), the ledger, and the call driver. |
+| `rig.mjs` | The instance: scratch dashboard (`AUTOCRAFT_DEV_AUTH=1`, own database and home), users and Task Runner credentials, Task Runners (`worker/autocraft.mjs work --parallel K`, each in its own process group, own config and cache), the ledger, and the call driver. |
 | `report.mjs` | Collects the numbers and evaluates the acceptance lines. |
 | `run.mjs` | Scenarios and the command line. |
 
