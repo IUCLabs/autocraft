@@ -189,9 +189,10 @@ async function readRemoteJson(req: IncomingMessage, limit: number = BODY_LIMIT):
   if (keys.length !== 2 || typeof env.encoding !== "string" || typeof env.body !== "string" || !(ENCODINGS as readonly string[]).includes(env.encoding)) return json;
   let raw: Buffer;
   try {
-    // A small body (status, heartbeat, most replies) inflates in microseconds, less than a round trip through the thread pool.
+    // A small body under the default limit (status, heartbeat, claim) inflates in microseconds, less than a round trip
+    // through the thread pool. Submits may inflate to megabytes, so they stay off the event loop.
     const gz = Buffer.from(env.body, "base64");
-    raw = gz.length <= SYNC_GUNZIP_MAX ? gunzipSync(gz, { maxOutputLength: limit }) : await gunzipAsync(gz, { maxOutputLength: limit });
+    raw = gz.length <= SYNC_GUNZIP_MAX && limit <= BODY_LIMIT ? gunzipSync(gz, { maxOutputLength: limit }) : await gunzipAsync(gz, { maxOutputLength: limit });
   } catch (e) {
     if ((e as { code?: string }).code === "ERR_BUFFER_TOO_LARGE") throw new HttpError(413, "Request too large");
     throw new HttpError(400, `The body is not valid ${env.encoding}`);
