@@ -62,10 +62,12 @@ export async function ensureLabels(client: Querier, repo: string, apply: boolean
   return missing;
 }
 
-export type ApplyResult = { planned: number; labeled: number; failed: number[]; skipped: number; batches: number; dryRun: boolean };
+export type ApplyResult = { planned: number; labeled: number; failed: number[]; skipped: number; batches: number; dryRun: boolean; /** True when applyLabels stopped before the last batch because `stopAt` passed. */ stopped?: boolean };
 export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; /** Who asked; default: an operator at the command line. */ by?: By; wait?: Wait; log?: (s: string) => void;
   /** Called with the running count of items labelled, after each batch. */
   onLabeled?: (labeled: number) => void;
+  /** Epoch ms after which no new batch starts. The items left still lack their labels, so the next run takes them. */
+  stopAt?: number;
 };
 
 /** An item the Plans give labels to, and the labels to add. */
@@ -92,6 +94,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
   if (unknown.length) throw new LabelsError(`missing labels on ${repo}: ${unknown.join(", ")}; run labels ensure --repo ${repo} --apply`);
 
   for (let i = 0; i < todo.length; i += BATCH) {
+    if (o.stopAt !== undefined && Date.now() >= o.stopAt) { res.stopped = true; break; }
     const chunk = todo.slice(i, i + BATCH);
     const started = Date.now();
     const ids = await nodeIds(client, repo, chunk.map((r) => r.number), wait);
