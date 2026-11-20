@@ -228,8 +228,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_login ON sessions(login);
 
--- Personal tokens for the Inbox MCP server (POST /mcp, src/dash/mcp/): a signed-in user's own agent reads the
--- inbox and sends feedback as that user, with the user's current role from the access list. The token is shown once.
+-- Personal credentials of two kinds. `connector`: the MCP Connector (POST /mcp, src/dash/mcp/): a signed-in user's own agent
+-- reads the inbox and sends feedback as that user, with the user's current role from the access list; shown once.
+-- `runner`: a Task Runner (/api/remote/*) that claims model calls in the user-local inference mode; the runner makes the
+-- credential itself and only its hash arrives here, through a device login (runner_logins).
 -- can_answer: an operator opted the token in to answering decisions and undoing answers; such a token lasts 7 days.
 CREATE TABLE IF NOT EXISTS mcp_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,9 +240,11 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   label TEXT,
   can_answer INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL,
-  can_run INTEGER NOT NULL DEFAULT 0, -- the token's helper may claim model calls in the user-local inference mode
+  can_run INTEGER NOT NULL DEFAULT 0, -- 1 exactly when kind = 'runner'; read by servers from before `kind`, written until it is dropped
   idle_claim_at INTEGER,              -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
-  idle_tiers TEXT, idle_repos TEXT    -- JSON: the tiers and repos (null: any) that empty claim asked for
+  idle_tiers TEXT, idle_repos TEXT,   -- JSON: the tiers and repos (null: any) that empty claim asked for
+  kind TEXT NOT NULL DEFAULT 'connector', -- connector | runner
+  machine TEXT                        -- runner: JSON { hostname, platform, arch } the runner sent at login
 );
 -- Leases that ended without a release or a reply (lost heartbeat, past a time limit), at most one per token in 10 minutes,
 -- newest 2 hours kept; counted per login toward its cool-off (src/remote/cooloff.ts).
@@ -283,10 +287,31 @@ CREATE TABLE IF NOT EXISTS remote_helpers (
   models TEXT NOT NULL, reserve TEXT NOT NULL, usage TEXT,
   reported_at INTEGER NOT NULL,       -- ms since epoch
   slots INTEGER, busy INTEGER,        -- calls the helper runs at once (its --parallel slots and the fast lane), and how many run now
-  last_error TEXT                     -- JSON { text, at }: the helper's last failure that no success has cleared
+  last_error TEXT,                    -- JSON { text, at }: the helper's last failure that no success has cleared
+  helper_version TEXT                 -- the helper's version from its latest status or claim
 );
+-- Device logins of Task Runners (POST /api/remote/login/start, /poll; approved on the Connect page). The runner keeps the
+-- credential and sends its hash; approval inserts a `runner` mcp_tokens row with that hash as token_hash. Times are ms since epoch.
+CREATE TABLE IF NOT EXISTS runner_logins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_code TEXT NOT NULL,            -- 8 characters of BCDFGHJKLMNPQRSTVWXZ, stored uppercase without the hyphen; single use
+  secret_hash TEXT NOT NULL,          -- sha256 hex of the runner's credential (protocol LoginStart.credentialHash)
+  label TEXT,
+  machine TEXT,                       -- JSON { hostname, platform, arch } as the runner sent it
+  ip TEXT,                            -- the requesting client address
+  helper_version TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending', -- pending | approved | denied | expired
+  login TEXT COLLATE NOCASE,          -- the user who approved or denied it
+  token_id INTEGER                    -- the mcp_tokens row the approval made
+);
+CREATE UNIQUE INDEX IF NOT EXISTS runner_logins_code ON runner_logins(user_code);
+CREATE UNIQUE INDEX IF NOT EXISTS runner_logins_secret ON runner_logins(secret_hash);
+CREATE INDEX IF NOT EXISTS runner_logins_expires ON runner_logins(expires_at);
 -- Each user's own settings, one row per key (src/remote/reserve.ts: reserve_five_hour, reserve_weekly; src/remote/my-repos.ts: repos;
--- src/remote/max-calls.ts: max_calls).
+-- src/remote/max-calls.ts: max_calls; manual_only: '1' when the user's runners take only the calls the user picked and
+-- follow-ups of their own sessions).
 CREATE TABLE IF NOT EXISTS user_settings (
   login TEXT NOT NULL COLLATE NOCASE,
   key TEXT NOT NULL,
@@ -800,7 +825,10 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   ended_at INTEGER,
   reference_repo TEXT,                -- the repo whose reference documentation the call's reference tools search
   root TEXT,                          -- the lease's path root: the claim's directory the sandbox paths are placed below (macOS helpers), or NULL for the fixed paths
-  authors TEXT                        -- JSON: lowercase logins that authored or co-authored an item of the call, read when it was queued (author preference)
+  authors TEXT,                       -- JSON: lowercase logins that authored or co-authored an item of the call, read when it was queued (author preference)
+  picked_by TEXT COLLATE NOCASE,      -- a user picked the queued call for their own Task Runners ("Run on my Task Runner"); cleared on requeue and unlease
+  picked_at INTEGER,
+  pick_until INTEGER                  -- the pick counts until then
 );
 CREATE INDEX IF NOT EXISTS remote_calls_state ON remote_calls(state, tier);
 CREATE INDEX IF NOT EXISTS remote_calls_ended ON remote_calls(state, ended_at);

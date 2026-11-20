@@ -7,7 +7,7 @@ const DAY = 86_400_000;
 /** The Connect page's tokens, in memory; the server's rules (at most five, own tokens only) apply. */
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference" | "remote"> & { meSettings: Api["me"]["settings"] } {
   let inference: InferenceSettings = { mode: me.inference, models: { top: ["opus", "astra"], mid: ["sonnet"], small: ["haiku"] }, minEffort: { top: "high" } };
-  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, maxCalls: null, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "iconcraft", "pdfcraft", "photocraft", "Sheetcraft", "wordcraft"] };
+  let settings: MySettings = { reserve: { fiveHour: 20, weekly: 10 }, maxCalls: null, manualOnly: false, repos: ["designcraft", "photocraft", "textcraft"], repoChoices: ["designcraft", "fontcraft", "gridcraft", "iconcraft", "pdfcraft", "photocraft", "Sheetcraft", "wordcraft"] };
   const at = (ms: number) => new Date(NOW + ms).toISOString();
   const helpers: RemoteHelper[] = [
     { tokenId: 2, label: "laptop", slots: 5, busy: 2, lastError: null, readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-40_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
@@ -19,7 +19,7 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
   ];
   let next = 3;
   let tokens: McpToken[] = [
-    { id: 2, label: "laptop", canAnswer: false, canRun: true, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
+    { id: 2, label: "laptop", kind: "runner", canAnswer: false, canRun: true, createdAt: new Date(NOW - 3 * DAY).toISOString(), lastUsedAt: new Date(NOW - 40 * 60_000).toISOString(), expiresAt: new Date(NOW + 87 * DAY).toISOString() },
   ];
   const list = () => ({ tokens: structuredClone(tokens), max: 5, path: "/mcp", answering: false });
   const wait = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 60));
@@ -58,7 +58,7 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
         if (answer) throw new Error("answering from an agent is not available yet");
         if (tokens.length >= 5) throw new Error("you have 5 tokens; revoke one first");
         const id = next++;
-        tokens = [{ id, label: label.trim() || null, canAnswer: answer, canRun: run, createdAt: new Date(NOW).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + (answer ? 7 : 90) * DAY).toISOString() }, ...tokens];
+        tokens = [{ id, label: label.trim() || null, kind: run ? "runner" : "connector", canAnswer: answer, canRun: run, createdAt: new Date(NOW).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + (answer ? 7 : 90) * DAY).toISOString() }, ...tokens];
         changed();
         return wait({ ...list(), id, token: `acmcp_mock${id}${"x".repeat(36)}` });
       },

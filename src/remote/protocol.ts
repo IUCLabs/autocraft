@@ -3,8 +3,10 @@
 // own subscription; everything else (planner, gates, GitHub writes, builds) stays on the server.
 // No Node imports: the helper keeps its own copy of these shapes and the dashboard build may import this file.
 
-/** Bumped on any change to these shapes; the server refuses a claim from a helper of another version. */
-export const PROTOCOL_VERSION = 3;
+/** Bumped on any change to these shapes; the server refuses a claim from a helper of a version outside ACCEPTED_PROTOCOLS. */
+export const PROTOCOL_VERSION = 4;
+/** The protocol versions the server answers. 3 is a helper without long-polling claims (no `Claim.wait`); its claims are answered at once. */
+export const ACCEPTED_PROTOCOLS: readonly number[] = [3, 4];
 
 /** API routes on the dashboard origin. Agent-token routes take `Authorization: Bearer <agent token>`; lease routes take `Authorization: Bearer <lease secret>`. */
 export const ROUTES = {
@@ -26,8 +28,14 @@ export const ROUTES = {
   tool: "/api/remote/tool",
   /** Lease secret. Streamable HTTP MCP servers with only this call's tools, one per server name: `/mcp/task/<name>` (items, build, reference). */
   mcp: "/mcp/task",
+  /** No credential. Body `LoginStart`, reply `LoginStartReply`: a Task Runner asks to have the credential it made approved by a signed-in user. */
+  loginStart: "/api/remote/login/start",
+  /** `Authorization: Bearer <the pending credential>`. Body `{}`, reply `LoginPollReply`, or 429 with `Retry-After` when polled too often. */
+  loginPoll: "/api/remote/login/poll",
   /** The helper itself, a single file. */
-  helper: "/worker/autocraft-task.mjs",
+  helper: "/worker/autocraft.mjs",
+  /** The helper's earlier path, which helpers up to 1.2.0 download in `update`. */
+  legacyHelper: "/worker/autocraft-task.mjs",
 } as const;
 
 export type Tier = "top" | "mid" | "small";
@@ -64,6 +72,11 @@ export type Claim = {
   requestId: string;
   /** The claim comes from the helper's fast-lane slot: the server offers it only follow-ups of its sessions, gating calls and small-tier calls. */
   fastLane?: boolean;
+  /**
+   * Protocol 4 only: how long the server may hold the claim open when nothing is queued for it, in whole seconds (0 to 30).
+   * A call queued meanwhile is leased at once; when none comes, the empty reply has `retryAfter: 1`. Absent or 0: answered at once.
+   */
+  wait?: number;
 };
 
 /** How long the server remembers a claim's `requestId` and its reply. */
@@ -115,11 +128,15 @@ export type HelperStatus = {
   busy: number;
   /** The helper's last error talking to the server or running a call, until it recovers: what failed, in one line, and when (ISO time). */
   lastError?: { text: string; at: string };
+  /** The helper's own version (`HELPER_VERSION`). */
+  helperVersion?: string;
+  /** The machine the helper runs on. */
+  machine?: Machine;
 };
 /** The user's reserve, so a helper knows it before its first claim. */
 export type StatusReply = { ok: true; reserve: Reserve };
 
-/** One of the user's helpers (agent tokens that may run tasks), for the Connect page and my_work: GET /api/remote/helpers replies `{ helpers: HelperInfo[] }`. */
+/** One of the user's helpers (Task Runner credentials), for the Connect page and my_work: the session route GET /api/runners replies with these and more per runner. */
 export type HelperInfo = {
   tokenId: number;
   label: string | null;
@@ -138,6 +155,32 @@ export type HelperInfo = {
   slots: number | null;
   busy: number | null;
   lastError: { text: string; at: string } | null;
+};
+
+/** One of the signed-in user's Task Runners: GET /api/runners (session route) replies `RunnersReply`. */
+export type RunnerInfo = HelperInfo & {
+  /** The machine the runner named at login or in its latest status; null for a runner from before logins carried it. */
+  machine: Machine | null;
+  /** The runner's version from its latest status or claim; null when it never reported one. */
+  helperVersion: string | null;
+  /** When the credential was made (ISO time). */
+  createdAt: string;
+  /** When the credential expires unless used (ISO time); each use moves it on. */
+  expiresAt: string;
+};
+export type RunnersReply = { runners: RunnerInfo[] };
+
+/** GET /api/runners/pending?code=<user code> (session route): a device login waiting for approval, or 404. Times are ISO. */
+export type PendingRunnerLogin = {
+  label: string;
+  machine: Machine;
+  /** The address the runner's login came from. */
+  ip: string;
+  /** This browser's address, as the server sees it. */
+  yourIp: string;
+  startedAt: string;
+  helperVersion: string;
+  expiresAt: string;
 };
 
 /**
@@ -209,3 +252,25 @@ export type SubmitReply = { accepted: boolean; reason?: string };
 export type ToolReply = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 export type Release = { /** Why the helper gives the lease back, shown on the call. */ reason: string };
+
+/** The machine a Task Runner runs on, as Node's `os.hostname()`, `process.platform` and `process.arch` give it. */
+export type Machine = { hostname: string; platform: string; arch: string };
+
+/**
+ * Device-style login: the runner makes its own credential (`acrun_` + 32 random bytes, base64url), keeps it, and sends only
+ * its hash, lowercase hex SHA-256 of the whole credential string. A signed-in user approves the shown `userCode` on the dashboard.
+ */
+export type LoginStart = { credentialHash: string; /** The name the runner is listed under; the approving user may change it. */ label: string; machine: Machine; helperVersion: string };
+export type LoginStartReply = {
+  /** 8 characters from BCDFGHJKLMNPQRSTVWXZ as "BCDF-GHJK"; compared without case or hyphen. */
+  userCode: string;
+  /** The dashboard page that approves this login: `<base>/connect?runner=<userCode>`. */
+  verifyUrl: string;
+  /** Seconds between two polls. */
+  interval: number;
+  /** Seconds until the login expires unapproved. */
+  expiresIn: number;
+};
+/** `approved`: the credential works on the agent-token routes as it is. `denied` and `expired` are final; the runner starts a new login. */
+export type LoginState = "pending" | "approved" | "denied" | "expired";
+export type LoginPollReply = { state: LoginState };

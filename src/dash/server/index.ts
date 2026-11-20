@@ -566,7 +566,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (url.pathname.startsWith("/api/remote/") && url.pathname !== HELPERS_PATH) return await handleRemoteHttp(req, res, url);
       if (url.pathname.startsWith(`${ROUTES.mcp}/`)) return await handleTaskMcp(req, res, url);
       // Public: the helper script, which a maintainer downloads before having any credential.
-      if (url.pathname === ROUTES.helper) return await sendHelper(req, res);
+      if (url.pathname === ROUTES.helper || url.pathname === ROUTES.legacyHelper) return await sendHelper(req, res);
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(req, res);
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.

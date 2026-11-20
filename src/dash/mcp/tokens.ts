@@ -17,14 +17,14 @@ export const MCP_TOKEN_PREFIX = "acmcp_";
 const LABEL_MAX = 60;
 const TOUCH_EVERY = 60_000;
 
-export type McpTokenRow = { id: number; label: string | null; canAnswer: boolean; /** The token's helper may claim model calls in the user-local inference mode (src/remote/). */ canRun: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
+export type McpTokenRow = { id: number; label: string | null; kind: "connector" | "runner"; canAnswer: boolean; /** The token's helper may claim model calls in the user-local inference mode (src/remote/). */ canRun: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
 /** `canAnswer`: the token was made to answer; the answer tools also need `role` to be operator at the time of the call. */
 export type McpCaller = { tokenId: number; login: string; role: Role; canAnswer: boolean; canRun: boolean };
 
-type Raw = { id: number; label: string | null; can_answer: number; can_run: number; created_at: string; last_used_at: string | null; expires_at: string };
-const COLS = "id, label, can_answer, can_run, created_at, last_used_at, expires_at";
+type Raw = { id: number; label: string | null; kind: "connector" | "runner"; can_answer: number; can_run: number; created_at: string; last_used_at: string | null; expires_at: string };
+const COLS = "id, label, kind, can_answer, can_run, created_at, last_used_at, expires_at";
 const toRow = (r: Raw): McpTokenRow =>
-  ({ id: Number(r.id), label: r.label, canAnswer: r.can_answer === 1, canRun: r.can_run === 1, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at });
+  ({ id: Number(r.id), label: r.label, kind: r.kind, canAnswer: r.can_answer === 1, canRun: r.can_run === 1, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at });
 
 /** The login's live tokens, newest first. */
 export function listTokens(db: DatabaseSync, login: string): McpTokenRow[] {
@@ -40,8 +40,8 @@ export function createToken(db: DatabaseSync, login: string, rawLabel: unknown, 
   const token = `${MCP_TOKEN_PREFIX}${randomToken(32)}`;
   const now = new Date();
   const ttl = canAnswer ? MCP_ANSWER_TOKEN_TTL : MCP_TOKEN_TTL;
-  const r = db.prepare(`INSERT INTO mcp_tokens (login, token_hash, label, can_answer, can_run, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`)
-    .get(login, sha256hex(token), label, canAnswer ? 1 : 0, canRun ? 1 : 0, now.toISOString(), new Date(now.getTime() + ttl).toISOString()) as Raw;
+  const r = db.prepare(`INSERT INTO mcp_tokens (login, token_hash, label, kind, can_answer, can_run, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`)
+    .get(login, sha256hex(token), label, canRun ? "runner" : "connector", canAnswer ? 1 : 0, canRun ? 1 : 0, now.toISOString(), new Date(now.getTime() + ttl).toISOString()) as Raw;
   return { token, row: toRow(r) };
 }
 

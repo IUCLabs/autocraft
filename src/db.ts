@@ -238,6 +238,12 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["build_envs", "confidential_since", "TEXT"],
   ["build_envs", "confidential_online_at", "TEXT"],
   ["security_findings", "env_wait_at", "TEXT"],
+  ["mcp_tokens", "kind", "TEXT NOT NULL DEFAULT 'connector'"],
+  ["mcp_tokens", "machine", "TEXT"],
+  ["remote_helpers", "helper_version", "TEXT"],
+  ["remote_calls", "picked_by", "TEXT COLLATE NOCASE"],
+  ["remote_calls", "picked_at", "INTEGER"],
+  ["remote_calls", "pick_until", "INTEGER"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
@@ -278,7 +284,7 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 17;
+const MIGRATION_VERSION = 18;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -318,6 +324,7 @@ function backfill(db: DatabaseSync): void {
       WHERE base_ref IS NULL`);
     db.exec("INSERT OR IGNORE INTO main.settings (key, value) VALUES ('review_base_backfilled', '1')");
   }
+  splitRunnerTokens(db);
   // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.
   const now = new Date().toISOString();
   db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
@@ -347,6 +354,35 @@ function backfill(db: DatabaseSync): void {
       WHEN json_extract(probs, '$.security') >= :sec THEN '["security"]'
       WHEN json_extract(probs, '$.needs_decision') >= :nd THEN '["needs decision"]'
       ELSE '[]' END`).run({ sec: JEV_SECURITY_YES, nd: JEV_NEEDS_DECISION_YES });
+}
+
+/**
+ * Tokens from before the MCP Connector / Task Runner split: a token that may run tasks and that a helper used (a status row,
+ * an idle claim, or a lease) becomes a runner; the others become connectors. `can_run` then mirrors the kind. Once only.
+ */
+export function splitRunnerTokens(db: DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM main.settings WHERE key = 'runner_tokens_split'").get()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'runner_tokens_split'").get()) {
+      const used = `t.idle_claim_at IS NOT NULL OR EXISTS (SELECT 1 FROM main.remote_helpers h WHERE h.token_id = t.id)
+        OR t.id IN (SELECT token_id FROM main.remote_calls WHERE token_id IS NOT NULL)`;
+      const changed = db.prepare(`SELECT t.id, t.login, t.label, CASE WHEN ${used} THEN 'runner' ELSE 'connector' END AS kind
+        FROM main.mcp_tokens t WHERE t.can_run = 1 AND t.kind = 'connector'`).all() as { id: number; login: string; label: string | null; kind: string }[];
+      const at = new Date().toISOString();
+      const set = db.prepare("UPDATE main.mcp_tokens SET kind = ?, can_run = ? WHERE id = ?");
+      const log = db.prepare("INSERT INTO main.audit (at, login, action, target, details) VALUES (?, 'migration', 'runner-migrate', ?, ?)");
+      for (const t of changed) {
+        set.run(t.kind, t.kind === "runner" ? 1 : 0, t.id);
+        log.run(at, t.login, JSON.stringify({ id: Number(t.id), ...(t.label !== null && { label: t.label }), kind: t.kind }));
+      }
+      db.exec("INSERT INTO main.settings (key, value) VALUES ('runner_tokens_split', '1')");
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 function addColumns(db: DatabaseSync): void {

@@ -19,9 +19,15 @@ void [
   same<protocol.Heartbeat, H.Heartbeat>((b) => b), same<H.Heartbeat, protocol.Heartbeat>((b) => b),
 ];
 
-test("the helper speaks the server's protocol version and routes", () => {
-  assert.equal(helper.PROTOCOL_VERSION, protocol.PROTOCOL_VERSION);
-  assert.deepEqual(helper.ROUTES, protocol.ROUTES);
+test("the helper speaks a protocol version and routes the server accepts", () => {
+  assert.ok(protocol.ACCEPTED_PROTOCOLS.includes(helper.PROTOCOL_VERSION));
+  const routes: Record<string, string> = { ...protocol.ROUTES };
+  if (helper.PROTOCOL_VERSION === 3) {
+    // A protocol 3 helper downloads itself from the legacy path and knows no device login.
+    routes.helper = protocol.ROUTES.legacyHelper;
+    for (const k of ["legacyHelper", "loginStart", "loginPoll"]) delete routes[k];
+  }
+  assert.deepEqual(helper.ROUTES, routes);
   assert.deepEqual([helper.HEARTBEAT_S, helper.PREPARE_MAX_S, helper.CLAIM_ID_TTL_S], [protocol.HEARTBEAT_S, protocol.PREPARE_MAX_S, protocol.CLAIM_ID_TTL_S]);
 });
 
