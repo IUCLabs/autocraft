@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef, ModelQueueWhyCode } from "../../web/src/api/types.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
-import { freshRunnerLogins, pickCounts, queueSnapshot, roleFits } from "./calls.ts";
+import { pickerLogins, pickCounts, queueSnapshot, roleFits } from "./calls.ts";
 import { gating } from "./claim-class.ts";
 import { cooloffOf } from "./cooloff.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
@@ -86,7 +86,7 @@ export function queueView(db: DatabaseSync, nowMs: number, showPicker: boolean):
   const writable = new Set<string>();
   for (const p of db.prepare("SELECT login, repo, permission FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(runners.map((r) => r.login))) as { login: string; repo: string; permission: string }[])
     if (WRITE_PERMISSIONS.has(p.permission)) writable.add(`${p.login.toLowerCase()}\n${p.repo}`);
-  const fresh = freshRunnerLogins(db, nowMs);
+  const fresh = pickerLogins(db, nowMs);
   const ahead = new Map<Tier, number>();
   const calls: QueuedCall[] = [];
   for (const r of snap) {

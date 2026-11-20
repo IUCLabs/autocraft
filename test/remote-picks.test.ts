@@ -1,6 +1,6 @@
 // "Run on my Task Runner" picks and Manual only: a pick goes to the picker's runners first and no one else's while it counts;
-// it lapses with its time or its picker's runners; a Manual only user's runners take only their picks and are no room; the
-// queue view hides picker logins and errors from viewers.
+// it lapses with its time or its picker's runners and does not count while its picker cannot take it; a Manual only user's
+// runners take only their picks and are no room; the queue view hides picker logins and errors from viewers.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import type { Req, Role } from "../src/dash/types.ts";
 import { connect } from "../src/db.ts";
 import { claimCall, dropQueueCache, enqueueCall, type Caller } from "../src/remote/calls.ts";
 import { parseStatus, STATUS_FRESH_MS, storeStatus } from "../src/remote/helpers.ts";
+import { setUserMaxCalls } from "../src/remote/max-calls.ts";
 import { setInferenceMode } from "../src/remote/mode.ts";
 import { pickCall, setPickMinutes, unpickCall } from "../src/remote/picks.ts";
 import { PROTOCOL_VERSION, type Claim, type Tier } from "../src/remote/protocol.ts";
@@ -83,6 +84,24 @@ describe("picks and Manual only", () => {
     db.prepare("UPDATE remote_calls SET pick_until = ? WHERE id = ?").run(Date.now() - 1, b);
     dropQueueCache(db);
     assert.equal(await leased("alice"), b, "the pick's time is up");
+    clear();
+  });
+
+  test("a pick does not count while its picker is cooling off or at their Max calls at once", async () => {
+    const a = q();
+    await pickCall(db, user("bob"), a);
+    db.prepare("INSERT INTO remote_cooloffs (login, until, reason) VALUES ('Bob', ?, 'testing cool-off')").run(Date.now() + 60_000);
+    assert.equal(await leased("alice"), a, "bob is cooling off: alice's runner takes his pick");
+    db.prepare("DELETE FROM remote_cooloffs WHERE login = 'bob'").run();
+    setUserMaxCalls(db, "bob", 1);
+    const b = q();
+    await pickCall(db, user("bob"), b);
+    assert.equal(await leased("alice"), null, "bob may still take it");
+    const held = q({ ageMs: 60_000 });
+    db.prepare("UPDATE remote_calls SET state = 'leased', user_login = 'bob', leased_at = ?, heartbeat_at = ? WHERE id = ?").run(Date.now(), Date.now(), held);
+    dropQueueCache(db);
+    assert.equal(await leased("alice"), b, "bob runs his Max calls at once: alice's runner takes his pick");
+    setUserMaxCalls(db, "bob", null);
     clear();
   });
 

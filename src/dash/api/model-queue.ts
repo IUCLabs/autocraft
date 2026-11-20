@@ -3,7 +3,7 @@
 // manual logins, and never repo-less calls; maintainers and operators see those; operators also end any user's pick.
 import type { DatabaseSync } from "node:sqlite";
 import type { ModelQueue, ModelQueueCall } from "../../../web/src/api/types.ts";
-import { freshRunnerLogins } from "../../remote/calls.ts";
+import { pickerLogins } from "../../remote/calls.ts";
 import { manualOnly } from "../../remote/manual-only.ts";
 import { pickCall, pickerState, pickRefusal, unpickCall } from "../../remote/picks.ts";
 import { queueView } from "../../remote/queue-view.ts";
@@ -39,7 +39,7 @@ export async function get(db: DatabaseSync, req: Req): Promise<ModelQueue> {
   const visible = req.user.role === "operator" ? null : new Set(hidden.visible ?? []);
   const { calls, runners } = queueView(db, nowMs, staff);
   const state = pickerState(db, req.user, nowMs);
-  const fresh = freshRunnerLogins(db, nowMs);
+  const fresh = pickerLogins(db, nowMs);
   const memo = new Map<string, Promise<boolean>>();
   const user = { ...req.user, canWrite: (repo: string) => { let p = memo.get(repo); if (!p) memo.set(repo, (p = req.user.canWrite(repo).catch(() => false))); return p; } };
   const out: ModelQueueCall[] = [];

@@ -1,14 +1,15 @@
 // Picks ("Run on my Task Runner" in the model call queue): a maintainer or operator reserves a queued call for their own Task
 // Runners. Their runners take their picks before the queue's order; other users' runners pass a call over while its pick
 // counts (calls.ts claimOrder, leaseCall). A pick counts until its time is up (setting remote_pick_minutes, 0: no time
-// limit), while one of the picker's runners is fresh; it ends with a lease, a requeue, an unpick, or at a claim that finds
+// limit), while one of the picker's runners is fresh and the picker is neither cooling off nor at their Max calls at once
+// (calls.ts pickerSql); it ends with a lease, a requeue, an unpick, or at a claim that finds
 // the call released by or no longer open to the picker. Registered as a wait in src/stages/registry.ts.
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { HttpError } from "../dash/server/util.ts";
 import type { Role } from "../dash/types.ts";
-import { authorsOf, clearPick, dropQueueCache, freshRunnerLogins, judges, pickCounts, pickLapsedArgs, pickLapsedSql, roleFits } from "./calls.ts";
+import { authorsOf, clearPick, dropQueueCache, pickerLogins, judges, pickCounts, pickLapsedArgs, pickLapsedSql, roleFits } from "./calls.ts";
 import { cooloffOf } from "./cooloff.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
 import { acceptedModels, familyOf, inferenceMode, isTier } from "./mode.ts";
@@ -89,8 +90,8 @@ export type PickCall = { id: number; tier: Tier; promptId: string; parentId: num
 /**
  * Why the user may not pick the call now, or null: only a queued call with a live caller, not a follow-up, not a judging
  * call on the user's own item, not under another user's live pick, of a tier the user's runners cover, that the role rules
- * give the user and on whose every repo the user may write; and only below the user's most picks. `fresh`: whether a login
- * has a fresh Task Runner.
+ * give the user and on whose every repo the user may write; and only below the user's most picks. `fresh`: whether a login's
+ * picks count (pickerLogins).
  */
 export async function pickRefusal(state: PickerState, user: Picker, c: PickCall, nowMs: number, fresh: (login: string) => boolean): Promise<string | null> {
   if (!state.canPick) return state.why;
@@ -129,7 +130,7 @@ export async function pickCall(db: DatabaseSync, user: Picker, id: number, nowMs
   if (c.state !== "queued") throw new HttpError(409, "the call is no longer queued");
   const state = pickerState(db, user, nowMs);
   if (user.role !== "maintainer" && user.role !== "operator") throw new HttpError(403, state.why ?? "only maintainers and operators pick calls");
-  const fresh = freshRunnerLogins(db, nowMs);
+  const fresh = pickerLogins(db, nowMs);
   const why = await pickRefusal(state, user, c, nowMs, (l) => fresh.has(l));
   if (why) throw new HttpError(409, why);
   const cap = pickCapMs(db);

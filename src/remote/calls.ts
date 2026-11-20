@@ -21,7 +21,7 @@ import { dashboardAlive } from "./liveness.ts";
 import { acceptedModels, familyOf, isEffort, isTier, meetsEffort, minEfforts, TIERS } from "./mode.ts";
 import { ACCEPTED_PROTOCOLS, CLAIM_ID_TTL_S, HEARTBEAT_S, PREPARE_MAX_S, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { claimRepos } from "./my-repos.ts";
-import { userMaxCalls } from "./max-calls.ts";
+import { MAX_CALLS_KEY, MAX_CALLS_MAX, userMaxCalls } from "./max-calls.ts";
 import { claimClass, gating } from "./claim-class.ts";
 import { holdMs, Ticket, type ClaimTry, type ClaimWaits, type EmptyReply } from "./claim-wait.ts";
 import { userReserve } from "./reserve.ts";
@@ -513,8 +513,8 @@ function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, 
   const sessions = new Set(sessionIds);
   const followUps = q.followUps.filter((r) => sessions.has(r.parent_id!) && sameLogin(r.sticky_login, caller.login) && fits(r));
   let fresh: Set<string> | null = null;
-  // The caller claims, so its own runners are fresh; other pickers' are read once, when a pick needs it.
-  const counts = (r: Cand): boolean => pickCounts(r, nowMs, (who) => who === login || (fresh ??= freshRunnerLogins(db, nowMs)).has(who));
+  // The caller's own picks count for it; whether other pickers can take theirs is read once, when a pick needs it.
+  const counts = (r: Cand): boolean => pickCounts(r, nowMs, (who) => who === login || (fresh ??= pickerLogins(db, nowMs)).has(who));
   const mine: Cand[] = [];
   for (const r of q.ordered) {
     if (r.pickedBy !== login || !counts(r)) continue;
@@ -529,21 +529,29 @@ function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, 
 // ---- picks ("Run on my Task Runner", picks.ts) ----------------------------------------
 
 /**
- * SQL on a remote_calls row that has a pick: the pick no longer counts, as its time is up or none of the picker's Task
- * Runners is fresh (its last status is older than STATUS_FRESH_MS). Bind pickLapsedArgs.
+ * SQL on a login expression: the login can take its picks now, so they count. It has a fresh Task Runner (last status within
+ * STATUS_FRESH_MS), is not cooling off (cooloff.ts) and holds fewer leases than its "Max calls at once" (max-calls.ts); a
+ * picker who cannot take a call does not hold it away from other runners. Bind pickerArgs.
  */
-export const pickLapsedSql = `(pick_until < ? OR NOT EXISTS (SELECT 1 FROM main.remote_helpers ph JOIN main.mcp_tokens pt ON pt.id = ph.token_id
-  WHERE ph.login = remote_calls.picked_by AND pt.kind = 'runner' AND pt.expires_at > ? AND ph.reported_at >= ?))`;
-export const pickLapsedArgs = (nowMs: number): [number, string, number] => [nowMs, new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS];
+const pickerSql = (login: string): string => `(EXISTS (SELECT 1 FROM main.remote_helpers ph JOIN main.mcp_tokens pt ON pt.id = ph.token_id
+    WHERE ph.login = ${login} AND pt.kind = 'runner' AND pt.expires_at > ? AND ph.reported_at >= ?)
+  AND NOT EXISTS (SELECT 1 FROM main.remote_cooloffs pc WHERE pc.login = ${login} AND pc.until > ?)
+  AND NOT EXISTS (SELECT 1 FROM main.user_settings ps WHERE ps.login = ${login} AND ps.key = '${MAX_CALLS_KEY}'
+    AND CAST(ps.value AS INTEGER) BETWEEN 1 AND ${MAX_CALLS_MAX}
+    AND (SELECT COUNT(*) FROM main.remote_calls pl WHERE pl.state = 'leased' AND pl.user_login = ${login} COLLATE NOCASE) >= CAST(ps.value AS INTEGER)))`;
+const pickerArgs = (nowMs: number): [string, number, number] => [new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS, nowMs];
 
-/** The logins (lowercase) with a fresh Task Runner: only their picks count. */
-export function freshRunnerLogins(db: DatabaseSync, nowMs: number): Set<string> {
-  const rows = db.prepare(`SELECT DISTINCT lower(h.login) AS login FROM main.remote_helpers h JOIN main.mcp_tokens t ON t.id = h.token_id
-    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.reported_at >= ?`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { login: string }[];
+/** SQL on a remote_calls row that has a pick: the pick no longer counts, as its time is up or its picker cannot take it now (pickerSql). Bind pickLapsedArgs. */
+export const pickLapsedSql = `(pick_until < ? OR NOT ${pickerSql("remote_calls.picked_by")})`;
+export const pickLapsedArgs = (nowMs: number): [number, string, number, number] => [nowMs, ...pickerArgs(nowMs)];
+
+/** The logins (lowercase) whose picks count now (pickerSql). */
+export function pickerLogins(db: DatabaseSync, nowMs: number): Set<string> {
+  const rows = db.prepare(`SELECT DISTINCT lower(h.login) AS login FROM main.remote_helpers h WHERE ${pickerSql("h.login")}`).all(...pickerArgs(nowMs)) as { login: string }[];
   return new Set(rows.map((r) => r.login));
 }
 
-/** Whether a queued call's pick counts now: it has one, its time is not up (no time: until it ends) and its picker has a fresh Task Runner. */
+/** Whether a queued call's pick counts now: it has one, its time is not up (no time: until it ends) and its picker can take it (`fresh`: pickerLogins). */
 export const pickCounts = (r: { pickedBy: string | null; pickUntil: number | null }, nowMs: number, fresh: (login: string) => boolean): boolean =>
   r.pickedBy !== null && (r.pickUntil === null || r.pickUntil >= nowMs) && fresh(r.pickedBy.toLowerCase());
 
