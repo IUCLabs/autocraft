@@ -188,11 +188,12 @@ A Task Runner needs a maintainer or operator login on the dashboard. The Connect
 
 Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` or `codex`), and a sandbox tool: bubblewrap (`/usr/bin/bwrap`) on Linux and WSL, `sandbox-exec` on macOS. Other systems are refused.
 
-1. Install the Task Runner:
+1. Install the Task Runner and set up the machine:
    ```sh
-   mkdir -p ~/.local/bin && curl -fsSL <dashboard URL>/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft
+   mkdir -p ~/.local/bin && curl -fsSL <dashboard URL>/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft && ~/.local/bin/autocraft setup <dashboard URL>
    ```
-2. Log in: `autocraft login <dashboard URL>`, then approve the code on the Connect page. The URL must be `https` (`http` only for localhost).
+   `setup` looks at what the machine lacks and, one item at a time, prints the problem and the command that fixes it, and runs the command only when you answer yes (see [setup](#setup)). It ends with `doctor`.
+2. Log in: `setup` runs `autocraft login <dashboard URL>`; approve the code on the Connect page. The URL must be `https` (`http` only for localhost).
 3. Choose how the harness signs in:
 
    | Command | Harness login |
@@ -203,7 +204,30 @@ Requirements: Node 22 or later, `git` and `tar`, a signed-in harness (`claude` o
    | `autocraft harness codex [--device-auth]` | Logs Codex in to the Task Runner's own `CODEX_HOME`, a login separate from `~/.codex`, so refreshes never invalidate your own session. `--device-auth` is for a machine without a browser. |
 
 4. Models. Claude defaults to `opus`, `sonnet` and `haiku` for the three tiers. Codex has no defaults: add `"tiers": {"top": "...", "mid": "...", "small": "..."}` to `$XDG_CONFIG_HOME/autocraft-runner/config.json` (mode 0600; default `~/.config/autocraft-runner/config.json`). The config also takes `repos` (claim only calls on these repos), `claudeBin`, `codexBin` and `treeCacheGb` (the tree cache cap, default 20). `AUTOCRAFT_RUNNER_CLAUDE_BIN` and `AUTOCRAFT_RUNNER_CODEX_BIN` override the binaries.
-5. Run `autocraft doctor`, then `autocraft work`, or `autocraft service install [--parallel N]` to keep it running.
+5. Run `autocraft doctor`, then `autocraft work` in a terminal (Ctrl-C stops it), `autocraft run` for one call, or `autocraft service install [--parallel N]` to keep it running.
+
+### setup
+
+`autocraft setup [<dashboard URL>]` checks the machine and offers one fix at a time, in this order. Each offer prints the problem, what the fix does and the exact command, and asks `Run it now?`. A command that runs `sudo` or downloads and runs an installer asks `[y/N]`: only a typed `y` runs it, and an empty line is no. The others ask `[Y/n]`. Input typed before a question appears is discarded, so an answer typed ahead, or a line left over from the step before, never answers it. After each offer setup looks at the machine again, so a fix that made the next one unnecessary is not offered. Each item is offered once per run.
+
+| Missing | Command offered |
+|---|---|
+| Windows or another system | None: install and run `autocraft` inside WSL |
+| bubblewrap (Linux), `git`, `tar`, and `curl` and `bash` when Claude Code must be installed | The package manager's install, run with `sudo sh -c '…'` unless run as root: `apt-get update && apt-get install -y`, `dnf install -y`, `pacman -Sy --needed --noconfirm`, `zypper --non-interactive install` or `apk add`; `xcode-select --install` on macOS, also when the `git` found on `PATH` is, after following symlinks, the stub `/usr/bin/git` that macOS has without the developer tools (`xcode-select -p` fails) |
+| A sandbox that does not start because AppArmor restricts unprivileged user namespaces (`/proc/sys/kernel/apparmor_restrict_unprivileged_userns` is 1, Ubuntu 23.10 and later) | Installs Ubuntu's `bwrap-userns-restrict` AppArmor profile as `/etc/apparmor.d/bwrap-userns-restrict` and loads it with `apparmor_parser -r`. It copies `/usr/share/apparmor/extra-profiles/bwrap-userns-restrict` when that exists (apparmor 4.x, package `apparmor-profiles`), else writes the same rules. The profile lets any program on the machine run `/usr/bin/bwrap` to create user namespaces; everything bwrap starts runs under the `unpriv_bwrap` profile, which denies every capability, so bwrap gives a sandbox but never a privileged namespace. Programs inside a call therefore cannot start a sandbox of their own. Setup writes a temporary file and hard-links it into place, so a profile that exists by then is never overwritten and a failed write leaves none; when loading fails, it removes only the profile it linked, so the next `setup` offers it again. When the file already exists, it offers `sudo apparmor_parser -r` on it; for another cause it only shows bubblewrap's error |
+| `claude` on `PATH` | Claude Code's native installer (`bash -c "$(curl -fsSL https://claude.ai/install.sh)"`, into `~/.local/bin`, no sudo): the script is downloaded whole before bash runs it. It says so when it sees the snap `claude-code` or VS Code's own copy of Claude Code (`~/.vscode-server/extensions`): neither is a standalone binary at a fixed path, so neither can be mounted into the sandbox. For Codex it names the audited versions and installs nothing |
+| A Claude login (none yet, or the chosen one no longer gives a token) | `claude` (the binary setup found, also outside `PATH`; with `CLAUDE_CONFIG_DIR` set when the runner reads another config directory), to sign in and `/exit`. When the runner has a stored setup-token, or a config directory on macOS (where Claude Code keeps its login in the Keychain), it offers `autocraft harness claude` instead, to paste a new token from `claude setup-token` |
+| A harness login for the runner | `autocraft harness claude --config-dir` (Linux) or `--keychain` (macOS) when that login exists (on macOS setup checks that the Keychain item exists without reading it); `autocraft harness codex` for Codex. A setup-token is not offered: choose it yourself |
+| A dashboard login, or a login to another dashboard than the URL setup was given | `autocraft login <dashboard URL>`, when setup was given the URL; it replaces the other login, and the offer says so |
+
+To remove the AppArmor profile setup installed, unload it, then delete the file (newer Ubuntu releases ship this file in the `apparmor` package; leave theirs in place):
+
+```sh
+sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict
+sudo rm /etc/apparmor.d/bwrap-userns-restrict
+```
+
+`--yes` runs every command without asking, the `sudo` and installer ones included. Without a terminal and without `--yes`, `setup` only lists the commands. When `~/.local/bin` is not on `PATH`, setup looks there too and, at the end, says how to add it to the shell profile (`export PATH="$HOME/.local/bin:$PATH"`).
 
 ### Moving a 1.2.0 runner
 
@@ -236,7 +260,8 @@ The move (`autocraft migrate`, also run at the first start of 1.3.0, before the 
 |---|---|
 | `login <dashboard URL> [--label X] [--no-wait] [--answer] [--no-agent]`, `login --wait`, `login <dashboard URL> --stdin` | Makes a credential and waits for its approval on the Connect page, or stores one read from stdin (see [Task Runner credentials](#task-runner-credentials)). `--answer` also asks to answer decisions and approve merges; `--no-agent` asks for no Agent access. |
 | `harness claude\|codex ...` | Chooses the harness login (see [Setting up a Task Runner](#setting-up-a-task-runner)). |
-| `doctor` | Checks Node, platform, sandbox (on macOS with the canary), `git` and `tar`, the harness binary, version and login, a harness start inside the sandbox, the server and the tiers. Exit code 1 when a check fails. |
+| `setup [<dashboard URL>] [--yes]` | Installs what the machine lacks, asking first (see [setup](#setup)), then runs `doctor` and returns its exit code. |
+| `doctor` | Checks Node, platform, sandbox (on macOS with the canary), `git` and `tar`, the harness binary, version and login, a harness start inside the sandbox, the server and the tiers. Exit code 1 when a check fails; it then names `autocraft setup`. |
 | `update` | Downloads the server's current Task Runner over this file (checked with `node --check` first); restart `work` or the service afterwards. A version refusal names this command. |
 | `service install [--parallel N]` | Writes and starts a systemd user unit (Linux, `~/.config/systemd/user/autocraft.service`) or a launchd agent (macOS, `~/Library/LaunchAgents/autocraft.plist`) that runs `work` with these arguments and restarts it whenever it ends (systemd `Restart=always`, launchd `KeepAlive`). It keeps `PATH`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` and `CLAUDE_CONFIG_DIR` from the shell it ran in. The log: `journalctl --user -u autocraft -f` (Linux), `$XDG_CACHE_HOME/autocraft-runner/service.log` (macOS). On Linux, when lingering is off, the command prints a line that the service stops at logout and names `loginctl enable-linger`; `doctor` warns the same while a unit is installed. No root. |
 | `service uninstall` / `service status` | Stops and removes the service; prints its state and where its log is. |

@@ -14,6 +14,7 @@
 //   autocraft harness claude [--keychain]  a `claude setup-token` token on stdin, or (macOS) Claude Code's own login from the Keychain
 //   autocraft harness claude --config-dir [<dir>]  the login of a Claude config directory, read at each call (Linux)
 //   autocraft harness codex [--device-auth]  logs Codex in to the runner's own CODEX_HOME
+//   autocraft setup [<url>] [--yes]   installs what is missing (bubblewrap, git, tar, AppArmor rule, Claude Code, logins), asking first
 //   autocraft doctor                  checks platform, sandbox, harness, login and server
 //   autocraft update                  replaces this file with the server's current runner
 //   autocraft service install | uninstall | status  runs `work` as a systemd user unit or launchd agent
@@ -41,7 +42,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.3.3";
+export const HELPER_VERSION = "1.3.4";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
@@ -3769,14 +3770,14 @@ async function cmdDoctor() {
   const problem = platformProblem();
   const mac = process.platform === "darwin";
   check(!problem, problem ?? (mac ? `platform darwin, sandbox-exec at ${SANDBOX_EXEC}` : `platform ${process.platform}, bubblewrap at ${BWRAP}`));
-  if (problem) return 1;
+  if (problem) { console.log("`autocraft setup` offers to install what is missing."); return 1; }
   if (mac) {
     canaryResult = macCanary();
     check(canaryResult.ok, canaryResult.ok ? `the sandbox canary passed; slot 0 is ${slotRoot(slotBase(), 0)}` : "the sandbox canary failed: no call will be claimed");
     for (const l of canaryResult.lines) console.log(`       ${l}`);
   } else {
-    const ns = spawnSync(BWRAP, ["--unshare-all", "--share-net", "--die-with-parent", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin", "--proc", "/proc", "--dev", "/dev", "/usr/bin/true"], { encoding: "utf8", timeout: 20_000 });
-    check(ns.status === 0, ns.status === 0 ? "a sandbox starts" : `a sandbox does not start: ${(ns.stderr || "").trim().slice(0, 200)}`);
+    const ns = sandboxProbe();
+    check(ns.ok, ns.ok ? "a sandbox starts" : `a sandbox does not start: ${ns.error.slice(0, 200)}`);
   }
   for (const tool of ["git", "tar"]) { const r = spawnSync(tool, ["--version"], { encoding: "utf8" }); check(r.status === 0, r.status === 0 ? `${tool} found` : `${tool} not found`); }
   const cfg = loadConfig();
@@ -3816,7 +3817,272 @@ async function cmdDoctor() {
   const tiers = Object.entries({ ...adapter.defaultTiers, ...cfg.tiers });
   check(tiers.length > 0, tiers.length ? `tiers: ${tiers.map(([t, m]) => `${t}=${m}`).join(", ")}` : `no tiers set: add "tiers" with ${adapter.id} model ids to the config`);
   if (!mac && existsSync(systemdUnitFile(SERVICE_NAME)) && lingerOff()) console.log(`warn ${LINGER_HINT}`);
+  if (bad) console.log("`autocraft setup` offers to install what is missing.");
   return bad ? 1 : 0;
+}
+
+/** Whether a bubblewrap sandbox starts here, and bubblewrap's error when it does not. */
+function sandboxProbe() {
+  const r = spawnSync(BWRAP, ["--unshare-all", "--share-net", "--die-with-parent", "--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin", "--proc", "/proc", "--dev", "/dev", "/usr/bin/true"], { encoding: "utf8", timeout: 20_000 });
+  return r.status === 0 ? { ok: true, error: "" } : { ok: false, error: (r.stderr || String(r.error ?? `exit code ${r.status}`)).trim() };
+}
+
+// ---------------------------------------------------------------------------
+// Setup: what this machine lacks for running calls, each with the command that adds it, run only after the user agrees.
+
+/**
+ * What `setup` found on this machine.
+ * @typedef {object} SetupFacts
+ * @property {string} platform  process.platform
+ * @property {boolean} root  running as root (no sudo needed)
+ * @property {"apt" | "dnf" | "pacman" | "zypper" | "apk" | null} pkg  the system's package manager (Linux)
+ * @property {string[]} missing  system packages to install: bubblewrap, git, tar, and curl and bash when Claude Code's installer must run
+ * @property {"ok" | "failed" | null} sandbox  whether a bubblewrap sandbox starts (null: not tried, bubblewrap is missing or not Linux)
+ * @property {string} sandboxError  bubblewrap's error when it does not start
+ * @property {boolean} userns  the kernel restricts unprivileged user namespaces through AppArmor (Ubuntu 23.10 on)
+ * @property {boolean} bwrapProfile  /etc/apparmor.d/bwrap-userns-restrict exists
+ * @property {"claude" | "codex"} harness
+ * @property {boolean} harnessBin  the harness binary is found
+ * @property {string | null} claudeBin  the Claude Code binary found (also outside PATH, through claudeBin or the environment)
+ * @property {string | null} claudeDir  the Claude config directory the runner is set to read, when it is not the default one
+ * @property {string | null} otherClaude  a Claude Code binary that is not on PATH and not usable as it is (snap, VS Code's own copy)
+ * @property {"set" | "available" | "none"} harnessLogin  the runner has a harness login / one can be taken over (~/.claude, the Keychain) / none
+ * @property {"token" | "config-dir" | "keychain" | null} claudeLogin  the kind of Claude login the runner is set to (a stored setup-token counts as "token" whatever else is set)
+ * @property {boolean} loggedIn  the runner has an approved server credential (for `server`, when that is given)
+ * @property {string | null} loggedInTo  the dashboard the runner's credential belongs to
+ * @property {string | null} server  the dashboard URL given to setup
+ * @property {string} me  the shell words that run this runner
+ */
+
+/**
+ * One step of `setup`: a problem and how to fix it; `cmd` is a shell command, absent when only the user can fix it.
+ * `defaultNo`: the command runs sudo or downloads and runs an installer, so only a typed yes runs it.
+ * @typedef {{ id: string, problem: string, fix: string, cmd?: string, defaultNo?: boolean }} SetupStep
+ */
+
+/** The install command of each package manager, for the packages given. */
+const PKG_INSTALL = {
+  apt: (/** @type {string} */ p) => `apt-get update && apt-get install -y ${p}`, dnf: (/** @type {string} */ p) => `dnf install -y ${p}`,
+  pacman: (/** @type {string} */ p) => `pacman -Sy --needed --noconfirm ${p}`, zypper: (/** @type {string} */ p) => `zypper --non-interactive install ${p}`,
+  apk: (/** @type {string} */ p) => `apk add ${p}`,
+};
+const BWRAP_PROFILE = "/etc/apparmor.d/bwrap-userns-restrict";
+/** Ubuntu's copy of the profile (apparmor 4.x, package apparmor-profiles); newer releases install it in /etc/apparmor.d themselves. */
+const BWRAP_PROFILE_SHIPPED = "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict";
+/**
+ * Ubuntu's bwrap-userns-restrict profile, written when the system has no copy of it: bubblewrap may create user namespaces
+ * and use capabilities inside them, and everything it starts runs stacked under unpriv_bwrap, which denies every
+ * capability. A process can then get a sandbox through bwrap, but never a privileged namespace of its own.
+ */
+const BWRAP_USERNS_RESTRICT = (() => {
+  const common = ["allow file rwlkm /{**,},", "allow network,", "allow unix,", "allow ptrace,", "allow signal,", "allow mqueue,", "allow io_uring,", "allow userns,", "allow mount,", "allow umount,", "allow pivot_root,", "allow dbus,"];
+  return [
+    "abi <abi/4.0>,",
+    "include <tunables/global>",
+    `profile bwrap ${BWRAP} flags=(attach_disconnected,mediate_deleted) {`,
+    ...["allow capability,", ...common, "allow pix /** -> &bwrap//&unpriv_bwrap,", "include if exists <local/bwrap-userns-restrict>"].map((l) => `  ${l}`),
+    "}",
+    "profile unpriv_bwrap flags=(attach_disconnected,mediate_deleted) {",
+    ...[...common, "allow pix /** -> &unpriv_bwrap,", "audit deny capability,", "include if exists <local/unpriv_bwrap>"].map((l) => `  ${l}`),
+    "}",
+  ];
+})();
+/** The installer is downloaded whole before bash runs it, so a broken download never runs in part. */
+const CLAUDE_INSTALL = `bash -c "$(curl -fsSL https://claude.ai/install.sh)"`;
+/**
+ * Writes BWRAP_PROFILE and loads it: a copy of BWRAP_PROFILE_SHIPPED when the system has it, else the lines given as
+ * arguments. The text goes to a temporary file first, which a hard link then makes the profile: `ln` fails when a profile
+ * exists (one that appeared meanwhile is never overwritten), and a write that fails never leaves a profile behind. Only a
+ * profile this run linked is removed again when it does not load, so the next setup offers it once more.
+ */
+const APPARMOR_SCRIPT = `set -e; f=${BWRAP_PROFILE}; s=${BWRAP_PROFILE_SHIPPED}; t=$(mktemp "$f.XXXXXX"); trap 'rm -f "$t"' EXIT; if [ -r "$s" ]; then cat "$s" > "$t"; else printf '%s\\n' "$@" > "$t"; fi; chmod 644 "$t"; ln "$t" "$f"; apparmor_parser -r "$f" || { rm -f "$f"; exit 1; }`;
+/** @param {string} s */
+const shq = (s) => /^[A-Za-z0-9_./:=@-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The steps that make this machine able to run calls, first to fix first; empty when nothing is missing.
+ * @param {SetupFacts} f
+ * @returns {SetupStep[]}
+ */
+export function setupSteps(f) {
+  /** @type {SetupStep[]} */
+  const out = [];
+  const linux = f.platform === "linux", mac = f.platform === "darwin";
+  if (!linux && !mac) return [{ id: "platform", problem: `${f.platform} cannot run calls: the harness runs in bubblewrap or sandbox-exec`, fix: "Install and run autocraft inside WSL (Ubuntu) on Windows, or on Linux or macOS." }];
+  const sudo = f.root ? "" : "sudo ";
+  if (f.missing.length) {
+    const what = f.missing.join(", ");
+    if (mac) out.push({ id: "packages", problem: `${what} not found`, fix: "Install the Xcode command line tools.", cmd: "xcode-select --install", defaultNo: true });
+    else if (f.pkg) out.push({ id: "packages", problem: `${what} not found`, fix: `Install ${f.missing.length > 1 ? "them" : "it"} with ${f.pkg}${sudo ? " (asks for your password)" : ""}.`, cmd: `${sudo}sh -c ${shq(PKG_INSTALL[f.pkg](f.missing.join(" ")))}`, defaultNo: true });
+    else out.push({ id: "packages", problem: `${what} not found`, fix: "Install them with your system's package manager." });
+  }
+  if (linux && f.sandbox === "failed") {
+    if (f.userns && !f.bwrapProfile) {
+      out.push({
+        id: "apparmor", problem: `a sandbox does not start: AppArmor restricts unprivileged user namespaces (${f.sandboxError.slice(0, 120)})`,
+        fix: `Load Ubuntu's bwrap-userns-restrict AppArmor profile as ${BWRAP_PROFILE} (a copy of ${BWRAP_PROFILE_SHIPPED} when it exists, else the same rules). It lets any program on this machine run ${BWRAP} to create user namespaces; everything bwrap starts runs without capabilities. To undo it: sudo apparmor_parser -R ${BWRAP_PROFILE}, then delete the file.`,
+        cmd: `${sudo}sh -c ${shq(APPARMOR_SCRIPT)} sh ${BWRAP_USERNS_RESTRICT.map(shq).join(" ")}`, defaultNo: true,
+      });
+    } else if (f.userns) out.push({ id: "sandbox", problem: `a sandbox does not start: ${f.sandboxError.slice(0, 200)}`, fix: `${BWRAP_PROFILE} exists but may not be loaded; load it.`, cmd: `${sudo}apparmor_parser -r ${BWRAP_PROFILE}`, defaultNo: true });
+    else out.push({ id: "sandbox", problem: `a sandbox does not start: ${f.sandboxError.slice(0, 200)}`, fix: "bubblewrap needs unprivileged user namespaces; check the kernel settings (user.max_user_namespaces, kernel.unprivileged_userns_clone) and AppArmor." });
+  }
+  if (!f.harnessBin) {
+    if (f.harness === "codex") out.push({ id: "harness-bin", problem: "codex not found on PATH", fix: `Install Codex ${CODEX_AUDITED.map((v) => `${v}.x`).join(" or ")} (npm install -g @openai/codex@<version>), or set codexBin in the config.` });
+    else {
+      const why = f.otherClaude ? ` (${f.otherClaude} cannot be used: it is not a standalone binary at a fixed path)` : "";
+      out.push({ id: "harness-bin", problem: `claude not found on PATH${why}`, fix: "Download Claude Code's native installer from claude.ai and run it; it installs into ~/.local/bin (no sudo).", cmd: CLAUDE_INSTALL, defaultNo: true });
+    }
+  } else if (f.harnessLogin === "available") {
+    out.push(mac
+      ? { id: "harness-login", problem: "no harness login chosen", fix: "Use Claude Code's own login from the Keychain.", cmd: `${f.me} harness claude --keychain` }
+      : { id: "harness-login", problem: "no harness login chosen", fix: "Use the Claude login in your Claude config directory, read before each call.", cmd: `${f.me} harness claude --config-dir` });
+  } else if (f.harnessLogin === "none") {
+    if (f.harness === "codex") out.push({ id: "harness-login", problem: "Codex is not logged in for the runner", fix: "Log Codex in to the runner's own CODEX_HOME.", cmd: `${f.me} harness codex` });
+    // A stored setup-token, or a config directory on macOS (which keeps the login in the Keychain), is replaced only by
+    // `harness claude`; signing in to Claude Code again would not change it.
+    else if (f.claudeLogin === "token" || (mac && f.claudeLogin === "config-dir")) out.push({
+      id: "harness-token", problem: f.claudeLogin === "token" ? "the stored Claude setup-token gives no login" : "the runner is set to a Claude config directory, which macOS does not use",
+      fix: "Paste a new token from `claude setup-token`.", cmd: `${f.me} harness claude`,
+    });
+    else out.push({ id: "claude-signin", problem: "Claude Code is not signed in", fix: "Start Claude Code, sign in, then type /exit; setup goes on.", cmd: `${f.claudeDir ? `CLAUDE_CONFIG_DIR=${shq(f.claudeDir)} ` : ""}${shq(f.claudeBin ?? "claude")}` });
+  }
+  if (!f.loggedIn) {
+    const other = f.server && f.loggedInTo && f.loggedInTo !== f.server;
+    if (f.server) out.push({ id: "login", problem: other ? `logged in to ${f.loggedInTo}, not to ${f.server}` : "not logged in to a dashboard", fix: `Log in to ${f.server}${other ? ` (this replaces the login to ${f.loggedInTo})` : ""}, then approve the code on its Connect page.`, cmd: `${f.me} login ${shq(f.server)}` });
+    else out.push({ id: "login", problem: "not logged in to a dashboard", fix: "Run `autocraft setup <dashboard URL>`, or `autocraft login <dashboard URL>`." });
+  }
+  return out;
+}
+
+/** @param {string} bin */
+function onPath(bin) {
+  return (process.env.PATH ?? "").split(delimiter).filter(Boolean).some((d) => { try { accessSync(join(d, bin), constants.X_OK); return true; } catch { return false; } });
+}
+
+/**
+ * macOS without the developer tools still has /usr/bin/git, a stub that only offers to install them: it counts as missing.
+ */
+function gitStub() {
+  if (process.platform !== "darwin") return false;
+  const git = (process.env.PATH ?? "").split(delimiter).map((p) => join(p, "git")).find((f) => { try { accessSync(f, constants.X_OK); return true; } catch { return false; } });
+  if (!git) return false;
+  let real = git;
+  try { real = realpathSync(git); } catch { /* as found */ }
+  return appleGitStub(real, () => spawnSync("xcode-select", ["-p"], { encoding: "utf8", timeout: 10_000 }).status === 0);
+}
+
+/**
+ * Whether the git that PATH resolves to (symlinks followed) is macOS's stub: /usr/bin/git without the developer tools.
+ * @param {string} resolved @param {() => boolean} toolsInstalled
+ */
+export const appleGitStub = (resolved, toolsInstalled) => resolved === "/usr/bin/git" && !toolsInstalled();
+
+/** Whether Claude Code's Keychain item exists; its secret is not read. */
+function keychainItemExists(item = claudeKeychainItem()) {
+  return process.platform === "darwin" && spawnSync("/usr/bin/security", ["find-generic-password", "-a", item.account, "-s", item.service], { stdio: "ignore", timeout: 20_000 }).status === 0;
+}
+
+/** @param {string | null} server @returns {SetupFacts} */
+function setupFacts(server) {
+  const cfg = loadConfig();
+  const linux = process.platform === "linux";
+  const pkgs = /** @type {const} */ (["apt", "dnf", "pacman", "zypper", "apk"]);
+  const pkg = linux ? pkgs.find((p) => onPath(p === "apt" ? "apt-get" : p)) ?? null : null;
+  const adapter = adapterOf(cfg);
+  const d = adapter.detect(cfg);
+  // Claude Code's installer needs curl and bash; macOS has both.
+  const installer = linux && adapter.id === "claude" && !d.bin ? ["curl", "bash"] : [];
+  const missing = [...(linux && !existsSync(BWRAP) ? ["bubblewrap"] : []), ...["git", "tar", ...installer].filter((t) => !onPath(t) || (t === "git" && gitStub()))];
+  const probe = linux && existsSync(BWRAP) ? sandboxProbe() : null;
+  /** @param {string} f */
+  const read = (f) => { try { return readFileSync(f, "utf8").trim(); } catch { return ""; } };
+  let otherClaude = null;
+  if (adapter.id === "claude" && !d.bin) {
+    if (existsSync("/snap/bin/claude-code")) otherClaude = "the snap claude-code";
+    else {
+      const vsc = join(homedir(), ".vscode-server", "extensions");
+      try { if (readdirSync(vsc).some((e) => e.startsWith("anthropic.claude-code-"))) otherClaude = "VS Code's own Claude Code"; } catch { /* none */ }
+    }
+  }
+  /** @type {SetupFacts["harnessLogin"]} */
+  let harnessLogin = "none";
+  // A login chosen before counts only while it still gives a token (its credentials file or Keychain item may be gone).
+  if (adapter.id === "codex") harnessLogin = d.loggedIn ? "set" : "none";
+  else if (cfg.claudeConfigDir || cfg.claudeAuth === "keychain" || cfg.claudeToken) harnessLogin = d.loggedIn ? "set" : "none";
+  else if (process.platform === "darwin" ? keychainItemExists() : typeof readClaudeCredentials(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"))?.claudeAiOauth?.accessToken === "string") harnessLogin = "available";
+  return {
+    platform: process.platform, root: process.getuid?.() === 0, pkg, missing,
+    sandbox: probe ? (probe.ok ? "ok" : "failed") : null, sandboxError: probe?.error ?? "",
+    userns: read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") === "1", bwrapProfile: existsSync(BWRAP_PROFILE),
+    harness: adapter.id === "codex" ? "codex" : "claude", harnessBin: !!d.bin, otherClaude, harnessLogin,
+    claudeLogin: cfg.claudeToken ? "token" : cfg.claudeConfigDir ? "config-dir" : cfg.claudeAuth === "keychain" ? "keychain" : null,
+    claudeBin: adapter.id === "claude" ? d.bin : null,
+    claudeDir: cfg.claudeConfigDir && resolve(cfg.claudeConfigDir) !== resolve(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")) ? cfg.claudeConfigDir : null,
+    loggedIn: !!cfg.server && !!credentialOf(cfg) && (!server || cfg.server === server), loggedInTo: cfg.server && credentialOf(cfg) ? cfg.server : null, server,
+    me: `${shq(process.execPath)} ${shq(realpathSync(self))}`,
+  };
+}
+
+/**
+ * Asks a yes/no question on the terminal; an empty answer is `dflt`. What was typed before the question shows (answers
+ * typed ahead, input left over from the step before) is read in raw mode and dropped first, so it never answers it.
+ * @param {string} q @param {boolean} dflt
+ */
+async function confirm(q, dflt) {
+  const stdin = process.stdin;
+  const drop = () => {};
+  stdin.setRawMode(true);
+  stdin.on("data", drop);
+  stdin.resume();
+  await sleep(50);
+  stdin.off("data", drop);
+  stdin.pause();
+  stdin.setRawMode(false);
+  const rl = createInterface({ input: stdin, output: process.stdout });
+  try {
+    const a = (await new Promise((r) => rl.question(q, r))).trim();
+    return a ? /^(y|yes)$/i.test(a) : dflt;
+  } finally { rl.close(); }
+}
+
+/**
+ * `setup [<dashboard URL>] [--yes]`: finds what this machine lacks (bubblewrap, git, tar, the AppArmor rule bubblewrap needs on
+ * Ubuntu, Claude Code, its login, the dashboard login), shows the command that adds each and runs it when the user agrees
+ * (`--yes`: without asking), then runs doctor. Without a terminal and without --yes it only lists the commands.
+ * @param {string[]} argv
+ */
+async function cmdSetup(argv) {
+  const usage = "usage: autocraft setup [<dashboard URL>] [--yes]";
+  for (const a of argv) if (a.startsWith("-") && a !== "--yes" && a !== "-y") throw new UsageError(usage);
+  const urls = argv.filter((a) => !a.startsWith("-"));
+  if (urls.length > 1) throw new UsageError(usage);
+  const server = urls[0] ? serverUrl(urls[0]) : null;
+  const yes = argv.includes("--yes") || argv.includes("-y");
+  const ask = !yes && !!process.stdin.isTTY && !!process.stdout.isTTY;
+  // The native Claude installer puts claude into ~/.local/bin; look there too after it ran.
+  const local = join(homedir(), ".local", "bin");
+  const pathHad = (process.env.PATH ?? "").split(delimiter).includes(local);
+  if (!pathHad) process.env.PATH = [process.env.PATH, local].filter(Boolean).join(delimiter);
+  // Each step is offered once; after it ran (or was declined) the next one is computed from a fresh look at the machine.
+  const done = new Set();
+  let listed = 0;
+  for (;;) {
+    const step = setupSteps(setupFacts(server)).find((s) => !done.has(s.id));
+    if (!step) break;
+    done.add(step.id);
+    listed++;
+    console.log(`\nmissing: ${step.problem}\n  ${step.fix}`);
+    if (!step.cmd) continue;
+    console.log(`  $ ${step.cmd}`);
+    if (!yes && !(ask && await confirm(`  Run it now? ${step.defaultNo ? "[y/N]" : "[Y/n]"} `, !step.defaultNo))) continue;
+    const r = spawnSync("sh", ["-c", step.cmd], { stdio: "inherit" });
+    if (r.status !== 0) console.log(`  that ended with exit code ${r.status ?? r.signal}`);
+  }
+  if (!listed) console.log("nothing is missing");
+  else if (!yes && !ask) console.log("\nNo terminal to ask on: run the commands above yourself, or `autocraft setup --yes` to run them.");
+  if (!pathHad) console.log(`\nnote: ${local} is not on your PATH; add it in your shell's profile (for example: echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc) so autocraft and claude are found.`);
+  console.log("");
+  return cmdDoctor();
 }
 
 /**
@@ -4684,6 +4950,7 @@ const SETUP_HELP = [
   ["autocraft harness claude [--keychain]", "store a `claude setup-token` token from stdin; --keychain: Claude Code's login (macOS)"],
   ["autocraft harness claude --config-dir [<dir>]", "use a Claude config directory's login (default ~/.claude; Linux)"],
   ["autocraft harness codex [--device-auth]", "log Codex in to the runner's own CODEX_HOME (not your ~/.codex)"],
+  ["autocraft setup [<url>] [--yes]", "find what this machine lacks and install it, asking first; then doctor"],
   ["autocraft doctor", "check platform, sandbox, harness, login and server"],
   ["autocraft update", "replace this file with the server's current runner"],
   ["autocraft service install [--parallel N] | uninstall | status", "run `work` as a systemd user unit (Linux) or launchd agent (macOS)"],
@@ -4816,6 +5083,7 @@ export async function main(argv) {
       case "work": return await cmdWork(rest);
       case "service": return await cmdService(rest);
       case "doctor": return await cmdDoctor();
+      case "setup": return await cmdSetup(rest);
       case "try": return await cmdTry(rest);
       case "mcp": return await cmdMcp(rest);
       case "tool": return await cmdTool(rest);
