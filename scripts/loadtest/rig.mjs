@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { setPriority } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { startProxy } from "./proxy.mjs";
@@ -180,6 +181,9 @@ export class Rig {
     h.proc.stdout.pipe(out); h.proc.stderr.pipe(out);
     h.proc.on("exit", () => out.end());
     h.pid = h.proc.pid;
+    // In production Task Runners run on users' machines, not beside the dashboard: here they yield the CPU to it. The
+    // harnesses and sandboxes they start inherit the priority.
+    try { setPriority(h.pid, 15); } catch { /* exited already */ }
   }
   signalHelper(i, sig) { const h = this.helpers[i]; try { process.kill(-h.pid, sig); } catch { /* gone */ } }
   killHelper(i) { this.note(`helper ${i + 1} SIGKILL`); this.signalHelper(i, "SIGKILL"); }

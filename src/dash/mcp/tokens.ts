@@ -4,6 +4,7 @@
 // it claims model calls on /api/remote/*, and with Agent access (can_agent) it also uses /mcp like a connector. Only hashes are stored, and a credential counts only while its login is on
 // the access list: the role is read from the list on every call, so a role change applies at once.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../../sql-cache.ts";
 import type { Role } from "../types.ts";
 import { randomToken, sha256hex } from "../server/crypto.ts";
 import { HttpError } from "../server/util.ts";
@@ -116,21 +117,21 @@ export function loadToken(db: DatabaseSync, token: string | undefined): McpCalle
   const prefix = token.startsWith(RUNNER_TOKEN_PREFIX) ? "runner" : token.startsWith(MCP_TOKEN_PREFIX) ? "connector" : null;
   if (!prefix) return null;
   const now = new Date();
-  const row = db.prepare(`SELECT t.id, t.login, t.kind, t.last_used_at, t.can_answer, t.can_agent, a.role FROM mcp_tokens t JOIN access a ON a.login = t.login
+  const row = prep(db, `SELECT t.id, t.login, t.kind, t.last_used_at, t.can_answer, t.can_agent, a.role FROM mcp_tokens t JOIN access a ON a.login = t.login
     WHERE t.token_hash = ? AND t.expires_at > ?`).get(sha256hex(token), now.toISOString()) as
     { id: number; login: string; kind: TokenKind; last_used_at: string | null; can_answer: number; can_agent: number; role: Role } | undefined;
   if (!row) return null;
   // Runner credentials from before the split carry the connector prefix.
   if (prefix === "runner" && row.kind !== "runner") return null;
   if (!row.last_used_at || now.getTime() - Date.parse(row.last_used_at) > TOUCH_EVERY) {
-    if (row.kind === "runner") db.prepare("UPDATE mcp_tokens SET last_used_at = ?, expires_at = ? WHERE id = ?").run(now.toISOString(), new Date(now.getTime() + RUNNER_TOKEN_TTL).toISOString(), row.id);
-    else db.prepare("UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?").run(now.toISOString(), row.id);
+    if (row.kind === "runner") prep(db, "UPDATE mcp_tokens SET last_used_at = ?, expires_at = ? WHERE id = ?").run(now.toISOString(), new Date(now.getTime() + RUNNER_TOKEN_TTL).toISOString(), row.id);
+    else prep(db, "UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?").run(now.toISOString(), row.id);
   }
   return { tokenId: Number(row.id), login: row.login, role: row.role, canAnswer: row.can_answer === 1, canAgent: row.kind === "connector" || row.can_agent === 1, kind: row.kind };
 }
 
 /** Ended credentials, and device logins an hour past their expiry, which their runner has had time to poll for the outcome. */
 export function pruneTokens(db: DatabaseSync): void {
-  db.prepare("DELETE FROM mcp_tokens WHERE expires_at <= ?").run(new Date().toISOString());
+  prep(db, "DELETE FROM mcp_tokens WHERE expires_at <= ?").run(new Date().toISOString());
   db.prepare("DELETE FROM runner_logins WHERE expires_at <= ?").run(Date.now() - 3_600_000);
 }

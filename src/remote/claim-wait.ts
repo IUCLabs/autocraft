@@ -4,6 +4,7 @@
 // waiting claims one at a time, oldest first. Each claim is also tried in full every RETRY_MS and once at its deadline.
 import type { DatabaseSync } from "node:sqlite";
 import { isBusy } from "../db.ts";
+import { prep } from "../sql-cache.ts";
 import type { ClaimReply } from "./protocol.ts";
 
 export type EmptyReply = Extract<ClaimReply, { lease: null }>;
@@ -15,6 +16,9 @@ export const HOLD_MAX_S = 25;
 export const TICK_MS = scaled(500);
 /** How often a waiting claim is tried in full (cool-off, max calls at once, tiers, repos) even when the queue did not change. */
 export const RETRY_MS = scaled(5_000);
+
+/** The longest one pass of the timer runs before it lets other requests be served. */
+const YIELD_MS = 5;
 
 /** How long a claim asking for `wait` seconds is held, in ms; 0 when it asks for none. */
 export const holdMs = (wait: number | undefined): number => (wait && wait > 0 ? scaled(Math.min(wait, HOLD_MAX_S) * 1000) : 0);
@@ -140,12 +144,18 @@ export class ClaimWaits {
     try {
       let seq: number;
       try {
-        seq = Number((this.#db.prepare("SELECT seq FROM main.change_seq WHERE topic = 'remote-queue'").get() as { seq: number } | undefined)?.seq ?? 0);
+        seq = Number((prep(this.#db, "SELECT seq FROM main.change_seq WHERE topic = 'remote-queue'").get() as { seq: number } | undefined)?.seq ?? 0);
       } catch (e) {
         if (isBusy(e)) return;
         throw e;
       }
+      let slice = performance.now();
       for (const w of [...this.#waiters]) {
+        // Requests that arrived meanwhile are served between tries, so a pass over many held claims does not stall them.
+        if (performance.now() - slice >= YIELD_MS) {
+          await new Promise<void>((r) => setImmediate(r));
+          slice = performance.now();
+        }
         if (w.done) continue;
         const now = Date.now();
         const final = now >= w.deadline, full = final || now >= w.nextTry;

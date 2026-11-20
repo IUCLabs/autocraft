@@ -7,6 +7,7 @@
 // counting once its last claim and heartbeats are old. The helpers of a Manual only user (manual-only.ts) take only the user's
 // own picks and follow-ups, so they are no room.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import { claimClass } from "./claim-class.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
 import { manualSql } from "./manual-only.ts";
@@ -32,7 +33,7 @@ const LIVE_LEASE_MS = 3 * scaled(HEARTBEAT_S * 1000);
  * apart from the others', so it also undercounts by one while it runs.
  */
 export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.now()): number {
-  const helpers = db.prepare(`SELECT t.login, t.idle_claim_at, COALESCE(h.slots, 1) AS slots,
+  const helpers = prep(db, `SELECT t.login, t.idle_claim_at, COALESCE(h.slots, 1) AS slots,
       (SELECT COUNT(*) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS leased,
       (SELECT MAX(c.heartbeat_at) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS beat
     FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
@@ -49,10 +50,10 @@ export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.n
   let room = 0;
   for (const [login, n] of free) {
     const max = userMaxCalls(db, login);
-    const leased = max === null ? 0 : Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n);
+    const leased = max === null ? 0 : Number((prep(db, "SELECT COUNT(*) AS n FROM main.remote_calls INDEXED BY remote_calls_leased WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n);
     room += max === null ? n : Math.min(n, Math.max(0, max - leased));
   }
-  const queued = db.prepare("SELECT class AS cls, tier, since, parent_id, prompt_id FROM main.remote_calls INDEXED BY remote_calls_waiting WHERE state = 'queued' AND seen_at >= ?").all(nowMs - CALLER_STALE_MS) as
+  const queued = prep(db, "SELECT class AS cls, tier, since, parent_id, prompt_id FROM main.remote_calls INDEXED BY remote_calls_waiting WHERE state = 'queued' AND seen_at >= ?").all(nowMs - CALLER_STALE_MS) as
     { cls: number; tier: Tier; since: number; parent_id: number | null; prompt_id: string }[];
   const ahead = queued.filter((r) => claimClass(r, nowMs) >= cls).length;
   return Math.max(0, room - ahead);

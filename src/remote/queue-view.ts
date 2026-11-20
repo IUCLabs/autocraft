@@ -30,7 +30,7 @@ export function readyRunners(db: DatabaseSync, nowMs: number): ReadyRunner[] {
     let n = userLeft.get(key);
     if (n === undefined) {
       const max = userMaxCalls(db, login);
-      n = max === null ? Infinity : Math.max(0, max - Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n));
+      n = max === null ? Infinity : Math.max(0, max - Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls INDEXED BY remote_calls_leased WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n));
       userLeft.set(key, n);
     }
     return n;

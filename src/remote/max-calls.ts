@@ -1,6 +1,7 @@
 // Each user's "Max calls at once" for their user-local helpers, stored in `user_settings` under `max_calls`: the most calls
 // all their helpers hold leases on together (claimCall). No row means no limit.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import { audit } from "../dash/audit.ts";
 
 export const MAX_CALLS_KEY = "max_calls";
@@ -9,7 +10,7 @@ export const MAX_CALLS_MAX = 64;
 
 /** The user's limit, or null for none. */
 export function userMaxCalls(db: DatabaseSync, login: string): number | null {
-  const row = db.prepare("SELECT value FROM main.user_settings WHERE login = ? AND key = ?").get(login, MAX_CALLS_KEY) as { value: string } | undefined;
+  const row = prep(db, "SELECT value FROM main.user_settings WHERE login = ? AND key = ?").get(login, MAX_CALLS_KEY) as { value: string } | undefined;
   const n = row ? Number(row.value) : NaN;
   return Number.isInteger(n) && n >= 1 && n <= MAX_CALLS_MAX ? n : null;
 }
@@ -24,8 +25,8 @@ export function parseMaxCalls(raw: unknown): number | null {
 /** Stores the user's limit (null removes it); a change is audited. */
 export function setUserMaxCalls(db: DatabaseSync, login: string, max: number | null): number | null {
   const was = userMaxCalls(db, login);
-  if (max === null) db.prepare("DELETE FROM main.user_settings WHERE login = ? AND key = ?").run(login, MAX_CALLS_KEY);
-  else db.prepare("INSERT INTO main.user_settings (login, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (login, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+  if (max === null) prep(db, "DELETE FROM main.user_settings WHERE login = ? AND key = ?").run(login, MAX_CALLS_KEY);
+  else prep(db, "INSERT INTO main.user_settings (login, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (login, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
     .run(login, MAX_CALLS_KEY, String(max), new Date().toISOString());
   if (was !== max) audit(db, login, "max-calls", login, { maxCalls: max, was });
   return max;

@@ -1,6 +1,7 @@
 // Each user's plan-usage reserve for the user-local helper, stored in `user_settings`. Only the user sets their own; the
 // claim reply and the status reply carry it, and the helper claims only while every window keeps more than it free.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import { audit } from "../dash/audit.ts";
 import type { Reserve } from "./protocol.ts";
 
@@ -11,7 +12,7 @@ const KEYS = { fiveHour: "reserve_five_hour", weekly: "reserve_weekly" } as cons
 
 /** The user's reserve, with the default for a window they never set. */
 export function userReserve(db: DatabaseSync, login: string): Reserve {
-  const rows = db.prepare("SELECT key, value FROM main.user_settings WHERE login = ? AND key IN (?, ?)").all(login, KEYS.fiveHour, KEYS.weekly) as { key: string; value: string }[];
+  const rows = prep(db, "SELECT key, value FROM main.user_settings WHERE login = ? AND key IN (?, ?)").all(login, KEYS.fiveHour, KEYS.weekly) as { key: string; value: string }[];
   const out = { ...DEFAULT_RESERVE };
   for (const r of rows) {
     const n = Number(r.value);
@@ -36,7 +37,7 @@ export function parseReserve(raw: unknown): Reserve {
 export function setUserReserve(db: DatabaseSync, login: string, reserve: Reserve): Reserve {
   const was = userReserve(db, login);
   const at = new Date().toISOString();
-  const put = db.prepare("INSERT INTO main.user_settings (login, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (login, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");
+  const put = prep(db, "INSERT INTO main.user_settings (login, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (login, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");
   put.run(login, KEYS.fiveHour, String(reserve.fiveHour), at);
   put.run(login, KEYS.weekly, String(reserve.weekly), at);
   if (was.fiveHour !== reserve.fiveHour || was.weekly !== reserve.weekly) audit(db, login, "usage-reserve", login, { reserve, was });

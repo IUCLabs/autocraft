@@ -5,6 +5,7 @@
 // (calls.ts pickerSql); it ends with a lease, a requeue, an unpick, or at a claim that finds
 // the call released by or no longer open to the picker. Registered as a wait in src/stages/registry.ts.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { HttpError } from "../dash/server/util.ts";
@@ -25,7 +26,7 @@ const PICK_MINUTES_MAX = 24 * 60;
 export const PICKS_MAX = 8;
 
 export function pickMinutes(db: DatabaseSync): number {
-  const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PICK_MINUTES_KEY) as { value: string } | undefined)?.value;
+  const v = (prep(db, "SELECT value FROM main.settings WHERE key = ?").get(PICK_MINUTES_KEY) as { value: string } | undefined)?.value;
   const n = Number(v);
   return v !== undefined && Number.isInteger(n) && n >= 0 && n <= PICK_MINUTES_MAX ? n : PICK_MINUTES_DEFAULT;
 }
@@ -34,7 +35,7 @@ export function setPickMinutes(db: DatabaseSync, input: unknown, by: string): nu
   const n = typeof input === "number" ? input : typeof input === "string" && /^[0-9]+$/.test(input) ? Number(input) : NaN;
   if (!Number.isInteger(n) || n < 0 || n > PICK_MINUTES_MAX) throw new Error(`the minutes a pick counts must be a whole number from 0 (no limit) to ${PICK_MINUTES_MAX}`);
   const was = pickMinutes(db);
-  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(PICK_MINUTES_KEY, String(n));
+  prep(db, "INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(PICK_MINUTES_KEY, String(n));
   if (n !== was) audit(db, by, "remote-pick-minutes", "pipeline", { minutes: n, was });
   return n;
 }
@@ -52,7 +53,7 @@ export type PickerState = { canPick: boolean; why: string | null; tiers: Readonl
 
 /** The user's fresh Task Runners together: the tiers their models cover (accepted families) and their slots without the fast lane. */
 function freshRunnersOf(db: DatabaseSync, login: string, nowMs: number): { tiers: Set<Tier>; slots: number; count: number } {
-  const rows = db.prepare(`SELECT h.models, COALESCE(h.slots, 1) AS slots FROM main.remote_helpers h JOIN main.mcp_tokens t ON t.id = h.token_id
+  const rows = prep(db, `SELECT h.models, COALESCE(h.slots, 1) AS slots FROM main.remote_helpers h JOIN main.mcp_tokens t ON t.id = h.token_id
     WHERE h.login = ? AND t.kind = 'runner' AND t.expires_at > ? AND h.reported_at >= ?`).all(login, new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { models: string; slots: number }[];
   const accepted = acceptedModels(db);
   const tiers = new Set<Tier>();
@@ -69,7 +70,7 @@ function freshRunnersOf(db: DatabaseSync, login: string, nowMs: number): { tiers
 
 /** The user's live picks: a picker's own picks count while their time is not up (canPick needs a fresh runner). */
 const livePicks = (db: DatabaseSync, login: string, nowMs: number, except = -1): number =>
-  Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'queued' AND picked_by = ? AND (pick_until IS NULL OR pick_until >= ?) AND id <> ?").get(login, nowMs, except) as { n: number }).n);
+  Number((prep(db, "SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'queued' AND picked_by = ? AND (pick_until IS NULL OR pick_until >= ?) AND id <> ?").get(login, nowMs, except) as { n: number }).n);
 
 export function pickerState(db: DatabaseSync, user: Pick<Picker, "login" | "role">, nowMs: number): PickerState {
   const none = (why: string): PickerState => ({ canPick: false, why, tiers: new Set(), picks: 0, pickMax: 0 });
@@ -111,7 +112,7 @@ export async function pickRefusal(state: PickerState, user: Picker, c: PickCall,
 type CallRow = { id: number; state: string; tier: Tier; prompt_id: string; parent_id: number | null; items: string; repo: string | null; authors: string | null; seen_at: number; picked_by: string | null; pick_until: number | null };
 
 function readCall(db: DatabaseSync, id: number): (PickCall & { state: string; refs: ItemRef[] }) | null {
-  const r = db.prepare("SELECT id, state, tier, prompt_id, parent_id, items, repo, authors, seen_at, picked_by, pick_until FROM main.remote_calls WHERE id = ?").get(id) as CallRow | undefined;
+  const r = prep(db, "SELECT id, state, tier, prompt_id, parent_id, items, repo, authors, seen_at, picked_by, pick_until FROM main.remote_calls WHERE id = ?").get(id) as CallRow | undefined;
   if (!r) return null;
   const refs = JSON.parse(r.items) as ItemRef[];
   const authors = r.authors !== null ? JSON.parse(r.authors) as string[] : judges(r.prompt_id) ? authorsOf(db, refs) : [];
@@ -142,7 +143,7 @@ export async function pickCall(db: DatabaseSync, user: Picker, id: number, nowMs
       db.exec("ROLLBACK");
       throw new HttpError(409, `you hold ${state.pickMax} picks, your most`);
     }
-    changed = Number(db.prepare(`UPDATE main.remote_calls SET picked_by = ?, picked_at = ?, pick_until = ?
+    changed = Number(prep(db, `UPDATE main.remote_calls SET picked_by = ?, picked_at = ?, pick_until = ?
       WHERE id = ? AND state = 'queued' AND parent_id IS NULL AND (picked_by IS NULL OR picked_by = ? OR ${pickLapsedSql})`)
       .run(user.login, nowMs, cap === null ? null : nowMs + cap, id, user.login, ...pickLapsedArgs(nowMs)).changes);
     db.exec("COMMIT");

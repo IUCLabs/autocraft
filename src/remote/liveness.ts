@@ -2,6 +2,7 @@
 // restarting no heartbeat can arrive, and a lease must not be counted as lost for that. The dashboard stamps the
 // `remote_liveness` row every ALIVE_EVERY_MS; job processes, which expire leases (calls.ts expireLeases), read it.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import { isBusy } from "../db.ts";
 import { scaled } from "./time-scale.ts";
 
@@ -19,15 +20,15 @@ export function stampAlive(db: DatabaseSync, nowMs: number = Date.now()): void {
   if (db.isTransaction) return;
   db.exec("BEGIN IMMEDIATE");
   try {
-    const r = db.prepare("SELECT alive_at FROM main.remote_liveness WHERE id = 1").get() as { alive_at: number } | undefined;
-    if (!r) db.prepare("INSERT INTO main.remote_liveness (id, alive_at, since) VALUES (1, ?, ?)").run(nowMs, nowMs);
+    const r = prep(db, "SELECT alive_at FROM main.remote_liveness WHERE id = 1").get() as { alive_at: number } | undefined;
+    if (!r) prep(db, "INSERT INTO main.remote_liveness (id, alive_at, since) VALUES (1, ?, ?)").run(nowMs, nowMs);
     else if (nowMs - Number(r.alive_at) > ALIVE_STALE_MS) {
       const gap = nowMs - Number(r.alive_at);
-      db.prepare(`UPDATE main.remote_calls SET heartbeat_at = MIN(heartbeat_at + ?1, ?2), leased_at = MIN(leased_at + ?1, ?2),
+      prep(db, `UPDATE main.remote_calls SET heartbeat_at = MIN(heartbeat_at + ?1, ?2), leased_at = MIN(leased_at + ?1, ?2),
           started_at = CASE WHEN started_at IS NULL THEN NULL ELSE MIN(started_at + ?1, ?2) END
         WHERE state = 'leased'`).run(gap, nowMs);
-      db.prepare("UPDATE main.remote_liveness SET alive_at = ?, since = ? WHERE id = 1").run(nowMs, nowMs);
-    } else db.prepare("UPDATE main.remote_liveness SET alive_at = ? WHERE id = 1").run(nowMs);
+      prep(db, "UPDATE main.remote_liveness SET alive_at = ?, since = ? WHERE id = 1").run(nowMs, nowMs);
+    } else prep(db, "UPDATE main.remote_liveness SET alive_at = ? WHERE id = 1").run(nowMs);
     db.exec("COMMIT");
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already ended */ }
@@ -40,7 +41,7 @@ export function stampAlive(db: DatabaseSync, nowMs: number = Date.now()): void {
  * dashboard has run against it) counts as always alive.
  */
 export function dashboardAlive(db: DatabaseSync, nowMs: number): { alive: boolean; since: number } {
-  const r = db.prepare("SELECT alive_at, since FROM main.remote_liveness WHERE id = 1").get() as { alive_at: number; since: number } | undefined;
+  const r = prep(db, "SELECT alive_at, since FROM main.remote_liveness WHERE id = 1").get() as { alive_at: number; since: number } | undefined;
   if (!r) return { alive: true, since: -Infinity };
   return { alive: nowMs - Number(r.alive_at) <= ALIVE_STALE_MS, since: Number(r.since) };
 }
