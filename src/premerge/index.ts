@@ -1,4 +1,4 @@
-// CLI of the pre-merge review: `autocraft premerge --repo R [--number N] [--apply]`. Without --apply it lists the
+// CLI of the pre-merge review: `autocraft-server premerge --repo R [--number N] [--apply]`. Without --apply it lists the
 // candidates (PRs waiting in the merge queue for the review) and calls nothing. Operator only: the box's shell is the operator's.
 import { audit } from "../dash/audit.ts";
 

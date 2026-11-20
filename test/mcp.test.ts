@@ -238,7 +238,7 @@ describe("transport", () => {
     const t = await tokenFor("maint");
     const init = await rpc(t, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
     assert.equal(init.body.result.protocolVersion, "2025-06-18");
-    assert.equal(init.body.result.serverInfo.name, "autocraft-inbox");
+    assert.equal(init.body.result.serverInfo.name, "autocraft");
     assert.match(init.body.result.instructions, /untrusted/);
     assert.equal((await rpc(t, "initialize", { protocolVersion: "1999-01-01" })).body.result.protocolVersion, "2025-06-18");
     const tools = (await rpc(t, "tools/list")).body.result.tools.map((x: { name: string }) => x.name).sort();

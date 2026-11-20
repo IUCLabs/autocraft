@@ -43,7 +43,7 @@ test("user-local prompts read as the server's for claude and name no Claude tool
 });
 
 test("a helper's path root moves only the marked sandbox paths and the path arguments; item data and other arguments stay", () => {
-  const root = "/private/var/folders/ab/c_d0/C/autocraft-task/slot-1";
+  const root = "/private/var/folders/ab/c_d0/C/autocraft-runner/slot-1";
   const planted = "/repo/PLANTED and /repos/x and /mcp.json";
   let paths = 0, seen = 0;
   for (const c of cases()) {

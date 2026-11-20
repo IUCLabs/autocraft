@@ -5,8 +5,8 @@
 // A branch we can't push to gets the patch as a comment where the repo allows comments. At most two tries per head.
 // The log and the PR are untrusted data: nothing from them is run here, and a model only reads them.
 //
-//   autocraft cifix --repo R [--limit N] [--apply]
-//   autocraft cifix-rerun --repo R [--limit N] [--apply]
+//   autocraft-server cifix --repo R [--limit N] [--apply]
+//   autocraft-server cifix-rerun --repo R [--limit N] [--apply]
 import { duplicateHeld } from "../dupes/held.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";

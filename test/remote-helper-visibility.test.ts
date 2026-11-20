@@ -17,7 +17,7 @@ test("a helper's last error and busy count are listed, and a starved tier warns"
   const db = connect(join(mkdtempSync(join(SCRATCH, "helper-vis-")), "t.db"));
   setInferenceMode(db, "user-local", "test");
   db.prepare("INSERT INTO access (login, role) VALUES ('alice', 'maintainer')").run();
-  const tokenId = createToken(db, "alice", "laptop", false, true).row.id;
+  const tokenId = createToken(db, "alice", "laptop", { kind: "runner" }).row.id;
   const now = Date.now();
   const status = parseStatus({ readiness: "ready", harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 20, weekly: 20 }, slots: 4, busy: 2,
     lastError: { text: "/api/remote/heartbeat: HTTP 502", at: new Date(now - 60_000).toISOString() } });

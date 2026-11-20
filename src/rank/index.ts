@@ -1,4 +1,4 @@
-// autocraft rank [show <repo> <n>]: the work rank of open items (src/rank/score.ts).
+// autocraft-server rank [show <repo> <n>]: the work rank of open items (src/rank/score.ts).
 //
 // Reads the stored priority, the settled classification and the size; calls no model. The rank step
 // rewrites the item_rank row of every open item in a tracked repo and removes the rows of the others.

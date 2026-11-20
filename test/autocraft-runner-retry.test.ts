@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import * as helper from "../worker/autocraft-task.mjs";
+import * as helper from "../worker/autocraft.mjs";
 
 test("lease requests retry 5xx and resets with backoff, keep the same body, and stop at a 410, another 4xx or the deadline", async () => {
   const hits: Record<string, string[]> = {};

@@ -57,7 +57,7 @@ describe("per-lease tools of remote calls", () => {
     writeFileSync(join(ref, "layers.md"), `# Layers\n\n${Array.from({ length: 10 }, (_, i) => `Layer note ${i}. ${"filler ".repeat(100)}`).join("\n\n")}`);
     await buildReferenceIndex("photocraft", { embedder: fake });
     addLogin(db, "cli", "bob", "maintainer", null);
-    const caller: Caller = { tokenId: createToken(db, "bob", "helper", false, true).row.id, login: "bob", role: "maintainer" };
+    const caller: Caller = { tokenId: createToken(db, "bob", "helper", { kind: "runner" }).row.id, login: "bob", role: "maintainer" };
     const items = [{ repo: "photocraft", number: 7 }];
     const common = { promptId: "review.opus", promptVersion: "1", tier: "top" as const, effort: "medium", askedModel: "opus", items, level: 2, maxAttempts: 1 };
     const ids = {
@@ -98,8 +98,8 @@ describe("per-lease tools of remote calls", () => {
     assert.equal((await tool("ended", "items", "search_items", { query: "wave" })).status, 410, "an ended lease");
 
     // The helper's stdio proxy against the task MCP server, as a harness that only speaks stdio MCP uses it.
-    const proxy = spawn(process.execPath, ["worker/autocraft-task.mjs", "mcp", "items", "0"], {
-      env: { ...process.env, XDG_CONFIG_HOME: join(dir, "cfg"), AUTOCRAFT_TASK_LEASE_SECRET: leases.get("tools")!.secret, AUTOCRAFT_TASK_SERVER: base },
+    const proxy = spawn(process.execPath, ["worker/autocraft.mjs", "mcp", "items", "0"], {
+      env: { ...process.env, XDG_CONFIG_HOME: join(dir, "cfg"), AUTOCRAFT_RUNNER_LEASE_SECRET: leases.get("tools")!.secret, AUTOCRAFT_RUNNER_SERVER: base },
       stdio: ["pipe", "pipe", "inherit"],
     });
     const lines = createInterface({ input: proxy.stdout })[Symbol.asyncIterator]();

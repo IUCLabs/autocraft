@@ -1,4 +1,4 @@
--- Mirror tables: written only by `autocraft sync`, overwritten from GitHub.
+-- Mirror tables: written only by `autocraft-server sync`, overwritten from GitHub.
 
 CREATE TABLE IF NOT EXISTS repos (
   name TEXT PRIMARY KEY,              -- "photocraft"; unique across owners
@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS decision_prepares (decision_id TEXT NOT NULL, at TEXT
 CREATE INDEX IF NOT EXISTS decision_prepares_decision ON decision_prepares(decision_id, at);
 
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
--- whitelist rule defaults; editable with `autocraft whitelist rule`
+-- whitelist rule defaults; editable with `autocraft-server whitelist rule`
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merged', '5');
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merge_rate', '0.6');
 
@@ -228,8 +228,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_login ON sessions(login);
 
--- Personal tokens for the Inbox MCP server (POST /mcp, src/dash/mcp/): a signed-in user's own agent reads the
--- inbox and sends feedback as that user, with the user's current role from the access list. The token is shown once.
+-- Personal credentials of two kinds. `connector`: the MCP Connector (POST /mcp, src/dash/mcp/): a signed-in user's own agent
+-- reads the inbox and sends feedback as that user, with the user's current role from the access list; shown once.
+-- `runner`: a Task Runner (/api/remote/*) that claims model calls in the user-local inference mode; the runner makes the
+-- credential itself and only its hash arrives here, through a device login (runner_logins).
 -- can_answer: an operator opted the token in to answering decisions and undoing answers; such a token lasts 7 days.
 CREATE TABLE IF NOT EXISTS mcp_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,9 +240,11 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   label TEXT,
   can_answer INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL,
-  can_run INTEGER NOT NULL DEFAULT 0, -- the token's helper may claim model calls in the user-local inference mode
+  can_run INTEGER NOT NULL DEFAULT 0, -- 1 exactly when kind = 'runner'; read by servers from before `kind`, written until it is dropped
   idle_claim_at INTEGER,              -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
-  idle_tiers TEXT, idle_repos TEXT    -- JSON: the tiers and repos (null: any) that empty claim asked for
+  idle_tiers TEXT, idle_repos TEXT,   -- JSON: the tiers and repos (null: any) that empty claim asked for
+  kind TEXT NOT NULL DEFAULT 'connector', -- connector | runner
+  machine TEXT                        -- runner: JSON { hostname, platform, arch } the runner sent at login
 );
 -- Leases that ended without a release or a reply (lost heartbeat, past a time limit), at most one per token in 10 minutes,
 -- newest 2 hours kept; counted per login toward its cool-off (src/remote/cooloff.ts).
@@ -283,10 +287,31 @@ CREATE TABLE IF NOT EXISTS remote_helpers (
   models TEXT NOT NULL, reserve TEXT NOT NULL, usage TEXT,
   reported_at INTEGER NOT NULL,       -- ms since epoch
   slots INTEGER, busy INTEGER,        -- calls the helper runs at once (its --parallel slots and the fast lane), and how many run now
-  last_error TEXT                     -- JSON { text, at }: the helper's last failure that no success has cleared
+  last_error TEXT,                    -- JSON { text, at }: the helper's last failure that no success has cleared
+  helper_version TEXT                 -- the helper's version from its latest status or claim
 );
+-- Device logins of Task Runners (POST /api/remote/login/start, /poll; approved on the Connect page). The runner keeps the
+-- credential and sends its hash; approval inserts a `runner` mcp_tokens row with that hash as token_hash. Times are ms since epoch.
+CREATE TABLE IF NOT EXISTS runner_logins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_code TEXT NOT NULL,            -- 8 characters of BCDFGHJKLMNPQRSTVWXZ, stored uppercase without the hyphen; single use
+  secret_hash TEXT NOT NULL,          -- sha256 hex of the runner's credential (protocol LoginStart.credentialHash)
+  label TEXT,
+  machine TEXT,                       -- JSON { hostname, platform, arch } as the runner sent it
+  ip TEXT,                            -- the requesting client address
+  helper_version TEXT,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending', -- pending | approved | denied | expired
+  login TEXT COLLATE NOCASE,          -- the user who approved or denied it
+  token_id INTEGER                    -- the mcp_tokens row the approval made
+);
+CREATE UNIQUE INDEX IF NOT EXISTS runner_logins_code ON runner_logins(user_code);
+CREATE UNIQUE INDEX IF NOT EXISTS runner_logins_secret ON runner_logins(secret_hash);
+CREATE INDEX IF NOT EXISTS runner_logins_expires ON runner_logins(expires_at);
 -- Each user's own settings, one row per key (src/remote/reserve.ts: reserve_five_hour, reserve_weekly; src/remote/my-repos.ts: repos;
--- src/remote/max-calls.ts: max_calls).
+-- src/remote/max-calls.ts: max_calls; manual_only: '1' when the user's runners take only the calls the user picked and
+-- follow-ups of their own sessions).
 CREATE TABLE IF NOT EXISTS user_settings (
   login TEXT NOT NULL COLLATE NOCASE,
   key TEXT NOT NULL,
@@ -461,7 +486,7 @@ SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
 INSERT OR IGNORE INTO settings VALUES ('tracked_seeded', '1');
 
 -- Pipeline jobs: the only channel from the dashboard to the runner
--- (`autocraft runner serve`). The dashboard inserts requests and cancel
+-- (`autocraft-server runner serve`). The dashboard inserts requests and cancel
 -- marks; the runner claims, runs and finishes jobs. Steps are defined in code
 -- (src/runner/steps.ts); params are validated against the step's schema
 -- before a row is written.
@@ -502,7 +527,7 @@ INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
   ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
   ('labels-apply', NULL), ('merge', 10), ('act', 20), ('fixup', 20), ('verify', 30), ('opus-review', 40);
 
--- One row per `autocraft sync` run, kept for two days, for the Pipeline page.
+-- One row per `autocraft-server sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (
   started_at TEXT NOT NULL,
   ended_at TEXT,
@@ -547,7 +572,7 @@ CREATE TABLE IF NOT EXISTS review_gates (
 );
 
 -- CI and merge state of open PRs at their head commit, for review candidates.
--- Written by `autocraft checks` and the Review stage; sync never touches it.
+-- Written by `autocraft-server checks` and the Review stage; sync never touches it.
 CREATE TABLE IF NOT EXISTS pr_checks (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   head_oid TEXT NOT NULL,
@@ -663,7 +688,7 @@ CREATE INDEX IF NOT EXISTS items_state_updated ON items(state, updated_at);
 CREATE INDEX IF NOT EXISTS items_author_nocase ON items(author COLLATE NOCASE);
 
 -- Sentence embeddings of tracked items, for similar items and semantic search.
--- Written by `autocraft embed` (src/embed/); the dashboard only reads them.
+-- Written by `autocraft-server embed` (src/embed/); the dashboard only reads them.
 CREATE TABLE IF NOT EXISTS item_embeddings (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   model TEXT NOT NULL,                -- embedder id: "<model>:<dtype>:<max tokens>"; another model's rows count as missing
@@ -800,7 +825,10 @@ CREATE TABLE IF NOT EXISTS remote_calls (
   ended_at INTEGER,
   reference_repo TEXT,                -- the repo whose reference documentation the call's reference tools search
   root TEXT,                          -- the lease's path root: the claim's directory the sandbox paths are placed below (macOS helpers), or NULL for the fixed paths
-  authors TEXT                        -- JSON: lowercase logins that authored or co-authored an item of the call, read when it was queued (author preference)
+  authors TEXT,                       -- JSON: lowercase logins that authored or co-authored an item of the call, read when it was queued (author preference)
+  picked_by TEXT COLLATE NOCASE,      -- a user picked the queued call for their own Task Runners ("Run on my Task Runner"); cleared on requeue and unlease
+  picked_at INTEGER,
+  pick_until INTEGER                  -- the pick counts until then
 );
 CREATE INDEX IF NOT EXISTS remote_calls_state ON remote_calls(state, tier);
 CREATE INDEX IF NOT EXISTS remote_calls_ended ON remote_calls(state, ended_at);
@@ -1689,7 +1717,7 @@ CREATE INDEX IF NOT EXISTS push_outcomes_to ON push_outcomes(repo, to_oid);
 CREATE INDEX IF NOT EXISTS push_outcomes_stage ON push_outcomes(stage, id);
 
 -- Circuit breaker: a stage that stopped itself. One row per stage; active = 1 while tripped, and only an operator clears it
--- (autocraft pipeline resume <stage>, or the Resume button on the Pipeline page). Pushes and merges from before cleared_at
+-- (autocraft-server pipeline resume <stage>, or the Resume button on the Pipeline page). Pushes and merges from before cleared_at
 -- do not count towards the next trip. evidence: JSON of refs (repo#number and commits).
 CREATE TABLE IF NOT EXISTS stage_trips (
   stage TEXT PRIMARY KEY,             -- fixup | cifix | fixissue | merge

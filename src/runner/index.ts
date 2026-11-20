@@ -1,4 +1,4 @@
-// autocraft runner serve | exec | enqueue | jobs | cancel | steps; autocraft pipeline on | off | status | limit
+// autocraft-server runner serve | exec | enqueue | jobs | cancel | steps; autocraft-server pipeline on | off | status | limit
 import { resumeStage, TripError } from "../push-outcomes.ts";
 import { startWorkerServer } from "../build/worker-api.ts";
 import { acquireLock } from "../mirror.ts";
@@ -13,6 +13,7 @@ import { isDraining, isEnabled, LimitError, pipelineState, resetLimitCount, setE
 import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { MIN_INTERVAL_KEY, reviewMinInterval, setReviewMinInterval } from "../review/gate.ts";
+import { PICK_MINUTES_KEY, pickMinutes, setPickMinutes } from "../remote/picks.ts";
 import { ParallelError, setStepParallel, stepParallelSetting } from "./concurrency.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
@@ -20,11 +21,11 @@ import { dbReady, startHealthServer } from "../health.ts";
 import { envVar } from "../env.ts";
 import { startDiscord } from "../discord/index.ts";
 
-const USAGE = `usage: autocraft runner serve
-       autocraft runner steps
-       autocraft runner enqueue <step> [--<param> <value> ...]
-       autocraft runner jobs [--state queued|running|done|failed|cancelled] [--limit N]
-       autocraft runner cancel <job id>`;
+const USAGE = `usage: autocraft-server runner serve
+       autocraft-server runner steps
+       autocraft-server runner enqueue <step> [--<param> <value> ...]
+       autocraft-server runner jobs [--state queued|running|done|failed|cancelled] [--limit N]
+       autocraft-server runner cancel <job id>`;
 
 function die(msg: string): never {
   console.error(msg);
@@ -158,13 +159,14 @@ export const commands = {
   },
 };
 
-const PIPELINE_USAGE = `usage: autocraft pipeline on [--if-draining] | off | drain | status
-       autocraft pipeline limit <step> --per-day <N|none>
-       autocraft pipeline limit reset <step>|--all
-       autocraft pipeline parallel [<N|none>]
-       autocraft pipeline review-interval [<minutes>]
-       autocraft pipeline resume <fixup|cifix|fixissue|merge>
-       autocraft pipeline pilot set <repo#number>... | show | clear`;
+const PIPELINE_USAGE = `usage: autocraft-server pipeline on [--if-draining] | off | drain | status
+       autocraft-server pipeline limit <step> --per-day <N|none>
+       autocraft-server pipeline limit reset <step>|--all
+       autocraft-server pipeline parallel [<N|none>]
+       autocraft-server pipeline review-interval [<minutes>]
+       autocraft-server pipeline pick-minutes [<minutes>]
+       autocraft-server pipeline resume <fixup|cifix|fixissue|merge>
+       autocraft-server pipeline pilot set <repo#number>... | show | clear`;
 
 // Recorded as `cli`: only someone with a shell on the host can run this.
 async function pipeline(args: string[]): Promise<void> {
@@ -199,6 +201,15 @@ async function pipeline(args: string[]): Promise<void> {
       die((e as Error).message);
     }
     console.log(`${MIN_INTERVAL_KEY} ${reviewMinInterval(db)}`);
+    return;
+  } else if (sub === "pick-minutes") {
+    if (rest.length > 1) die(PIPELINE_USAGE);
+    try {
+      if (rest[0] !== undefined) setPickMinutes(db, rest[0], "cli");
+    } catch (e) {
+      die((e as Error).message);
+    }
+    console.log(`${PICK_MINUTES_KEY} ${pickMinutes(db)}`);
     return;
   } else if (sub === "resume") {
     if (rest.length !== 1) die(PIPELINE_USAGE);

@@ -2,6 +2,7 @@
 // (docs/dashboard-spec.md, Data) in camelCase.
 
 import type { StageId } from "../../../src/stages/registry.ts";
+import type { UserSettings, UserSettingsReply } from "../../../src/remote/protocol.ts";
 export type RepoName = string;
 
 export interface ItemRef {
@@ -2478,14 +2479,50 @@ export interface ScanDetail {
 }
 
 /** One of the signed-in user's agent tokens for the Inbox MCP server; the token itself is shown only when made. `canAnswer`: an operator's token whose agent may answer decisions. */
-export type McpToken = { id: number; label: string | null; canAnswer: boolean; /** The token's helper may claim model calls in the user-local inference mode. */ canRun: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
+export type McpToken = { id: number; label: string | null; /** `connector`: the MCP Connector; `runner`: a Task Runner credential. */ kind: "connector" | "runner"; canAnswer: boolean; /** The token's helper may claim model calls in the user-local inference mode. */ canRun: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
 /** The user's live tokens, the most they may hold, and the server's MCP path (on the dashboard's own origin). */
 export type McpTokens = { tokens: McpToken[]; max: number; path: string; /** Whether an operator may make a token that answers decisions. */ answering: boolean };
 /** After making a token: the list, the new token's id, and its value, shown this once. */
 export type McpTokenCreated = McpTokens & { id: number; token: string };
 
 /** The signed-in user's own settings, and their user-local helpers as the server last saw them (src/remote/protocol.ts). */
-export type { UserSettingsReply as MySettings, UserSettings as MySettingsChange, HelperInfo as RemoteHelper, Readiness as HelperReadiness, UsageWindow } from "../../../src/remote/protocol.ts";
+export type { HelperInfo as RemoteHelper, Readiness as HelperReadiness, UsageWindow, Machine, RunnerInfo, RunnersReply, PendingRunnerLogin } from "../../../src/remote/protocol.ts";
+/** `manualOnly`: the user's Task Runners take only the calls the user picked and follow-ups of their own sessions. */
+export type MySettings = UserSettingsReply & { manualOnly: boolean };
+export type MySettingsChange = UserSettings & { manualOnly: boolean };
+
+/** Why a queued model call waits, most specific first: picked by a user; waiting for the runner that holds its session; no runner ready for its tier; every ready runner is Manual only; every runner that may take it is busy; no ready runner's user can take calls on its repo; calls ahead of it. */
+export type ModelQueueWhyCode = "picked" | "session" | "no-runner" | "manual-only" | "busy" | "no-repo-access" | "behind";
+
+/** One queued model call of the user-local inference mode, as GET /api/model-queue shows it to the signed-in user's role. */
+export interface ModelQueueCall {
+  id: number;
+  items: (ItemRef & ItemShown)[];
+  /** The step's title. */
+  kind: string;
+  tier: InferenceTier;
+  model: string;
+  /** Median cost of the prompt's recent finished runs; null without history. */
+  estCostUsd: number | null;
+  waitedMs: number;
+  why: { code: ModelQueueWhyCode; text: string };
+  /** Null when no live pick holds it; `login` only for maintainers and operators. */
+  picked: { login?: string } | null;
+  /** Whether the signed-in user may pick it now. */
+  pickable: boolean;
+  /** A gating call: the fast lane may take it. */
+  gating: boolean;
+  followUp: boolean;
+  /** Maintainers and operators: the last attempt's error, when it had one. */
+  lastError?: string;
+}
+
+/** GET /api/model-queue. `runners`: fresh ready runners taking calls on their own and Manual only ones (`manualLogins` for maintainers and operators). `me.picks` of `me.pickMax`: the user's live picks and the most they may hold. */
+export interface ModelQueue {
+  calls: ModelQueueCall[];
+  runners: { autopilot: number; manual: number; manualLogins?: string[] };
+  me: { canPick: boolean; manualOnly: boolean; picks: number; pickMax: number };
+}
 
 // ---- redesign: one status per item, Home, the two-sided item page, findings as items ----------------------------
 

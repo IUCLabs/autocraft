@@ -1,5 +1,5 @@
-// CLI of the post-merge review stage: `autocraft postmerge review <repo>#<n> [--again]`,
-// `autocraft postmerge file <repo>#<n> <finding>` and `autocraft postmerge backfill --since <ISO date> [--yes]`.
+// CLI of the post-merge review stage: `autocraft-server postmerge review <repo>#<n> [--again]`,
+// `autocraft-server postmerge file <repo>#<n> <finding>` and `autocraft-server postmerge backfill --since <ISO date> [--yes]`.
 // Operator only: the box's shell is the operator's.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
@@ -41,7 +41,7 @@ export const commands = {
       } else if (sub === "backfill") {
         const yes = rest.includes("--yes");
         const a = rest.filter((x) => x !== "--yes");
-        if (a[0] !== "--since" || a.length !== 2 || Number.isNaN(Date.parse(a[1]!))) throw new Error("usage: autocraft postmerge backfill --since <ISO date> [--yes]");
+        if (a[0] !== "--since" || a.length !== 2 || Number.isNaN(Date.parse(a[1]!))) throw new Error("usage: autocraft-server postmerge backfill --since <ISO date> [--yes]");
         const { queueBackfill } = await import("./review.ts");
         const n = queueBackfill(connect(), ACTOR, a[1]!, { yes });
         console.log(`${n} merged PRs wait for a post-merge review; the postmerge step reviews them`);

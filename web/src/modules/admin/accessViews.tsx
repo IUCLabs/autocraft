@@ -305,6 +305,7 @@ function AgentTokens({ tokens }: { tokens: AccessToken[] }) {
                   </td>
                   <td className="px-3 text-ink/70">
                     {t.label ?? ""}
+                    <Badge className={t.label ? "ml-2" : undefined}>{t.kind === "runner" ? "Task Runner" : "MCP Connector"}</Badge>
                     {t.canAnswer && <Badge className="ml-2">answers decisions</Badge>}
                   </td>
                   <td className="num whitespace-nowrap px-3 text-ink/65">{day(t.createdAt)}</td>

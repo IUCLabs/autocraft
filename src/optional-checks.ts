@@ -79,7 +79,7 @@ export const commands = {
       const [verb, repo, ...rest] = args;
       if (verb === "add" || verb === "remove") {
         const name = rest.join(" ");
-        if (!repo || !name) { console.error("usage: autocraft optional-checks add|remove REPO NAME"); process.exit(2); }
+        if (!repo || !name) { console.error("usage: autocraft-server optional-checks add|remove REPO NAME"); process.exit(2); }
         try {
           const changed = setOptionalCheck(db, "cli", repo, name, verb === "add");
           console.log(changed ? `${repo}: ${verb === "add" ? "added" : "removed"} ${name}` : `${repo}: ${name} was ${verb === "add" ? "already" : "not"} listed`);
@@ -90,7 +90,7 @@ export const commands = {
         return;
       }
       const only = verb === "--repo" ? repo : undefined;
-      if (verb && !only) { console.error("usage: autocraft optional-checks [--repo R] | add R NAME | remove R NAME"); process.exit(2); }
+      if (verb && !only) { console.error("usage: autocraft-server optional-checks [--repo R] | add R NAME | remove R NAME"); process.exit(2); }
       const repos = (db.prepare("SELECT name FROM main.tracked_repos ORDER BY name").all() as { name: string }[]).map((r) => r.name).filter((r) => !only || r === only);
       for (const r of repos) {
         const list = optionalChecks(db, r);

@@ -1,5 +1,5 @@
 // The load rig: a scratch dashboard (user-local mode, fresh data directory), a fault-injection proxy, a ledger the fake
-// harnesses report to, N helpers (worker/autocraft-task.mjs with the fake harness), and a driver that queues calls the way a
+// harnesses report to, N Task Runners (worker/autocraft.mjs with the fake harness), and a driver that queues calls the way a
 // job process does. No external services: helpers run with scripts/loadtest/preload.mjs, which answers the plan-usage
 // endpoint itself and blocks every other non-loopback request.
 import { spawn } from "node:child_process";
@@ -108,9 +108,12 @@ export class Rig {
   }
   async stopDashboard(signal = "SIGTERM") {
     if (!this.dash || this.dash.exitCode !== null) return;
-    this.dash.kill(signal);
-    await Promise.race([this.dashExit, sleep(15_000).then(() => this.dash.kill("SIGKILL"))]);
-    await this.dashExit;
+    // This process only: by the time the fallback fires, `this.dash` may be the restarted dashboard.
+    const dash = this.dash, exit = this.dashExit;
+    dash.kill(signal);
+    const kill = setTimeout(() => dash.kill("SIGKILL"), 15_000);
+    await exit;
+    clearTimeout(kill);
   }
   async restartDashboard() { this.note("dashboard restart"); await this.stopDashboard(); await this.startDashboard(); this.note("dashboard back"); }
   /** The dashboard is gone for `seconds` (the proxy keeps answering 502). */
@@ -129,7 +132,7 @@ export class Rig {
     for (let i = 0; i < this.o.users; i++) {
       const login = `rig-user-${String(i + 1).padStart(2, "0")}`;
       this.db.prepare("INSERT OR REPLACE INTO main.access (login, role, added_by, added_at) VALUES (?, 'maintainer', 'rig', ?)").run(login, now);
-      const { token, row } = tokens.createToken(this.db, login, "rig", false, true);
+      const { token, row } = tokens.createToken(this.db, login, "rig", { kind: "runner" });
       this.users.push({ login, token, tokenId: row.id });
     }
     this.refreshPermissions();
@@ -156,10 +159,13 @@ export class Rig {
     let src = readFileSync(join(here, "fake-harness.mjs"), "utf8");
     if (failing) src = src.replace("const ALWAYS_FAIL = false;", "const ALWAYS_FAIL = true;");
     writeFileSync(harness, src, { mode: 0o755 }); chmodSync(harness, 0o755);
-    mkdir(join(cfg, "autocraft-task"));
-    writeFileSync(join(cfg, "autocraft-task", "config.json"), JSON.stringify({ server: `http://127.0.0.1:${this.proxyPort}`, agentToken: u.token, harness: "claude", claudeToken: "rig-fake-token" }), { mode: 0o600 });
+    const server = `http://127.0.0.1:${this.proxyPort}`;
+    mkdir(join(cfg, "autocraft-runner"));
+    writeFileSync(join(cfg, "autocraft-runner", "config.json"), JSON.stringify({ server, harness: "claude", claudeToken: "rig-fake-token" }), { mode: 0o600 });
+    // The runner credential as `autocraft login` stores it once approved.
+    writeFileSync(join(cfg, "autocraft-runner", "credentials.json"), JSON.stringify({ server, credential: u.token, label: u.login, state: "approved" }), { mode: 0o600 });
     const env = {
-      PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache, AUTOCRAFT_TASK_CLAUDE_BIN: harness, ...this.scaleEnv(),
+      PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: cfg, XDG_CACHE_HOME: cache, AUTOCRAFT_RUNNER_CLAUDE_BIN: harness, ...this.scaleEnv(),
       NODE_OPTIONS: `--import=${join(here, "preload.mjs")}`,
     };
     const h = { i, login: u.login, tokenId: u.tokenId, dir: hd, failing, parallel, env, proc: null, log: join(hd, "helper.log"), stopped: false, restarts: 0 };
@@ -170,7 +176,7 @@ export class Rig {
   spawnHelper(h) {
     const out = createWriteStream(h.log, { flags: "a" });
     // Its own process group, so SIGSTOP and SIGKILL reach the harnesses and sandboxes below it as a laptop sleep or a crash would.
-    h.proc = spawn(process.execPath, [join(ROOT, "worker/autocraft-task.mjs"), "work", "--parallel", String(h.parallel)], { cwd: ROOT, env: h.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    h.proc = spawn(process.execPath, [join(ROOT, "worker/autocraft.mjs"), "work", "--parallel", String(h.parallel)], { cwd: ROOT, env: h.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     h.proc.stdout.pipe(out); h.proc.stderr.pipe(out);
     h.proc.on("exit", () => out.end());
     h.pid = h.proc.pid;

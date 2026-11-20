@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.XDG_CACHE_HOME = mkdtempSync(join(tmpdir(), "usage-reads-"));
-const helper = await import("../worker/autocraft-task.mjs");
+const helper = await import("../worker/autocraft.mjs");
 
 const body = { five_hour: { utilization: 20, resets_at: new Date(Date.now() + 3600_000).toISOString() }, seven_day: { utilization: 20, resets_at: new Date(Date.now() + 86400_000).toISOString() } };
 const adapter = { id: "claude", token: () => "t" } as any;
@@ -26,7 +26,7 @@ test("parallel usage reads make one fetch, and a 429 keeps the last good reading
     assert.equal(a, b);
     assert.ok(!("error" in c));
     // The provider now refuses; the cached good reading is replaced by a refusal that Retry-After holds back.
-    const file = join(process.env.XDG_CACHE_HOME!, "autocraft-task", "usage.json");
+    const file = join(process.env.XDG_CACHE_HOME!, "autocraft-runner", "usage.json");
     const cache = JSON.parse(readFileSync(file, "utf8"));
     cache.reading = { ...cache.reading, at: Date.now() - 120_000 };
     cache.good = cache.reading;

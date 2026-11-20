@@ -4,10 +4,12 @@
 // leases its token holds. A user's helpers together count no more than the user's "Max calls at once" leaves (max-calls.ts). The
 // queued calls that rank at or above the caller's class in the claim order (claim-class.ts) take room first. A helper
 // held by its plan usage or paused stops asking for work and reports so; a helper that stopped without a word stops
-// counting once its last claim and heartbeats are old.
+// counting once its last claim and heartbeats are old. The helpers of a Manual only user (manual-only.ts) take only the user's
+// own picks and follow-ups, so they are no room.
 import type { DatabaseSync } from "node:sqlite";
 import { claimClass } from "./claim-class.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
+import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S, type Tier } from "./protocol.ts";
@@ -34,7 +36,7 @@ export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.n
       (SELECT COUNT(*) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS leased,
       (SELECT MAX(c.heartbeat_at) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS beat
     FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
-    WHERE t.can_run = 1 AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as
+    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as
     { login: string; idle_claim_at: number | null; slots: number; leased: number; beat: number | null }[];
   const free = new Map<string, number>();
   for (const h of helpers) {
@@ -50,7 +52,7 @@ export function remoteRoom(db: DatabaseSync, cls: number, nowMs: number = Date.n
     const leased = max === null ? 0 : Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n);
     room += max === null ? n : Math.min(n, Math.max(0, max - leased));
   }
-  const queued = db.prepare("SELECT class AS cls, tier, since, parent_id, prompt_id FROM main.remote_calls INDEXED BY remote_calls_queued WHERE state = 'queued' AND seen_at >= ?").all(nowMs - CALLER_STALE_MS) as
+  const queued = db.prepare("SELECT class AS cls, tier, since, parent_id, prompt_id FROM main.remote_calls INDEXED BY remote_calls_waiting WHERE state = 'queued' AND seen_at >= ?").all(nowMs - CALLER_STALE_MS) as
     { cls: number; tier: Tier; since: number; parent_id: number | null; prompt_id: string }[];
   const ahead = queued.filter((r) => claimClass(r, nowMs) >= cls).length;
   return Math.max(0, room - ahead);

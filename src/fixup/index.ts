@@ -3,9 +3,9 @@
 // it on top of the reviewed head, and the result is pushed to the
 // contributor's branch. The new head gets reviewed again by the Review stage.
 //
-//   autocraft fixup --repo R [--limit N] [--apply]
-//   autocraft fixup repost R#N [--apply]
-//   autocraft push-approval [--repo R]
+//   autocraft-server fixup --repo R [--limit N] [--apply]
+//   autocraft-server fixup repost R#N [--apply]
+//   autocraft-server push-approval [--repo R]
 //
 // Without --apply it is a dry run: local tables only, nothing called or written.
 // The checkout is untrusted data: nothing from it is ever run (see git.ts).
@@ -730,13 +730,13 @@ export const commands = {
     async run(args: string[]): Promise<void> {
       if (args[0] === "try") {
         const m = /^([^#\s]+)#(\d+)$/.exec(args[1] ?? "");
-        if (!m || args.length !== 2) throw new Error("usage: autocraft fixup try <repo>#<n>");
+        if (!m || args.length !== 2) throw new Error("usage: autocraft-server fixup try <repo>#<n>");
         process.exitCode = await (await import("./try.ts")).runFixupTry(connect(), m[1]!, Number(m[2]));
         return;
       }
       if (args[0] === "repost") {
         const m = /^([^#\s]+)#(\d+)$/.exec(args[1] ?? "");
-        if (!m || args.slice(2).some((a) => a !== "--apply")) throw new Error("usage: autocraft fixup repost <repo>#<n> [--apply]");
+        if (!m || args.slice(2).some((a) => a !== "--apply")) throw new Error("usage: autocraft-server fixup repost <repo>#<n> [--apply]");
         const r = await repostAsk(connect(), m[1]!, Number(m[2]), args.includes("--apply"));
         console.log(`old:\n${r.old}\n\nnew:\n${r.text}\n\n${r.status}`);
         if (r.status === "failed") process.exitCode = 1;

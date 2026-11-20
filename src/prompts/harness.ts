@@ -13,7 +13,7 @@ export const stripMarks = (text: string): string => text.replaceAll(MARK, "");
 
 /**
  * Codex runs with its shell turned off: its sandbox would let commands read the login, so it reads through the helper's
- * read-only file tools on the same paths (worker/autocraft-task.mjs, `files` MCP server).
+ * read-only file tools on the same paths (worker/autocraft.mjs, `files` MCP server).
  */
 const FILES = "the file tools mcp__files__read_file, mcp__files__grep and mcp__files__glob";
 

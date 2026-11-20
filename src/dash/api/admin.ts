@@ -38,10 +38,10 @@ const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 // Accounts and access (who can sign in, sessions, the Claude accounts) are audited for operators only.
-export const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("github-app-") || a.startsWith("account-") || a.startsWith("mcp-token-") || ["session-revoke", "sign-in", "sign-in-refused", "usage-reserve", "my-repos", "max-calls"].includes(a);
+export const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("github-app-") || a.startsWith("account-") || a.startsWith("mcp-token-") || a.startsWith("runner-") || ["session-revoke", "sign-in", "sign-in-refused", "usage-reserve", "my-repos", "max-calls", "manual-only"].includes(a);
 export const AUDIT_ACTIONS = [
   "answer", "undo", "dispute", "dispute-resolve", "answer-sweep", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "mcp-token-create", "mcp-token-revoke", "usage-reserve", "my-repos", "max-calls", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-token-start", "account-token-code", "account-token-cancel", "account-token-set", "account-token-remove", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-reopen", "act-open-issue", "discord-issue-open", "discord-issue-label", "act-unlabel", "act-transfer", "act-request-reviewers", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "optional-check-add", "optional-check-remove", "fixissue-push", "fixissue-pr", "fixissue-comment",
+  "session-revoke", "mcp-token-create", "mcp-token-revoke", "runner-migrate", "runner-approve", "runner-deny", "runner-revoke", "usage-reserve", "my-repos", "max-calls", "manual-only", "remote-pick", "remote-unpick", "remote-pick-minutes", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-token-start", "account-token-code", "account-token-cancel", "account-token-set", "account-token-remove", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-reopen", "act-open-issue", "discord-issue-open", "discord-issue-label", "act-unlabel", "act-transfer", "act-request-reviewers", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "optional-check-add", "optional-check-remove", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "security-scan-start", "security-scan-stop", "security-finding-dismiss", "security-finding-backlog", "security-finding-reopen", "security-finding-fix", "security-finding-land", "security-finding-advisory", "security-finding-publish", "security-land-push", "security-land", "security-land-opened", "security-landed", "security-advisory", "security-advisory-fork", "security-advisory-push", "security-advisory-pr", "security-advisory-ready", "security-publish", "security-published", "security-cve", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "github-identity", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
   "fasttrack-add", "fasttrack-remove", "fasttrack-weight", "abuse-limits", "outside-release", "outside-release-author", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "ci-approve", "ci-revoke", "ci-run-approve", "ci-rerun", "cifix-push", "cifix-comment", "cifix-check", "postmerge-file", "postmerge-file-one", "postmerge-review", "postmerge-backfill",
@@ -535,9 +535,9 @@ export function revokeAgentToken(db: DatabaseSync, req: Req): AccessOverview {
   requireOperator(req, "manage access");
   const id = body(req).id;
   if (!Number.isInteger(id)) throw new HttpError(400, "id must be a token id");
-  const login = revokeAnyToken(db, id as number);
-  if (!login) throw new HttpError(404, "that token has already ended");
-  audit(db, req.user.login, "mcp-token-revoke", login, { id });
+  const gone = revokeAnyToken(db, id as number);
+  if (!gone) throw new HttpError(404, "that token has already ended");
+  audit(db, req.user.login, gone.kind === "runner" ? "runner-revoke" : "mcp-token-revoke", gone.login, { id, kind: gone.kind });
   return accessOverview(db, req);
 }
 

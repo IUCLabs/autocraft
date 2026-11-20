@@ -115,3 +115,33 @@ export function evaluate(rig, spec, m) {
   for (const c of checks) lines.push(`${c.ok ? "PASS" : "FAIL"}  ${c.name}: ${c.detail}`);
   return { lines, checks };
 }
+
+/**
+ * Scenario 7's lines: how fast a held claim picks up a queued call, how often idle runners claim compared with polling every
+ * 15 s, and how the claims held when the dashboard stopped were answered. `lp` is what the runners recorded (run.mjs).
+ */
+export function evaluateLongPoll(rig, spec, lp) {
+  const checks = [], lines = [];
+  const add = (name, ok, detail) => checks.push({ ok, name, detail });
+  // Calls queued while the dashboard was down, or before the runners' first retry after it came back, wait for the restart.
+  const settle = rig.sc(5000);
+  const pickups = [], restartPickups = [];
+  for (const c of rig.calls.values()) {
+    const at = lp.leases.get(c.id);
+    if (at === undefined) continue;
+    (c.enqueuedAt >= lp.stopAt && c.enqueuedAt <= lp.backAt + settle ? restartPickups : pickups).push(at - c.enqueuedAt);
+  }
+  const lim = rig.sc(2000), p95 = pct(pickups, 95);
+  add(`pickup p95 under ${s(lim)}`, p95 !== null && p95 < lim, `p50 ${ms(pct(pickups, 50))}, p95 ${ms(p95)}, max ${ms(pickups.length ? Math.max(...pickups) : null)} over ${pickups.length} calls; ${restartPickups.length} queued around the restart, max ${ms(restartPickups.length ? Math.max(...restartPickups) : null)}`);
+  // Empty replies per production minute against polling's: every runner slot claims every 15 s when nothing is queued.
+  const empties = lp.claims.filter((c) => c.status === 200 && c.lease === null && c.reason === null).length;
+  const prodMin = (lp.end - lp.t0) / rig.ts / 60_000;
+  const rate = empties / prodMin, baseline = spec.users * 4;
+  add("idle claims below the polling rate", rate < baseline, `${rate.toFixed(1)} empty claims per production minute (${empties} in ${prodMin.toFixed(1)} min); polling every 15 s: ${baseline}`);
+  const held = lp.claims.filter((c) => lp.stopAt && c.start < lp.stopAt && c.end >= lp.stopAt);
+  const bad = held.filter((c) => c.status !== 200 || c.lease !== null);
+  add("held claims answered at the restart, none reset", held.length > 0 && bad.length === 0, `${held.length} claims held when the dashboard stopped; ${bad.length} not answered with an empty reply${bad.length ? ` (statuses ${[...new Set(bad.map((c) => c.status))].join(", ")})` : ""}`);
+  lines.push(`long polling: ${lp.claims.length} claims, ${lp.leases.size} leases, ${empties} empty`);
+  for (const c of checks) lines.push(`${c.ok ? "PASS" : "FAIL"}  ${c.name}: ${c.detail}`);
+  return { lines, checks, metrics: { pickups, restartPickups, empties, prodMin, held: held.length, bad: bad.length } };
+}

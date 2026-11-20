@@ -130,6 +130,11 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   ],
   // The user-local helpers' readiness and their leases starting and ending, for the Connect page; not planner input.
   "remote-helpers": [{ table: "remote_helpers" }, { table: "remote_calls", ops: ["UPDATE"], when: "old.state IS NOT new.state AND (new.state = 'leased' OR old.state = 'leased')" }],
+  // Model calls entering or leaving the queue and picks changing: held claims and the queue view; not planner input.
+  "remote-queue": [
+    { table: "remote_calls", ops: ["INSERT"] },
+    { table: "remote_calls", ops: ["UPDATE"], when: "(old.state IS NOT new.state AND (new.state = 'queued' OR old.state = 'queued')) OR old.picked_by IS NOT new.picked_by OR old.pick_until IS NOT new.pick_until" },
+  ],
   // Rows of the audit table that record a write on GitHub.
   github: [{ table: "audit", ops: ["INSERT", "UPDATE"], when: `new.action IN (${Object.keys(GITHUB_ACTIONS).map((a) => `'${a}'`).join(", ")})` }],
 };
@@ -168,8 +173,8 @@ export function liveSql(db?: DatabaseSync): string {
   for (const [topic, sources] of Object.entries(TOPIC_TABLES)) {
     for (const { table, ops = ALL_OPS, when } of sources) {
       for (const op of ops) {
-        // `steps`, `trace`, `limits` and `decision-snooze` read tables other topics already watch; their triggers need names of their own.
-        const name = `live_${topic === "steps" || topic === "trace" || topic === "limits" || topic === "decision-snooze" || topic === "build-features" ? `${topic.replace(/\W/g, "_")}_` : ""}${table}_${op[0]!.toLowerCase()}`;
+        // `steps`, `trace`, `limits`, `decision-snooze`, `build-features` and `remote-queue` read tables other topics already watch; their triggers need names of their own.
+        const name = `live_${topic === "steps" || topic === "trace" || topic === "limits" || topic === "decision-snooze" || topic === "build-features" || topic === "remote-queue" ? `${topic.replace(/\W/g, "_")}_` : ""}${table}_${op[0]!.toLowerCase()}`;
         const key = op === "DELETE" ? "old.key" : "new.key";
         let cond = when ? when.replaceAll("new_key", key) : "";
         if (op === "UPDATE" && !when) {

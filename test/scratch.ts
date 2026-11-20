@@ -9,3 +9,6 @@ const BASE = join(homedir(), ".cache/autocraft-scratch");
 mkdirSync(BASE, { recursive: true });
 export const SCRATCH = mkdtempSync(join(BASE, "test-"));
 process.on("exit", () => rmSync(SCRATCH, { recursive: true, force: true }));
+// The diff cache defaults to one shared directory under the home: test processes running at once would read, write and
+// drop (dropCachedDiff) each other's diffs for the same fixture heads (app#3@sha3). A test may still point it elsewhere.
+process.env.AUTOCRAFT_DIFF_CACHE = join(SCRATCH, "diffs");

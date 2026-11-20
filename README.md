@@ -4,7 +4,7 @@ AutoCraft is a model harness for maintaining GitHub repositories with a large ba
 
 The models' tools are a fixed set of GitHub actions (comments, labels, branches, PRs, merges), all behind one write module and `safe-merge`-style checks. Actions run automatically where the rules say they are safe. Otherwise a model proposes and a person accepts. Each issue and PR has its own conversation between Opus and a maintainer, with action cards the maintainer can run. The pipeline is built around maintainers' judgement, which is the limited resource, not around token cost.
 
-Originally written for the [storytold](https://github.com/storytold) craft apps, AutoCraft can also track repositories owned by other GitHub organizations or users via `autocraft repos track owner/name` without requiring source edits. See [Track repos and sync](#track-repos-and-sync) for naming and GitHub App sync limitations.
+Originally written for the [storytold](https://github.com/storytold) craft apps, AutoCraft can also track repositories owned by other GitHub organizations or users via `autocraft-server repos track owner/name` without requiring source edits. See [Track repos and sync](#track-repos-and-sync) for naming and GitHub App sync limitations.
 
 ## How it works
 
@@ -55,7 +55,7 @@ See [Trust boundary](docs/pipeline.md#trust-boundary).
 | `git` | Clones, diffs and pushes |
 | `claude` (Claude Code CLI) | All Claude calls |
 | `bwrap` (bubblewrap, `/usr/bin/bwrap`) | Sandbox for tool-using calls. Without it, those calls run without tools; `AUTOCRAFT_NO_SANDBOX=1` forces that |
-| `jev` (optional) | CLI for TypeSafe's Jev model, used by the classify, priority and duplicate steps (`jev --compact ask`). Without it, switched off (`autocraft accounts jev off`), or when its account is out of credit or its key is rejected, Haiku does Jev's work through the Claude accounts (more Claude usage) |
+| `jev` (optional) | CLI for TypeSafe's Jev model, used by the classify, priority and duplicate steps (`jev --compact ask`). Without it, switched off (`autocraft-server accounts jev off`), or when its account is out of credit or its key is rejected, Haiku does Jev's work through the Claude accounts (more Claude usage) |
 | Podman and a second OS user | Build environments for Verify and Fix (optional) |
 | `sqlite3`, `curl` | `deploy/backup.sh` and `deploy/hook.sh` |
 
@@ -124,10 +124,10 @@ Claude calls run under accounts that an operator enables. Each account is a Clau
 New accounts start disabled. Enable and size them:
 
 ```sh
-autocraft accounts list
-autocraft accounts set a --label main --enabled yes --max-concurrent 3
-autocraft accounts jev 4        # parallel Jev calls
-autocraft accounts jev off      # Haiku does Jev's work; `on` switches Jev back on
+autocraft-server accounts list
+autocraft-server accounts set a --label main --enabled yes --max-concurrent 3
+autocraft-server accounts jev 4        # parallel Jev calls
+autocraft-server accounts jev off      # Haiku does Jev's work; `on` switches Jev back on
 ```
 
 See [Claude accounts and agent runs](docs/pipeline.md#claude-accounts-and-agent-runs).
@@ -135,34 +135,34 @@ See [Claude accounts and agent runs](docs/pipeline.md#claude-accounts-and-agent-
 ### Track repos and sync
 
 ```sh
-autocraft repos track <name>        # a new bare name defaults to storytold
-autocraft repos track <owner/name>  # a repository owned by another organization or user
-autocraft repos list
-autocraft sync                   # first sync of the tracked repos
+autocraft-server repos track <name>        # a new bare name defaults to storytold
+autocraft-server repos track <owner/name>  # a repository owned by another organization or user
+autocraft-server repos list
+autocraft-server sync                   # first sync of the tracked repos
 ```
 
 Repo names are unique across owners and case-sensitive. With the GitHub App identity, the app must also be installed on `storytold`. See [Tracked repos](docs/operations.md#tracked-repos).
 
-Newly tracked repositories start with their pipeline disabled. Sync, Embed, and Rank remain available; operator conversations and explicitly fast-tracked items are exceptions to the pipeline-off restriction. For recurring sync, install and enable the supplied systemd timer (`deploy/systemd/autocraft-sync.timer`) or use the periodic service in the Docker Compose deployment. Running the initial sync does not schedule future runs. `autocraft embed` populates vectors. With the default model and an empty cache, the first embedding operation downloads the approximately 34 MB model plus supporting files.
+Newly tracked repositories start with their pipeline disabled. Sync, Embed, and Rank remain available; operator conversations and explicitly fast-tracked items are exceptions to the pipeline-off restriction. For recurring sync, install and enable the supplied systemd timer (`deploy/systemd/autocraft-sync.timer`) or use the periodic service in the Docker Compose deployment. Running the initial sync does not schedule future runs. `autocraft-server embed` populates vectors. With the default model and an empty cache, the first embedding operation downloads the approximately 34 MB model plus supporting files.
 
 ### Start the dashboard and add the first operator
 
 ```sh
-autocraft access add <github-login> --operator
-autocraft dash serve
+autocraft-server access add <github-login> --operator
+autocraft-server dash serve
 ```
 
-Sign in at the base URL. Further users are added on the Access page or with `autocraft access add <login> [--maintainer]`. Then, on the dashboard:
+Sign in at the base URL. Further users are added on the Access page or with `autocraft-server access add <login> [--maintainer]`. Then, on the dashboard:
 
 1. Repos page: approve each repo for the writes you want (labels, comments, fixing, pushing, merging) and switch its pipeline on.
-2. Run the runner: `autocraft runner serve`. It is the only process that runs steps.
-3. Pipeline page: turn the pipeline on, or `autocraft pipeline on`. Set daily limits with `autocraft pipeline limit <step> --per-day N`.
+2. Run the runner: `autocraft-server runner serve`. It is the only process that runs steps.
+3. Pipeline page: turn the pipeline on, or `autocraft-server pipeline on`. Set daily limits with `autocraft-server pipeline limit <step> --per-day N`.
 
-`AUTOCRAFT_DEV_AUTH=1 autocraft dash serve` starts a local server with a fake GitHub sign-in on `127.0.0.1:8994`, with no secrets file.
+`AUTOCRAFT_DEV_AUTH=1 autocraft-server dash serve` starts a local server with a fake GitHub sign-in on `127.0.0.1:8994`, with no secrets file.
 
 ### Contributors' agents
 
-Maintainers (and operators) can work the Inbox from their own agent: from the user menu (top right, **Connect agent**) they make an agent token and get the command that adds the Inbox MCP server to Claude Code (`claude mcp add --transport http autocraft-inbox <base URL>/mcp --header "Authorization: Bearer <token>"`). Then they ask things like "is there anything open in photocraft I can help with?" or "give me 5 PRs that need a fix-up". The agent lists open decisions and held fix-ups, works one through with them locally, and sends their pick and note back as feedback. MCP decision answering and undo remain disabled, even with GitHub App sign-in configured; use the dashboard for these actions. See [Inbox MCP server](docs/operations.md#inbox-mcp-server).
+Maintainers (and operators) can work the Inbox from their own agent: from the user menu (top right, **Connect**) they make an MCP Connector token and get the command that adds the AutoCraft MCP server to Claude Code (`claude mcp add --transport http autocraft <base URL>/mcp --header "Authorization: Bearer <token>"`). Then they ask things like "is there anything open in photocraft I can help with?" or "give me 5 PRs that need a fix-up". The agent lists open decisions and held fix-ups, works one through with them locally, and sends their pick and note back as feedback. MCP decision answering and undo remain disabled, even with GitHub App sign-in configured; use the dashboard for these actions. See [MCP Connector](docs/operations.md#mcp-connector).
 
 ### Discord mentions (optional)
 
@@ -192,12 +192,12 @@ Details, including the worker and build environments: [docs/operations.md](docs/
 
 ## Model calls on maintainers' machines
 
-An instance runs its model calls in one of two modes, which an operator switches on the Inference page or with `autocraft inference`:
+An instance runs its model calls in one of two modes, which an operator switches on the Inference page or with `autocraft-server inference`:
 
 - `server` (default): calls run on this host with the Claude accounts registered on the Accounts page.
-- `user-local`: calls are queued, and maintainers' and operators' own Claude Code or Codex subscriptions run them through a small helper (`autocraft-task`) on their machines, in a sandbox.
+- `user-local`: calls are queued, and maintainers' and operators' own Claude Code or Codex subscriptions run them through a small Task Runner (`autocraft`) on their machines, in a sandbox. A Task Runner logs in with `autocraft login`, approved on the Connect page; its credential is separate from an MCP Connector token. Held claims make pickup immediate. Maintainers and operators can also reserve a queued call for their own Task Runners (**Run on my Task Runner** in the model call queue) or switch their Task Runners to Manual only.
 
-The planner, gates, Jev calls, embeddings, GitHub writes and builds always stay on the server. A helper only receives a call's prompt, read-only checkouts and per-call tools, and sends back a reply. See [User-local inference](docs/operations.md#user-local-inference) for setup, eligibility and limits.
+The planner, gates, Jev calls, embeddings, GitHub writes and builds always stay on the server. A Task Runner only receives a call's prompt, read-only checkouts and per-call tools, and sends back a reply. See [User-local inference](docs/operations.md#user-local-inference) for setup, eligibility and limits.
 
 ## Development
 

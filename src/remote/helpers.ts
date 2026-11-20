@@ -1,15 +1,13 @@
-// The readiness of the user-local helpers: each helper sends its status (POST ROUTES.status) on every change and at least
-// every STATUS_EVERY_S while it runs; the last one is kept per agent token, with its slots and busy count. The planner's room
-// counts only helpers whose last status is `ready` and fresh, by their free slots (room.ts); the Connect page and my_work list the user's own.
+// The readiness of the user-local helpers (Task Runners): each sends its status (POST ROUTES.status) on every change and at
+// least every STATUS_EVERY_S while it runs; the last one is kept per runner credential, with its slots and busy count. The
+// planner's room counts only runners whose last status is `ready` and fresh, by their free slots (room.ts); the Connect
+// page (GET /api/runners) and my_work list the user's own.
 import type { DatabaseSync } from "node:sqlite";
 import { HttpError } from "../dash/server/util.ts";
 import { cooloffOf } from "./cooloff.ts";
 import { isTier } from "./mode.ts";
 import { scaled } from "./time-scale.ts";
-import { READINESS, STATUS_EVERY_S, type HarnessId, type HelperInfo, type HelperStatus, type Readiness, type Reserve, type Tier, type UsageReading, type UsageWindow } from "./protocol.ts";
-
-/** The session route listing the signed-in user's helpers (GET, reply `{ helpers: HelperInfo[] }`). */
-export const HELPERS_PATH = "/api/remote/helpers";
+import { READINESS, STATUS_EVERY_S, type HarnessId, type HelperInfo, type HelperStatus, type Machine, type Readiness, type Reserve, type Tier, type UsageReading, type UsageWindow } from "./protocol.ts";
 
 /** A status this old no longer counts: one report interval and a minute of slack. */
 export const STATUS_FRESH_MS = scaled((STATUS_EVERY_S + 60) * 1000);
@@ -61,27 +59,45 @@ export function parseStatus(raw: unknown): HelperStatus {
     if (typeof e !== "object" || typeof e.text !== "string" || !isoTime(e.at)) throw new HttpError(400, "lastError must be { text, at }");
     lastError = { text: e.text.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, REASON_MAX), at: e.at };
   }
+  if (s.helperVersion !== undefined && (typeof s.helperVersion !== "string" || !/^[0-9A-Za-z.+-]{1,40}$/.test(s.helperVersion))) throw new HttpError(400, "helperVersion must be a version string");
+  let machine: Machine | undefined;
+  if (s.machine !== undefined) {
+    const m = s.machine as Record<string, unknown>;
+    const field = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max && !/[\u0000-\u001f\u007f]/.test(v);
+    if (!m || typeof m !== "object" || !field(m.hostname, 253) || !field(m.platform, 40) || !field(m.arch, 40)) throw new HttpError(400, "machine must be { hostname, platform, arch }");
+    machine = { hostname: m.hostname, platform: m.platform, arch: m.arch };
+  }
   return {
-    slots, busy: Math.min(busy, slots), ...(lastError && { lastError }),
+    slots, busy: Math.min(busy, slots), ...(lastError && { lastError }), ...(typeof s.helperVersion === "string" && { helperVersion: s.helperVersion }), ...(machine && { machine }),
     readiness: s.readiness as Readiness, ...(isoTime(s.until) && { until: s.until }), ...(reason && { reason }),
     harness: s.harness as HarnessId, models, reserve: { fiveHour: r.fiveHour as number, weekly: r.weekly as number }, ...(usage && { usage }),
   };
 }
 
-/** Keeps a helper's status as the last one of its token. Rows of deleted tokens go with the dashboard's minute maintenance (pruneRemote). */
+/**
+ * Keeps a helper's status as the last one of its credential, and the machine it names on the credential. Rows of deleted
+ * credentials go with the dashboard's minute maintenance (pruneRemote).
+ */
 export function storeStatus(db: DatabaseSync, tokenId: number, login: string, s: HelperStatus, nowMs: number = Date.now()): void {
-  db.prepare(`INSERT INTO main.remote_helpers (token_id, login, readiness, until, reason, harness, models, reserve, usage, reported_at, slots, busy, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  db.prepare(`INSERT INTO main.remote_helpers (token_id, login, readiness, until, reason, harness, models, reserve, usage, reported_at, slots, busy, last_error, helper_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (token_id) DO UPDATE SET login = excluded.login, readiness = excluded.readiness, until = excluded.until, reason = excluded.reason, harness = excluded.harness,
       models = excluded.models, reserve = excluded.reserve, usage = excluded.usage, reported_at = excluded.reported_at,
-      slots = excluded.slots, busy = excluded.busy, last_error = excluded.last_error`)
-    .run(tokenId, login, s.readiness, s.until ?? null, s.reason ?? null, s.harness, JSON.stringify(s.models), JSON.stringify(s.reserve), s.usage ? JSON.stringify(s.usage) : null, nowMs, s.slots, s.busy, s.lastError ? JSON.stringify(s.lastError) : null);
+      slots = excluded.slots, busy = excluded.busy, last_error = excluded.last_error, helper_version = COALESCE(excluded.helper_version, remote_helpers.helper_version)`)
+    .run(tokenId, login, s.readiness, s.until ?? null, s.reason ?? null, s.harness, JSON.stringify(s.models), JSON.stringify(s.reserve), s.usage ? JSON.stringify(s.usage) : null, nowMs, s.slots, s.busy, s.lastError ? JSON.stringify(s.lastError) : null, s.helperVersion ?? null);
+  if (s.machine) db.prepare("UPDATE main.mcp_tokens SET machine = ? WHERE id = ? AND machine IS NOT ?").run(JSON.stringify(s.machine), tokenId, JSON.stringify(s.machine));
 }
 
-/** The login's helpers: every live token that may run tasks, with its last status. */
+/** Whether the login has a Task Runner whose last status is fresh (the MCP Connector then offers the task tools). */
+export function hasFreshRunner(db: DatabaseSync, login: string, nowMs: number = Date.now()): boolean {
+  return db.prepare(`SELECT 1 FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
+    WHERE t.login = ? AND t.kind = 'runner' AND t.expires_at > ? AND h.reported_at >= ? LIMIT 1`).get(login, new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) !== undefined;
+}
+
+/** The login's helpers: every live Task Runner credential, with its last status. */
 export function listHelpers(db: DatabaseSync, login: string, nowMs: number = Date.now()): HelperInfo[] {
   const rows = db.prepare(`SELECT t.id, t.label, t.last_used_at, h.readiness, h.until, h.reason, h.harness, h.models, h.reserve, h.usage, h.reported_at, h.slots, h.busy, h.last_error
       FROM main.mcp_tokens t LEFT JOIN main.remote_helpers h ON h.token_id = t.id
-    WHERE t.login = ? AND t.can_run = 1 AND t.expires_at > ? ORDER BY t.created_at DESC, t.id DESC`).all(login, new Date(nowMs).toISOString()) as
+    WHERE t.login = ? AND t.kind = 'runner' AND t.expires_at > ? ORDER BY t.created_at DESC, t.id DESC`).all(login, new Date(nowMs).toISOString()) as
     { id: number; label: string | null; last_used_at: string | null; readiness: Readiness | null; until: string | null; reason: string | null; harness: HarnessId | null; models: string | null; reserve: string | null; usage: string | null; reported_at: number | null; slots: number | null; busy: number | null; last_error: string | null }[];
   const cooloff = cooloffOf(db, login, nowMs);
   return rows.map((r) => {

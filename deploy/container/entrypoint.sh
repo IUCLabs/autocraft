@@ -1,10 +1,10 @@
 #!/bin/bash
 # Container entrypoint: the first argument picks the process. The commands match the systemd units.
-#   dashboard   autocraft dash serve
-#   runner      autocraft runner serve (also serves the worker API)
-#   sync        autocraft sync [args]             one-shot
+#   dashboard   autocraft-server dash serve
+#   runner      autocraft-server runner serve (also serves the worker API)
+#   sync        autocraft-server sync [args]             one-shot
 #   backup      deploy/backup.sh [PREFIX [KEEP]]  one-shot, default "daily"
-#   anything else is passed to the autocraft CLI.
+#   anything else is passed to the autocraft-server CLI.
 set -euo pipefail
 cd /app
 mkdir -p "${HOME:?}"

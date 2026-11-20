@@ -218,7 +218,7 @@ const toPassage = (r: { id: number; page: string; title: string; text: string })
 /**
  * Hybrid search: embedding similarity and FTS5 rank, fused by reciprocal rank. Up to 8 passages. It reads the index as
  * built and never builds one: embedding a whole manual takes many minutes of CPU, which the dashboard serving the search
- * cannot spare. `autocraft reference import` and `autocraft reference index` build it.
+ * cannot spare. `autocraft-server reference import` and `autocraft-server reference index` build it.
  */
 export async function referenceSearch(repo: string, query: string, limit = 5, opts: SearchOptions = {}): Promise<Passage[]> {
   checkRepo(repo);

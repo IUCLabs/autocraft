@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as helper from "../worker/autocraft-task.mjs";
-import type * as H from "../worker/autocraft-task.mjs";
+import * as helper from "../worker/autocraft.mjs";
+import type * as H from "../worker/autocraft.mjs";
 import * as protocol from "../src/remote/protocol.ts";
 
 // The helper keeps its own copy of the wire format; these fail to compile when the copies drift.
@@ -17,9 +17,13 @@ void [
   same<protocol.HelperStatus, H.HelperStatus>((b) => b), same<H.HelperStatus, protocol.HelperStatus>((b) => b),
   same<protocol.StatusReply, H.StatusReply>((b) => b), same<H.StatusReply, protocol.StatusReply>((b) => b),
   same<protocol.Heartbeat, H.Heartbeat>((b) => b), same<H.Heartbeat, protocol.Heartbeat>((b) => b),
+  same<protocol.Machine, H.Machine>((b) => b), same<H.Machine, protocol.Machine>((b) => b),
+  same<protocol.LoginStart, H.LoginStart>((b) => b), same<H.LoginStart, protocol.LoginStart>((b) => b),
+  same<protocol.LoginStartReply, H.LoginStartReply>((b) => b), same<H.LoginStartReply, protocol.LoginStartReply>((b) => b),
+  same<protocol.LoginPollReply, H.LoginPollReply>((b) => b), same<H.LoginPollReply, protocol.LoginPollReply>((b) => b),
 ];
 
-test("the helper speaks the server's protocol version and routes", () => {
+test("the runner speaks the server's protocol version and routes", () => {
   assert.equal(helper.PROTOCOL_VERSION, protocol.PROTOCOL_VERSION);
   assert.deepEqual(helper.ROUTES, protocol.ROUTES);
   assert.deepEqual([helper.HEARTBEAT_S, helper.PREPARE_MAX_S, helper.CLAIM_ID_TTL_S], [protocol.HEARTBEAT_S, protocol.PREPARE_MAX_S, protocol.CLAIM_ID_TTL_S]);
@@ -127,14 +131,14 @@ test("codex runs without a shell or --sandbox, reads through the file tools, and
   assert.ok(!args.includes("--ephemeral") && !args.includes("--sandbox") && !args.includes("-s"));
   assert.match(line, /features=\{shell_tool=false, unified_exec=false/);
   assert.match(line, /permissions=\{autocraft=\{extends=":read-only", filesystem=\{"\/codex-home"="deny"\}\}\}/);
-  assert.match(line, /files=\{url="http:\/\/127\.0\.0\.1:4100\/mcp", bearer_token_env_var="AUTOCRAFT_TASK_FILES_TOKEN"/);
-  assert.match(line, /items=\{url="https:\/\/ac\.example\/mcp\/task\/items", bearer_token_env_var="AUTOCRAFT_TASK_LEASE_SECRET", default_tools_approval_mode="approve"/);
+  assert.match(line, /files=\{url="http:\/\/127\.0\.0\.1:4100\/mcp", bearer_token_env_var="AUTOCRAFT_RUNNER_FILES_TOKEN"/);
+  assert.match(line, /items=\{url="https:\/\/ac\.example\/mcp\/task\/items", bearer_token_env_var="AUTOCRAFT_RUNNER_LEASE_SECRET", default_tools_approval_mode="approve"/);
   const thread = "019a8c2e-5b7d-7e31-9a0c-3f4d2b1e6a90";
   const resumed = helper.codexArgs({ model: "m", effort: "low", system: "Answer as JSON.", server: "https://ac.example", servers: [], files: "http://127.0.0.1:1/mcp", keepSession: true, resumeId: thread, toolTimeoutSec: 60 });
   assert.deepEqual(resumed.slice(-3), ["resume", thread, "-"]);
   assert.ok(resumed.includes('developer_instructions="Answer as JSON."'));
   assert.throws(() => helper.codexArgs({ model: "m", effort: "low", system: null, server: "s", servers: [], files: "f", keepSession: true, resumeId: "last-review", toolTimeoutSec: 60 }), /thread id/);
-  const c = helper.codexSandbox({ codexBin: "/bin/codex", codexHome: "/cfg/codex-home", codexArgs: args, mounts: [{ host: "/cache/tree", path: "/repo" }, { host: "/cache/fw", path: "/repos/framework" }], env: { AUTOCRAFT_TASK_FILES_TOKEN: "files-secret", AUTOCRAFT_TASK_LEASE_SECRET: "aclease_secret" } });
+  const c = helper.codexSandbox({ codexBin: "/bin/codex", codexHome: "/cfg/codex-home", codexArgs: args, mounts: [{ host: "/cache/tree", path: "/repo" }, { host: "/cache/fw", path: "/repos/framework" }], env: { AUTOCRAFT_RUNNER_FILES_TOKEN: "files-secret", AUTOCRAFT_RUNNER_LEASE_SECRET: "aclease_secret" } });
   assert.ok(!c.args.join(" ").includes("secret"));
   assert.equal(c.env.CODEX_HOME, "/codex-home");
   assert.ok(c.args.join(" ").includes("--bind /cfg/codex-home /codex-home") && c.args.join(" ").includes("--dir /repos"));
@@ -192,7 +196,7 @@ test("only audited Codex versions run, and a tool outside the call's MCP servers
 
 test("the macOS profile denies by default, names the secrets before the narrow allows, and writes only the temp directory and the given stores", () => {
   const home = "/Users/ann";
-  const p = helper.macProfile({ deny: helper.macDenied(home), dirs: [`${home}/.claude/local/node_modules/@anthropic-ai/claude-code`, "/opt/homebrew/Cellar/node/24.1.0"], writes: [`${home}/.cache/autocraft-task/sessions/store-x`] });
+  const p = helper.macProfile({ deny: helper.macDenied(home), dirs: [`${home}/.claude/local/node_modules/@anthropic-ai/claude-code`, "/opt/homebrew/Cellar/node/24.1.0"], writes: [`${home}/.cache/autocraft-runner/sessions/store-x`] });
   const lines = p.split("\n");
   assert.deepEqual(lines.slice(0, 2), ["(version 1)", "(deny default)"]);
   const at = (s: string) => { const i = p.indexOf(s); assert.ok(i >= 0, s); return i; };
@@ -203,7 +207,7 @@ test("the macOS profile denies by default, names the secrets before the narrow a
   assert.match(p, /\(allow file-read\* file-test-existence \(subpath \(param "ROOT"\)\)\)/);
   const writable = lines.filter((l) => /\(allow [^)]*file-write\*/.test(l) || /^\(allow file-read\* file-write\* file-test-existence$/.test(l));
   assert.equal(writable.length, 2);
-  assert.ok(p.includes('(allow file-read* file-write* file-test-existence (subpath (param "TMP")))') && p.includes(`(subpath "${home}/.cache/autocraft-task/sessions/store-x")`));
+  assert.ok(p.includes('(allow file-read* file-write* file-test-existence (subpath (param "TMP")))') && p.includes(`(subpath "${home}/.cache/autocraft-runner/sessions/store-x")`));
   assert.ok(!p.includes(`(subpath "${home}")`) && !p.includes("(allow file-read*)") && !p.includes('(subpath "/System/Volumes/Data")'));
   assert.ok(p.includes('(allow network-outbound (remote ip "*:*"))') && !p.includes("network-inbound"));
   assert.match(helper.macProfile({ deny: [], files: ['/Applications/A "b"/claude'] }), /\(literal "\/Applications\/A \\"b\\"\/claude"\)/);
@@ -249,16 +253,16 @@ test("macOS runs: the canary verdict, the command line, Codex's paths in the slo
   assert.equal(leak.ok, false);
   assert.ok(leak.lines.some((l) => l.startsWith("FAIL readPlanted")));
   assert.equal(helper.canaryVerdict("").ok, false);
-  const root = "/private/var/folders/ab/cd/C/autocraft-task/slot-0";
+  const root = "/private/var/folders/ab/cd/C/autocraft-runner/slot-0";
   const c = helper.macCommand({ profile: "/tmp/p.sb", root, argv: ["/bin/claude", "-p"], env: { CLAUDE_CODE_OAUTH_TOKEN: "tok" } });
   assert.deepEqual(c.args, ["-f", "/tmp/p.sb", "-D", `ROOT=${root}`, "-D", `TMP=${root}/tmp`, "/bin/claude", "-p"]);
   assert.equal(c.cmd, "/usr/bin/sandbox-exec");
   assert.equal(c.cwd, `${root}/work`);
   assert.equal(c.env.HOME, `${root}/tmp/home`);
   assert.equal(c.env.CLAUDE_CODE_TMPDIR, `${root}/tmp/t`);
-  const args = helper.codexArgs({ model: "m", effort: "low", system: null, server: "s", servers: [], files: "f", keepSession: false, toolTimeoutSec: 60, paths: { work: `${root}/work`, home: `${root}/tmp/home`, codexHome: "/Users/ann/.config/autocraft-task/codex-home" } });
+  const args = helper.codexArgs({ model: "m", effort: "low", system: null, server: "s", servers: [], files: "f", keepSession: false, toolTimeoutSec: 60, paths: { work: `${root}/work`, home: `${root}/tmp/home`, codexHome: "/Users/ann/.config/autocraft-runner/codex-home" } });
   const line = args.join(" ");
-  assert.ok(line.includes(`-C ${root}/work`) && line.includes('filesystem={"/Users/ann/.config/autocraft-task/codex-home"="deny"}') && !line.includes('{"/codex-home"') && !line.includes("/home/sandbox"));
+  assert.ok(line.includes(`-C ${root}/work`) && line.includes('filesystem={"/Users/ann/.config/autocraft-runner/codex-home"="deny"}') && !line.includes('{"/codex-home"') && !line.includes("/home/sandbox"));
   assert.deepEqual(helper.claudeKeychainItem({ USER: "ann" }), { service: "Claude Code-credentials", account: "ann" });
   assert.match(helper.claudeKeychainItem({ USER: "a b", CLAUDE_CONFIG_DIR: "/Users/ann/.claude-work" }).service, /^Claude Code-credentials-[0-9a-f]{8}$/);
   assert.equal(helper.claudeKeychainItem({ USER: "a b" }).account, "claude-code-user");

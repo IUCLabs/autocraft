@@ -1,8 +1,8 @@
 // Builds the task bundle of one prompt for testing a helper. The prompt's example input is the item; the checkout at /repo
 // is the given directory (default: a two-file sample) as an inline files mount.
 //   node scripts/remote-bundle.ts <prompt id> [--root <slot root>] [--harness claude|codex] [--repo <dir>]
-//     prints the bundle as the server hands it to a helper, for `autocraft-task try` (no server); `--root` is the slot
-//     root `autocraft-task doctor` prints on macOS
+//     prints the bundle as the server hands it to a helper, for `autocraft try` (no server); `--root` is the slot
+//     root `autocraft doctor` prints on macOS
 //   AUTOCRAFT_DB=<scratch db> node scripts/remote-bundle.ts --setup <login> --item-repo <repo>
 //     makes <login> an operator, switches the inference mode to user-local and prints a token that may run tasks
 //   AUTOCRAFT_DB=<scratch db> node scripts/remote-bundle.ts <prompt id> --enqueue --item-repo <repo> [--repo <dir>]
@@ -28,7 +28,7 @@ const setup = opt("--setup");
 if (db && setup) {
   db.prepare("INSERT OR IGNORE INTO main.access (login, role, added_by, added_at) VALUES (?, 'operator', 'remote-bundle', ?)").run(setup, new Date().toISOString());
   (await import("../src/remote/mode.ts")).setInferenceMode(db, "user-local", "remote-bundle");
-  const { token } = (await import("../src/dash/mcp/tokens.ts")).createToken(db, setup, "remote-bundle", false, true);
+  const { token } = (await import("../src/dash/mcp/tokens.ts")).createToken(db, setup, "remote-bundle", { kind: "runner" });
   console.log(token);
   process.exit(0);
 }

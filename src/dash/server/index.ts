@@ -34,13 +34,16 @@ import { retryWaiting } from "../../github/user-lane.ts";
 import { appPermission } from "../../remote/permission.ts";
 import { cachedWrite, createSession, deleteSession, loadSession, makeUser, PERM_READ_TTL, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, mcpReply, writes as mcpWrites, type Msg as McpMsg, type Reply as McpReply } from "../mcp/index.ts";
-import { loadToken, pruneTokens } from "../mcp/tokens.ts";
+import { loadToken, pruneTokens, type McpCaller } from "../mcp/tokens.ts";
+import { sha256hex } from "./crypto.ts";
 import * as remote from "../../remote/calls.ts";
+import { ClaimWaits, heldMsOf } from "../../remote/claim-wait.ts";
 import { scaled, TIME_SCALE } from "../../remote/time-scale.ts";
 import { isBusy } from "../../db.ts";
 import { inferenceMode } from "../../remote/mode.ts";
-import { HELPERS_PATH, parseStatus, storeStatus } from "../../remote/helpers.ts";
-import { ROUTES, type ClaimReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
+import { hasFreshRunner, parseStatus, storeStatus } from "../../remote/helpers.ts";
+import { addressKey, parseLoginStart, pollLogin, startLogin } from "../../remote/device-login.ts";
+import { ROUTES, type ClaimReply, type LoginPollReply, type LoginStartReply, type StatusReply, type ToolReply } from "../../remote/protocol.ts";
 import { userReserve } from "../../remote/reserve.ts";
 import { startLiveness } from "../../remote/liveness.ts";
 import { archiveOf, callTaskTool, TASK_TOOLS, taskLease, type TaskLease, type ToolResult } from "../../remote/tools.ts";
@@ -56,7 +59,7 @@ const BODY_LIMIT = 64 * 1024;
 const SUBMIT_BODY_LIMIT = 8 * 1024 * 1024;
 /** A task tool call: a `check` call carries the whole patch, as the local bridge allows. */
 const TOOL_BODY_LIMIT = 2 * 1024 * 1024;
-const HELPER_FILE = new URL("../../../worker/autocraft-task.mjs", import.meta.url);
+const HELPER_FILE = new URL("../../../worker/autocraft.mjs", import.meta.url);
 const PUBLIC_FILES = new Set(["/artcraft-mark.svg", "/artcraft-mark.png"]);
 const FILE_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", svg: "image/svg+xml",
@@ -220,12 +223,16 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // Per helper token, sized for a helper with 16 slots and its fast-lane slot: each idle slot claims every CLAIM_RETRY_S
   // and again at once after a call ends, with retries on errors; status reports come on every change.
   const remoteClaimLimit = new RateLimiter(600, 60_000);
+  const claimWaits = new ClaimWaits(rdb);
   const remoteStatusLimit = new RateLimiter(120, 60_000);
   // Bundle, heartbeat, release and submit of one lease: a heartbeat every 30 seconds and retries.
   const remoteLeaseLimit = new RateLimiter(120, 60_000);
   // Tool calls of one remote call (item, reference and check tools together).
   const remoteToolLimit = new RateLimiter(300, 60_000);
   const remoteArchiveLimit = new RateLimiter(20, 60_000); // tarball fetches per lease
+  // Task Runner device logins: starts per client address, polls per credential (one every 5 seconds, with slack).
+  const loginStartLimit = new RateLimiter(10, 10 * 60_000);
+  const loginPollLimit = new RateLimiter(30, 60_000);
   const webhookLimitIp = new RateLimiter(5000, 60_000);  // flood guard only; the periodic sync still runs. Before the body is read or the signature checked
   // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
   const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
@@ -344,7 +351,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
       user: makeUser(db, box, provider, session, writes, githubIdentity(db) === "app"),
       scope: route.scoped && !writes ? scopeOf(req) : null,
-      csrf: session.csrf, nonce,
+      csrf: session.csrf, ip: clientIp(req), nonce,
     };
     const res2 = await route.handler(db, r);
     // The writer sees its own change at once; other processes' writes arrive on the watcher's next read.
@@ -562,11 +569,11 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return send(res, nonce, r, set);
       }
       if (url.pathname === "/mcp") return await handleMcpHttp(req, res);
-      // The helper routes; the Connect page's list of helpers is a session route like the rest of the API.
-      if (url.pathname.startsWith("/api/remote/") && url.pathname !== HELPERS_PATH) return await handleRemoteHttp(req, res, url);
+      // The Task Runner routes, never with the session cookie; the Connect page's runner routes are /api/runners.
+      if (url.pathname.startsWith("/api/remote/")) return await handleRemoteHttp(req, res, url);
       if (url.pathname.startsWith(`${ROUTES.mcp}/`)) return await handleTaskMcp(req, res, url);
       // Public: the helper script, which a maintainer downloads before having any credential.
-      if (url.pathname === ROUTES.helper) return await sendHelper(req, res);
+      if (url.pathname === ROUTES.helper || url.pathname === ROUTES.legacyHelper) return await sendHelper(req, res);
       if (url.pathname === WEBHOOK_PATH) return await handleWebhook(req, res);
       const method = req.method;
       // Public: the Discord bot's privacy notice must be readable by people who are not dashboard users.
@@ -649,6 +656,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     // The per-address limit counts failed authentications only: behind a proxy every client shares one address.
     if (!caller && !mcpLimitIp.allow(clientIp(req))) return reply(429, rpcError(-32000, "too many requests; wait a minute"), { "retry-after": "60" });
     if (!caller) return reply(401, rpcError(-32001, "a valid AutoCraft agent token is required (Authorization: Bearer <token>); make one on the dashboard's Connect page"), { "www-authenticate": 'Bearer realm="autocraft"' });
+    if (caller.kind !== "connector") return reply(403, rpcError(-32001, "this is a Task Runner credential; the MCP Connector needs a token from the dashboard's Connect page"));
     if (!mcpLimitToken.allow(caller.login.toLowerCase())) return reply(429, rpcError(-32000, "too many requests for this login; wait a minute"), { "retry-after": "60" });
     let msg: unknown;
     try {
@@ -662,7 +670,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const out = await handleMcp({
       db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && (caller.role === "operator" || (caller.role === "maintainer" && maintainerWritesOn(db))),
       user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
-      ...(caller.canRun && inferenceMode(db) === "user-local" && { run: { tokenId: caller.tokenId, canWrite: claimPermission(caller.login, caller.role).canWrite } }),
+      // The task tools are offered while one of the login's Task Runners reports in; they never lease.
+      ...(inferenceMode(db) === "user-local" && hasFreshRunner(db, caller.login) && { run: { canWrite: claimPermission(caller.login, caller.role).canWrite } }),
     }, m);
     if (mcpWrites(m)) live.poke();
     // A notification or a response from the client: accepted, nothing to say.
@@ -698,8 +707,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     };
   }
 
-  // The routes of the user-local helper (src/remote/protocol.ts ROUTES): claim with an agent token that may run tasks, the
-  // others with the lease secret of one call. Never the session cookie; a browser request from another site is refused.
+  // The routes of the Task Runner (src/remote/protocol.ts ROUTES): login start with no credential, login poll with the pending
+  // credential, claim and status with a runner credential, the others with the lease secret of one call. Never the session
+  // cookie; a browser request from another site is refused.
   async function handleRemoteHttp(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const reply = (status: number, body: unknown, headers: Record<string, string> = {}): void => {
       res.writeHead(status, secure({ "cache-control": "no-store", "content-type": "application/json; charset=utf-8", ...headers }, "default-src 'none'"));
@@ -712,27 +722,54 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (req.method !== method) return reply(405, { error: `use ${method}` }, { allow: method });
     const tooMany = (): void => reply(429, { error: "too many requests; wait a minute" }, { "retry-after": "60" });
     const db = rdb;
+    /** The runner credential's caller, or null once the refusal is sent. */
+    const runner = (): McpCaller | null => {
+      const caller = loadToken(db, bearer);
+      if (!caller) {
+        if (!mcpLimitIp.allow(clientIp(req))) tooMany();
+        else reply(401, { error: "a valid Task Runner credential is required (Authorization: Bearer <credential>); run autocraft login" }, { "www-authenticate": 'Bearer realm="autocraft"' });
+        return null;
+      }
+      if (caller.kind === "runner") return caller;
+      reply(403, { error: "MCP Connector tokens cannot run tasks; log the Task Runner in with autocraft login" });
+      return null;
+    };
     try {
+      if (path === ROUTES.loginStart) {
+        const ip = clientIp(req);
+        if (!loginStartLimit.allow(addressKey(ip))) return reply(429, { error: "too many logins from this address; wait a few minutes" }, { "retry-after": "600" });
+        const start = parseLoginStart(await readJson(req));
+        return reply(200, startLogin(db, start, ip, config.baseUrl ?? `http://${req.headers.host ?? "localhost"}`) satisfies LoginStartReply);
+      }
+      if (path === ROUTES.loginPoll) {
+        if (!bearer || bearer.length > 200) return reply(401, { error: "send the credential the login was started with (Authorization: Bearer <credential>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
+        if (!loginPollLimit.allow(sha256hex(bearer))) return reply(429, { error: "polled too often" }, { "retry-after": "5" });
+        const out = pollLogin(db, bearer);
+        if (!out && !mcpLimitIp.allow(clientIp(req))) return tooMany();
+        return out ? reply(200, out satisfies LoginPollReply) : reply(401, { error: "no login was started with this credential" }, { "www-authenticate": 'Bearer realm="autocraft"' });
+      }
       if (path === ROUTES.claim) {
-        const caller = loadToken(db, bearer);
-        if (!caller && !mcpLimitIp.allow(clientIp(req))) return tooMany();
-        if (!caller) return reply(401, { error: "a valid AutoCraft agent token is required (Authorization: Bearer <token>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
-        if (!caller.canRun) return reply(403, { error: "this token cannot run tasks; make one with Can run tasks on the Connect page" });
+        const caller = runner();
+        if (!caller) return;
         if (!remoteClaimLimit.allow(String(caller.tokenId))) return tooMany();
+        // A held claim whose client leaves stops waiting; a reply already written does not count as leaving. Listened for
+        // before the body is read, so a client that leaves while it is sent is never held.
+        const gone = new AbortController();
+        res.once("close", () => { if (!res.writableEnded) gone.abort(); });
+        if (req.socket.destroyed) gone.abort();
         const claim = remote.parseClaim(await readJson(req));
         // In the server mode no call is queued for helpers: nothing to take for a while.
         if (inferenceMode(db) !== "user-local") return reply(200, { lease: null, retryAfter: 300, reserve: userReserve(db, caller.login) } satisfies ClaimReply);
         const perm = claimPermission(caller.login, caller.role);
-        const out = await remote.claimCall(db, caller, claim, perm.canWrite);
+        const out = await remote.claimCall(db, caller, claim, perm.canWrite, Date.now(), { waits: claimWaits, signal: gone.signal, blocked: () => perm.errors.size > 0 });
         // Calls passed over because GitHub could not confirm the permission: the helper logs why it gets nothing.
         if (!out.lease && out.reason === undefined && perm.errors.size) out.reason = [...perm.errors.values()][0];
-        return reply(200, out);
+        // How long the claim waited for a call, so a latency measurement can leave it out.
+        return reply(200, out, { "x-held-ms": String(heldMsOf(out)) });
       }
       if (path === ROUTES.status) {
-        const caller = loadToken(db, bearer);
-        if (!caller && !mcpLimitIp.allow(clientIp(req))) return tooMany();
-        if (!caller) return reply(401, { error: "a valid AutoCraft agent token is required (Authorization: Bearer <token>)" }, { "www-authenticate": 'Bearer realm="autocraft"' });
-        if (!caller.canRun) return reply(403, { error: "this token cannot run tasks; make one with Can run tasks on the Connect page" });
+        const caller = runner();
+        if (!caller) return;
         if (!remoteStatusLimit.allow(String(caller.tokenId))) return tooMany();
         storeStatus(db, caller.tokenId, caller.login, parseStatus(await readJson(req)));
         return reply(200, { ok: true, reserve: userReserve(db, caller.login) } satisfies StatusReply);
@@ -937,7 +974,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return sendFile(res, "text/html; charset=utf-8", "no-store", APP_CSP, index);
   }
 
-  return { handle, routes: opts.routes, provider, live, close: () => { clearInterval(maintenance); live.close(); } };
+  // Shutting down answers the held claims at once, each with its own short retry, and holds no new ones.
+  return { handle, routes: opts.routes, provider, live, close: () => { clearInterval(maintenance); claimWaits.close(); live.close(); } };
 }
 
 export async function startServer(opts: AppOptions): Promise<{ server: Server; url: string; app: ReturnType<typeof createApp>; close(): Promise<void> }> {
@@ -957,11 +995,14 @@ export async function startServer(opts: AppOptions): Promise<{ server: Server; u
   return {
     server, app,
     url: `http://${host}:${addr.port}`,
+    // The held claims' replies are written first; connections still open after a short flush wait (SSE streams) are cut.
     close: () => new Promise<void>((resolve) => {
       stopLiveness();
       app.close();
-      server.closeAllConnections();
-      server.close(() => resolve());
+      // A keep-alive connection turns idle only once its reply is out, after close() looked at it.
+      const idle = setInterval(() => server.closeIdleConnections(), 25);
+      const cut = setTimeout(() => server.closeAllConnections(), 500);
+      server.close(() => { clearInterval(idle); clearTimeout(cut); resolve(); });
     }),
   };
 }

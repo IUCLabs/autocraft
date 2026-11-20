@@ -19,13 +19,16 @@ import { scrub } from "../runner/scrub.ts";
 import { cooloffOf, noteDrop, noteFailure, noteSuccess, pruneCooloffs } from "./cooloff.ts";
 import { dashboardAlive } from "./liveness.ts";
 import { acceptedModels, familyOf, isEffort, isTier, meetsEffort, minEfforts, TIERS } from "./mode.ts";
-import { CLAIM_ID_TTL_S, HEARTBEAT_S, PREPARE_MAX_S, PROTOCOL_VERSION, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
+import { ACCEPTED_PROTOCOLS, CLAIM_ID_TTL_S, HEARTBEAT_S, PREPARE_MAX_S, ROUTES, type Claim, type ClaimReply, type HarnessId, type Heartbeat, type Release, type Submit, type SubmitReply, type TaskBundle, type Tier } from "./protocol.ts";
 import { claimRepos } from "./my-repos.ts";
-import { userMaxCalls } from "./max-calls.ts";
+import { MAX_CALLS_KEY, MAX_CALLS_MAX, userMaxCalls } from "./max-calls.ts";
 import { claimClass, gating } from "./claim-class.ts";
+import { holdMs, Ticket, type ClaimTry, type ClaimWaits, type EmptyReply } from "./claim-wait.ts";
 import { userReserve } from "./reserve.ts";
 import { scaled, scaledS } from "./time-scale.ts";
 import { CALLER_STALE_MS, IDLE_FRESH_MS, SEEN_EVERY_MS } from "./room.ts";
+import { STATUS_FRESH_MS } from "./helpers.ts";
+import { manualOnly, manualSql } from "./manual-only.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
 import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 import { endChecks, serveChecks } from "./check-relay.ts";
@@ -136,7 +139,7 @@ function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "m
   const fail = r.attempt >= r.max_attempts;
   const skip = opts.skipLogin ?? null;
   // Compare and set: only the lease that was read ends, so two processes that saw it expire end it once.
-  const up = db.prepare(`UPDATE main.remote_calls SET state = ?, attempt = attempt + ?, lease_secret_hash = NULL, token_id = NULL, claim_id = NULL, started_at = NULL, queued_since = ?, ended_at = ?, error = ?, progress = NULL,
+  const up = db.prepare(`UPDATE main.remote_calls SET state = ?, attempt = attempt + ?, lease_secret_hash = NULL, token_id = NULL, claim_id = NULL, started_at = NULL, queued_since = ?, ended_at = ?, error = ?, progress = NULL, picked_by = NULL, picked_at = NULL, pick_until = NULL,
       released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
     WHERE id = ? AND state = 'leased' AND attempt = ? AND leased_at IS ?`).run(fail ? "failed" : "queued", fail ? 0 : 1, fail ? null : nowMs, fail ? nowMs : null, reason, skip, skip, nowMs, r.id, r.attempt, r.leased_at);
   if (Number(up.changes) !== 1) return false;
@@ -148,7 +151,7 @@ function requeue(db: DatabaseSync, r: Pick<Row, "id" | "run_id" | "attempt" | "m
 
 /** Puts a leased call back in the queue without using an attempt (released by its helper, or its token lost the right to run it). */
 function unlease(db: DatabaseSync, r: { id: number; runId: number | null; hash: string | null }, why: string, nowMs: number, releasedBy: string | null = null): void {
-  const up = db.prepare(`UPDATE main.remote_calls SET state = 'queued', lease_secret_hash = NULL, token_id = NULL, claim_id = NULL, started_at = NULL, queued_since = ?, error = ?, progress = NULL, released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
+  const up = db.prepare(`UPDATE main.remote_calls SET state = 'queued', lease_secret_hash = NULL, token_id = NULL, claim_id = NULL, started_at = NULL, queued_since = ?, error = ?, progress = NULL, picked_by = NULL, picked_at = NULL, pick_until = NULL, released_by = COALESCE(?, released_by), released_at = CASE WHEN ? IS NULL THEN released_at ELSE ? END
     WHERE id = ? AND state = 'leased' AND lease_secret_hash IS ?`).run(nowMs, why, releasedBy, releasedBy, nowMs, r.id, r.hash);
   if (Number(up.changes) !== 1) return;
   dropQueueCache(db);
@@ -208,14 +211,14 @@ export function liveLease(db: DatabaseSync, secret: string | undefined, nowMs: n
   const found = db.prepare("SELECT id FROM main.remote_calls WHERE lease_secret_hash = ? AND state = 'leased'").get(hash) as { id: number } | undefined;
   if (!found) return null;
   expireLeases(db, nowMs, Number(found.id));
-  // The lease lives only while the token that claimed it may still run tasks and its login is still a maintainer or operator.
+  // The lease lives only while the Task Runner credential that claimed it lives and its login is still a maintainer or operator.
   const r = db.prepare(`SELECT c.id, c.job_id, c.run_id, c.user_login, c.prompt_id, c.items, c.repo, c.root, a.login AS ok FROM main.remote_calls c
-      LEFT JOIN main.mcp_tokens t ON t.id = c.token_id AND t.can_run = 1 AND t.expires_at > ?
+      LEFT JOIN main.mcp_tokens t ON t.id = c.token_id AND t.kind = 'runner' AND t.expires_at > ?
       LEFT JOIN main.access a ON a.login = t.login AND a.role IN ('maintainer', 'operator')
     WHERE c.id = ? AND c.lease_secret_hash = ? AND c.state = 'leased'`).get(new Date(nowMs).toISOString(), found.id, hash) as
     { id: number; job_id: number | null; run_id: number | null; user_login: string; prompt_id: string; items: string; repo: string | null; root: string | null; ok: string | null } | undefined;
   if (r && r.ok === null) {
-    unlease(db, { id: Number(r.id), runId: r.run_id, hash }, "returned to the queue: the token that claimed it may no longer run tasks", nowMs);
+    unlease(db, { id: Number(r.id), runId: r.run_id, hash }, "returned to the queue: the Task Runner that claimed it was removed or may no longer run tasks", nowMs);
     return null;
   }
   return r ? { id: Number(r.id), jobId: r.job_id, runId: r.run_id, login: r.user_login, promptId: r.prompt_id, items: JSON.parse(r.items) as ItemRef[], repo: r.repo, root: r.root } : null;
@@ -262,16 +265,21 @@ export function authorsOf(db: DatabaseSync, refs: readonly ItemRef[]): string[] 
 /** A queued call as claims read it: the items parsed, the repos it names and its authors. */
 type Cand = Waiter & Pick<Row, "prompt_id" | "tier" | "parent_id" | "sticky_login" | "seen_at"> & {
   refs: ItemRef[]; repos: string[]; authors: ReadonlySet<string>; releasedBy: string | null; releasedAt: number | null;
+  /** The lowercase login of the call's pick ("Run on my Task Runner", picks.ts), when it has one, live or not (pickCounts). */
+  pickedBy: string | null; pickedAt: number | null; pickUntil: number | null;
+  /** Ends the call's pick; set while it has one. */
+  unpick?: () => void;
 };
 
 /** The role rules: maintainers and operators; discord.* calls and calls that name no repo go to operators only. */
-const roleFits = (role: string, c: Pick<Cand, "prompt_id" | "repos">): boolean =>
+export const roleFits = (role: string, c: Pick<Cand, "prompt_id" | "repos">): boolean =>
   (role === "operator" || role === "maintainer") && !((c.prompt_id.startsWith("discord.") || !c.repos.length) && role !== "operator");
 
 type IdleHelper = { login: string; role: string; tiers: ReadonlySet<string>; only: ReadonlySet<string> | null };
 
 /**
- * Whether a login other than the caller could take a call now: its helper's last claim found nothing within IDLE_FRESH_MS,
+ * Whether a login other than the caller could take a call now: its helper's last claim found nothing within IDLE_FRESH_MS
+ * and the login is not Manual only (manual-only.ts),
  * that claim covered the call's tier and repos, the login fits the role rules, its cached write permission covers every repo
  * and it authored no item of the call. A state check made at each claim; nothing waits on it. The idle helpers and their
  * permissions are read once per claim, on the first call that needs them.
@@ -286,7 +294,7 @@ function idleOthers(db: DatabaseSync, login: string, nowMs: number): (c: Cand) =
   return (c) => {
     if (!idle) {
       idle = (db.prepare(`SELECT t.login, a.role, t.idle_tiers, t.idle_repos FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login
-          WHERE t.can_run = 1 AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
+          WHERE t.kind = 'runner' AND t.expires_at > ? AND t.idle_claim_at >= ? AND t.login <> ? COLLATE NOCASE AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - IDLE_FRESH_MS, login) as
         { login: string; role: string; idle_tiers: string | null; idle_repos: string | null }[])
         .map((o) => ({ login: o.login, role: o.role, tiers: new Set(o.idle_tiers ? JSON.parse(o.idle_tiers) as string[] : []), only: o.idle_repos ? new Set(JSON.parse(o.idle_repos) as string[]) : null }));
       for (const p of db.prepare("SELECT login, repo, permission, checked_at FROM main.repo_permissions WHERE login IN (SELECT value FROM json_each(?))").all(JSON.stringify(idle.map((o) => o.login))) as { login: string; repo: string; permission: string; checked_at: string }[])
@@ -308,6 +316,13 @@ function idleOthers(db: DatabaseSync, login: string, nowMs: number): (c: Cand) =
  * prompt judges is passed over only while another helper that could take the call is asking for work (idleOthers).
  */
 async function eligible(caller: Caller, c: Cand, canWrite: (repo: string) => Promise<boolean>, othersIdle: (c: Cand) => boolean): Promise<boolean> {
+  const ok = await mayTake(caller, c, canWrite, othersIdle);
+  // The caller's own pick of a call it may no longer take ends: it would hold the call from every other user.
+  if (!ok && c.pickedBy === caller.login.toLowerCase()) c.unpick?.();
+  return ok;
+}
+
+async function mayTake(caller: Caller, c: Cand, canWrite: (repo: string) => Promise<boolean>, othersIdle: (c: Cand) => boolean): Promise<boolean> {
   if (!roleFits(caller.role, c)) return false;
   for (const repo of c.repos) if (!(await canWrite(repo))) return false;
   return !(judges(c.prompt_id) && c.authors.has(caller.login.toLowerCase()) && othersIdle(c));
@@ -316,11 +331,12 @@ async function eligible(caller: Caller, c: Cand, canWrite: (repo: string) => Pro
 const HARNESSES: HarnessId[] = ["claude", "codex"];
 const short = (v: unknown, max: number): v is string => typeof v === "string" && v.length > 0 && v.length <= max;
 
-/** The claim body, checked; throws HttpError 400 for a malformed one and 409 for another protocol version. */
+/** The claim body, checked; throws HttpError 400 for a malformed one and 409 for a protocol version outside ACCEPTED_PROTOCOLS. */
 export function parseClaim(raw: unknown): Claim {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HttpError(400, "the body must be a Claim object");
   const c = raw as Record<string, unknown>;
-  if (c.protocol !== PROTOCOL_VERSION) throw new HttpError(409, `this server speaks protocol ${PROTOCOL_VERSION}; update the helper`);
+  if (typeof c.protocol !== "number" || !ACCEPTED_PROTOCOLS.includes(c.protocol)) throw new HttpError(409, `this server speaks protocol ${ACCEPTED_PROTOCOLS.join(" or ")}; update the helper`);
+  const protocol = c.protocol;
   if (!HARNESSES.includes(c.harness as HarnessId)) throw new HttpError(400, `harness must be one of ${HARNESSES.join(", ")}`);
   if (!short(c.helperVersion, 40) || !short(c.harnessVersion, 80)) throw new HttpError(400, "helperVersion and harnessVersion must be short strings");
   if (!c.tiers || typeof c.tiers !== "object" || Array.isArray(c.tiers)) throw new HttpError(400, "tiers must map a tier to a model");
@@ -339,7 +355,10 @@ export function parseClaim(raw: unknown): Claim {
   if (c.root !== undefined && (typeof c.root !== "string" || !validRoot(c.root))) throw new HttpError(400, "root must be an absolute path of plain characters (letters, digits, . _ + @ -) without . or .. components");
   if (typeof c.requestId !== "string" || !/^[A-Za-z0-9_-]{8,64}$/.test(c.requestId)) throw new HttpError(400, "requestId must be 8 to 64 letters, digits, - or _");
   if (c.fastLane !== undefined && typeof c.fastLane !== "boolean") throw new HttpError(400, "fastLane must be a boolean");
-  return { requestId: c.requestId, ...(c.fastLane === true && { fastLane: true }), protocol: PROTOCOL_VERSION, helperVersion: c.helperVersion, harness: c.harness as HarnessId, harnessVersion: c.harnessVersion, tiers, ...(efforts && { efforts }), ...(c.repos !== undefined && { repos: c.repos as string[] }), ...(c.sessions !== undefined && { sessions: c.sessions as number[] }), ...(c.root !== undefined && { root: c.root as string }) };
+  // Protocol 3 helpers know no wait; a field they might send is not read.
+  const wait = protocol >= 4 ? c.wait : undefined;
+  if (wait !== undefined && (!Number.isInteger(wait) || (wait as number) < 0 || (wait as number) > 30)) throw new HttpError(400, "wait must be whole seconds from 0 to 30");
+  return { requestId: c.requestId, ...(c.fastLane === true && { fastLane: true }), ...(wait !== undefined && { wait: wait as number }), protocol, helperVersion: c.helperVersion, harness: c.harness as HarnessId, harnessVersion: c.harnessVersion, tiers, ...(efforts && { efforts }), ...(c.repos !== undefined && { repos: c.repos as string[] }), ...(c.sessions !== undefined && { sessions: c.sessions as number[] }), ...(c.root !== undefined && { root: c.root as string }) };
 }
 
 /** Whether dotted version `v` is older than `min` (numeric parts compared in order; a part that is not a number counts as 0). */
@@ -359,10 +378,17 @@ function titleOf(promptId: string, refs: ItemRef[]): string {
 const leasedBy = (db: DatabaseSync, login: string): number =>
   Number((db.prepare("SELECT COUNT(*) AS n FROM main.remote_calls WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n);
 
+/** The role of a live Task Runner credential's user, or null when the credential is gone or expired. */
+function runnerRole(db: DatabaseSync, tokenId: number, nowMs: number): Role | null {
+  const r = db.prepare("SELECT a.role FROM main.mcp_tokens t JOIN main.access a ON a.login = t.login WHERE t.id = ? AND t.kind = 'runner' AND t.expires_at > ?").get(tokenId, new Date(nowMs).toISOString()) as { role: Role } | undefined;
+  return r?.role ?? null;
+}
+
 /**
- * Leases the call to the caller if it is still queued: the agent run starts now, on no account, with the user and harness.
- * With `cap`, only while the login holds fewer leases than that (checked in the same transaction, so parallel claims of one
- * user cannot pass it together); "limit" when it holds that many.
+ * Leases the call to the caller if it is still queued and no other user's pick counts for it (a Manual only caller: only
+ * its own pick or a follow-up); the pick ends with the lease. The agent run starts now, on no account, with the user and
+ * harness. With `cap`, only while the login holds fewer leases than that (checked in the same transaction, so parallel claims
+ * of one user cannot pass it together); "limit" when it holds that many.
  */
 function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, model: string, nowMs: number, cap: number | null = null): Extract<ClaimReply, { lease: object }>["lease"] | "limit" | null {
   const secret = `${LEASE_PREFIX}${randomToken(32)}`;
@@ -373,8 +399,12 @@ function leaseCall(db: DatabaseSync, id: number, caller: Caller, claim: Claim, m
       return "limit";
     }
     const r = db.prepare(`UPDATE main.remote_calls SET state = 'leased', token_id = ?, user_login = ?, harness = ?, harness_version = ?, model = ?, root = ?, lease_secret_hash = ?, leased_at = ?, heartbeat_at = ?, started_at = NULL, claim_id = ?,
-        queued_ms = queued_ms + CASE WHEN queued_since IS NULL THEN 0 ELSE MAX(0, ? - queued_since) END, queued_since = NULL, progress = NULL, error = NULL
-      WHERE id = ? AND state = 'queued' RETURNING ${COLS}`).get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, claim.root ?? null, sha256hex(secret), nowMs, nowMs, claim.requestId, nowMs, id) as Row | undefined;
+        queued_ms = queued_ms + CASE WHEN queued_since IS NULL THEN 0 ELSE MAX(0, ? - queued_since) END, queued_since = NULL, progress = NULL, error = NULL,
+        picked_by = NULL, picked_at = NULL, pick_until = NULL
+      WHERE id = ? AND state = 'queued' AND (picked_by IS NULL OR picked_by = ? OR ${pickLapsedSql}) AND (? = 0 OR parent_id IS NOT NULL OR picked_by = ?)
+        AND EXISTS (SELECT 1 FROM main.mcp_tokens lt WHERE lt.id = ? AND lt.kind = 'runner' AND lt.expires_at > ?) RETURNING ${COLS}`)
+      .get(caller.tokenId, caller.login, claim.harness, claim.harnessVersion, model, claim.root ?? null, sha256hex(secret), nowMs, nowMs, claim.requestId, nowMs, id,
+        caller.login, ...pickLapsedArgs(nowMs), manualOnly(db, caller.login) ? 1 : 0, caller.login, caller.tokenId, new Date(nowMs).toISOString()) as Row | undefined;
     if (!r) {
       db.exec("COMMIT");
       return null;
@@ -403,7 +433,7 @@ const queueCaches = new WeakMap<DatabaseSync, QueueCache>();
 type Parsed = Pick<Cand, "refs" | "repos" | "authors">;
 const parsedCalls = new WeakMap<DatabaseSync, Map<number, Parsed>>();
 /** Drops the cached queue order: a call was queued or leased by this process. Other processes' changes show in the signature (count and newest id of the queued calls) or within QUEUE_CACHE_MS. */
-const dropQueueCache = (db: DatabaseSync): void => void queueCaches.delete(db);
+export const dropQueueCache = (db: DatabaseSync): void => void queueCaches.delete(db);
 /** The signature of the queued calls as queuedCalls reads it from the table: their count and newest id. */
 const queueSig = (n: number, m: number | null): string => `${n}:${m}`;
 /**
@@ -429,8 +459,9 @@ function queuedCalls(db: DatabaseSync, nowMs: number): QueueCache {
   if (hit && hit.sig === sig && nowMs >= hit.at && nowMs - hit.at < QUEUE_CACHE_MS) return hit;
   const known = parsedCalls.get(db) ?? new Map<number, Parsed>(), seen = new Map<number, Parsed>();
   const extra = db.prepare("SELECT items, authors FROM main.remote_calls WHERE id = ?");
-  const rows = (db.prepare(`SELECT id, class AS cls, level, step, repo, since, seen_at, prompt_id, tier, parent_id, sticky_login, released_by, released_at FROM main.remote_calls INDEXED BY remote_calls_queued WHERE state = 'queued'`).all() as
-    (Waiter & Pick<Row, "prompt_id" | "tier" | "parent_id" | "sticky_login" | "seen_at"> & { released_by: string | null; released_at: number | null })[])
+  const rows = (db.prepare(`SELECT id, class AS cls, level, step, repo, since, seen_at, prompt_id, tier, parent_id, sticky_login, released_by, released_at, picked_by, picked_at, pick_until
+      FROM main.remote_calls INDEXED BY remote_calls_waiting WHERE state = 'queued'`).all() as
+    (Waiter & Pick<Row, "prompt_id" | "tier" | "parent_id" | "sticky_login" | "seen_at"> & { released_by: string | null; released_at: number | null; picked_by: string | null; picked_at: number | null; pick_until: number | null })[])
     .map((r): Cand => {
       const id = Number(r.id);
       let p = known.get(id);
@@ -445,6 +476,8 @@ function queuedCalls(db: DatabaseSync, nowMs: number): QueueCache {
       return {
         id, cls: r.cls, level: r.level, step: r.step, repo: r.repo, since: r.since, seen_at: r.seen_at, prompt_id: r.prompt_id, tier: r.tier, parent_id: r.parent_id, sticky_login: r.sticky_login,
         ...p, releasedBy: r.released_by?.toLowerCase() ?? null, releasedAt: r.released_at,
+        pickedBy: r.picked_by?.toLowerCase() ?? null, pickedAt: r.picked_at, pickUntil: r.pick_until,
+        ...(r.picked_by !== null && { unpick: () => void clearPick(db, id) }),
       };
     });
   parsedCalls.set(db, seen);
@@ -457,18 +490,79 @@ function queuedCalls(db: DatabaseSync, nowMs: number): QueueCache {
   return c;
 }
 
+/** Every queued call in queue order (follow-ups first), as claims read it: for the queue view (queue-view.ts). Read only. */
+export function queueSnapshot(db: DatabaseSync, nowMs: number): readonly Readonly<Cand>[] {
+  const q = queuedCalls(db, nowMs);
+  return [...q.followUps, ...q.ordered];
+}
+
 /**
  * The queued calls a claim could take in the order it takes them, before eligibility: follow-up turns of the sessions its
- * helper holds first, then the model queue's order with gating and long-waiting small calls raised (claimClass), filtered by
- * tiers and repos (claimRepos: every repo a call names must be in the set). A fast-lane claim gets only what fastLaneFits.
+ * helper holds first, then the user's own live picks (picks.ts) oldest first, then the model queue's order with gating and
+ * long-waiting small calls raised (claimClass) and without other users' live picks, filtered by tiers and repos (claimRepos:
+ * every repo a call names must be in the set; picks do not go by it). A fast-lane claim gets only what fastLaneFits. A Manual
+ * only user (manual-only.ts) gets no calls from the queue's order. The caller's pick of a call it released or whose role
+ * rules it no longer fits ends here; one it may not take for another reason ends in eligible.
  */
 function claimOrder(db: DatabaseSync, caller: Caller, tiers: ReadonlySet<Tier>, repos: ReadonlySet<string> | null, sessionIds: readonly number[], nowMs: number, fastLane = false): Cand[] {
   const q = queuedCalls(db, nowMs);
   const login = caller.login.toLowerCase();
-  const fits = (r: Cand): boolean => r.seen_at >= nowMs - CALLER_STALE_MS && !(r.releasedBy === login && r.releasedAt !== null && r.releasedAt >= nowMs - RELEASE_SKIP_MS)
-    && tiers.has(r.tier) && (!repos || r.repos.every((x) => repos.has(x)));
+  const live = (r: Cand): boolean => r.seen_at >= nowMs - CALLER_STALE_MS;
+  const released = (r: Cand): boolean => r.releasedBy === login && r.releasedAt !== null && r.releasedAt >= nowMs - RELEASE_SKIP_MS;
+  const fits = (r: Cand): boolean => live(r) && !released(r) && tiers.has(r.tier) && (!repos || r.repos.every((x) => repos.has(x)));
   const sessions = new Set(sessionIds);
-  return [...q.followUps.filter((r) => sessions.has(r.parent_id!) && sameLogin(r.sticky_login, caller.login) && fits(r)), ...q.ordered.filter((r) => fits(r) && (!fastLane || fastLaneFits(r)))];
+  const followUps = q.followUps.filter((r) => sessions.has(r.parent_id!) && sameLogin(r.sticky_login, caller.login) && fits(r));
+  let fresh: Set<string> | null = null;
+  // The caller's own picks count for it; whether other pickers can take theirs is read once, when a pick needs it.
+  const counts = (r: Cand): boolean => pickCounts(r, nowMs, (who) => who === login || (fresh ??= pickerLogins(db, nowMs)).has(who));
+  const mine: Cand[] = [];
+  for (const r of q.ordered) {
+    if (r.pickedBy !== login || !counts(r)) continue;
+    if (released(r) || !roleFits(caller.role, r)) clearPick(db, r.id);
+    else if (live(r) && tiers.has(r.tier) && (!fastLane || fastLaneFits(r))) mine.push(r);
+  }
+  mine.sort((a, b) => a.pickedAt! - b.pickedAt! || a.id - b.id);
+  if (manualOnly(db, caller.login)) return [...followUps, ...mine];
+  return [...followUps, ...mine, ...q.ordered.filter((r) => fits(r) && !(r.pickedBy !== null && counts(r)) && (!fastLane || fastLaneFits(r)))];
+}
+
+// ---- picks ("Run on my Task Runner", picks.ts) ----------------------------------------
+
+/**
+ * SQL on a login expression: the login can take its picks now, so they count. It has a fresh Task Runner (last status within
+ * STATUS_FRESH_MS), is not cooling off (cooloff.ts) and holds fewer leases than its "Max calls at once" (max-calls.ts); a
+ * picker who cannot take a call does not hold it away from other runners. Bind pickerArgs.
+ */
+const pickerSql = (login: string): string => `(EXISTS (SELECT 1 FROM main.remote_helpers ph JOIN main.mcp_tokens pt ON pt.id = ph.token_id
+    WHERE ph.login = ${login} AND pt.kind = 'runner' AND pt.expires_at > ? AND ph.reported_at >= ?)
+  AND NOT EXISTS (SELECT 1 FROM main.remote_cooloffs pc WHERE pc.login = ${login} AND pc.until > ?)
+  AND NOT EXISTS (SELECT 1 FROM main.user_settings ps WHERE ps.login = ${login} AND ps.key = '${MAX_CALLS_KEY}'
+    AND CAST(ps.value AS INTEGER) BETWEEN 1 AND ${MAX_CALLS_MAX}
+    AND (SELECT COUNT(*) FROM main.remote_calls pl WHERE pl.state = 'leased' AND pl.user_login = ${login} COLLATE NOCASE) >= CAST(ps.value AS INTEGER)))`;
+const pickerArgs = (nowMs: number): [string, number, number] => [new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS, nowMs];
+
+/** SQL on a remote_calls row that has a pick: the pick no longer counts, as its time is up or its picker cannot take it now (pickerSql). Bind pickLapsedArgs. */
+export const pickLapsedSql = `(pick_until < ? OR NOT ${pickerSql("remote_calls.picked_by")})`;
+export const pickLapsedArgs = (nowMs: number): [number, string, number, number] => [nowMs, ...pickerArgs(nowMs)];
+
+/** The logins (lowercase) whose picks count now (pickerSql). */
+export function pickerLogins(db: DatabaseSync, nowMs: number): Set<string> {
+  const rows = db.prepare(`SELECT DISTINCT lower(h.login) AS login FROM main.remote_helpers h WHERE ${pickerSql("h.login")}`).all(...pickerArgs(nowMs)) as { login: string }[];
+  return new Set(rows.map((r) => r.login));
+}
+
+/** Whether a queued call's pick counts now: it has one, its time is not up (no time: until it ends) and its picker can take it (`fresh`: pickerLogins). */
+export const pickCounts = (r: { pickedBy: string | null; pickUntil: number | null }, nowMs: number, fresh: (login: string) => boolean): boolean =>
+  r.pickedBy !== null && (r.pickUntil === null || r.pickUntil >= nowMs) && fresh(r.pickedBy.toLowerCase());
+
+/** Ends a queued call's pick (only `login`'s, when given); true when one ended. */
+export function clearPick(db: DatabaseSync, id: number, login?: string): boolean {
+  const r = login === undefined
+    ? db.prepare("UPDATE main.remote_calls SET picked_by = NULL, picked_at = NULL, pick_until = NULL WHERE id = ? AND picked_by IS NOT NULL").run(id)
+    : db.prepare("UPDATE main.remote_calls SET picked_by = NULL, picked_at = NULL, pick_until = NULL WHERE id = ? AND picked_by = ?").run(id, login);
+  if (Number(r.changes) !== 1) return false;
+  dropQueueCache(db);
+  return true;
 }
 
 /** Memoises the caller's write permission per repo; a failed lookup counts as no permission. */
@@ -509,65 +603,111 @@ export function callStatus(db: DatabaseSync, id: number, login: string): { id: n
  * claims, so the secret is never stored; the promise is kept from the start, so a repeat that arrives while the first is
  * still being answered waits for it.
  */
-const claimReplies = new Map<string, { at: number; reply: Promise<ClaimReply> }>();
+const claimReplies = new Map<string, { at: number; reply: Promise<ClaimReply>; ticket?: Ticket }>();
 
 /**
  * Gives the caller the first queued call it may take (claimOrder), filtered by eligibility. `canWrite` reads the caller's live
  * write permission on a repo. The reply carries the user's reserve either way. A claim repeated with the same request id
  * gets the first one's reply. While the login's leases are at the user's "Max calls at once" (max-calls.ts), only a follow-up
  * of its own sessions is leased, one past the limit at most, so a session can finish; otherwise the reply says why.
+ * With `hold`, a protocol 4 claim that finds nothing and has no reason to give waits for a call up to its `wait` (claim-wait.ts).
  */
-export function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now()): Promise<ClaimReply> {
+export function claimCall(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number = Date.now(), hold?: Hold): Promise<ClaimReply> {
   // Entries are in claim order, so the expired ones come first.
   for (const [k, v] of claimReplies) { if (v.at >= nowMs - scaled(CLAIM_ID_TTL_S * 1000)) break; claimReplies.delete(k); }
   const key = `${caller.tokenId}:${claim.requestId}`;
   const seen = claimReplies.get(key);
-  if (seen) return seen.reply;
-  const reply = claimNew(db, caller, claim, canWrite, nowMs);
-  claimReplies.set(key, { at: nowMs, reply });
+  if (seen) {
+    if (hold) seen.ticket?.attach(hold.signal);
+    return seen.reply;
+  }
+  // Protocol 3 helpers send no wait (parseClaim); their claims are answered at once.
+  const ms = hold && claim.protocol >= 4 ? holdMs(claim.wait) : 0;
+  const ticket = hold && ms > 0 ? new Ticket(hold.signal) : undefined;
+  const reply = claimNew(db, caller, claim, canWrite, nowMs, hold && ticket ? { ...hold, ms, ticket } : undefined);
+  claimReplies.set(key, { at: nowMs, reply, ticket });
   reply.catch(() => { if (claimReplies.get(key)?.reply === reply) claimReplies.delete(key); });
+  // Every request for a held claim left before its reply: a retry with the same id claims afresh. A lease already given stays
+  // remembered, so the retry gets it.
+  if (ticket) ticket.onGone = () => void reply.then((r) => { if (!r.lease && claimReplies.get(key)?.reply === reply) claimReplies.delete(key); }, () => {});
   return reply;
 }
 
-async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number): Promise<ClaimReply> {
+/**
+ * How a claim may wait (claim-wait.ts): `signal` aborts when the request's connection closes before its reply; `blocked` says
+ * the claim has a reason to give outside its tries (a write permission GitHub could not confirm), so it is answered at once.
+ * `waits.closed` (shutting down) answers at once too.
+ */
+export type Hold = { waits: ClaimWaits; signal: AbortSignal; blocked: () => boolean };
+
+async function claimNew(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number, hold?: Hold & { ms: number; ticket: Ticket }): Promise<ClaimReply> {
+  const c = prepareClaim(db, caller, claim, canWrite, nowMs);
+  if ("reply" in c) return c.reply;
+  const live = hold ? () => !hold.ticket.gone && !hold.waits.closed : () => true;
+  const first = await c.attempt(nowMs, { quick: false, live });
+  if (first) return first;
+  c.idle(nowMs);
+  if (!hold || hold.waits.closed || hold.ticket.gone || hold.blocked()) return c.empty(nowMs, false);
+  return hold.waits.hold(hold.ticket, nowMs + hold.ms, { ...c, blocked: hold.blocked });
+}
+
+/**
+ * The once-per-claim part of a claim: the helper's version, and a lease of a repeated claim the dashboard no longer remembers.
+ * Returns a reply when the claim is answered here, else its tries: `attempt` re-reads the cool-off, the accepted models, the
+ * repos and the user's max calls at once each time, and gives null when there is nothing to take and no reason to give.
+ */
+function prepareClaim(db: DatabaseSync, caller: Caller, claim: Claim, canWrite: (repo: string) => Promise<boolean>, nowMs: number):
+  { reply: ClaimReply } | { attempt: ClaimTry; idle: (nowMs: number) => void; empty: (nowMs: number, held: boolean) => EmptyReply } {
   if (olderVersion(claim.helperVersion, REQUIRED_HELPER)) throw new HttpError(409, `helper ${claim.helperVersion} is older than ${REQUIRED_HELPER}, the oldest this server accepts; download the current helper from ${ROUTES.helper}`);
   // A repeat the dashboard no longer remembers (it restarted in between): the lease the first claim took cannot be given
   // out again, as only its secret's hash is stored, so it goes back to the queue unused and this claim is answered afresh.
   const orphan = db.prepare("SELECT id, run_id, lease_secret_hash FROM main.remote_calls WHERE token_id = ? AND claim_id = ? AND state = 'leased'").get(caller.tokenId, claim.requestId) as { id: number; run_id: number | null; lease_secret_hash: string | null } | undefined;
   if (orphan) unlease(db, { id: Number(orphan.id), runId: orphan.run_id, hash: orphan.lease_secret_hash }, "returned to the queue: the claim that leased it was repeated after a server restart", nowMs);
   expireLeases(db, nowMs);
-  const cooled = cooloffOf(db, caller.login, nowMs);
-  if (cooled) return { lease: null, retryAfter: Math.ceil((cooled.until - nowMs) / 1000), reason: cooled.reason, until: cooled.until, reserve: userReserve(db, caller.login) };
-  const accepted = acceptedModels(db), floors = minEfforts(db);
-  const tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
-  if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
-  const can = memoWrite(canWrite), others = idleOthers(db, caller.login, nowMs);
-  const repos = claimRepos(db, caller.login, claim.repos);
   const fast = claim.fastLane === true;
-  const max = userMaxCalls(db, caller.login);
-  const atLimit = (): ClaimReply => ({ lease: null, retryAfter: CLAIM_RETRY_S, reason: `your helpers run ${max} calls, your limit of calls at once (Connect page, My settings)`, reserve: userReserve(db, caller.login) });
-  const full = max !== null && leasedBy(db, caller.login) >= max;
-  let limited = full;
-  for (const r of claimOrder(db, caller, tiers, repos, claim.sessions ?? [], nowMs, fast)) {
-    // Only follow-ups of the helper's own sessions carry a parent here (claimOrder).
-    if (full && r.parent_id === null) continue;
-    if (!(await eligible(caller, r, can, others))) continue;
-    const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now(), max === null ? null : r.parent_id !== null ? max + 1 : max);
-    if (lease === "limit") {
-      limited = true;
-      continue;
+  // What the latest full try took, for a quick try's look at the queue.
+  let tiers = new Set<Tier>(), repos: ReadonlySet<string> | null = null;
+  const attempt: ClaimTry = async (now, { quick, live }) => {
+    // A held claim outlives the route's credential check: a credential removed, expired or demoted meanwhile ends the hold untaken.
+    if (runnerRole(db, caller.tokenId, now) !== caller.role) return { lease: null, retryAfter: CLAIM_RETRY_S, reason: "this Task Runner credential was removed or its user's role changed", reserve: userReserve(db, caller.login) };
+    if (quick && !claimOrder(db, caller, tiers, repos, claim.sessions ?? [], now, fast).length) return null;
+    const cooled = cooloffOf(db, caller.login, now);
+    if (cooled) return { lease: null, retryAfter: Math.ceil((cooled.until - now) / 1000), reason: cooled.reason, until: cooled.until, reserve: userReserve(db, caller.login) };
+    const accepted = acceptedModels(db), floors = minEfforts(db);
+    tiers = new Set((Object.keys(claim.tiers) as Tier[]).filter((t) => familyOf(claim.tiers[t]!, accepted[t]) !== null && meetsEffort(claim.efforts?.[t], floors[t], claim.harness)));
+    if (!tiers.size) throw new HttpError(400, `no tier of the claim has an accepted model at the minimum effort; accepted: ${(Object.keys(accepted) as Tier[]).map((t) => `${t} ${accepted[t].join("/")}${floors[t] ? ` at effort ${floors[t]} or higher` : ""}`).join(", ")}`);
+    const can = memoWrite(canWrite), others = idleOthers(db, caller.login, now);
+    repos = claimRepos(db, caller.login, claim.repos);
+    const max = userMaxCalls(db, caller.login);
+    const full = max !== null && leasedBy(db, caller.login) >= max;
+    let limited = full;
+    for (const r of claimOrder(db, caller, tiers, repos, claim.sessions ?? [], now, fast)) {
+      // Only follow-ups of the helper's own sessions carry a parent here (claimOrder).
+      if (full && r.parent_id === null) continue;
+      if (!(await eligible(caller, r, can, others))) continue;
+      // The client left while eligibility was read: nothing is leased to nobody.
+      if (!live()) return null;
+      const lease = leaseCall(db, Number(r.id), caller, claim, claim.tiers[r.tier]!, Date.now(), max === null ? null : r.parent_id !== null ? max + 1 : max);
+      if (lease === "limit") {
+        limited = true;
+        continue;
+      }
+      if (!lease) continue;
+      takeFromQueueCache(db, Number(r.id));
+      // The fast lane says nothing about the helper's other slots: only their claims mark it idle or busy.
+      if (!fast) db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
+      return { lease, reserve: userReserve(db, caller.login) };
     }
-    if (!lease) continue;
-    takeFromQueueCache(db, Number(r.id));
-    // The fast lane says nothing about the helper's other slots: only their claims mark it idle or busy.
-    if (!fast) db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = NULL WHERE id = ?").run(caller.tokenId);
-    return { lease, reserve: userReserve(db, caller.login) };
-  }
-  if (limited) return atLimit();
-  if (fast) return { lease: null, retryAfter: CLAIM_RETRY_S, reserve: userReserve(db, caller.login) };
-  // An idle helper, with what it takes (the user's picks narrowed by the helper's list): an author's claim gives way to it (idleOthers).
-  db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(nowMs, JSON.stringify([...tiers]), repos ? JSON.stringify([...repos]) : null, caller.tokenId);
-  return { lease: null, retryAfter: CLAIM_RETRY_S, reserve: userReserve(db, caller.login) };
+    if (limited) return { lease: null, retryAfter: CLAIM_RETRY_S, reason: `your helpers run ${max} calls, your limit of calls at once (Connect page, My settings)`, reserve: userReserve(db, caller.login) };
+    return null;
+  };
+  return {
+    attempt,
+    // An idle helper, with what it takes (the user's picks narrowed by the helper's list): an author's claim gives way to it
+    // (idleOthers). The fast lane says nothing about the helper's other slots.
+    idle: (now) => { if (!fast) db.prepare("UPDATE main.mcp_tokens SET idle_claim_at = ?, idle_tiers = ?, idle_repos = ? WHERE id = ?").run(now, JSON.stringify([...tiers]), repos ? JSON.stringify([...repos]) : null, caller.tokenId); },
+    empty: (_now, held) => ({ lease: null, retryAfter: held ? scaledS(1) : CLAIM_RETRY_S, reserve: userReserve(db, caller.login) }),
+  };
 }
 
 // ---- lease routes ------------------------------------------------------------------

@@ -235,7 +235,7 @@ export const commands = {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log(`usage: autocraft whitelist ${Object.keys(SUB).join("|")} ...`);
+        console.log(`usage: autocraft-server whitelist ${Object.keys(SUB).join("|")} ...`);
         process.exit(sub ? 1 : 0);
       }
       await fn(rest);
