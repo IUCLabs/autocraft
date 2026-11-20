@@ -6,7 +6,7 @@ import { answering, handleMcp, type McpEnv } from "../src/dash/mcp/index.ts";
 import { RateLimiter } from "../src/dash/server/util.ts";
 import type { Role } from "../src/dash/types.ts";
 import { refreshPlanCache } from "../src/core/plan-cache.ts";
-import { fastTrackList } from "../src/fasttrack.ts";
+import { addFastTrack, fastTrackList } from "../src/fasttrack.ts";
 import { insertBatch, updateBatch } from "../src/merge/batch-store.ts";
 import { preapprovalOf } from "../src/preapproval/index.ts";
 import { OPERATOR, world, type World } from "./world-db.ts";
@@ -44,6 +44,8 @@ describe("merge queue tools", () => {
     for (const n of ["queue_pr", "set_weight", "cancel_queued", "list_merge_queue"]) assert.ok((await names(op)).includes(n), n);
     for (const env of [maint, maintNoAnswer, viewer]) assert.ok((await names(env)).includes("list_merge_queue"));
     assert.deepEqual(writes(await names(maint)), ["queue_pr"]);
+    // Weights are set by operators: a maintainer's queue_pr takes none.
+    assert.equal((await rpc(maint, "tools/list")).tools.find((t: { name: string }) => t.name === "queue_pr").inputSchema.properties.weight, undefined);
     assert.deepEqual(writes(await names(maintNoAnswer)), []);
     assert.deepEqual(writes(await names(viewer)), []);
     assert.match((await rpc(op, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
@@ -97,8 +99,8 @@ describe("merge queue tools", () => {
     }
   });
 
-  test("a maintainer queues only where they answer decisions; set_weight and cancel_queued stay with operators", async () => {
-    const w = fresh().pr(1);
+  test("a maintainer queues only where they answer decisions, with the default weight; set_weight and cancel_queued stay with operators", async () => {
+    const w = fresh().pr(1).pr(2);
     const maint = envOf(w, "maintainer");
     const refusedAll = async () => {
       for (const [name, args, why] of [["queue_pr", { item: "app#1" }, /only an operator, or a maintainer with write access where the app acts for them/], ["set_weight", { item: "app#1", weight: 9 }, /only operators steer the merge queue/], ["cancel_queued", { item: "app#1" }, /only operators steer the merge queue/]] as const) {
@@ -116,8 +118,13 @@ describe("merge queue tools", () => {
     w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('github_identity', 'app')").run();
     const r = await call(maint, "queue_pr", { item: "app#1", weight: 6 });
     assert.equal(r.isError, false, r.text);
+    assert.match(r.text, /The weight was ignored: only operators set fast-track weights/);
     assert.equal(preapprovalOf(w.db, "app", 1)?.by, "maint");
-    assert.deepEqual(weights(w), [[1, 6]]);
+    assert.deepEqual(weights(w), [[1, 5]]);
+    // An item an operator fast-tracked keeps its weight, lighter or not.
+    addFastTrack(w.db, OPERATOR, "app#2", 3);
+    assert.equal((await call(maint, "queue_pr", { item: "app#2", weight: 9 })).isError, false);
+    assert.deepEqual(weights(w), [[1, 5], [2, 3]]);
     assert.equal((await call(maint, "cancel_queued", { item: "app#1" })).isError, true);
     assert.equal((await call(maint, "set_weight", { item: "app#1", remove: true })).isError, true);
   });

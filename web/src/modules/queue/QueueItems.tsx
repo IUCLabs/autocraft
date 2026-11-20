@@ -1,7 +1,7 @@
 // "Queue items": a button on the Merge queue tab that opens a dialog to add several PRs and issues at once, one GitHub link or id per
 // line. A PR is pre-approved at its current head and fast-tracked with the chosen weight; an issue is fast-tracked, and the one open PR
 // that closes it is queued too. For operators, and for maintainers who settle decisions (maintainer writes on, write access to a repo);
-// the server checks each line's repo.
+// the server checks each line's repo. Weights are set by operators, so a maintainer's dialog has no weight and the server uses the default.
 import { useState } from "react";
 import { CheckCircleIcon, PlusIcon, XCircleIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
@@ -19,6 +19,7 @@ const linesOf = (text: string) => [...new Set(text.split(/\r?\n/).map((l) => l.t
 
 function QueueDialog({ onClose }: { onClose: () => void }) {
   const api = useApi();
+  const operator = useUser().role === "operator";
   const [text, setText] = useState("");
   const [weight, setWeight] = useState(WEIGHT_DEFAULT);
   const [busy, setBusy] = useState(false);
@@ -31,7 +32,7 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
     // One at a time, so each line gets its own answer and a refusal does not stop the rest.
     for (const item of items) {
       try {
-        out.push({ item, ok: true, text: (await api.queueControl.add(item, weight)).label });
+        out.push({ item, ok: true, text: (await api.queueControl.add(item, operator ? weight : undefined)).label });
       } catch (e) {
         out.push({ item, ok: false, text: (e as Error).message });
       }
@@ -63,16 +64,18 @@ function QueueDialog({ onClose }: { onClose: () => void }) {
           />
         </label>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 text-xs text-ink/65">
-            Weight
-            <Select value={weight} onChange={(e) => setWeight(Number(e.target.value))}>
-              {WEIGHTS.map((w) => (
-                <option key={w} value={w}>
-                  {w}
-                </option>
-              ))}
-            </Select>
-          </label>
+          {operator && (
+            <label className="flex items-center gap-2 text-xs text-ink/65">
+              Weight
+              <Select value={weight} onChange={(e) => setWeight(Number(e.target.value))}>
+                {WEIGHTS.map((w) => (
+                  <option key={w} value={w}>
+                    {w}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          )}
           <Button type="submit" className="ml-auto max-md:h-11" loading={busy} disabled={!items.length}>
             Queue items
           </Button>
