@@ -4678,7 +4678,7 @@ function cmdLogs(argv) {
 
 /** @type {HelpLine[]} */
 const SETUP_HELP = [
-  ["autocraft login <url> [--label X] [--answer] [--no-agent] [--no-wait]", "make a credential and wait for its approval on the dashboard; --answer also asks to answer decisions and approve merges, --no-agent asks for no agent access"],
+  ["autocraft login <url> [--label X] [--answer] [--no-agent] [--no-wait]", "make a credential and wait for its approval on the dashboard"],
   ["autocraft login --wait", "wait for a login started with --no-wait (at most 9 minutes)"],
   ["autocraft login <url> --stdin", "store a Task Runner credential read from stdin"],
   ["autocraft harness claude [--keychain]", "store a `claude setup-token` token from stdin; --keychain: Claude Code's login (macOS)"],
@@ -4748,18 +4748,20 @@ const SERVER_NOTE = `Inbox, merge queue, model call and other server commands ne
 Options of a command's tool that are not shown pass through as --<argument>; \`autocraft call <tool> --help\` lists them.
 Add --json for the raw result. Exit 0 done, 1 refused or failed, 2 wrong command line.`;
 
-/** `help [--all]`. @param {boolean} all */
+/** `help [--all]`: the groups and two lines; `--all` adds the task commands and the details. @param {boolean} all */
 function helpText(all) {
-  return [
-    `autocraft ${HELPER_VERSION}: the AutoCraft Task Runner runs AutoCraft model calls under your own harness subscription,
-and gives you AutoCraft's inbox, merge queue and model calls on the command line.`,
-    ...helpSections(all).map(([t, l]) => section(t, l)),
-    SERVER_NOTE,
+  const intro = `autocraft ${HELPER_VERSION}: the AutoCraft Task Runner runs AutoCraft model calls under your own harness subscription,
+and gives you AutoCraft's inbox, merge queue and model calls on the command line.`;
+  const sections = helpSections(all).map(([t, l]) => section(t, l));
+  if (!all) return [intro, ...sections, "Server commands need Agent access for this Task Runner (Connect page).\n--json prints the raw result; `autocraft help --all` lists everything."].join("\n\n");
+  return [intro, ...sections,
+    `login --answer also asks to answer decisions and approve merges; --no-agent asks for no agent access.
+${SERVER_NOTE}`,
     `The runner claims only while every plan window keeps more than the reserve free (set per user on the
 dashboard, default 20%), and holds whenever it cannot read the usage.
 
 Config: ${"$XDG_CONFIG_HOME"}/autocraft-runner/config.json, the credential in credentials.json beside it (mode 0600);
-"tiers" maps top/mid/small to models (Claude defaults to opus, sonnet and haiku; Codex has no defaults).${all ? "" : "\n`autocraft help --all` also lists the task commands the service and agents use."}`,
+"tiers" maps top/mid/small to models (Claude defaults to opus, sonnet and haiku; Codex has no defaults).`,
   ].join("\n\n");
 }
 
