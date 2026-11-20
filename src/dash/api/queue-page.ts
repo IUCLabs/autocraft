@@ -144,7 +144,7 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   out.total = free.length;
   out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
   out.nextMerges = nextMerges(entries, fast, batchOf, scores);
-  out.batches = active.map((b) => toBatch(b, b.prs.flatMap((p) => rowOf.get(`${b.repo}#${p.number}`) ?? [])));
+  out.batches = active.map((b) => toBatch(b, reader, b.prs.flatMap((p) => rowOf.get(`${b.repo}#${p.number}`) ?? [])));
   return out;
 }
 
@@ -253,10 +253,10 @@ export async function fastTrackWeight(db: DatabaseSync, req: Req): Promise<strin
 }
 
 /** Fast-tracks an item with weight `w`; one already fast-tracked keeps a heavier weight it has, so this only ever moves it up. */
-async function markFast(db: DatabaseSync, by: string, repo: string, number: number, w: number): Promise<void> {
+async function markFast(db: DatabaseSync, by: string, repo: string, number: number, w: number, via?: string): Promise<void> {
   const ref = `${repo}#${number}`;
   const had = (db.prepare("SELECT weight FROM main.fast_track WHERE repo = ? AND number = ?").get(repo, number) as { weight: number } | undefined)?.weight;
-  await guarded(() => (had === undefined ? addFastTrack(db, by, ref, w) : w > had ? setFastTrackWeight(db, by, ref, w) : null));
+  await guarded(() => (had === undefined ? addFastTrack(db, by, ref, w, via) : w > had ? setFastTrackWeight(db, by, ref, w, via) : null));
 }
 
 /** The open PRs of `repo` that close issue `issue` when they merge (GitHub's closing references, from the mirror). */
@@ -279,23 +279,23 @@ function openPrsClosing(db: DatabaseSync, repo: string, issue: number): number[]
  * and CI is green) and fast-tracked with the weight, so its review, checks and merge come first. An issue is fast-tracked, so Fix works it
  * first; when exactly one open PR closes it, that PR is queued as above. Several closing PRs are only listed: a person picks one.
  */
-export async function queueAdd(db: DatabaseSync, req: Req): Promise<{ label: string; fast: string[] }> {
+export async function queueAdd(db: DatabaseSync, req: Req, via?: string): Promise<{ label: string; fast: string[] }> {
   const r = item(req);
   const w = weightOf(req);
   await needVisible(db, req, r.repo);
   const by = req.user.login;
   const kind = (db.prepare("SELECT kind FROM main.items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { kind: string } | undefined)?.kind;
   if (kind === "issue") {
-    await markFast(db, by, r.repo, r.number, w);
+    await markFast(db, by, r.repo, r.number, w, via);
     const prs = openPrsClosing(db, r.repo, r.number);
     let rest: string;
     if (!prs.length) rest = "no open PR closes it yet";
     else if (prs.length > 1) rest = `${prs.map((n) => `#${n}`).join(", ")} close it; queue one of them`;
     else {
       try {
-        preapproveMerge(db, { repo: r.repo, number: prs[0]!, by });
+        preapproveMerge(db, { repo: r.repo, number: prs[0]!, by, via });
         try {
-          await markFast(db, by, r.repo, prs[0]!, w);
+          await markFast(db, by, r.repo, prs[0]!, w, via);
           rest = `queued #${prs[0]}, which closes it`;
         } catch (e) {
           rest = `queued #${prs[0]}, which closes it, but did not fast-track it: ${(e as Error).message}`;
@@ -308,11 +308,11 @@ export async function queueAdd(db: DatabaseSync, req: Req): Promise<{ label: str
   }
   let done: { label: string };
   try {
-    done = preapproveMerge(db, { repo: r.repo, number: r.number, by });
+    done = preapproveMerge(db, { repo: r.repo, number: r.number, by, via });
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }
-  await markFast(db, by, r.repo, r.number, w);
+  await markFast(db, by, r.repo, r.number, w, via);
   return { label: done.label, fast: await fastTrackRefs(db, req) };
 }
 

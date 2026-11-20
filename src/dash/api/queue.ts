@@ -100,14 +100,15 @@ export async function queueBatches(db: DatabaseSync, req: Req): Promise<BatchLis
   const { batches, total, more } = pageBatches(db, { repo, hidden, before: after, limit });
   const refs = batches.flatMap((b) => b.prs.map((p) => `${b.repo}#${p.number}`));
   const rows = new Map(refs.length ? cachedQueue(db, { merged: "all", refs, hidden }).map((e) => [`${e.repo}#${e.number}`, toRow(e, reader)]) : []);
-  const out = batches.map((b) => toBatch(b, b.prs.flatMap((p) => rows.get(`${b.repo}#${p.number}`) ?? [])));
+  const out = batches.map((b) => toBatch(b, reader, b.prs.flatMap((p) => rows.get(`${b.repo}#${p.number}`) ?? [])));
   return { batches: out, total, next: more ? String(out[out.length - 1]!.id) : null };
 }
 
 /** A batch row with its member PRs as queue rows. */
-export function toBatch(b: BatchRow & { prs: unknown[] }, prs: QueueRow[]): QueueBatch {
+/** `summary` can hold raw push, PR and gh errors, so only staff get it. */
+export function toBatch(b: BatchRow & { prs: unknown[] }, reader: Reader, prs: QueueRow[]): QueueBatch {
   return {
     id: b.id, repo: b.repo, branch: b.branch, fork: b.fork, state: b.state as BatchState, baseSha: b.base_sha, size: b.prs.length, prs,
-    prNumber: b.pr_number, prUrl: b.pr_url, summary: b.summary, createdAt: b.created_at, updatedAt: b.updated_at,
+    prNumber: b.pr_number, prUrl: b.pr_url, summary: reader.staff ? b.summary : null, createdAt: b.created_at, updatedAt: b.updated_at,
   };
 }

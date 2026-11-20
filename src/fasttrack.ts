@@ -60,7 +60,7 @@ export function fastPositions(db: DatabaseSync): Map<string, { position: number;
 }
 
 /** Adds an open item of a tracked repo at the end of its weight. Returns false when it was already there (its weight stays as it is). */
-export function addFastTrack(db: DatabaseSync, by: string, input: unknown, weight: unknown = WEIGHT_DEFAULT): { ref: FastRef; added: boolean } {
+export function addFastTrack(db: DatabaseSync, by: string, input: unknown, weight: unknown = WEIGHT_DEFAULT, via?: string): { ref: FastRef; added: boolean } {
   const ref = parseItemRef(input);
   if (!isTracked(db, ref.repo)) throw new FastTrackError(`${ref.repo} is not a tracked repo`, 404);
   const item = db.prepare("SELECT state FROM main.items WHERE repo = ? AND number = ?").get(ref.repo, ref.number) as { state: string } | undefined;
@@ -68,25 +68,25 @@ export function addFastTrack(db: DatabaseSync, by: string, input: unknown, weigh
   if (item.state !== "OPEN") throw new FastTrackError(`${refText(ref)} is not open`, 409);
   const w = parseWeight(weight);
   const r = db.prepare("INSERT OR IGNORE INTO main.fast_track (repo, number, added_by, added_at, weight) VALUES (?, ?, ?, ?, ?)").run(ref.repo, ref.number, by, new Date().toISOString(), w);
-  if (r.changes) audit(db, by, "fasttrack-add", refText(ref), { weight: w });
+  if (r.changes) audit(db, by, "fasttrack-add", refText(ref), { weight: w, ...(via ? { via } : {}) });
   return { ref, added: r.changes > 0 };
 }
 
 /** Changes the weight of a fast-tracked item; among items of its new weight it keeps its place by when it was added. */
-export function setFastTrackWeight(db: DatabaseSync, by: string, input: unknown, weight: unknown): { ref: FastRef; weight: number } {
+export function setFastTrackWeight(db: DatabaseSync, by: string, input: unknown, weight: unknown, via?: string): { ref: FastRef; weight: number } {
   const ref = parseItemRef(input);
   const w = parseWeight(weight);
   if (!db.prepare("SELECT 1 FROM main.fast_track WHERE repo = ? AND number = ?").get(ref.repo, ref.number)) throw new FastTrackError(`${refText(ref)} is not fast-tracked`, 404);
   const r = db.prepare("UPDATE main.fast_track SET weight = ? WHERE repo = ? AND number = ? AND weight <> ?").run(w, ref.repo, ref.number, w);
-  if (r.changes) audit(db, by, "fasttrack-weight", refText(ref), { weight: w });
+  if (r.changes) audit(db, by, "fasttrack-weight", refText(ref), { weight: w, ...(via ? { via } : {}) });
   return { ref, weight: w };
 }
 
 /** Takes an item off the list; it returns to normal ranking. Returns false when it was not on it. */
-export function removeFastTrack(db: DatabaseSync, by: string, input: unknown): { ref: FastRef; removed: boolean } {
+export function removeFastTrack(db: DatabaseSync, by: string, input: unknown, via?: string): { ref: FastRef; removed: boolean } {
   const ref = parseItemRef(input);
   const r = db.prepare("DELETE FROM main.fast_track WHERE repo = ? AND number = ?").run(ref.repo, ref.number);
-  if (r.changes) audit(db, by, "fasttrack-remove", refText(ref));
+  if (r.changes) audit(db, by, "fasttrack-remove", refText(ref), via ? { via } : undefined);
   return { ref, removed: r.changes > 0 };
 }
 

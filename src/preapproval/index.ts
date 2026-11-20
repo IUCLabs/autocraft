@@ -72,14 +72,14 @@ function say(db: DatabaseSync, repo: string, n: number, text: string): void {
 }
 
 /** Moves the row to `to` when it is still in its state; audits the transition (the trace shows it). Callable inside a transaction. */
-function moveRaw(db: DatabaseSync, p: Row, to: Row["state"], o: { head?: string | null; reason?: string | null; by?: string }): boolean {
+function moveRaw(db: DatabaseSync, p: Row, to: Row["state"], o: { head?: string | null; reason?: string | null; by?: string; via?: string }): boolean {
   const r = db.prepare("UPDATE preapprovals SET state = ?, head = COALESCE(?, head), reason = ?, updated_at = ? WHERE id = ? AND state = ?")
     .run(to, o.head ?? null, o.reason ?? null, iso(), p.id, p.state);
   if (r.changes !== 1) return false;
   // A fix-up request that has no try yet must not start after the pre-approval ended; a push that is already running is recorded by the fix-up step as usual.
   if (["asked", "cancelled", "failed", "merged"].includes(to) && p.fix_id !== null) db.prepare("UPDATE operator_fixups SET state = 'ended' WHERE id = ?").run(p.fix_id);
   const head = o.head ?? p.head;
-  audit(db, o.by ?? ACTOR, "preapproval", `${p.repo}#${p.number}`, { id: p.id, from: p.state, state: to, ...(head ? { head } : {}), ...(o.reason ? { reason: o.reason } : {}) });
+  audit(db, o.by ?? ACTOR, "preapproval", `${p.repo}#${p.number}`, { id: p.id, from: p.state, state: to, ...(head ? { head } : {}), ...(o.reason ? { reason: o.reason } : {}), ...(o.via ? { via: o.via } : {}) });
   return true;
 }
 
@@ -105,7 +105,7 @@ export function revertAnswer(db: DatabaseSync, p: Row, by: string): boolean {
 }
 
 /** Cancels the row and takes the hand-over answer back in one transaction, whatever state the caller read. False when the row had ended meanwhile. */
-function cancelRow(db: DatabaseSync, id: number, by: string, reason: string, line: string, guard = false): boolean {
+function cancelRow(db: DatabaseSync, id: number, by: string, reason: string, line: string, guard = false, via?: string): boolean {
   db.exec("BEGIN IMMEDIATE");
   let p: Row | undefined;
   try {
@@ -120,7 +120,7 @@ function cancelRow(db: DatabaseSync, id: number, by: string, reason: string, lin
       if (mergeRunning(db, p.repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
       if (p.head && db.prepare("SELECT 1 FROM merges WHERE repo = ? AND number = ? AND head_oid = ? AND outcome = 'merged'").get(p.repo, p.number, p.head)) throw new Error("the PR is already merged");
     }
-    if (!moveRaw(db, p, "cancelled", { by, reason })) {
+    if (!moveRaw(db, p, "cancelled", { by, reason, via })) {
       db.exec("ROLLBACK");
       return false;
     }
@@ -201,8 +201,8 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
  * the way a carried answer does, so the PR merges only after a sure take review, a clean pre-merge review and green CI there;
  * a take-fix review, a defect or a red head asks the Merge? question instead. Throws when it cannot start.
  */
-export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: number; by: string }): { label: string } {
-  const { repo, number, by } = o;
+export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: number; by: string; via?: string }): { label: string } {
+  const { repo, number, by, via } = o;
   const ref = `${repo}#${number}`;
   const it = prRow(db, repo, number);
   if (!it || it.kind !== "pr") throw new Error(`${ref} is not a pull request`);
@@ -222,7 +222,7 @@ export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: num
     // Checked again under the write lock: another writer may have started one since the first check.
     if (active()) throw new Error(`${ref} already has a pre-approved merge in progress`);
     const id = Number(db.prepare("INSERT INTO preapprovals (repo, number, by, at, instructions, state, from_head, head, updated_at, fix_id) VALUES (?, ?, ?, ?, '', 'review', ?, ?, ?, NULL)").run(repo, number, by, at, head, head, at).lastInsertRowid);
-    audit(db, by, "preapproval", ref, { id, state: "review", head, queued: "merge-queue" });
+    audit(db, by, "preapproval", ref, { id, state: "review", head, queued: "merge-queue", ...(via ? { via } : {}) });
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -594,13 +594,13 @@ export const inActiveBatch = (db: DatabaseSync, repo: string, n: number): boolea
  * removed from the batch (the operator control: the batch PR is closed; the hold it sets is released) unless the merge is running.
  * Throws when there is none or the queue is past stopping it.
  */
-export async function cancelPreapproval(db: DatabaseSync, by: string, repo: string, n: number, run?: Exec): Promise<Preapproval> {
+export async function cancelPreapproval(db: DatabaseSync, by: string, repo: string, n: number, run?: Exec, via?: string): Promise<Preapproval> {
   const p = db.prepare(`SELECT id FROM preapprovals WHERE repo = ? AND number = ? AND state IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 1`).get(repo, n, ...ACTIVE) as { id: number } | undefined;
   if (!p) throw new Error(`${repo}#${n} has no pre-approved merge in progress`);
   const state = (db.prepare("SELECT state FROM preapprovals WHERE id = ?").get(p.id) as { state: string }).state;
   // The state change and the take-back of the hand-over answer are one transaction, so the merge queue never sees a cancelled row with a live answer.
   const finish = () => {
-    if (!cancelRow(db, p.id, by, `cancelled by ${by}`, `${by} cancelled the pre-approved merge.`, true)) throw new Error("the pre-approved merge changed a moment ago");
+    if (!cancelRow(db, p.id, by, `cancelled by ${by}`, `${by} cancelled the pre-approved merge.`, true, via)) throw new Error("the pre-approved merge changed a moment ago");
   };
   if (state === "queued" && inActiveBatch(db, repo, n)) {
     if (mergeRunning(db, repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
