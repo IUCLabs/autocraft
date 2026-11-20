@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { after, before, describe, test } from "node:test";
 import type { RunnersReply } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
@@ -206,5 +207,21 @@ describe("over HTTP", () => {
     const after = db.prepare("SELECT state, attempt, token_id FROM remote_calls WHERE id = ?").get(call) as { state: string; attempt: number; token_id: number | null };
     assert.deepEqual([after.state, after.attempt, after.token_id], ["queued", 1, null]);
     assert.equal((await claim(token)).status, 401);
+  });
+
+  test("runner routes take a gzip+base64 envelope, its uncompressed body held to the route's limit; claim replies list the encoding", async () => {
+    const { token, row } = createToken(db, "maint", "proxied box", { kind: "runner" });
+    assert.deepEqual((await claim(token)).body.encodings, ["gzip+base64"]);
+    const secret = `aclease_${randomToken(32)}`;
+    const now = Date.now();
+    const call = Number((db.prepare(`INSERT INTO remote_calls (step, stage, prompt_id, prompt_version, tier, effort, asked_model, model, bundle, state, since, seen_at, max_attempts, timeout_ms,
+        user_login, lease_secret_hash, token_id, leased_at, heartbeat_at) VALUES ('review', 0, 'p', '1', 'top', 'high', 'opus', 'opus', '{}', 'leased', ?, ?, 3, 600000, 'maint', ?, ?, ?, ?) RETURNING id`)
+      .get(now, now, sha256hex(secret), row.id, now, now) as { id: number }).id);
+    const enc = (body: unknown) => ({ encoding: "gzip+base64", body: gzipSync(JSON.stringify(body)).toString("base64") });
+    const reply = { ok: true, text: "<script>alert(1)</script> UNION SELECT", model: "claude-opus-4-5", usage: { inputTokens: 1, outputTokens: 1 }, durationMs: 5 };
+    assert.equal((await post(ROUTES.submit, enc({ ...reply, text: "x".repeat(8 * 1024 * 1024) }), secret)).status, 413);
+    assert.equal((await post(ROUTES.heartbeat, enc({ phase: "running", progress: "Reading /etc/passwd" }), secret)).status, 200);
+    assert.deepEqual(await post(ROUTES.submit, enc(reply), secret), { status: 200, body: { accepted: true } });
+    assert.equal((db.prepare("SELECT reply FROM remote_calls WHERE id = ?").get(call) as { reply: string }).reply, reply.text);
   });
 });
