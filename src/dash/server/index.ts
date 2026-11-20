@@ -4,7 +4,7 @@ import { maintainerWritesOn } from "../../settlers.ts";
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { gunzip } from "node:zlib";
+import { gunzip, gunzipSync } from "node:zlib";
 import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
@@ -51,6 +51,7 @@ import { startLiveness } from "../../remote/liveness.ts";
 import { archiveOf, callTaskTool, TASK_TOOLS, taskLease, type TaskLease, type ToolResult } from "../../remote/tools.ts";
 import { handleDelivery, WEBHOOK_BODY_LIMIT, WEBHOOK_PATH } from "../../github/webhooks.ts";
 import { esc, HttpError, parseCookies, plainPage, previewTags, RateLimiter, safeReturnTo } from "./util.ts";
+import { prep } from "../../sql-cache.ts";
 
 export const SESSION_COOKIE = "__Host-craft_session";
 /** `oauth_states.return_to` of an "act as you" authorization, which the shared sign-in callback tells apart from a sign-in by this prefix. */
@@ -173,6 +174,8 @@ async function readJson(req: IncomingMessage, limit: number = BODY_LIMIT): Promi
 }
 
 const gunzipAsync = promisify(gunzip);
+/** Compressed bodies up to this size are inflated on the event loop. */
+const SYNC_GUNZIP_MAX = 16 * 1024;
 
 /**
  * readJson for the Task Runner routes: the body may also come as an Envelope (src/remote/protocol.ts ENCODINGS), an object
@@ -186,7 +189,9 @@ async function readRemoteJson(req: IncomingMessage, limit: number = BODY_LIMIT):
   if (keys.length !== 2 || typeof env.encoding !== "string" || typeof env.body !== "string" || !(ENCODINGS as readonly string[]).includes(env.encoding)) return json;
   let raw: Buffer;
   try {
-    raw = await gunzipAsync(Buffer.from(env.body, "base64"), { maxOutputLength: limit });
+    // A small body (status, heartbeat, most replies) inflates in microseconds, less than a round trip through the thread pool.
+    const gz = Buffer.from(env.body, "base64");
+    raw = gz.length <= SYNC_GUNZIP_MAX ? gunzipSync(gz, { maxOutputLength: limit }) : await gunzipAsync(gz, { maxOutputLength: limit });
   } catch (e) {
     if ((e as { code?: string }).code === "ERR_BUFFER_TOO_LARGE") throw new HttpError(413, "Request too large");
     throw new HttpError(400, `The body is not valid ${env.encoding}`);
@@ -584,7 +589,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         void vault.sweepRevocations().catch(() => {});
       }
       // A revoked session's token is revoked at once, not at the next hourly sweep; failures are retried by that sweep.
-      if (db.prepare("SELECT 1 FROM user_token_revocations WHERE attempts = 0 LIMIT 1").get()) void vault.sweepRevocations(true).catch(() => {});
+      if (prep(db, "SELECT 1 FROM user_token_revocations WHERE attempts = 0 LIMIT 1").get()) void vault.sweepRevocations(true).catch(() => {});
       // Dev auth lets anyone who reaches the port sign in as any login, so
       // a request that came through a proxy or under a public name is refused.
       if (config.devAuth && (req.headers["x-forwarded-for"] !== undefined || !isLoopbackHost(req.headers.host))) {

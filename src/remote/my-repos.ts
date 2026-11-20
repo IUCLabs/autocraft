@@ -1,6 +1,7 @@
 // Each user's own repo picks for their user-local helpers, stored in `user_settings` under `repos` as a JSON list. Empty means
 // every repo. The per-repo Pipeline switch stays the operators' control: a picked repo whose pipeline is off has no calls.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import { audit } from "../dash/audit.ts";
 import { trackedNames } from "../repos.ts";
 
@@ -10,7 +11,7 @@ export const MAX_PICKS = 500;
 
 /** The user's picked repos, sorted; empty when they never picked any (every repo). */
 export function userRepos(db: DatabaseSync, login: string): string[] {
-  const row = db.prepare("SELECT value FROM main.user_settings WHERE login = ? AND key = ?").get(login, KEY) as { value: string } | undefined;
+  const row = prep(db, "SELECT value FROM main.user_settings WHERE login = ? AND key = ?").get(login, KEY) as { value: string } | undefined;
   if (!row) return [];
   try {
     const v = JSON.parse(row.value) as unknown;
@@ -32,7 +33,7 @@ export function parseRepos(db: DatabaseSync, raw: unknown): string[] {
 /** Stores the user's picks; a change is audited. */
 export function setUserRepos(db: DatabaseSync, login: string, repos: string[]): string[] {
   const was = userRepos(db, login);
-  db.prepare("INSERT INTO main.user_settings (login, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (login, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+  prep(db, "INSERT INTO main.user_settings (login, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (login, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
     .run(login, KEY, JSON.stringify(repos), new Date().toISOString());
   if (was.join("\n") !== repos.join("\n")) audit(db, login, "my-repos", login, { repos, was });
   return repos;

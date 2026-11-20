@@ -259,6 +259,10 @@ const ADDED_INDEXES = [
   // (INDEXED BY) during a rollout: the deploy migrates the database before the old processes restart. The next release drops it.
   "CREATE INDEX IF NOT EXISTS main.remote_calls_queued ON remote_calls(class, seen_at, level, since, step, repo, prompt_id, tier, parent_id, sticky_login, released_by, released_at) WHERE state = 'queued'",
   "CREATE INDEX IF NOT EXISTS main.remote_calls_waiting ON remote_calls(class, seen_at, level, since, step, repo, prompt_id, tier, parent_id, sticky_login, released_by, released_at, picked_by, picked_at, pick_until) WHERE state = 'queued'",
+  // Leased calls only: covers the reads of them that run on every claim and lease request (a login's leases, a repeated claim's
+  // lease, lease expiry), so none walks the overflow pages of each row's bundle. Those reads name it (INDEXED BY): without
+  // statistics the planner takes the (state, ...) indexes, which do not cover them.
+  "CREATE INDEX IF NOT EXISTS main.remote_calls_leased ON remote_calls(token_id, claim_id, user_login, heartbeat_at, leased_at, started_at, timeout_ms) WHERE state = 'leased'",
   // One live card per set of choices: a double press cannot run the same choice twice.
   "CREATE UNIQUE INDEX IF NOT EXISTS main.conversation_cards_choice_live ON conversation_cards(choice_id) WHERE choice_id IS NOT NULL AND state IN ('proposed', 'running', 'done')",
   // Records the answerer's role when an answer is written (any writer); cleared with the answerer by an undo.

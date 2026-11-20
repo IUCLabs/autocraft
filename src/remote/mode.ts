@@ -2,6 +2,7 @@
 // `user-local`: they are queued as remote calls that maintainers' helpers claim, run on their own machines and
 // submit (src/remote/calls.ts). Jev calls and embeddings run on this host in both modes.
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import { audit } from "../dash/audit.ts";
 import { EFFORTS, type Effort, type HarnessId, type Tier } from "./protocol.ts";
 
@@ -12,13 +13,13 @@ export const INFERENCE_KEY = "inference";
 export const isInferenceMode = (v: unknown): v is InferenceMode => typeof v === "string" && (INFERENCE_MODES as readonly string[]).includes(v);
 
 export const inferenceMode = (db: DatabaseSync): InferenceMode =>
-  (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(INFERENCE_KEY) as { value: string } | undefined)?.value === "user-local" ? "user-local" : "server";
+  (prep(db, "SELECT value FROM main.settings WHERE key = ?").get(INFERENCE_KEY) as { value: string } | undefined)?.value === "user-local" ? "user-local" : "server";
 
 /** Sets the mode and audits the change as `by`; false when it already was `mode`. */
 export function setInferenceMode(db: DatabaseSync, mode: InferenceMode, by: string): boolean {
   if (inferenceMode(db) === mode) return false;
-  if (mode === "server") db.prepare("DELETE FROM main.settings WHERE key = ?").run(INFERENCE_KEY);
-  else db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(INFERENCE_KEY, mode);
+  if (mode === "server") prep(db, "DELETE FROM main.settings WHERE key = ?").run(INFERENCE_KEY);
+  else prep(db, "INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(INFERENCE_KEY, mode);
   audit(db, by, "inference", INFERENCE_KEY, { value: mode });
   return true;
 }
@@ -42,7 +43,7 @@ export const DEFAULT_REMOTE_MODELS: Record<Tier, string[]> = { top: ["opus", COD
 const FAMILY = /^[a-z0-9][a-z0-9.-]{0,39}$/;
 
 const rawModels = (db: DatabaseSync): Record<string, unknown> => {
-  const raw = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(REMOTE_MODELS_KEY) as { value: string } | undefined)?.value;
+  const raw = (prep(db, "SELECT value FROM main.settings WHERE key = ?").get(REMOTE_MODELS_KEY) as { value: string } | undefined)?.value;
   if (!raw) return {};
   try {
     const v = JSON.parse(raw) as unknown;
@@ -115,7 +116,7 @@ export function setAcceptedModels(db: DatabaseSync, raw: unknown, by: string, mi
     for (const t of clear) { if (!isTier(t)) throw new Error(`unknown tier ${t}`); delete floors[t]; }
   }
   const stored = { ...next, ...(Object.keys(floors).length && { minEffort: floors }) };
-  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(REMOTE_MODELS_KEY, JSON.stringify(stored));
+  prep(db, "INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(REMOTE_MODELS_KEY, JSON.stringify(stored));
   audit(db, by, "remote-models", REMOTE_MODELS_KEY, stored);
   return next;
 }

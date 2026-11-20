@@ -3,6 +3,7 @@
 import { filtered, hiddenTest, type HiddenRepos } from "../hidden-sql.ts";
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { DatabaseSync } from "node:sqlite";
+import { prep } from "../sql-cache.ts";
 import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState, AgentRunTool, ItemRef, ItemShown, RateBucket, Rates } from "../../web/src/api/types.ts";
 
 export const MAX_ITEM_REFS = 50;
@@ -16,7 +17,9 @@ const ERROR_MAX = 400;
 export type RunStart = {
   jobId: number | null; step: string; stage: number;
   promptId: string; promptVersion: string; provider: "claude" | "jev"; model: string; accountId: string | null;
-  items: ItemRef[]; prompt: string;
+  items: ItemRef[];
+  /** The prompt text, or the stored form packPrompt made of it. */
+  prompt: string | Uint8Array;
 };
 
 export type RunEnd = {
@@ -44,24 +47,27 @@ export function onRunEnd(f: () => void): () => void {
 }
 const runEnded = (): void => { for (const f of [...endWakers]) f(); };
 
+/** A prompt in its stored form (scrubbed, cut and compressed), for a caller that builds it before a write transaction. */
+export const packPrompt = (prompt: string): Uint8Array => packText(scrub(prompt.slice(0, TEXT_MAX)));
+
 /** Inserts the running row, its item refs and its prompt text. Does not open a transaction. */
 export function insertRun(db: DatabaseSync, s: RunStart): number {
   const refs = s.items.slice(0, MAX_ITEM_REFS);
-  const id = Number(db.prepare(`INSERT INTO agent_runs (job_id, step, stage, prompt_id, prompt_version, provider, model, account_id, items, item_count, state, started_at)
+  const id = Number(prep(db, `INSERT INTO agent_runs (job_id, step, stage, prompt_id, prompt_version, provider, model, account_id, items, item_count, state, started_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
     .run(s.jobId, s.step, s.stage, s.promptId, s.promptVersion, s.provider, s.model, s.accountId, JSON.stringify(refs), s.items.length, now()).lastInsertRowid);
-  const ins = db.prepare("INSERT OR IGNORE INTO agent_run_items (run_id, repo, number) VALUES (?, ?, ?)");
+  const ins = prep(db, "INSERT OR IGNORE INTO agent_run_items (run_id, repo, number) VALUES (?, ?, ?)");
   for (const r of s.items) ins.run(id, r.repo, r.number);
-  db.prepare("INSERT INTO agent_run_texts (run_id, prompt) VALUES (?, ?)").run(id, packText(scrub(s.prompt.slice(0, TEXT_MAX))));
+  prep(db, "INSERT INTO agent_run_texts (run_id, prompt) VALUES (?, ?)").run(id, typeof s.prompt === "string" ? packPrompt(s.prompt) : s.prompt);
   return id;
 }
 
 export function finishRun(db: DatabaseSync, id: number, e: RunEnd): void {
   const t = e.tokens;
-  db.prepare(`UPDATE agent_runs SET state = ?, ended_at = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, cost_usd = ?, summary = ?, error = ?, progress = NULL
+  prep(db, `UPDATE agent_runs SET state = ?, ended_at = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, cost_usd = ?, summary = ?, error = ?, progress = NULL
     WHERE id = ? AND state = 'running'`)
     .run(e.state, now(), t?.input ?? null, t?.output ?? null, t?.cacheRead ?? null, t?.cacheWrite ?? null, e.costUsd ?? null, e.summary ?? null, e.error ? e.error.slice(0, ERROR_MAX) : null, id);
-  if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(packText(scrub(e.output.slice(0, TEXT_MAX))), id);
+  if (e.output) prep(db, "UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(packText(scrub(e.output.slice(0, TEXT_MAX))), id);
   setImmediate(runEnded); // after the caller's own follow-up claim, which gets the freed slot first
 }
 
