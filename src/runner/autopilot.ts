@@ -54,6 +54,7 @@ import { inferenceMode } from "../remote/mode.ts";
 import { takerSignature } from "../remote/takers.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
+import { NO_TAKER_SKIP } from "./leases.ts";
 import { jobBlock, noRunnerFor, stepParallel, untakenTest, type Active, type UntakenTest } from "./concurrency.ts";
 import { knownStep, loadSteps, STEPS, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
@@ -990,6 +991,12 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   return { proposals, logs, wakeAt: wakes.length ? Math.min(...wakes) : null, status, timing: { loadMs, lanesMs, cacheMs, ...cache } };
 }
 
+/** The lease keys among a job's skip keys: null for a job from before the keys were recorded. */
+function leaseSkipKeys(keys: string | null): string[] | null {
+  if (!keys) return null;
+  try { return (JSON.parse(keys) as string[]).filter((k) => !k.startsWith(NO_TAKER_SKIP)); } catch { return null; }
+}
+
 /** True when a running job holds a lease on one of the keys a job skipped (a job from before the keys were recorded: on any lease). */
 function skippedLeaseHeld(db: DatabaseSync, keys: string | null): boolean {
   return !!db.prepare(`SELECT 1 FROM work_leases l JOIN jobs j ON j.id = l.job_id WHERE j.state = 'running'${keys ? " AND l.key IN (SELECT value FROM json_each(?))" : ""} LIMIT 1`).get(...(keys ? [keys] : []));
@@ -1000,7 +1007,9 @@ function unchangedSinceIdle(db: DatabaseSync, step: string, repo: string | null,
   const last = lastJobEnd(db, step, repo, AUTOPILOT_USER);
   if (!last || last.state !== "done" || !wasIdle(last)) return false;
   // A job that skipped items another job was working retries once no running job holds a lease on any of them. While one does, the step stays parked, so the planner does not queue it in a loop.
-  if (last.lease_skips && !skippedLeaseHeld(db, last.lease_skip_keys)) return false;
+  // Skips for want of a taker do not count: such a step is woken by the taker signature in its fingerprint.
+  const leaseKeys = leaseSkipKeys(last.lease_skip_keys);
+  if (last.lease_skips && leaseKeys?.length !== 0 && !skippedLeaseHeld(db, leaseKeys && JSON.stringify(leaseKeys))) return false;
   const rec = fpRecord(db, step, repo);
   if (!rec || rec.job !== last.id || rec.fp !== fp) return false;
   return !((releasedAt(db, step) ?? "") > last.endedAt);

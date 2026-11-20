@@ -2,7 +2,7 @@
 // can. A taker is a fresh, ready Task Runner (helpers.ts) of a user who is not cooled off (cooloff.ts) and who may take the
 // call (runnerTakes: role rules, write permission by the room's rule roomCanWrite, My repos narrowed by the runner's own
 // list), busy or not. A Manual only user's runner (manual-only.ts) is a taker, since the user may pick the call, though it is
-// no room. hasTaker and takerTest are the one taker rule: pools and the runner's job starts skip work without a taker, the
+// no room. takerTest is the one taker rule: pools and the runner's job starts skip work without a taker, the
 // dashboard's minute maintenance runs sweepTakers: a queued call with no taker for NO_TAKER_MS is withdrawn, and pipeline-on
 // repos with no taker are recorded for the remote-no-taker health check. Follow-up turns and calls with a pick that counts
 // keep their own rules (calls.ts awaitCall, picks).
@@ -29,10 +29,6 @@ export function takerTest(db: DatabaseSync, nowMs: number): (c: TakerCall) => bo
   let test: ((c: TakerCall) => boolean) | null = null;
   return (c) => (test ??= readTakers(db, nowMs))(c);
 }
-
-/** Whether a call naming `repos` has a taker now; unknown repos (undefined: the caller does not know them) always have one. */
-export const hasTaker = (db: DatabaseSync, nowMs: number, repos?: readonly string[]): boolean =>
-  repos === undefined || takerTest(db, nowMs)({ prompt_id: "", repos });
 
 /** SQL on a runner token `t` joined to its status `h`: the runner may be a taker (fresh, ready, its user not cooling off). Bind takerArgs. */
 const TAKER_SQL = `t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?

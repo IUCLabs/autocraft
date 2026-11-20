@@ -33,7 +33,7 @@ import { manualOnly, manualSql } from "./manual-only.ts";
 import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
 import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 import { endChecks, serveChecks } from "./check-relay.ts";
-import { skipItem } from "../runner/leases.ts";
+import { NO_TAKER_SKIP, skipItem } from "../runner/leases.ts";
 import type { CheckTool } from "../checktool/index.ts";
 
 /** A lease with no heartbeat for this long, while the dashboard was serving (liveness.ts), goes back to the queue. */
@@ -903,7 +903,7 @@ async function pollCall(db: DatabaseSync, id: number, opts: { onProgress?: (line
     }
     if (r.state === "failed" && r.error?.startsWith(NO_TAKER_PREFIX)) {
       const repos = [...new Set([...(JSON.parse(r.items) as ItemRef[]).map((i) => i.repo), ...(r.repo ? [r.repo] : [])])];
-      skipItem(`no-taker:${repos.join(",")}`, log, r.error);
+      skipItem(`${NO_TAKER_SKIP}${repos.join(",")}`, log, r.error);
       throw new NoTakerError(r.error);
     }
     if (r.state === "failed") return { state: "failed", error: r.error ?? "failed", tokens: r.usage ? storedTokens(JSON.parse(r.usage)) : null, runId: r.run_id };

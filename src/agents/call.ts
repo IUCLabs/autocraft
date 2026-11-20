@@ -154,7 +154,7 @@ export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass(), rep
 /** Room questions answered from one reading of the helpers (queueRoomPass). */
 export type RoomPass = {
   room(cls: 0 | 1 | 2, repos?: readonly string[]): number;
-  /** Whether a call naming `repos` has a taker (src/remote/takers.ts; always in the server-account mode). */
+  /** Whether a call naming `repos` has a taker (src/remote/takers.ts; always in the server-account mode). A call naming no repo (none given and no job repo) has one only in an operator's Task Runner, as the sweep reads it. */
   taker(repos?: readonly string[]): boolean;
 };
 
@@ -164,11 +164,11 @@ export function queueRoomPass(db: DatabaseSync): RoomPass {
   const nowMs = Date.now();
   let st: RoomState | undefined;
   const state = (): RoomState => (st ??= roomState(db, nowMs));
-  // The taker rule of src/remote/takers.ts, read once per pass; unknown repos always have a taker.
+  // The taker rule of src/remote/takers.ts, read once per pass.
   const takes = takerTest(db, nowMs);
   return {
     room: (cls, repos) => roomOf(db, state(), cls, nowMs, callRepos(repos)),
-    taker: (repos) => { const r = callRepos(repos); return r === undefined || takes({ prompt_id: "", repos: r }); },
+    taker: (repos) => takes({ prompt_id: "", repos: callRepos(repos) ?? [] }),
   };
 }
 
