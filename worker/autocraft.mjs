@@ -3859,6 +3859,13 @@ function sandboxProbe() {
 const PKG_INSTALL = { apt: "apt-get install -y", dnf: "dnf install -y", pacman: "pacman -S --needed --noconfirm", zypper: "zypper --non-interactive install", apk: "apk add" };
 const BWRAP_PROFILE = "/etc/apparmor.d/bwrap";
 const CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash";
+/**
+ * Writes the profile lines given as arguments to BWRAP_PROFILE and loads it. The text goes to a temporary file first, which a
+ * hard link then makes the profile: `ln` fails when a profile exists (one that appeared meanwhile is never overwritten), and
+ * a write that fails never leaves a profile behind. Only a profile this run linked is removed again when it does not load,
+ * so the next setup offers it once more.
+ */
+const APPARMOR_SCRIPT = `set -e; f=${BWRAP_PROFILE}; t=$(mktemp "$f.XXXXXX"); trap 'rm -f "$t"' EXIT; printf '%s\\n' "$@" > "$t"; chmod 644 "$t"; ln "$t" "$f"; apparmor_parser -r "$f" || { rm -f "$f"; exit 1; }`;
 /** @param {string} s */
 const shq = (s) => /^[A-Za-z0-9_./:=@-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -3885,8 +3892,7 @@ export function setupSteps(f) {
       out.push({
         id: "apparmor", problem: `a sandbox does not start: AppArmor restricts unprivileged user namespaces (${f.sandboxError.slice(0, 120)})`,
         fix: `Allow them for bubblewrap only, with an AppArmor profile at ${BWRAP_PROFILE}.`,
-        // A profile that does not load is removed again, so the next setup offers it once more.
-        cmd: `printf '%s\\n' ${profile.map(shq).join(" ")} | ${sudo}tee ${BWRAP_PROFILE} >/dev/null && { ${sudo}apparmor_parser -r ${BWRAP_PROFILE} || { ${sudo}rm -f ${BWRAP_PROFILE}; false; }; }`,
+        cmd: `${sudo}sh -c ${shq(APPARMOR_SCRIPT)} sh ${profile.map(shq).join(" ")}`,
       });
     } else out.push({ id: "sandbox", problem: `a sandbox does not start: ${f.sandboxError.slice(0, 200)}`, fix: "bubblewrap needs unprivileged user namespaces; check the kernel settings (user.max_user_namespaces, kernel.unprivileged_userns_clone) and AppArmor." });
   }
@@ -3923,8 +3929,17 @@ function onPath(bin) {
 function gitStub() {
   if (process.platform !== "darwin") return false;
   const git = (process.env.PATH ?? "").split(delimiter).map((p) => join(p, "git")).find((f) => { try { accessSync(f, constants.X_OK); return true; } catch { return false; } });
-  return git === "/usr/bin/git" && spawnSync("xcode-select", ["-p"], { encoding: "utf8", timeout: 10_000 }).status !== 0;
+  if (!git) return false;
+  let real = git;
+  try { real = realpathSync(git); } catch { /* as found */ }
+  return appleGitStub(real, () => spawnSync("xcode-select", ["-p"], { encoding: "utf8", timeout: 10_000 }).status === 0);
 }
+
+/**
+ * Whether the git that PATH resolves to (symlinks followed) is macOS's stub: /usr/bin/git without the developer tools.
+ * @param {string} resolved @param {() => boolean} toolsInstalled
+ */
+export const appleGitStub = (resolved, toolsInstalled) => resolved === "/usr/bin/git" && !toolsInstalled();
 
 /** @param {string | null} server @returns {SetupFacts} */
 function setupFacts(server) {

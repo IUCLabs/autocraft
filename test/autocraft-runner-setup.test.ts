@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as helper from "../worker/autocraft.mjs";
 import type * as H from "../worker/autocraft.mjs";
 
@@ -37,13 +40,9 @@ test("missing packages are installed with the system's package manager, with sud
 test("a sandbox blocked by AppArmor gets a bwrap-only profile; another cause or an existing profile only shows the error", () => {
   const s = steps({ sandbox: "failed", sandboxError: "bwrap: setting up uid map: Permission denied", userns: true })[0]!;
   assert.equal(s.id, "apparmor");
-  // A profile that does not load is removed again, so a later setup offers it once more.
-  assert.match(s.cmd!, /\| sudo tee \/etc\/apparmor\.d\/bwrap >\/dev\/null && \{ sudo apparmor_parser -r \/etc\/apparmor\.d\/bwrap \|\| \{ sudo rm -f \/etc\/apparmor\.d\/bwrap; false; \}; \}$/);
+  assert.match(s.cmd!, /^sudo sh -c '.*' sh 'abi <abi\/4\.0>,' /);
   assert.match(s.cmd!, /'profile bwrap \/usr\/bin\/bwrap flags=\(unconfined\) \{'/);
-  // The printf writes exactly the profile.
-  const printf = s.cmd!.split(" | ")[0]!;
-  const out = spawnSync("sh", ["-c", printf], { encoding: "utf8" });
-  if (out.status === 0) assert.equal(out.stdout, "abi <abi/4.0>,\ninclude <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n}\n");
+  assert.equal(steps({ sandbox: "failed", userns: true, root: true })[0]!.cmd!.startsWith("sh -c "), true);
   assert.deepEqual(steps({ sandbox: "failed", userns: true, bwrapProfile: true }).map((x) => [x.id, x.cmd]), [["sandbox", undefined]]);
   assert.deepEqual(steps({ sandbox: "failed", userns: false }).map((x) => [x.id, x.cmd]), [["sandbox", undefined]]);
 });
@@ -95,4 +94,45 @@ test("setup refuses unknown flags and more than one URL", async () => {
   } finally { console.error = err; }
   assert.match(errors.join("\n"), /usage: autocraft setup/);
   assert.match(errors.join("\n"), /https/);
+});
+
+// The AppArmor step's command, run against a scratch file instead of /etc/apparmor.d/bwrap, with `true` or `false` as apparmor_parser.
+const profileRun = (parser: "true" | "false", setup?: (file: string) => void) => {
+  const dir = mkdtempSync(join(tmpdir(), "apparmor-")).replace(/\\/g, "/");
+  const file = `${dir}/bwrap`;
+  setup?.(file);
+  const cmd = steps({ sandbox: "failed", userns: true, root: true })[0]!.cmd!.replaceAll("/etc/apparmor.d/bwrap", file).replace("apparmor_parser", parser);
+  const r = spawnSync("sh", ["-c", cmd], { encoding: "utf8" });
+  const left = readdirSync(dir);
+  const text = existsSync(file) ? readFileSync(file, "utf8") : null;
+  rmSync(dir, { recursive: true, force: true });
+  return { status: r.status, left, text };
+};
+const shOk = spawnSync("sh", ["-c", "command -v mktemp ln >/dev/null"]).status === 0;
+
+test("the AppArmor profile is written whole and loaded; one that does not load is removed again", { skip: !shOk && "no sh" }, () => {
+  const ok = profileRun("true");
+  assert.equal(ok.status, 0);
+  assert.equal(ok.text, "abi <abi/4.0>,\ninclude <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined) {\n  userns,\n}\n");
+  assert.deepEqual(ok.left, ["bwrap"]);
+  // The parser refuses it: the profile this run created goes, and no temporary file stays.
+  const bad = profileRun("false");
+  assert.notEqual(bad.status, 0);
+  assert.deepEqual(bad.left, []);
+});
+
+test("a profile that appeared before the step ran is neither overwritten nor removed", { skip: !shOk && "no sh" }, () => {
+  for (const parser of ["true", "false"] as const) {
+    const r = profileRun(parser, (file) => writeFileSync(file, "# someone else's\n"));
+    assert.notEqual(r.status, 0);
+    assert.equal(r.text, "# someone else's\n");
+    assert.deepEqual(r.left, ["bwrap"]);
+  }
+});
+
+test("macOS's git stub is found through symlinks: only /usr/bin/git without the developer tools counts", () => {
+  assert.equal(helper.appleGitStub("/usr/bin/git", () => false), true);
+  assert.equal(helper.appleGitStub("/usr/bin/git", () => true), false);
+  // /usr/local/bin/git linking to the stub resolves to /usr/bin/git before this check; another git is never the stub.
+  assert.equal(helper.appleGitStub("/opt/homebrew/Cellar/git/2.47.0/bin/git", () => false), false);
 });

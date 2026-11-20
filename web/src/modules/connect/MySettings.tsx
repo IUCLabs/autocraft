@@ -1,5 +1,5 @@
 import { CheckIcon, SlidersHorizontalIcon } from "@phosphor-icons/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApi, useQuery } from "../../api/client";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
@@ -21,6 +21,14 @@ export function MySettings() {
   const [manual, setManual] = useState(false);
   // When the last change was saved: the header says "Saved" for a few seconds after each save.
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // Saves still running (the header says Saving… until all are done), and the number of the latest change: only the
+  // save of the latest change may say Saved, so one that ends after a newer edit or save does not.
+  const [saving, setSaving] = useState(0);
+  const latest = useRef(0);
+  const edited = () => {
+    latest.current++;
+    setSavedAt(null);
+  };
   useEffect(() => {
     if (savedAt === null) return;
     const t = setTimeout(() => setSavedAt(null), 3000);
@@ -36,9 +44,13 @@ export function MySettings() {
   if (!data || !vals) return error ? <ErrorLine error={error.message} className="mt-4" /> : null;
   /** Saves through the shared write state and marks the time it succeeded. */
   const saveRun = (key: string, f: () => Promise<unknown>) => {
-    // A new write clears an earlier "Saved", so a failed one does not show as saved.
-    setSavedAt(null);
-    void write.run(key, f).then((ok) => ok && setSavedAt(Date.now()));
+    edited();
+    const n = latest.current;
+    setSaving((c) => c + 1);
+    void write.run(key, f).then((ok) => {
+      setSaving((c) => c - 1);
+      if (ok && n === latest.current) setSavedAt(Date.now());
+    });
   };
   const savePicks = (next: string[]) => {
     const was = picks;
@@ -102,7 +114,7 @@ export function MySettings() {
         onChange={(e) => {
           const next = { ...vals, [key]: e.target.value };
           setVals(next);
-          setSavedAt(null);
+          edited();
         }}
         onBlur={() => save(vals)}
         onKeyDown={(e) => {
@@ -122,7 +134,7 @@ export function MySettings() {
       title={<SectionTitle icon={SlidersHorizontalIcon}>My settings</SectionTitle>}
       aside={
         <span role="status" aria-live="polite" className="flex items-center gap-1">
-          {write.busy ? "Saving…" : savedAt !== null ? (
+          {saving > 0 ? "Saving…" : savedAt !== null ? (
             <span className="flex items-center gap-1 font-medium text-ok">
               <CheckIcon aria-hidden weight="bold" /> Saved
             </span>
@@ -153,7 +165,7 @@ export function MySettings() {
             invalid={!validMax(maxCalls)}
             onChange={(e) => {
               setMaxCalls(e.target.value);
-              setSavedAt(null);
+              edited();
             }}
             onBlur={() => saveMax(maxCalls)}
             onKeyDown={(e) => {
