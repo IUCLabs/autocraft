@@ -640,7 +640,8 @@ export const STEPS: StepDef[] = [
       const { itemOf, plannedItems } = await import("../core/select-items.ts");
       const run = latestRun(ctx.db);
       if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
-      const due = plannedItems(ctx.db, "referee", { run }).slice(0, Number(ctx.params.limit));
+      const { takersFirst } = await import("../agents/call.ts");
+      const due = takersFirst(ctx.db, plannedItems(ctx.db, "referee", { run }), (p) => [p.facts.repo]).slice(0, Number(ctx.params.limit));
       if (!due.length) return `Nothing to referee in run ${run}.`;
       const asked = (source: string) => due.filter((p) => p.action.params?.source === source).map((p) => itemOf(ctx.db, p.facts.repo, p.facts.number));
       const sonnet = asked("sonnet"), opus = asked("opus");

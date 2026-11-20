@@ -168,6 +168,16 @@ export function queueRoomPass(db: DatabaseSync): RoomPass {
   };
 }
 
+/**
+ * `items` with those whose calls no connected Task Runner may take moved behind the others (stable). A job cuts its selection to a
+ * limit before its pool runs; sorted this way the cut never fills with items the pool would skip.
+ */
+export function takersFirst<T>(db: DatabaseSync, items: readonly T[], reposOf: (t: T) => readonly string[] | undefined): T[] {
+  const pass = queueRoomPass(db);
+  const has = items.map((t) => pass.taker(reposOf(t)));
+  return [...items.keys()].sort((a, b) => Number(has[b]) - Number(has[a]) || a - b).map((i) => items[i]!);
+}
+
 /** The model queue's room for a pool's units by index (classify/run.ts pool): answers are kept for one round of the pool's scheduling. */
 export type PoolRoom = { round(): void; room(i: number): number; taker(i: number): boolean };
 

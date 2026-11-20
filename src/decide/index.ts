@@ -12,6 +12,7 @@ import { connect } from "../db.ts";
 import { trackedNames } from "../repos.ts";
 import { buildDecision } from "./decision.ts";
 import { ask } from "../decisions.ts";
+import { takersFirst } from "../agents/call.ts";
 import { prepare, prepareIds } from "./prepare.ts";
 import { type Candidate, type Reason } from "./select.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
@@ -110,7 +111,9 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
     count(result.byRepo, c.repo).asked++;
     jobItem(db, c.repo, c.number, "asked a scope decision", log, q.id);
   }
-  const ids = prepareIds(db, params.repos).slice(0, total);
+  const due = prepareIds(db, params.repos);
+  const repoOf = due.length > total ? new Map((db.prepare("SELECT id, repo FROM decisions").all() as { id: string; repo: string | null }[]).map((r) => [r.id, r.repo])) : new Map<string, string | null>();
+  const ids = (due.length > total ? takersFirst(db, due, (id) => { const r = repoOf.get(id); return r ? [r] : undefined; }) : due).slice(0, total);
   if (ids.length) {
     result.usageRun = usageRun;
     const r = await prepare(db, ids, {
