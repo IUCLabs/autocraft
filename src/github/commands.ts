@@ -121,20 +121,22 @@ function settle(db: DatabaseSync, r: Row, state: "done" | "refused" | "ignored" 
 /**
  * Decides one queued command and carries it out. Who may queue is not decided here: queueAdd applies the rule of every person-started write
  * (settleRefusal in src/settlers.ts) to the commenter's current role and the write permission read from GitHub now. This only settles what a
- * comment adds: who the commenter is. Returns false when GitHub could not tell the permission: the row stays queued.
+ * comment adds: who the commenter is. "retry" when GitHub could not tell the permission, "wait" when an item needs a newer read: the row
+ * stays queued.
  */
 async function carryOut(db: DatabaseSync, r: Row, deps: CommandDeps, now: Date, qp: QueuePage): Promise<"settled" | "retry" | "wait"> {
-  const access = getAccess(db, r.login);
-  const bound = (db.prepare("SELECT github_id FROM main.access WHERE login = ?").get(r.login) as { github_id: number | null } | undefined)?.github_id ?? null;
-  // Not someone AutoCraft knows (no login, or the login now belongs to another GitHub account): no answer.
-  if (!access || (bound !== null && Number(bound) !== r.github_id)) { settle(db, r, "ignored", null, now); return "settled"; }
-  if (bound === null) { settle(db, r, "refused", "sign in to the AutoCraft dashboard once first, so your GitHub account is bound to your login", now); return "settled"; }
+  // Before the permission read, so a commenter AutoCraft does not know costs no GitHub call.
+  if (!knownCommenter(db, r, now)) return "settled";
   const permission = deps.permission ?? (await import("../conversations/act.ts")).liveWrite;
   const p = await permission(deps.querier, r.repo, r.login).catch(() => "transient" as const);
   if (p === "transient") return "retry";
   // The permission read waited on GitHub: the hour may have run out meanwhile, and the outcome is recorded at this time.
   now = (deps.now ?? (() => new Date()))();
   if (now.getTime() - Date.parse(r.requested_at) >= EXPIRE_MS) { settle(db, r, "expired", null, now); return "settled"; }
+  // Who the commenter is, read again: the role or the login's binding may have changed while GitHub answered, and the role queueAdd
+  // checks is the one read here.
+  const access = knownCommenter(db, r, now);
+  if (!access) return "settled";
   // Again after the permission read: a read may have been written meanwhile. The mirror never goes back to a read that started
   // earlier (writePage), so an item that passes here keeps a read from after the comment until queueAdd's pre-approval reads it.
   if (waitsForRead(db, r, now, qp)) return "wait";
@@ -146,6 +148,18 @@ async function carryOut(db: DatabaseSync, r: Row, deps: CommandDeps, now: Date, 
     settle(db, r, "refused", oneLine(String((e as Error)?.message ?? e)) || "it could not be queued", now);
   }
   return "settled";
+}
+
+/**
+ * The commenter's access row, read now, or null after settling the command: `ignored` (no AutoCraft login, or the login is bound to
+ * another GitHub account: no answer) or `refused` (the login's GitHub id was never bound).
+ */
+function knownCommenter(db: DatabaseSync, r: Row, now: Date): NonNullable<ReturnType<typeof getAccess>> | null {
+  const access = getAccess(db, r.login);
+  const bound = (db.prepare("SELECT github_id FROM main.access WHERE login = ?").get(r.login) as { github_id: number | null } | undefined)?.github_id ?? null;
+  if (!access || (bound !== null && Number(bound) !== r.github_id)) { settle(db, r, "ignored", null, now); return null; }
+  if (bound === null) { settle(db, r, "refused", "sign in to the AutoCraft dashboard once first, so your GitHub account is bound to your login", now); return null; }
+  return access;
 }
 
 /**

@@ -302,6 +302,28 @@ describe("drainCommands", () => {
     assert.deepEqual(state, { 1: "queued", 2: "queued", 3: "done" }, "#2 and then #3 were tried before #1 again");
   });
 
+  test("the role and binding are read again after the permission read: a demoted or rebound commenter queues nothing", async () => {
+    const w = fresh().pr(1).pr(2);
+    deliver(w, payload({ body: `@${SLUG} merge queue`, number: 1, comment: 9001 }));
+    w.db.exec("DELETE FROM sync_requests");
+    readAt(w, 1, new Date(Date.now() + 1000));
+    const gh = ghFake();
+    // Demoted to viewer while GitHub answers.
+    await drainCommands(w.db, { ...deps(w, { exec: gh.exec }), permission: async () => { w.db.prepare("UPDATE access SET role = 'viewer' WHERE login = ?").run(OPERATOR); return "ok" as const; } });
+    assert.equal(rows(w)[0]!.state, "refused");
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    assert.match(gh.posted[0]!.body, /@op Not added to the merge queue: only an operator, or a maintainer/);
+    // The login is bound to another GitHub account while GitHub answers: no pre-approval and no answer.
+    w.db.prepare("UPDATE access SET role = 'operator' WHERE login = ?").run(OPERATOR);
+    deliver(w, payload({ body: `@${SLUG} merge queue`, number: 2, comment: 9002 }));
+    w.db.exec("DELETE FROM sync_requests");
+    readAt(w, 2, new Date(Date.now() + 1000));
+    await drainCommands(w.db, { ...deps(w, { exec: gh.exec }), permission: async () => { w.db.prepare("UPDATE access SET github_id = 999 WHERE login = ?").run(OPERATOR); return "ok" as const; } });
+    assert.equal(rows(w)[1]!.state, "ignored");
+    assert.equal(preapprovalOf(w.db, "app", 2), null);
+    assert.equal(gh.posted.length, 1);
+  });
+
   test("a command exactly an hour old has expired", async () => {
     const w = fresh().pr(1);
     deliver(w, payload({ body: `@${SLUG} merge queue` }));
