@@ -124,6 +124,8 @@ export type PoolOptions = {
   pollMs?: number;
   /** Upper bound on running jobs, also when `width` is a function. */
   max?: number;
+  /** Told the index of each job a PoolRoom left unstarted (no Task Runner may take it) when the pool ends. */
+  skipped?: (i: number) => void;
 };
 
 /**
@@ -156,7 +158,7 @@ export async function pool<T>(jobs: (() => Promise<T>)[], width: number | ((next
   if (opts.first && jobs.length > 1) {
     roomy?.round();
     const i = pending.find(takenBy);
-    if (i === undefined) return results;
+    if (i === undefined) { for (const x of pending) opts.skipped?.(x); return results; }
     await launch(i);
   }
   while (pending.length && !failed) {
@@ -182,6 +184,7 @@ export async function pool<T>(jobs: (() => Promise<T>)[], width: number | ((next
   }
   await Promise.all(running);
   if (failed) throw (failed as { e: unknown }).e;
+  for (const x of pending) opts.skipped?.(x);
   return results;
 }
 
@@ -801,14 +804,20 @@ export const add = (a: Usage, b: Usage): Usage => {
 
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
-export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<void> {
-  const batches = repoBatches(items, batchSize, (i) => i.repo);
+/** The Haiku batches of `items`: one repo's items each (repoBatches). */
+export const haikuBatches = (items: readonly Item[], batchSize: number = HAIKU.limits.perCall): Item[][] => repoBatches(items, batchSize, (i) => i.repo);
+
+/** Classifies the items in Haiku batches; returns how many items were in batches that ran (a batch no Task Runner may take does not). */
+export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<number> {
+  const batches = haikuBatches(items, batchSize);
+  let skipped = 0;
   await pool(batches.map((batch, n) => async () => {
     const r = await runModelStep(db, CLASSIFY_HAIKU, batch, { model, usage: { run: runId, agent: `haiku-${String(n).padStart(2, "0")}`, stage: "classify" } });
     if (r.ok) for (const verdicts of r.values) for (const v of verdicts) saveVerdict(db, "haiku", runId, v);
     const left = r.ok ? r.rest ?? [] : batch;
     if (left.length) console.error(`haiku batch ${n}: no valid answer for ${left.map(refOf).join(", ")}`);
-  }), poolRoom(db, (i) => itemRepos(batches[i]!)), { first: opts.cold });
+  }), poolRoom(db, (i) => itemRepos(batches[i]!)), { first: opts.cold, skipped: (i) => void (skipped += batches[i]!.length) });
+  return items.length - skipped;
 }
 
 export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = jevParallel(db)): Promise<void> {

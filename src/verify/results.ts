@@ -303,7 +303,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean; /
   const byPr = new Map<string, typeof rows>();
   for (const v of rows) byPr.set(`${v.repo}#${v.number}`, [...(byPr.get(`${v.repo}#${v.number}`) ?? []), v]);
   const groups = [...byPr.values()];
-  await pool(groups.map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), poolRoom(db, (i) => [groups[i]![0]!.repo]), { max: POOL_MAX.verifyCollect });
+  await pool(groups.map((group) => async (): Promise<void> => { for (const v of group) await one(v); }), poolRoom(db, (i) => [groups[i]![0]!.repo], { mayNotCall: true }), { max: POOL_MAX.verifyCollect });
 
   // Screenshot runs: one read of an empty table while the Screenshots feature has never run.
   s.shots = await collectScreenshots(db, d, log, runId, params.stopping);

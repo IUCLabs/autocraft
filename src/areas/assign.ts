@@ -99,13 +99,13 @@ async function assignRepo(db: DatabaseSync, repo: string, due: Due[], p: AssignP
     // With neither model available there is nothing to ask, so no diff is fetched.
     if (!jevAvailable(db) && freeSlots(db) <= 0 && !p.paths) { p.log?.(`areas: no model available for ${repo}`); break; }
     const chunk = await withPaths(due.slice(i, i + CHUNK), p.paths ?? diffPaths(db));
-    p.onSent?.(chunk.length);
     const t = await runTiered(db, AREAS, chunk, {
       ctx: { repo, areas: list.areas },
       cancelled: p.cancelled,
       jevUsage: (x) => ({ run: p.usageRun, agent: `areas-jev-${refOf(x)}`, stage: "areas", model: "jev-latest", items: () => 1, keepEarlier: true }),
       haikuUsage: (_batch, n) => ({ run: p.usageRun, agent: `areas-haiku-${repo}-${String(n).padStart(3, "0")}`, stage: "areas", keepEarlier: true }),
     });
+    p.onSent?.(chunk.length - t.skipped.size);
     for (const x of chunk) {
       const a = t.jev.get(refOf(x));
       if (a && settles(a.top)) store(x, a.area, "jev", a.top);

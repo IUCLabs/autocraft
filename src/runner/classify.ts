@@ -12,7 +12,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { refOf, type Item } from "../classify/parse.ts";
 import { freeSlots } from "../agents/accounts.ts";
 import { jevAvailable } from "../agents/jev.ts";
-import { runHaiku, runJev } from "../classify/run.ts";
+import { haikuBatches, runHaiku, runJev } from "../classify/run.ts";
 import { fillClassHashes } from "../itemhash.ts";
 import { itemOf, plannedItems } from "../core/select-items.ts";
 import type { StepContext } from "./steps.ts";
@@ -73,10 +73,9 @@ async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: 
   for (let i = 0, size = 0; i < todo.length && !ctx.cancelled(); i += size) {
     size = HAIKU_PER_CALL * Math.max(4, freeSlots(db));
     const chunk = todo.slice(i, i + size);
-    keepUsage(db, run, Array.from({ length: Math.ceil(chunk.length / HAIKU_PER_CALL) }, (_, n) => `haiku-${String(n).padStart(2, "0")}`));
-    sent(chunk.length);
-    // The first call of the pass runs alone and writes the prompt cache; the rest read it.
-    await runHaiku(db, run, chunk, undefined, undefined, { cold: i === 0 });
+    keepUsage(db, run, Array.from({ length: haikuBatches(chunk, HAIKU_PER_CALL).length }, (_, n) => `haiku-${String(n).padStart(2, "0")}`));
+    // The first call of the pass runs alone and writes the prompt cache; the rest read it. Items no Task Runner may take are not sent.
+    sent(await runHaiku(db, run, chunk, HAIKU_PER_CALL, undefined, { cold: i === 0 }));
     ctx.progress(`Haiku: ${Math.min(i + size, todo.length)} of ${todo.length} items`);
   }
   return (count.get(run, t0) as { n: number }).n;

@@ -51,6 +51,7 @@ import { PIPELINE_DRAIN } from "../core/rules.ts";
 import { DEADLINE_ERROR, enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { inferenceMode } from "../remote/mode.ts";
+import { takerSignature } from "../remote/room.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
 import { jobBlock, stepParallel, type Active } from "./concurrency.ts";
@@ -174,6 +175,9 @@ function repoAllows(plans: PlanSet, repo: string, want: Want): boolean {
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, audit entries the item-trace bookkeeping and the limits topic (its tables are already read through the jobs topic) do not. */
 export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits", "claims", "conversation-includes", "decision-choices", "decision-snooze", "security", "discord", "discord-links", "downloads", "build-features", "pr-builds", "nightly", "remote-helpers", "remote-queue"].includes(t));
 
+/** User-local mode: the Task Runners that could take calls (takerSignature). Work a pool left for want of a taker waits on it. */
+const takersOf = (db: DatabaseSync): string => (inferenceMode(db) === "user-local" ? takerSignature(db) : "");
+
 /** Sandbox tasks that ended, for lanes that read their results. */
 const tasksSig = (db: DatabaseSync): string =>
   String((db.prepare("SELECT COUNT(*) AS n FROM main.build_tasks WHERE state IN ('done', 'failed', 'cancelled', 'lost')").get() as { n: number }).n);
@@ -204,7 +208,7 @@ const fpKey = (step: string, repo: string | null): string => `pipeline_fp:${step
 /** What the lane's input looked like: the step, its repo, and the counters of the topics it reads. */
 export function fingerprintOf(db: DatabaseSync, lane: Pick<Lane, "topics" | "extra">, step: string, params: Params, seqs: Record<string, number> = readSeqs(db)): string {
   const topics = lane.topics ?? INPUT_TOPICS;
-  return [step, typeof params.repo === "string" ? params.repo : "", ...topics.map((t) => seqs[t] ?? 0), lane.extra?.(db) ?? ""].join("|");
+  return [step, typeof params.repo === "string" ? params.repo : "", ...topics.map((t) => seqs[t] ?? 0), lane.extra?.(db) ?? "", takersOf(db)].join("|");
 }
 
 function fpRecord(db: DatabaseSync, step: string, repo: string | null): FpRecord | null {
@@ -1049,7 +1053,7 @@ export async function planAutopilot(db: DatabaseSync, opts: PlanOptions = {}): P
 /** What the planner's marks say about the content stages read and the limits that apply to them. */
 function inputSignature(db: DatabaseSync): string {
   const seqs = readSeqs(db);
-  return [...INPUT_TOPICS.map((t) => seqs[t] ?? 0), limitsSig(db), tasksSig(db)].join(",");
+  return [...INPUT_TOPICS.map((t) => seqs[t] ?? 0), limitsSig(db), tasksSig(db), takersOf(db)].join(",");
 }
 
 /**

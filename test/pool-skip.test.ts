@@ -5,7 +5,11 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { poolRoom, repoBatches } from "../src/agents/call.ts";
-import { pool } from "../src/classify/run.ts";
+import { pool, runHaiku } from "../src/classify/run.ts";
+import type { Item } from "../src/classify/parse.ts";
+import { runTiered } from "../src/agents/step.ts";
+import { PRIORITY } from "../src/agents/steps.ts";
+import { setJevEnabled } from "../src/agents/jev.ts";
 import { createToken } from "../src/dash/mcp/tokens.ts";
 import { connect } from "../src/db.ts";
 import { parseStatus, storeStatus } from "../src/remote/helpers.ts";
@@ -28,6 +32,14 @@ test("a pool skips a unit nobody may take and runs the later ones", async () => 
   const started: number[] = [];
   await pool(repos.map((_, i) => async () => { started.push(i); }), poolRoom(db, (i) => [repos[i]!]), { first: true, pollMs: 5 });
   assert.deepEqual(started, [1, 2], "the deckcraft units ran; the photocraft unit never started and the pool ended");
+
+  // Work no Task Runner may take is neither counted as sent nor stored as answered.
+  const photo = [{ repo: "photocraft", number: 7, kind: "issue", title: "t", body: "" }] as unknown as Item[];
+  assert.equal(await runHaiku(db, "run-1", photo), 0, "no item of a skipped batch counts as sent");
+  setJevEnabled(db, false, "test");
+  const t = await runTiered(db, PRIORITY, photo);
+  assert.deepEqual([...t.skipped], ["photocraft#7"]);
+  assert.equal(t.alone.size + t.haiku.size, 0, "a skipped item is not one Haiku decided alone");
 });
 
 test("batches hold one repo's items, at most the batch size each, in the order of their first item", () => {

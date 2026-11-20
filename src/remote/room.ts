@@ -130,3 +130,17 @@ export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: numb
   const ahead = queueSnapshot(db, nowMs).filter((r) => r.seen_at >= nowMs - CALLER_STALE_MS && claimClass(r, nowMs) >= cls && takes(r)).length;
   return Math.max(0, room - ahead);
 }
+
+/**
+ * Which Task Runners could take calls, in a form that changes only when that set does: the fresh, ready, not Manual only
+ * runners' logins with their role, My repos and own repo list. The planner adds it to its input, so work left for want of a
+ * taker is planned again when one connects, without every status report waking the planner. Empty in other modes.
+ */
+export function takerSignature(db: DatabaseSync, nowMs: number = Date.now()): string {
+  const r = prep(db, `SELECT group_concat(k, ';') AS s FROM (SELECT DISTINCT lower(t.login) || ':' || COALESCE(a.role, '') || ':' || COALESCE(us.value, '') || ':' || COALESCE(t.idle_repos, '') AS k
+      FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
+      LEFT JOIN main.user_settings us ON us.login = t.login AND us.key = 'repos'
+      WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")} ORDER BY k)`)
+    .get(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { s: string | null };
+  return r.s ?? "";
+}

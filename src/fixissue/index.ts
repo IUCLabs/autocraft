@@ -608,7 +608,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
     } catch (e) {
       ilog(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     } finally { release(); }
-  }), poolRoom(db, (i) => [rows[i]!.repo]), { max: POOL_MAX.fixissueCollect });
+  }), poolRoom(db, (i) => [rows[i]!.repo], { mayNotCall: true }), { max: POOL_MAX.fixissueCollect });
   for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(xOf(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;

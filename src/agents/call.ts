@@ -160,8 +160,12 @@ export function queueRoomPass(db: DatabaseSync): RoomPass {
 /** The model queue's room for a pool's units by index (classify/run.ts pool): answers are kept for one round of the pool's scheduling. */
 export type PoolRoom = { round(): void; room(i: number): number; taker(i: number): boolean };
 
-/** PoolRoom for units whose calls name `reposOf(i)` (the job's repo param is added), in the current call's class. */
-export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly string[] | undefined): PoolRoom {
+/**
+ * PoolRoom for units whose calls name `reposOf(i)` (the job's repo param is added), in the current call's class. `mayNotCall`:
+ * a unit may finish without a model call (collecting build results), so every unit counts as having a taker and a unit of a
+ * repo no Task Runner takes still starts when none of the pool's units runs.
+ */
+export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly string[] | undefined, opts: { mayNotCall?: boolean } = {}): PoolRoom {
   const cls = currentClass();
   let pass: RoomPass | null = null;
   const rooms = new Map<string, number>(), takers = new Map<string, boolean>();
@@ -175,6 +179,7 @@ export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly stri
       return n;
     },
     taker: (i) => {
+      if (opts.mayNotCall) return true;
       const r = reposOf(i), k = keyOf(r);
       let t = takers.get(k);
       if (t === undefined) takers.set(k, (t = (pass ??= queueRoomPass(db)).taker(r)));
