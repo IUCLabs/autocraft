@@ -23,7 +23,7 @@ import { ghComment, WritePacedError } from "./write.ts";
 
 /** Comments read for a command: GitHub caps a body at 65536 characters. */
 const BODY_MAX = 65_536;
-/** A command not carried out within this long is dropped unanswered (the runner was down, or GitHub could not tell the permission). */
+/** A command not carried out before this long has passed is dropped unanswered (the runner was down, or GitHub could not tell the permission). */
 const EXPIRE_MS = 3600_000;
 /** A command whose permission read GitHub could not settle is tried again after this long. */
 const RETRY_MS = 60_000;
@@ -134,7 +134,7 @@ async function carryOut(db: DatabaseSync, r: Row, deps: CommandDeps, now: Date, 
   if (p === "transient") return "retry";
   // The permission read waited on GitHub: the hour may have run out meanwhile, and the outcome is recorded at this time.
   now = (deps.now ?? (() => new Date()))();
-  if (now.getTime() - Date.parse(r.requested_at) > EXPIRE_MS) { settle(db, r, "expired", null, now); return "settled"; }
+  if (now.getTime() - Date.parse(r.requested_at) >= EXPIRE_MS) { settle(db, r, "expired", null, now); return "settled"; }
   // Again after the permission read: a read may have been written meanwhile. The mirror never goes back to a read that started
   // earlier (writePage), so an item that passes here keeps a read from after the comment until queueAdd's pre-approval reads it.
   if (waitsForRead(db, r, now, qp)) return "wait";
@@ -217,7 +217,7 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
     const now = clock();
     let r = r0;
     if (r.state === "queued") {
-      if (now.getTime() - Date.parse(r.requested_at) > EXPIRE_MS) { settle(db, r, "expired", null, now); continue; }
+      if (now.getTime() - Date.parse(r.requested_at) >= EXPIRE_MS) { settle(db, r, "expired", null, now); continue; }
       if (r.command !== "merge-queue") { settle(db, r, "ignored", null, now); continue; }
       // No GitHub call while an item waits for a read since the comment (see waitsForRead).
       if (waitsForRead(db, r, now, qp)) continue;

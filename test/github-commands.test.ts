@@ -285,6 +285,15 @@ describe("drainCommands", () => {
     assert.equal(gh.posted.length, 0);
   });
 
+  test("a command exactly an hour old has expired", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue` }));
+    const at = Date.parse((w.db.prepare("SELECT requested_at FROM github_commands").get() as { requested_at: string }).requested_at);
+    await drained(w, { exec: ghFake().exec, now: () => new Date(at + 3600_000) });
+    assert.deepEqual(rows(w).map((r) => r.state), ["expired"]);
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+  });
+
   test("the hour can run out while GitHub answers the permission read: then nothing is queued", async () => {
     const w = fresh().pr(1);
     deliver(w, payload({ body: `@${SLUG} merge queue` }));
