@@ -1,7 +1,7 @@
 // Personal credentials of two kinds. An MCP Connector token: a signed-in user makes one on the Connect page and gives
 // it to their own agent, which calls POST /mcp with it as a bearer token and acts as that user. A Task Runner
 // credential: the runner makes it itself and a signed-in user approves its device login (src/remote/device-login.ts);
-// it claims model calls on /api/remote/*. Only hashes are stored, and a credential counts only while its login is on
+// it claims model calls on /api/remote/*, and with Agent access (can_agent) it also uses /mcp like a connector. Only hashes are stored, and a credential counts only while its login is on
 // the access list: the role is read from the list on every call, so a role change applies at once.
 import type { DatabaseSync } from "node:sqlite";
 import type { Role } from "../types.ts";
@@ -10,9 +10,9 @@ import { HttpError } from "../server/util.ts";
 
 const DAY = 86_400_000;
 export const MCP_TOKEN_TTL = 90 * DAY;
-/** A token that may answer decisions lasts as long as an operator's dashboard session at most (OPERATOR_SESSION_MAX). */
+/** A connector token that may answer decisions lasts as long as an operator's dashboard session at most (OPERATOR_SESSION_MAX). */
 export const MCP_ANSWER_TOKEN_TTL = 7 * DAY;
-/** A Task Runner credential lasts this long after its last use. */
+/** A Task Runner credential lasts this long after its last use, whatever its scopes. */
 export const RUNNER_TOKEN_TTL = 90 * DAY;
 /** Per login and kind: five connectors and five runners. */
 export const MCP_TOKENS_PER_LOGIN = 5;
@@ -22,14 +22,17 @@ const LABEL_MAX = 60;
 const TOUCH_EVERY = 60_000;
 
 export type TokenKind = "connector" | "runner";
-export type McpTokenRow = { id: number; label: string | null; kind: TokenKind; canAnswer: boolean; /** Equal to `kind === "runner"`: the credential may claim model calls in the user-local inference mode (src/remote/). */ canRun: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
-/** `canAnswer`: the token was made to answer; the answer tools also need `role` to be operator at the time of the call. */
-export type McpCaller = { tokenId: number; login: string; role: Role; canAnswer: boolean; kind: TokenKind };
+export type McpTokenRow = { id: number; label: string | null; kind: TokenKind; canAnswer: boolean; /** A runner credential may also use /mcp; true for every connector. */ canAgent: boolean; /** Equal to `kind === "runner"`: the credential may claim model calls in the user-local inference mode (src/remote/). */ canRun: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
+/**
+ * `canAnswer`: the credential was made to answer; the answer tools also need answering to be available and `role` to settle
+ * decisions at the time of the call. `canAgent`: the credential may use /mcp (always for a connector).
+ */
+export type McpCaller = { tokenId: number; login: string; role: Role; canAnswer: boolean; canAgent: boolean; kind: TokenKind };
 
-type Raw = { id: number; label: string | null; kind: TokenKind; can_answer: number; can_run: number; created_at: string; last_used_at: string | null; expires_at: string };
-const COLS = "id, label, kind, can_answer, can_run, created_at, last_used_at, expires_at";
+type Raw = { id: number; label: string | null; kind: TokenKind; can_answer: number; can_agent: number; can_run: number; created_at: string; last_used_at: string | null; expires_at: string };
+const COLS = "id, label, kind, can_answer, can_agent, can_run, created_at, last_used_at, expires_at";
 const toRow = (r: Raw): McpTokenRow =>
-  ({ id: Number(r.id), label: r.label, kind: r.kind, canAnswer: r.can_answer === 1, canRun: r.can_run === 1, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at });
+  ({ id: Number(r.id), label: r.label, kind: r.kind, canAnswer: r.can_answer === 1, canAgent: r.kind === "connector" || r.can_agent === 1, canRun: r.can_run === 1, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at });
 
 /** A label as shown: control characters become spaces, trimmed, at most LABEL_MAX characters; null when empty. */
 export function cleanLabel(raw: unknown): string | null {
@@ -43,31 +46,38 @@ export function listTokens(db: DatabaseSync, login: string, kind?: TokenKind): M
     .all(login, new Date().toISOString(), ...(kind ? [kind] : [])) as Raw[]).map(toRow);
 }
 
-function insert(db: DatabaseSync, login: string, hash: string, label: string | null, kind: TokenKind, canAnswer: boolean, machine: string | null): McpTokenRow {
+export type Scopes = { agent: boolean; answer: boolean };
+
+function insert(db: DatabaseSync, login: string, hash: string, label: string | null, kind: TokenKind, scopes: Scopes, machine: string | null): McpTokenRow {
   if (listTokens(db, login, kind).length >= MCP_TOKENS_PER_LOGIN) {
     throw new HttpError(409, kind === "runner" ? `you have ${MCP_TOKENS_PER_LOGIN} Task Runners; remove one first` : `you have ${MCP_TOKENS_PER_LOGIN} tokens; revoke one first`);
   }
   const now = new Date();
-  const ttl = kind === "runner" ? RUNNER_TOKEN_TTL : canAnswer ? MCP_ANSWER_TOKEN_TTL : MCP_TOKEN_TTL;
-  return toRow(db.prepare(`INSERT INTO mcp_tokens (login, token_hash, label, kind, can_answer, can_run, machine, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`)
-    .get(login, hash, label, kind, canAnswer ? 1 : 0, kind === "runner" ? 1 : 0, machine, now.toISOString(), new Date(now.getTime() + ttl).toISOString()) as Raw);
+  const ttl = kind === "runner" ? RUNNER_TOKEN_TTL : scopes.answer ? MCP_ANSWER_TOKEN_TTL : MCP_TOKEN_TTL;
+  return toRow(db.prepare(`INSERT INTO mcp_tokens (login, token_hash, label, kind, can_answer, can_agent, can_run, machine, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${COLS}`)
+    .get(login, hash, label, kind, scopes.answer ? 1 : 0, kind === "runner" && scopes.agent ? 1 : 0, kind === "runner" ? 1 : 0, machine, now.toISOString(), new Date(now.getTime() + ttl).toISOString()) as Raw);
 }
 
 /**
  * A new credential for `login`; the plain value is returned once and never stored. Connectors are made on the Connect page;
  * a runner credential made here (server CLI, tests, benchmarks) skips the device login. The caller checks who may make an
- * answering token; a runner never answers.
+ * answering credential. `canAgent` applies to runners only.
  */
-export function createToken(db: DatabaseSync, login: string, rawLabel: unknown, opts: { kind?: TokenKind; canAnswer?: boolean } = {}): { token: string; row: McpTokenRow } {
+export function createToken(db: DatabaseSync, login: string, rawLabel: unknown, opts: { kind?: TokenKind; canAnswer?: boolean; canAgent?: boolean } = {}): { token: string; row: McpTokenRow } {
   const kind = opts.kind ?? "connector";
-  if (kind === "runner" && opts.canAnswer) throw new HttpError(400, "a Task Runner credential cannot answer decisions");
   const token = `${kind === "runner" ? RUNNER_TOKEN_PREFIX : MCP_TOKEN_PREFIX}${randomToken(32)}`;
-  return { token, row: insert(db, login, sha256hex(token), cleanLabel(rawLabel), kind, opts.canAnswer === true, null) };
+  return { token, row: insert(db, login, sha256hex(token), cleanLabel(rawLabel), kind, { agent: opts.canAgent === true, answer: opts.canAnswer === true }, null) };
 }
 
 /** The runner credential a device login approved: the runner holds the value, only `hash` arrives here. `machine` is its JSON. */
-export function addRunnerToken(db: DatabaseSync, login: string, hash: string, label: string | null, machine: string | null): McpTokenRow {
-  return insert(db, login, hash, label, "runner", false, machine);
+export function addRunnerToken(db: DatabaseSync, login: string, hash: string, label: string | null, machine: string | null, scopes: Scopes): McpTokenRow {
+  return insert(db, login, hash, label, "runner", scopes, machine);
+}
+
+/** Sets the scopes of one of the login's runners; false when it has no such runner. The caller checks who may grant `answer`. */
+export function setRunnerScopes(db: DatabaseSync, login: string, id: number, scopes: Scopes): boolean {
+  return db.prepare("UPDATE mcp_tokens SET can_agent = ?, can_answer = ? WHERE id = ? AND login = ? AND kind = 'runner' AND expires_at > ?")
+    .run(scopes.agent ? 1 : 0, scopes.answer ? 1 : 0, id, login, new Date().toISOString()).changes === 1;
 }
 
 /** Revokes one of the login's own credentials of `kind`; false when it has no such credential. */
@@ -80,9 +90,10 @@ export function endTokens(db: DatabaseSync, login: string): number {
   return Number(db.prepare("DELETE FROM mcp_tokens WHERE login = ?").run(login).changes);
 }
 
-/** Ends a login's answering tokens (it stopped being an operator); its read and feedback tokens stay. */
+/** Ends a login's answering connector tokens and takes answering from its runners (its role was lowered); the rest stay. */
 export function endAnswerTokens(db: DatabaseSync, login: string): number {
-  return Number(db.prepare("DELETE FROM mcp_tokens WHERE login = ? AND can_answer = 1").run(login).changes);
+  return Number(db.prepare("DELETE FROM mcp_tokens WHERE login = ? AND can_answer = 1 AND kind = 'connector'").run(login).changes)
+    + Number(db.prepare("UPDATE mcp_tokens SET can_answer = 0 WHERE login = ? AND can_answer = 1 AND kind = 'runner'").run(login).changes);
 }
 
 /** Every login's live tokens, for operators on the Access page. */
@@ -105,9 +116,9 @@ export function loadToken(db: DatabaseSync, token: string | undefined): McpCalle
   const prefix = token.startsWith(RUNNER_TOKEN_PREFIX) ? "runner" : token.startsWith(MCP_TOKEN_PREFIX) ? "connector" : null;
   if (!prefix) return null;
   const now = new Date();
-  const row = db.prepare(`SELECT t.id, t.login, t.kind, t.last_used_at, t.can_answer, a.role FROM mcp_tokens t JOIN access a ON a.login = t.login
+  const row = db.prepare(`SELECT t.id, t.login, t.kind, t.last_used_at, t.can_answer, t.can_agent, a.role FROM mcp_tokens t JOIN access a ON a.login = t.login
     WHERE t.token_hash = ? AND t.expires_at > ?`).get(sha256hex(token), now.toISOString()) as
-    { id: number; login: string; kind: TokenKind; last_used_at: string | null; can_answer: number; role: Role } | undefined;
+    { id: number; login: string; kind: TokenKind; last_used_at: string | null; can_answer: number; can_agent: number; role: Role } | undefined;
   if (!row) return null;
   // Runner credentials from before the split carry the connector prefix.
   if (prefix === "runner" && row.kind !== "runner") return null;
@@ -115,7 +126,7 @@ export function loadToken(db: DatabaseSync, token: string | undefined): McpCalle
     if (row.kind === "runner") db.prepare("UPDATE mcp_tokens SET last_used_at = ?, expires_at = ? WHERE id = ?").run(now.toISOString(), new Date(now.getTime() + RUNNER_TOKEN_TTL).toISOString(), row.id);
     else db.prepare("UPDATE mcp_tokens SET last_used_at = ? WHERE id = ?").run(now.toISOString(), row.id);
   }
-  return { tokenId: Number(row.id), login: row.login, role: row.role, canAnswer: row.can_answer === 1, kind: row.kind };
+  return { tokenId: Number(row.id), login: row.login, role: row.role, canAnswer: row.can_answer === 1, canAgent: row.kind === "connector" || row.can_agent === 1, kind: row.kind };
 }
 
 /** Ended credentials, and device logins an hour past their expiry, which their runner has had time to poll for the outcome. */

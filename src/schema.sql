@@ -232,7 +232,9 @@ CREATE INDEX IF NOT EXISTS sessions_login ON sessions(login);
 -- reads the inbox and sends feedback as that user, with the user's current role from the access list; shown once.
 -- `runner`: a Task Runner (/api/remote/*) that claims model calls in the user-local inference mode; the runner makes the
 -- credential itself and only its hash arrives here, through a device login (runner_logins).
--- can_answer: an operator opted the token in to answering decisions and undoing answers; such a token lasts 7 days.
+-- can_answer: the token may answer decisions and approve merges (an operator, or a maintainer where maintainers settle, opted it
+-- in); a connector token that answers lasts 7 days, a runner keeps its sliding expiry.
+-- can_agent: a runner credential may also use /mcp (its user ticked Agent access); connector tokens always may.
 CREATE TABLE IF NOT EXISTS mcp_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   login TEXT NOT NULL COLLATE NOCASE,
@@ -244,7 +246,8 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   idle_claim_at INTEGER,              -- ms since epoch: the token's last claim that found nothing to take (src/remote/room.ts)
   idle_tiers TEXT, idle_repos TEXT,   -- JSON: the tiers and repos (null: any) that empty claim asked for
   kind TEXT NOT NULL DEFAULT 'connector', -- connector | runner
-  machine TEXT                        -- runner: JSON { hostname, platform, arch } the runner sent at login
+  machine TEXT,                       -- runner: JSON { hostname, platform, arch } the runner sent at login
+  can_agent INTEGER NOT NULL DEFAULT 0
 );
 -- Leases that ended without a release or a reply (lost heartbeat, past a time limit), at most one per token in 10 minutes
 -- and one per call and login in 2 hours, newest 2 hours kept; counted per login toward its cool-off (src/remote/cooloff.ts).
@@ -305,7 +308,9 @@ CREATE TABLE IF NOT EXISTS runner_logins (
   expires_at INTEGER NOT NULL,
   state TEXT NOT NULL DEFAULT 'pending', -- pending | approved | denied | expired
   login TEXT COLLATE NOCASE,          -- the user who approved or denied it
-  token_id INTEGER                    -- the mcp_tokens row the approval made
+  token_id INTEGER,                   -- the mcp_tokens row the approval made
+  want_agent INTEGER NOT NULL DEFAULT 1, -- the scopes the runner asked for (LoginStart.scopes); the approver sets the final ones
+  want_answer INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS runner_logins_code ON runner_logins(user_code);
 CREATE UNIQUE INDEX IF NOT EXISTS runner_logins_secret ON runner_logins(secret_hash);

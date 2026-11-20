@@ -685,7 +685,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     // The per-address limit counts failed authentications only: behind a proxy every client shares one address.
     if (!caller && !mcpLimitIp.allow(clientIp(req))) return reply(429, rpcError(-32000, "too many requests; wait a minute"), { "retry-after": "60" });
     if (!caller) return reply(401, rpcError(-32001, "a valid AutoCraft agent token is required (Authorization: Bearer <token>); make one on the dashboard's Connect page"), { "www-authenticate": 'Bearer realm="autocraft"' });
-    if (caller.kind !== "connector") return reply(403, rpcError(-32001, "this is a Task Runner credential; the MCP Connector needs a token from the dashboard's Connect page"));
+    if (!caller.canAgent) return reply(403, rpcError(-32001, "this Task Runner has no agent access; tick Agent access for it on the dashboard's Connect page"));
     if (!mcpLimitToken.allow(caller.login.toLowerCase())) return reply(429, rpcError(-32000, "too many requests for this login; wait a minute"), { "retry-after": "60" });
     let msg: unknown;
     try {

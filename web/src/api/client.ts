@@ -11,6 +11,7 @@ import type {
   MySettings,
   MySettingsChange,
   ModelQueue,
+  LoginScopes,
   PendingRunnerLogin,
   RunnersReply,
   DiscordLinkCode,
@@ -312,12 +313,15 @@ export interface Api {
     /** A login waiting for approval under this user code, or null when none is (404). */
     pending(code: string): Promise<PendingRunnerLogin | null>;
     /**
-     * `label`: the name the runner is listed under, when the user changed it. `otherMachine`: the user says they started the
-     * login on another machine; required when it came from another address (409 otherwise).
+     * `label`: the name the runner is listed under, when the user changed it; `scopes`: the ticks the user approved.
+     * `otherMachine`: the user says they started the login on another machine; required when it came from another address
+     * (409 otherwise).
      */
-    approve(code: string, label?: string, otherMachine?: boolean): Promise<unknown>;
+    approve(code: string, label: string | undefined, scopes: LoginScopes, otherMachine?: boolean): Promise<unknown>;
     deny(code: string): Promise<unknown>;
     revoke(id: number): Promise<unknown>;
+    /** Sets one of the user's runners' agent access and answering. */
+    setScopes(id: number, scopes: LoginScopes): Promise<unknown>;
   };
   /** The queued model calls of the user-local inference mode; maintainers and operators pick calls for their own Task Runners. */
   modelQueue: {

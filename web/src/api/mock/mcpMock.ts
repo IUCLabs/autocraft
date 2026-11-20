@@ -15,21 +15,21 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
   let runners: RunnerInfo[] = [
     { tokenId: 7, label: "studio", slots: 2, busy: 0, lastError: null, readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-25_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
       usage: { fiveHour: { usedPercent: 4, resetsAt: at(4.5 * 3600_000) }, weekly: { usedPercent: 9, resetsAt: at(5 * DAY) }, at: at(-25_000) },
-      machine: { hostname: "studio.local", platform: "darwin", arch: "arm64" }, helperVersion: "1.3.0", createdAt: at(-2 * 3600_000), expiresAt: at(90 * DAY) },
+      machine: { hostname: "studio.local", platform: "darwin", arch: "arm64" }, helperVersion: "1.3.0", createdAt: at(-2 * 3600_000), expiresAt: at(90 * DAY), agent: true, answer: true },
     { tokenId: 2, label: "laptop", slots: 5, busy: 2, lastError: null, readiness: "ready", until: null, reason: null, fresh: true, lastSeen: at(-40_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
       usage: { fiveHour: { usedPercent: 42, resetsAt: at(3 * 3600_000) }, weekly: { usedPercent: 18, resetsAt: at(4 * DAY) }, at: at(-40_000) },
-      machine: { hostname: "kestrel", platform: "linux", arch: "x64" }, helperVersion: "1.3.0", createdAt: at(-30 * DAY), expiresAt: at(90 * DAY) },
+      machine: { hostname: "kestrel", platform: "linux", arch: "x64" }, helperVersion: "1.3.0", createdAt: at(-30 * DAY), expiresAt: at(90 * DAY), agent: true, answer: false },
     { tokenId: 3, label: "workstation", slots: 2, busy: 0, lastError: { text: "/api/remote/heartbeat: HTTP 502 bad gateway", at: at(-9 * MIN) }, readiness: "quota-held", until: at(95 * MIN), reason: "5-hour window 83% used (reserve 20% free)", fresh: true, lastSeen: at(-4 * MIN), harness: "codex", models: { top: "astra", mid: "astra-mini", small: "astra-mini" }, reserve: { fiveHour: 20, weekly: 10 },
       usage: { fiveHour: { usedPercent: 83, resetsAt: at(95 * MIN) }, weekly: { usedPercent: 61, resetsAt: at(2 * DAY) }, at: at(-4 * MIN) },
-      machine: { hostname: "ws-0412", platform: "linux", arch: "x64" }, helperVersion: "1.3.0", createdAt: at(-12 * DAY), expiresAt: at(89 * DAY) },
+      machine: { hostname: "ws-0412", platform: "linux", arch: "x64" }, helperVersion: "1.3.0", createdAt: at(-12 * DAY), expiresAt: at(89 * DAY), agent: false, answer: false },
     { tokenId: 4, label: "mini", slots: 1, busy: 0, lastError: { text: "Review of designcraft#412: the harness exited with code 1", at: at(-26 * MIN) }, readiness: "cooled-off", until: at(5 * 3600_000), reason: "its leases were lost 3 times within 2 hours (no heartbeat, or past the call's time limit)", fresh: true, lastSeen: at(-90_000), harness: "claude", models: { top: "opus", mid: "sonnet", small: "haiku" }, reserve: { fiveHour: 20, weekly: 10 },
       usage: { fiveHour: { usedPercent: 12, resetsAt: at(4 * 3600_000) }, weekly: { usedPercent: 30, resetsAt: at(4 * DAY) }, at: at(-90_000) },
-      machine: null, helperVersion: "1.2.0", createdAt: at(-60 * DAY), expiresAt: at(80 * DAY) },
+      machine: null, helperVersion: "1.2.0", createdAt: at(-60 * DAY), expiresAt: at(80 * DAY), agent: false, answer: false },
   ];
   // `?runner=BCDF-GHJK` comes from this browser's address, `?runner=QRST-VWXZ` from another one.
   const pending = new Map<string, PendingRunnerLogin>([
-    ["BCDFGHJK", { label: "desk", machine: { hostname: "desk-linux", platform: "linux", arch: "x64" }, ip: "203.0.113.24", yourIp: "203.0.113.24", startedAt: at(-50_000), helperVersion: "1.3.0", expiresAt: at(9 * MIN) }],
-    ["QRSTVWXZ", { label: "build-box", machine: { hostname: "build-07", platform: "linux", arch: "arm64" }, ip: "198.51.100.77", yourIp: "203.0.113.24", startedAt: at(-3 * MIN), helperVersion: "1.3.0", expiresAt: at(7 * MIN) }],
+    ["BCDFGHJK", { label: "desk", machine: { hostname: "desk-linux", platform: "linux", arch: "x64" }, ip: "203.0.113.24", yourIp: "203.0.113.24", startedAt: at(-50_000), helperVersion: "1.3.0", expiresAt: at(9 * MIN), scopes: { agent: true, answer: true } }],
+    ["QRSTVWXZ", { label: "build-box", machine: { hostname: "build-07", platform: "linux", arch: "arm64" }, ip: "198.51.100.77", yourIp: "203.0.113.24", startedAt: at(-3 * MIN), helperVersion: "1.3.0", expiresAt: at(7 * MIN), scopes: { agent: true, answer: false } }],
   ]);
   const norm = (code: string) => code.replace(/-/g, "").toUpperCase();
   let nextRunner = 20;
@@ -100,17 +100,18 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
       },
     },
     runners: {
-      list: () => wait({ runners: structuredClone(runners) }),
+      list: () => wait({ runners: structuredClone(runners), answering: settles }),
       pending: (code) => wait(structuredClone(pending.get(norm(code)) ?? null)),
-      async approve(code, label, otherMachine) {
+      async approve(code, label, scopes, otherMachine) {
         if (!staff) throw new Error("viewers cannot add Task Runners");
+        if (scopes.answer && !settles) throw new Error("only operators, and maintainers where they may settle decisions, let a Task Runner answer decisions");
         const p = pending.get(norm(code));
         if (!p) throw new Error("no pending Task Runner login has this code");
         if (p.ip !== p.yourIp && !otherMachine) throw new Error("this login was started from another address than yours");
         if (runners.length >= 5) throw new Error("you have 5 Task Runners; revoke one first");
         pending.delete(norm(code));
         runners = [{ tokenId: nextRunner++, label: label?.trim() || p.label, slots: null, busy: null, lastError: null, readiness: null, until: null, reason: null, fresh: false, lastSeen: null, harness: null, models: {}, reserve: null, usage: null,
-          machine: p.machine, helperVersion: p.helperVersion, createdAt: at(0), expiresAt: at(90 * DAY) }, ...runners];
+          machine: p.machine, helperVersion: p.helperVersion, createdAt: at(0), expiresAt: at(90 * DAY), ...scopes }, ...runners];
         changed();
         return wait({ ok: true });
       },
@@ -122,6 +123,14 @@ export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | 
       async revoke(id) {
         if (!runners.some((r) => r.tokenId === id)) throw new Error("you have no such Task Runner");
         runners = runners.filter((r) => r.tokenId !== id);
+        changed();
+        return wait({ ok: true });
+      },
+      async setScopes(id, scopes) {
+        const cur = runners.find((r) => r.tokenId === id);
+        if (!cur) throw new Error("you have no such Task Runner");
+        if (scopes.answer && !cur.answer && !settles) throw new Error("only operators, and maintainers where they may settle decisions, let a Task Runner answer decisions");
+        runners = runners.map((r) => (r.tokenId === id ? { ...r, ...scopes } : r));
         changed();
         return wait({ ok: true });
       },

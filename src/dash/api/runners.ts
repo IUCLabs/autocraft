@@ -1,9 +1,13 @@
 // The signed-in user's Task Runners (session routes): their list, approving or denying a runner's device login
-// (src/remote/device-login.ts), and removing one. Maintainers and operators approve and deny; anyone lists and removes
-// their own. Removing deletes the credential: a lease it holds goes back to the queue at its next heartbeat (liveLease).
+// (src/remote/device-login.ts), setting a runner's scopes, and removing one. Maintainers and operators approve and deny;
+// anyone lists, sets the scopes of and removes their own. Answering is granted on the rule of answering connector tokens
+// (mcp.ts): only while answering is available, by an operator or by a maintainer where maintainers settle decisions.
+// Removing deletes the credential: a lease it holds goes back to the queue at its next heartbeat (liveLease).
 import type { DatabaseSync } from "node:sqlite";
+import { maintainerWritesOn } from "../../settlers.ts";
 import { audit } from "../audit.ts";
-import { revokeToken } from "../mcp/tokens.ts";
+import { answering } from "../mcp/index.ts";
+import { revokeToken, setRunnerScopes, type Scopes } from "../mcp/tokens.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { approveLogin, denyLogin, normalizeCode, pendingLogin } from "../../remote/device-login.ts";
@@ -41,16 +45,30 @@ function byCode<T>(req: Req, raw: unknown, find: (code: string) => T | null): T 
   return found;
 }
 
+/** Whether the signed-in user may let a runner answer. */
+const mayGrantAnswer = (db: DatabaseSync, req: Req): boolean =>
+  answering.enabled && (req.user.role === "operator" || (req.user.role === "maintainer" && maintainerWritesOn(db)));
+
+/** The `agent` and `answer` ticks of a request body, checked; `hadAnswer`: the runner answers already, so keeping it grants nothing. */
+function scopesOf(db: DatabaseSync, req: Req, b: Record<string, unknown>, hadAnswer = false): Scopes {
+  if (typeof b.agent !== "boolean" || typeof b.answer !== "boolean") throw new HttpError(400, "agent and answer must be true or false");
+  if (b.answer && !hadAnswer && !mayGrantAnswer(db, req)) {
+    throw new HttpError(403, answering.enabled ? "only operators, and maintainers where they may settle decisions, let a Task Runner answer decisions" : "answering from an agent is not available yet");
+  }
+  return { agent: b.agent, answer: b.answer };
+}
+
 export function list(db: DatabaseSync, req: Req): RunnersReply {
   const helpers = listHelpers(db, req.user.login);
-  const extra = new Map((db.prepare(`SELECT t.id, t.machine, t.created_at, t.expires_at, h.helper_version FROM mcp_tokens t LEFT JOIN remote_helpers h ON h.token_id = t.id
-      WHERE t.login = ? AND t.kind = 'runner'`).all(req.user.login) as { id: number; machine: string | null; created_at: string; expires_at: string; helper_version: string | null }[])
+  const extra = new Map((db.prepare(`SELECT t.id, t.machine, t.created_at, t.expires_at, t.can_agent, t.can_answer, h.helper_version FROM mcp_tokens t LEFT JOIN remote_helpers h ON h.token_id = t.id
+      WHERE t.login = ? AND t.kind = 'runner'`).all(req.user.login) as { id: number; machine: string | null; created_at: string; expires_at: string; can_agent: number; can_answer: number; helper_version: string | null }[])
     .map((r) => [Number(r.id), r]));
   return {
     runners: helpers.flatMap((h) => {
       const x = extra.get(h.tokenId);
-      return x ? [{ ...h, machine: x.machine ? JSON.parse(x.machine) as Machine : null, helperVersion: x.helper_version, createdAt: x.created_at, expiresAt: x.expires_at }] : [];
+      return x ? [{ ...h, machine: x.machine ? JSON.parse(x.machine) as Machine : null, helperVersion: x.helper_version, createdAt: x.created_at, expiresAt: x.expires_at, agent: x.can_agent === 1, answer: x.can_answer === 1 }] : [];
     }),
+    answering: mayGrantAnswer(db, req),
   };
 }
 
@@ -64,8 +82,20 @@ export function approve(db: DatabaseSync, req: Req): RunnersReply {
   if (inferenceMode(db) !== "user-local") throw new HttpError(409, "the instance runs model calls on its own accounts; Task Runners take none now");
   const b = body(req);
   if (b.otherMachine !== undefined && typeof b.otherMachine !== "boolean") throw new HttpError(400, "otherMachine must be true or false");
-  const out = byCode(req, b.code, (code) => approveLogin(db, req.user.login, code, b.label, req.ip ?? "", b.otherMachine === true));
-  audit(db, req.user.login, "runner-approve", req.user.login, { id: out.row.id, label: out.row.label ?? undefined, machine: out.machine ?? undefined, ip: out.ip ?? undefined });
+  const scopes = scopesOf(db, req, b);
+  const out = byCode(req, b.code, (code) => approveLogin(db, req.user.login, code, b.label, scopes, req.ip ?? "", b.otherMachine === true));
+  audit(db, req.user.login, "runner-approve", req.user.login, { id: out.row.id, label: out.row.label ?? undefined, machine: out.machine ?? undefined, ip: out.ip ?? undefined, ...scopes });
+  return list(db, req);
+}
+
+export function scopes(db: DatabaseSync, req: Req): RunnersReply {
+  const b = body(req);
+  if (!Number.isInteger(b.id)) throw new HttpError(400, "id must be a Task Runner id");
+  const had = db.prepare("SELECT can_answer FROM mcp_tokens WHERE id = ? AND login = ? AND kind = 'runner'").get(b.id as number, req.user.login) as { can_answer: number } | undefined;
+  if (!had) throw new HttpError(404, "you have no such Task Runner");
+  const s = scopesOf(db, req, b, had.can_answer === 1);
+  if (!setRunnerScopes(db, req.user.login, b.id as number, s)) throw new HttpError(404, "you have no such Task Runner");
+  audit(db, req.user.login, "runner-scopes", req.user.login, { id: b.id, ...s });
   return list(db, req);
 }
 
