@@ -563,7 +563,7 @@ CREATE TABLE IF NOT EXISTS sync_requests (
   requested_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
--- Commands an operator wrote to the GitHub App in a comment (`@<app> merge queue`, src/github/commands.ts), for the runner to
+-- Commands a person wrote to the GitHub App in a comment (`@<app> merge queue`, src/github/commands.ts), for the runner to
 -- carry out and answer. Only these fields of the delivery are kept, never the comment's text. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS github_commands (
   comment_id INTEGER PRIMARY KEY,     -- GitHub's id of the comment: a redelivery adds nothing
@@ -574,13 +574,17 @@ CREATE TABLE IF NOT EXISTS github_commands (
   weight INTEGER,                     -- the fast-track weight given, or null for the default
   login TEXT NOT NULL,                -- the commenter, as GitHub sent it
   github_id INTEGER NOT NULL,         -- the commenter's numeric GitHub id
-  requested_at TEXT NOT NULL,
-  state TEXT NOT NULL,                -- queued | done | refused | ignored (unknown commenter: no answer) | expired
+  created_at TEXT NOT NULL,           -- the comment's creation time on GitHub: the PR head is pinned to this moment
+  requested_at TEXT NOT NULL,         -- when the delivery arrived
+  state TEXT NOT NULL,                -- queued | done | refused | ignored (no answer) | expired
   result TEXT,                        -- what the answer says
   done_at TEXT,
-  tried_at TEXT,                      -- the last try GitHub could not settle the permission for; the next one waits a minute
-  reply TEXT                          -- posted | failed; null while the answer is still to post
+  tried_at TEXT,                      -- the last try that waited on GitHub (a re-read or a read that failed); the next one waits a minute
+  retries INTEGER NOT NULL DEFAULT 0, -- tries GitHub could not settle (permission, comment or head read)
+  allowed INTEGER,                    -- 1: the commenter may queue on the repo, so the answer needs no comment approval
+  reply TEXT                          -- posted | failed | none (no answer is given); null while the answer is still to post
 );
+CREATE INDEX IF NOT EXISTS github_commands_state ON github_commands(state, reply);
 -- A tracked repo the last sync could not read: skipped for the run, retried by the next. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS sync_repo_errors (
   repo TEXT PRIMARY KEY,
