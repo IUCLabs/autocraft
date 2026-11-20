@@ -563,6 +563,23 @@ CREATE TABLE IF NOT EXISTS sync_requests (
   requested_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
+-- Commands an operator wrote to the GitHub App in a comment (`@<app> merge queue`, src/github/commands.ts), for the runner to
+-- carry out and answer. Only these fields of the delivery are kept, never the comment's text. Bookkeeping: no live topic.
+CREATE TABLE IF NOT EXISTS github_commands (
+  comment_id INTEGER PRIMARY KEY,     -- GitHub's id of the comment: a redelivery adds nothing
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  pr INTEGER NOT NULL,                -- 1: the comment is on a pull request
+  command TEXT NOT NULL,              -- merge-queue
+  weight INTEGER,                     -- the fast-track weight given, or null for the default
+  login TEXT NOT NULL,                -- the commenter, as GitHub sent it
+  github_id INTEGER NOT NULL,         -- the commenter's numeric GitHub id
+  requested_at TEXT NOT NULL,
+  state TEXT NOT NULL,                -- queued | done | refused | ignored (unknown commenter: no answer) | expired
+  result TEXT,                        -- what the answer says
+  done_at TEXT,
+  reply TEXT                          -- posted | failed; null while the answer is still to post
+);
 -- A tracked repo the last sync could not read: skipped for the run, retried by the next. Bookkeeping: no live topic.
 CREATE TABLE IF NOT EXISTS sync_repo_errors (
   repo TEXT PRIMARY KEY,

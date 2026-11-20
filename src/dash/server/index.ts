@@ -676,7 +676,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       throw e;
     }
     const one = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v);
-    const v = handleDelivery(db, config.secrets.app?.webhookSecret ?? null, { signature: one(req.headers["x-hub-signature-256"]), event: one(req.headers["x-github-event"]) }, raw, safeEqual);
+    const v = handleDelivery(db, config.secrets.app?.webhookSecret ?? null, { signature: one(req.headers["x-hub-signature-256"]), event: one(req.headers["x-github-event"]) }, raw, safeEqual, config.secrets.app?.slug ?? null);
     return reply(v.status);
   }
 

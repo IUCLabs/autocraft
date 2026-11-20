@@ -1,0 +1,198 @@
+// Commands in GitHub comments: `@<app> merge queue` from an operator queues the item as Queue items does and the app answers.
+import assert from "node:assert/strict";
+import { afterEach, describe, test } from "node:test";
+import { safeEqual } from "../src/dash/server/crypto.ts";
+import { drainCommands, parseCommand, type CommandDeps } from "../src/github/commands.ts";
+import { handleDelivery, signatureOf } from "../src/github/webhooks.ts";
+import type { Exec } from "../src/fixup/git.ts";
+import { fastTrackList } from "../src/fasttrack.ts";
+import { preapprovalOf } from "../src/preapproval/index.ts";
+import { OPERATOR, world, type World } from "./world-db.ts";
+
+const SLUG = "autocraft-bot";
+const SECRET = "hook-secret";
+const OP_ID = 101;
+
+let current: World | null = null;
+const fresh = (off: Parameters<World["repo"]>[0] = []): World => {
+  const w = (current = world().repo(off));
+  w.db.prepare("UPDATE access SET github_id = ? WHERE login = ?").run(OP_ID, OPERATOR);
+  return w;
+};
+afterEach(() => current?.close());
+
+const payload = (o: { body: string; number?: number; login?: string; id?: number; comment?: number; action?: string; type?: string; pr?: boolean; repo?: string }) => ({
+  action: o.action ?? "created",
+  repository: { full_name: o.repo ?? "storytold/app", name: "app" },
+  issue: { number: o.number ?? 1, ...(o.pr === false ? {} : { pull_request: { url: "x" } }) },
+  comment: { id: o.comment ?? 5000, body: o.body, user: { login: o.login ?? OPERATOR, id: o.id ?? OP_ID, type: o.type ?? "User" } },
+});
+const deliver = (w: World, p: unknown, slug: string | null = SLUG) => {
+  const raw = Buffer.from(JSON.stringify(p));
+  return handleDelivery(w.db, SECRET, { event: "issue_comment", signature: signatureOf(SECRET, raw) }, raw, safeEqual, slug);
+};
+const rows = (w: World) => w.db.prepare("SELECT comment_id, number, pr, weight, login, state, result, reply FROM github_commands ORDER BY comment_id").all().map((r) => ({ ...r }));
+
+/** A fake gh that records the comments it posts. */
+function ghFake(code = 0) {
+  const posted: { args: string[]; body: string }[] = [];
+  const exec: Exec = async (_cmd, args, opts) => {
+    posted.push({ args, body: String(opts?.input ?? "") });
+    return { code, stdout: code ? "" : "https://github.com/storytold/app/pull/1#issuecomment-9", stderr: code ? "boom" : "" };
+  };
+  return { posted, exec };
+}
+const deps = (w: World, o: Partial<CommandDeps> & { perm?: "ok" | "no" | "transient" } = {}): CommandDeps => ({
+  querier: w.gh.querier, permission: async () => o.perm ?? "ok", ...o,
+});
+const drained = async (w: World, o: Parameters<typeof deps>[1] = {}) => {
+  w.db.exec("DELETE FROM sync_requests");
+  return drainCommands(w.db, deps(w, o));
+};
+
+describe("parseCommand", () => {
+  test("a line of its own addressed to the app, any case and spelling, with an optional weight", () => {
+    assert.deepEqual(parseCommand(`@${SLUG} merge queue`, SLUG), { command: "merge-queue", weight: null });
+    assert.deepEqual(parseCommand(`Looks good.\n\n  @Autocraft-Bot Merge-Queue!  \nthanks`, SLUG), { command: "merge-queue", weight: null });
+    assert.deepEqual(parseCommand(`@${SLUG} mergequeue 8`, SLUG), { command: "merge-queue", weight: 8 });
+    assert.deepEqual(parseCommand(`@${SLUG}[bot]: merge queue weight 3`, SLUG), { command: "merge-queue", weight: 3 });
+    assert.deepEqual(parseCommand(`@${SLUG} merge queue 42`, SLUG), { command: "merge-queue", weight: 42 }, "the range is checked when it is carried out");
+  });
+
+  test("other apps, other words, quotes, code and text around the command do not count", () => {
+    for (const body of [
+      "@other-bot merge queue", `@${SLUG}x merge queue`, `please @${SLUG} merge queue`, `@${SLUG} merge queue now please`,
+      `> @${SLUG} merge queue`, "```\n@" + SLUG + " merge queue\n```", `@${SLUG} merge`, "", `@${SLUG} merge queue 123`,
+    ]) assert.equal(parseCommand(body, SLUG), null, body);
+    assert.equal(parseCommand(`@${SLUG} merge queue`, ""), null);
+    assert.equal(parseCommand(null, SLUG), null);
+    assert.equal(parseCommand(`@a.b merge queue`, "a-b"), null, "the slug is matched literally");
+  });
+});
+
+describe("webhook", () => {
+  test("a new comment with a command is queued once with the commenter, never its text; other comments queue none", () => {
+    const w = fresh().pr(1);
+    assert.equal(deliver(w, payload({ body: `@${SLUG} merge queue 7` })).status, 202);
+    assert.equal(deliver(w, payload({ body: `@${SLUG} merge queue 7` })).status, 202, "a redelivery");
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5001, action: "edited" }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5002, type: "Bot" }));
+    deliver(w, payload({ body: "just a comment", comment: 5003 }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5004, repo: "someoneelse/app" }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5005 }), null);
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5006, login: "bad login" }));
+    assert.deepEqual(rows(w), [{ comment_id: 5000, number: 1, pr: 1, weight: 7, login: OPERATOR, state: "queued", result: null, reply: null }]);
+    const cols = (w.db.prepare("SELECT name FROM pragma_table_info('github_commands')").all() as { name: string }[]).map((c) => c.name);
+    assert.ok(!cols.includes("body"), "the comment's text has no column");
+    assert.deepEqual(w.db.prepare("SELECT number FROM sync_requests").all().map((r) => ({ ...r })), [{ number: 1 }], "the item is still re-read");
+  });
+});
+
+describe("drainCommands", () => {
+  test("an operator with write access queues the PR as Queue items does, and the app answers in the thread", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue 7` }));
+    const gh = ghFake();
+    assert.equal(await drained(w, { exec: gh.exec }), 1);
+    assert.equal(preapprovalOf(w.db, "app", 1)?.state, "review");
+    assert.deepEqual(fastTrackList(w.db).map((f) => [f.number, f.weight]), [[1, 7]]);
+    const [r] = rows(w) as { state: string; reply: string; result: string }[];
+    assert.equal(r!.state, "done");
+    assert.equal(r!.reply, "posted");
+    assert.equal(gh.posted.length, 1);
+    assert.deepEqual(gh.posted[0]!.args.slice(0, 5), ["pr", "comment", "1", "--repo", "storytold/app"]);
+    assert.match(gh.posted[0]!.body, /^_Automated reply_\n\n@op Added to the merge queue; .*Fast-tracked with weight 7, 1 of 1\.$/);
+    const audit = w.db.prepare("SELECT action, login, details FROM audit WHERE action IN ('preapproval', 'fasttrack-add', 'github-command', 'github-command-reply') ORDER BY rowid").all() as { action: string; login: string; details: string }[];
+    assert.deepEqual(audit.map((a) => [a.action, a.login]), [["preapproval", OPERATOR], ["fasttrack-add", OPERATOR], ["github-command", OPERATOR], ["github-command-reply", OPERATOR]]);
+    assert.equal(JSON.parse(audit[1]!.details).via, "github");
+    assert.equal(JSON.parse(audit[3]!.details).state, "done");
+    assert.equal(await drained(w, { exec: gh.exec }), 0, "nothing is left");
+    assert.equal(gh.posted.length, 1);
+  });
+
+  test("the command waits for the item's re-read", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue` }));
+    const gh = ghFake();
+    assert.equal(await drainCommands(w.db, deps(w, { exec: gh.exec })), 0);
+    assert.equal(rows(w)[0]!.state, "queued");
+  });
+
+  test("a stranger, or a login now held by another GitHub account, gets no answer and changes nothing", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue`, login: "stranger", id: 999 }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5001, id: 998 }));
+    const gh = ghFake();
+    await drained(w, { exec: gh.exec });
+    assert.deepEqual(rows(w).map((r) => r.state), ["ignored", "ignored"]);
+    assert.equal(gh.posted.length, 0);
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+  });
+
+  test("Queue items' rule decides: a maintainer without maintainer writes, a viewer and an operator without write access are refused; so is an unbound login", async () => {
+    const w = fresh().pr(1);
+    w.db.prepare("INSERT INTO access (login, role, github_id) VALUES ('maint', 'maintainer', 202), ('view', 'viewer', 404), ('newop', 'operator', NULL)").run();
+    deliver(w, payload({ body: `@${SLUG} merge queue`, login: "maint", id: 202 }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5001, login: "view", id: 404 }));
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5002, login: "newop", id: 303 }));
+    const gh = ghFake();
+    await drained(w, { exec: gh.exec });
+    deliver(w, payload({ body: `@${SLUG} merge queue`, comment: 5003 }));
+    await drained(w, { exec: gh.exec, perm: "no" });
+    assert.deepEqual(rows(w).map((r) => r.state), ["refused", "refused", "refused", "refused"]);
+    assert.equal(preapprovalOf(w.db, "app", 1), null);
+    const bodies = gh.posted.map((p) => p.body);
+    assert.match(bodies[0]!, /@maint Not added to the merge queue: only an operator, or a maintainer with write access where the app acts for them, queues items on app\.$/);
+    assert.match(bodies[1]!, /@view Not added to the merge queue: only an operator, or a maintainer/);
+    assert.match(bodies[2]!, /@newop Not added to the merge queue: sign in to the AutoCraft dashboard once first/);
+    assert.match(bodies[3]!, /@op Not added to the merge queue: no write access to storytold\/app/);
+    assert.equal((w.db.prepare("SELECT github_id FROM access WHERE login = 'newop'").get() as { github_id: number | null }).github_id, null, "a comment never binds an id");
+  });
+
+  test("a maintainer who settles decisions on the repo queues, as with Queue items; without write access they do not", async () => {
+    const w = fresh().pr(1).pr(2);
+    w.db.prepare("INSERT INTO access (login, role, github_id) VALUES ('maint', 'maintainer', 202)").run();
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1'), ('github_identity', 'app')").run();
+    deliver(w, payload({ body: `@${SLUG} merge queue`, login: "maint", id: 202, number: 2, comment: 6000 }));
+    await drained(w, { exec: ghFake().exec, perm: "no" });
+    assert.equal(rows(w)[0]!.state, "refused");
+    assert.equal(preapprovalOf(w.db, "app", 2), null);
+    deliver(w, payload({ body: `@${SLUG} merge queue`, login: "maint", id: 202, comment: 6001 }));
+    await drained(w, { exec: ghFake().exec });
+    assert.equal(rows(w)[1]!.state, "done");
+    assert.equal(preapprovalOf(w.db, "app", 1)?.by, "maint");
+  });
+
+  test("queueAdd's refusal is the answer; an unclear permission keeps the command for later", async () => {
+    const w = fresh(["merge"]).pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue` }));
+    const gh = ghFake();
+    await drained(w, { exec: gh.exec, perm: "transient" });
+    assert.equal(rows(w)[0]!.state, "queued");
+    assert.equal(gh.posted.length, 0);
+    await drained(w, { exec: gh.exec });
+    assert.equal(rows(w)[0]!.state, "refused");
+    assert.match(gh.posted[0]!.body, /@op Not added to the merge queue: merging is not approved for app\.$/);
+  });
+
+  test("an issue is fast-tracked; an answer that fails is recorded and not posted again", async () => {
+    const w = fresh().issue(3);
+    deliver(w, payload({ body: `@${SLUG} merge queue`, number: 3, pr: false }));
+    const gh = ghFake(1);
+    await drained(w, { exec: gh.exec });
+    assert.deepEqual(fastTrackList(w.db).map((f) => f.number), [3]);
+    assert.equal(gh.posted[0]!.args[0], "issue");
+    assert.deepEqual(rows(w).map((r) => [r.state, r.reply]), [["done", "failed"]]);
+    await drained(w, { exec: gh.exec });
+    assert.equal(gh.posted.length, 1);
+  });
+
+  test("a command not carried out within an hour is dropped unanswered", async () => {
+    const w = fresh().pr(1);
+    deliver(w, payload({ body: `@${SLUG} merge queue` }));
+    const gh = ghFake();
+    await drained(w, { exec: gh.exec, now: () => new Date(Date.now() + 2 * 3600_000) });
+    assert.deepEqual(rows(w).map((r) => r.state), ["expired"]);
+    assert.equal(gh.posted.length, 0);
+  });
+});
