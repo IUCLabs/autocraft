@@ -64,7 +64,12 @@ export function queueDelivery(db: DatabaseSync, event: string, payload: unknown,
   const p = obj(payload);
   const repo = trackedName(db, p);
   if (!repo) return 0;
-  queueCommand(db, repo, event, p, appSlug, now);
+  // A command that cannot be stored never keeps the delivery's re-read from being queued.
+  try {
+    queueCommand(db, repo, event, p, appSlug, now);
+  } catch (e) {
+    console.log(`webhook command in ${repo}: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+  }
   const numbers = itemNumbers(db, repo, event, p);
   if (!numbers.length) return 0;
   const at = now.toISOString().replace(/\.\d+Z$/, "Z");

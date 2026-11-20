@@ -11,7 +11,7 @@
 //   merged / asked / cancelled / failed end it.
 // Every transition is a pure reaction to rows other steps write (fixups, opus_reviews, pr_checks, items, merges), evaluated by
 // advancePreapprovals on each runner tick: no timer and no wait of its own; the one time comparison (the start of the mirror's last sync against the push) is made when the tick runs anyway. Merging itself is never called from here.
-import { settlesNow } from "../settlers.ts";
+import { settleMemo, settlesNow } from "../settlers.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { Preapproval } from "../../web/src/api/types.ts";
 import type { Step } from "../conversations/cards.ts";
@@ -34,6 +34,7 @@ import { markReviewsStale, staleReviews } from "../review/discussion.ts";
 import { reviewHold } from "../review/gate.ts";
 import type { PrFacts } from "../core/plan.ts";
 import { openOperatorFixups, operatorTriesLeft, queuedOperatorFix } from "./state.ts";
+import { refreshSettlers, type RefreshDeps } from "./permissions.ts";
 import { lockLiveSql } from "../answers/hold.ts";
 
 export type PipelineStep = Extract<Step, { kind: "review" | "fixup" }>;
@@ -90,8 +91,11 @@ function move(db: DatabaseSync, p: Row, to: Row["state"], o: { head?: string | n
   return true;
 }
 
-/** An operator, or a maintainer who still settles on the repo (src/settlers.ts): their Merge answer and approval count. */
-const isOperator = (db: DatabaseSync, login: string | null, repo: string): boolean => settlesNow(db, login, [repo]);
+/**
+ * An operator, or a maintainer who still settles on the repo (src/settlers.ts): their Merge answer and approval count. `held` is the pass's
+ * `refreshSettlers` result: a maintainer's write permission the pipeline is reading again still counts until GitHub answers.
+ */
+const isOperator = (db: DatabaseSync, login: string | null, repo: string, held?: ReadonlySet<string>): boolean => settlesNow(db, login, [repo], { ...settleMemo(), held });
 
 /** Takes back the Merge answer the hand-over wrote at the row's head (an answer anyone else wrote, or one already applied, stays). Inside the caller's transaction. */
 export function revertAnswer(db: DatabaseSync, p: Row, by: string): boolean {
@@ -201,7 +205,11 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
  * the way a carried answer does, so the PR merges only after a sure take review, a clean pre-merge review and green CI there;
  * a take-fix review, a defect or a red head asks the Merge? question instead. Throws when it cannot start.
  */
-export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: number; by: string; via?: string }): { label: string } {
+/** Why a pre-approval pinned to a head (a comment's) was refused: the PR has another head now. */
+export const HEAD_CHANGED = "the PR changed after your comment; comment again";
+
+/** `head`, when given, is the only head it may pre-approve: the head the person saw (a command's comment-time head). */
+export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: number; by: string; via?: string; head?: string }): { label: string } {
   const { repo, number, by, via } = o;
   const ref = `${repo}#${number}`;
   const it = prRow(db, repo, number);
@@ -213,6 +221,7 @@ export function preapproveMerge(db: DatabaseSync, o: { repo: string; number: num
   if (NOT_REVIEWABLE.includes(planState)) throw new Error(`${ref} cannot be reviewed (${planState}): answer its open question first`);
   const head = it.head_oid;
   if (!head) throw new Error(`${ref} has no head commit in the mirror yet`);
+  if (o.head !== undefined && head !== o.head) throw new Error(HEAD_CHANGED);
   if (!mergeApprovalOf(db, repo)) throw new Error(`merging is not approved for ${repo}`);
   const active = () => db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND state IN (${ACTIVE.map(() => "?").join(",")})`).get(repo, number, ...ACTIVE);
   if (active()) throw new Error(`${ref} already has a pre-approved merge in progress`);
@@ -265,12 +274,12 @@ type Hand = { done: true } | { gone: true } | { wait: true } | { stop: string };
  * Moves the row from ci to queued and answers the PR's Merge? decision at `head` with Merge for the operator, as the dashboard would,
  * in one transaction: a cancel that ran first leaves the row cancelled and nothing answered. Idempotent.
  */
-function handOver(db: DatabaseSync, p: Row, head: string): Hand {
+function handOver(db: DatabaseSync, p: Row, head: string, held: ReadonlySet<string>): Hand {
   const id = mergeDecisionId(p.repo, p.number, head);
   const at = iso();
   db.exec("BEGIN IMMEDIATE");
   try {
-    if (!isOperator(db, p.by, p.repo)) {
+    if (!isOperator(db, p.by, p.repo, held)) {
       db.exec("ROLLBACK");
       return { stop: `${p.by} no longer settles decisions on ${p.repo}` };
     }
@@ -375,7 +384,7 @@ function stepRuns(f: PrFacts, step: "cifix" | "conflict"): boolean {
 const FAILED_FIXUP = ["failed", "refused", "rejected", "cannot-push", "too-large", "push-denied", "asked", "comment-failed", "superseded"];
 
 /** One pre-approved merge: reads what the other steps recorded and makes at most one transition. */
-function advance(db: DatabaseSync, p: Row): void {
+function advance(db: DatabaseSync, p: Row, held: ReadonlySet<string>): void {
   const it = prRow(db, p.repo, p.number);
   const cancel = (reason: string) => void cancelRow(db, p.id, ACTOR, reason, `The pre-approved merge was cancelled: ${reason}.`);
   const stop = (to: "asked" | "failed", why: string, head: string, facts: string[] = [why]) => {
@@ -389,7 +398,7 @@ function advance(db: DatabaseSync, p: Row): void {
   if (it.state !== "OPEN") return cancel("the PR was closed");
 
   // The fix-up and the review that follows run on the maker's authority; the queued state re-checks the Merge answer below.
-  if (p.state !== "queued" && !isOperator(db, p.by, p.repo)) return cancel(`${p.by} no longer settles decisions on ${p.repo}`);
+  if (p.state !== "queued" && !isOperator(db, p.by, p.repo, held)) return cancel(`${p.by} no longer settles decisions on ${p.repo}`);
 
   if (p.state === "fixup") {
     const fx = db.prepare("SELECT state, to_head, reason FROM fixups WHERE operator_fix = ? AND source = 'operator' ORDER BY rowid DESC LIMIT 1").get(p.fix_id) as { state: string; to_head: string | null; reason: string | null } | undefined;
@@ -484,7 +493,7 @@ function advance(db: DatabaseSync, p: Row): void {
     const defects = findingsOf(pm).filter((x) => x.severity === "defect").length;
     if (defects) return stop("asked", `the pre-merge review found ${defects} defect${defects === 1 ? "" : "s"}`, head);
     if (pm.unsure === 1) return stop("asked", "the pre-merge review is unsure", head);
-    const h = handOver(db, p, head);
+    const h = handOver(db, p, head, held);
     if ("stop" in h) {
       if (move(db, p, "asked", { reason: h.stop, line: `The pre-approved merge stopped: ${h.stop}.` }) && !h.stop.includes("was answered")) askMerge(db, p, head, h.stop, [h.stop]);
     }
@@ -494,14 +503,14 @@ function advance(db: DatabaseSync, p: Row): void {
   // queued: the merge queue owns it now; only an answer that stops counting ends it here.
   const d = getDecision(db, mergeDecisionId(p.repo, p.number, head));
   if (!d || d.answer !== "merge") return cancel("its Merge answer was withdrawn");
-  if (!isOperator(db, d.answered_by ?? p.by, p.repo)) cancel(`${d.answered_by ?? p.by} no longer settles decisions on ${p.repo}, so the Merge answer no longer counts`);
+  if (!isOperator(db, d.answered_by ?? p.by, p.repo, held)) cancel(`${d.answered_by ?? p.by} no longer settles decisions on ${p.repo}, so the Merge answer no longer counts`);
 }
 
 /** Ends fix-up requests the planner can no longer work (the PR's head moved, it closed, the push is not possible), with the reason in the thread. Requests of a pre-approved merge end with it. */
-function endStaleRequests(db: DatabaseSync): void {
+function endStaleRequests(db: DatabaseSync, held: ReadonlySet<string>): void {
   // A request whose maker stopped settling (a maintainer after the setting went off, the repo left the app identity, a demotion) is dropped before the planner can push it.
   for (const o of db.prepare("SELECT id, repo, number, from_head, by, preapproval_id FROM operator_fixups WHERE state = 'queued'").all() as { id: number; repo: string; number: number; from_head: string; by: string; preapproval_id: number | null }[]) {
-    if (o.preapproval_id !== null || settlesNow(db, o.by, [o.repo])) continue;
+    if (o.preapproval_id !== null || isOperator(db, o.by, o.repo, held)) continue;
     if (db.prepare("UPDATE operator_fixups SET state = 'ended' WHERE id = ? AND state = 'queued'").run(o.id).changes !== 1) continue;
     audit(db, ACTOR, "operator-fixup", `${o.repo}#${o.number}`, { id: o.id, ended: true, reason: "the requester no longer settles here" });
     say(db, o.repo, o.number, `The queued fix-up of ${short(o.from_head)} was dropped: ${o.by} no longer settles decisions on ${o.repo}.`);
@@ -531,13 +540,13 @@ function settleCancelled(db: DatabaseSync): void {
  * still stands and the PR has no pre-approved merge, a row starts in `review` at H2 with no fix-up, and the chain of review, pre-merge
  * review and CI runs again before the hand-over answers the Merge? question at H2. One row per (PR, H2); the row's existence is the memory.
  */
-function carryAnswers(db: DatabaseSync): void {
+function carryAnswers(db: DatabaseSync, held: ReadonlySet<string>): void {
   const pushes = db.prepare(`SELECT m.repo, m.number, m.from_head, m.to_head, 'base merge' AS what FROM conflict_merges m WHERE m.state = 'merged' AND m.own_diff = 'same' AND m.to_head IS NOT NULL AND m.repo IN (SELECT name FROM main.tracked_repos)`).all() as { repo: string; number: number; from_head: string; to_head: string; what: string }[];
   for (const x of pushes) {
     const it = prRow(db, x.repo, x.number);
     if (!it || it.kind !== "pr" || it.state !== "OPEN" || it.head_oid !== x.to_head) continue;
     const d = getDecision(db, mergeDecisionId(x.repo, x.number, x.from_head));
-    if (!d || d.answer !== "merge" || !d.answered_by || !isOperator(db, d.answered_by, x.repo)) continue;
+    if (!d || d.answer !== "merge" || !d.answered_by || !isOperator(db, d.answered_by, x.repo, held)) continue;
     if (db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND (head = ? OR state IN (${ACTIVE.map(() => "?").join(",")}))`).get(x.repo, x.number, x.to_head, ...ACTIVE)) continue;
     // An answer the hand-over of a row wrote is that row's own; its ownPush handling carries it while the row is active.
     if (db.prepare("SELECT 1 FROM audit WHERE action = 'answer' AND target = ? AND details LIKE '%\"source\":\"preapproval\"%'").get(d.id) && db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND head = ? AND state IN (${ACTIVE.map(() => "?").join(",")})`).get(x.repo, x.number, x.from_head, ...ACTIVE)) continue;
@@ -559,20 +568,31 @@ function carryAnswers(db: DatabaseSync): void {
   }
 }
 
-/** Runs on every runner tick: moves each pre-approved merge that other steps' rows have carried to a new state. Writes nothing when nothing moved. */
-export function advancePreapprovals(db: DatabaseSync, log: (line: string) => void = () => {}): number {
+/**
+ * Runs on every runner tick: moves each pre-approved merge that other steps' rows have carried to a new state. Writes nothing when nothing moved,
+ * except the maintainers' write permissions it reads again first (refreshSettlers).
+ */
+export function advancePreapprovals(db: DatabaseSync, log: (line: string) => void = () => {}, deps: RefreshDeps = {}): number {
   let n = 0;
+  let held: Set<string>;
   try {
-    endStaleRequests(db);
+    held = refreshSettlers(db, log, deps);
+  } catch (e) {
+    // Without the permission reads a stale row would end a maintainer's pre-approval: nothing moves this pass.
+    log(`preapproval permissions: ${(e as Error).message}`);
+    return 0;
+  }
+  try {
+    endStaleRequests(db, held);
     settleCancelled(db);
-    carryAnswers(db);
+    carryAnswers(db, held);
   } catch (e) {
     log(`preapproval requests: ${(e as Error).message}`);
   }
   const rows = db.prepare(`SELECT * FROM preapprovals WHERE state IN (${ACTIVE.map(() => "?").join(",")}) AND repo IN (SELECT name FROM main.tracked_repos) ORDER BY id`).all(...ACTIVE) as Row[];
   for (const p of rows) {
     try {
-      advance(db, p);
+      advance(db, p, held);
       if ((db.prepare("SELECT state FROM preapprovals WHERE id = ?").get(p.id) as { state: string }).state !== p.state) n++;
     } catch (e) {
       const msg = oneLine(String((e as Error).message ?? e), 300);

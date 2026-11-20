@@ -244,7 +244,7 @@ export const STEPS: StepDef[] = [
       const limit = Number(ctx.params.limit);
       const stopAt = Date.parse(ctx.job.startedAt) + (stepDeadlineMin("labels-apply", limit) - 5) * 60_000;
       const r = await applyLabels(ctx.db, new Client(500), repo, { runId, limit, stopAt: Number.isNaN(stopAt) ? undefined : stopAt, apply: true, login: ctx.job.requestedBy, by: byOfJob(ctx.job.requestedBy), log: ctx.log, onLabeled: ctx.handled });
-      return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed${r.stopped ? "; stopped before the time limit, the rest go in the next job" : ""}`;
+      return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed${r.stopped ? "; stopped before the time limit, the rest go in the next job" : ""}${r.paced ? "; paused for the GitHub write budget, the rest go in the next job" : ""}`;
     },
   },
   {
