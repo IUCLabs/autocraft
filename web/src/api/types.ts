@@ -2493,9 +2493,10 @@ export type McpTokenCreated = McpTokens & { id: number; token: string };
 export type { HelperInfo as RemoteHelper, Readiness as HelperReadiness, UsageWindow, Machine, RunnerInfo, RunnersReply, PendingRunnerLogin, LoginScopes } from "../../../src/remote/protocol.ts";
 /**
  * `manualOnly`: the user's Task Runners take only the calls the user picked and follow-ups of their own sessions. `tasks`: the
- * ids of `taskChoices` the runners take from the queue; every one unless the user unticked some.
+ * ids of `taskChoices` the runners take from the queue; every one unless the user unticked some. A choice's `about` says what
+ * the task does, `models` which Claude models its calls ask for.
  */
-export type MySettings = UserSettingsReply & { manualOnly: boolean; tasks: string[]; taskChoices: { id: string; title: string }[] };
+export type MySettings = UserSettingsReply & { manualOnly: boolean; tasks: string[]; taskChoices: { id: string; title: string; about: string; models: string[] }[] };
 export type MySettingsChange = UserSettings & { manualOnly: boolean; tasks: string[] };
 
 /** Why a queued model call waits, most specific first: picked by a user; waiting for the runner that holds its session; no runner ready for its tier; every ready runner is Manual only; every runner that may take it is busy; no ready runner's user can take calls on its repo; calls ahead of it. */

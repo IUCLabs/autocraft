@@ -3,7 +3,7 @@ import { CheckIcon } from "@phosphor-icons/react";
 import { cn } from "../cn";
 
 /** One row of a tick list: the checkbox, a title with an optional tag on the right, and `children` (the extra's text and its edit control). Props only. */
-export function CheckRow({ checked, onChange, title, tag, disabled, action, children }: { checked: boolean; onChange: (on: boolean) => void; title: ReactNode; tag?: ReactNode; disabled?: boolean; /** A control at the row's right edge, outside the checkbox (an edit button). */ action?: ReactNode; children?: ReactNode }) {
+export function CheckRow({ checked, onChange, title, tag, disabled, action, description, children }: { checked: boolean; onChange: (on: boolean) => void; title: ReactNode; tag?: ReactNode; disabled?: boolean; /** Read out after the name, for what a tooltip shows sighted users. */ description?: string; /** A control at the row's right edge, outside the checkbox (an edit button). */ action?: ReactNode; children?: ReactNode }) {
   return (
     <div className="rounded-md">
       <div className="flex items-start">
@@ -11,6 +11,7 @@ export function CheckRow({ checked, onChange, title, tag, disabled, action, chil
         type="button"
         role="checkbox"
         aria-checked={checked}
+        aria-description={description}
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className="flex min-h-9 min-w-0 flex-1 items-start gap-2.5 rounded-md px-2 py-2 text-left hover:bg-ink/[0.04] max-md:min-h-11"

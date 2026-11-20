@@ -5,18 +5,29 @@
 import type { DatabaseSync } from "node:sqlite";
 import { prep } from "../sql-cache.ts";
 import { audit } from "../dash/audit.ts";
+import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { STAGES, stageOfStep } from "../stages/registry.ts";
 
 export const SKIP_TASKS_KEY = "skip_tasks";
 /** The task of a call whose step belongs to no stage that makes model calls (security scans, Discord and the like). */
 export const OTHER_TASK = "other";
 
-export type TaskChoice = { id: string; title: string };
+/** `about`: the first sentence of the stage's description; `models`: the Claude models its calls ask for, largest first. */
+export type TaskChoice = { id: string; title: string; about: string; models: string[] };
+
+const CLAUDE_MODELS = ["opus", "sonnet", "haiku"] as const;
+const firstSentence = (text: string): string => /^.*?\.(?=\s|$)/.exec(text)?.[0] ?? text;
 
 /** The tasks a user can tick, in pipeline order: each stage that makes model calls, then Other. */
 export const TASK_CHOICES: readonly TaskChoice[] = [
-  ...[...STAGES].filter((s) => s.promptIds.length > 0).sort((a, b) => a.order - b.order).map((s) => ({ id: s.id, title: s.title })),
-  { id: OTHER_TASK, title: "Other (security, Discord)" },
+  ...[...STAGES].filter((s) => s.promptIds.length > 0).sort((a, b) => a.order - b.order).map((s) => ({
+    id: s.id, title: s.title, about: firstSentence(s.description),
+    models: CLAUDE_MODELS.filter((m) => s.models.some((x) => x.model === m)),
+  })),
+  {
+    id: OTHER_TASK, title: "Other (security, Discord)", about: "Work outside the pipeline stages: the security scan's checks and private fixes, and Discord mentions, searches and issue drafts.",
+    models: CLAUDE_MODELS.filter((m) => Object.values(CLAUDE_PROMPTS).some((p) => /^(security|discord)\./.test(p.id) && (p.models as readonly string[]).includes(m))),
+  },
 ];
 const TASK_IDS = new Set(TASK_CHOICES.map((t) => t.id));
 

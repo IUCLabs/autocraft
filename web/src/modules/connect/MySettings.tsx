@@ -6,9 +6,13 @@ import { Input } from "../../ui/atoms/Input";
 import { Switch } from "../../ui/atoms/Switch";
 import { Block } from "../../ui/molecules/Block";
 import { CheckRow } from "../../ui/molecules/CheckRow";
+import { TipLines, Tooltip } from "../../ui/atoms/Tooltip";
 import { useWrite } from "../../lib/hooks";
 import { Fold } from "./Fold";
 import { SectionTitle } from "./SectionTitle";
+
+/** A model id as people say it: opus → Opus. */
+const modelName = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
 
 export function MySettings() {
   const api = useApi();
@@ -221,16 +225,23 @@ export function MySettings() {
       </Fold>
       <Fold className="mt-1" title="My tasks" summary={tasks.length === allTasks.length ? "All tasks" : `${tasks.length} of ${allTasks.length} tasks`}>
         <div role="group" aria-label="My tasks" className="mt-1 rounded-md border border-line p-1 sm:max-w-3xl">
-          <p className="px-2 pb-1 pt-1.5 text-xs text-ink/60">The work your Task Runners take from the queue. Calls you pick yourself and follow-ups of your runners' sessions run either way.</p>
+          <p className="px-2 pb-1 pt-1.5 text-xs text-ink/60">The work your Task Runners take from the queue; point at a task to see what it does and which models it calls. Calls you pick yourself and follow-ups of your runners' sessions run either way.</p>
           <CheckRow checked={tasks.length === allTasks.length} onChange={() => tasks.length !== allTasks.length && saveTasks(allTasks)} title="All tasks" />
           {!tasks.length && <p role="status" className="px-2 pb-1 text-xs text-warn">No task ticked: your Task Runners take only the calls you pick.</p>}
           <div className="sm:columns-2 sm:gap-x-1 lg:columns-3">
             {data.taskChoices.map((t) => {
               const on = tasks.includes(t.id);
               return (
-                <div key={t.id} className="break-inside-avoid">
-                  <CheckRow checked={on} onChange={() => saveTasks(on ? tasks.filter((x) => x !== t.id) : allTasks.filter((x) => x === t.id || tasks.includes(x)))} title={t.title} />
-                </div>
+                <Tooltip key={t.id} side="right" align="start" title={t.title} content={<TipLines lines={[t.about, t.models.length > 0 && `Models: ${t.models.map(modelName).join(", ")}`]} />}>
+                  <div className="break-inside-avoid">
+                    <CheckRow
+                      checked={on}
+                      onChange={() => saveTasks(on ? tasks.filter((x) => x !== t.id) : allTasks.filter((x) => x === t.id || tasks.includes(x)))}
+                      title={t.title}
+                      description={`${t.about}${t.models.length ? ` Models: ${t.models.map(modelName).join(", ")}.` : ""}`}
+                    />
+                  </div>
+                </Tooltip>
               );
             })}
           </div>

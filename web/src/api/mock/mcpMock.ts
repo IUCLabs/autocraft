@@ -8,9 +8,17 @@ const MIN = 60_000;
 /** The Connect page and the model call queue, in memory; the server's rules (five tokens per kind, own tokens and runners only, pick limits) apply. */
 /** The task choices as the server lists them (src/remote/my-tasks.ts TASK_CHOICES). */
 const TASKS = [
-  { id: "dupes", title: "Duplicates" }, { id: "classify", title: "Classify" }, { id: "priority", title: "Priority" }, { id: "decide", title: "Decide" },
-  { id: "review", title: "Review" }, { id: "fix", title: "Fix" }, { id: "fixup", title: "Fix-up" }, { id: "verify", title: "Verify" },
-  { id: "merge", title: "Merge queue" }, { id: "postmerge", title: "Post-merge review" }, { id: "other", title: "Other (security, Discord)" },
+  { id: "dupes", title: "Duplicates", about: "Finds items that describe the same bug or request as another open item, or one closed in the last year, and compares each group.", models: ["opus", "sonnet", "haiku"] },
+  { id: "classify", title: "Classify", about: "Gives each open item one type label and two flags (security, needs decision).", models: ["opus", "sonnet", "haiku"] },
+  { id: "priority", title: "Priority", about: "Gives each open item a level from P0 to P4, then orders the candidates of later stages by a work rank.", models: ["haiku"] },
+  { id: "decide", title: "Decide", about: "Asks an operator for scope calls, prepares every open decision with a summary, a pick and drafted answers, and answers questions about an item in its conversation.", models: ["opus", "haiku"] },
+  { id: "review", title: "Review", about: "Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list.", models: ["opus"] },
+  { id: "fix", title: "Fix", about: "Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.", models: ["opus", "sonnet", "haiku"] },
+  { id: "fixup", title: "Fix-up", about: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to.", models: ["opus", "sonnet", "haiku"] },
+  { id: "verify", title: "Verify", about: "Records upstream CI as the verification of taken PRs in repos that have it.", models: ["opus", "sonnet", "haiku"] },
+  { id: "merge", title: "Merge queue", about: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules.", models: ["opus"] },
+  { id: "postmerge", title: "Post-merge review", about: "Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings.", models: ["opus"] },
+  { id: "other", title: "Other (security, Discord)", about: "Work outside the pipeline stages: the security scan's checks and private fixes, and Discord mentions, searches and issue drafts.", models: ["opus", "haiku"] },
 ];
 
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference" | "runners" | "modelQueue"> & { meSettings: Api["me"]["settings"] } {
