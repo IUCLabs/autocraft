@@ -8,10 +8,10 @@ type Step = { label: string; alts: Alt[] };
 
 /** A Task Runner's setup, one command per step (or one per alternative); `origin` is this dashboard. */
 const steps = (origin: string): Step[] => [
-  { label: "Install", alts: [{ key: "", label: "", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft` }] },
-  { label: "Log in, then approve the code here", alts: [{ key: "", label: "", text: `autocraft login ${origin}` }] },
+  // `setup` asks before installing what is missing (bubblewrap, git, tar, the AppArmor rule, Claude Code), then logs in.
+  { label: "Install and set up, then approve the code here", alts: [{ key: "", label: "", text: `mkdir -p ~/.local/bin && curl -fsSL ${origin}/worker/autocraft.mjs -o ~/.local/bin/autocraft && chmod +x ~/.local/bin/autocraft && ~/.local/bin/autocraft setup ${origin}` }] },
   {
-    label: "Harness",
+    label: "Harness, if setup did not pick one",
     alts: [
       { key: "linux", label: "Linux login", text: "autocraft harness claude --config-dir" },
       { key: "mac", label: "macOS login", text: "autocraft harness claude --keychain" },
@@ -32,7 +32,7 @@ const onMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgen
 
 /** The setup commands for a new Task Runner, numbered; steps with alternatives pick one with a segmented control. */
 export function RunnerSetup({ className }: { className?: string }) {
-  const [pick, setPick] = useState<Record<string, string>>({ Harness: onMac ? "mac" : "linux", Run: "service" });
+  const [pick, setPick] = useState<Record<string, string>>({ "Harness, if setup did not pick one": onMac ? "mac" : "linux", Run: "service" });
   return (
     <ol className={cn("space-y-2.5 px-3 py-3", className)}>
       {steps(location.origin).map((s, i) => {
