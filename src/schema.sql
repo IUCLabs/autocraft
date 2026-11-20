@@ -140,7 +140,7 @@ INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merge_rate', '0.6');
 -- their own agent with an answering token (src/dash/mcp/) (spec: docs/dashboard-spec.md).
 CREATE TABLE IF NOT EXISTS decisions (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,                 -- scope | duplicate | close | merge | split | other
+  kind TEXT NOT NULL,                 -- scope | duplicate | close | merge | hold | split | other | backlog (a person's Backlog press on an item with no open question: written answered Backlog, deleted by Reopen or Undo)
   repo TEXT,                          -- null only for a batch spanning repos
   number INTEGER,                     -- null for a batch
   items TEXT,                         -- batch: JSON [{repo, number}]

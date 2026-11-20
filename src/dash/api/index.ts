@@ -416,6 +416,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/decisions/:id/snooze", operator: true, handler: ok(dec.snooze) },
     { method: "POST", pattern: "/api/decisions/:id/reprepare", operator: true, handler: ok(dec.reprepare) },
     post("/api/decisions/:id/reopen", dec.reopen),
+    post("/api/items/:repo/:n/backlog", dec.backlogItemRoute),
     { method: "POST", pattern: "/api/decisions/backlog", operator: true, handler: ok(dec.backlogBulk) },
     post("/api/decisions/:id/adopt", dec.adopt),
     post("/api/decisions/:id/feedback", (db, req) => dec.feedback(db, req, limiter)),

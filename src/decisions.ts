@@ -10,8 +10,13 @@ import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
 import { inPilot } from "./pilot.ts";
 
-export const KINDS = ["scope", "duplicate", "close", "merge", "hold", "split", "other"] as const;
+export const KINDS = ["scope", "duplicate", "close", "merge", "hold", "split", "other", "backlog"] as const;
 export type Kind = (typeof KINDS)[number];
+
+/** The kind of the decision a person's Backlog press makes for an item with no open question: answered Backlog when written, never asked. */
+export const BACKLOG_KIND = "backlog";
+export const BACKLOG_QUESTION = "Work on this item?";
+export const backlogDecisionId = (repo: string, number: number): string => `${repo}#${number}:backlog`;
 
 export type Option = { key: string; label: string; hint?: string };
 export type Ref = { repo: string; number: number };
@@ -93,7 +98,7 @@ const str = (v: unknown): string | null => (typeof v === "string" && v ? v : nul
 export function validateAsk(q: Record<string, unknown>): Record<string, string | number | null> {
   const err = (m: string) => new Error(`decision ${String(q.id ?? "?")}: ${m}`);
   if (typeof q.id !== "string" || !q.id) throw err("id is required");
-  if (!KINDS.includes(q.kind as Kind)) throw err(`kind must be one of ${KINDS.join(", ")}`);
+  if (!KINDS.includes(q.kind as Kind) || q.kind === BACKLOG_KIND) throw err(`kind must be one of ${KINDS.filter((k) => k !== BACKLOG_KIND).join(", ")}`);
   if (typeof q.question !== "string" || !q.question.trim()) throw err("question is required");
   const options = q.options as Option[];
   if (!Array.isArray(options) || options.length < 2 || options.length > 5 ||

@@ -1,4 +1,4 @@
-// The operator's overflow menu on the item page: fast track, merge hold and the releases the item allows.
+// The overflow menu on the item page: Backlog for whoever settles on the repo; fast track, merge hold and the releases the item allows for operators.
 import { useEffect, useState } from "react";
 import { DotsThreeIcon } from "@phosphor-icons/react";
 import { DropdownMenu } from "radix-ui";
@@ -7,6 +7,7 @@ import type { ItemPageData, ItemReleases, ReleaseAction } from "../../../api/typ
 import { useWrite } from "../../../lib/hooks";
 import { ErrorLine } from "../../admin/parts";
 import { refOf, useFastTrack, useHeldMerges } from "../../queue/fastTrack";
+import { useUser } from "../../../shell/UserContext";
 
 const RELEASES: { key: keyof ItemReleases; action: ReleaseAction; label: string; confirm: string }[] = [
   { key: "reviewAgain", action: "review-again", label: "Review again at this head", confirm: "Delete the hold, review again" },
@@ -44,27 +45,31 @@ function Entry({ label, confirm, busy, onRun }: { label: string; confirm?: strin
   );
 }
 
-/** Operators only; renders nothing when no action applies. */
+/** Renders nothing when no action applies. */
 export function ItemMenu({ d }: { d: ItemPageData }) {
   const api = useApi();
   const write = useWrite();
   const fast = useFastTrack();
   const held = useHeldMerges();
+  const operator = useUser().role === "operator";
   const open = d.state === "open";
   const ref = refOf(d.repo, d.number);
   const fastOn = fast.includes(ref);
   const holdOn = held.includes(ref);
-  const releases = RELEASES.filter((r) => d.header.releases[r.key]);
-  const hasHold = open && d.kind === "pr";
-  if (!open && releases.length === 0) return null;
+  const releases = operator ? RELEASES.filter((r) => d.header.releases[r.key]) : [];
+  const hasFast = operator && open;
+  const hasHold = hasFast && d.kind === "pr";
+  const hasBacklog = open && d.header.backlog.canSettle && !d.header.backlog.held;
+  if (!hasFast && !hasBacklog && releases.length === 0) return null;
   return (
     <>
       <DropdownMenu.Root>
         <DropdownMenu.Trigger aria-label="More actions" className="flex size-8 shrink-0 items-center justify-center rounded border border-line-strong hover:bg-ink/[0.06] max-md:size-11"><DotsThreeIcon weight="bold" /></DropdownMenu.Trigger>
         <DropdownMenu.Portal>
           <DropdownMenu.Content align="end" sideOffset={6} className="z-50 min-w-[210px] rounded-md border border-line-strong bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise">
-            {open && <Entry label={fastOn ? "Remove fast track" : "Fast track"} busy={write.busy === "fast"} onRun={() => void write.run("fast", () => (fastOn ? api.queueControl.fastTrackRemove(ref) : api.queueControl.fastTrackAdd(ref)))} />}
+            {hasFast && <Entry label={fastOn ? "Remove fast track" : "Fast track"} busy={write.busy === "fast"} onRun={() => void write.run("fast", () => (fastOn ? api.queueControl.fastTrackRemove(ref) : api.queueControl.fastTrackAdd(ref)))} />}
             {hasHold && <Entry label={holdOn ? "Release the merge hold" : "Hold merge"} busy={write.busy === "hold"} onRun={() => void write.run("hold", () => (holdOn ? api.queueControl.release(ref) : api.queueControl.hold(ref)))} />}
+            {hasBacklog && <Entry label="Backlog" busy={write.busy === "backlog"} onRun={() => void write.run("backlog", () => api.backlogItem(d.repo, d.number))} />}
             {releases.map((r) => (
               <Entry key={r.action} label={r.label} confirm={r.confirm} busy={write.busy === r.action} onRun={() => void write.run(r.action, () => api.release(d.repo, d.number, r.action))} />
             ))}

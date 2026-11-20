@@ -6,7 +6,7 @@ import type { DecisionKind } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { KIND_LABEL, KINDS, useDecisionFilter } from "./state";
+import { ASKED_KINDS, KIND_LABEL, useDecisionFilter } from "./state";
 
 const AGES = [
   { v: "", label: "Any age" },
@@ -56,7 +56,7 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
         ))}
       </div>
       <div className={cn("flex items-center gap-1", phone ? "flex-wrap" : "min-w-0 overflow-x-auto scrollbar-none")}>
-        {KINDS.map((k) => (
+        {ASKED_KINDS.map((k) => (
           <button key={k} className="chip" data-active={kinds.includes(k)} aria-pressed={kinds.includes(k)} onClick={() => toggleKind(k)}>
             {KIND_LABEL[k]}
             {open?.byKind[k] ? <span className="num text-ink/45">{open.byKind[k]}</span> : null}

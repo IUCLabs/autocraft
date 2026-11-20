@@ -17,7 +17,7 @@ import { useUser } from "../../shell/UserContext";
 import { KIND_ICON } from "../decisions/parts";
 import type { ViewProps } from "../../registry/types";
 
-const NEED_LABEL: Record<NeedKind, string> = { merge: "Merge?", scope: "Scope", duplicate: "Duplicates", close: "Close", hold: "Hold", split: "Split", other: "Other", security: "Security", feedback: "Feedback", stopped: "Stopped" };
+const NEED_LABEL: Record<NeedKind, string> = { merge: "Merge?", scope: "Scope", duplicate: "Duplicates", close: "Close", hold: "Hold", split: "Split", other: "Other", backlog: "Backlog", security: "Security", feedback: "Feedback", stopped: "Stopped" };
 const NEED_ICON: Record<NeedKind, Icon> = { ...KIND_ICON, security: ShieldWarningIcon, feedback: ChatTeardropTextIcon, stopped: XCircleIcon };
 const KIND_ORDER: NeedKind[] = ["merge", "security", "scope", "duplicate", "close", "hold", "split", "other", "feedback", "stopped"];
 const NEED_TO: Partial<Record<NeedKind, string>> = { security: "/security", feedback: "/needs?tab=feedback", stopped: "/needs?tab=stopped" };

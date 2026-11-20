@@ -155,15 +155,16 @@ export interface Api {
     /** The decision a readable link opens: the item's first open one, else its latest; null when it has none. */
     forItem(repo: RepoName, number: number, kind?: DecisionKind): Promise<Decision | null>;
     answer(id: string, input: AnswerInput): Promise<Decision>;
-    undo(id: string): Promise<Decision>;
+    /** Null when it took back a Backlog press on an item with no question: that decision is gone. */
+    undo(id: string): Promise<Decision | null>;
     /** Operator: runs the GitHub write of a waiting or failed answer again. */
     retry(id: string): Promise<Decision>;
     /** Someone who settles, other than the answerer, disputes an answer the pipeline has not applied; the reason is required. */
     dispute(id: string, reason: string): Promise<Decision>;
     /** The answerer or an operator keeps a disputed answer. */
     keepAnswer(id: string): Promise<Decision>;
-    /** Operator: clear a Backlog answer so the decision is open again. */
-    reopen(id: string): Promise<Decision>;
+    /** Clears a Backlog answer so the decision is open again; null for a Backlog press on an item with no question, which is deleted. */
+    reopen(id: string): Promise<Decision | null>;
     /** Operator: snooze (`on`) or wake an open decision. */
     snooze(id: string, on: boolean): Promise<Decision>;
     /** The feedback box: an optional pick (replaces the user's live one) and free text, at least one. Text alone joins the thread. */
@@ -229,6 +230,8 @@ export interface Api {
   release(repo: RepoName, number: number, action: ReleaseAction): Promise<void>;
   /** Operator only: puts an issue with a stopped fix in the Backlog or closes it (through a scope decision answered at once). */
   stopFix(repo: RepoName, number: number, answer: "backlog" | "close"): Promise<void>;
+  /** Someone who settles on the repo puts the open item on the Backlog: answers its open question with Backlog, or holds it with an answered `backlog` decision. */
+  backlogItem(repo: RepoName, number: number): Promise<Decision>;
   /** Top bar: jumps by number, logins, words in titles and bodies. */
   search(q: string): Promise<SearchHit[]>;
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */

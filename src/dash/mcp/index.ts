@@ -461,6 +461,7 @@ async function undoAnswer(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { id: "id" }, ["id"]);
   const user = env.user(true);
   const d = await dec.undo(env.db, reqOf(user, { method: "POST", params: { id: a.id as string } }), "mcp");
+  if (!d) return { text: `The Backlog hold of ${a.id as string} is taken back; the item is back in the pipeline.` };
   return { text: `The answer to ${ref(d)} is taken back; the decision is open again.\nDecision: ${link(env, decisionPath(d))}` };
 }
 

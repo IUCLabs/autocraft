@@ -124,6 +124,7 @@ export function mockHeader(kind: ItemKind, labels: string[] = []): ItemPageHeade
   return {
     labels, assignees: [], autocraftAssigned: false, pipelineOn: true, discord: null, queue: null, fastTracked: false, held: false, preapproval: null,
     releases: { reviewAgain: false, verifyAgain: false, fixAgain: false, batchAgain: false }, tier: "not", size: kind === "pr" ? "S" : null,
+    backlog: { held: false, canSettle: true },
   };
 }
 

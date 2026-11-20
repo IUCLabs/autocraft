@@ -12,8 +12,11 @@ export const KIND_LABEL: Record<DecisionKind, string> = {
   hold: "Hold",
   split: "Split",
   other: "Question",
+  backlog: "Backlog",
 };
 export const KINDS = Object.keys(KIND_LABEL) as DecisionKind[];
+/** The kinds the pipeline asks: a `backlog` decision is only ever answered, so it has no inbox filter. */
+export const ASKED_KINDS = KINDS.filter((k) => k !== "backlog");
 
 /** Filters live in the URL so a link reproduces the view. */
 export function useDecisionFilter() {

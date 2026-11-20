@@ -1,6 +1,6 @@
-// The overflow menu on a Queue row: fast track and its weight, merge hold and, for batch members, remove from batch. Operators only.
+// The overflow menu on a Queue row: fast track and its weight, merge hold, Backlog and, for batch members, remove from batch. Operators only.
 import { DropdownMenu } from "radix-ui";
-import { CaretRightIcon, CheckIcon, DotsThreeIcon, FastForwardIcon, PauseIcon, PlayIcon, ScalesIcon, SignOutIcon } from "@phosphor-icons/react";
+import { ArchiveIcon, CaretRightIcon, CheckIcon, DotsThreeIcon, FastForwardIcon, PauseIcon, PlayIcon, ScalesIcon, SignOutIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { FastPosition } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
@@ -11,7 +11,8 @@ import { refOf, WEIGHT_DEFAULT, WEIGHTS } from "./fastTrack";
 const menuCls = "z-50 min-w-[200px] rounded-md border border-line-strong bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise";
 const itemCls = "flex h-8 cursor-default items-center gap-2.5 rounded px-2 text-sm outline-none data-[highlighted]:bg-ink/[0.07] max-md:h-11";
 
-export function RowMenu({ repo, number, fast, held, pr, inBatch }: { repo: string; number: number; fast: FastPosition | null; held: boolean; pr: boolean; inBatch?: boolean }) {
+/** `backlog`: the row may be put on the Backlog (it is not held by a Backlog answer already). */
+export function RowMenu({ repo, number, fast, held, pr, inBatch, backlog }: { repo: string; number: number; fast: FastPosition | null; held: boolean; pr: boolean; inBatch?: boolean; backlog?: boolean }) {
   const api = useApi();
   const write = useWrite();
   if (useUser().role !== "operator") return null;
@@ -63,6 +64,12 @@ export function RowMenu({ repo, number, fast, held, pr, inBatch }: { repo: strin
               <DropdownMenu.Item className={itemCls} onSelect={run("hold", () => (held ? api.queueControl.release(ref) : api.queueControl.hold(ref)))}>
                 {held ? <PlayIcon size={16} /> : <PauseIcon size={16} />}
                 {held ? "Release" : "Hold merge"}
+              </DropdownMenu.Item>
+            )}
+            {backlog && (
+              <DropdownMenu.Item className={itemCls} onSelect={run("backlog", () => api.backlogItem(repo, number))}>
+                <ArchiveIcon size={16} />
+                Backlog
               </DropdownMenu.Item>
             )}
             {inBatch && (

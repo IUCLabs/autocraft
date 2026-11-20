@@ -149,6 +149,7 @@ export function createHttpApi(): Api {
     stopFix: async (repo, number, answer) => {
       await post(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/stop-fix`, { answer });
     },
+    backlogItem: (repo, number) => post(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/backlog`),
     conversations: {
       get: (repo, number) => get(conv(repo, number)),
       say: (repo, number, text, ask) => post(conv(repo, number, "/messages"), ask === false ? { text, ask: false } : { text }),

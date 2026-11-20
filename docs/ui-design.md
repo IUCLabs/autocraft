@@ -143,7 +143,7 @@ Operators and maintainers can send feedback, with or without picking an option (
 
 Two panels: the item (68 %) and a collapsible side panel (32 %).
 
-- Header as on GitHub: title with `#number`, a state pill (Open / Merged / Closed), author with avatar, age and repo. The header shows the item's `ItemIcon` with `repo#number`, and a "See in GitHub" button (GitHub icon and text, new tab, 44 px high on phones) among the header actions beside Fast track and Hold merge.
+- Header as on GitHub: title with `#number`, a state pill (Open / Merged / Closed), author with avatar, age and repo. The header shows the item's `ItemIcon` with `repo#number`, and a "See in GitHub" button (GitHub icon and text, new tab, 44 px high on phones) among the header actions beside the menu: Backlog for whoever settles on the repo, and for operators Fast track, Hold merge and the releases the item allows.
 - Properties as a key-value list: author with whitelist tier badge and merged / closed-unmerged counts; size (+/−, file count, S/M/L/XL); checks; mergeable; labels; updated.
 - Classifier verdicts as a table, one column per classifier (type, want, reference, topics, reason). Values that disagree with the majority get an amber highlight; the heading says "2 of 3 agree on type". On phones, one block per classifier.
 - Timeline with an icon per stage in plain words ("Waiting for a decision", "Merged by the pipeline"), actor and age; the current stage is highlighted.
