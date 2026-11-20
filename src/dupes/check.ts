@@ -115,7 +115,7 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     }
     const todo = r.ok ? (r.rest ?? []) : input;
     c.unanswered += todo.length;
-  }), poolRoom(db, (i) => [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))]), { first: true, skipped: (i) => {
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))], { promptId: HAIKU.id }), { first: true, skipped: (i) => {
     c.unanswered += batches[i]!.length;
     skipped += batches[i]!.length;
   } });

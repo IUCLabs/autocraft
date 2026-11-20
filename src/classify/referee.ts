@@ -78,7 +78,7 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
       }
     }
     total += got;
-  }), poolRoom(db, (i) => itemRepos(chunks[i]!)), { first: true });
+  }), poolRoom(db, (i) => itemRepos(chunks[i]!), { promptId: REFEREE.id }), { first: true });
   return total;
 }
 

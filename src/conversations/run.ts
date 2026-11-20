@@ -38,7 +38,7 @@ const now = () => new Date().toISOString();
 export async function answerPending(db: DatabaseSync, p: ConversationParams): Promise<number> {
   const model = p.model ?? CONVERSATION_PROMPT.models[0]!;
   let todo = pendingConversations(db);
-  if (p.limit !== undefined) todo = takersFirst(db, todo, (c) => [c.repo]).slice(0, Math.max(0, p.limit));
+  if (p.limit !== undefined) todo = takersFirst(db, todo, (c) => [c.repo], CONVERSATION_PROMPT.id).slice(0, Math.max(0, p.limit));
   const checkouts = new Map<string, Promise<string | null>>();
   let answered = 0, handled = 0;
   await pool(todo.map((c, k) => async () => {
@@ -79,7 +79,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
       jobItem(db, repo, n, "no usable reply to a message", p.log);
     }
-  }), poolRoom(db, (i) => [todo[i]!.repo]), { first: true });
+  }), poolRoom(db, (i) => [todo[i]!.repo], { promptId: CONVERSATION_PROMPT.id }), { first: true });
   return answered;
 }
 

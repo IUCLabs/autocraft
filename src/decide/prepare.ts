@@ -295,6 +295,6 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
       try { failed.run(head, now(), head, d.id); } catch { /* the next pass tries again */ }
       res.failed++;
     }
-  }), poolRoom(db, (i) => { const repo = repoOf.get(ids[i]!); return repo ? [repo] : undefined; }), { first: true });
+  }), poolRoom(db, (i) => { const repo = repoOf.get(ids[i]!); return repo ? [repo] : undefined; }, { promptId: "decide.prepare" }), { first: true });
   return res;
 }

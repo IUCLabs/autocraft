@@ -46,6 +46,9 @@ const PROMPT_STEP: Record<string, { step: string; stage: number }> = {
   "security.scantest": { step: "security-scan", stage: 9 }, "security.fix": { step: "security-fix", stage: 9 }, "security.fixcheck": { step: "security-fix", stage: 9 },
 };
 
+/** The step a call of `promptId` made now is stored under (stepOf), for room and taker questions; undefined when neither is known. */
+const askStep = (promptId?: string): string | undefined => context?.step ?? (promptId === undefined ? undefined : PROMPT_STEP[promptId]?.step);
+
 export function stepOf(promptId: string): { jobId: number | null; step: string; stage: number } {
   if (context) return { jobId: context.jobId, step: context.step, stage: context.stage };
   return { jobId: null, ...(PROMPT_STEP[promptId] ?? { step: "unknown", stage: 0 }) };
@@ -155,7 +158,8 @@ export function queueRoom(db: DatabaseSync, cls: 0 | 1 | 2 = currentClass(), rep
 
 /**
  * Room questions answered from one reading of the helpers (queueRoomPass). `step`: the step of the calls asked about, for the
- * tasks the runners take (src/remote/my-tasks.ts); left out, the current job's step (none outside a job: every task counts).
+ * tasks the runners take (src/remote/my-tasks.ts); left out, the current job's step, or outside a job the step of the pass's
+ * prompt (none known: every task counts).
  */
 export type RoomPass = {
   room(cls: 0 | 1 | 2, repos?: readonly string[], step?: string): number;
@@ -163,8 +167,12 @@ export type RoomPass = {
   taker(repos?: readonly string[], step?: string): boolean;
 };
 
-/** queueRoom for many questions at one moment (the runner's pass over queued jobs, a pool's round): in the user-local mode the helpers, their permissions and repos are read once. */
-export function queueRoomPass(db: DatabaseSync): RoomPass {
+/**
+ * queueRoom for many questions at one moment (the runner's pass over queued jobs, a pool's round): in the user-local mode the
+ * helpers, their permissions and repos are read once. `promptId`: the prompt of the calls asked about, whose step stands in
+ * outside a job.
+ */
+export function queueRoomPass(db: DatabaseSync, promptId?: string): RoomPass {
   if (inferenceMode(db) !== "user-local") return { room: (cls, repos) => queueRoom(db, cls, repos), taker: () => true };
   const nowMs = Date.now();
   let st: RoomState | undefined;
@@ -172,17 +180,17 @@ export function queueRoomPass(db: DatabaseSync): RoomPass {
   // The taker rule of src/remote/takers.ts, read once per pass.
   const takes = takerTest(db, nowMs);
   return {
-    room: (cls, repos, step = context?.step) => roomOf(db, state(), cls, nowMs, callRepos(repos), step),
-    taker: (repos, step = context?.step) => takes({ prompt_id: "", repos: callRepos(repos) ?? [], step }),
+    room: (cls, repos, step = askStep(promptId)) => roomOf(db, state(), cls, nowMs, callRepos(repos), step),
+    taker: (repos, step = askStep(promptId)) => takes({ prompt_id: "", repos: callRepos(repos) ?? [], step }),
   };
 }
 
 /**
  * `items` with those whose calls no connected Task Runner may take moved behind the others (stable). A job cuts its selection to a
- * limit before its pool runs; sorted this way the cut never fills with items the pool would skip.
+ * limit before its pool runs; sorted this way the cut never fills with items the pool would skip. `promptId`: as for queueRoomPass.
  */
-export function takersFirst<T>(db: DatabaseSync, items: readonly T[], reposOf: (t: T) => readonly string[] | undefined): T[] {
-  const pass = queueRoomPass(db);
+export function takersFirst<T>(db: DatabaseSync, items: readonly T[], reposOf: (t: T) => readonly string[] | undefined, promptId?: string): T[] {
+  const pass = queueRoomPass(db, promptId);
   const has = items.map((t) => pass.taker(reposOf(t)));
   return [...items.keys()].sort((a, b) => Number(has[b]) - Number(has[a]) || a - b).map((i) => items[i]!);
 }
@@ -193,10 +201,11 @@ export type PoolRoom = { round(): void; room(i: number): number; taker(i: number
 /**
  * PoolRoom for units whose calls name `reposOf(i)` (the job's repo param is added), in the current call's class. `mayNotCall`:
  * a unit may finish without a model call (collecting build results), so every unit counts as having a taker and a unit of a
- * repo no Task Runner takes still starts when none of the pool's units runs.
+ * repo no Task Runner takes still starts when none of the pool's units runs. `promptId`: the prompt the units call, whose step
+ * and class stand in outside a job.
  */
-export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly string[] | undefined, opts: { mayNotCall?: boolean } = {}): PoolRoom {
-  const cls = currentClass();
+export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly string[] | undefined, opts: { mayNotCall?: boolean; promptId?: string } = {}): PoolRoom {
+  const cls = currentClass(opts.promptId);
   let pass: RoomPass | null = null;
   const rooms = new Map<string, number>(), takers = new Map<string, boolean>();
   const keyOf = (r: readonly string[] | undefined): string => (r === undefined ? "\0" : [...r].sort().join("\n"));
@@ -205,14 +214,14 @@ export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly stri
     room: (i) => {
       const r = reposOf(i), k = keyOf(r);
       let n = rooms.get(k);
-      if (n === undefined) rooms.set(k, (n = (pass ??= queueRoomPass(db)).room(cls, r)));
+      if (n === undefined) rooms.set(k, (n = (pass ??= queueRoomPass(db, opts.promptId)).room(cls, r)));
       return n;
     },
     taker: (i) => {
       if (opts.mayNotCall) return true;
       const r = reposOf(i), k = keyOf(r);
       let t = takers.get(k);
-      if (t === undefined) takers.set(k, (t = (pass ??= queueRoomPass(db)).taker(r)));
+      if (t === undefined) takers.set(k, (t = (pass ??= queueRoomPass(db, opts.promptId)).taker(r)));
       return t;
     },
   };

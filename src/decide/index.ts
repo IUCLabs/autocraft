@@ -113,7 +113,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   }
   const due = prepareIds(db, params.repos);
   const repoOf = due.length > total ? new Map((db.prepare("SELECT id, repo FROM decisions").all() as { id: string; repo: string | null }[]).map((r) => [r.id, r.repo])) : new Map<string, string | null>();
-  const ids = (due.length > total ? takersFirst(db, due, (id) => { const r = repoOf.get(id); return r ? [r] : undefined; }) : due).slice(0, total);
+  const ids = (due.length > total ? takersFirst(db, due, (id) => { const r = repoOf.get(id); return r ? [r] : undefined; }, "decide.prepare") : due).slice(0, total);
   if (ids.length) {
     result.usageRun = usageRun;
     const r = await prepare(db, ids, {

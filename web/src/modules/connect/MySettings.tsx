@@ -23,7 +23,7 @@ const listSaves = (): ListSaves => ({ chain: Promise.resolve(), n: 0, confirmed:
 
 export function MySettings() {
   const api = useApi();
-  const write = useWrite();
+  const write = useWrite({ latestOnly: true });
   const { data, error } = useQuery("my-settings", (a) => a.me.settings.get());
   const [vals, setVals] = useState<{ fiveHour: string; weekly: string } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);

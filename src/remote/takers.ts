@@ -22,8 +22,11 @@ import { scaled } from "./time-scale.ts";
 export const NO_TAKER_MS = scaled(10 * 60_000);
 
 /** A call as the taker rule reads it: its prompt (role rules for discord.* calls) and the repos it names. */
-/** `step`: the call's step, for the takers' tasks (my-tasks.ts); left out, the question is about repos alone. */
-export type TakerCall = { prompt_id: string; repos: readonly string[]; step?: string };
+/**
+ * `step`: the call's step, for the takers' tasks (my-tasks.ts); left out, the question is about repos alone. `someTask`: with no
+ * step, only a runner whose user takes at least one task counts (with none ticked a user takes only picks).
+ */
+export type TakerCall = { prompt_id: string; repos: readonly string[]; step?: string; someTask?: boolean };
 
 /**
  * Whether some taker may take a call now, for many questions at one moment (a pool's round, the runner's pass over queued
@@ -68,7 +71,7 @@ function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean 
     try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
     return { login: h.login, role: h.role, repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login) };
   });
-  return (c) => runners.some((r) => runnerTakes(r, c, canWrite));
+  return (c) => runners.some((r) => !(c.someTask && r.skip.size >= TASK_CHOICES.length) && runnerTakes(r, c, canWrite));
 }
 
 /** The error of a call withdrawn for lack of a taker: its caller skips the work (NoTakerError). `step`: a taker may take calls on its repos, but none takes its task. */
@@ -78,7 +81,7 @@ export const noTakerReason = (repos: readonly string[], step?: string): string =
 };
 
 /**
- * One maintenance pass at `nowMs`. Each pipeline-on repo with no taker keeps the time it was first seen so
+ * One maintenance pass at `nowMs`. Each pipeline-on repo with no taker whose user takes some task keeps the time it was first seen so
  * (remote_no_taker); one with a taker loses it. Each queued call with a live caller that is no follow-up and has no pick
  * that counts gets the same mark (no_taker_since), and is withdrawn once the mark is NO_TAKER_MS old. Returns the number of
  * calls withdrawn. Outside the user-local mode the repo marks are cleared.
@@ -90,7 +93,7 @@ export function sweepTakers(db: DatabaseSync, nowMs: number = Date.now()): numbe
   }
   const takes = takerTest(db, nowMs);
   const repos = (prep(db, "SELECT name FROM main.tracked_repos WHERE pipeline = 1").all() as { name: string }[]).map((r) => r.name);
-  const untaken = repos.filter((repo) => !takes({ prompt_id: "", repos: [repo] }));
+  const untaken = repos.filter((repo) => !takes({ prompt_id: "", repos: [repo], someTask: true }));
   prep(db, "DELETE FROM main.remote_no_taker WHERE repo NOT IN (SELECT value FROM json_each(?))").run(JSON.stringify(untaken));
   const mark = prep(db, "INSERT OR IGNORE INTO main.remote_no_taker (repo, since) VALUES (?, ?)");
   for (const repo of untaken) mark.run(repo, nowMs);

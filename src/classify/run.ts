@@ -817,7 +817,7 @@ export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], b
     if (r.ok) for (const verdicts of r.values) for (const v of verdicts) saveVerdict(db, "haiku", runId, v);
     const left = r.ok ? r.rest ?? [] : batch;
     if (left.length) console.error(`haiku batch ${n}: no valid answer for ${left.map(refOf).join(", ")}`);
-  }), poolRoom(db, (i) => itemRepos(batches[i]!)), { first: opts.cold, skipped: (i) => void (skipped += batches[i]!.length) });
+  }), poolRoom(db, (i) => itemRepos(batches[i]!), { promptId: CLASSIFY_HAIKU.id }), { first: opts.cold, skipped: (i) => void (skipped += batches[i]!.length) });
   return items.length - skipped;
 }
 

@@ -59,7 +59,7 @@ export function dueForArea(db: DatabaseSync, opts: { repo?: string; limit: numbe
       AND (a.number IS NULL OR (a.source <> 'operator' AND (a.list_version <> l.v OR (:rescan AND a.area IS NULL))))
     ORDER BY t.pipeline DESC, i.updated_at DESC, i.repo, i.number`)
     .all({ repo: opts.repo ?? null, rescan: opts.rescan ? 1 : 0 }) as unknown as Due[];
-  return takersFirst(db, due, (x) => [x.repo]).slice(0, opts.limit);
+  return takersFirst(db, due, (x) => [x.repo], "areas.haiku").slice(0, opts.limit);
 }
 
 export type AssignParams = {
