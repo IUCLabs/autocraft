@@ -13,8 +13,8 @@ export function Switch({ on, onChange, label, busy, className }: { on: boolean; 
       onClick={() => onChange(!on)}
       className={cn("group -m-2 inline-flex shrink-0 items-center rounded-full p-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent-ink disabled:cursor-wait", className)}
     >
-      <span className={cn("relative inline-flex h-6 w-11 items-center rounded-full border transition-colors group-disabled:opacity-60", on ? "border-accent bg-accent" : "border-line-strong bg-ink/10")}>
-        <span className={cn("inline-block size-5 rounded-full bg-panel shadow-sm transition-transform", on ? "translate-x-5" : "translate-x-0.5")} />
+      <span className={cn("relative inline-flex h-4 w-7 items-center rounded-full border transition-colors group-disabled:opacity-60", on ? "border-accent bg-accent" : "border-line-strong bg-ink/10")}>
+        <span className={cn("inline-block size-3 rounded-full bg-panel shadow-sm transition-transform", on ? "translate-x-3" : "translate-x-px")} />
       </span>
     </button>
   );
