@@ -206,9 +206,11 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
   const clock = deps.now ?? (() => new Date());
   const t0 = clock();
   // Every waiting row is read (an hour's commands at most): rows that wait for a re-read or a retry are passed over without
-  // a GitHub call, so they never keep a newer command out. `limit` bounds the rows that call GitHub in one drain.
+  // a GitHub call, so they never keep a newer command out. `limit` bounds the rows that call GitHub in one drain. Rows never tried
+  // come first, oldest first, then retries by their last try, so due retries cannot fill the limit drain after drain either.
   const rows = db.prepare(`SELECT comment_id, repo, number, pr, command, weight, login, github_id, requested_at, state, result FROM main.github_commands
-    WHERE (state = 'queued' AND (tried_at IS NULL OR tried_at <= ?)) OR (state IN ('done', 'refused') AND reply IS NULL) ORDER BY requested_at`)
+    WHERE (state = 'queued' AND (tried_at IS NULL OR tried_at <= ?)) OR (state IN ('done', 'refused') AND reply IS NULL)
+    ORDER BY tried_at IS NOT NULL, COALESCE(tried_at, requested_at)`)
     .all(new Date(t0.getTime() - RETRY_MS).toISOString()) as Row[];
   const qp = await import("../dash/api/queue-page.ts");
   let settled = 0, calls = 0;
@@ -226,7 +228,7 @@ export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promis
       if (out === "wait") continue;
       if (out === "retry") {
         // GitHub could not tell the permission: retried after RETRY_MS; the expiry still counts from requested_at.
-        db.prepare("UPDATE main.github_commands SET tried_at = ? WHERE comment_id = ?").run(now.toISOString(), r.comment_id);
+        db.prepare("UPDATE main.github_commands SET tried_at = ? WHERE comment_id = ?").run(clock().toISOString(), r.comment_id);
         continue;
       }
       settled++;

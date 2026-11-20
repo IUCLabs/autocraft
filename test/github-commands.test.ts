@@ -285,6 +285,23 @@ describe("drainCommands", () => {
     assert.equal(gh.posted.length, 0);
   });
 
+  test("due retries do not keep a command that was never tried out, also with drains minutes apart", async () => {
+    const w = fresh().pr(1).pr(2).pr(3);
+    for (const n of [1, 2, 3]) deliver(w, payload({ body: `@${SLUG} merge queue`, number: n, comment: 8000 + n }));
+    w.db.exec("DELETE FROM sync_requests");
+    for (const n of [1, 2, 3]) readAt(w, n, new Date(Date.now() + 1000));
+    // One GitHub call per drain, drains two minutes apart, so a retry is due again at every drain. GitHub cannot tell the
+    // permission for the first two calls. Oldest first alone would retry #1 at every drain and never reach #3.
+    let calls = 0;
+    const permission = async () => (++calls <= 2 ? "transient" as const : "ok" as const);
+    for (const k of [0, 1, 2]) {
+      const at = new Date(Date.now() + k * 2 * 60_000);
+      await drainCommands(w.db, { ...deps(w, { exec: ghFake().exec, now: () => at }), limit: 1, permission });
+    }
+    const state = Object.fromEntries(rows(w).map((r) => [r.number, r.state]));
+    assert.deepEqual(state, { 1: "queued", 2: "queued", 3: "done" }, "#2 and then #3 were tried before #1 again");
+  });
+
   test("a command exactly an hour old has expired", async () => {
     const w = fresh().pr(1);
     deliver(w, payload({ body: `@${SLUG} merge queue` }));
