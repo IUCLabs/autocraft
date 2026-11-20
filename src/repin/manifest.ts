@@ -16,6 +16,19 @@ export function parsePrRef(s: string): PrRef | null {
   return number > 0 ? { owner: m[1] ?? m[4] ?? null, name: (m[2] ?? m[5])!, number } : null;
 }
 
+/** Path components of a branch: letters, digits, `_`, `-` and inner dots; never a leading dot or `-`, never `..` or `.lock` at the end. */
+const COMPONENT = /^(?![.-])(?!.*\.\.)(?!.*\.lock$)[A-Za-z0-9._-]+(?<!\.)$/;
+
+/**
+ * The branch a command names after `via`, or null for a name git would refuse or that could be read as anything but a branch
+ * (an option, a revision expression, a ref path). It ends up in a fetch refspec, so only plain names pass.
+ */
+export function parseBranch(s: string): string | null {
+  if (s.length > 100 || /^(?:HEAD|refs)(?:\/|$)/.test(s)) return null;
+  const parts = s.split("/");
+  return parts.every((p) => COMPONENT.test(p)) ? s : null;
+}
+
 const isTable = (v: unknown): v is TomlTable => !!v && typeof v === "object" && !Array.isArray(v);
 const SHA = /^[0-9a-f]{40}$/;
 

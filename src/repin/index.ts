@@ -2,9 +2,13 @@
 // say) pins that repository's crates to a commit of its branch. Someone who may queue items on the repo comments
 //
 //   @<app-slug> autorepin storytold/craft-libs#12        (also `craft-libs#12`, the pull request's URL, or `off`)
+//   @<app-slug> autorepin storytold/craft-libs#12 via next
 //
 // and once that pull request is merged into its default branch, this one gets a commit that sets the `rev` of every Cargo
-// git dependency on that repository to the merge commit, with Cargo.lock updated to match. No model is involved:
+// git dependency on that repository to the merge commit, with Cargo.lock updated to match. With `via <branch>` the pin is
+// instead the first commit of that branch's first-parent history that holds the merge (the merge into the branch, or the
+// pull request's merge itself when it was merged into the branch directly), so nothing else of the branch comes along; until
+// the merge reaches the branch the autorepin waits, looking again every 15 minutes, for at most 7 days. No model is involved:
 //  - the manifests are rewritten here (src/repin/manifest.ts): only `rev` strings change;
 //  - Cargo.lock is written by `cargo update --workspace` in a build environment, never on this host, and is accepted only
 //    if it adds nothing but crates.io packages and the dependency at the merge commit;
@@ -37,7 +41,7 @@ import { baseScopeRepos } from "../pilot.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { settleRefusal } from "../settlers.ts";
 import { fetchScript } from "../worker/rust.ts";
-import { LOCK_MAX_MS, repinsDue, type RepinRow } from "./due.ts";
+import { BRANCH_MAX_MS, BRANCH_POLL_MS, LOCK_MAX_MS, RETRY_MS, repinsDue, type RepinRow } from "./due.ts";
 import { lockRefusal, repinManifest, safePath, type PrRef } from "./manifest.ts";
 
 /** Attempts that may end unfinished (GitHub unreadable, the head moved, the lockfile task failed) before the repin is given up. */
@@ -59,7 +63,7 @@ export const LOCK_SCRIPT = fetchScript(["/usr/local/cargo/bin/cargo update --wor
 const MERGE_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
     defaultBranchRef { name }
-    pullRequest(number: $n) { state baseRefName mergeCommit { oid } }
+    pullRequest(number: $n) { state baseRefName mergedAt mergeCommit { oid } }
   }
 }`;
 const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
@@ -71,7 +75,7 @@ const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
     }
   }
 }`;
-type MergeRead = { repository?: { defaultBranchRef?: { name: string } | null; pullRequest?: { state: string; baseRefName: string; mergeCommit?: { oid: string } | null } | null } | null };
+type MergeRead = { repository?: { defaultBranchRef?: { name: string } | null; pullRequest?: { state: string; baseRefName: string; mergedAt?: string | null; mergeCommit?: { oid: string } | null } | null } | null };
 type PrRead = { repository?: { pullRequest?: { state: string; headRefOid: string; headRefName: string; maintainerCanModify: boolean; headRepository: { nameWithOwner: string } | null; headRef?: { branchProtectionRule?: { id: string } | null } | null } | null } | null };
 
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300).replace(/[.\s]+$/, "");
@@ -107,7 +111,7 @@ const refused = (why: string): HttpError => new HttpError(409, why);
  * reason when refused. `at` orders the commands of a pull request: a command older than an `off` or than the command that set
  * the row sets nothing.
  */
-export async function requestRepin(db: DatabaseSync, o: { login: string; githubId: number; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; /** When the command was given (the comment's time). */ at?: Date }): Promise<string> {
+export async function requestRepin(db: DatabaseSync, o: { login: string; githubId: number; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; /** `via <branch>`, validated by the parser (parseBranch). */ branch?: string | null; /** When the command was given (the comment's time). */ at?: Date }): Promise<string> {
   if (!o.pr) throw refused("autorepin is for pull requests");
   const refusal = await settleRefusal(db, { login: o.login, role: o.role, canWrite: async (r) => r === o.repo && o.canWrite }, [o.repo], `sets autorepin on ${o.repo}`);
   if (refusal) throw refused(refusal);
@@ -138,13 +142,20 @@ export async function requestRepin(db: DatabaseSync, o: { login: string; githubI
   const scope = outOfBuildScope(db, o.repo, o.number);
   if (scope) throw refused(scope);
   // Only over a row of an earlier command: a later `off`, or a later command for the same repository, stands.
-  const set = db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, login, github_id, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting')
-    ON CONFLICT (repo, number, ref_repo) DO UPDATE SET ref_number = excluded.ref_number, login = excluded.login, github_id = excluded.github_id, requested_at = excluded.requested_at, state = 'waiting',
+  const branch = o.branch ?? null;
+  const set = db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, ref_branch, login, github_id, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting')
+    ON CONFLICT (repo, number, ref_repo) DO UPDATE SET ref_number = excluded.ref_number, ref_branch = excluded.ref_branch, login = excluded.login, github_id = excluded.github_id, requested_at = excluded.requested_at, state = 'waiting',
       sha = NULL, head = NULL, task_id = NULL, tries = 0, tried_at = NULL, to_head = NULL, result = NULL, done_at = NULL, notice = NULL
       WHERE excluded.requested_at >= autorepins.requested_at`)
-    .run(o.repo, o.number, dep, o.ref.number, o.login, o.githubId, at).changes;
+    .run(o.repo, o.number, dep, o.ref.number, branch, o.login, o.githubId, at).changes;
   if (!set) throw refused(`a later autorepin command for ${slugOf(dep)} on this pull request stands`);
-  audit(db, o.login, "autorepin-set", refOf(o), { on: depRef });
+  audit(db, o.login, "autorepin-set", refOf(o), { on: depRef, ...(branch ? { via: branch } : {}) });
+  if (branch) {
+    const to = `the first \`${branch}\` commit that contains it`;
+    return other.state === "MERGED"
+      ? `Autorepin set: ${depRef} is already merged, so ${slugOf(dep)} is repinned here to ${to} once \`${branch}\` has it`
+      : `Autorepin set: once ${depRef} is merged and on \`${branch}\`, ${slugOf(dep)} is repinned here to ${to}, in a commit pushed to this branch`;
+  }
   return other.state === "MERGED"
     ? `Autorepin set: ${depRef} is already merged, so ${slugOf(dep)} is repinned to its merge commit here now`
     : `Autorepin set: once ${depRef} is merged, ${slugOf(dep)} is repinned to its merge commit here, in a commit pushed to this branch`;
@@ -184,6 +195,8 @@ class Ended extends Error {
 const failed = (why: string): Ended => new Ended("failed", oneLine(why));
 /** The attempt did not finish and is tried again; the reason is worded here and is the outcome's when the tries run out. */
 class Retry extends Error {}
+/** The merge is not on the `via` branch yet: looked for again after BRANCH_POLL_MS, without counting a try. */
+class Wait extends Error {}
 
 const KEY = "repo = ? AND number = ? AND ref_repo = ?";
 const keyOf = (r: RepinRow): [string, number, string] => [r.repo, r.number, r.ref_repo];
@@ -212,7 +225,8 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   if (!other) throw failed(`AutoCraft no longer has ${depRef}`);
   if (other.state === "CLOSED") throw new Ended("cancelled", `${depRef} was closed without merging, so nothing was repinned`);
 
-  // The merge commit, from GitHub: it must be on the default branch, where the dependency's revs are to come from.
+  // The merge commit, from GitHub: it must be on the default branch, where the dependency's revs are to come from, or with
+  // `via` on the default branch or the named one.
   const m = await q.query(MERGE_QUERY, { owner: ownerOf(r.ref_repo), name: r.ref_repo, n: r.ref_number }) as MergeRead;
   const merged = m.repository?.pullRequest;
   if (!merged) throw new Retry(`GitHub returned no ${depRef}`);
@@ -220,19 +234,46 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   if (merged.state !== "MERGED") throw new Retry(`${depRef} is not merged on GitHub yet`);
   const main = m.repository?.defaultBranchRef?.name;
   if (!main) throw new Retry(`GitHub returned no default branch for ${dep}`);
-  if (merged.baseRefName !== main) throw failed(`${depRef} was merged into ${merged.baseRefName}, not into ${dep}'s default branch ${main}`);
+  const via = r.ref_branch;
+  if (merged.baseRefName !== main && merged.baseRefName !== via) {
+    throw failed(`${depRef} was merged into ${merged.baseRefName}, not into ${dep}'s default branch ${main}${via ? ` or ${via}` : ""}`);
+  }
   const sha = merged.mergeCommit?.oid ?? "";
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Retry(`GitHub returned no merge commit for ${depRef}`);
-  // The branch as it is now: a default branch rewritten since the merge may no longer hold the commit.
+  // The branch as it is now: a branch rewritten since the merge may no longer hold the commit.
   const root = d.root ?? fixupDir();
   mkdirSync(root, { recursive: true });
   const depGit = new Git(run, root, r.ref_repo);
-  const tip = await depGit.fetchBase(ownerOf(r.ref_repo), r.ref_repo, main);
-  // The fetch brought every commit the branch holds: one that is not here is not on it.
-  const have = (await depGit.git(["cat-file", "-e", `${sha}^{commit}`])).code === 0;
-  const on = have ? await depGit.git(["merge-base", "--is-ancestor", sha, tip]) : { code: 1, stderr: "" };
-  if (on.code === 1) throw failed(`the merge commit of ${depRef} is no longer on ${dep}'s default branch ${main}`);
-  if (on.code !== 0) throw new Error(`the merge commit of ${depRef} could not be looked up on ${dep}'s ${main}: ${oneLine(on.stderr)}`);
+  const onBranch = async (branch: string): Promise<{ tip: string; on: boolean }> => {
+    const tip = await depGit.fetchBase(ownerOf(r.ref_repo), r.ref_repo, branch).catch((e: unknown) => {
+      d.log?.(`autorepin ${refOf(r)}: fetching ${dep} ${branch}: ${oneLine(String((e as Error)?.message ?? e))}`);
+      throw new Retry(`${dep}'s branch ${branch} could not be fetched`);
+    });
+    // The fetch brought every commit the branch holds: one that is not here is not on it.
+    const have = (await depGit.git(["cat-file", "-e", `${sha}^{commit}`])).code === 0;
+    const on = have ? await depGit.git(["merge-base", "--is-ancestor", sha, tip]) : { code: 1, stderr: "" };
+    if (on.code !== 0 && on.code !== 1) throw new Error(`the merge commit of ${depRef} could not be looked up on ${dep}'s ${branch}: ${oneLine(on.stderr)}`);
+    return { tip, on: on.code === 0 };
+  };
+  // The commit pinned to, and how the comment and the commit name it.
+  let target = sha, what = `the merge of ${depRef}`;
+  if (merged.baseRefName === main && !(await onBranch(main)).on) throw failed(`the merge commit of ${depRef} is no longer on ${dep}'s default branch ${main}`);
+  if (via) {
+    const b = await onBranch(via);
+    if (!b.on) {
+      if (merged.baseRefName === via) throw failed(`the merge commit of ${depRef} is no longer on ${dep}'s ${via}`);
+      // Merged into the default branch and not brought into `via` yet.
+      const mergedAt = Date.parse(merged.mergedAt ?? "");
+      const since = Number.isFinite(mergedAt) ? mergedAt : Date.parse(r.requested_at);
+      const now = (d.now ?? (() => new Date()))();
+      if (now.getTime() - since > BRANCH_MAX_MS) throw failed(`${depRef} has not reached ${dep}'s ${via} within ${BRANCH_MAX_MS / 86_400_000} days of its merge`);
+      throw new Wait(`${depRef} is merged but not on ${dep}'s ${via} yet`);
+    }
+    target = await firstHolding(depGit, sha, b.tip);
+    what = target === sha ? `the merge of ${depRef}, on ${via}` : `the first ${via} commit that contains ${depRef}`;
+  }
+  // The pin found again while the lockfile was written must be the one the task was given.
+  if (r.state === "locking" && r.sha !== null && r.sha !== target) throw new Retry(`the commit of ${dep}'s ${via ?? main} to pin to changed while the lockfile was written`);
 
   // Whoever asked must still be allowed to, with the login still bound to the GitHub account that asked, and the repo must
   // still approve pushes.
@@ -284,7 +325,7 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
     }
     // A manifest that never names the repository (a test fixture, say) is not read as TOML at all.
     if (!f.content.toLowerCase().includes(name)) continue;
-    const out = repinManifest(f.content, dep, sha);
+    const out = repinManifest(f.content, dep, target);
     if (!out.ok) {
       d.log?.(`autorepin ${refOf(r)}: ${path}: ${out.reason}${out.detail ? `: ${oneLine(out.detail)}` : ""}`);
       throw failed(`${safePath(path, "a Cargo.toml")}: ${out.reason}`);
@@ -296,8 +337,8 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   if (!pinned) throw failed(`no Cargo.toml of this pull request pins ${dep} by rev${unpinned ? ` (${unpinned} use a branch, a tag or no rev, which autorepin leaves alone)` : ""}`);
   if (!files.length) {
     // The head is the commit an earlier try pushed (the outcome was not recorded): keep it, so a merge pre-approved at the old head carries on (ownPush in src/preapproval).
-    if (r.to_head !== null && r.to_head === head) throw new Ended("pushed", `Repinned ${dep} to ${short(sha)}, the merge of ${depRef}, in ${short(head)}`, { toHead: head });
-    throw new Ended("pushed", `${dep} is already pinned to ${short(sha)}, the merge of ${depRef}; nothing to change`);
+    if (r.to_head !== null && r.to_head === head) throw new Ended("pushed", `Repinned ${dep} to ${short(target)}, ${what}, in ${short(head)}`, { toHead: head });
+    throw new Ended("pushed", `${dep} is already pinned to ${short(target)}, ${what}; nothing to change`);
   }
 
   const scratch = mkdtempSync(join(root, ".index-"));
@@ -317,8 +358,8 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
           step: "autorepin", repo: r.repo, number: r.number, headSha: head, requires: { os: "linux", toolchains: ["rust-stable"] }, patch: await git.diffText(head, tree),
           plan: [{ name: "lock", cmd: ["sh", "-c", LOCK_SCRIPT], network: "fetch", timeoutSec: 900, artifacts: [LOCK] }],
         });
-        db.prepare(`UPDATE main.autorepins SET state = 'locking', sha = ?, head = ?, to_head = NULL, task_id = ? WHERE ${KEY}`).run(sha, head, id, ...keyOf(r));
-        d.log?.(`autorepin ${refOf(r)}: lockfile task ${id} queued for ${dep} at ${short(sha)}`);
+        db.prepare(`UPDATE main.autorepins SET state = 'locking', sha = ?, head = ?, to_head = NULL, task_id = ? WHERE ${KEY}`).run(target, head, id, ...keyOf(r));
+        d.log?.(`autorepin ${refOf(r)}: lockfile task ${id} queued for ${dep} at ${short(target)}`);
         return;
       }
       const t = db.prepare("SELECT state FROM main.build_tasks WHERE id = ?").get(r.task_id) as { state: string } | undefined;
@@ -327,7 +368,7 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
       const file = art ? absolute(art.file) : null;
       if (!file) throw new Retry("the lockfile task returned no Cargo.lock");
       const after = readFileSync(file, "utf8");
-      const no = lockRefusal(lock.content, after, dep, sha);
+      const no = lockRefusal(lock.content, after, dep, target);
       if (no) throw failed(no);
       if (after !== lock.content) {
         tree = await git.withFiles(tree, [{ path: LOCK, mode: lock.mode, content: after }], join(scratch, "index"));
@@ -335,24 +376,50 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
       }
     }
     const who = await commitIdentity(db, r.repo, () => pipelineAccount(run));
-    const commit = await git.commit(tree, head, `Repin ${r.ref_repo} to ${short(sha)}\n\nThe merge commit of ${depRef}.\n`, { name: who.name, email: who.email });
+    const commit = await git.commit(tree, head, `Repin ${r.ref_repo} to ${short(target)}\n\n${what[0]!.toUpperCase()}${what.slice(1)}.\n`, { name: who.name, email: who.email });
     // The commit is exactly the rewritten manifests and the lockfile: contents of files that exist, nothing added, removed or re-moded.
     const changes = await git.rawChanges(head, commit);
     if (changes.some((x) => x[2] !== "M" || x[0] !== x[1]) || changes.map((x) => x[3]!).sort().join("\n") !== [...changed].sort().join("\n")) throw failed("the commit would change more than the revs and the lockfile");
     // Written before the push, so a head that reaches the mirror before the outcome is recorded is already known as this commit (ownPush in src/preapproval).
     db.prepare(`UPDATE main.autorepins SET head = ?, to_head = ? WHERE ${KEY}`).run(head, commit, ...keyOf(r));
-    const push = await pushRepin({ db, login: AUDIT_LOGIN }, g, git, { repo: r.repo, number: r.number, remote: headRepo, branch: pr.headRefName, head, sha: commit }, { on: depRef, rev: sha, files: changed, by: r.login });
+    const push = await pushRepin({ db, login: AUDIT_LOGIN }, g, git, { repo: r.repo, number: r.number, remote: headRepo, branch: pr.headRefName, head, sha: commit }, { on: depRef, rev: target, files: changed, by: r.login });
     if (push.code !== 0) {
       const err = oneLine(push.stderr);
       if (/stale info|rejected|fetch first/i.test(err)) throw new Retry("the branch moved before the push");
       if (/denied|403|permission|not allowed|protected branch|declined|GH013/i.test(err)) throw failed("GitHub refused the push to this pull request's branch");
       throw new Error(`the push failed: ${err}`);
     }
-    throw new Ended("pushed", `Repinned ${dep} to ${short(sha)}, the merge of ${depRef}, in ${short(commit)} (${changed.join(", ")})`, { toHead: commit });
+    throw new Ended("pushed", `Repinned ${dep} to ${short(target)}, ${what}, in ${short(commit)} (${changed.join(", ")})`, { toHead: commit });
   } finally {
     // A scratch folder that cannot be removed must not replace the outcome (a push that was made, a task that was queued).
     try { rmSync(scratch, { recursive: true, force: true }); } catch (e) { d.log?.(`autorepin ${refOf(r)}: scratch folder not removed: ${oneLine(String((e as Error)?.message ?? e))}`); }
   }
+}
+
+/**
+ * The oldest commit of `tip`'s first-parent history that holds `sha` (an ancestor of `tip`): `sha` itself when that history
+ * passes through it (a fast-forward, a squash or a merge straight into the branch), else the merge that brought it in. Along
+ * that history, once a commit holds it every later one does, so the history is searched by halves.
+ */
+async function firstHolding(git: Git, sha: string, tip: string): Promise<string> {
+  // The history down to the first commit that `sha` itself holds (excluded); newest first, so the tip comes first.
+  const chain = (await git.must(["rev-list", "--first-parent", tip, `^${sha}`])).split("\n").map((x) => x.trim()).filter(Boolean);
+  if (!chain.length) return sha;
+  const holds = async (c: string): Promise<boolean> => {
+    const r = await git.git(["merge-base", "--is-ancestor", sha, c]);
+    if (r.code !== 0 && r.code !== 1) throw new Error(`git merge-base failed: ${oneLine(r.stderr)}`);
+    return r.code === 0;
+  };
+  // chain[0], the tip, holds it: find the highest index (the oldest commit) that does.
+  let lo = 0, hi = chain.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (await holds(chain[mid]!)) lo = mid;
+    else hi = mid - 1;
+  }
+  const first = chain[lo]!;
+  const parent = (await git.git(["rev-parse", "--verify", "--quiet", `${first}^1`])).stdout.trim();
+  return parent === sha ? sha : first;
 }
 
 /** The comment that tells the outcome on the pull request. */
@@ -399,7 +466,13 @@ export async function drainRepins(db: DatabaseSync, deps: RepinDeps): Promise<nu
       } catch (e) {
         if (e instanceof WritePacedError) break;
         if (e instanceof Ended) finish(db, r, e, clock());
-        else {
+        else if (e instanceof Wait) {
+          // Not a try: tried_at is set ahead, so the row is due again (repinsDue: a minute after tried_at) in BRANCH_POLL_MS.
+          stopTask(db, r.task_id);
+          db.prepare(`UPDATE main.autorepins SET state = 'waiting', task_id = NULL, tried_at = ? WHERE ${KEY}`).run(new Date(clock().getTime() + BRANCH_POLL_MS - RETRY_MS).toISOString(), ...keyOf(r));
+          deps.log?.(`autorepin ${refOf(r)}: ${e.message}`);
+          continue;
+        } else {
           // Not finished: from the start again after a minute, and given up with the reason after MAX_TRIES. Only a reason
           // worded here (Retry) is posted. head and to_head stay: a push that went out before the error is still known as ours.
           const raw = oneLine(String((e as Error)?.message ?? e));
