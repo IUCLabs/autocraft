@@ -7,6 +7,8 @@
 // repos with no taker are recorded for the remote-no-taker health check. Follow-up turns and calls with a pick that counts
 // keep their own rules (calls.ts awaitCall, picks).
 import type { DatabaseSync } from "node:sqlite";
+import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
+import { PERM_READ_TTL } from "../dash/server/sessions.ts";
 import { prep } from "../sql-cache.ts";
 import { NO_TAKER_PREFIX, pickCounts, pickerLogins, queueSnapshot, runnerTakes, withdrawCall } from "./calls.ts";
 import { STATUS_FRESH_MS } from "./helpers.ts";
@@ -38,14 +40,19 @@ const takerArgs = (nowMs: number): [string, number, number] => [new Date(nowMs).
 /**
  * The runners the taker rule reads, in a form that changes only when they or what decides their repos change: each one's
  * login, role, My repos and own repo list. The planner adds it to its input, so work left for want of a taker is planned
- * again when one connects or comes back, without every status report waking the planner. Write permission is not in it.
+ * again when one connects or comes back, without every status report waking the planner. Of write permission it holds the
+ * oldest check among their cached non-write permissions that still count (roomCanWrite), so it changes when that one expires.
  */
 export function takerSignature(db: DatabaseSync, nowMs: number = Date.now()): string {
   const r = prep(db, `SELECT group_concat(k, ';') AS s FROM (SELECT DISTINCT lower(t.login) || ':' || COALESCE(a.role, '') || ':' || COALESCE(us.value, '') || ':' || COALESCE(t.idle_repos, '') AS k
       FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
       LEFT JOIN main.user_settings us ON us.login = t.login AND us.key = 'repos'
       WHERE ${TAKER_SQL} ORDER BY k)`).get(...takerArgs(nowMs)) as { s: string | null };
-  return r.s ?? "";
+  if (!r.s) return "";
+  const denied = prep(db, `SELECT MIN(p.checked_at) AS at FROM main.repo_permissions p WHERE p.permission NOT IN (SELECT value FROM json_each(?)) AND p.checked_at > ?
+      AND p.login IN (SELECT t.login FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE ${TAKER_SQL})`)
+    .get(JSON.stringify([...WRITE_PERMISSIONS]), new Date(nowMs - PERM_READ_TTL).toISOString(), ...takerArgs(nowMs)) as { at: string | null };
+  return denied.at ? `${r.s}|${denied.at}` : r.s;
 }
 
 function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
