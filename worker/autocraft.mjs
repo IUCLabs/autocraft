@@ -4325,7 +4325,7 @@ class UsageError extends Error {}
 /** @param {Set<string>} has */
 const answerWhy = (has) => (has.has("set_weight")
   ? "this Task Runner cannot approve merges: tick \"Can answer decisions and approve merges\" for it on the Connect page (the server must offer answering)"
-  : "only operators steer the merge queue");
+  : "only operators, and maintainers who answer decisions (an answering Task Runner while maintainer writes are on), approve merges");
 const LOCAL_WHY = "model calls run on the server's accounts here: the server is not in the user-local inference mode";
 /** @param {Set<string>} has */
 const pickWhy = (has) => (has.has("list_model_calls") ? "only maintainers and operators pick model calls" : LOCAL_WHY);

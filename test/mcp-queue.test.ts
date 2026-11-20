@@ -1,5 +1,5 @@
 // The Inbox MCP server's merge queue tools: an operator's agent queues, weights and withdraws PRs with the Queue page's
-// own handlers (pre-approval, fast track); other roles only read the queue.
+// own handlers (pre-approval, fast track); a maintainer who answers decisions queues items too; other roles only read the queue.
 import assert from "node:assert/strict";
 import { afterEach, before, describe, test } from "node:test";
 import { answering, handleMcp, type McpEnv } from "../src/dash/mcp/index.ts";
@@ -36,17 +36,21 @@ const weights = (w: World) => fastTrackList(w.db).map((f) => [f.number, f.weight
 const data = (text: string): any => JSON.parse(text.slice(text.indexOf(">>>\n") + 4, text.lastIndexOf("\n<<<end untrusted>>>")));
 
 describe("merge queue tools", () => {
-  test("only an operator is offered the write tools and told about them; everyone reads the queue", async () => {
+  test("an operator is offered the write tools; a maintainer's answering token only queue_pr; everyone reads the queue", async () => {
     const w = fresh();
     const op = envOf(w, "operator"), maint = envOf(w, "maintainer"), viewer = envOf(w, "viewer");
+    const maintNoAnswer = envOf(w, "maintainer", "maint", { role: "maintainer" }, false);
+    const writes = (list: string[]) => list.filter((n) => ["queue_pr", "set_weight", "cancel_queued"].includes(n));
     for (const n of ["queue_pr", "set_weight", "cancel_queued", "list_merge_queue"]) assert.ok((await names(op)).includes(n), n);
-    for (const env of [maint, viewer]) {
-      const list = await names(env);
-      assert.ok(list.includes("list_merge_queue"));
-      assert.deepEqual(list.filter((n) => ["queue_pr", "set_weight", "cancel_queued"].includes(n)), []);
-    }
+    for (const env of [maint, maintNoAnswer, viewer]) assert.ok((await names(env)).includes("list_merge_queue"));
+    assert.deepEqual(writes(await names(maint)), ["queue_pr"]);
+    assert.deepEqual(writes(await names(maintNoAnswer)), []);
+    assert.deepEqual(writes(await names(viewer)), []);
     assert.match((await rpc(op, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
-    assert.doesNotMatch((await rpc(maint, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
+    const maintText = (await rpc(maint, "initialize", { protocolVersion: "2025-06-18" })).instructions;
+    assert.match(maintText, /queue_pr/);
+    assert.doesNotMatch(maintText, /set_weight|cancel_queued/);
+    assert.doesNotMatch((await rpc(maintNoAnswer, "initialize", { protocolVersion: "2025-06-18" })).instructions, /queue_pr/);
   });
 
   test("an operator token that cannot answer is not offered queue_pr or cancel_queued, and a call is refused", async () => {
@@ -93,16 +97,29 @@ describe("merge queue tools", () => {
     }
   });
 
-  test("a maintainer's call is refused and changes nothing", async () => {
+  test("a maintainer queues only where they answer decisions; set_weight and cancel_queued stay with operators", async () => {
     const w = fresh().pr(1);
     const maint = envOf(w, "maintainer");
-    for (const [name, args] of [["queue_pr", { item: "app#1" }], ["set_weight", { item: "app#1", weight: 9 }], ["cancel_queued", { item: "app#1" }]] as const) {
-      const r = await call(maint, name, args);
-      assert.equal(r.isError, true, name);
-      assert.match(r.text, /only operators steer the merge queue/);
-    }
-    assert.equal(preapprovalOf(w.db, "app", 1), null);
-    assert.deepEqual(weights(w), []);
+    const refusedAll = async () => {
+      for (const [name, args, why] of [["queue_pr", { item: "app#1" }, /only an operator, or a maintainer with write access where the app acts for them/], ["set_weight", { item: "app#1", weight: 9 }, /only operators steer the merge queue/], ["cancel_queued", { item: "app#1" }, /only operators steer the merge queue/]] as const) {
+        const r = await call(maint, name, args);
+        assert.equal(r.isError, true, name);
+        assert.match(r.text, why, name);
+      }
+      assert.equal(preapprovalOf(w.db, "app", 1), null);
+      assert.deepEqual(weights(w), []);
+    };
+    // Maintainer writes off, then on without the app identity: nothing changes.
+    await refusedAll();
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1')").run();
+    await refusedAll();
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('github_identity', 'app')").run();
+    const r = await call(maint, "queue_pr", { item: "app#1", weight: 6 });
+    assert.equal(r.isError, false, r.text);
+    assert.equal(preapprovalOf(w.db, "app", 1)?.by, "maint");
+    assert.deepEqual(weights(w), [[1, 6]]);
+    assert.equal((await call(maint, "cancel_queued", { item: "app#1" })).isError, true);
+    assert.equal((await call(maint, "set_weight", { item: "app#1", remove: true })).isError, true);
   });
 
   test("an operator demoted after tools/list is refused on the next call, with the tools still in its client's list", async () => {
@@ -112,15 +129,17 @@ describe("merge queue tools", () => {
     assert.ok((await names(env)).includes("queue_pr"));
     assert.equal((await call(env, "queue_pr", { item: "app#2", weight: 4 })).isError, false);
     who.role = "maintainer";
-    for (const [name, args] of [["queue_pr", { item: "app#1" }], ["set_weight", { item: "app#2", weight: 9 }], ["cancel_queued", { item: "app#2" }]] as const) {
+    // A maintainer queues only where they answer decisions (maintainer writes are off here).
+    for (const [name, args, why] of [["queue_pr", { item: "app#1" }, /only an operator, or a maintainer/], ["set_weight", { item: "app#2", weight: 9 }, /only operators steer the merge queue; op is a maintainer/], ["cancel_queued", { item: "app#2" }, /only operators steer the merge queue; op is a maintainer/]] as const) {
       const r = await call(env, name, args);
       assert.equal(r.isError, true, name);
-      assert.match(r.text, /only operators steer the merge queue; op is a maintainer/);
+      assert.match(r.text, why, name);
     }
     assert.equal(preapprovalOf(w.db, "app", 1), null);
     assert.equal(preapprovalOf(w.db, "app", 2)?.state, "review");
     assert.deepEqual(weights(w), [[2, 4]]);
-    assert.equal((await names(env)).includes("queue_pr"), false);
+    // As a maintainer with an answering token it keeps only queue_pr (the server turns answering off while maintainer writes are off).
+    assert.deepEqual((await names(env)).filter((n) => ["queue_pr", "set_weight", "cancel_queued"].includes(n)), ["queue_pr"]);
   });
 
   test("queue_pr pre-approves the PR at its head and fast-tracks it with the weight, as the Queue page does", async () => {
