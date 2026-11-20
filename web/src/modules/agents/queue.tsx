@@ -47,7 +47,7 @@ export function ModelQueueView({ user }: ViewProps) {
   const d = q.data;
   const runners = d && (
     <span className="num">
-      {d.runners.autopilot} on their own · {d.runners.manual} Manual only
+      {d.runners.autopilot} on autopilot · {d.runners.manual} Manual only
       {d.runners.manualLogins?.length ? ` (${d.runners.manualLogins.join(", ")})` : ""}
     </span>
   );

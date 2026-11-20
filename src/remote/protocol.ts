@@ -1,4 +1,4 @@
-// The wire format between the server and the user-local helper (`worker/autocraft-task.mjs`) in the
+// The wire format between the server and the Task Runner `autocraft` (`worker/autocraft.mjs`) in the
 // `user-local` inference mode: model calls run in a harness on a maintainer's own machine, under their
 // own subscription; everything else (planner, gates, GitHub writes, builds) stays on the server.
 // No Node imports: the helper keeps its own copy of these shapes and the dashboard build may import this file.
