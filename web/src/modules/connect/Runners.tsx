@@ -15,7 +15,6 @@ import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { clock, day, nowMs } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
 import { cn } from "../../ui/cn";
-import { RunnerSetup } from "./Setup";
 import { SectionTitle } from "./SectionTitle";
 
 /** A runner made this recently carries a "new" badge, so one the user did not add stands out. */
@@ -66,14 +65,14 @@ export function Runners() {
       {code && <ApprovalCard key={code} code={code} answering={!!data?.answering} onDone={closeCode} />}
       <ErrorLine error={error?.message} className="px-3 pt-2" />
       {any && (
-        <ul className="border-b border-line">
+        <ul>
           {data.runners.map((r) => (
             <RunnerRow key={r.tokenId} r={r} answering={data.answering} />
           ))}
         </ul>
       )}
-      <RunnerSetup />
-      <p className="flex flex-wrap gap-x-4 gap-y-1 border-t border-line px-3 py-2 text-xs">
+      {data && !any && <p className="px-3 py-3 text-sm text-ink/65">No Task Runner yet: set one up with the steps below.</p>}
+      <p className={cn("flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 text-xs", any && "border-t border-line")}>
         <Link to="/model-queue" className="text-accent-ink hover:underline">Model call queue</Link>
         <Link to="/agents" className="text-accent-ink hover:underline">Model calls that ran</Link>
       </p>

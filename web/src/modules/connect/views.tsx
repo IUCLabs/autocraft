@@ -17,6 +17,7 @@ import { day } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
 import { MySettings } from "./MySettings";
 import { Runners } from "./Runners";
+import { RunnerGuide } from "./Setup";
 import { Fold } from "./Fold";
 import { SectionTitle, touch } from "./SectionTitle";
 
@@ -27,8 +28,9 @@ export function ConnectView({ user }: ViewProps) {
   const local = user.role !== "viewer" && user.inference === "user-local";
   return (
     <Page title="Connect">
-      {local && <Runners />}
       {local && <MySettings />}
+      {local && <Runners />}
+      {local && <RunnerGuide />}
       <Connector user={user} />
     </Page>
   );
