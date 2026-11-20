@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { poolRoom, repoBatches } from "../src/agents/call.ts";
+import { poolRoom, repoBatches, takersFirst } from "../src/agents/call.ts";
 import { pool, runHaiku } from "../src/classify/run.ts";
 import type { Item } from "../src/classify/parse.ts";
 import { runTiered } from "../src/agents/step.ts";
@@ -45,4 +45,18 @@ test("a pool skips a unit nobody may take and runs the later ones", async () => 
 test("batches hold one repo's items, at most the batch size each, in the order of their first item", () => {
   const items = ["deck:1", "photo:1", "deck:2", "deck:3", "photo:2", "deck:4", "design:1"].map((x) => ({ repo: x.split(":")[0]!, id: x }));
   assert.deepEqual(repoBatches(items, 2, (x) => x.repo).map((b) => b.map((x) => x.id)), [["deck:1", "deck:2"], ["photo:1", "photo:2"], ["deck:3", "deck:4"], ["design:1"]]);
+});
+
+test("a limited selection takes the items with a taker before the ones nobody may take", () => {
+  const db = connect(join(mkdtempSync(join(SCRATCH, "pool-skip-")), "t.db"));
+  setInferenceMode(db, "user-local", "test");
+  db.prepare("INSERT INTO access (login, role) VALUES ('olga', 'operator')").run();
+  const id = createToken(db, "olga", "helper", { kind: "runner" }).row.id;
+  storeStatus(db, id, "olga", parseStatus({ slots: 1, busy: 0, readiness: "ready", harness: "claude", models: { top: "opus" }, reserve: { fiveHour: 0, weekly: 0 } }));
+  db.prepare("UPDATE mcp_tokens SET idle_claim_at = ? WHERE id = ?").run(Date.now(), id);
+  setUserRepos(db, "olga", ["deckcraft"]);
+  const items = [{ repo: "photocraft", n: 1 }, { repo: "deckcraft", n: 2 }, { repo: "photocraft", n: 3 }, { repo: "deckcraft", n: 4 }];
+  const picked = takersFirst(db, items, (x) => [x.repo]).slice(0, 1);
+  assert.deepEqual(picked, [{ repo: "deckcraft", n: 2 }]);
+  assert.deepEqual(takersFirst(db, items, (x) => [x.repo]).map((x) => x.n), [2, 4, 1, 3], "stable within each group, none dropped");
 });
