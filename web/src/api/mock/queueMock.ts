@@ -129,15 +129,15 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
         return [...fast];
       },
       async add(item, weight) {
-        if (me.role !== "operator" && !(me.role === "maintainer" && me.maintainerWrites)) throw new Error("not allowed");
+        if (me.role !== "operator" && !(me.role === "maintainer" && me.maintainerSettles)) throw new Error("not allowed");
         // A GitHub link or owner/repo#n becomes repo#n, as the server's parseItemRef reads it.
         const url = /github\.com\/[\w.-]+\/([\w.-]+)\/(?:pull|issues)\/(\d+)/.exec(item);
         const issueLink = /\/issues\/\d+/.test(item);
         item = url ? `${url[1]}#${url[2]}` : item.replace(/^[\w.-]+\/(?=[\w.-]+#\d+$)/, "");
         if (!/^[\w.-]+#\d+$/.test(item)) throw new Error("not an item: use a GitHub URL, repo#number or owner/repo#number");
         const [repo, n] = [item.split("#")[0]!, Number(item.split("#")[1])];
-        // As the server: a maintainer queues only where they may write (an operator anywhere).
-        if (me.role === "maintainer" && !me.writeRepos.includes(repo)) throw new Error(`only an operator, or a maintainer with write access where the app acts for them, queues items on ${repo}`);
+        // As the server (settleRefusal): queuing needs write access on the repo, for an operator and a maintainer alike.
+        if (!me.writeRepos.includes(repo)) throw new Error(me.role === "operator" ? `no write access to ${repo}` : `only an operator, or a maintainer with write access where the app acts for them, queues items on ${repo}`);
         // Never lowers the weight of an item already fast-tracked.
         const mark = (ref: string) => {
           if (!fast.includes(ref)) fast = [...fast, ref];
