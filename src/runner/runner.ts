@@ -18,6 +18,7 @@ import { failRunning, pruneRuns } from "../agents/runs.ts";
 import { pruneTasks, reapLost } from "../build/tasks.ts";
 import { pruneBench } from "../nightly/index.ts";
 import { prunePlanHistory } from "../core/plan-cache.ts";
+import { COMMAND_WORK_SQL, drainCommands, pruneCommands } from "../github/commands.ts";
 import { checkPendingUpdate } from "../build/worker-update.ts";
 import { endJob, JOB_KEEP_MS, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { advanceSecurityFixes, autoFixConfirmed } from "../security/actions.ts";
@@ -189,7 +190,8 @@ export class Runner {
   private webhookTick(): void {
     if (this.webhooking || Date.now() - this.webhookAt < WEBHOOK_DRAIN_MS) return;
     this.webhookAt = Date.now();
-    if (!this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
+    const commands = !!this.db.prepare(`SELECT 1 FROM main.github_commands WHERE ${COMMAND_WORK_SQL} LIMIT 1`).get();
+    if (!commands && !this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
     this.webhooking = (async () => {
       const { lockHeld, lockPath, fullLockPath, Client, SYNC_RESERVE } = await import("../mirror.ts");
       if (lockHeld(lockPath()) || lockHeld(fullLockPath())) return;
@@ -197,6 +199,10 @@ export class Runner {
       const { drainSyncRequests } = await import("../github/webhooks.ts");
       const n = await drainSyncRequests(this.db, c, { limit: 10, log: this.o.log });
       if (n) this.o.log(`webhooks: read ${n} items again`);
+      // Commands in comments (`@<app> merge queue`) after the re-reads, so the item is read at its current head.
+      if (!commands) return;
+      const k = await drainCommands(this.db, { querier: c, log: this.o.log });
+      if (k) this.o.log(`webhooks: carried out ${k} commands from comments`);
     })().catch((e) => this.o.log(`webhooks: ${(e as Error).message}`)).finally(() => (this.webhooking = null));
   }
 
@@ -334,6 +340,11 @@ export class Runner {
         pruneRuns(this.db, t);
       } catch (e) {
         this.o.log(`prune agent runs: ${(e as Error).message}`);
+      }
+      try {
+        pruneCommands(this.db, t);
+      } catch (e) {
+        this.o.log(`prune github commands: ${(e as Error).message}`);
       }
     }
   }

@@ -22,6 +22,7 @@ import { findingsOf, type PremergeRow } from "../../premerge/store.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import { githubUserId } from "../../github/users.ts";
+import { maintainersSettle } from "../../settlers.ts";
 import * as discord from "./discord.ts";
 import * as agents from "./agents.ts";
 import * as build from "./build.ts";
@@ -108,6 +109,7 @@ async function me(db: DatabaseSync, req: Req): Promise<User> {
     role: req.user.role,
     writeRepos: await writeRepos(db, req),
     maintainerWrites: mw?.value === "1",
+    maintainerSettles: maintainersSettle(db),
     inference: inferenceMode(db),
   };
 }
@@ -593,7 +595,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/fast-track", operator: true, handler: ok(fastTrackAdd) },
     { method: "POST", pattern: "/api/fast-track/remove", operator: true, handler: ok(fastTrackRemove) },
     { method: "POST", pattern: "/api/fast-track/weight", operator: true, handler: ok(fastTrackWeight) },
-    { method: "POST", pattern: "/api/queue/add", operator: true, handler: ok(queueAdd) },
+    post("/api/queue/add", queueAdd),
     { method: "POST", pattern: "/api/merge/hold", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, true)) },
     { method: "POST", pattern: "/api/merge/release", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, false)) },
     { method: "POST", pattern: "/api/merge/batch-remove", operator: true, handler: ok((db, req) => batchRemovePr(db, req, opts.exec)) },

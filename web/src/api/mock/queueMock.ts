@@ -37,7 +37,8 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
   };
   // Weights of the fast-tracked items (default 5); `fast` stays sorted heaviest first, then in the order added.
   const weights = new Map<string, number>();
-  const weightOf = (ref: string) => weights.get(ref) ?? 5;
+  const WEIGHT_DEFAULT = 5;
+  const weightOf = (ref: string) => weights.get(ref) ?? WEIGHT_DEFAULT;
   const resort = () => {
     const order = new Map(fast.map((x, i) => [x, i]));
     fast = [...fast].sort((a, b) => weightOf(b) - weightOf(a) || order.get(a)! - order.get(b)!);
@@ -129,18 +130,22 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
         return [...fast];
       },
       async add(item, weight) {
-        need();
+        if (me.role !== "operator" && !(me.role === "maintainer" && me.maintainerSettles)) throw new Error("not allowed");
         // A GitHub link or owner/repo#n becomes repo#n, as the server's parseItemRef reads it.
         const url = /github\.com\/[\w.-]+\/([\w.-]+)\/(?:pull|issues)\/(\d+)/.exec(item);
         const issueLink = /\/issues\/\d+/.test(item);
         item = url ? `${url[1]}#${url[2]}` : item.replace(/^[\w.-]+\/(?=[\w.-]+#\d+$)/, "");
         if (!/^[\w.-]+#\d+$/.test(item)) throw new Error("not an item: use a GitHub URL, repo#number or owner/repo#number");
         const [repo, n] = [item.split("#")[0]!, Number(item.split("#")[1])];
-        // Never lowers the weight of an item already fast-tracked.
+        // As the server (settleRefusal): queuing needs write access on the repo, for an operator and a maintainer alike.
+        if (!me.writeRepos.includes(repo)) throw new Error(me.role === "operator" ? `no write access to ${repo}` : `only an operator, or a maintainer with write access where the app acts for them, queues items on ${repo}`);
+        // Never lowers the weight of an item already fast-tracked. Weights are an operator's: a maintainer's line adds with the default and changes no weight.
+        const own = me.role === "operator" ? (weight ?? WEIGHT_DEFAULT) : null;
+        const ignored = own === null && weight !== undefined ? ". The weight was ignored: only operators set fast-track weights" : "";
         const mark = (ref: string) => {
           if (!fast.includes(ref)) fast = [...fast, ref];
-          else if (weight <= weightOf(ref)) return;
-          weights.set(ref, weight);
+          else if (own === null || own <= weightOf(ref)) return;
+          weights.set(ref, own ?? WEIGHT_DEFAULT);
         };
         const closers = allMerge.filter((r) => r.repo === repo && r.closes?.includes(n)).map((r) => r.number);
         if (issueLink || closers.length || allWork.some((w) => w.repo === repo && w.number === n && w.kind === "issue")) {
@@ -158,14 +163,14 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
           }
           resort();
           changed();
-          return { label: `Fast-tracked the issue; ${rest}`, fast: [...fast] };
+          return { label: `Fast-tracked the issue; ${rest}${ignored}`, fast: [...fast] };
         }
         if (queued.has(item)) throw new Error(`${item} already has a pre-approved merge in progress`);
         mark(item);
         queued.set(item, new Date().toISOString());
         resort();
         changed();
-        return { label: "Added to the merge queue; it merges once the review says take and CI is green", fast: [...fast] };
+        return { label: `Added to the merge queue; it merges once the review says take and CI is green${ignored}`, fast: [...fast] };
       },
       async fastTrackRemove(item) {
         need();

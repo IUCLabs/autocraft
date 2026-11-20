@@ -127,3 +127,30 @@ describe("batch-build", () => {
     assert.deepEqual(batches(t.w).map((b) => [b.state, b.build_state, b.pr_number]), [["open", "skipped", 900]]);
   });
 });
+
+describe("a maintainer's Merge answer in a batch", () => {
+  test("is read again before the batch merges: without write access its PR is held and the batch is rebuilt without it", async () => {
+    const t = setup([1, 2], false);
+    const { w } = t;
+    // Outside the merge rule (a new author), so #3 merges on its Merge answer.
+    w.pr(3, { author: "newcomer" }).review(3).verified(3).premerge(3, "clean").answer(3, "merge");
+    await run(t);
+    const members = () => w.rows("SELECT b.state, m.number FROM merge_batch_prs m JOIN merge_batches b ON b.id = m.batch_id ORDER BY b.id, m.number").map((r) => `${r.state}:${r.number}`);
+    assert.deepEqual(members(), ["open:1", "open:2", "open:3"]);
+    // The answer is a maintainer's, under maintainer writes and the app identity, with a write permission past its cache time.
+    w.db.prepare("UPDATE decisions SET answered_by = 'maint' WHERE id LIKE 'app#3:merge@%'").run();
+    w.db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES ('maint', 'maintainer')").run();
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1'), ('github_identity', 'app')").run();
+    const perm = (permission: string, at: string) =>
+      w.db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES ('maint', 'app', ?, ?)").run(permission, at);
+    perm("write", new Date(Date.now() - 11 * 60_000).toISOString());
+    const reads: string[] = [];
+    t.deps.permission = async (_db, login) => { reads.push(login); perm("read", new Date().toISOString()); return { kind: "ok", permission: "read" }; };
+    const s = await run(t);
+    assert.deepEqual(reads, ["maint"]);
+    assert.deepEqual(s.merged, []);
+    assert.equal(w.rows("SELECT 1 FROM merge_holds WHERE repo = 'app' AND number = 3").length, 1);
+    assert.match(String(w.rows("SELECT summary FROM merge_batches WHERE id = 1")[0]!.summary), /app#3 left the batch: maint no longer settles decisions on app/);
+    assert.ok(!members().some((m) => !m.startsWith("superseded") && m.endsWith(":3")), members().join());
+  });
+});

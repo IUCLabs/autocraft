@@ -1,0 +1,449 @@
+// Commands to the GitHub App in a GitHub comment. Someone who may use Queue items on the repo writes, on a line of its own,
+//
+//   @<app-slug> merge queue            (also merge-queue, mergequeue; optional weight: `@<app-slug> merge queue 8`)
+//
+// on a pull request or an issue, and the item goes into the merge queue as "Queue items" on the Queue page puts it there
+// (queueAdd: a PR is pre-approved and fast-tracked; an issue is fast-tracked and its one closing PR queued). A PR is pre-approved at
+// the head it had when the comment was written, never at one pushed later. The app answers in the same thread with the outcome.
+//
+// The webhook keeps only the fields of github_commands, never the comment's text, and nothing of it reaches a prompt. The runner
+// carries the command out: the commenter must have an AutoCraft login with the GitHub id bound to it, the comment must still exist
+// with the command in it, and then queueAdd applies the same rule as for Queue items (src/settlers.ts: an operator with write access
+// on the repo, or a maintainer who settles decisions there), with the write permission read from GitHub through the app now. A
+// commenter without a bound AutoCraft login, or a viewer, gets no answer, so a stranger cannot make the app write. The answer is the
+// only write and goes through write.ts.
+import type { DatabaseSync } from "node:sqlite";
+import { getAccess, LOGIN } from "../access.ts";
+import type { Role } from "../dash/types.ts";
+import { guardRepo } from "../core/guard.ts";
+import { audit } from "../dash/audit.ts";
+import { HttpError } from "../dash/server/util.ts";
+import { WRITE_PERMISSIONS } from "../dash/server/provider.ts";
+import { fastPositions } from "../fasttrack.ts";
+import { exec as defaultExec, type Exec } from "../fixup/git.ts";
+import type { Querier } from "../mirror.ts";
+import { ownerOf, slugOf } from "../owners.ts";
+import { appPermission, type AppPermission } from "../remote/permission.ts";
+import { isQuiet } from "../security/quiet.ts";
+import { settleRefusal } from "../settlers.ts";
+import { AppError, call, GITHUB_API } from "./app.ts";
+import { appSlug } from "./identity.ts";
+import { installationToken } from "./install-token.ts";
+import { ghComment, WritePacedError } from "./write.ts";
+
+/** Comments read for a command: GitHub caps a body at 65536 characters. */
+const BODY_MAX = 65_536;
+/** A command not carried out before this long has passed is dropped (the runner was down, or GitHub could not be read). */
+const EXPIRE_MS = 3600_000;
+/** A comment older than this when its delivery arrives is a redelivery of an old comment: no command is queued. */
+export const STALE_MS = 5 * 60_000;
+/** A command whose GitHub reads could not be settled is tried again after this long. */
+const RETRY_MS = 60_000;
+/** Settled commands are kept this long. */
+const KEEP_MS = 30 * 86400_000;
+const AUDIT_LOGIN = "github-command";
+const NO_ACCESS_READ = "could not check your access; comment again";
+const NOT_QUEUED = "it could not be queued";
+
+export type Command = { command: "merge-queue"; weight: number | null };
+
+const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The command in a comment addressed to the app, or null. The command is a line of its own: `@<slug> merge queue`, with an
+ * optional weight (`8` or `weight 8`). Quoted lines (`> ...`), fenced and indented code and HTML comments are skipped, so quoting or
+ * hiding a command runs nothing. A fence closes as CommonMark closes it: the opening character, at least as many of it, and nothing
+ * after but spaces.
+ */
+export function parseCommand(body: unknown, slug: string): Command | null {
+  if (typeof body !== "string" || !slug) return null;
+  const re = new RegExp(`^@${escape(slug)}(?:\\[bot\\])?[\\s,:]+merge[-\\s]?queue(?:\\s+(?:weight\\s+)?(\\d{1,2}))?\\s*[.!]?$`, "i");
+  let fence: { ch: string; len: number } | null = null;
+  let comment = false;
+  for (const raw of body.slice(0, BODY_MAX).split(/\r?\n/)) {
+    let text = raw;
+    if (!fence) {
+      if (comment) {
+        const end = text.indexOf("-->");
+        if (end < 0) continue;
+        comment = false;
+        text = text.slice(end + 3);
+      }
+      text = text.replace(/<!--[\s\S]*?-->/g, "");
+      const open = text.indexOf("<!--");
+      if (open >= 0) { comment = true; text = text.slice(0, open); }
+    }
+    const line = text.trim();
+    const f = /^(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (f && f[0] === fence.ch && f.length >= fence.len && line.slice(f.length).trim() === "") fence = null;
+      continue;
+    }
+    if (f) { fence = { ch: f[0]!, len: f.length }; continue; }
+    // Indented code: four columns of leading space, a tab counting up to the next multiple of four.
+    if (/^(?: {4}| {0,3}\t)/.test(text)) continue;
+    const m = re.exec(line);
+    if (m) return { command: "merge-queue", weight: m[1] === undefined ? null : Number(m[1]) };
+  }
+  return null;
+}
+
+type Obj = Record<string, unknown>;
+const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
+const posInt = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : null);
+
+/**
+ * Queues the command of a new `issue_comment` in a tracked repo (`repo`, as webhooks.ts resolved it). A redelivery of the same
+ * comment adds nothing, and a comment written more than STALE_MS before the delivery queues nothing. Comments by bots and apps are
+ * left alone. Returns true when a command was queued.
+ */
+export function queueCommand(db: DatabaseSync, repo: string, event: string, payload: unknown, slug: string | null | undefined, now: Date = new Date()): boolean {
+  if (event !== "issue_comment" || !slug) return false;
+  const p = obj(payload);
+  if (p.action !== "created") return false;
+  const comment = obj(p.comment), user = obj(comment.user), issue = obj(p.issue);
+  if (user.type !== "User" || comment.performed_via_github_app) return false;
+  const login = typeof user.login === "string" && LOGIN.test(user.login) ? user.login : null;
+  const githubId = posInt(user.id), commentId = posInt(comment.id), number = posInt(issue.number);
+  const created = typeof comment.created_at === "string" ? Date.parse(comment.created_at) : NaN;
+  if (!login || !githubId || !commentId || !number || !Number.isFinite(created)) return false;
+  if (now.getTime() - created > STALE_MS) return false;
+  const cmd = parseCommand(comment.body, slug);
+  if (!cmd) return false;
+  const r = db.prepare(`INSERT OR IGNORE INTO main.github_commands (comment_id, repo, number, pr, command, weight, login, github_id, created_at, requested_at, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`)
+    .run(commentId, repo, number, issue.pull_request ? 1 : 0, cmd.command, cmd.weight, login, githubId, new Date(created).toISOString(), now.toISOString());
+  return r.changes > 0;
+}
+
+type Row = { comment_id: number; repo: string; number: number; pr: number; command: string; weight: number | null; login: string; github_id: number; created_at: string; requested_at: string; state: string; result: string | null; retries: number; allowed: number | null; reply: string | null };
+const COLS = "comment_id, repo, number, pr, command, weight, login, github_id, created_at, requested_at, state, result, retries, allowed, reply";
+
+/**
+ * What carries out a queued merge-queue command: the Queue page's queueAdd, as the commenter. `canWrite`: GitHub's answer for `repo`,
+ * read just before. `heads`: the head each PR may be pre-approved at, null for one opened or pushed to after the comment. Injectable for tests.
+ */
+export type QueueFn = (db: DatabaseSync, o: { login: string; role: Role; canWrite: boolean; repo: string; item: string; weight: number | null; heads: ReadonlyMap<number, string | null> }) => Promise<string>;
+
+type QueuePage = typeof import("../dash/api/queue-page.ts");
+
+const userOf = (o: { login: string; role: Role; repo: string; canWrite: boolean }) => {
+  // The permission read covers the item's repo only; any other repo counts as no access.
+  const has = async (repo: string): Promise<boolean> => repo === o.repo && o.canWrite;
+  return { login: o.login, role: o.role, canWrite: has, canRead: has };
+};
+
+/** queueAdd from a module loaded beforehand, so nothing but the handler's own checks runs between the freshness check and its write. */
+const queueVia = ({ queueAdd }: QueuePage): QueueFn => async (db, o) => {
+  const req = { method: "POST" as const, path: "/webhooks/github", params: {}, query: new URLSearchParams(), form: new URLSearchParams(), json: { item: o.item, ...(o.weight === null ? {} : { weight: o.weight }) }, user: userOf(o), csrf: "", nonce: "" };
+  return (await queueAdd(db, req, "github", (n) => o.heads.get(n) ?? null)).label;
+};
+
+/** The comment as GitHub has it now: `gone` when it was deleted. */
+export type CommentNow = { kind: "ok"; authorId: number | null; body: string } | { kind: "gone" };
+
+/** A PR as GitHub has it now: its head, when it was opened and whether its head changed after a given time. */
+export type PrNow = { head: string; opened: string; changed: boolean };
+
+export type CommandDeps = {
+  /** Reads the PRs' heads from GitHub. */
+  querier: Querier;
+  /** Runs `gh` for the answer. */
+  exec?: Exec;
+  queue?: QueueFn;
+  /** Stands in for `appPermission`, which reads the live permission through the app installation and writes it to repo_permissions. */
+  permission?: (db: DatabaseSync, login: string, repo: string) => Promise<AppPermission>;
+  /** Reads the comment again by its id (default: REST through the app installation). Throws when GitHub cannot be read. */
+  comment?: (repo: string, id: number) => Promise<CommentNow>;
+  /** Reads a PR's head and its changes since a time (default: `prSince`). Null: no such PR. Throws when GitHub cannot be read. */
+  pr?: (q: Querier, repo: string, number: number, since: string) => Promise<PrNow | null>;
+  /** The app's slug the comment is parsed again with (default: the app's). */
+  slug?: string | null;
+  now?: () => Date;
+  log?: (l: string) => void;
+  limit?: number;
+};
+
+const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300).replace(/[.\s]+$/, "");
+const refOf = (r: { repo: string; number: number }): string => `${r.repo}#${r.number}`;
+
+/** Write access from the app's answer; "transient" when GitHub could not answer or the app cannot ask (the command is tried again until it expires). */
+async function liveWrite(db: DatabaseSync, r: Row, deps: CommandDeps): Promise<"ok" | "no" | "transient"> {
+  const p = await (deps.permission ?? ((d, login, repo) => appPermission(d, login, repo)))(db, r.login, r.repo).catch(() => ({ kind: "error" as const }));
+  return p.kind === "ok" ? (WRITE_PERMISSIONS.has(p.permission) ? "ok" : "no") : "transient";
+}
+
+async function restComment(repo: string, id: number): Promise<CommentNow> {
+  const token = await installationToken(ownerOf(repo));
+  try {
+    const c = obj(await call(GITHUB_API, `/repos/${slugOf(repo)}/issues/comments/${id}`, token));
+    return { kind: "ok", authorId: posInt(obj(c.user).id), body: typeof c.body === "string" ? c.body : "" };
+  } catch (e) {
+    if (e instanceof AppError && (e.status === 404 || e.status === 410)) return { kind: "gone" };
+    throw e;
+  }
+}
+
+const PR_SINCE = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      createdAt headRefOid
+      timelineItems(last: 20, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT]) { nodes { ... on HeadRefForcePushedEvent { createdAt } } }
+      commits(last: 100) { nodes { commit { oid committedDate checkSuites(first: 20) { nodes { createdAt } } } } }
+    }
+  }
+}`;
+
+type PrNode = {
+  createdAt: string; headRefOid: string;
+  timelineItems: { nodes: ({ createdAt?: string } | null)[] };
+  commits: { nodes: ({ commit: { oid: string; committedDate: string; checkSuites: { nodes: ({ createdAt: string } | null)[] } | null } } | null)[] };
+};
+
+/**
+ * A PR's head now and whether it changed after `since` (a comment's creation time). GitHub keeps no push time for a commit, so three
+ * signals are read: a force push (HeadRefForcePushedEvent, stamped by GitHub), a commit dated later (the committer date, which the
+ * pusher sets, so a back-dated commit passes this one) and the head's first check suite created later (stamped by GitHub when a
+ * push starts CI; a merge needs green CI at the head, so the head of a mergeable PR has one). Throws while the head has no check
+ * suite and no other signal shows a change: the push time cannot be told yet.
+ */
+export async function prSince(q: Querier, repo: string, number: number, since: string): Promise<PrNow | null> {
+  const data = await q.query(PR_SINCE, { owner: ownerOf(repo), name: repo, number }) as { repository?: { pullRequest?: PrNode | null } | null };
+  const pr = data.repository?.pullRequest;
+  if (!pr?.headRefOid) return null;
+  const t = Date.parse(since);
+  const after = (s: string | undefined | null): boolean => !!s && Date.parse(s) > t;
+  const commits = pr.commits.nodes.flatMap((n) => (n ? [n.commit] : []));
+  const head = commits.find((c) => c.oid === pr.headRefOid);
+  const suites = (head?.checkSuites?.nodes ?? []).flatMap((s) => (s ? [Date.parse(s.createdAt)] : []));
+  const changed = pr.timelineItems.nodes.some((n) => after(n?.createdAt)) || commits.some((c) => after(c.committedDate));
+  if (changed) return { head: pr.headRefOid, opened: pr.createdAt, changed };
+  // Without a check suite the head's push time is unknown: a back-dated commit pushed after the comment would pass the other
+  // signals, so the command waits (tried again) until CI has registered the head.
+  if (!suites.length) throw new Error("the head has no check suite yet");
+  return { head: pr.headRefOid, opened: pr.createdAt, changed: Math.min(...suites) > t };
+}
+
+/** Settles a command. `reply`: the app answers in the thread; `allowed`: the commenter may queue there, so the answer needs no comment approval. */
+function settle(db: DatabaseSync, r: Row, state: "done" | "refused" | "ignored" | "expired", result: string | null, at: Date, o: { reply?: boolean; allowed?: boolean } = {}): void {
+  db.prepare("UPDATE main.github_commands SET state = ?, result = ?, done_at = ?, reply = ?, allowed = ? WHERE comment_id = ?")
+    .run(state, result, at.toISOString(), o.reply ? null : "none", o.allowed ? 1 : 0, r.comment_id);
+  audit(db, state === "ignored" || state === "expired" ? AUDIT_LOGIN : r.login, "github-command", refOf(r), { comment: r.comment_id, command: r.command, by: r.login, state, ...(result ? { result } : {}) });
+}
+
+/** Any of the items the command touches is a quiet pull request (a security fix not yet published): nothing is said there. */
+const quietFor = (db: DatabaseSync, r: Row, qp: QueuePage): boolean =>
+  [r.number, ...(r.pr ? [] : qp.openPrsClosing(db, r.repo, r.number))].some((n) => isQuiet(db, r.repo, n));
+
+/** The commenter's access row while the login is bound to the commenter's GitHub id; a login never bound counts as unknown. */
+function boundAccess(db: DatabaseSync, r: Row): NonNullable<ReturnType<typeof getAccess>> | null {
+  const access = getAccess(db, r.login);
+  const bound = (db.prepare("SELECT github_id FROM main.access WHERE login = ?").get(r.login) as { github_id: number | null } | undefined)?.github_id ?? null;
+  return access && bound !== null && Number(bound) === r.github_id ? access : null;
+}
+
+/**
+ * The commenter's access row, read now, or null after settling the command without an answer: no AutoCraft login, a login never
+ * bound to a GitHub account or bound to another one (`ignored`), a viewer, or anyone but an operator on a quiet pull request (`refused`).
+ */
+function knownCommenter(db: DatabaseSync, r: Row, now: Date, qp: QueuePage): NonNullable<ReturnType<typeof getAccess>> | null {
+  const access = boundAccess(db, r);
+  if (!access) { settle(db, r, "ignored", null, now); return null; }
+  if (access.role !== "operator" && access.role !== "maintainer") { settle(db, r, "refused", "viewers cannot queue items", now); return null; }
+  if (access.role !== "operator" && quietFor(db, r, qp)) { settle(db, r, "refused", "the pull request is quiet until its fix is published", now); return null; }
+  return access;
+}
+
+/**
+ * Drops a command that ran out of time. One whose GitHub reads kept failing is answered once, so the commenter knows to comment
+ * again; one that only waited (the runner was down, the item was not read again) ends silently.
+ */
+function expire(db: DatabaseSync, r: Row, now: Date, qp: QueuePage): void {
+  const role = boundAccess(db, r)?.role;
+  const answer = r.retries > 0 && (role === "operator" || role === "maintainer") && !quietFor(db, r, qp);
+  settle(db, r, "expired", answer ? NO_ACCESS_READ : null, now, { reply: answer });
+}
+
+type Outcome = "settled" | "retry" | "wait";
+
+/**
+ * Decides one queued command and carries it out. Who may queue is not decided here: queueAdd applies the rule of every person-started write
+ * (settleRefusal in src/settlers.ts) to the commenter's current role and the write permission read from GitHub now. This settles what a
+ * comment adds: who the commenter is, that the comment still says it, and the head it was written at. "retry" when GitHub could not be
+ * read, "wait" when an item needs a newer read: the row stays queued.
+ */
+async function carryOut(db: DatabaseSync, r: Row, deps: CommandDeps, now: Date, qp: QueuePage): Promise<Outcome> {
+  const clock = deps.now ?? (() => new Date());
+  // Before any GitHub read, so a commenter AutoCraft does not know costs no GitHub call.
+  if (!knownCommenter(db, r, now, qp)) return "settled";
+  // The comment as it is now: a deleted comment, or one edited so that it no longer holds this command, runs nothing.
+  let c: CommentNow;
+  try {
+    c = await (deps.comment ?? restComment)(r.repo, r.comment_id);
+  } catch {
+    return "retry";
+  }
+  const slug = deps.slug === undefined ? appSlug() : deps.slug;
+  const cmd = c.kind === "ok" && c.authorId === r.github_id ? parseCommand(c.body, slug ?? "") : null;
+  if (!cmd || cmd.command !== r.command || cmd.weight !== r.weight) {
+    settle(db, r, "ignored", c.kind === "gone" ? "the comment was deleted" : "the comment no longer holds the command", clock());
+    return "settled";
+  }
+  // A role or setting that refuses whatever GitHub says is answered without the head and permission reads.
+  const first = knownCommenter(db, r, clock(), qp);
+  if (!first) return "settled";
+  if (await refusal(db, r, first.role as Role, true, qp)) return refuse(db, r, clock(), first.role as Role, true, qp);
+  // The head each PR had when the comment was written: the PR itself, or for an issue its one closing PR, which must also be older
+  // than the comment. A PR opened or pushed to later maps to null and is not queued.
+  const heads = new Map<number, string | null>();
+  const closing = r.pr ? [] : qp.openPrsClosing(db, r.repo, r.number);
+  for (const n of r.pr ? [r.number] : closing.length === 1 ? closing : []) {
+    let p: PrNow | null;
+    try {
+      p = await (deps.pr ?? prSince)(deps.querier, r.repo, n, r.created_at);
+    } catch {
+      return "retry";
+    }
+    heads.set(n, !p || p.changed || (!r.pr && !(Date.parse(p.opened) < Date.parse(r.created_at))) ? null : p.head);
+  }
+  const perm = await liveWrite(db, r, deps);
+  if (perm === "transient") return "retry";
+  // The reads waited on GitHub: the hour may have run out meanwhile, and the outcome is recorded at this time.
+  now = clock();
+  if (now.getTime() - Date.parse(r.requested_at) >= EXPIRE_MS) { expire(db, r, now, qp); return "settled"; }
+  // Who the commenter is, read again: the role or the login's binding may have changed while GitHub answered, and the role queueAdd
+  // checks is the one read here.
+  const access = knownCommenter(db, r, now, qp);
+  if (!access) return "settled";
+  const role = access.role as Role;
+  // Again after the reads: a read may have been written meanwhile. The mirror never goes back to a read that started earlier
+  // (writePage), so an item that passes here keeps a read from after the comment until queueAdd's pre-approval reads it.
+  if (waitsForRead(db, r, now, qp)) return "wait";
+  if (await refusal(db, r, role, perm === "ok", qp)) return refuse(db, r, now, role, perm === "ok", qp);
+  const quiet = quietFor(db, r, qp);
+  try {
+    const label = await (deps.queue ?? queueVia(qp))(db, { login: r.login, role, canWrite: perm === "ok", repo: r.repo, item: refOf(r), weight: r.weight, heads });
+    const f = fastPositions(db).get(refOf(r));
+    settle(db, r, "done", `${oneLine(label)}.${f ? ` Fast-tracked with weight ${f.weight}, ${f.position} of ${f.of}.` : ""}`, now, { reply: !quiet, allowed: true });
+  } catch (e) {
+    // Only a handler's own refusal is said on GitHub; anything else is logged here and answered with a fixed text.
+    if (!(e instanceof HttpError)) deps.log?.(`github command ${refOf(r)}: ${oneLine(String((e as Error)?.message ?? e))}`);
+    settle(db, r, "refused", (e instanceof HttpError ? oneLine(e.message) : "") || NOT_QUEUED, now, { reply: !quiet, allowed: true });
+  }
+  return "settled";
+}
+
+/** The queue rule's refusal for the commenter with `role` and GitHub's write answer `canWrite`, or null. */
+const refusal = (db: DatabaseSync, r: Row, role: Role, canWrite: boolean, qp: QueuePage): Promise<string | null> =>
+  settleRefusal(db, userOf({ login: r.login, role, repo: r.repo, canWrite }), [r.repo], qp.queueWhat(r.repo));
+
+/** Settles a command the queue rule refuses, in the rule's own words; not answered on a quiet PR. The answer needs the repo's comment approval. */
+async function refuse(db: DatabaseSync, r: Row, now: Date, role: Role, canWrite: boolean, qp: QueuePage): Promise<Outcome> {
+  settle(db, r, "refused", await refusal(db, r, role, canWrite, qp), now, { reply: !quietFor(db, r, qp) });
+  return "settled";
+}
+
+/**
+ * True while an item the command may pre-approve has no read from GitHub since the comment: the item, and for an issue the open PRs
+ * that close it (queueAdd queues the sole one). The read is the webhook's re-read, or the poll after a failed one; a request row
+ * that is gone proves nothing, since a failed re-read drops it too. It must have started strictly after the comment: `synced_at` is
+ * cut to the second, so one in the same instant may have started before it. For each stale item with no read queued it queues one,
+ * at most once a minute (tried_at), so the command does not wait for a poll that may never read it again.
+ */
+function waitsForRead(db: DatabaseSync, r: Row, now: Date, qp: QueuePage): boolean {
+  const readAt = db.prepare("SELECT synced_at FROM main.item_reads WHERE repo = ? AND number = ?");
+  const stale = [r.number, ...(r.pr ? [] : qp.openPrsClosing(db, r.repo, r.number))].filter((n) => {
+    const read = (readAt.get(r.repo, n) as { synced_at: string } | undefined)?.synced_at;
+    return !read || Date.parse(read) <= Date.parse(r.requested_at);
+  });
+  if (!stale.length) return false;
+  const ask = stale.filter((n) => !db.prepare("SELECT 1 FROM main.sync_requests WHERE repo = ? AND number = ?").get(r.repo, n));
+  for (const n of ask) {
+    db.prepare("INSERT INTO main.sync_requests (repo, number, event, requested_at) VALUES (?, ?, 'issue_comment', ?) ON CONFLICT (repo, number) DO NOTHING")
+      .run(r.repo, n, now.toISOString().replace(/\.\d+Z$/, "Z"));
+  }
+  if (ask.length) db.prepare("UPDATE main.github_commands SET tried_at = ? WHERE comment_id = ?").run(now.toISOString(), r.comment_id);
+  return true;
+}
+
+/** The answer posted on GitHub for a carried-out command. */
+export function answerText(r: { login: string; state: string; result: string | null }): string {
+  return r.state === "done" ? `@${r.login} ${r.result}` : `@${r.login} Not added to the merge queue: ${r.result}.`;
+}
+
+/**
+ * Posts the answer. An answer to someone who may queue on the repo needs no comment approval there; any other needs it. A paced write
+ * leaves it for the next drain; any other failure is recorded (write.ts audits it) and not retried.
+ */
+async function answer(db: DatabaseSync, r: Row, deps: CommandDeps): Promise<"posted" | "failed" | "paced"> {
+  const g = guardRepo(db, r.repo, r.allowed ? null : "comment", { operator: r.login }, undefined, r.login);
+  let reply: "posted" | "failed";
+  if ("refused" in g) {
+    deps.log?.(`github command ${refOf(r)}: no answer: ${g.refused}`);
+    reply = "failed";
+  } else {
+    try {
+      const out = await ghComment({ db, login: r.login }, g, deps.exec ?? defaultExec, "github-command-reply", { repo: r.repo, number: r.number, pr: r.pr === 1 }, { by: "fixed-operator" }, answerText(r), { comment: r.comment_id, command: r.command });
+      reply = out.code === 0 ? "posted" : "failed";
+      if (out.code !== 0) deps.log?.(`github command ${refOf(r)}: the answer failed: ${oneLine(out.stderr || out.stdout)}`);
+    } catch (e) {
+      if (e instanceof WritePacedError) return "paced";
+      deps.log?.(`github command ${refOf(r)}: the answer failed: ${oneLine(String((e as Error)?.message ?? e))}`);
+      reply = "failed";
+    }
+  }
+  db.prepare("UPDATE main.github_commands SET reply = ? WHERE comment_id = ?").run(reply, r.comment_id);
+  return reply;
+}
+
+/** SQL condition: rows a drain has work for, queued commands and settled ones whose answer is still to post (index github_commands_state). */
+export const COMMAND_WORK_SQL = "(state = 'queued' OR (state <> 'queued' AND reply IS NULL))";
+
+/**
+ * Carries out the queued commands, oldest first, and posts their answers. Run after the webhook's re-reads, so the item is in the
+ * mirror at its current head. Returns how many commands were settled.
+ */
+export async function drainCommands(db: DatabaseSync, deps: CommandDeps): Promise<number> {
+  const clock = deps.now ?? (() => new Date());
+  const t0 = clock();
+  // Every waiting row is read (an hour's commands at most): rows that wait for a re-read or a retry are passed over without
+  // a GitHub call, so they never keep a newer command out. `limit` bounds the rows that call GitHub in one drain. Rows never tried
+  // come first, oldest first, then retries by their last try, so due retries cannot fill the limit drain after drain either.
+  const rows = db.prepare(`SELECT ${COLS} FROM main.github_commands
+    WHERE (state = 'queued' AND (tried_at IS NULL OR tried_at <= ?)) OR (state <> 'queued' AND reply IS NULL)
+    ORDER BY tried_at IS NOT NULL, COALESCE(tried_at, requested_at)`)
+    .all(new Date(t0.getTime() - RETRY_MS).toISOString()) as Row[];
+  const qp = await import("../dash/api/queue-page.ts");
+  let settled = 0, calls = 0;
+  for (const r0 of rows) {
+    if (calls >= (deps.limit ?? 10)) break;
+    const now = clock();
+    let r = r0;
+    if (r.state === "queued") {
+      if (now.getTime() - Date.parse(r.requested_at) >= EXPIRE_MS) expire(db, r, now, qp);
+      else if (r.command !== "merge-queue") settle(db, r, "ignored", null, now);
+      // No GitHub call while an item waits for a read since the comment (see waitsForRead).
+      else if (waitsForRead(db, r, now, qp)) continue;
+      else {
+        calls++;
+        const out = await carryOut(db, r, deps, now, qp);
+        if (out === "wait") continue;
+        if (out === "retry") {
+          // GitHub could not be read: retried after RETRY_MS; the expiry still counts from requested_at.
+          db.prepare("UPDATE main.github_commands SET tried_at = ?, retries = retries + 1 WHERE comment_id = ?").run(clock().toISOString(), r.comment_id);
+          continue;
+        }
+      }
+      settled++;
+      r = db.prepare(`SELECT ${COLS} FROM main.github_commands WHERE comment_id = ?`).get(r.comment_id) as Row;
+      if (r.state === "queued" || r.reply !== null) continue;
+    } else calls++;
+    if ((await answer(db, r, deps)) === "paced") break;
+  }
+  return settled;
+}
+
+/** Deletes settled commands older than KEEP_MS. */
+export function pruneCommands(db: DatabaseSync, nowMs: number = Date.now()): number {
+  return Number(db.prepare("DELETE FROM main.github_commands WHERE state <> 'queued' AND done_at < ?").run(new Date(nowMs - KEEP_MS).toISOString()).changes);
+}

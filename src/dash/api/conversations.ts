@@ -15,8 +15,7 @@ import type { Req } from "../types.ts";
 import { isQuiet } from "../../security/quiet.ts";
 import { canSeeInternals } from "./staff.ts";
 import { needVisible } from "./visible.ts";
-import { slugOf } from "../../owners.ts";
-import { canSettle, canSettleCached } from "../../settlers.ts";
+import { canSettleCached, requireSettle } from "../../settlers.ts";
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
 
@@ -206,17 +205,13 @@ export async function postInclude(db: DatabaseSync, req: Req, deps?: StoreDeps):
   return conversationView(db, repo, n, req.user);
 }
 
-/** The card, for someone who settles it: an operator with write access on its repo, or a maintainer under the rule of src/settlers.ts on every repo it writes to. */
+/** The card, for someone who settles it on every repo it writes to (src/settlers.ts: an operator with write access, or a maintainer under its rule). */
 async function needCard(db: DatabaseSync, req: Req): Promise<CardRow> {
   const id = Number(req.params.id);
   const c = Number.isInteger(id) ? cardOf(db, id) : undefined;
   if (!c) throw new HttpError(404, `no card ${req.params.id}`);
   await needVisible(db, req, c.repo);
-  if (isOperator(req)) {
-    if (!(await req.user.canWrite(c.repo).catch(() => false))) throw new HttpError(403, `no write access to ${slugOf(c.repo)}`);
-  } else if (!(await canSettle(db, req.user, cardRepos(c, JSON.parse(c.params) as CardParams)))) {
-    throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, runs cards");
-  }
+  await requireSettle(db, req.user, cardRepos(c, JSON.parse(c.params) as CardParams), "runs cards");
   return c;
 }
 
@@ -337,11 +332,7 @@ export async function doChoice(db: DatabaseSync, req: Req, deps?: ActDeps): Prom
   if (staleOf(db, row.repo, row.number, seenJson(row.seen)) === "pr-changed" && dependsOnCode(v.card.params, v.card.text)) throw new HttpError(409, "the PR changed since these choices were written; Opus is updating the choices");
 
   const probe = { repo: row.repo } as CardRow;
-  if (isOperator(req)) {
-    if (!(await req.user.canWrite(row.repo).catch(() => false))) throw new HttpError(403, `no write access to ${slugOf(row.repo)}`);
-  } else if (!(await canSettle(db, req.user, cardRepos(probe, v.card.params)))) {
-    throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, runs choices");
-  }
+  await requireSettle(db, req.user, cardRepos(probe, v.card.params), "runs choices");
 
   // The press is claimed here, with no await between the check and the insert: a second press that got this far sees the first one's card.
   let id = 0;

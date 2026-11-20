@@ -332,6 +332,69 @@ describe("queue items: an issue", () => {
   });
 });
 
+describe("queue items: who may add", () => {
+  test("an operator; a maintainer only with maintainer writes on, the app identity and write access on the repo; never a viewer", async () => {
+    const w = fresh().pr(51).pr(52).pr(53);
+    w.db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES ('maint', 'maintainer'), ('view', 'viewer')").run();
+    const req = (n: number, login: string, role: string, write = true) =>
+      ({ query: new URLSearchParams(), json: { item: `app#${n}` }, user: { login, role, canWrite: async () => write, canRead: async () => true } }) as unknown as Req;
+    await assert.rejects(queueAdd(w.db, req(51, "maint", "maintainer")), (e: Error & { status?: number }) => e.status === 403);
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1')").run();
+    await assert.rejects(queueAdd(w.db, req(51, "maint", "maintainer")), (e: Error & { status?: number }) => e.status === 403);
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('github_identity', 'app')").run();
+    await assert.rejects(queueAdd(w.db, req(51, "maint", "maintainer", false)), (e: Error & { status?: number }) => e.status === 403);
+    await assert.rejects(queueAdd(w.db, req(51, "view", "viewer")), (e: Error & { status?: number }) => e.status === 403);
+    assert.equal(preapprovalOf(w.db, "app", 51), null);
+    await queueAdd(w.db, req(51, "maint", "maintainer"));
+    assert.equal(preapprovalOf(w.db, "app", 51)?.state, "review");
+    assert.equal(preapprovalOf(w.db, "app", 51)?.by, "maint");
+    // An operator needs write access on the repo too, as for answering (src/settlers.ts, settleRefusal).
+    await assert.rejects(queueAdd(w.db, req(52, OPERATOR, "operator", false)), (e: Error & { status?: number }) => e.status === 403 && /no write access to storytold\/app/.test(e.message));
+    assert.equal(preapprovalOf(w.db, "app", 52), null);
+    await queueAdd(w.db, req(52, OPERATOR, "operator"));
+    assert.equal(preapprovalOf(w.db, "app", 52)?.by, OPERATOR);
+  });
+});
+
+describe("a maintainer's pre-approval after their dashboard session", () => {
+  test("the pipeline reads the write permission again through the app: write keeps it, a failed read keeps it for an hour, read cancels it", async () => {
+    const w = fresh().pr(61).pr(62);
+    w.db.prepare("INSERT OR IGNORE INTO access (login, role) VALUES ('maint', 'maintainer')").run();
+    w.db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('maintainer_writes', '1'), ('github_identity', 'app')").run();
+    const stale = new Date(Date.now() - 11 * 60_000).toISOString();
+    const perm = (permission: string, at: string) =>
+      w.db.prepare("INSERT OR REPLACE INTO repo_permissions (login, repo, permission, checked_at) VALUES ('maint', 'app', ?, ?)").run(permission, at);
+    perm("write", new Date().toISOString());
+    preapproveMerge(w.db, { repo: "app", number: 61, by: "maint" });
+    // Stands in for appPermission, which writes what GitHub answered to repo_permissions.
+    const answer = (permission: string | null) => async () => {
+      if (permission === null) return { kind: "error" as const, why: "GitHub permission check failed: 502" };
+      perm(permission, new Date().toISOString());
+      return { kind: "ok" as const, permission };
+    };
+    const pass = async (permission: string | null) => {
+      advancePreapprovals(w.db, () => {}, { permission: answer(permission) });
+      await new Promise((r) => setImmediate(r));
+      advancePreapprovals(w.db, () => {}, { permission: answer(permission) });
+    };
+    perm("write", stale);
+    await pass("write");
+    assert.equal(preapprovalOf(w.db, "app", 61)?.state, "review");
+    perm("write", stale);
+    await pass(null);
+    assert.equal(preapprovalOf(w.db, "app", 61)?.state, "review");
+    perm("write", stale);
+    await pass("read");
+    assert.equal(preapprovalOf(w.db, "app", 61)?.state, "cancelled");
+    // A write permission GitHub last confirmed over an hour ago no longer counts while the reads fail.
+    perm("write", new Date().toISOString());
+    preapproveMerge(w.db, { repo: "app", number: 62, by: "maint" });
+    perm("write", new Date(Date.now() - 61 * 60_000).toISOString());
+    await pass(null);
+    assert.equal(preapprovalOf(w.db, "app", 62)?.state, "cancelled");
+  });
+});
+
 describe("fast track weights", () => {
   test("heavier items go first; equal weights keep the order added", () => {
     const w = fresh().pr(21).pr(22).pr(23);

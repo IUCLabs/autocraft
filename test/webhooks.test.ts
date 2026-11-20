@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { connect } from "../src/db.ts";
 import { safeEqual } from "../src/dash/server/crypto.ts";
 import { drainSyncRequests, handleDelivery, signatureOf } from "../src/github/webhooks.ts";
+import { writeItemNode } from "../src/mirror.ts";
 import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -59,6 +60,38 @@ test("the drain re-reads a queued item, sets synced_at and clears the request", 
   assert.equal(row.title, "t");
   assert.match(row.synced_at, /^\d{4}-\d\d-\d\dT/);
   assert.deepEqual(queued(db), []);
+});
+
+test("synced_at is when the re-read was sent, not when its answer was written", async () => {
+  const db = scratch();
+  deliver(db, "issues", { repository: { full_name: "storytold/a", name: "a" }, issue: { number: 5 } });
+  const node = {
+    __typename: "Issue", repository: { name: "a", owner: { login: "storytold" } }, number: 5, title: "t", body: "", url: "u", author: { login: "x" },
+    authorAssociation: "NONE", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-11-02T10:00:00Z", closedAt: null, state: "OPEN",
+    labels: { nodes: [] }, assignees: { nodes: [] }, commentCount: { totalCount: 0 }, stateReason: null, comments: { nodes: [] },
+  };
+  let sent = 0;
+  // GitHub takes more than a second to answer: a comment made meanwhile is newer than this read.
+  const c = { spent: 0, remaining: 4000 as number | null, async query() { sent = Date.now(); await new Promise((r) => setTimeout(r, 1100)); return { repository: { issueOrPullRequest: node } }; } };
+  assert.equal(await drainSyncRequests(db, c), 1);
+  const at = (db.prepare("SELECT synced_at FROM item_reads WHERE repo = 'a' AND number = 5").get() as { synced_at: string }).synced_at;
+  assert.ok(Date.parse(at) <= sent, `${at} is not after the request went out`);
+});
+
+test("a read that started before the stored one does not replace it: the item and its read time stay the newer read's", () => {
+  const db = scratch();
+  const node = (title: string) => ({
+    __typename: "Issue", repository: { name: "a", owner: { login: "storytold" } }, number: 6, title, body: "", url: "u", author: { login: "x" },
+    authorAssociation: "NONE", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-11-02T10:00:00Z", closedAt: null, state: "OPEN",
+    labels: { nodes: [] }, assignees: { nodes: [] }, commentCount: { totalCount: 0 }, stateReason: null, comments: { nodes: [] },
+  });
+  const row = () => db.prepare("SELECT i.title, r.synced_at FROM items i JOIN item_reads r USING (repo, number) WHERE repo = 'a' AND number = 6").get() as { title: string; synced_at: string };
+  assert.ok(writeItemNode(db, "a", node("new"), new Date("2026-11-20T12:00:10Z")));
+  // A reconcile that started earlier writes its answer afterwards.
+  writeItemNode(db, "a", node("old"), new Date("2026-11-20T12:00:05Z"));
+  assert.deepEqual({ ...row() }, { title: "new", synced_at: "2026-11-20T12:00:10Z" });
+  writeItemNode(db, "a", node("newer"), new Date("2026-11-20T12:00:20Z"));
+  assert.deepEqual({ ...row() }, { title: "newer", synced_at: "2026-11-20T12:00:20Z" });
 });
 
 test("a request that fails for a reason other than a transient one is dropped so the queue moves on", async () => {

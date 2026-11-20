@@ -330,7 +330,11 @@ export const KEEP_KNOWN_MERGEABLE = (table: string): string =>
   `CASE WHEN ${table}.head_oid IS excluded.head_oid AND ${table}.mergeable IN ('CONFLICTING','MERGEABLE') AND excluded.mergeable IS NOT 'CONFLICTING' AND excluded.mergeable IS NOT 'MERGEABLE' THEN ${table}.mergeable ELSE excluded.mergeable END`;
 
 /** `force` rewrites an item and its comments even when the row is unchanged (a comment edit leaves the item row as it was). */
-function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[], force = false): void {
+/**
+ * `readAt` is when the read of these nodes started (before its first GitHub request), stored as `item_reads.synced_at`, so a
+ * read that began before a change never passes for one made after it (src/github/commands.ts compares it with a comment's time).
+ */
+function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[], force = false, readAt: string = iso(new Date())): void {
   // Upserts keep each row's rowid, which the full-text index (schema.sql) is keyed on.
   const insert = db.prepare(`INSERT INTO main.items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => c === "mergeable" ? `mergeable=${KEEP_KNOWN_MERGEABLE("items")}` : `${c}=excluded.${c}`).join(",")}`);
@@ -346,9 +350,14 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const live = appSlug();
   if (live) { try { rememberSlug(db, live); } catch { /* read-only connection */ } }
   const own = mentionNames(db, live);
-  const readAt = iso(new Date());
+  const lastRead = db.prepare("SELECT synced_at FROM main.item_reads WHERE repo = ? AND number = ?");
   db.exec("BEGIN IMMEDIATE");
   try {
+    // A read never replaces what a later-started read stored: the item, its comments and its read time stay the newer read's.
+    nodes = nodes.filter((n) => {
+      const last = (lastRead.get(repo, n.number) as { synced_at: string } | undefined)?.synced_at;
+      return last === undefined || !(Date.parse(last) > Date.parse(readAt));
+    });
     for (const n of nodes) {
       const row = toRow(repo, kind, n, detail);
       // A row identical to the stored one (overlapping reads re-fetch many) writes nothing.
@@ -366,7 +375,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
     }
     if (nodes.length) {
       db.prepare(`INSERT INTO main.item_reads (repo, number, synced_at) VALUES ${nodes.map(() => "(?,?,?)").join(",")}
-        ON CONFLICT (repo, number) DO UPDATE SET synced_at = excluded.synced_at`).run(...nodes.flatMap((n) => [repo, n.number, readAt]));
+        ON CONFLICT (repo, number) DO UPDATE SET synced_at = excluded.synced_at WHERE julianday(excluded.synced_at) >= julianday(item_reads.synced_at)`).run(...nodes.flatMap((n) => [repo, n.number, readAt]));
     }
     db.exec("COMMIT");
   } catch (e) {
@@ -397,13 +406,15 @@ const iso = (d: Date): string => d.toISOString().replace(/\.\d+Z$/, "Z");
 
 // Reads a repo's items, newest first, down to `cutoff` (everything when null). Moves no high water.
 async function readRepoSince(db: DatabaseSync, client: Querier, name: string, cutoff: string | null): Promise<{ count: number; newest: string }> {
+  // Before the first request: every page of this read counts as read from here on (never later than its own request).
+  const startedAt = iso(new Date());
   let newest = "";
   let count = 0;
   for (const kind of ["issue", "pr"] as const) {
     const passes: [Detail, string[]][] = [["full", ["OPEN"]], ["light", kind === "issue" ? ["CLOSED"] : ["CLOSED", "MERGED"]]];
     for (const [detail, states] of passes) {
       for await (const nodes of untilCutoff(fetchPages(client, kind, detail, name, states), cutoff)) {
-        writePage(db, name, kind, detail, nodes);
+        writePage(db, name, kind, detail, nodes, false, startedAt);
         count += nodes.length;
         for (const n of nodes) if (n.updatedAt > newest) newest = n.updatedAt;
       }
@@ -513,6 +524,8 @@ export type SearchResult = { count: number; newest: string | null; slices: numbe
 // returned (tracked repos or not), the next sync's starting point; null when nothing matched.
 export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: string[], since: string, until: string): Promise<SearchResult> {
   const trackedSet = new Set(tracked);
+  // Before the first request: the read start every page of this run is stored with (see writePage).
+  const startedAt = iso(new Date());
   // Search covers the default org only; repos of other owners are read one by one after it.
   const scope = `org:${DEFAULT_OWNER}`;
   const bump = db.prepare("UPDATE main.repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
@@ -549,7 +562,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
     }
     for (const [key, group] of groups) {
       const [repo, kind, detail] = key.split("\t");
-      writePage(db, repo, kind as Kind, detail as Detail, group);
+      writePage(db, repo, kind as Kind, detail as Detail, group, false, startedAt);
       out.count += group.length;
     }
   }
@@ -809,9 +822,10 @@ query($owner: String!, $name: String!, $number: Int!) {
 }`;
 
 /** Writes one item read by number (a webhook re-read) like the sync does. False for a null, deleted or transferred item: the daily reconcile handles those. */
-export function writeItemNode(db: DatabaseSync, repo: string, n: Node | null | undefined): boolean {
+/** `readAt`: when the request for `n` was sent (see writePage); default now. */
+export function writeItemNode(db: DatabaseSync, repo: string, n: Node | null | undefined, readAt?: Date): boolean {
   if (!n || n.repository?.name !== repo || !ownedBy(n, repo)) return false;
-  writePage(db, repo, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n], true);
+  writePage(db, repo, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n], true, iso(readAt ?? new Date()));
   return true;
 }
 
@@ -821,9 +835,10 @@ export function writeItemNode(db: DatabaseSync, repo: string, n: Node | null | u
 // (no consumer reads a state other than OPEN, CLOSED and MERGED) and audited.
 export async function reconcileRepo(db: DatabaseSync, client: Querier, name: string, now: Date = new Date()): Promise<{ open: number; updated: number; gone: number }> {
   const listed = new Set<string>();
+  const startedAt = iso(new Date());
   for (const kind of ["issue", "pr"] as const) {
     for await (const nodes of fetchPages(client, kind, "full", name, ["OPEN"])) {
-      writePage(db, name, kind, "full", nodes);
+      writePage(db, name, kind, "full", nodes, false, startedAt);
       for (const n of nodes) listed.add(`${kind}\t${n.number}`);
     }
   }
@@ -832,9 +847,10 @@ export async function reconcileRepo(db: DatabaseSync, client: Querier, name: str
   let updated = 0;
   let gone = 0;
   for (const r of stale) {
+    const sentAt = iso(new Date());
     const n: Node = (await client.query(ONE_QUERY, { owner: ownerOf(name), name, number: r.number })).repository?.issueOrPullRequest;
     if (n && n.repository?.name === name && ownedBy(n, name)) {
-      writePage(db, name, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n]);
+      writePage(db, name, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n], false, sentAt);
       updated++;
     } else {
       db.prepare("UPDATE main.items SET state = 'CLOSED', closed_at = COALESCE(closed_at, ?) WHERE repo = ? AND number = ? AND state = 'OPEN'")

@@ -91,6 +91,7 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "settler" | "viewer"
     role: "operator",
     writeRepos: ["photocraft", "filmcraft", "designcraft", "pdfcraft", "wordcraft", "gridcraft", "vectorcraft", "deckcraft", "craft-libs", "effectcraft"],
     maintainerWrites: false,
+    maintainerSettles: false,
     inference: "user-local",
   },
   maintainer: {
@@ -98,6 +99,7 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "settler" | "viewer"
     role: "maintainer",
     writeRepos: ["photocraft", "designcraft", "vectorcraft", "deckcraft", "pdfcraft", "filmcraft"],
     maintainerWrites: false,
+    maintainerSettles: false,
     inference: "user-local",
   },
   // A maintainer under `maintainer_writes`: settles decisions where they have write access.
@@ -106,9 +108,10 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "settler" | "viewer"
     role: "maintainer",
     writeRepos: ["photocraft", "designcraft", "vectorcraft", "deckcraft", "pdfcraft", "filmcraft"],
     maintainerWrites: true,
+    maintainerSettles: true,
     inference: "user-local",
   },
-  viewer: { login: "glasswing", role: "viewer", writeRepos: [], maintainerWrites: false, inference: "user-local" },
+  viewer: { login: "glasswing", role: "viewer", writeRepos: [], maintainerWrites: false, maintainerSettles: false, inference: "user-local" },
 };
 export type MockRole = keyof typeof MOCK_USERS;
 

@@ -1,7 +1,9 @@
 // GitHub App webhooks. A delivery is verified, reduced to the repo and item number it names, and queued; the
-// runner re-reads those items from GitHub. Nothing else in the payload is stored or read, and none of it reaches a prompt.
+// runner re-reads those items from GitHub. A new comment addressed to the app with a command (src/github/commands.ts) also
+// queues that command, with the commenter and the comment's id. Nothing else in the payload is stored, and none of it reaches a prompt.
 import { createHmac } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { queueCommand } from "./commands.ts";
 import { ONE_QUERY, Transient, writeItemNode, type Querier } from "../mirror.ts";
 import { ownerOf } from "../owners.ts";
 
@@ -57,11 +59,17 @@ export function itemNumbers(db: DatabaseSync, repo: string, event: string, paylo
   }
 }
 
-/** Queues the items one delivery names, one row per item. Returns how many were queued. */
-export function queueDelivery(db: DatabaseSync, event: string, payload: unknown, now: Date = new Date()): number {
+/** Queues the items one delivery names, one row per item, and a command to the app (`appSlug`) in a new comment. Returns how many items were queued. */
+export function queueDelivery(db: DatabaseSync, event: string, payload: unknown, now: Date = new Date(), appSlug?: string | null): number {
   const p = obj(payload);
   const repo = trackedName(db, p);
   if (!repo) return 0;
+  // A command that cannot be stored never keeps the delivery's re-read from being queued.
+  try {
+    queueCommand(db, repo, event, p, appSlug, now);
+  } catch (e) {
+    console.log(`webhook command in ${repo}: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+  }
   const numbers = itemNumbers(db, repo, event, p);
   if (!numbers.length) return 0;
   const at = now.toISOString().replace(/\.\d+Z$/, "Z");
@@ -73,8 +81,8 @@ export function queueDelivery(db: DatabaseSync, event: string, payload: unknown,
 
 export type Verdict = { status: number; queued?: number };
 
-/** One delivery: verifies the signature over the raw body, then queues. Never throws on bad input. */
-export function handleDelivery(db: DatabaseSync, secret: string | null, headers: { signature?: string; event?: string }, raw: Buffer, safeEqual: (a: string, b: string) => boolean): Verdict {
+/** One delivery: verifies the signature over the raw body, then queues. `appSlug` is the app's slug, which comments address commands to. Never throws on bad input. */
+export function handleDelivery(db: DatabaseSync, secret: string | null, headers: { signature?: string; event?: string }, raw: Buffer, safeEqual: (a: string, b: string) => boolean, appSlug?: string | null): Verdict {
   if (!secret) return { status: 401 };
   if (!headers.signature || !safeEqual(headers.signature, signatureOf(secret, raw))) return { status: 401 };
   const event = headers.event ?? "";
@@ -85,7 +93,7 @@ export function handleDelivery(db: DatabaseSync, secret: string | null, headers:
   } catch {
     return { status: 400 };
   }
-  return { status: 202, queued: queueDelivery(db, event, payload) };
+  return { status: 202, queued: queueDelivery(db, event, payload, new Date(), appSlug) };
 }
 
 /** Requests older than this are dropped: the poll has read the item since. */
@@ -107,8 +115,9 @@ export async function drainSyncRequests(db: DatabaseSync, client: Querier, opts:
     // Never wait out a rate limit here; the poll has its own handling.
     if (client.remaining !== null && client.remaining < (opts.reserve ?? 1000)) break;
     try {
+      const sentAt = new Date();
       const data = await client.query(ONE_QUERY, { owner: ownerOf(r.repo), name: r.repo, number: r.number });
-      if (!writeItemNode(db, r.repo, data.repository?.issueOrPullRequest)) { gone(); continue; }
+      if (!writeItemNode(db, r.repo, data.repository?.issueOrPullRequest, sentAt)) { gone(); continue; }
       gone();
       done++;
     } catch (e) {

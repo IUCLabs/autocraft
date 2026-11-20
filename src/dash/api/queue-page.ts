@@ -6,8 +6,9 @@ import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueueOrigin, QueuePage, QueueRepos, QueueTab, QueueWorkRow, TypeLabel } from "../../../web/src/api/types.ts";
 import { cachedQueue, openViews, type CachedEntry } from "../../core/plan-read.ts";
-import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, parseWeight, removeFastTrack, setFastTrackWeight } from "../../fasttrack.ts";
-import { preapproveMerge } from "../../preapproval/index.ts";
+import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, parseWeight, removeFastTrack, setFastTrackWeight, WEIGHT_DEFAULT } from "../../fasttrack.ts";
+import { HEAD_CHANGED, preapproveMerge } from "../../preapproval/index.ts";
+import { requireSettle } from "../../settlers.ts";
 import type { Exec } from "../../fixup/git.ts";
 import { ControlError, holdMerge, releaseMerge, removeFromBatch, stopBatch } from "../../merge/controls.ts";
 import { pageBatches } from "../../merge/batch-store.ts";
@@ -233,10 +234,15 @@ export async function fastTrackAdd(db: DatabaseSync, req: Req): Promise<string[]
   return fastTrackRefs(db, req);
 }
 
+/** The `weight` of the JSON body as sent, unchecked. */
+function rawWeight(req: Req): unknown {
+  const b = req.json;
+  return b && typeof b === "object" && !Array.isArray(b) ? (b as { weight?: unknown }).weight : undefined;
+}
+
 /** The `weight` of the JSON body, checked; the default when it has none. */
 function weightOf(req: Req): number {
-  const b = req.json;
-  const w = b && typeof b === "object" && !Array.isArray(b) ? (b as { weight?: unknown }).weight : undefined;
+  const w = rawWeight(req);
   try {
     return parseWeight(w);
   } catch (e) {
@@ -252,15 +258,18 @@ export async function fastTrackWeight(db: DatabaseSync, req: Req): Promise<strin
   return fastTrackRefs(db, req);
 }
 
-/** Fast-tracks an item with weight `w`; one already fast-tracked keeps a heavier weight it has, so this only ever moves it up. */
-async function markFast(db: DatabaseSync, by: string, repo: string, number: number, w: number, via?: string): Promise<void> {
+/**
+ * Fast-tracks an item with weight `w`; one already fast-tracked keeps a heavier weight it has, so this only ever moves it up. `w` null is a
+ * maintainer's line: an item not on the list gets the default weight and an existing weight stays, since weights are set by operators.
+ */
+async function markFast(db: DatabaseSync, by: string, repo: string, number: number, w: number | null, via?: string): Promise<void> {
   const ref = `${repo}#${number}`;
   const had = (db.prepare("SELECT weight FROM main.fast_track WHERE repo = ? AND number = ?").get(repo, number) as { weight: number } | undefined)?.weight;
-  await guarded(() => (had === undefined ? addFastTrack(db, by, ref, w, via) : w > had ? setFastTrackWeight(db, by, ref, w, via) : null));
+  await guarded(() => (had === undefined ? addFastTrack(db, by, ref, w ?? WEIGHT_DEFAULT, via) : w !== null && w > had ? setFastTrackWeight(db, by, ref, w, via) : null));
 }
 
 /** The open PRs of `repo` that close issue `issue` when they merge (GitHub's closing references, from the mirror). */
-function openPrsClosing(db: DatabaseSync, repo: string, issue: number): number[] {
+export function openPrsClosing(db: DatabaseSync, repo: string, issue: number): number[] {
   const rows = db.prepare("SELECT number, closing_issues FROM main.items INDEXED BY items_closing WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND closing_issues IS NOT NULL AND closing_issues <> '[]'").all(repo) as { number: number; closing_issues: string }[];
   return rows
     .filter((p) => {
@@ -274,15 +283,26 @@ function openPrsClosing(db: DatabaseSync, repo: string, issue: number): number[]
     .sort((a, b) => a - b);
 }
 
+/** What Queue items does, as the refusal of `settleRefusal` names it. */
+export const queueWhat = (repo: string): string => `queues items on ${repo}`;
+
 /**
- * "Queue items", one line. A PR is pre-approved at its current head (it merges once the review says take, the pre-merge review is clean
+ * "Queue items", one line, for an operator or a maintainer who settles on the repo. A PR is pre-approved at its current head (it merges once the review says take, the pre-merge review is clean
  * and CI is green) and fast-tracked with the weight, so its review, checks and merge come first. An issue is fast-tracked, so Fix works it
  * first; when exactly one open PR closes it, that PR is queued as above. Several closing PRs are only listed: a person picks one.
+ * Weights stay with operators: a maintainer's line fast-tracks with the default weight and ignores a weight it names.
+ * `pin` (a command in a comment) names the one head each PR may be pre-approved at, or null for a PR that may not be queued: one
+ * opened or pushed to after the comment.
  */
-export async function queueAdd(db: DatabaseSync, req: Req, via?: string): Promise<{ label: string; fast: string[] }> {
+export async function queueAdd(db: DatabaseSync, req: Req, via?: string, pin?: (pr: number) => string | null): Promise<{ label: string; fast: string[] }> {
   const r = item(req);
-  const w = weightOf(req);
+  const operator = req.user.role === "operator";
+  const w = operator ? weightOf(req) : null;
+  const raw = rawWeight(req);
+  const ignored = !operator && raw !== undefined && raw !== null && raw !== "" ? ". The weight was ignored: only operators set fast-track weights" : "";
   await needVisible(db, req, r.repo);
+  // A pre-approved merge is a Merge answer given ahead, so it takes the rule of an answer (src/settlers.ts): an operator with write access, or a maintainer where they settle decisions.
+  await requireSettle(db, req.user, [r.repo], queueWhat(r.repo));
   const by = req.user.login;
   const kind = (db.prepare("SELECT kind FROM main.items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { kind: string } | undefined)?.kind;
   if (kind === "issue") {
@@ -291,9 +311,10 @@ export async function queueAdd(db: DatabaseSync, req: Req, via?: string): Promis
     let rest: string;
     if (!prs.length) rest = "no open PR closes it yet";
     else if (prs.length > 1) rest = `${prs.map((n) => `#${n}`).join(", ")} close it; queue one of them`;
+    else if (pin && pin(prs[0]!) === null) rest = `#${prs[0]} closes it but was opened or pushed to after your comment, so it was not queued; comment on #${prs[0]} to queue it`;
     else {
       try {
-        preapproveMerge(db, { repo: r.repo, number: prs[0]!, by, via });
+        preapproveMerge(db, { repo: r.repo, number: prs[0]!, by, via, ...(pin ? { head: pin(prs[0]!)! } : {}) });
         try {
           await markFast(db, by, r.repo, prs[0]!, w, via);
           rest = `queued #${prs[0]}, which closes it`;
@@ -304,16 +325,18 @@ export async function queueAdd(db: DatabaseSync, req: Req, via?: string): Promis
         rest = `#${prs[0]} closes it but was not queued: ${(e as Error).message}`;
       }
     }
-    return { label: `Fast-tracked the issue; ${rest}`, fast: await fastTrackRefs(db, req) };
+    return { label: `Fast-tracked the issue; ${rest}${ignored}`, fast: await fastTrackRefs(db, req) };
   }
   let done: { label: string };
+  const head = pin ? pin(r.number) : undefined;
+  if (head === null) throw new HttpError(409, HEAD_CHANGED);
   try {
-    done = preapproveMerge(db, { repo: r.repo, number: r.number, by, via });
+    done = preapproveMerge(db, { repo: r.repo, number: r.number, by, via, ...(head === undefined ? {} : { head }) });
   } catch (e) {
     throw new HttpError(409, (e as Error).message);
   }
   await markFast(db, by, r.repo, r.number, w, via);
-  return { label: done.label, fast: await fastTrackRefs(db, req) };
+  return { label: `${done.label}${ignored}`, fast: await fastTrackRefs(db, req) };
 }
 
 export async function fastTrackRemove(db: DatabaseSync, req: Req): Promise<string[]> {
