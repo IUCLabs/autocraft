@@ -42,7 +42,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 
-export const HELPER_VERSION = "1.3.4";
+export const HELPER_VERSION = "1.3.5";
 
 // ---------------------------------------------------------------------------
 // Wire format: a copy of src/remote/protocol.ts (the helper is served alone, so it keeps its own).
@@ -280,6 +280,68 @@ function claudeCredential(cfg) {
     return k ? { claudeAiOauth: { accessToken: k.token, expiresAt: k.expiresAt ?? Number.MAX_SAFE_INTEGER } } : null;
   }
   return cfg.claudeConfigDir && process.platform !== "darwin" ? readClaudeCredentials(cfg.claudeConfigDir) : null;
+}
+
+/**
+ * Claude Code refreshes its login only within 5 minutes of its expiry, under its own lock in the config directory, and
+ * rotates the refresh token while doing so. The helper never refreshes the login itself: inside that window it runs the
+ * user's own claude once, outside the sandbox with the login's own config directory or Keychain item, and lets it refresh.
+ */
+const CLAUDE_REFRESH_WINDOW_MS = 4 * 60_000;
+const CLAUDE_REFRESH_RETRY_MS = 90_000;
+// The smallest request that goes through Claude Code's login check: no tools, settings, hooks, MCP servers or session file.
+const CLAUDE_REFRESH_ARGS = ["-p", "ok", "--model", "haiku", "--max-turns", "1", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"];
+/** @type {{ at: number, run: Promise<boolean> | null }} */
+const claudeRefresh = { at: 0, run: null };
+
+/** Whether the harness login ends before a call started now could finish. @param {Adapter} adapter @param {Config} cfg */
+function loginExpiring(adapter, cfg) {
+  const t = adapter.tokenFor?.(cfg, READY_CALL_TIMEOUT_S);
+  return !!t && "problem" in t && t.problem === CLAUDE_LOGIN_EXPIRES;
+}
+
+/**
+ * The environment under which the user's own claude finds the login the config names, or null when the helper can't
+ * have it refreshed: a setup-token (it doesn't expire this way), or a Keychain item of another config directory.
+ * @param {Config} cfg @returns {Record<string, string> | null}
+ */
+export function claudeRefreshEnv(cfg, platform = process.platform) {
+  const env = { PATH: process.env.PATH ?? "/usr/bin", HOME: homedir(), LANG: "C.UTF-8", DISABLE_AUTOUPDATER: "1" };
+  if (cfg.claudeAuth === "keychain") return keychainItemOf(cfg).service === "Claude Code-credentials" ? env : null;
+  return cfg.claudeConfigDir && platform !== "darwin" ? { ...env, CLAUDE_CONFIG_DIR: cfg.claudeConfigDir } : null;
+}
+
+/**
+ * Has the user's claude refresh the login when it ends within CLAUDE_REFRESH_WINDOW_MS (or has ended), at most once per
+ * CLAUDE_REFRESH_RETRY_MS; concurrent callers share one run. True when the login now outlives the window.
+ * @param {Config} cfg @param {string} bin @returns {Promise<boolean>}
+ */
+async function refreshClaudeLogin(cfg, bin) {
+  const env = claudeRefreshEnv(cfg);
+  const expiresAt = () => claudeCredential(cfg)?.claudeAiOauth?.expiresAt;
+  const e = expiresAt();
+  if (!env || typeof e !== "number" || e > Date.now() + CLAUDE_REFRESH_WINDOW_MS) return false;
+  if (claudeRefresh.run) return claudeRefresh.run;
+  if (Date.now() - claudeRefresh.at < CLAUDE_REFRESH_RETRY_MS) return false;
+  claudeRefresh.at = Date.now();
+  claudeRefresh.run = (async () => {
+    const dir = mkdtempSync(join(privateDir(cacheDir()), "login-refresh-"));
+    try {
+      const code = await new Promise((done) => {
+        const p = spawn(bin, CLAUDE_REFRESH_ARGS, { cwd: dir, env, stdio: "ignore", timeout: 60_000 });
+        p.on("error", () => done(-1));
+        p.on("exit", (c) => done(c ?? -1));
+      });
+      const after = expiresAt();
+      const ok = typeof after === "number" && after > Date.now() + CLAUDE_REFRESH_WINDOW_MS;
+      console.log(ok ? "Claude login refreshed" : `Claude login refresh did not take (claude exit ${code}); trying again in ${CLAUDE_REFRESH_RETRY_MS / 1000} s`);
+      return ok;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      claudeRefresh.run = null;
+    }
+  })();
+  return claudeRefresh.run;
 }
 
 /** The arguments with the model replaced (`--model x` or `--model=x`), or added after `-p` when absent. */
@@ -2432,7 +2494,10 @@ async function checkReady(cfg, opt = {}) {
     else if (old) st = { ...base, readiness: "harness-missing", until: null, reason: old };
     else if (!Object.keys(models).length) st = { ...base, readiness: "harness-missing", until: null, reason: `no model is set for any tier ("tiers" in ${join(configDir(), "config.json")})` };
     else if (canary) st = { ...base, readiness: "sandbox-failed", until: null, reason: canary.split("\n")[0] ?? canary };
-    else if (adapter.tokenFor && "problem" in adapter.tokenFor(cfg, READY_CALL_TIMEOUT_S) && /** @type {{ problem: string }} */ (adapter.tokenFor(cfg, READY_CALL_TIMEOUT_S)).problem === CLAUDE_LOGIN_EXPIRES) st = { ...base, readiness: "harness-missing", until: null, reason: "the Claude login expires soon; run claude to refresh it" };
+    else if (loginExpiring(adapter, cfg) && !(adapter.id === "claude" && await refreshClaudeLogin(cfg, d.bin))) {
+      const reason = adapter.id === "claude" && claudeRefreshEnv(cfg) ? `the Claude login expires soon; the Task Runner has claude refresh it ${CLAUDE_REFRESH_WINDOW_MS / 60_000} minutes before it ends` : "the Claude login expires soon; run claude to refresh it";
+      st = { ...base, readiness: "harness-missing", until: null, reason };
+    }
     else {
       const control = readControl();
       const cooloff = prev.cooloff && now < prev.cooloff.until && !(control.pause && (control.pause.until === null || now < control.pause.until)) ? prev.cooloff : null;
