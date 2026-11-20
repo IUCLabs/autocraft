@@ -151,8 +151,8 @@ function Jobs({ selected }: { selected?: number }) {
                     {j.requestedBy} · <TimeAgo iso={j.requestedAt} />
                   </td>
                   <td className="num whitespace-nowrap px-3 text-right">{took(j.startedAt, j.endedAt)}</td>
-                  <td className="max-w-[340px] truncate px-3 text-ink/70" title={j.error ?? j.summary ?? j.progress ?? ""}>
-                    {j.state === "failed" ? <span className="text-bad">{j.error}</span> : (j.summary ?? j.progress ?? "")}
+                  <td className="max-w-[340px] truncate px-3 text-ink/70" title={j.error ?? j.summary ?? j.progress ?? j.waiting ?? ""}>
+                    {j.state === "failed" ? <span className="text-bad">{j.error}</span> : j.waiting ? <span className="text-warn">{j.waiting}</span> : (j.summary ?? j.progress ?? "")}
                   </td>
                   <td className="num whitespace-nowrap px-3 text-right text-ink/65">{cost(j)}</td>
                 </tr>
@@ -304,6 +304,7 @@ function JobDetailView({ id, operator, back }: { id: number; operator: boolean; 
             )}
           </dl>
           {j.cancelRequested && j.state === "running" && <p className="text-sm text-warn">Stop requested; the runner is ending the job.</p>}
+          {j.waiting && <p className="text-sm text-warn">{j.waiting}</p>}
           {j.progress && j.state === "running" && <p className="text-sm">{j.progress}</p>}
           {j.summary && <p className="rounded border border-ok/30 bg-ok/5 px-3 py-2 text-sm">{j.summary}</p>}
           {j.items.length > 0 && <JobItems items={j.items} />}

@@ -1,8 +1,11 @@
 // Which jobs may run together: one queued or running job per (step, repo), at most `step_parallel` repos per step,
 // and the named mutexes of StepDef.exclusive. The planner, the command-line gate and the runner use the same rules.
+// In the user-local mode a queued job that no Task Runner may take (untakenTest) holds no repo of the step.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import type { StepDef } from "./steps.ts";
+import { inferenceMode } from "../remote/mode.ts";
+import { takerTest } from "../remote/takers.ts";
+import { knownStep, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 
 export const STEP_PARALLEL_KEY = "step_parallel";
 export const STEP_PARALLEL_DEFAULT = 1;
@@ -34,12 +37,38 @@ export function setStepParallel(db: DatabaseSync, input: unknown, by: string): s
   return v as string;
 }
 
-/** A job that holds or waits for its (step, repo). `number` is the finding of a security-fix job. */
-export type Active = { id: number; step: string; state: string; repo: string | null; number: number | null };
+/** A job that holds or waits for its (step, repo). `number` is the finding of a security-fix job; `params` (JSON) is read for jobs in the table. */
+export type Active = { id: number; step: string; state: string; repo: string | null; number: number | null; params?: string };
 
 export function activeJobs(db: DatabaseSync, states: ("queued" | "running")[] = ["queued", "running"]): Active[] {
-  return db.prepare(`SELECT id, step, state, repo, json_extract(params, '$.number') AS number FROM jobs WHERE state IN (${states.map(() => "?").join(",")})`)
+  return db.prepare(`SELECT id, step, state, repo, json_extract(params, '$.number') AS number, params FROM jobs WHERE state IN (${states.map(() => "?").join(",")})`)
     .all(...states) as Active[];
+}
+
+/** A job or proposal as untakenTest reads it: `params` as an object or the stored JSON. */
+export type JobOfRepo = { step: string; repo: string | null; params?: Params | string | null };
+
+/** Whether a job waits for a Task Runner: see untakenTest. */
+export type UntakenTest = (j: JobOfRepo) => boolean;
+
+/** The reason a job of `repo` waits: shown for the step, the lane's items and the queued job. */
+export const noRunnerFor = (repo: string): string => `No Task Runner takes ${repo}`;
+
+/**
+ * Whether a job waits for a Task Runner: in the user-local mode, a job of a step that calls Claude, for a repo no Task Runner
+ * may take now (src/remote/takers.ts, the rule the runner's job starts and the pools use). The runners are read once, on the
+ * first such job, so one test serves a whole pass. Never in the server-account mode, nor for a job with no repo.
+ */
+export function untakenTest(db: DatabaseSync, steps?: Map<string, StepDef>, nowMs: number = Date.now()): UntakenTest {
+  if (inferenceMode(db) !== "user-local") return () => false;
+  const takes = takerTest(db, nowMs);
+  const claude = (j: JobOfRepo): boolean => {
+    let params: Params = {};
+    if (typeof j.params === "string") { try { params = JSON.parse(j.params) as Params; } catch { /* the step's defaults */ } }
+    else if (j.params) params = j.params;
+    return usesClaude(modelsOf(steps?.get(j.step) ?? knownStep(j.step), params));
+  };
+  return (j) => j.repo !== null && claude(j) && !takes({ prompt_id: "", repos: [j.repo] });
 }
 
 /** Two jobs of one step do the same work: the same repo (and finding), or one of them is not about a single repo. */
@@ -54,8 +83,10 @@ export type Want = { step: string; repo: string | null; number?: number | null }
  * Why the job cannot be queued or started now, or null. `states` are the jobs that count: queued and running for
  * queueing, running alone for starting. `extra` are proposals of the same pass: they only count as the same work (a duplicate), so a fallback proposal for another repo can still be made. `reserved` are jobs this pass already queued or gated: they count for the same work and for the repo capacity. `mutex` also checks StepDef.exclusive
  * against running jobs. With `precheck` (a planner check before any repo is known) only the repo capacity is checked.
+ * A queued job that `untaken` says waits for a Task Runner counts as the same work but takes no repo of the capacity; a
+ * pass that asks many times passes one test.
  */
-export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Want, o: { states?: ("queued" | "running")[]; extra?: Active[]; reserved?: Active[]; mutex?: boolean; precheck?: boolean } = {}): string | null {
+export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Want, o: { states?: ("queued" | "running")[]; extra?: Active[]; reserved?: Active[]; mutex?: boolean; precheck?: boolean; untaken?: UntakenTest } = {}): string | null {
   const held = [...activeJobs(db, o.states), ...(o.reserved ?? [])].filter((j) => j.step === want.step);
   const same = [...held, ...(o.extra ?? []).filter((j) => j.step === want.step)];
   if (!o.precheck) {
@@ -64,7 +95,9 @@ export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Wa
   }
   const cap = stepParallel(db);
   if (cap !== Infinity) {
-    const repos = new Set(held.map((j) => j.repo ?? ""));
+    let untaken = o.untaken;
+    const holds = (j: Active): boolean => j.state !== "queued" || j.params === undefined || !(untaken ??= untakenTest(db, steps))(j);
+    const repos = new Set(held.filter(holds).map((j) => j.repo ?? ""));
     if (repos.size >= cap && (o.precheck || !repos.has(want.repo ?? ""))) return `${want.step} is working ${repos.size} repo${repos.size === 1 ? "" : "s"}, the most at once (step_parallel)`;
   }
   const mutex = steps.get(want.step)?.exclusive;

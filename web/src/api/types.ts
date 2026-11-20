@@ -1188,6 +1188,8 @@ export interface Job {
   models: string[];
   /** Labels of the Claude accounts used by the job's agent runs, running or finished. */
   accounts: string[];
+  /** Why the queued job does not start, e.g. "No Task Runner takes photocraft"; null otherwise. */
+  waiting: string | null;
 }
 
 /** An item a job handled: what happened to it, and the decision the job asked about it (null when none). */
