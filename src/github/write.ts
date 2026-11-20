@@ -123,6 +123,9 @@ function laneQuery(w: Writer, g: Guarded | Grant, q: Querier, kind: WriteKind = 
 // identities) are exempt.
 export const PACE_PER_MINUTE = 60;
 export const PACE_PER_HOUR = 400;
+/** Bulk writes (the label writes of the labels-apply step) start only while the key has used less than this share of each limit, so they leave room for the writes that move PRs. */
+export const BULK_SHARE = 0.5;
+const BULK_ACTIONS = new Set(["labels-apply"]);
 /** The longest a write waits for the budget; past it the write is refused as paced and the caller retries later. */
 export const PACE_MAX_WAIT_MS = 15_000;
 /** After a secondary-limit failure the key pauses this long. */
@@ -172,9 +175,12 @@ function tryBegin(w: Writer, action: string, target: string, details: Details, n
     ).all(new Date(now - 3_600_000).toISOString(), identity, owner) as { at: string; state: string | null; error: string | null }[];
     const times = rows.map((r) => Date.parse(r.at));
     const inMinute = times.filter((t) => t > now - 60_000);
+    const share = BULK_ACTIONS.has(action) ? BULK_SHARE : 1;
+    const perMinute = Math.floor(PACE_PER_MINUTE * share);
+    const perHour = Math.floor(PACE_PER_HOUR * share);
     let wait = 0;
-    if (inMinute.length >= PACE_PER_MINUTE) wait = inMinute[inMinute.length - PACE_PER_MINUTE]! + 60_000 - now;
-    if (times.length >= PACE_PER_HOUR) wait = Math.max(wait, times[times.length - PACE_PER_HOUR]! + 3_600_000 - now);
+    if (inMinute.length >= perMinute) wait = inMinute[inMinute.length - perMinute]! + 60_000 - now;
+    if (times.length >= perHour) wait = Math.max(wait, times[times.length - perHour]! + 3_600_000 - now);
     const lastSecondary = rows.filter((r) => r.state === "failed" && SECONDARY_LIMIT.test(r.error ?? "")).map((r) => Date.parse(r.at)).at(-1);
     if (lastSecondary !== undefined) wait = Math.max(wait, lastSecondary + SECONDARY_PAUSE_MS - now);
     if (wait > 0) { w.db.exec("COMMIT"); return { wait: Math.max(wait, 1) }; }
