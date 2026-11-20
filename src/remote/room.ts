@@ -17,7 +17,7 @@ import { STATUS_FRESH_MS } from "./helpers.ts";
 import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimRepos } from "./my-repos.ts";
-import { taskOfStep, userSkips } from "./my-tasks.ts";
+import { TASK_CHOICES, taskOfStep, userSkips } from "./my-tasks.ts";
 import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S } from "./protocol.ts";
 
@@ -63,16 +63,18 @@ type Helper = { login: string; role: string | null; idle_claim_at: number | null
 type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string> } };
 /**
  * What the room reads of the helpers, once for any number of room questions at one moment: the fresh, ready helpers that are
- * not Manual only (`ready`), those of them that are active, and on first use their permissions, repos and users' caps.
+ * not Manual only and whose users take some task (`ready`; with no task ticked a user takes only picks, as Manual only), those
+ * of them that are active, and on first use their permissions, repos and users' caps.
  */
 export type RoomState = { ready: Helper[]; active: Helper[]; takers?: { list: Taker[]; canWrite: (login: string, repo: string) => boolean }; left: Map<string, number> };
 
 export function roomState(db: DatabaseSync, nowMs: number = Date.now()): RoomState {
-  const rows = prep(db, `SELECT t.login, a.role, t.idle_claim_at, t.idle_repos, COALESCE(h.slots, 1) AS slots,
+  const rows = (prep(db, `SELECT t.login, a.role, t.idle_claim_at, t.idle_repos, COALESCE(h.slots, 1) AS slots,
       (SELECT COUNT(*) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS leased,
       (SELECT MAX(c.heartbeat_at) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS beat
     FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
-    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as Helper[];
+    WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as Helper[])
+    .filter((h) => userSkips(db, h.login).size < TASK_CHOICES.length);
   return { ready: rows, active: rows.filter((h) => isActive(h, nowMs)), left: new Map() };
 }
 

@@ -9,7 +9,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { STAGES, stageOfStep } from "../stages/registry.ts";
 
 export const SKIP_TASKS_KEY = "skip_tasks";
-/** The task of a call whose step belongs to no stage that makes model calls (security scans, Discord and the like). */
+/** The task of a call whose step belongs to no stage that makes model calls (security scans, Discord, and a step not known). */
 export const OTHER_TASK = "other";
 
 /** `about`: the first sentence of the stage's description; `models`: the Claude models its calls ask for, largest first. */
@@ -18,14 +18,19 @@ export type TaskChoice = { id: string; title: string; about: string; models: str
 const CLAUDE_MODELS = ["opus", "sonnet", "haiku"] as const;
 const firstSentence = (text: string): string => /^.*?\.(?=\s|$)/.exec(text)?.[0] ?? text;
 
+/** What a task's first description sentence leaves out of the steps it covers. */
+const ALSO: Record<string, string> = {
+  merge: "It also covers the Opus review of a PR's head commit before the PR goes into a batch or a pre-approved merge is handed to the queue.",
+};
+
 /** The tasks a user can tick, in pipeline order: each stage that makes model calls, then Other. */
 export const TASK_CHOICES: readonly TaskChoice[] = [
   ...[...STAGES].filter((s) => s.promptIds.length > 0).sort((a, b) => a.order - b.order).map((s) => ({
-    id: s.id, title: s.title, about: firstSentence(s.description),
+    id: s.id, title: s.title, about: [firstSentence(s.description), ALSO[s.id]].filter(Boolean).join(" "),
     models: CLAUDE_MODELS.filter((m) => s.models.some((x) => x.model === m)),
   })),
   {
-    id: OTHER_TASK, title: "Other (security, Discord)", about: "Work outside the pipeline stages: the security scan's checks and private fixes, and Discord mentions, searches and issue drafts.",
+    id: OTHER_TASK, title: "Other", about: "Calls of steps outside the stages above: the security scan's checks and private fixes, Discord mentions, searches and issue drafts, and any call whose step is not known.",
     models: CLAUDE_MODELS.filter((m) => Object.values(CLAUDE_PROMPTS).some((p) => /^(security|discord)\./.test(p.id) && (p.models as readonly string[]).includes(m))),
   },
 ];

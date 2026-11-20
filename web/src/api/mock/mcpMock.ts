@@ -16,9 +16,9 @@ const TASKS = [
   { id: "fix", title: "Fix", about: "Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.", models: ["opus", "sonnet", "haiku"] },
   { id: "fixup", title: "Fix-up", about: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to.", models: ["opus", "sonnet", "haiku"] },
   { id: "verify", title: "Verify", about: "Records upstream CI as the verification of taken PRs in repos that have it.", models: ["opus", "sonnet", "haiku"] },
-  { id: "merge", title: "Merge queue", about: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules.", models: ["opus"] },
+  { id: "merge", title: "Merge queue", about: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. It also covers the Opus review of a PR's head commit before the PR goes into a batch or a pre-approved merge is handed to the queue.", models: ["opus"] },
   { id: "postmerge", title: "Post-merge review", about: "Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings.", models: ["opus"] },
-  { id: "other", title: "Other (security, Discord)", about: "Work outside the pipeline stages: the security scan's checks and private fixes, and Discord mentions, searches and issue drafts.", models: ["opus", "haiku"] },
+  { id: "other", title: "Other", about: "Calls of steps outside the stages above: the security scan's checks and private fixes, Discord mentions, searches and issue drafts, and any call whose step is not known.", models: ["opus", "haiku"] },
 ];
 
 export function createMcpMock(me: User, changed: () => void): Pick<Api, "mcp" | "inference" | "runners" | "modelQueue"> & { meSettings: Api["me"]["settings"] } {

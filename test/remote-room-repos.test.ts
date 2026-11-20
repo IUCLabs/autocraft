@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { queueRoom, setCallContext } from "../src/agents/call.ts";
+import { queueRoom, queueRoomPass, setCallContext } from "../src/agents/call.ts";
 import { createToken } from "../src/dash/mcp/tokens.ts";
 import { connect } from "../src/db.ts";
 import { enqueueCall } from "../src/remote/calls.ts";
@@ -77,7 +77,7 @@ test("room is counted per repo: runners with disjoint repos, a call nobody may t
   }
 });
 
-test("room counts only the runners whose users take the call's task (My tasks)", () => {
+test("room and takers count only the runners whose users take the call's task (My tasks)", () => {
   const db = connect(join(mkdtempSync(join(SCRATCH, "remote-room-tasks-")), "t.db"));
   setInferenceMode(db, "user-local", "test");
   db.prepare("INSERT INTO access (login, role) VALUES ('olga', 'operator')").run();
@@ -89,10 +89,16 @@ test("room counts only the runners whose users take the call's task (My tasks)",
   assert.ok(room(["deckcraft"], "fixissue") > 0);
   assert.equal(room(["deckcraft"], "opus-review"), 0, "the only runner's user unticked Review");
   assert.equal(room(undefined, "opus-review"), 0, "with no repo named as well");
+  const pass = queueRoomPass(db);
+  assert.equal(pass.taker(["deckcraft"], "opus-review"), false, "no taker for the unticked task");
+  assert.equal(pass.taker(["deckcraft"], "fixissue"), true);
   setCallContext({ jobId: 1, step: "opus-review", stage: 5, repo: "deckcraft", cancelled: () => false });
   try {
     assert.equal(queueRoom(db, 0, ["deckcraft"]), 0, "a review job's calls get no room");
   } finally {
     setCallContext(null);
   }
+  assert.ok(remoteRoom(db, 0, Date.now()) > 0);
+  setUserTasks(db, "olga", []);
+  assert.equal(remoteRoom(db, 0, Date.now()), 0, "with no task ticked the user takes only picks: no room for any call");
 });

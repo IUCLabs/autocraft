@@ -14,6 +14,13 @@ import { SectionTitle } from "./SectionTitle";
 /** A model id as people say it: opus → Opus. */
 const modelName = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
 
+/**
+ * Saves of one list run one after another, so the server ends with the latest selection. `confirmed` is the server's last
+ * answer; only the latest save sets the list, from its answer or, when it fails, back to `confirmed`.
+ */
+type ListSaves = { chain: Promise<unknown>; n: number; confirmed: string[] };
+const listSaves = (): ListSaves => ({ chain: Promise.resolve(), n: 0, confirmed: [] });
+
 export function MySettings() {
   const api = useApi();
   const write = useWrite();
@@ -30,9 +37,8 @@ export function MySettings() {
   // save of the latest change may say Saved, so one that ends after a newer edit or save does not.
   const [saving, setSaving] = useState(0);
   const latest = useRef(0);
-  // Task saves run one after another, so the server ends with the latest selection. `confirmed` is the server's last answer;
-  // only the latest save sets the boxes from its answer, or back to `confirmed` when it fails.
-  const taskSaves = useRef({ chain: Promise.resolve() as Promise<unknown>, n: 0, confirmed: [] as string[] });
+  const repoSaves = useRef(listSaves());
+  const taskSaves = useRef(listSaves());
   const edited = () => {
     latest.current++;
     setSavedAt(null);
@@ -47,6 +53,7 @@ export function MySettings() {
     setManual(data.manualOnly);
     setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
     setPicks(data.repos);
+    repoSaves.current.confirmed = data.repos;
     setTasks(data.tasks);
     taskSaves.current.confirmed = data.tasks;
     setMaxCalls(data.maxCalls === null ? "" : String(data.maxCalls));
@@ -62,33 +69,23 @@ export function MySettings() {
       if (ok && n === latest.current) setSavedAt(Date.now());
     });
   };
-  const savePicks = (next: string[]) => {
-    const was = picks;
-    setPicks(next);
-    saveRun("repos", async () => {
-      try {
-        setPicks((await api.me.settings.put({ repos: next })).repos);
-      } catch (e) {
-        setPicks(was);
-        throw e;
-      }
-    });
-  };
-  const saveTasks = (next: string[]) => {
-    const s = taskSaves.current, n = ++s.n;
-    setTasks(next);
-    saveRun("tasks", () => {
+  const saveList = (key: string, s: ListSaves, next: string[], set: (v: string[]) => void, put: () => Promise<string[]>) => {
+    const n = ++s.n;
+    set(next);
+    saveRun(key, () => {
       const run = s.chain.then(async () => {
         try {
-          s.confirmed = (await api.me.settings.put({ tasks: next })).tasks;
+          s.confirmed = await put();
         } finally {
-          if (n === s.n) setTasks(s.confirmed);
+          if (n === s.n) set(s.confirmed);
         }
       });
       s.chain = run.catch(() => undefined);
       return run;
     });
   };
+  const savePicks = (next: string[]) => saveList("repos", repoSaves.current, next, setPicks, async () => (await api.me.settings.put({ repos: next })).repos);
+  const saveTasks = (next: string[]) => saveList("tasks", taskSaves.current, next, setTasks, async () => (await api.me.settings.put({ tasks: next })).tasks);
   const allTasks = data.taskChoices.map((t) => t.id);
   const choices = new Set(data.repoChoices);
   // Picks that are no longer available (pipeline off, or no write permission) stay listed so they can be removed.
@@ -232,9 +229,7 @@ export function MySettings() {
       </Fold>
       <Fold className="mt-1" title="My tasks" summary={tasks.length === allTasks.length ? "All tasks" : `${tasks.length} of ${allTasks.length} tasks`}>
         <div role="group" aria-label="My tasks" className="mt-1 rounded-md border border-line p-1 sm:max-w-3xl">
-          <p className="px-2 pb-1 pt-1.5 text-xs text-ink/60">The work your Task Runners take from the queue; point at a task to see what it does and which models it calls. Calls you pick yourself and follow-ups of your runners' sessions run either way.</p>
-          <CheckRow checked={tasks.length === allTasks.length} onChange={() => tasks.length !== allTasks.length && saveTasks(allTasks)} title="All tasks" />
-          {!tasks.length && <p role="status" className="px-2 pb-1 text-xs text-warn">No task ticked: your Task Runners take only the calls you pick.</p>}
+          <CheckRow checked={tasks.length === allTasks.length} onChange={(on) => saveTasks(on ? allTasks : [])} title="All tasks" />
           <div className="sm:columns-2 sm:gap-x-1 lg:columns-3">
             {data.taskChoices.map((t) => {
               const on = tasks.includes(t.id);
