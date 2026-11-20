@@ -32,7 +32,7 @@ import { backlogHeld } from "../../dupes/held.ts";
 import { filtered, hiddenTest, type HiddenRepos } from "../../hidden-sql.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
-import { canSettle, canSettleCached, canSettleSql, settledBy, settleMemo, type SettleMemo } from "../../settlers.ts";
+import { canSettleCached, canSettleSql, requireSettle, settledBy, settleMemo, type SettleMemo } from "../../settlers.ts";
 import { DEFAULT_BAND } from "../../rank/level.ts";
 import { isQuiet } from "../../security/quiet.ts";
 
@@ -90,15 +90,7 @@ async function blockedRepos(req: Req, d: DecisionRow): Promise<string[]> {
 }
 
 /** An operator settles with write access on every repo; a maintainer only under the rule of src/settlers.ts. */
-async function requireRepoSettler(db: DatabaseSync, req: Req, repos: string[]): Promise<void> {
-  if (!isOperator(req)) {
-    if (!(await canSettle(db, req.user, repos))) throw new HttpError(403, "only an operator, or a maintainer with write access where the app acts for them, settles decisions");
-    return;
-  }
-  const ok = await Promise.all(repos.map((r) => req.user.canWrite(r).catch(() => false)));
-  const blocked = repos.filter((_, i) => !ok[i]);
-  if (blocked.length) throw new HttpError(403, `no write access to ${blocked.map((r) => slugOf(r)).join(", ")}`);
-}
+const requireRepoSettler = (db: DatabaseSync, req: Req, repos: string[]): Promise<void> => requireSettle(db, req.user, repos, "settles decisions");
 
 /** `requireRepoSettler` on the decision's repos. `own`: the decision's answer must be this login's (undo, retry, reopen), unless an operator asks. */
 async function requireSettler(db: DatabaseSync, req: Req, d: DecisionRow, own = false): Promise<void> {

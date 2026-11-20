@@ -8,7 +8,7 @@ import type { FastPosition, MergeWait, NextMerge, QueueMergeRow, QueueOrigin, Qu
 import { cachedQueue, openViews, type CachedEntry } from "../../core/plan-read.ts";
 import { addFastTrack, fastPositions, fastTrackList, FastTrackError, parseItemRef, parseWeight, removeFastTrack, setFastTrackWeight } from "../../fasttrack.ts";
 import { preapproveMerge } from "../../preapproval/index.ts";
-import { canSettle } from "../../settlers.ts";
+import { requireSettle } from "../../settlers.ts";
 import type { Exec } from "../../fixup/git.ts";
 import { ControlError, holdMerge, releaseMerge, removeFromBatch, stopBatch } from "../../merge/controls.ts";
 import { pageBatches } from "../../merge/batch-store.ts";
@@ -284,8 +284,8 @@ export async function queueAdd(db: DatabaseSync, req: Req, via?: string): Promis
   const r = item(req);
   const w = weightOf(req);
   await needVisible(db, req, r.repo);
-  // A pre-approved merge is a Merge answer given ahead: a maintainer queues where they settle decisions (src/settlers.ts).
-  if (!(await canSettle(db, req.user, [r.repo]))) throw new HttpError(403, `only an operator, or a maintainer with write access where the app acts for them, queues items on ${r.repo}`);
+  // A pre-approved merge is a Merge answer given ahead, so it takes the rule of an answer (src/settlers.ts): an operator with write access, or a maintainer where they settle decisions.
+  await requireSettle(db, req.user, [r.repo], `queues items on ${r.repo}`);
   const by = req.user.login;
   const kind = (db.prepare("SELECT kind FROM main.items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { kind: string } | undefined)?.kind;
   if (kind === "issue") {

@@ -74,7 +74,7 @@ describe("merge queue tools", () => {
     const noWrite: McpEnv = { ...envOf(w, "operator"), user: () => ({ login: OPERATOR, role: "operator", canWrite: async () => false, canRead: async () => true }) };
     const r = await call(noWrite, "queue_pr", { item: "app#1" });
     assert.equal(r.isError, true);
-    assert.match(r.text, /no write access to app/);
+    assert.match(r.text, /no write access to storytold\/app/);
     assert.equal(preapprovalOf(w.db, "app", 1), null);
     const op = envOf(w, "operator");
     await call(op, "queue_pr", { item: "app#1" });

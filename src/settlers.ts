@@ -5,6 +5,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { githubIdentity } from "./github/identity.ts";
 import { PERM_READ_TTL } from "./dash/server/sessions.ts";
+import { HttpError } from "./dash/server/util.ts";
+import { slugOf } from "./owners.ts";
 
 export const MAINTAINER_WRITES_KEY = "maintainer_writes";
 
@@ -68,12 +70,30 @@ export function canSettleCached(db: DatabaseSync, login: string, role: string, r
   return repos.every((r) => cachedWrite(db, login, r, m));
 }
 
-/** The request form: write permission is read live (the session's `canWrite`). An operator's write access is checked by the caller. */
+/** The request form: write permission is read live (the session's `canWrite`). An operator's write access is not checked here: request handlers call `settleRefusal`, which does. */
 export async function canSettle(db: DatabaseSync, user: { login: string; role: string; canWrite: (repo: string) => Promise<boolean> }, repos: string[]): Promise<boolean> {
   if (user.role === "operator") return true;
   if (user.role !== "maintainer" || !maintainerWritesOn(db) || !allAppIdentity(db, repos)) return false;
   const ok = await Promise.all(repos.map((r) => user.canWrite(r).catch(() => false)));
   return ok.every(Boolean);
+}
+
+/**
+ * May `user` act on `repos` now: answer or settle a decision, run a conversation card or choice, put items in the merge queue (Queue items,
+ * queue_pr). One rule for every such write a person starts: an operator needs live write access on every repo, a maintainer the rule of
+ * `canSettle`. Returns why not, or null; `what` names the action in the refusal ("settles decisions").
+ */
+export async function settleRefusal(db: DatabaseSync, user: { login: string; role: string; canWrite: (repo: string) => Promise<boolean> }, repos: string[], what: string): Promise<string | null> {
+  if (user.role !== "operator") return (await canSettle(db, user, repos)) ? null : `only an operator, or a maintainer with write access where the app acts for them, ${what}`;
+  const ok = await Promise.all(repos.map((r) => user.canWrite(r).catch(() => false)));
+  const blocked = repos.filter((_, i) => !ok[i]);
+  return blocked.length ? `no write access to ${blocked.map((r) => slugOf(r)).join(", ")}` : null;
+}
+
+/** `settleRefusal` as a 403, for the request handlers. */
+export async function requireSettle(db: DatabaseSync, user: Parameters<typeof settleRefusal>[1], repos: string[], what: string): Promise<void> {
+  const why = await settleRefusal(db, user, repos, what);
+  if (why) throw new HttpError(403, why);
 }
 
 /** The DB-side form for the pipeline: the login's current role, and the cached write permission for a maintainer. Write access is read live again when the write is made. */

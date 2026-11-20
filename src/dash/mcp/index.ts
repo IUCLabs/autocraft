@@ -502,10 +502,8 @@ async function queuePr(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { item: "item", weight: "weight" }, ["item"]);
   const r = itemArg(a.item);
   const user = env.user(true);
-  // An operator, or a maintainer: queueAdd then checks that they settle on the repo (maintainer writes, the app identity, write access).
+  // An operator, or a maintainer: queueAdd then checks that they settle on the repo (src/settlers.ts: write access, and for a maintainer maintainer writes and the app identity).
   if (user.role !== "operator" && user.role !== "maintainer") throw new HttpError(403, `only operators and maintainers who answer decisions queue items; ${user.login} is a ${user.role}`);
-  // A pre-approved merge is a Merge answer given ahead, so it needs the write permission an answer does.
-  if (!(await user.canWrite(r.repo).catch(() => false))) throw new HttpError(403, `no write access to ${r.repo}`);
   const done = await queueAdd(env.db, reqOf(user, { method: "POST", json: { item: refText(r), weight: a.weight } }), "mcp");
   return { text: `${done.label}. ${placeOf(env, r)}\nItem: ${link(env, itemPath(r.repo, r.number))}` };
 }
