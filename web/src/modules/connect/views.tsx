@@ -1,5 +1,5 @@
 import { PlugsConnectedIcon, PlusIcon } from "@phosphor-icons/react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useApi, useQuery } from "../../api/client";
 import type { McpToken } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
@@ -26,11 +26,29 @@ const claudeCommand = (url: string, token: string) => `claude mcp add --transpor
 const jsonConfig = (url: string, token: string) => JSON.stringify({ mcpServers: { autocraft: { type: "http", url, headers: { Authorization: `Bearer ${token}` } } } }, null, 2);
 export function ConnectView({ user }: ViewProps) {
   const local = user.role !== "viewer" && user.inference === "user-local";
+  const runners = useQuery("runners", (a) => a.runners.list(), { enabled: local });
+  const none = !!runners.data && runners.data.runners.length === 0;
+  // Without a Task Runner the setup guide is shown at once; with one, the header links to it.
+  const [guide, setGuide] = useState(false);
+  const guideRef = useRef<HTMLDivElement>(null);
+  const openGuide = () => {
+    setGuide(!guide);
+    if (!guide) requestAnimationFrame(() => guideRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
+  const link = local && runners.data && !none && (
+    <button type="button" aria-expanded={guide} onClick={openGuide} className="text-accent-ink hover:underline">
+      {guide ? "Hide the setup guide" : "How to set up a Task Runner"}
+    </button>
+  );
   return (
-    <Page title="Connect">
+    <Page title="Connect your Agents" sub={link}>
       {local && <MySettings />}
+      {local && (none || guide) && (
+        <div ref={guideRef} className="scroll-mt-4">
+          <RunnerGuide />
+        </div>
+      )}
       {local && <Runners />}
-      {local && <RunnerGuide />}
       <Connector user={user} />
     </Page>
   );

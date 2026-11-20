@@ -71,7 +71,7 @@ export function Runners() {
           ))}
         </ul>
       )}
-      {data && !any && <p className="px-3 py-3 text-sm text-ink/65">No Task Runner yet: set one up with the steps below.</p>}
+      {data && !any && <p className="px-3 py-3 text-sm text-ink/65">No Task Runner yet: set one up with the steps above.</p>}
       <p className={cn("flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 text-xs", any && "border-t border-line")}>
         <Link to="/model-queue" className="text-accent-ink hover:underline">Model call queue</Link>
         <Link to="/agents" className="text-accent-ink hover:underline">Model calls that ran</Link>
@@ -125,7 +125,7 @@ function RunnerRow({ r, answering }: { r: RunnerInfo; answering: boolean }) {
           </div>
           {!r.fresh && (
             <p className="mt-1 text-xs leading-5 text-ink/65">
-              {r.readiness ? "Stopped." : "Logged in, not started yet."} Start it on {r.machine?.hostname ?? "its machine"}: <span className="code">autocraft work</span> (step 4 below)
+              {r.readiness ? "Stopped." : "Logged in, not started yet."} Start it on {r.machine?.hostname ?? "its machine"}: <span className="code">autocraft work</span>
             </p>
           )}
           {r.lastError && (
