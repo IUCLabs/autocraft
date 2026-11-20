@@ -104,6 +104,8 @@ export class Runner {
   private flowAt = 0;
   private webhookAt = 0;
   private webhooking: Promise<void> | null = null;
+  /** The autorepin drain (src/repin), apart from the webhook pass so its git work never delays re-reads and comment commands. */
+  private repinning: Promise<void> | null = null;
   private webhookClient: import("../mirror.ts").Client | null = null;
   private reconcileAt = 0;
   private reconciling: Promise<void> | null = null;
@@ -193,7 +195,7 @@ export class Runner {
     this.webhookAt = Date.now();
     const commands = !!this.db.prepare(`SELECT 1 FROM main.github_commands WHERE ${COMMAND_WORK_SQL} LIMIT 1`).get();
     // Autorepins whose pull request was merged or closed, or whose lockfile task ended (src/repin).
-    const repins = anyRepinDue(this.db);
+    const repins = !this.repinning && anyRepinDue(this.db);
     if (!commands && !repins && !this.db.prepare("SELECT 1 FROM main.sync_requests LIMIT 1").get()) return;
     this.webhooking = (async () => {
       const { lockHeld, lockPath, fullLockPath, Client, SYNC_RESERVE } = await import("../mirror.ts");
@@ -207,11 +209,14 @@ export class Runner {
         const k = await drainCommands(this.db, { querier: c, log: this.o.log });
         if (k) this.o.log(`webhooks: carried out ${k} commands from comments`);
       }
-      // After the commands: an autorepin set on a pull request that is already merged starts in this pass.
-      if (repins || commands) {
-        const { drainRepins } = await import("../repin/index.ts");
-        const k = await drainRepins(this.db, { querier: c, log: this.o.log });
-        if (k) this.o.log(`autorepin: ${k} ended`);
+      // Started after the commands, so an autorepin set on a pull request that is already merged starts in this pass, and not
+      // waited for: the next pass's re-reads and commands do not wait on its git work.
+      if ((repins || commands) && !this.repinning) {
+        this.repinning = (async () => {
+          const { drainRepins } = await import("../repin/index.ts");
+          const k = await drainRepins(this.db, { querier: c, log: this.o.log });
+          if (k) this.o.log(`autorepin: ${k} ended`);
+        })().catch((e) => this.o.log(`autorepin: ${(e as Error).message}`)).finally(() => (this.repinning = null));
       }
     })().catch((e) => this.o.log(`webhooks: ${(e as Error).message}`)).finally(() => (this.webhooking = null));
   }

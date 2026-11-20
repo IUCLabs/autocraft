@@ -102,16 +102,17 @@ export const safePath = (s: string, what: string): string => (/^[A-Za-z0-9._/-]{
 /**
  * Why the lockfile `after`, written by Cargo for the repinned manifests, is not accepted in place of `before`, or null.
  * Every package of `slug` must be at `sha`, pinned by rev. Any other package must be in `before` with the same name, source,
- * version and checksum, except a package from crates.io whose name `before` does not have from crates.io: Cargo may add those
- * for the dependency's new requirements. Packages may be dropped.
+ * version and checksum, except a crates.io package whose name `before` has from no source at all: Cargo may add those for the
+ * dependency's new requirements. Packages may be dropped.
  */
 export function lockRefusal(before: string, after: string, slug: string, sha: string): string | null {
   const was = lockedPackages(before), now = lockedPackages(after);
   if (!was || !now) return "the lockfile does not read as a Cargo.lock";
   if (!now.length) return "the new lockfile lists no packages";
-  const pair = (p: Locked): string => `${p.name}\0${p.source ?? ""}`;
-  const exact = (p: Locked): string => `${pair(p)}\0${p.version}\0${p.checksum ?? ""}`;
-  const pairs = new Set(was.map(pair)), kept = new Set(was.map(exact));
+  const exact = (p: Locked): string => `${p.name}\0${p.source ?? ""}\0${p.version}\0${p.checksum ?? ""}`;
+  const kept = new Set(was.map(exact));
+  // Names the old lockfile has from crates.io (either index's spelling) or from any other source but a local path.
+  const known = new Set(was.filter((p) => p.source !== null).map((p) => p.name));
   const want = slug.toLowerCase();
   for (const p of now) {
     const name = safeName(p.name);
@@ -123,9 +124,9 @@ export function lockRefusal(before: string, after: string, slug: string, sha: st
       return `the new lockfile has ${name} from ${slug} at another commit`;
     }
     if (kept.has(exact(p))) continue;
-    if (pairs.has(pair(p))) return `the new lockfile changes the version or checksum of ${name}`;
-    if (p.source === null) return `the new lockfile adds the local package ${name}`;
+    if (p.source === null) return `the new lockfile adds or changes the local package ${name}`;
     if (!CRATES_IO.has(p.source)) return `the new lockfile adds ${name} from a source outside crates.io and ${slug}`;
+    if (known.has(p.name)) return `the new lockfile changes the version, source or checksum of ${name}`;
   }
   return null;
 }

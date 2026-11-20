@@ -360,6 +360,13 @@ describe("autorepin", () => {
     assert.equal(s.w.db.prepare("SELECT COUNT(*) AS n FROM autorepins").get()!.n, 0);
   });
 
+  test("is refused while the repo is outside the pipeline's scope and the pull request is not fast-tracked, since no worker would take its task", async () => {
+    const s = setup();
+    s.w.db.prepare("UPDATE tracked_repos SET pipeline = 0 WHERE name = 'app'").run();
+    await assert.rejects(set(s), /pipeline is off for storytold\/app/);
+    assert.equal(s.w.db.prepare("SELECT COUNT(*) AS n FROM autorepins").get()!.n, 0);
+  });
+
   test("an autorepin command carried out after a later off does not set it again", async () => {
     const s = setup();
     const ask = (ref: Parameters<typeof requestRepin>[1]["ref"], at: string) => requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref, at: new Date(at) });

@@ -32,6 +32,8 @@ import { ghComment, pushRepin, WritePacedError } from "../github/write.ts";
 import type { Querier } from "../mirror.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { appPermission } from "../remote/permission.ts";
+import { isFastTracked } from "../fasttrack.ts";
+import { baseScopeRepos } from "../pilot.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { settleRefusal } from "../settlers.ts";
 import { fetchScript } from "../worker/rust.ts";
@@ -82,6 +84,20 @@ const itemOf = (db: DatabaseSync, repo: string, number: number): Item | undefine
 
 // ---- the command ---------------------------------------------------------------
 
+/**
+ * Why no build worker would take the pull request's lockfile task, or null: workers take pipeline tasks only for repos in
+ * scope or for fast-tracked items (claim in src/build/tasks.ts).
+ */
+function outOfBuildScope(db: DatabaseSync, repo: string, number: number): string | null {
+  return baseScopeRepos(db).has(repo) || isFastTracked(db, repo, number) ? null : `AutoCraft's pipeline is off for ${slugOf(repo)}, so no build worker would write its lockfile`;
+}
+
+/** Cancels a lockfile task that is no longer wanted; one that already ended is left as it is. */
+function stopTask(db: DatabaseSync, id: number | null): void {
+  if (id === null) return;
+  try { cancelTask(db, id, AUDIT_LOGIN); } catch { /* already ended, or gone */ }
+}
+
 /** A refusal worded for the answer on GitHub. */
 const refused = (why: string): HttpError => new HttpError(409, why);
 
@@ -102,7 +118,9 @@ export async function requestRepin(db: DatabaseSync, o: { login: string; githubI
     // Kept even when nothing waits, so an older `autorepin` command still to be carried out (a retry) does not set it again.
     db.prepare(`INSERT INTO main.autorepin_offs (repo, number, off_at) VALUES (?, ?, ?)
       ON CONFLICT (repo, number) DO UPDATE SET off_at = excluded.off_at WHERE excluded.off_at > autorepin_offs.off_at`).run(o.repo, o.number, at);
+    const tasks = db.prepare("SELECT task_id FROM main.autorepins WHERE repo = ?2 AND number = ?3 AND state = 'locking' AND requested_at <= ?1").all(at, o.repo, o.number) as { task_id: number | null }[];
     const n = db.prepare("UPDATE main.autorepins SET state = 'cancelled', result = NULL, done_at = ?1, requested_at = ?1, notice = 'none' WHERE repo = ?2 AND number = ?3 AND state IN ('waiting', 'locking') AND requested_at <= ?1").run(at, o.repo, o.number).changes;
+    for (const t of tasks) stopTask(db, t.task_id);
     audit(db, o.login, "autorepin-off", refOf(o), { cancelled: Number(n) });
     return n ? "Autorepin is off for this pull request" : "No autorepin was waiting on this pull request; it stays off";
   }
@@ -117,6 +135,8 @@ export async function requestRepin(db: DatabaseSync, o: { login: string; githubI
   if (other.state === "CLOSED") throw refused(`${depRef} was closed without merging`);
   const g = guardRepo(db, o.repo, "push", { operator: o.login }, undefined, o.login);
   if ("refused" in g) throw refused(g.refused);
+  const scope = outOfBuildScope(db, o.repo, o.number);
+  if (scope) throw refused(scope);
   // Only over a row of an earlier command: a later `off`, or a later command for the same repository, stands.
   const set = db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, login, github_id, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting')
     ON CONFLICT (repo, number, ref_repo) DO UPDATE SET ref_number = excluded.ref_number, login = excluded.login, github_id = excluded.github_id, requested_at = excluded.requested_at, state = 'waiting',
@@ -169,6 +189,7 @@ const KEY = "repo = ? AND number = ? AND ref_repo = ?";
 const keyOf = (r: RepinRow): [string, number, string] => [r.repo, r.number, r.ref_repo];
 
 function finish(db: DatabaseSync, r: RepinRow, e: Ended, at: Date): void {
+  stopTask(db, r.task_id);
   db.prepare(`UPDATE main.autorepins SET state = ?, result = ?, done_at = ?, to_head = ?, notice = ? WHERE ${KEY}`).run(e.state, e.message || null, at.toISOString(), e.toHead, e.notice, ...keyOf(r));
   audit(db, AUDIT_LOGIN, "autorepin", refOf(r), { on: depRefOf(r), by: r.login, state: e.state, ...(e.message ? { result: e.message } : {}), ...(e.toHead ? { commit: e.toHead } : {}) });
 }
@@ -290,6 +311,8 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
         throw failed(`${LOCK} could not be read`);
       }
       if (r.state !== "locking") {
+        const scope = outOfBuildScope(db, r.repo, r.number);
+        if (scope) throw failed(scope);
         const id = createTask(db, {
           step: "autorepin", repo: r.repo, number: r.number, headSha: head, requires: { os: "linux", toolchains: ["rust-stable"] }, patch: await git.diffText(head, tree),
           plan: [{ name: "lock", cmd: ["sh", "-c", LOCK_SCRIPT], network: "fetch", timeoutSec: 900, artifacts: [LOCK] }],
@@ -382,7 +405,11 @@ export async function drainRepins(db: DatabaseSync, deps: RepinDeps): Promise<nu
           const raw = oneLine(String((e as Error)?.message ?? e));
           deps.log?.(`autorepin ${refOf(r)}: try ${r.tries + 1} of ${MAX_TRIES}: ${raw}`);
           if (r.tries + 1 >= MAX_TRIES) finish(db, r, failed(e instanceof Retry ? raw : UNEXPECTED), clock());
-          else { db.prepare(`UPDATE main.autorepins SET state = 'waiting', task_id = NULL, tries = tries + 1, tried_at = ? WHERE ${KEY}`).run(clock().toISOString(), ...keyOf(r)); continue; }
+          else {
+            stopTask(db, r.task_id);
+            db.prepare(`UPDATE main.autorepins SET state = 'waiting', task_id = NULL, tries = tries + 1, tried_at = ? WHERE ${KEY}`).run(clock().toISOString(), ...keyOf(r));
+            continue;
+          }
         }
       }
       ended++;
