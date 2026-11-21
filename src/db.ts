@@ -251,6 +251,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["runner_logins", "want_answer", "INTEGER NOT NULL DEFAULT 0"],
   ["github_commands", "ref_repo", "TEXT"],
   ["github_commands", "ref_number", "INTEGER"],
+  ["github_commands", "ref_branch", "TEXT"],
+  ["autorepins", "ref_branch", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

@@ -584,7 +584,8 @@ CREATE TABLE IF NOT EXISTS github_commands (
   allowed INTEGER,                    -- 1: the commenter may queue on the repo, so the answer needs no comment approval
   reply TEXT,                         -- posted | failed | none (no answer is given); null while the answer is still to post
   ref_repo TEXT,                      -- autorepin: the repository of the pull request it names, as written (`owner/name` or `name`); null with ref_number: autorepin off
-  ref_number INTEGER
+  ref_number INTEGER,
+  ref_branch TEXT                     -- autorepin `via <branch>`: the dependency's branch to pin from; null: its default branch
 );
 CREATE INDEX IF NOT EXISTS github_commands_state ON github_commands(state, reply);
 -- Autorepin (src/repin): once the pull request `ref_repo#ref_number` is merged, the pull request `repo#number` gets a commit that
@@ -599,15 +600,16 @@ CREATE TABLE IF NOT EXISTS autorepins (
   github_id INTEGER NOT NULL,         -- the asker's numeric GitHub id: the login must still be bound to it at the push
   requested_at TEXT NOT NULL,
   state TEXT NOT NULL,                -- waiting (for the merge) | locking (the lockfile task runs) | pushed | failed | cancelled
-  sha TEXT,                           -- the merge commit, once read
+  sha TEXT,                           -- the commit pinned to (the merge commit, or with ref_branch the first commit of that branch holding it), once read
   head TEXT,                          -- the PR head the task works on (locking) and the commit was made on (pushed)
   task_id INTEGER,                    -- locking: the build task that writes Cargo.lock
   tries INTEGER NOT NULL DEFAULT 0,   -- attempts that did not finish (GitHub unreadable, the head moved, the task failed)
-  tried_at TEXT,                      -- the last such attempt; the next one waits a minute
+  tried_at TEXT,                      -- the last such attempt; the next one waits a minute (set ahead while the merge has not reached ref_branch)
   to_head TEXT,                       -- the commit pushed, written right before the push (pushed with null: nothing needed changing)
   result TEXT,                        -- what the comment on the pull request says
   done_at TEXT,
   notice TEXT,                        -- posted | failed | none; null while the comment is still to post
+  ref_branch TEXT,                    -- `via <branch>`: pin to the first commit of this branch of ref_repo that holds the merge; null: the merge commit on the default branch
   PRIMARY KEY (repo, number, ref_repo)
 ) WITHOUT ROWID;
 -- The latest `autorepin off` per pull request: a command written before it (one carried out late, after retries) sets nothing.
