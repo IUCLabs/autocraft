@@ -16,7 +16,7 @@ import { pushApprovalOf } from "../fixup/approval.ts";
 import { authorWrites } from "../fixup/author-permission.ts";
 import { longLivedOf, pushable, sameRepo, type LongLived } from "../fixup/pushable.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
-import { latestRun, refereeClosed, settledLookup } from "../classify/settled.ts";
+import { latestRun, refereeClosed, settledSet } from "../classify/settled.ts";
 import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import { batchStates, membersOf } from "../merge/batch-store.ts";
 import { changesRequestedWhy, gatesOf, GATE_FAILURES, failureNote, type ReviewFact } from "../merge/changes-requested.ts";
@@ -150,7 +150,24 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
 
   // Values read once for all PRs.
   const run = opts.run !== undefined ? opts.run : latestRun(db);
-  const settled = settledLookup(db, run);
+  // Rows of per-PR tables, read once for the load and keyed by `repo#number` (narrowed like the PRs: by repo or refs).
+  const narrow = (a: string): { sql: string; p: Record<string, string> } => {
+    const p: Record<string, string> = {};
+    let sql = "";
+    if (opts.repo) { sql += ` AND ${a}.repo = :repo`; p.repo = opts.repo; }
+    if (opts.refs) { sql += ` AND ${a}.repo || '#' || ${a}.number IN (SELECT value FROM json_each(:refs))`; p.refs = params.refs!; }
+    return { sql, p };
+  };
+  const keyed = <T extends { k: string }>(sql: string, a: string): Map<string, Omit<T, "k">[]> => {
+    const n = narrow(a), out = new Map<string, Omit<T, "k">[]>();
+    for (const row of db.prepare(sql.replace("/*narrow*/", n.sql)).all(n.p) as T[]) {
+      const k = row.k;
+      delete (row as Partial<T>).k;
+      (out.get(k) ?? out.set(k, []).get(k)!).push(row);
+    }
+    return out;
+  };
+  const settled = settledSet(db, run, rows.filter((r) => r.in_pilot && r.not_integration).map((r) => `${r.repo}#${r.number}`));
   const stale = staleReviews(db, opts.repo);
   const staleActionable = staleReviews(db, opts.repo, true);
   const scope = scopeAnswers(db);
@@ -168,7 +185,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const ourSameDiffMerge = db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' AND own_diff = 'same' LIMIT 1");
   // A head we pushed, or the head our push moved off (the mirror may still show it, and our own comment makes its review stale).
   const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND (to_oid = ?3 OR from_oid = ?3)");
-  const pushedOffRows = db.prepare("SELECT at FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND from_oid = ?3 AND to_oid <> ?3");
+  const pushedOffAt = keyed<{ k: string; at: string }>("SELECT p.repo || '#' || p.number || '@' || p.from_oid AS k, p.at FROM push_outcomes p WHERE p.to_oid <> p.from_oid /*narrow*/", "p");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
   const posts = new Map((db.prepare("SELECT repo, number, review_id, head_oid, posted_at, opus_at FROM review_posts").all() as { repo: string; number: number; review_id: string; head_oid: string | null; posted_at: string | null; opus_at: string | null }[])
@@ -218,14 +235,15 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at, (SELECT COUNT(*) FROM merges m2 WHERE m2.repo = merges.repo AND m2.number = merges.number AND m2.head_oid = merges.head_oid AND m2.outcome = 'refused') AS refusals FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
   const retriedAfter = db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'retry' AND at > ? LIMIT 1");
   const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
-  const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
-  const decision = db.prepare("SELECT id FROM decisions WHERE id = ?");
-  const holdRow = db.prepare("SELECT answer FROM decisions WHERE id = ?");
+  const verifRows = keyed<{ k: string; state: string; kind: string; summary: string | null; note: string | null }>("SELECT v.repo || '#' || v.number || '@' || v.head_sha AS k, v.state, v.kind, v.summary, v.note FROM verifications v WHERE 1 /*narrow*/", "v");
+  const verifAt = (ref: string, head: string) => verifRows.get(`${ref}@${head}`)?.[0];
+  // The answer of every decision, by id (null: not answered yet).
+  const decisionAnswers = new Map((db.prepare("SELECT id, answer FROM decisions").all() as { id: string; answer: string | null }[]).map((d) => [d.id, d.answer]));
   // An item has one open question at a time (src/merge/withdraw.ts): a Hold question would set another one aside, so it waits for that one.
-  const otherOpen = db.prepare("SELECT 1 FROM decisions WHERE repo = ? AND number = ? AND answer IS NULL AND id NOT LIKE '%~replaced-%' AND id NOT LIKE '%:dupegroup:%' AND kind IN ('scope', 'merge', 'close') LIMIT 1");
-  const holdQuestionOf = (repo: string, number: number, id: string): PrFacts["decision"]["hold"] => {
-    const row = holdRow.get(id) as { answer: string | null } | undefined;
-    return { asked: !!row, open: !!row && row.answer === null, answer: row?.answer ?? null, otherOpen: !!otherOpen.get(repo, number) };
+  const otherOpen = keyed<{ k: string }>("SELECT DISTINCT d.repo || '#' || d.number AS k FROM decisions d WHERE d.answer IS NULL AND d.id NOT LIKE '%~replaced-%' AND d.id NOT LIKE '%:dupegroup:%' AND d.kind IN ('scope', 'merge', 'close') /*narrow*/", "d");
+  const holdQuestionOf = (ref: string, id: string): PrFacts["decision"]["hold"] => {
+    const asked = decisionAnswers.has(id), answer = decisionAnswers.get(id) ?? null;
+    return { asked, open: asked && answer === null, answer, otherOpen: otherOpen.has(ref) };
   };
   const statement = db.prepare("SELECT id, repo, number, text FROM owner_statements WHERE id = ?");
   const openQuestion = db.prepare(OPEN_QUESTION_SQL);
@@ -256,7 +274,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     return { waiting, reread: !!w.reread, crossRepo: !!w.cross_repo, approvable: runs.filter((x) => x.event === "pull_request" && (failed[x.id] ?? 0) < MAX_FAILURES).length, blocked };
   };
 
-  const holdOf = reviewHolds(db, now);
+  const holdOf = reviewHolds(db, now, params.refs ? (JSON.parse(params.refs) as string[]) : undefined);
   const outsideHolds = holdMap(db);
   const out: PrFacts[] = [];
   for (const r of rows) {
@@ -270,7 +288,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const batchRow = integration ? (batchOf.get(r.repo, r.number) as { id: number; commit_sha: string } | undefined) : undefined;
     const inScope = integration ? pipelineOn_.has(r.repo) || (!!batchRow && (members => members.length > 0 && members.every((m) => inPilot(db, r.repo, m.number)))(membersOf(db, batchRow.id))) : !!r.in_pilot;
     const head = batchRow?.commit_sha ?? headOf(r);
-    const pushedOff = r.state === "OPEN" && !integration && !!head && (pushedOffRows.all(r.repo, r.number, head) as { at: string }[]).some((p) => !r.updated_at || Date.parse(r.updated_at) < Date.parse(p.at));
+    const pushedOff = r.state === "OPEN" && !integration && !!head && (pushedOffAt.get(`${ref}@${head}`) ?? []).some((p) => !r.updated_at || Date.parse(r.updated_at) < Date.parse(p.at));
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
       repo: r.repo, number: r.number, ...(pushedOff ? { pushedOff } : {}), assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
@@ -281,7 +299,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       review: null, post: { postable: false, posted: null },
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", unknown: null, runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verifyOverride: false, verification: null, verifyUnavailable: null,
-      decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: !!otherOpen.get(r.repo, r.number) } },
+      decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref), hold: { asked: false, open: false, answer: null, otherOpen: otherOpen.has(ref) } },
       premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, baseOffDefault: false, stackedOn: null, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
@@ -291,7 +309,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       continue;
     }
     if (!inScope) {
-      const v = head ? (verifs.get(r.repo, r.number, head) as { state: string } | undefined) : undefined;
+      const v = head ? verifAt(ref, head) : undefined;
       base.outside = {
         review: r.r_head && r.r_head === head && r.r_verdict && !stale.has(`${ref}@${r.r_head}`) ? r.r_verdict : null,
         verify: v?.state ?? null, ci: head && r.c_head === head ? r.overall ?? null : null,
@@ -339,7 +357,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
     };
     base.pushChain = chain;
-    base.decision.hold = holdQuestionOf(r.repo, r.number, holdDecisionId(r.repo, r.number, r.r_head));
+    base.decision.hold = holdQuestionOf(ref, holdDecisionId(r.repo, r.number, r.r_head));
     if (r.state === "OPEN" && head && head !== r.r_head && (ourFixupHead.get(r.repo, r.number, head) || ourSameDiffMerge.get(r.repo, r.number, head)) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     const diffFacts = diffFactsAt(r.repo, r.number, r.r_head);
@@ -413,7 +431,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       base.lastMerge = { outcome: last.outcome, reason: last.reason, ci: last.ci, mergeable: last.mergeable, refusals: last.refusals };
       base.runsApprovedAfterMerge = !!wait?.approved_at && wait.approved_at > last.at;
     }
-    base.verification = (verifs.get(r.repo, r.number, r.r_head) as PrFacts["verification"] | undefined) ?? null;
+    base.verification = (verifAt(ref, r.r_head) as PrFacts["verification"] | undefined) ?? null;
     if (base.verification?.state === "failed" || base.verification?.state === "error") base.verifyOverride = verifyOverride(db, r.repo, r.number, r.r_head);
     if (!base.verification || base.verification.state === "stale") {
       base.verifyUnavailable = !rf.pub ? PRIVATE_REASON : rf.f.noCi && cachedRust(r.repo, r.r_head) === false ? NOT_RUST_REASON : null;
@@ -422,7 +440,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const id = mergeDecisionId(r.repo, r.number, r.r_head);
     const given = answers.get(id) ?? null;
     base.decision = {
-      asked: !!decision.get(id), openQuestion: r.state === "OPEN" && !!openQuestion.get(r.repo, r.number), answer: given,
+      asked: decisionAnswers.has(id), openQuestion: r.state === "OPEN" && !!openQuestion.get(r.repo, r.number), answer: given,
       mergeAnswerAfterReview: given === "merge" && !!answeredAfter.get(id, r.r_at), inOpenGroup: grouped.has(ref),
       hold: base.decision.hold,
     };

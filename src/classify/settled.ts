@@ -135,22 +135,40 @@ const parseFlags = (s: string | null): string[] => {
   } catch { return []; }
 };
 
+type ClsRow = { type_label: string; flags: string | null; probs: string | null; reason: string | null; at: string; input_hash: string | null };
+
+/** The settled label from an item's Jev and Haiku rows of the run; `referee` reads its Sonnet row, only when both count. */
+function settledFrom(j: ClsRow | undefined, h0: ClsRow | undefined, referee: () => ClsRow | undefined): Settled {
+  // A Haiku row without a Jev row counts only when Haiku classified alone.
+  const h = h0 && (j || h0.input_hash !== null) ? h0 : undefined;
+  const r = j && h ? referee() : undefined;
+  return settle(
+    j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs), sec: securityOf(j.probs) } : null,
+    h ? { label: h.type_label, flags: parseFlags(h.flags) } : null,
+    r && j && h && r.at >= j.at && r.at >= h.at ? refereeOf(r.type_label, r.probs, r.reason) : null,
+  );
+}
+
 /** settledOf() for one run, with the statement prepared once: for loops over many items. */
 export function settledLookup(db: DatabaseSync, run: string | null): (repo: string, number: number) => Settled {
   if (!run) return () => settle(null, null);
   const q = db.prepare("SELECT type_label, flags, probs, reason, at, input_hash FROM classifications WHERE repo = ? AND number = ? AND classifier = ? AND run_id = ?");
-  return (repo, number) => {
-    const j = q.get(repo, number, "jev", run) as { type_label: string; flags: string | null; probs: string | null; at: string } | undefined;
-    const h0 = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null; at: string; input_hash: string | null } | undefined;
-    // A Haiku row without a Jev row counts only when Haiku classified alone.
-    const h = h0 && (j || h0.input_hash !== null) ? h0 : undefined;
-    const r = j && h ? (q.get(repo, number, "sonnet", run) as { type_label: string; probs: string | null; reason: string | null; at: string } | undefined) : undefined;
-    return settle(
-      j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs), sec: securityOf(j.probs) } : null,
-      h ? { label: h.type_label, flags: parseFlags(h.flags) } : null,
-      r && j && h && r.at >= j.at && r.at >= h.at ? refereeOf(r.type_label, r.probs, r.reason) : null,
-    );
-  };
+  return (repo, number) => settledFrom(q.get(repo, number, "jev", run) as ClsRow | undefined, q.get(repo, number, "haiku", run) as ClsRow | undefined,
+    () => q.get(repo, number, "sonnet", run) as ClsRow | undefined);
+}
+
+/**
+ * settledLookup() with the run's rows read in one query: every item of the run, or only `refs` ("repo#number"). An item
+ * outside `refs` reads as unclassified.
+ */
+export function settledSet(db: DatabaseSync, run: string | null, refs?: Iterable<string>): (repo: string, number: number) => Settled {
+  if (!run) return () => settle(null, null);
+  const narrow = refs ? " AND repo || '#' || number IN (SELECT value FROM json_each(?))" : "";
+  const rows = db.prepare(`SELECT repo, number, classifier, type_label, flags, probs, reason, at, input_hash FROM classifications
+    WHERE run_id = ? AND classifier IN ('jev', 'haiku', 'sonnet')${narrow}`).all(...(refs ? [run, JSON.stringify([...refs])] : [run])) as (ClsRow & { repo: string; number: number; classifier: string })[];
+  const byItem = new Map<string, Partial<Record<string, ClsRow>>>();
+  for (const r of rows) { const k = `${r.repo}#${r.number}`; (byItem.get(k) ?? byItem.set(k, {}).get(k)!)[r.classifier] = r; }
+  return (repo, number) => { const c = byItem.get(`${repo}#${number}`) ?? {}; return settledFrom(c.jev, c.haiku, () => c.sonnet); };
 }
 
 /** Loops resolve `run` once (latestRun) and pass it, or use settledLookup(). */
