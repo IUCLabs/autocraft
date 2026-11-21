@@ -205,7 +205,7 @@ function repoAllows(plans: PlanSet, repo: string, want: Want): boolean {
 }
 
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, audit entries the item-trace bookkeeping and the limits topic (its tables are already read through the jobs topic) do not. */
-export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits", "claims", "conversation-includes", "decision-choices", "held-followups", "decision-snooze", "security", "discord", "discord-links", "downloads", "build-features", "pr-builds", "nightly", "remote-helpers", "remote-queue"].includes(t));
+export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "flow", "limits", "claims", "conversation-includes", "decision-choices", "held-followups", "decision-snooze", "security", "discord", "discord-links", "downloads", "build-features", "pr-builds", "nightly", "remote-helpers", "remote-queue"].includes(t));
 
 /** User-local mode: the Task Runners that could take calls (takerSignature). Work a pool left for want of a taker waits on it. */
 const takersOf = (db: DatabaseSync): string => (inferenceMode(db) === "user-local" ? takerSignature(db) : "");
@@ -823,20 +823,26 @@ export function failureBackoff(db: DatabaseSync, step: string, ms: number = Date
 
 const hhmm = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)} UTC`;
 
-/** Why the stage cannot start jobs now, or null. The one place a stage's pause is decided. A step's models are taken at their defaults. */
-export function pauseReason(db: DatabaseSync, step: string, ms: number = Date.now(), o: { backoff?: boolean } = {}): string | null {
+/** Why the stage cannot start jobs now and when that can lift by itself (null: only a write lifts it, such as a resume or a limit change), or null when it is not paused. A step's models are taken at their defaults. */
+export function pauseOf(db: DatabaseSync, step: string, ms: number = Date.now(), o: { backoff?: boolean } = {}): { why: string; wakeAt: number | null } | null {
   const l = limitRow(db, step), used = usageToday(db, step, ms);
   const tripped = tripReasonOfStep(db, step);
-  if (tripped) return tripped;
-  if (l.per_day === 0) return "paused: the daily limit is 0";
-  if (l.per_day !== null && used >= l.per_day) return `daily limit of ${l.per_day} items reached; resumes at 00:00 UTC`;
+  if (tripped) return { why: tripped, wakeAt: null };
+  if (l.per_day === 0) return { why: "paused: the daily limit is 0", wakeAt: null };
+  if (l.per_day !== null && used >= l.per_day) return { why: `daily limit of ${l.per_day} items reached; resumes at 00:00 UTC`, wakeAt: nextUtcMidnight(ms) };
   const b = o.backoff === false ? null : failureBackoff(db, step, ms);
-  if (b !== null) return `failed ${b.failures} time${b.failures === 1 ? "" : "s"} in a row; retry at ${hhmm(b.until)}`;
+  if (b !== null) return { why: `failed ${b.failures} time${b.failures === 1 ? "" : "s"} in a row; retry at ${hhmm(b.until)}`, wakeAt: b.until };
   // Steps that call Claude (decide, opus-review, the Haiku part of classify-new) wait for an account with headroom.
   // In the user-local mode no account is used: calls wait for helpers instead.
-  if (usesClaude(modelsOf(knownStep(step), {})) && inferenceMode(db) === "server") return claudePauseReason(db, ms);
+  if (usesClaude(modelsOf(knownStep(step), {})) && inferenceMode(db) === "server") {
+    const why = claudePauseReason(db, ms);
+    return why === null ? null : { why, wakeAt: ms + 60_000 };
+  }
   return null;
 }
+
+/** Why the stage cannot start jobs now, or null. The one place a stage's pause is decided. */
+export const pauseReason = (db: DatabaseSync, step: string, ms: number = Date.now(), o: { backoff?: boolean } = {}): string | null => pauseOf(db, step, ms, o)?.why ?? null;
 
 // ---- state ---------------------------------------------------------------------
 
@@ -1003,9 +1009,10 @@ function detectPass(db: DatabaseSync, opts: PlanOptions, steps: Map<string, Step
 
   const pausedWhy = (stepName: string): string | null => {
     if (!paused.has(stepName)) {
-      const why = pauseReason(db, stepName, ms, { backoff: false });
+      const p = pauseOf(db, stepName, ms, { backoff: false });
+      const why = p?.why ?? null;
       paused.set(stepName, why);
-      if (why) ctx.wake?.push(/daily limit/.test(why) ? nextUtcMidnight(ms) : ms + 60_000);
+      if (p?.wakeAt != null) ctx.wake?.push(p.wakeAt);
     }
     return paused.get(stepName)!;
   };
