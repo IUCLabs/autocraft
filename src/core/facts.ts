@@ -287,8 +287,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const unsureAt = keyed<{ k: string }>(`SELECT o.repo || '#' || o.number || '@' || o.head_oid AS k FROM opus_review_history o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/
     UNION SELECT o.repo || '#' || o.number || '@' || o.head_oid FROM opus_reviews o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/`, "o");
   // Pre-merge reviews at the head of each PR's latest review (r_head), the only ones the loop reads.
+  const premergeKeys = JSON.stringify(rows.filter((r) => r.r_head).map((r) => `${r.repo}#${r.number}@${r.r_head}`));
   const premergeNarrow = narrow("p");
-  const premerge = premergeRows(db, { sql: `${premergeNarrow.sql} AND p.head_oid = (SELECT r2.head_oid FROM opus_reviews r2 WHERE r2.repo = p.repo AND r2.number = p.number AND r2.verdict IS NOT NULL ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)`, p: premergeNarrow.p });
+  const premerge = premergeRows(db, { sql: `${premergeNarrow.sql} AND p.repo || '#' || p.number || '@' || p.head_oid IN (SELECT value FROM json_each(:premergeKeys))`, p: { ...premergeNarrow.p, premergeKeys } });
   // Only formal reviews with an author: changesRequestedBy() reads no others.
   const reviewRows = keyed<{ k: string } & ReviewFact>(`SELECT c.repo || '#' || c.number AS k, c.author, c.author_association AS association, c.review_state AS state, c.created_at AS at FROM comments c JOIN items i ON i.repo = c.repo AND i.number = c.number AND i.kind = 'pr' AND i.state = 'OPEN' WHERE c.kind = 'review' AND c.author IS NOT NULL AND c.review_state IN (${FORMAL_STATES.map((x) => `'${x}'`).join(", ")}) /*narrow*/ ORDER BY c.rowid`, "c");
   const batchTip = db.prepare(`SELECT a.runs, a.approved, a.reread, a.failed, a.cross_repo FROM merge_batches b

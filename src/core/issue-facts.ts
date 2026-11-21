@@ -180,8 +180,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   if (run) {
     for (const c of db.prepare(`SELECT c.repo, c.number, c.classifier, c.at, c.type_label, c.flags,
         CASE WHEN c.classifier = 'jev' AND json_valid(c.probs) THEN json_remove(c.probs, '$.type') ELSE c.probs END AS probs, c.input_hash
-      FROM classifications c WHERE c.run_id = :run AND EXISTS (SELECT 1 FROM items i WHERE i.repo = c.repo AND i.number = c.number
-        AND (i.state = 'OPEN' OR i.repo || '#' || i.number IN (SELECT value FROM json_each(:closing))))`).all({ run, closing: params.closing! }) as (Cls & { repo: string; number: number })[]) {
+      FROM classifications c WHERE c.run_id = :run AND c.repo || '#' || c.number IN (SELECT value FROM json_each(:loaded))`).all({ run, loaded: JSON.stringify(rows.map((r) => `${r.repo}#${r.number}`)) }) as (Cls & { repo: string; number: number })[]) {
       const k = `${c.repo}#${c.number}`;
       (byItem.get(k) ?? byItem.set(k, []).get(k)!).push(c);
     }

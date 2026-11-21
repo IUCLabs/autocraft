@@ -89,7 +89,7 @@ export const hasOpenPr = (db: DatabaseSync, repo: string, n: number): boolean =>
 /** Writes text_refs of the open PRs without one, in batches so other processes can write between them. */
 export function fillTextRefs(db: DatabaseSync): void {
   const sel = db.prepare("SELECT repo, number, title, body FROM main.items WHERE kind = 'pr' AND state = 'OPEN' AND text_refs IS NULL LIMIT 2000");
-  const upd = db.prepare("UPDATE main.items SET text_refs = ? WHERE repo = ? AND number = ?");
+  const upd = db.prepare("UPDATE main.items SET text_refs = ? WHERE repo = ? AND number = ? AND text_refs IS NULL");
   for (;;) {
     const rows = sel.all() as { repo: string; number: number; title: string | null; body: string | null }[];
     if (!rows.length) return;
