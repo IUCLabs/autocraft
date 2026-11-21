@@ -98,8 +98,10 @@ export type Want = { step: string; repo: string | null; number?: number | null }
  * A queued job that `untaken` says waits for a Task Runner counts as the same work but takes no repo of the capacity; a
  * pass that asks many times passes one test.
  */
-export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Want, o: { states?: ("queued" | "running")[]; extra?: Active[]; reserved?: Active[]; mutex?: boolean; precheck?: boolean; untaken?: UntakenTest } = {}): string | null {
-  const held = [...activeJobs(db, o.states), ...(o.reserved ?? [])].filter((j) => j.step === want.step);
+export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Want, o: { states?: ("queued" | "running")[]; extra?: Active[]; reserved?: Active[]; mutex?: boolean; precheck?: boolean; untaken?: UntakenTest; active?: Active[] } = {}): string | null {
+  // `active`: the queued and running jobs, read once by a caller that asks many times while no job changes.
+  const jobsIn = (states: ("queued" | "running")[] = ["queued", "running"]): Active[] => (o.active ? o.active.filter((j) => (states as string[]).includes(j.state)) : activeJobs(db, states));
+  const held = [...jobsIn(o.states), ...(o.reserved ?? [])].filter((j) => j.step === want.step);
   const same = [...held, ...(o.extra ?? []).filter((j) => j.step === want.step)];
   if (!o.precheck) {
     const clash = same.find((j) => sameWork(want.step, j, { repo: want.repo, number: want.number ?? null }));
@@ -114,7 +116,7 @@ export function jobBlock(db: DatabaseSync, steps: Map<string, StepDef>, want: Wa
   }
   const mutex = steps.get(want.step)?.exclusive;
   if (o.mutex && mutex) {
-    const other = activeJobs(db, ["running"]).find((j) => steps.get(j.step)?.exclusive === mutex);
+    const other = jobsIn(["running"]).find((j) => steps.get(j.step)?.exclusive === mutex);
     if (other) return `job ${other.id} (${other.step}) is running with the same mutex (${mutex})`;
   }
   return null;

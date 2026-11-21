@@ -19,7 +19,7 @@ import { actionable } from "../decisions.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { TERMINAL } from "../build/tasks.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
-import { issuesWithOpenPr, type OpenPr, notRustKey, textHash } from "../fixissue/candidates.ts";
+import { issuesWithOpenPrAll, type OpenPr, notRustKey, textHash } from "../fixissue/candidates.ts";
 import { headOf, scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql } from "../pilot.ts";
@@ -182,11 +182,14 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     { repo: string; number: number; head_oid: string; i_head: string | null; updated_at: string | null; c_head: string | null; c_at: string | null; asked: number }[])
     closeReview.set(`${r.repo}#${r.number}`, { head: r.head_oid, atHead: headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid, asked: !!r.asked });
   const repoMemo = new Map<string, { comment: boolean; fix: boolean; pub: boolean; notRust: boolean; openPrs: Map<number, OpenPr> }>();
+  // Public repos and open PRs, read once for every repo on first use.
+  let tables: { pub: Set<string>; openPrs: (repo: string) => Map<number, OpenPr> } | undefined;
   const repoOf = (repo: string) => {
     let m = repoMemo.get(repo);
     if (!m) {
-      m = { comment: commentApprovalOf(db, repo) !== null, fix: fixIssueApprovalOf(db, repo) !== null, pub: !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo),
-        notRust: hasSetting(db, notRustKey(repo)), openPrs: issuesWithOpenPr(db, repo) };
+      const t = (tables ??= { pub: new Set((db.prepare("SELECT name FROM repos WHERE visibility = 'public'").all() as { name: string }[]).map((x) => x.name)), openPrs: issuesWithOpenPrAll(db) });
+      m = { comment: commentApprovalOf(db, repo) !== null, fix: fixIssueApprovalOf(db, repo) !== null, pub: t.pub.has(repo),
+        notRust: hasSetting(db, notRustKey(repo)), openPrs: t.openPrs(repo) };
       repoMemo.set(repo, m);
     }
     return m;

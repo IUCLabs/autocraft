@@ -18,14 +18,31 @@ const TEXT: Record<(typeof ORDER)[number], string> = {
   "rerun-passed": "rerun passed",
 };
 
+type FixRow = { state: string; pr_number: number | null };
+
 /** Null when the repo has no approval and nothing was done at this head. */
 export function autocraftText(db: DatabaseSync, repo: string, headSha: string, state: string): string | null {
-  const states = new Set((db.prepare("SELECT state FROM main_fixes WHERE repo = ? AND head_sha = ?").all(repo, headSha) as { state: string }[]).map((r) => r.state));
+  return textOf(db.prepare("SELECT state, pr_number FROM main_fixes WHERE repo = ? AND head_sha = ?").all(repo, headSha) as FixRow[], () => !!mainFixApprovalOf(db, repo), state);
+}
+
+/** autocraftText() for many heads, with the main_fixes rows read once. */
+export function autocraftTexts(db: DatabaseSync): (repo: string, headSha: string, state: string) => string | null {
+  const rows = new Map<string, FixRow[]>();
+  for (const r of db.prepare("SELECT repo, head_sha, state, pr_number FROM main_fixes").all() as (FixRow & { repo: string; head_sha: string })[]) {
+    const k = `${r.repo}@${r.head_sha}`;
+    (rows.get(k) ?? rows.set(k, []).get(k)!).push(r);
+  }
+  return (repo, headSha, state) => textOf(rows.get(`${repo}@${headSha}`) ?? [], () => !!mainFixApprovalOf(db, repo), state);
+}
+
+function textOf(rows: FixRow[], approved: () => boolean, state: string): string | null {
+  const states = new Set(rows.map((r) => r.state));
   const first = ORDER.find((s) => states.has(s));
   if (first === "pr-opened") {
-    const n = (db.prepare("SELECT pr_number AS n FROM main_fixes WHERE repo = ? AND head_sha = ? AND state = 'pr-opened' AND pr_number IS NOT NULL ORDER BY pr_number LIMIT 1").get(repo, headSha) as { n: number } | undefined)?.n;
+    const ns = rows.filter((r) => r.state === "pr-opened" && r.pr_number !== null).map((r) => r.pr_number!);
+    const n = ns.length ? Math.min(...ns) : undefined;
     return n ? `${TEXT[first]} #${n}` : TEXT[first];
   }
   if (first) return TEXT[first];
-  return state === "red" && mainFixApprovalOf(db, repo) ? "reading the failure" : null;
+  return state === "red" && approved() ? "reading the failure" : null;
 }

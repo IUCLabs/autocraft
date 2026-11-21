@@ -5,7 +5,7 @@ import type { PlanSet } from "../core/plan-set.ts";
 import type { PrFacts } from "../core/plan.ts";
 import { findingsOf, premergeAt } from "../premerge/store.ts";
 import { type Carry, type FixCandidate, type FixSelection, parseFixes } from "./candidates.ts";
-import { conflictTries, type ConflictCandidate } from "./conflict-state.ts";
+import { triesIn, type ConflictCandidate, type ConflictRow } from "./conflict-state.ts";
 import { queuedOperatorFix } from "../preapproval/state.ts";
 
 /** The queued carry-over jobs of a kept PR that have points to carry, in the order the facts list them. */
@@ -34,16 +34,26 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
   const out: FixSelection = { fix: [], cannotPush: [], ask: [], lint: [], conflictMerge: [], conflictAsk: [] };
   const review = db.prepare("SELECT fixes, model FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'");
   const text = db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?");
-  for (const { facts: f, action } of planned(db, "conflict", opts)) {
+  // Titles and conflict merge rows of the conflict candidates, and the reviews of the fix-up candidates, each read once for the repo.
+  const conflicts = planned(db, "conflict", opts), fixups = planned(db, "fixup", opts);
+  const numbers = (ps: { facts: { number: number } }[]): string => JSON.stringify(ps.map((p) => p.facts.number));
+  const titles = new Map(conflicts.length ? (db.prepare("SELECT number, title FROM items WHERE repo = ? AND number IN (SELECT value FROM json_each(?))").all(repo, numbers(conflicts)) as { number: number; title: string | null }[]).map((r) => [r.number, r.title]) : []);
+  const conflictRowsOf = new Map<number, ConflictRow[]>();
+  if (conflicts.length) for (const r of db.prepare("SELECT number, from_head, state, created_at FROM conflict_merges WHERE repo = ? AND number IN (SELECT value FROM json_each(?)) ORDER BY rowid").all(repo, numbers(conflicts)) as (ConflictRow & { number: number })[])
+    (conflictRowsOf.get(r.number) ?? conflictRowsOf.set(r.number, []).get(r.number)!).push(r);
+  const reviews = new Map<string, { fixes: string | null; model: string | null }>();
+  if (fixups.length) for (const r of db.prepare("SELECT number, head_oid, fixes, model FROM final_reviews WHERE repo = ? AND verdict = 'take-fix' AND number IN (SELECT value FROM json_each(?))").all(repo, numbers(fixups)) as { number: number; head_oid: string; fixes: string | null; model: string | null }[])
+    if (!reviews.has(`${r.number}@${r.head_oid}`)) reviews.set(`${r.number}@${r.head_oid}`, { fixes: r.fixes, model: r.model });
+  for (const { facts: f, action } of conflicts) {
     const c: ConflictCandidate = {
-      repo, number: f.number, head: action.head!, base: f.conflict!.base, title: ((text.get(repo, f.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300),
-      reason: f.review!.reason, attempt: conflictTries(db, repo, f.number, action.head!) + 1, pushable: f.pushable,
+      repo, number: f.number, head: action.head!, base: f.conflict!.base, title: (titles.get(f.number) ?? "").slice(0, 300),
+      reason: f.review!.reason, attempt: triesIn(conflictRowsOf.get(f.number) ?? [], action.head!) + 1, pushable: f.pushable,
     };
     (action.params?.bucket === "merge" ? out.conflictMerge : out.conflictAsk).push(c);
   }
   const carryFix: FixCandidate[] = [], carryAsk: FixCandidate[] = [], fix: FixCandidate[] = [];
   const carryIndex = new Map<string, number>();
-  for (const { facts: f, action } of planned(db, "fixup", opts)) {
+  for (const { facts: f, action } of fixups) {
     const head = action.head!, bucket = action.params?.bucket;
     if (action.params?.source === "carry") {
       const ref = `${f.number}`;
@@ -61,7 +71,7 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
       const defects = findingsOf(row).filter((x) => x.severity === "defect");
       fix.push({ repo, number: f.number, head, reason: "pre-merge review", fixes: parseFixes(JSON.stringify(defects.map((x) => x.fix))), attempt: 1, model: row?.model ?? null, source: "premerge" });
     } else {
-      const r = review.get(repo, f.number, head) as { fixes: string | null; model: string | null } | undefined;
+      const r = reviews.get(`${f.number}@${head}`);
       const c: FixCandidate = { repo, number: f.number, head, reason: f.review!.reason, fixes: parseFixes(r?.fixes ?? null), attempt: f.fixup!.attempts + 1, model: r?.model ?? null };
       if (bucket === "ask") out.ask.push(c);
       else if (bucket === "cannot-push") out.cannotPush.push(c);

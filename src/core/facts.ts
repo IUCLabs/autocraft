@@ -549,8 +549,9 @@ export function pushChainOf(db: DatabaseSync): (repo: string, number: number, he
 /** Returns a function telling whether a PR's head is the pipeline's own work: a commit it pushed to its own branch, or one reached from such a commit only through its own later pushes. */
 export function ownHeadOf(db: DatabaseSync): (repo: string, number: number, head: string) => boolean {
   const chain = pushChainOf(db);
-  const pushed = db.prepare("SELECT 1 FROM main.own_commits WHERE repo = ? AND sha = ?");
-  return (repo, number, head) => chain(repo, number, head).some((h) => !!pushed.get(repo, h));
+  let pushed: Set<string> | undefined;
+  const ours = (repo: string, sha: string): boolean => (pushed ??= new Set((db.prepare("SELECT repo || ' ' || sha AS k FROM main.own_commits").all() as { k: string }[]).map((r) => r.k))).has(`${repo} ${sha}`);
+  return (repo, number, head) => chain(repo, number, head).some((h) => ours(repo, h));
 }
 
 /** True when any stored Opus review at the head (the current row or an overwritten one in the history) was a take or take-fix with sure = 0. */

@@ -29,7 +29,8 @@ export function conflictRows(db: DatabaseSync, repo: string, number: number): Co
   return db.prepare("SELECT from_head, state, created_at FROM conflict_merges WHERE repo = ? AND number = ? ORDER BY rowid").all(repo, number) as ConflictRow[];
 }
 
-const triesIn = (rows: ConflictRow[], head: string): number => rows.filter((r) => r.from_head === head && (TRY_STATES as string[]).includes(r.state)).length;
+/** conflictTries() from the PR's rows. */
+export const triesIn = (rows: ConflictRow[], head: string): number => rows.filter((r) => r.from_head === head && (TRY_STATES as string[]).includes(r.state)).length;
 
 export function conflictTries(db: DatabaseSync, repo: string, number: number, head: string): number {
   return triesIn(conflictRows(db, repo, number), head);
