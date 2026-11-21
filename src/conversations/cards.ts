@@ -104,8 +104,15 @@ export function cardEffect(db: DatabaseSync, p: CardParams): string | null {
 const questionWord = (d: DecisionRow | undefined): string => (d && d.kind !== "other" ? d.kind : "open");
 const optionLabel = (d: DecisionRow | undefined, key: string): string => (d ? optionsOf(d).find((x) => x.key === key)?.label : undefined) ?? key;
 
-/** One plain line for a step. */
-export function stepLine(st: Step): string {
+/**
+ * Whether the card holds its open_issue step until the PR merges: it answers Merge, or its fix-up merges. The issue is filed after the merge
+ * (src/conversations/held.ts), so a PR that never merges leaves none behind.
+ */
+export const holdsIssues = (p: CardParams): boolean =>
+  p.kind === "resolution" && ((p.settle?.kind === "answer" && p.settle.option === "merge") || p.steps.some((x) => x.kind === "fixup" && x.merge));
+
+/** One plain line for a step. `held`: the card holds its issue until the merge (holdsIssues). */
+export function stepLine(st: Step, held = false): string {
   switch (st.kind) {
     case "comment": return "Post the comment below";
     case "label": return `Add the label "${st.label}"`;
@@ -113,7 +120,7 @@ export function stepLine(st: Step): string {
     case "duplicate": return `Close as a duplicate of #${st.of}`;
     case "unlabel": return `Remove the label "${st.label}"`;
     case "reopen": return "Reopen it";
-    case "open_issue": return `Open an issue in ${st.repo}: "${st.title}"`;
+    case "open_issue": return `${held ? "After the merge: open" : "Open"} an issue in ${st.repo}: "${st.title}"`;
     case "transfer": return `Move the issue to ${st.to}`;
     case "assign": return `Assign ${st.login}`;
     case "request_reviewers": return `Ask ${st.logins.join(", ")} for a review`;
@@ -134,7 +141,7 @@ export function settleLine(db: DatabaseSync, s: Settle): string {
 
 /** The steps and settlement lines of any card, resolution or legacy (`description` is the legacy card's one line). */
 export function cardLines(db: DatabaseSync, p: CardParams, description: string): { steps: string[]; settles?: string } {
-  if (p.kind === "resolution") return { steps: p.steps.map(stepLine), ...(p.settle && { settles: settleLine(db, p.settle) }) };
+  if (p.kind === "resolution") return { steps: p.steps.map((x) => stepLine(x, holdsIssues(p))), ...(p.settle && { settles: settleLine(db, p.settle) }) };
   const steps = [description];
   switch (p.kind) {
     case "answer": return { steps: [], settles: settleLine(db, { kind: "answer", decision: p.decision, option: p.option, stamp: p.stamp ?? "" }) };

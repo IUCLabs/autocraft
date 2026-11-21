@@ -38,6 +38,7 @@ import { nightlyRepos } from "../nightly/index.ts";
 import { prBuildDue, reposWithQueuedBuilds } from "../prbuild/index.ts";
 import { actLimit, actUsedToday } from "../conversations/usage.ts";
 import { queueHead } from "../conversations/queue.ts";
+import { heldDue } from "../conversations/held.ts";
 import { compareKeys, targetKeys } from "../act/order.ts";
 import { openedToday, perDay } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
@@ -420,7 +421,8 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Queued card presses: the drain runs when the first press fits under the daily limit, so the room (and the limit) is part of the input.
     extra: (db) => {
       const h = queueHead(db);
-      return h ? `queue:${h.fits ? 1 : 0}:${actLimit(db) ?? "n"}` : "";
+      const held = heldDue(db).sig;
+      return [h ? `queue:${h.fits ? 1 : 0}:${actLimit(db) ?? "n"}` : "", held ? `${held}:${actLimit(db) ?? "n"}` : ""].filter(Boolean).join("|");
     },
     detect: (db, ctx) => {
       // Repos in the order of their best target: item priority level, then repos that Act served least recently (so one busy repo does not keep the shared daily limit), then the oldest answer.
@@ -436,6 +438,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       const head = queueHead(db);
       if (head && !head.fits) ctx.wake?.push(nextUtcMidnight(Date.now()));
       else if (head && ctx.tracked.includes(head.repo) && commentApprovalOf(db, head.repo)) best.set(head.repo, { band: 5, at: "" });
+      // Follow-up issues held until a PR merged: filed by the job of the PR's repo once it merged, dropped once it closed or its merge path ended.
+      for (const [repo, fits] of heldDue(db).repos) {
+        if (!fits) ctx.wake?.push(nextUtcMidnight(Date.now()));
+        else if (ctx.tracked.includes(repo) && commentApprovalOf(db, repo)) best.set(repo, { band: 5, at: "" });
+      }
       const served = new Map(ctx.tracked.map((repo) => [repo, lastJobEnd(db, "act", repo)?.endedAt ?? ""]));
       return ctx.tracked.filter((repo) => best.has(repo)).sort((a, b) => best.get(b)!.band - best.get(a)!.band || (served.get(a)! < served.get(b)! ? -1 : served.get(a)! > served.get(b)! ? 1 : 0) || compareKeys(best.get(a), best.get(b)) || a.localeCompare(b)).map((repo) => ({ step: "act", params: { repo } }));
     },

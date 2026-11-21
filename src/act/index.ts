@@ -45,6 +45,7 @@ import { planned } from "../core/select.ts";
 import { ownerOf } from "../owners.ts";
 import { sweepStaleAnswers } from "../answers/sweep.ts";
 import { authFailure, isWaiting, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps, type Lane } from "../github/user-lane.ts";
+import type { Exec } from "../fixup/git.ts";
 
 const ACTOR = "act";
 const NO_IO: GroupIo = { live: async () => null, comment: async () => "", close: async () => {} };
@@ -52,7 +53,7 @@ const KIND = "comment-close";
 const DUP_FACT = "duplicate of ";
 const REASON_FACT = "review reason: ";
 
-export type ActDeps = { querier: Querier; now: () => Date; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** Replaces the app lane's token minter and client (tests). */ app?: Pick<Writer, "mint" | "appClient"> };
+export type ActDeps = { querier: Querier; now: () => Date; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** Replaces the app lane's token minter and client (tests). */ app?: Pick<Writer, "mint" | "appClient">; /** Runs `gh` for the held follow-up issues (tests). */ exec?: Exec };
 export const defaultDeps = (): ActDeps => ({ querier: new Client(1000), now: () => new Date() });
 
 export type ActParams = {
@@ -73,6 +74,8 @@ export type ActSummary = {
   done: string[]; skipped: { ref: string; reason: string }[]; failed: { ref: string; reason: string }[];
   /** Queued card presses carried out by this run. */
   cards?: number;
+  /** Follow-up issues held until the merge that this run filed or dropped (src/conversations/held.ts). */
+  held?: number;
   note: string | null;
 };
 
@@ -290,6 +293,14 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     cardWrites = drained.writes;
     summary.cards = drained.ran;
     if (drained.ran) log(`act: ${drained.ran} queued card press${drained.ran === 1 ? "" : "es"} carried out`);
+    // Issues the cards held until the PR merged: filed once it merged, dropped once it closed or its merge path ended. Before the approval check: each guards the repo it opens in.
+    const { fileHeldFollowups } = await import("../conversations/held.ts");
+    const held = await fileHeldFollowups(db, repo, { now: deps?.now, exec: deps?.exec }, params.limit === undefined ? {} : { writes: Math.max(0, params.limit - cardWrites) });
+    cardWrites += held.writes;
+    summary.held = held.filed + held.dropped;
+    summary.failed.push(...held.failed);
+    if (held.filed || held.dropped) log(`act: ${held.filed} held follow-up issue${held.filed === 1 ? "" : "s"} filed, ${held.dropped} dropped`);
+    if (held.unknown) log(`act: a held follow-up issue was being created when the answer was lost; it may exist, check GitHub`);
   }
   if (!commentApprovalOf(db, repo)) {
     summary.note = `commenting in ${repo} is not approved`;

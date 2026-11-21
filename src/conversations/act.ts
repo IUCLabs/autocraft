@@ -15,12 +15,13 @@ import { settlesNow } from "../settlers.ts";
 import { actBlockedReason } from "../runner/autopilot.ts";
 import { addLabels, closeItem, commentOn, createIssue, IssueError, assignTo, removeLabel, reopenItem, requestReviewers, transferIssue, type Note, type Writer } from "../github/write.ts";
 import { exec as defaultExec, type Exec } from "../fixup/git.ts";
-import { runPipelineStep } from "../preapproval/index.ts";
+import { preapprovalOf, runPipelineStep } from "../preapproval/index.ts";
+import { holdFollowup } from "./held.ts";
 import type { CardEdit } from "../../web/src/api/types.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { closeRefusal, decisionStamp, dependsOnCode, isSettling, openDecision, otherTypeLabel, PUBLIC_TEXT_STEPS, settleLine, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
+import { closeRefusal, decisionStamp, dependsOnCode, holdsIssues, isSettling, openDecision, otherTypeLabel, PUBLIC_TEXT_STEPS, settleLine, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
 import { isQuiet } from "../security/quiet.ts";
 import { ConversationError, insertTurn, staleOf, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, NOTE_MAX, type CloseReason } from "./types.ts";
@@ -410,6 +411,8 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
   let closedHow: string | null = null;
   // A keep answer with a fix-up is recorded after the other steps and before the fix-up, so the fix-up's plan check and the later review see the PR in core.
   const early = p.settle?.kind === "answer" && p.steps.some((x) => x.kind === "fixup") ? p.settle : null;
+  const holding = holdsIssues(p);
+  const hold: Extract<Step, { kind: "open_issue" }>[] = [];
   let answered = false;
   const answerNow = async (s: NonNullable<typeof early>): Promise<void> => {
     results.push((await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note, s.reason)).result);
@@ -443,6 +446,13 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
         case "unlabel": results.push((await unlabel(ctx, st.label)).result); break;
         case "reopen": results.push((await reopen(ctx)).result); break;
         case "open_issue": {
+          // Filed by the Act step once the PR merged (src/conversations/held.ts); stored after the card's other steps and its answer.
+          if (holding) {
+            actGrant(db, st.repo, by);
+            hold.push(st);
+            results.push(`After the merge: opens an issue in ${st.repo}`);
+            continue;
+          }
           const o = await openIssue(ctx, st);
           url ??= o.url;
           results.push(o.result);
@@ -466,6 +476,11 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
       results.push((s.kind === "answer" ? await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note, s.reason)
         : s.kind === "backlog" ? await answerDecision(db, c, s.decision, s.stamp, BACKLOG.key, by, at, canWrite, ctx.note)
         : resolveDecision(db, c, s.decision, s.stamp, ctx.note ? `${s.summary}: ${ctx.note}` : s.summary, by, at)).result);
+    }
+    if (hold.length) {
+      const merge = p.steps.find((x) => x.kind === "fixup" && x.merge) ? preapprovalOf(db, c.repo, c.number) : null;
+      const decision = !merge && p.settle?.kind === "answer" ? p.settle.decision : null;
+      for (const st of hold) holdFollowup(db, { card_id: c.id, choice_id: c.choice_id ?? null, decision_id: decision, preapproval_id: merge?.id ?? null, repo: c.repo, number: c.number, issue_repo: st.repo, title: st.title, body: st.body, by, at });
     }
   } catch (e) {
     const msg = String((e as Error).message ?? e);
@@ -524,7 +539,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     if (new Set(deps.skip).size !== deps.skip.length || deps.skip.some((k) => !Number.isInteger(k) || k < 0 || k >= all.length)) throw new ConversationError(400, "skip must list distinct step positions of the card");
     const steps = all.filter((_, k) => !deps.skip!.includes(k));
     if (steps.length === 0 && !params.settle) throw new ConversationError(400, "a card with no steps left and no settlement does nothing");
-    skipped.push(...all.filter((_, k) => deps.skip!.includes(k)).map(stepLine));
+    skipped.push(...all.filter((_, k) => deps.skip!.includes(k)).map((x) => stepLine(x, holdsIssues(params))));
     params = { ...params, steps };
     // The settlement derived from a close step says the item was closed; without that step only the operator's own words are true.
     if (params.settle?.kind === "handled" && params.settle.fromClose && all.some((x, k) => deps.skip!.includes(k) && isSettling(x))) {

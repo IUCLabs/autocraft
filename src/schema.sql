@@ -1490,6 +1490,29 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
   queue_args TEXT,                    -- JSON {skip, note, noteStaysOut, role}: what the press carried, kept for the later run
   dispute_by TEXT, dispute_reason TEXT, dispute_at TEXT -- a queued press someone else disputed: the drain skips it until the presser or an operator keeps or dismisses it
 );
+-- The open_issue step of a card that merges the PR (a Merge answer, or a fix-up that merges): held at the press and filed by the Act step
+-- once the PR merged (src/conversations/held.ts). A row in `filing` is written before the call, so a restart never files it twice.
+CREATE TABLE IF NOT EXISTS held_followups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  card_id INTEGER NOT NULL,           -- the conversation card that held it
+  choice_id TEXT,                     -- the decision_choices row the card was run from, if any
+  decision_id TEXT,                   -- the Merge? decision the card answered Merge; NULL for a fix-up that merges
+  preapproval_id INTEGER,             -- the pre-approved merge the card started; NULL for a Merge answer
+  repo TEXT NOT NULL, number INTEGER NOT NULL,  -- the PR
+  issue_repo TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  by TEXT NOT NULL,                   -- who pressed the card
+  at TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'held', -- held | filing | filed | dropped | failed (a row left in filing: the outcome is unknown)
+  issue_number INTEGER,
+  url TEXT,
+  reason TEXT,                        -- dropped or failed: why; held: why the last try did not file it
+  attempts INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS held_followups_item ON held_followups(repo, number);
+CREATE INDEX IF NOT EXISTS held_followups_state ON held_followups(state);
 -- Maintainer posts (decision comments and opinions) an operator chose to share with Opus. Excluded unless a row exists; `sent_turn`
 -- is the operator turn whose stored block carries the text (each post is sent once).
 CREATE TABLE IF NOT EXISTS conversation_includes (

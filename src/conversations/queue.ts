@@ -5,7 +5,7 @@
 // Card writes and Act's closes share one count (src/conversations/usage.ts), held to the Act limit.
 import type { DatabaseSync } from "node:sqlite";
 import { actLimit, actUsedToday } from "./usage.ts";
-import type { CardParams } from "./cards.ts";
+import { holdsIssues, type CardParams } from "./cards.ts";
 import { RUNNING_STALE_MS } from "../answers/hold.ts";
 import { actBlockedReason } from "../runner/autopilot.ts";
 
@@ -14,13 +14,19 @@ export type QueueArgs = { skip?: number[]; note?: string; noteStaysOut?: boolean
 
 const WRITE_STEPS_ONE = new Set(["comment", "label", "close", "unlabel", "reopen", "open_issue", "transfer", "assign", "request_reviewers"]);
 
-/** The GitHub writes a card makes: one per write step, two for a close that comes with a comment and for a duplicate close. Review and fix-up steps start pipeline work and write nothing here. */
+/**
+ * The GitHub writes a card makes when pressed: one per write step, two for a close that comes with a comment and for a duplicate close. Review and
+ * fix-up steps start pipeline work and write nothing here; an issue the card holds until the merge is counted when it is filed (src/conversations/held.ts).
+ */
 export function cardWriteCount(params: CardParams, text: string | null): number {
   switch (params.kind) {
     case "comment": case "label": return 1;
     case "close": return text ? 2 : 1;
     case "duplicate": return 2;
-    case "resolution": return params.steps.reduce((n, s) => n + (s.kind === "duplicate" ? 2 : WRITE_STEPS_ONE.has(s.kind) ? 1 : 0), 0);
+    case "resolution": {
+      const held = holdsIssues(params);
+      return params.steps.reduce((n, s) => n + (s.kind === "duplicate" ? 2 : s.kind === "open_issue" && held ? 0 : WRITE_STEPS_ONE.has(s.kind) ? 1 : 0), 0);
+    }
     default: return 0;
   }
 }

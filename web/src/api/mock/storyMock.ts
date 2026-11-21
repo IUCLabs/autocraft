@@ -16,12 +16,13 @@ export interface ResultCard {
   followups?: ItemRef[];
 }
 
-export type MockPage = Omit<ItemPageData, "timeline" | "screenshots"> & { screenshots?: ItemPageData["screenshots"]; results: ResultCard[]; history: HistoryEntry[] };
+/** `extra`: timeline lines the history has no kind for (held follow-up issues), added as they are. */
+export type MockPage = Omit<ItemPageData, "timeline" | "screenshots"> & { screenshots?: ItemPageData["screenshots"]; results: ResultCard[]; history: HistoryEntry[]; extra?: TimelineEntry[] };
 
 const TONE = { ok: "ok", warn: "warn", bad: "bad", neutral: "neutral", accent: "neutral" } as const;
 
 export function withTimeline(p: MockPage): ItemPageData {
-  const { results, history, ...rest } = p;
+  const { results, history, extra, ...rest } = p;
   const reviews = [p.reviews.latest, ...p.reviews.earlier].filter((r) => r !== null);
   const line = (id: string, at: string, kind: TimelineEntry["kind"], actor: string, icon: TimelineEntry["icon"], text: string, o: Partial<TimelineEntry> = {}): TimelineEntry => ({
     id, at, kind, actor, icon, text, tone: "neutral", costUsd: null, major: false, jobId: null, reviewId: null, githubId: null, commit: null, preapproval: null, calls: [], body: null, markdown: false, lines: [], feedback: null, ...o,
@@ -34,6 +35,7 @@ export function withTimeline(p: MockPage): ItemPageData {
     return line(h.id, h.at, "harness", "AutoCraft", "job", `${h.step}: ${h.outcome}`, { costUsd: h.costUsd, calls: h.calls });
   });
   for (const r of results) if (["verify", "fixup", "premerge", "postmerge"].includes(r.kind)) out.push(line(`result:${r.id}`, r.at, "harness", "AutoCraft", r.kind === "fixup" ? "fixup" : "review", `${r.title}: ${r.outcome}`, { major: true, tone: TONE[r.tone], lines: r.detail ? [r.detail] : [] }));
+  out.push(...(extra ?? []));
   out.sort((a, b) => a.at.localeCompare(b.at));
   return { ...rest, screenshots: rest.screenshots ?? [], timeline: out };
 }
