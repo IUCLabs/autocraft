@@ -13,7 +13,7 @@ import { coverageSnapshot, githubIdentity } from "./github/identity.ts";
 import { readAppSecrets } from "./github/install-token.ts";
 import { PROBE_HEADERS } from "./health.ts";
 import { unboundLogins } from "./author-ids.ts";
-import { inferenceMode } from "./remote/mode.ts";
+import { inferenceMode, type InferenceMode } from "./remote/mode.ts";
 import { CALLER_STALE_MS } from "./remote/room.ts";
 import { NO_TAKER_MS } from "./remote/takers.ts";
 import { STATUS_FRESH_MS } from "./remote/helpers.ts";
@@ -66,7 +66,7 @@ export type Check = {
   to: string;
 };
 /** `probe`: the unauthenticated endpoint; it reads stored and cached state only (no account inserts, no GitHub App token work). */
-export type CheckCtx = { db: DatabaseSync; nowMs: number; probe?: boolean };
+export type CheckCtx = { db: DatabaseSync; nowMs: number; probe?: boolean; /** The inference mode, read once for every check. */ mode?: InferenceMode };
 
 const ok = (id: string, to: string, extra: Partial<Check> = {}): Check => ({ id, state: "ok", text: "", brief: "", since: null, to, ...extra });
 const minutes = (ms: number): string => (ms < 90 * 60_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : `${Math.round(ms / 3_600_000)} h`);
@@ -234,8 +234,8 @@ function outsideSurgeCheck({ db }: CheckCtx): Check[] {
 }
 
 /** User-local mode: model calls have waited for a helper and none has claimed anything in that time. */
-function remoteCallsCheck({ db, nowMs }: CheckCtx): Check[] {
-  if (inferenceMode(db) !== "user-local") return [];
+function remoteCallsCheck({ db, nowMs, mode }: CheckCtx): Check[] {
+  if ((mode ?? inferenceMode(db)) !== "user-local") return [];
   const cutoff = nowMs - THRESHOLDS.remoteQueuedMs;
   // Calls whose caller stopped polling are about to be withdrawn and do not count as waiting.
   const q = db.prepare("SELECT COUNT(*) AS n, MIN(queued_since) AS oldest FROM main.remote_calls WHERE state = 'queued' AND queued_since < ? AND seen_at >= ?").get(cutoff, nowMs - CALLER_STALE_MS) as { n: number; oldest: number | null };
@@ -249,8 +249,8 @@ function remoteCallsCheck({ db, nowMs }: CheckCtx): Check[] {
  * User-local mode: a helper that takes calls on its own is ready, yet the oldest queued call of a tier has waited past that
  * tier's limit (the helpers' models, reserves or repo choices may not fit it). Manual only helpers (manual-only.ts) do not count.
  */
-function remoteStarvedCheck({ db, nowMs }: CheckCtx): Check[] {
-  if (inferenceMode(db) !== "user-local") return [];
+function remoteStarvedCheck({ db, nowMs, mode }: CheckCtx): Check[] {
+  if ((mode ?? inferenceMode(db)) !== "user-local") return [];
   const ready = (db.prepare(`SELECT COUNT(*) AS n FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE t.kind = 'runner' AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).get(nowMs - STATUS_FRESH_MS) as { n: number }).n;
   if (!ready) return [ok("remote-starved", "/pipeline")];
   const out: Check[] = [];
@@ -266,8 +266,8 @@ function remoteStarvedCheck({ db, nowMs }: CheckCtx): Check[] {
 }
 
 /** User-local mode: calls have waited past remoteQueuedMs while every fresh, ready Task Runner is Manual only: they wait for a person to pick them. */
-function remoteManualCheck({ db, nowMs }: CheckCtx): Check[] {
-  if (inferenceMode(db) !== "user-local") return [];
+function remoteManualCheck({ db, nowMs, mode }: CheckCtx): Check[] {
+  if ((mode ?? inferenceMode(db)) !== "user-local") return [];
   const r = db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(${manualSql("t.login")}), 0) AS manual FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
     WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ?`).get(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { n: number; manual: number };
   if (!r.n || Number(r.manual) < Number(r.n)) return [ok("remote-manual", "/model-queue")];
@@ -283,8 +283,8 @@ function remoteManualCheck({ db, nowMs }: CheckCtx): Check[] {
  * the dashboard's minute maintenance keeps the marks). Their queued calls are withdrawn and their work waits, often with
  * nothing queued at all, so the check goes by repo.
  */
-function remoteNoTakerCheck({ db, nowMs }: CheckCtx): Check[] {
-  if (inferenceMode(db) !== "user-local") return [];
+function remoteNoTakerCheck({ db, nowMs, mode }: CheckCtx): Check[] {
+  if ((mode ?? inferenceMode(db)) !== "user-local") return [];
   const rows = db.prepare("SELECT n.repo, n.since FROM main.remote_no_taker n JOIN main.tracked_repos r ON r.name = n.repo AND r.pipeline = 1 WHERE n.since <= ? ORDER BY n.repo").all(nowMs - NO_TAKER_MS) as { repo: string; since: number }[];
   if (!rows.length) return [ok("remote-no-taker", "/model-queue")];
   const n = rows.length;
@@ -297,7 +297,8 @@ function remoteNoTakerCheck({ db, nowMs }: CheckCtx): Check[] {
 const SOURCES: ((ctx: CheckCtx) => Check[])[] = [runnerCheck, workerChecks, queueCheck, confidentialCheck, syncCheck, syncRepoChecks, accountsCheck, rateCheck, deadlineChecks, livenessCheck, appIdentityChecks, authorIdsCheck, outsideSurgeCheck, remoteCallsCheck, remoteStarvedCheck, remoteManualCheck, remoteNoTakerCheck];
 
 export function computeChecks(db: DatabaseSync, nowMs: number = Date.now(), probe = false): Check[] {
-  return SOURCES.flatMap((f) => f({ db, nowMs, probe }));
+  const mode = inferenceMode(db);
+  return SOURCES.flatMap((f) => f({ db, nowMs, probe, mode }));
 }
 
 /** The answer of GET /healthz/checks for staff: states, times and counts only; no repo, environment, account or error text. */
