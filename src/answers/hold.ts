@@ -19,7 +19,8 @@ export const RUNNING_STALE_MS = 10 * 60_000;
  * daily GitHub write limit. A lock whose card ended or died counts for nothing, so no path has to clear it for the decision to be answerable.
  */
 export const lockLiveSql = (t = "decisions", now: Date = new Date()): string =>
-  `(${t}.exec_state = '${SETTLING}' AND EXISTS (SELECT 1 FROM main.conversation_cards lc WHERE (lc.state = 'queued' OR (lc.state = 'running' AND lc.acted_at > '${new Date(now.getTime() - RUNNING_STALE_MS).toISOString()}')) AND ${t}.exec_reason LIKE lc.id || ':%'))`;
+  // CASE, not AND: in a select list SQLite evaluates both sides of AND, and the card scan would run for every row.
+  `(CASE WHEN ${t}.exec_state = '${SETTLING}' THEN EXISTS (SELECT 1 FROM main.conversation_cards lc WHERE (lc.state = 'queued' OR (lc.state = 'running' AND lc.acted_at > '${new Date(now.getTime() - RUNNING_STALE_MS).toISOString()}')) AND ${t}.exec_reason LIKE lc.id || ':%') ELSE 0 END)`;
 
 /** The login of the person whose card is settling an open decision right now, or null. */
 export function settlingBy(db: DatabaseSync, d: Pick<DecisionRow, "id" | "answer" | "exec_state" | "exec_reason">): string | null {
