@@ -5,7 +5,7 @@ import { isQuiet } from "../../security/quiet.ts";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemTrace, ItemTraceDetail, ItemTraceHeader, TraceActor, TraceEvent, TraceKind } from "../../../web/src/api/types.ts";
-import { getDecision, reposOf } from "../../decisions.ts";
+import { reposOf } from "../../decisions.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { knownStep } from "../../runner/steps.ts";
 import { HttpError } from "../server/util.ts";
@@ -239,14 +239,11 @@ const reviews: Source = {
 
 /** Decisions that name the item: its own, a duplicate group's, and a batch's (decision_items, filled from the `items` JSON). */
 function decisionIds({ db, repo, n, hidden }: Ctx): string[] {
-  const ids = new Set<string>();
-  for (const sql of ["SELECT id FROM decisions WHERE repo = ? AND number = ?", "SELECT decision_id AS id FROM dupe_group_items WHERE repo = ? AND number = ?", "SELECT decision_id AS id FROM decision_items WHERE repo = ? AND number = ?"])
-    for (const r of rows<{ id: string }>(db, sql, repo, n)) ids.add(r.id);
+  const found = rows<{ id: string; known: string | null; repo: string | null; number: number | null; items: string | null }>(db, `SELECT k.id, d.id AS known, d.repo, d.number, d.items FROM (
+      SELECT id FROM decisions WHERE repo = ?1 AND number = ?2 UNION SELECT decision_id FROM dupe_group_items WHERE repo = ?1 AND number = ?2
+      UNION SELECT decision_id FROM decision_items WHERE repo = ?1 AND number = ?2) k LEFT JOIN decisions d ON d.id = k.id`, repo, n);
   // A decision that touches a repo hidden from the viewer does not exist for them (the decisions API answers 404).
-  return [...ids].filter((id) => {
-    const d = getDecision(db, id);
-    return !d || !reposOf(d).some((r) => isHiddenRepo(hidden, r));
-  }).sort();
+  return found.filter((d) => d.known === null || !reposOf(d as unknown as Parameters<typeof reposOf>[0]).some((r) => isHiddenRepo(hidden, r))).map((d) => d.id).sort();
 }
 
 export type DecisionRow = { id: string; kind: string; question: string; asked_at: string; asked_by: string | null; answer: string | null; answered_at: string | null; answered_by: string | null; answer_note?: string | null };
@@ -263,11 +260,17 @@ const decisions: Source = {
   run(c) {
     const { db } = c;
     const out: Ev[] = [];
-    for (const id of decisionIds(c)) {
-      const d = db.prepare("SELECT id, kind, question, asked_at, asked_by, answer, answered_at, answered_by, answer_note FROM decisions WHERE id = ?").get(id) as DecisionRow | undefined;
+    const ids = JSON.stringify(decisionIds(c));
+    const byId = new Map(rows<DecisionRow>(db, "SELECT id, kind, question, asked_at, asked_by, answer, answered_at, answered_by, answer_note FROM decisions WHERE id IN (SELECT value FROM json_each(?))", ids).map((d) => [d.id, d]));
+    // In the (decision_id, at) index's order, as a read of one decision's comments walks it.
+    const comments = new Map<string, { id: string; login: string; at: string; len: number }[]>();
+    for (const f of rows<{ decision_id: string; id: string; login: string; at: string; len: number }>(db, "SELECT decision_id, id, login, at, LENGTH(body) AS len FROM decision_comments WHERE decision_id IN (SELECT value FROM json_each(?)) ORDER BY decision_id, at, rowid", ids))
+      (comments.get(f.decision_id) ?? comments.set(f.decision_id, []).get(f.decision_id)!).push({ id: f.id, login: f.login, at: f.at, len: f.len });
+    for (const id of JSON.parse(ids) as string[]) {
+      const d = byId.get(id);
       if (!d) continue;
       out.push(...decisionEvents(d));
-      for (const f of rows<{ id: string; login: string; at: string; len: number }>(db, "SELECT id, login, at, LENGTH(body) AS len FROM decision_comments WHERE decision_id = ?", d.id)) out.push(feedbackEvent(d.id, f));
+      for (const f of comments.get(d.id) ?? []) out.push(feedbackEvent(d.id, f));
     }
     return out;
   },
@@ -453,10 +456,10 @@ function headerOf(c: Ctx): ItemTraceHeader {
     next: acts.map((a) => ({ kind: a.kind as string, head: typeof a.head === "string" ? a.head : null })),
     who: {
       assignees, autocraftAssigned: box !== "" && assignees.includes(box),
-      openDecisions: decisionIds({ db, repo, n, hidden } as Ctx).flatMap((id) => {
-        const d = db.prepare("SELECT id, kind, question FROM decisions WHERE id = ? AND answer IS NULL").get(id) as { id: string; kind: string; question: string } | undefined;
-        return d ? [{ id: d.id, kind: d.kind, question: clip(d.question, 140) }] : [];
-      }),
+      openDecisions: ((ids) => {
+        const open = new Map(rows<{ id: string; kind: string; question: string }>(db, "SELECT id, kind, question FROM decisions WHERE id IN (SELECT value FROM json_each(?)) AND answer IS NULL", JSON.stringify(ids)).map((d) => [d.id, d]));
+        return ids.flatMap((id) => { const d = open.get(id); return d ? [{ id: d.id, kind: d.kind, question: clip(d.question, 140) }] : []; });
+      })(decisionIds({ db, repo, n, hidden } as Ctx)),
       holds: hold ? [{ by: hold.held_by, at: hold.held_at }] : [],
     },
   };
@@ -493,13 +496,44 @@ const FINGERPRINT = [
   "SELECT held_at FROM merge_holds WHERE repo = ? AND number = ?",
 ];
 
+/**
+ * The column values of the first row of each query, as `Object.values` of its row (`[]` when there is none), read in one statement.
+ * Each query is `SELECT <columns> FROM ...` with the parameters ?1, ?2 and ?3 (anonymous `?` are numbered in order); every value
+ * is an integer, text or null, which a JSON array carries unchanged.
+ */
+export function rowValues(db: DatabaseSync, queries: readonly string[], ...args: (string | number)[]): unknown[][] {
+  const cols = queries.map((sql, k) => {
+    let at = 0;
+    const numbered = sql.replace(/\?(?!\d)/g, () => `?${++at}`);
+    const from = topLevelFrom(numbered);
+    return `(SELECT json_array(${numbered.slice("SELECT ".length, from)})${numbered.slice(from)}) AS c${k}`;
+  });
+  const row = db.prepare(`SELECT ${cols.join(", ")}`).get(...args) as Record<string, string | null>;
+  return queries.map((_, k) => { const v = row[`c${k}`]; return v === null || v === undefined ? [] : (JSON.parse(v) as unknown[]); });
+}
+
+/** The index of the ` FROM ` that ends a query's column list: outside parentheses and quotes. */
+function topLevelFrom(sql: string): number {
+  let depth = 0, quote = "";
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i]!;
+    if (quote) { if (ch === quote) quote = ""; continue; }
+    if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (depth === 0 && sql.startsWith(" FROM ", i)) return i;
+  }
+  throw new Error(`no FROM in ${sql}`);
+}
+
 export function fingerprint(c: Ctx, qkey: string): string {
   const { db, repo, n, ref } = c;
   const parts: unknown[] = [qkey, c.staff, c.operator, c.hidden];
-  for (const sql of FINGERPRINT) parts.push(Object.values((db.prepare(sql).get(repo, n) ?? {}) as object));
-  parts.push(Object.values(db.prepare("SELECT COUNT(*), MAX(rowid), SUM(LENGTH(COALESCE(details, ''))) FROM audit WHERE target = ?").get(ref) as object));
-  for (const id of decisionIds(c))
-    parts.push(Object.values(db.prepare(`SELECT d.id, d.answer, d.answered_at, d.applied_at, d.asked_at, (SELECT COUNT(*) FROM decision_comments x WHERE x.decision_id = d.id) FROM decisions d WHERE d.id = ?`).get(id) as object));
+  parts.push(...rowValues(db, [...FINGERPRINT, "SELECT COUNT(*), MAX(rowid), SUM(LENGTH(COALESCE(details, ''))) FROM audit WHERE target = ?3"], repo, n, ref));
+  const ids = decisionIds(c);
+  const byId = new Map(rows<{ id: string; v: string }>(db, `SELECT d.id, json_array(d.id, d.answer, d.answered_at, d.applied_at, d.asked_at, (SELECT COUNT(*) FROM decision_comments x WHERE x.decision_id = d.id)) AS v
+    FROM decisions d WHERE d.id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).map((r) => [r.id, JSON.parse(r.v) as unknown[]]));
+  for (const id of ids) parts.push(Object.values(byId.get(id) as object));
   return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
 }
 

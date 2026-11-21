@@ -45,6 +45,8 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
   const jobsWithCalls = new Set(ev.filter((e) => e.kind === "job").map((e) => e.ref.jobId));
   const mergeSteps = ev.filter((e) => e.kind === "step" && e.id.startsWith("merge:"));
   const near = (a: string, b: string, ms: number) => Math.abs(Date.parse(a) - Date.parse(b)) <= ms;
+  // The model calls of every Opus review, read once.
+  const calls = staff ? runRows(db, ev.flatMap((e) => (e.kind === "review" && e.id.replace(/^review:/, "").startsWith("opus") ? ((e.ref.runIds as number[] | undefined) ?? []) : []))) : new Map<number, RunRow>();
 
   for (const e of ev) {
     const after = e.summary.includes(": ") ? e.summary.slice(e.summary.indexOf(": ") + 2) : e.summary;
@@ -85,7 +87,7 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
         const sure = e.detail?.sure === true;
         const t = base(e.id, e.at, "opus", "Opus", "review", `review: ${VERDICT[verdict] ?? verdict}${sure ? "" : ", unsure"}`);
         t.tone = VERDICT_TONE[verdict] ?? "neutral"; t.costUsd = e.costUsd ?? null; t.major = true; t.reviewId = id;
-        t.calls = staff ? runCalls(db, (e.ref.runIds as number[] | undefined) ?? []) : [];
+        t.calls = staff ? runCalls(calls, (e.ref.runIds as number[] | undefined) ?? []) : [];
         out.push(t);
       } else {
         const t = base(e.id, e.at, "harness", "AutoCraft", id.startsWith("verify") ? "check" : "review", id.startsWith("verify") ? e.summary.replace(/^Verification \((.*)\): \1$/, "Verification: $1") : e.summary);
@@ -228,9 +230,15 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
   return out;
 }
 
-function runCalls(db: DatabaseSync, ids: number[]): HistoryCall[] {
-  if (!ids.length) return [];
-  return q<{ step: string; model: string; cost_usd: number | null; user_login: string | null; harness: string | null; reported_model: string | null }>(db, `SELECT step, model, cost_usd, user_login, harness, reported_model FROM agent_runs WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY id`, ...ids)
+type RunRow = { id: number; step: string; model: string; cost_usd: number | null; user_login: string | null; harness: string | null; reported_model: string | null };
+function runRows(db: DatabaseSync, ids: number[]): Map<number, RunRow> {
+  if (!ids.length) return new Map();
+  return new Map(q<RunRow>(db, "SELECT id, step, model, cost_usd, user_login, harness, reported_model FROM agent_runs WHERE id IN (SELECT value FROM json_each(?))", JSON.stringify(ids)).map((r) => [r.id, r]));
+}
+
+/** The calls of the runs `ids` that exist, in id order. */
+function runCalls(rows: Map<number, RunRow>, ids: number[]): HistoryCall[] {
+  return [...new Set(ids.map(Number))].filter((id) => rows.has(id)).sort((a, b) => a - b).map((id) => rows.get(id)!)
     .map((r) => ({ label: `${stepTitle(r.step)} (${r.model})`, kind: "model" as const, costUsd: r.cost_usd, ...(r.user_login && { via: { login: r.user_login, harness: r.harness ?? "", model: r.reported_model ?? "" } }) }));
 }
 

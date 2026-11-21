@@ -2,13 +2,13 @@
 // Viewers get counts and short texts; the lists of needs name items only for staff.
 import { isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import type { DatabaseSync } from "node:sqlite";
-import type { Progress } from "../../../web/src/api/types.ts";
+import type { NeedsPage, NeedsStoppedRow, Progress } from "../../../web/src/api/types.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
 import { optionsOf, type DecisionRow } from "../../decisions.ts";
 import type { Req } from "../types.ts";
 import { needingSql, withoutHidden } from "./decisions.ts";
 import { healthOf } from "./now.ts";
-import { needs as needsPage, stopped } from "./needs.ts";
+import { needs as needsPage } from "./needs.ts";
 import { canSeeInternals } from "./staff.ts";
 import { excludeHidden, hiddenRepos } from "./visible.ts";
 import { ITEM_PHASES, PHASE_SQL, type Home, type HomeDone, type HomeNeed, type HomeProblem, type ItemPhase, type NeedKind } from "./home-types.ts";
@@ -36,14 +36,14 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
 }
 
 /** `total` is the nav badge's number: decisions, unanswered feedback and stopped items. `oldest` lists decisions and, for staff, high or critical findings still new (not in the total). */
-async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, staff: boolean): Promise<Home["needs"]> {
+async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, staff: boolean, page: NeedsPage): Promise<Home["needs"]> {
   const params: Record<string, string> = {};
   const hide = withoutHidden(hidden, params);
   const where = `${needingSql(req)}${hide ? ` AND ${hide}` : ""}`;
   const byKind: Partial<Record<NeedKind, number>> = {};
   for (const r of db.prepare(`SELECT kind, COUNT(*) AS n FROM decisions WHERE ${where} GROUP BY kind`).all(params) as { kind: NeedKind; n: number }[]) byKind[r.kind] = r.n;
   // The Needs page's own counts, so the total is the nav badge's number for this user.
-  const { counts } = await needsPage(db, req);
+  const { counts } = page;
   const total = counts.decisions + counts.feedback + counts.stopped;
   if (counts.feedback) byKind.feedback = counts.feedback;
   if (counts.stopped) byKind.stopped = counts.stopped;
@@ -70,9 +70,8 @@ async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, staff: boo
   return { total, byKind, oldest: [...asked, ...found].sort((a, b) => a.askedAt.localeCompare(b.askedAt)).slice(0, OLDEST) };
 }
 
-async function problems(db: DatabaseSync, hidden: string[], staff: boolean): Promise<HomeProblem[]> {
+async function problems(db: DatabaseSync, hidden: string[], staff: boolean, stops: NeedsStoppedRow[]): Promise<HomeProblem[]> {
   const out: HomeProblem[] = [];
-  const stops = await stopped(db, hidden);
   for (const s of stops) out.push({ kind: "stopped", title: s.title, detail: staff ? s.reason : "", to: "/needs/stopped" });
   const seen = new Set(stops.map((s) => s.id));
   // The health list repeats breakers, limits and paused accounts; those are the stopped rows above.
@@ -158,9 +157,11 @@ export async function home(db: DatabaseSync, req: Req, deps: Deps): Promise<Home
   const staff = canSeeInternals(req);
   const pg = deps.progress(hidden);
   const start = pg.repos.reduce((s, r) => s + (r.openTrend[0] ?? 0), 0);
+  // The Needs page's stopped rows are the problems list's first rows.
+  const page = await needsPage(db, req);
   return {
-    needs: await needs(db, req, hidden, staff),
-    problems: await problems(db, hidden, staff),
+    needs: await needs(db, req, hidden, staff, page),
+    problems: await problems(db, hidden, staff, page.stopped),
     phases: phases(db, hidden),
     running: running(db, hidden),
     progress: { openNow: pg.funnel.open, openAtStart: start, done24h: pg.perHour.reduce((a, b) => a + b, 0), byAutoCraftPct: byAutoCraftPct(db, hidden, pg.trackingSince), perHour: pg.perHour, spendTodayUsd: spendToday(db, hidden) },
