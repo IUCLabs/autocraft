@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "outside" | "plans" | "conversations" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "claims" | "preapprovals" | "security" | "discord" | "discord-links" | "downloads" | "build-features" | "pr-builds" | "nightly" | "remote-helpers" | "remote-queue";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "outside" | "plans" | "conversations" | "held-followups" | "conversation-includes" | "decision-choices" | "decision-snooze" | "steps" | "mainci" | "limits" | "claims" | "preapprovals" | "security" | "discord" | "discord-links" | "downloads" | "build-features" | "pr-builds" | "nightly" | "remote-helpers" | "remote-queue";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
@@ -15,7 +15,7 @@ const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics,
 /** Everything an item page shows about a pull request. */
 const ITEM: Topic[] = withSlot("discord", "items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "checks", "preapprovals", "pr-builds", "build-features");
 
-const TRACE: Topic[] = withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "preapprovals", "pr-builds", "build-features");
+const TRACE: Topic[] = withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "held-followups", "queue", "access", "checks", "trace", "preapprovals", "pr-builds", "build-features");
 
 const RULES: [prefix: string, topics: Topic[]][] = [
   // Agent progress lines arrive through `agents`; the shared 3 s window in live.tsx limits the refetch.

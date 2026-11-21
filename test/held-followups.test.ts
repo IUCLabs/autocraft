@@ -1,4 +1,5 @@
 // "Merge #n and open a follow-up issue": the press holds the issue, the Act step opens it once after the PR merged and drops it when the PR closes unmerged.
+// A fix-up-and-merge follow-up still opens when someone else merges the PR during the fix-up (the merge itself cancels the pre-approval).
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { runAct } from "../src/act/index.ts";
@@ -13,7 +14,7 @@ let current: World | null = null;
 afterEach(() => current?.close());
 
 test("a follow-up issue on a Merge card is opened once after the merge and dropped when the PR closes unmerged", async () => {
-  current = world().repo().pr(1).pr(2);
+  current = world().repo().pr(1).pr(2).pr(3);
   const w = current;
   const created: string[] = [];
   const exec: Exec = async (cmd, args) => {
@@ -35,12 +36,17 @@ test("a follow-up issue on a Merge card is opened once after the merge and dropp
   const held = () => w.rows("SELECT number, state, issue_number, reason FROM held_followups ORDER BY number");
   assert.deepEqual(held().map((h) => h.state), ["held", "held"]);
 
+  // PR 3: a fix-up-and-merge press; the PR is merged on GitHub at 10:00 and the pre-approval cancels itself after that.
+  const pre = Number(w.db.prepare("INSERT INTO preapprovals (repo, number, by, at, instructions, state, from_head, updated_at, fix_id, reason) VALUES ('app', 3, 'op', ?, 'rename', 'cancelled', 'sha3', '2026-01-02T10:05:00Z', 1, 'the PR was merged before the fix-up finished')").run(T0).lastInsertRowid);
+  w.db.prepare("INSERT INTO held_followups (card_id, preapproval_id, repo, number, issue_repo, title, body, by, at, updated_at) VALUES (0, ?, 'app', 3, 'app', 'Follow-up of 3', 'Body.', 'op', ?, ?)").run(pre, T0, T0);
+  w.db.prepare("UPDATE items SET state = 'MERGED', merged_at = '2026-01-02T10:00:00Z' WHERE repo = 'app' AND number = 3").run();
   w.db.prepare("UPDATE items SET state = 'MERGED' WHERE repo = 'app' AND number = 1").run();
   w.db.prepare("UPDATE items SET state = 'CLOSED' WHERE repo = 'app' AND number = 2").run();
   for (let k = 0; k < 2; k++) await runAct(w.db, { repo: "app", dryRun: false }, () => {}, { ...w.gh.actDeps(), exec });
 
-  assert.deepEqual(created, ["Follow-up of 1"], "opened once, after the merge");
-  const [one, two] = held();
+  assert.deepEqual(created, ["Follow-up of 1", "Follow-up of 3"], "each opened once, after the merge");
+  const [one, two, three] = held();
+  assert.equal(three!.state, "filed");
   assert.equal(one!.state, "filed");
   assert.ok(one!.issue_number);
   assert.equal(two!.state, "dropped");

@@ -15,8 +15,8 @@ import { settlesNow } from "../settlers.ts";
 import { actBlockedReason } from "../runner/autopilot.ts";
 import { addLabels, closeItem, commentOn, createIssue, IssueError, assignTo, removeLabel, reopenItem, requestReviewers, transferIssue, type Note, type Writer } from "../github/write.ts";
 import { exec as defaultExec, type Exec } from "../fixup/git.ts";
-import { preapprovalOf, runPipelineStep } from "../preapproval/index.ts";
-import { holdFollowup } from "./held.ts";
+import { runPipelineStep } from "../preapproval/index.ts";
+import { answerSeqOf, holdFollowup } from "./held.ts";
 import type { CardEdit } from "../../web/src/api/types.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -413,6 +413,7 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
   const early = p.settle?.kind === "answer" && p.steps.some((x) => x.kind === "fixup") ? p.settle : null;
   const holding = holdsIssues(p);
   const hold: Extract<Step, { kind: "open_issue" }>[] = [];
+  let preapproval: number | null = null;
   let answered = false;
   const answerNow = async (s: NonNullable<typeof early>): Promise<void> => {
     results.push((await answerDecision(db, c, s.decision, s.stamp, s.option, by, at, canWrite, ctx.note, s.reason)).result);
@@ -467,7 +468,12 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
         }
         case "assign": results.push((await assign(ctx, st.login)).result); break;
         case "request_reviewers": results.push((await askReviewers(ctx, st.logins)).result); break;
-        case "review": case "fixup": results.push((await runPipelineStep(db, { repo: c.repo, number: c.number, step: st, by })).label); break;
+        case "review": case "fixup": {
+          const r = await runPipelineStep(db, { repo: c.repo, number: c.number, step: st, by });
+          preapproval = r.preapproval ?? preapproval;
+          results.push(r.label);
+          break;
+        }
       }
       done.push(stepLine(st));
     }
@@ -478,9 +484,10 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
         : resolveDecision(db, c, s.decision, s.stamp, ctx.note ? `${s.summary}: ${ctx.note}` : s.summary, by, at)).result);
     }
     if (hold.length) {
-      const merge = p.steps.find((x) => x.kind === "fixup" && x.merge) ? preapprovalOf(db, c.repo, c.number) : null;
-      const decision = !merge && p.settle?.kind === "answer" ? p.settle.decision : null;
-      for (const st of hold) holdFollowup(db, { card_id: c.id, choice_id: c.choice_id ?? null, decision_id: decision, preapproval_id: merge?.id ?? null, repo: c.repo, number: c.number, issue_repo: st.repo, title: st.title, body: st.body, by, at });
+      // Bound to the merge path this press made: the pre-approved merge it started, or its Merge answer as the decision's answer history now stands.
+      const decision = preapproval === null && p.settle?.kind === "answer" ? p.settle.decision : null;
+      const answerSeq = decision === null ? null : answerSeqOf(db, decision);
+      for (const st of hold) holdFollowup(db, { card_id: c.id, choice_id: c.choice_id ?? null, decision_id: decision, answer_seq: answerSeq, preapproval_id: preapproval, repo: c.repo, number: c.number, issue_repo: st.repo, title: st.title, body: st.body, by, at });
     }
   } catch (e) {
     const msg = String((e as Error).message ?? e);

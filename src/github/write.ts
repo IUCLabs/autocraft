@@ -508,7 +508,9 @@ export function ghFork(w: Writer, g: GuardedRepo, exec: Exec, repo: string, deta
 /** `clear`: GitHub refused the request, so no issue can exist. Otherwise the outcome is unknown (a timeout, a lost response, a success without a URL). */
 export class IssueError extends Error {
   clear: boolean;
-  constructor(message: string, clear: boolean) { super(message); this.clear = clear; }
+  /** The write pacing held the create back (WritePacedError): nothing was sent and a later run may simply try again. */
+  paced: boolean;
+  constructor(message: string, clear: boolean, paced = false) { super(message); this.clear = clear; this.paced = paced; }
 }
 
 // gh's own wording when GitHub rejects the request before creating anything.
@@ -527,11 +529,12 @@ export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: st
     r = await viaGh(w, idOf(w, g), exec, o.action ?? "postmerge-file", o.target, { ...details, title: scrub(o.title), text: body },
       ["issue", "create", "--repo", `${slugOf(o.repo)}`, "--title", scrub(o.title), "--body-file", "-"], body);
   } catch (e) {
-    // exec rejects only when the command could not be started.
-    throw new IssueError(oneLine(String((e as Error).message ?? e)), true);
+    // exec rejects only when the command could not be started; the pacing rejects before anything is sent.
+    throw new IssueError(oneLine(String((e as Error).message ?? e)), true, e instanceof WritePacedError);
   }
   const url = r.stdout.match(/https:\/\/github\.com\/\S+\/issues\/(\d+)/);
-  if (r.code !== 0) { const m = oneLine(r.stderr || r.stdout) || `exit code ${r.code}`; throw new IssueError(m, REFUSED.test(m)); }
+  // A failed app-token mint never sent the request (`sent: false`).
+  if (r.code !== 0) { const m = oneLine(r.stderr || r.stdout) || `exit code ${r.code}`; throw new IssueError(m, r.sent === false || REFUSED.test(m)); }
   if (!url) throw new IssueError(oneLine(r.stderr || r.stdout) || "gh printed no issue URL", false);
   return { number: Number(url[1]), url: url[0] };
 }

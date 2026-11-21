@@ -1497,6 +1497,7 @@ CREATE TABLE IF NOT EXISTS held_followups (
   card_id INTEGER NOT NULL,           -- the conversation card that held it
   choice_id TEXT,                     -- the decision_choices row the card was run from, if any
   decision_id TEXT,                   -- the Merge? decision the card answered Merge; NULL for a fix-up that merges
+  answer_seq INTEGER,                 -- answer, undo and reopen audit rows of that decision once the card answered: a later one ends the row's merge path
   preapproval_id INTEGER,             -- the pre-approved merge the card started; NULL for a Merge answer
   repo TEXT NOT NULL, number INTEGER NOT NULL,  -- the PR
   issue_repo TEXT NOT NULL,
