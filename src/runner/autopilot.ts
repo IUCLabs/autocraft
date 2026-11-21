@@ -61,7 +61,7 @@ import { knownStep, loadSteps, STEPS, modelsOf, usesClaude, type Params, type St
 import { pilotItems, scopeRepos } from "../pilot.ts";
 import { refreshOutsideHolds } from "../outside.ts";
 import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
-import { FAST_FLOOR, fastFirst, fastScoreOf } from "../fasttrack.ts";
+import { FAST_FLOOR, fastFirst, fastScores } from "../fasttrack.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
 export const PLAN_EVERY_MS = 5 * 60_000;
@@ -146,6 +146,8 @@ export type PlanCtx = {
   notes?: Record<string, string>;
   /** The pass's reading of the Task Runners (untakenTest); a lane run without it reads them on first use. */
   untaken?: UntakenTest;
+  /** The fast-track scores of the pass (fastScores), read on first use. */
+  fast?: Map<string, number>;
 };
 
 /** Only the repos in scope (pipeline on, narrowed by the pilot) are planned for; a job for another repo is never proposed. */
@@ -165,6 +167,8 @@ export const planCtx = (db: DatabaseSync): PlanCtx => {
 
 /** The pass's Plans (loaded on first use when the ctx came without). */
 const plansOf = (db: DatabaseSync, ctx: PlanCtx): PlanSet => (ctx.plans ??= loadPlanSet(db, { run: ctx.run }));
+/** The pass's fast-track scores, keyed by `repo#number`. */
+const fastOf = (db: DatabaseSync, ctx: PlanCtx): Map<string, number> => (ctx.fast ??= fastScores(db));
 
 /** Whether the guard would let the pipeline make the write an action stands for: the global switch and the repo's approval. */
 const wantOf = (a: Action): Want => ({ kind: a.kind, ...(typeof a.params?.bucket === "string" ? { bucket: a.params.bucket } : {}) });
@@ -329,7 +333,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       }
       // No other stage re-reads the checks of a head that was stored as running or red: a PR whose review waits for CI has its repo's checks read again, at most once per WAITING_CI_RECHECK_MS.
       const ciWait = new Set(plansOf(db, ctx).prs.filter((p) => p.facts.reviewHold?.kind === "ci" && !p.facts.reviewHold.red && p.plan.wait === p.facts.reviewHold.wait).map((p) => p.facts.repo));
-      for (const repo of flightFirst(plansOf(db, ctx), fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number))) {
+      for (const repo of flightFirst(plansOf(db, ctx), fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number, fastOf(db, ctx)))) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -402,8 +406,9 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
         return false;
       };
       // The repo whose eligible PR is fast-tracked first goes first.
-      const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && e.eligible).sort((a, b) => (fastScoreOf(db, r, b.number) ?? -1) - (fastScoreOf(db, r, a.number) ?? -1))[0]?.number;
-      for (const repo of flightFirst(plans, fastFirst(db, [...new Set([...due, ...batches])].sort(), topEligible))) {
+      const fast = fastOf(db, ctx);
+      const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && e.eligible).sort((a, b) => (fast.get(`${r}#${b.number}`) ?? -1) - (fast.get(`${r}#${a.number}`) ?? -1))[0]?.number;
+      for (const repo of flightFirst(plans, fastFirst(db, [...new Set([...due, ...batches])].sort(), topEligible, fast))) {
         const poll = batches.has(repo);
         if (poll && later("merge", repo)) continue;
         out.push({ step: "merge", params: { repo }, ...(poll ? { poll } : {}) });
@@ -462,7 +467,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
         const push = repoAllows(plans, repo, { kind: "fixup", bucket: "fix" }), ask = repoAllows(plans, repo, { kind: "fixup", bucket: "ask" });
         return (push && (sel.fix.length > 0 || sel.lint.length > 0 || sel.conflictMerge.length > 0)) || (ask && (sel.ask.length > 0 || sel.conflictAsk.length > 0));
       });
-      return flightFirst(plans, fastFirst(db, repos.sort(), (r) => { const sel = sels.get(r)!; return (sel.lint[0] ?? sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; })).map((repo) => ({ step: "fixup", params: { repo } }));
+      return flightFirst(plans, fastFirst(db, repos.sort(), (r) => { const sel = sels.get(r)!; return (sel.lint[0] ?? sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }, fastOf(db, ctx))).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
@@ -474,7 +479,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       const out: Candidate[] = [];
       const plans = plansOf(db, ctx);
       const top = firstByRepo([...planned(db, "verify", { plans, bucket: "plan" }), ...planned(db, "verify", { plans, bucket: "unavailable" })]);
-      for (const repo of flightFirst(plans, fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => top.get(r)?.facts.number))) {
+      for (const repo of flightFirst(plans, fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => top.get(r)?.facts.number, fastOf(db, ctx)))) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -505,7 +510,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     extra: tasksSig,
     detect: (db, ctx) => {
       const work = fixWork(db, ctx.tracked, plansOf(db, ctx));
-      return flightFirst(plansOf(db, ctx), fastFirst(db, [...work.keys()].sort(), (r) => work.get(r)!.top?.number)).map((repo) => ({ step: "fixissue", params: { repo } }));
+      return flightFirst(plansOf(db, ctx), fastFirst(db, [...work.keys()].sort(), (r) => work.get(r)!.top?.number, fastOf(db, ctx))).map((repo) => ({ step: "fixissue", params: { repo } }));
     },
     topScore: (db, ctx) => bestScore([...fixWork(db, ctx.tracked, plansOf(db, ctx)).values()].map((w) => w.top?.score)),
   },
@@ -1166,7 +1171,7 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
     seen.add(ref);
     const refused = gates(f, wantOf(a), "pipeline");
     const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "The pipeline is off" ? null : refused ?? waits(f.repo);
-    const fast = (fastScoreOf(db, f.repo, f.number) ?? 0) >= FAST_FLOOR;
+    const fast = (fastOf(db, ctx).get(ref) ?? 0) >= FAST_FLOOR;
     all.push({
       repo: f.repo, number: f.number, kind: "kind" in f ? f.kind : "pr", action: a.kind, bucket: typeof a.params?.bucket === "string" ? a.params.bucket : null,
       fast, rank: f.score, inFlight: inFlightNow(f, state), next: false, blocked,

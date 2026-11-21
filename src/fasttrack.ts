@@ -112,6 +112,27 @@ export function fastScoreOf(db: DatabaseSync, repo: string, number: number): num
   return r.s;
 }
 
+/** A Fix PR's number from its URL, as `fastScoreSql` links it: the URL ends in `/pull/<number>` (any case, no leading zero). */
+const linkedPr = (url: string): number | null => {
+  const m = /\/pull\/(\d+)$/i.exec(url);
+  return m && String(Number(m[1])) === m[1] ? Number(m[1]) : null;
+};
+
+/** The fast-track score of every fast-tracked item (see `fastScoreSql`), keyed by `repo#number`: one query. An item without an entry is not fast-tracked. */
+export function fastScores(db: DatabaseSync): Map<string, number> {
+  const rows = db.prepare(`SELECT ft.repo, ft.number, NULL AS pr_url, ${rowScore("ft")} AS s FROM main.fast_track ft
+    UNION ALL SELECT ft.repo, NULL, fa.pr_url, ${rowScore("ft")} FROM main.fast_track ft JOIN main.fix_attempts fa ON fa.repo = ft.repo AND fa.number = ft.number
+    WHERE fa.pr_url IS NOT NULL`).all() as { repo: string; number: number | null; pr_url: string | null; s: number }[];
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    const n = r.number ?? linkedPr(r.pr_url!);
+    if (n === null) continue;
+    const k = `${r.repo}#${n}`, old = out.get(k);
+    if (old === undefined || r.s > old) out.set(k, r.s);
+  }
+  return out;
+}
+
 export const isFastTracked = (db: DatabaseSync, repo: string, number: number): boolean => fastScoreOf(db, repo, number) !== null;
 
 /** True when the sandbox task belongs to a fast-tracked item: its PR or issue, or a batch of fast-tracked PRs only. */
@@ -127,8 +148,9 @@ export function fastTask(db: DatabaseSync, t: { id: number; repo: string; number
  * Repos whose best candidate (`top` gives its number) is fast-tracked come first, the earliest fast-tracked first; the others follow in the given order.
  * Planners that visit repos one per job use it so fast track also orders across repos.
  */
-export function fastFirst(db: DatabaseSync, repos: string[], top: (repo: string) => number | undefined): string[] {
-  const score = new Map(repos.map((r) => { const n = top(r); return [r, n === undefined ? null : fastScoreOf(db, r, n)] as const; }));
+export function fastFirst(db: DatabaseSync, repos: string[], top: (repo: string) => number | undefined, scores?: Map<string, number>): string[] {
+  const scoreOf = (r: string, n: number): number | null => (scores ? scores.get(`${r}#${n}`) ?? null : fastScoreOf(db, r, n));
+  const score = new Map(repos.map((r) => { const n = top(r); return [r, n === undefined ? null : scoreOf(r, n)] as const; }));
   const fast = repos.filter((r) => (score.get(r) ?? 0) >= FAST_FLOOR).sort((x, y) => score.get(y)! - score.get(x)!);
   return [...fast, ...repos.filter((r) => !fast.includes(r))];
 }
