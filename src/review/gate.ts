@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi, effectiveCiWith, optionalChecksOf } from "../optional-checks.ts";
-import { BLOCKS_REVIEW, activeBlockers, hasOpenQuestion, storedBlockedBy } from "./blockers.ts";
+import { BLOCKS_REVIEW, blockersLoader, storedBlockedBy } from "./blockers.ts";
 import { MAX_RERUNS_PER_DAY, discussionState, maintainerSince, staleMarksSince, type DiscussionState } from "./discussion.ts";
 import { ourCommitsSince } from "./ours.ts";
 import { setting } from "../settings-read.ts";
@@ -95,6 +95,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now(), refs?:
     { k: string; head_oid: string; overall: string; checks: string | null }[]).map((r) => [r.k, r])));
   const optional = once(() => optionalChecksOf(db));
   const staleSince = once(() => staleMarksSince(db));
+  const blockers = once(() => blockersLoader(db));
   // CI at the head as headCi() reads it.
   const ciAt = (repo: string, number: number, head: string): "ok" | "pending" | "failure" | "unknown" => {
     const c = checks().get(`${repo}#${number}`);
@@ -130,8 +131,8 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now(), refs?:
     }
     let settled = false;
     if (last?.verdict === "hold" && storedBlockedBy(last.blocked_by).length) {
-      const open = activeBlockers(db, `${repo}#${number}`, last.blocked_by, last.at, nowMs);
-      if (open.length) return { kind: "blocked", wait: `${open.join(", ")}${BLOCKS_REVIEW}`, ...(hasOpenQuestion(db, open) ? { person: true } : {}) };
+      const open = blockers().active(`${repo}#${number}`, last.blocked_by, last.at, nowMs);
+      if (open.length) return { kind: "blocked", wait: `${open.join(", ")}${BLOCKS_REVIEW}`, ...(blockers().openQuestion(open) ? { person: true } : {}) };
       settled = true;
     }
     const ci = ciAt(repo, number, head);

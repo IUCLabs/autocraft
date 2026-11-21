@@ -27,6 +27,7 @@ import { holdMap } from "../outside.ts";
 import { lockLiveSql } from "../answers/hold.ts";
 import { isPreparing, prepareStateSql, utcDayStart, type PrepareColumns } from "../decide/prepared.ts";
 import type { ItemFacts } from "./plan.ts";
+import { setting, hasSetting } from "../settings-read.ts";
 
 export type { ItemFacts } from "./plan.ts";
 
@@ -83,7 +84,7 @@ type Cls = { classifier: string; at: string; type_label: string; flags: string |
 export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): ItemFacts[] {
   const now = opts.now ?? Date.now();
   const model = opts.model ?? embedderId(modelName());
-  const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
+  const pipelineOn = pipelineWrites(setting(db, "pipeline_enabled"));
 
   // Values read once for all items.
   const tripped = activeTrips(db);
@@ -185,12 +186,17 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     let m = repoMemo.get(repo);
     if (!m) {
       m = { comment: commentApprovalOf(db, repo) !== null, fix: fixIssueApprovalOf(db, repo) !== null, pub: !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo),
-        notRust: !!db.prepare("SELECT 1 FROM settings WHERE key = ?").get(notRustKey(repo)), openPrs: issuesWithOpenPr(db, repo) };
+        notRust: hasSetting(db, notRustKey(repo)), openPrs: issuesWithOpenPr(db, repo) };
       repoMemo.set(repo, m);
     }
     return m;
   };
-  const textOf = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?");
+  // Item text, read only for the rows that need it (a skipped Fix attempt, a missing text hash, a classifier hash to recompute), in one query.
+  type Text = { repo: string; number: number; kind: string; title: string | null; body: string | null; additions: number | null; deletions: number | null; changed_files: number | null; author_association: string | null };
+  const classed = (ref: string): boolean => (byItem.get(ref) ?? []).some((c) => c.classifier === "jev" || (c.classifier === "haiku" && c.input_hash !== null));
+  const needText = rows.filter((r) => r.a_state === "skipped" || r.embed_hash === null || ((r.class_scheme === SCHEME_ID ? r.class_hash : null) === null && classed(`${r.repo}#${r.number}`)));
+  const texts = new Map(needText.length ? (db.prepare(`SELECT i.repo, i.number, i.kind, i.title, i.body, i.additions, i.deletions, i.changed_files, i.author_association
+    FROM json_each(?) j JOIN items i ON i.repo = j.value ->> 0 AND i.number = j.value ->> 1`).all(JSON.stringify(needText.map((r) => [r.repo, r.number]))) as Text[]).map((t) => [`${t.repo}#${t.number}`, t]) : []);
   const mirrored = db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ? AND kind = 'pr'");
   // The fix PR we just opened counts as open until a sync mirrors it: the mirror's open-PR list doesn't have it yet.
   const ownPrUnmirrored = (state: string | null, url: string | null): OpenPr | null => {
@@ -198,7 +204,6 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     return m && !mirrored.get(m[1]!, Number(m[2])) ? { number: Number(m[2]), closes: true } : null;
   };
   const authorOf = db.prepare("SELECT author FROM items WHERE repo = ? AND number = ?");
-  const body = db.prepare("SELECT repo, number, kind, title, body, additions, deletions, changed_files, author_association FROM items WHERE repo = ? AND number = ?");
 
   return rows.map((r): ItemFacts => {
     const ref = `${r.repo}#${r.number}`;
@@ -220,8 +225,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     // The classifier's input hash: stored on the row, recomputed when it was made under another scheme.
     let classHash = r.class_scheme === SCHEME_ID ? r.class_hash : null;
     if (classHash === null && (j || h)) {
-      const b = body.get(r.repo, r.number) as { repo: string; number: number; kind: string; title: string | null; body: string | null; additions: number | null; deletions: number | null; changed_files: number | null; author_association: string | null };
-      classHash = classifyHash(b);
+      classHash = classifyHash(texts.get(ref)!);
     }
     const unsureFlag = (key: string, yes: number): boolean => {
       const p = (json<Record<string, unknown> | null>(j?.probs ?? null, null) ?? {})[key];
@@ -234,7 +238,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     } : null;
     const haiku = h ? { at: h.at, aloneCurrent: h.input_hash !== null && h.input_hash === classHash && (!j || h.at > j.at) } : null;
     // Sync and Embed write the text hash; one not written yet is computed here.
-    const embedHash = r.embed_hash ?? (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return hashOfText(b.title, b.body); })();
+    const embedHash = r.embed_hash ?? (() => { const b = texts.get(ref)!; return hashOfText(b.title, b.body); })();
     const note = labeled.get(ref) ?? null;
     return {
       repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, inFlight: r.state === "OPEN" && (["retry", "testing", "passed"].includes(r.a_state ?? "") || (r.kind === "pr" && own.prs.has(ref) && own.isOwn(r.repo, (authorOf.get(r.repo, r.number) as { author: string | null } | undefined)?.author ?? null))), draft: !!r.is_draft,
@@ -255,7 +259,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       fix: {
         attempt: r.a_state === null ? null : {
           state: r.a_state,
-          textChanged: r.a_state === "skipped" && (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return textHash(b.title ?? "", b.body ?? "") !== r.a_hash; })(),
+          textChanged: r.a_state === "skipped" && (() => { const b = texts.get(ref)!; return textHash(b.title ?? "", b.body ?? "") !== r.a_hash; })(),
           headDone: r.h_state !== null && (TERMINAL as string[]).includes(r.h_state),
           baseDone: r.a_base === null || (r.b_state !== null && (TERMINAL as string[]).includes(r.b_state)),
         },

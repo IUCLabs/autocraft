@@ -90,3 +90,48 @@ export function blocksIndex(db: DatabaseSync, hidden: HiddenRepos): Map<string, 
   }
   return out;
 }
+
+/**
+ * activeBlockers() and hasOpenQuestion() for many PRs, for one planner pass: the items, open decisions and latest reviews of the
+ * refs are read in one batch per new set of refs, starting with every ref a stored hold names.
+ */
+export function blockersLoader(db: DatabaseSync): { active: (self: string, stored: string | null | undefined, at: string, nowMs?: number) => string[]; openQuestion: (refs: readonly string[]) => boolean } {
+  const items = new Map<string, { kind: string; state: string } | null>();
+  const pending = new Set<string>();
+  const latest = new Map<string, { verdict: string; blocked_by: string | null }>();
+  // Keyed as the per-ref reads look them up: repo and numeric number.
+  const key = (ref: string): string | null => { const m = REF.exec(ref); return m ? `${m[1]}#${Number(m[2])}` : null; };
+  const ensure = (refs: readonly string[]): void => {
+    const pairs = [...new Set(refs.map(key))].filter((k): k is string => k !== null && !items.has(k)).map((k) => [k.slice(0, k.lastIndexOf("#")), Number(k.slice(k.lastIndexOf("#") + 1))] as const);
+    if (!pairs.length) return;
+    const p = JSON.stringify(pairs);
+    for (const [repo, n] of pairs) items.set(`${repo}#${n}`, null);
+    for (const r of db.prepare("SELECT i.repo || '#' || i.number AS k, i.kind, i.state FROM json_each(?) j JOIN main.items i ON i.repo = j.value ->> 0 AND i.number = j.value ->> 1").all(p) as { k: string; kind: string; state: string }[])
+      items.set(r.k, { kind: r.kind, state: r.state });
+    for (const r of db.prepare("SELECT DISTINCT d.repo || '#' || d.number AS k FROM json_each(?) j JOIN main.decisions d ON d.repo = j.value ->> 0 AND d.number = j.value ->> 1 WHERE d.answer IS NULL").all(p) as { k: string }[])
+      pending.add(r.k);
+    for (const r of db.prepare(`SELECT o.repo || '#' || o.number AS k, o.verdict, o.blocked_by FROM json_each(?) j JOIN main.opus_reviews o ON o.repo = j.value ->> 0 AND o.number = j.value ->> 1
+      WHERE o.verdict IS NOT NULL ORDER BY o.at DESC, o.rowid DESC`).all(p) as { k: string; verdict: string; blocked_by: string | null }[]) if (!latest.has(r.k)) latest.set(r.k, r);
+  };
+  let started = false;
+  const start = (): void => {
+    if (started) return;
+    started = true;
+    ensure((db.prepare("SELECT DISTINCT blocked_by FROM main.opus_reviews WHERE verdict = 'hold' AND blocked_by IS NOT NULL").all() as { blocked_by: string }[]).flatMap((r) => storedBlockedBy(r.blocked_by)));
+  };
+  const openQuestion = (refs: readonly string[]): boolean => { start(); ensure(refs); return refs.some((r) => { const k = key(r); return k !== null && pending.has(k); }); };
+  const active = (self: string, stored: string | null | undefined, at: string, nowMs: number = Date.now()): string[] => {
+    const refs = storedBlockedBy(stored);
+    if (!refs.length || nowMs - Date.parse(at) > BLOCKED_EXPIRES_MS) return [];
+    start();
+    ensure(refs);
+    return refs.filter((ref) => {
+      const k = key(ref), i = k !== null ? items.get(k) : null;
+      if (!i || i.state !== "OPEN") return false;
+      if (i.kind !== "pr" && !pending.has(k!)) return false;
+      const l = latest.get(k!);
+      return !(l?.verdict === "hold" && storedBlockedBy(l.blocked_by).includes(self));
+    });
+  };
+  return { active, openQuestion };
+}

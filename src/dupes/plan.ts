@@ -9,6 +9,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { canonInfoAll, pickCanonical } from "./canonical.ts";
 import { inPilot, pilotSql } from "../pilot.ts";
 import { backlogHeldSql } from "./held.ts";
+import { setting } from "../settings-read.ts";
 
 type Edge = { repo: string; a: number; b: number; similarity: number; jev_p: number | null; haiku: string | null };
 
@@ -126,10 +127,20 @@ export type ComparisonResult = {
   rounds: number;
 };
 
+type ComparisonRow = Omit<StoredComparison, "members" | "result"> & { members: string; result: string | null };
+
 export function storedComparison(db: DatabaseSync, repo: string, key: string): StoredComparison | null {
-  const r = db.prepare("SELECT * FROM dupe_comparisons WHERE repo = ? AND key = ?").get(repo, key) as
-    (Omit<StoredComparison, "members" | "result"> & { members: string; result: string | null }) | undefined;
-  if (!r) return null;
+  const r = db.prepare("SELECT * FROM dupe_comparisons WHERE repo = ? AND key = ?").get(repo, key) as ComparisonRow | undefined;
+  return r ? parseComparison(r) : null;
+}
+
+/** storedComparison() for the sets of the repo (every repo without one), from one reading of the table. */
+export function storedComparisons(db: DatabaseSync, repo?: string): (repo: string, key: string) => StoredComparison | null {
+  const rows = new Map((db.prepare(`SELECT * FROM dupe_comparisons${repo !== undefined ? " WHERE repo = ?" : ""}`).all(...(repo !== undefined ? [repo] : [])) as ComparisonRow[]).map((r) => [`${r.repo}\n${r.key}`, r]));
+  return (r, key) => { const row = rows.get(`${r}\n${key}`); return row ? parseComparison(row) : null; };
+}
+
+function parseComparison(r: ComparisonRow): StoredComparison {
   let result: ComparisonResult | null = null;
   try { result = r.result ? (JSON.parse(r.result) as ComparisonResult) : null; } catch { /* no result */ }
   return { ...r, members: JSON.parse(r.members) as number[], result };
@@ -174,8 +185,8 @@ export function comparedHead(db: DatabaseSync, repo: string, n: number): string 
 }
 
 /** The stored comparison of the set when it is current. */
-export const currentComparison = (db: DatabaseSync, s: KindSet): StoredComparison | null => {
-  const c = storedComparison(db, s.repo, s.key);
+export const currentComparison = (db: DatabaseSync, s: KindSet, stored: (repo: string, key: string) => StoredComparison | null = (r, k) => storedComparison(db, r, k)): StoredComparison | null => {
+  const c = stored(s.repo, s.key);
   if (!c) return null;
   if (c.hash === s.hash) return diffMoved(c, s.members) ? null : c;
   return c.sizes == null && c.hash === legacySetHash(s.members) ? c : null;
@@ -192,7 +203,7 @@ export function rememberDrop(db: DatabaseSync, s: KindSet, at: string): void {
 }
 
 function recentlyDropped(db: DatabaseSync, s: KindSet, nowMs: number): boolean {
-  const v = (db.prepare("SELECT value FROM settings WHERE key = ?").get(dropKey(s)) as { value: string } | undefined)?.value;
+  const v = setting(db, dropKey(s));
   if (!v) return false;
   const [hash, at] = v.split("|");
   return hash === s.hash && nowMs - Date.parse(at!) < DROP_PAUSE_MS;
@@ -209,11 +220,11 @@ function retryable(db: DatabaseSync, c: StoredComparison, nowMs: number): boolea
 /** Sets that need a comparison: an open member is in the pilot and no current result is stored (or a rule result may be retried), and the set did not just change on GitHub. */
 export function dueSets(db: DatabaseSync, repo?: string, nowMs: number = Date.now()): KindSet[] {
   const out: KindSet[] = [];
-  const groups = duplicateGroups(db, repo), setsOf = kindSetsLoader(db, groups);
+  const groups = duplicateGroups(db, repo), setsOf = kindSetsLoader(db, groups), stored = storedComparisons(db, repo);
   for (const g of groups)
     for (const s of setsOf(g)) {
       if (!s.members.some((m) => m.state === "OPEN" && setsOf.inPilot(s.repo, m.number))) continue;
-      const c = currentComparison(db, s);
+      const c = currentComparison(db, s, stored);
       if ((!c || retryable(db, c, nowMs)) && !recentlyDropped(db, s, nowMs)) out.push(s);
     }
   return out;
