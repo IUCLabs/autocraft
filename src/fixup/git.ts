@@ -189,9 +189,8 @@ export class Git {
   }
 
   /** Fetches the base branch of the base repository and returns its commit. */
-  async fetchBase(org: string, repo: string, branch: string): Promise<string> {
+  async fetchBase(org: string, repo: string, branch: string, ref = `refs/fixup/base/${branch}`): Promise<string> {
     await this.init();
-    const ref = `refs/fixup/base/${branch}`;
     await this.must(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", `https://github.com/${org}/${repo}.git`, `+refs/heads/${branch}:${ref}`]);
     return (await this.must(["rev-parse", ref])).trim();
   }

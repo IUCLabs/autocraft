@@ -17,6 +17,7 @@
 // The outcome (pushed, failed with the reason, or dropped because the dependency's pull request closed unmerged) is a
 // comment on the pull request, unless the pull request is quiet. Only reasons written here reach the comment; any other
 // error is logged and the comment gives a fixed reason.
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -66,6 +67,9 @@ const MERGE_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
     pullRequest(number: $n) { state baseRefName mergedAt mergeCommit { oid } }
   }
 }`;
+const BRANCH_QUERY = `query($owner: String!, $name: String!, $ref: String!) {
+  repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { name } }
+}`;
 const PR_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $n) {
@@ -111,7 +115,7 @@ const refused = (why: string): HttpError => new HttpError(409, why);
  * reason when refused. `at` orders the commands of a pull request: a command older than an `off` or than the command that set
  * the row sets nothing.
  */
-export async function requestRepin(db: DatabaseSync, o: { login: string; githubId: number; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; /** `via <branch>`, validated by the parser (parseBranch). */ branch?: string | null; /** When the command was given (the comment's time). */ at?: Date }): Promise<string> {
+export async function requestRepin(db: DatabaseSync, o: { login: string; githubId: number; role: string; canWrite: boolean; repo: string; number: number; pr: boolean; ref: PrRef | null; /** Reads the `via` branch when the command is accepted; without it, or when the read fails, the branch is not checked. */ querier?: Querier; /** `via <branch>`, validated by the parser (parseBranch). */ branch?: string | null; /** When the command was given (the comment's time). */ at?: Date }): Promise<string> {
   if (!o.pr) throw refused("autorepin is for pull requests");
   const refusal = await settleRefusal(db, { login: o.login, role: o.role, canWrite: async (r) => r === o.repo && o.canWrite }, [o.repo], `sets autorepin on ${o.repo}`);
   if (refusal) throw refused(refusal);
@@ -141,6 +145,10 @@ export async function requestRepin(db: DatabaseSync, o: { login: string; githubI
   if ("refused" in g) throw refused(g.refused);
   const scope = outOfBuildScope(db, o.repo, o.number);
   if (scope) throw refused(scope);
+  if (o.branch && o.querier) {
+    const here = await o.querier.query(BRANCH_QUERY, { owner: ownerOf(dep), name: dep, ref: `refs/heads/${o.branch}` }).then((x) => (x as { repository?: { ref?: unknown } | null }).repository, () => undefined);
+    if (here && here.ref == null) throw refused(`${slugOf(dep)} has no branch ${o.branch}`);
+  }
   // Only over a row of an earlier command: a later `off`, or a later command for the same repository, stands.
   const branch = o.branch ?? null;
   const set = db.prepare(`INSERT INTO main.autorepins (repo, number, ref_repo, ref_number, ref_branch, login, github_id, requested_at, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting')
@@ -251,7 +259,7 @@ async function step(db: DatabaseSync, r: RepinRow, d: RepinDeps): Promise<void> 
   mkdirSync(root, { recursive: true });
   const depGit = new Git(run, root, r.ref_repo);
   const onBranch = async (branch: string): Promise<{ tip: string; on: boolean }> => {
-    const tip = await depGit.fetchBase(ownerOf(r.ref_repo), r.ref_repo, branch).catch((e: unknown) => {
+    const tip = await depGit.fetchBase(ownerOf(r.ref_repo), r.ref_repo, branch, `refs/repin/branch/${createHash("sha256").update(branch).digest("hex")}`).catch((e: unknown) => {
       d.log?.(`autorepin ${refOf(r)}: fetching ${dep} ${branch}: ${oneLine(String((e as Error)?.message ?? e))}`);
       throw new Retry(`${dep}'s branch ${branch} could not be fetched`);
     });
@@ -484,9 +492,9 @@ export async function drainRepins(db: DatabaseSync, deps: RepinDeps): Promise<nu
         }
         if (e instanceof Ended) finish(db, r, e, clock());
         else if (e instanceof Wait) {
-          // Not a try: tried_at is set ahead, so the row is due again (repinsDue: a minute after tried_at) in BRANCH_POLL_MS.
+          // Not a try, and it clears the count, so MAX_TRIES counts consecutive failures only: tried_at is set ahead, so the row is due again (repinsDue: a minute after tried_at) in BRANCH_POLL_MS.
           stopTask(db, r.task_id);
-          db.prepare(`UPDATE main.autorepins SET state = 'waiting', task_id = NULL, tried_at = ? WHERE ${KEY}`).run(new Date(clock().getTime() + BRANCH_POLL_MS - RETRY_MS).toISOString(), ...keyOf(r));
+          db.prepare(`UPDATE main.autorepins SET state = 'waiting', task_id = NULL, tries = 0, tried_at = ? WHERE ${KEY}`).run(new Date(clock().getTime() + BRANCH_POLL_MS - RETRY_MS).toISOString(), ...keyOf(r));
           deps.log?.(`autorepin ${refOf(r)}: ${e.message}`);
           continue;
         } else {

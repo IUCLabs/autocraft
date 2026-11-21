@@ -145,7 +145,7 @@ function git(cwd: string, ...args: string[]): string {
   return r.stdout.trim();
 }
 
-type Setup = { w: World; fork: string; head: string; comments: string[]; pushes: number; live: { head: string; state: string; ref: string; base: string; sha: string; mergedAt: string }; deps: RepinDeps; branch: () => string; at: (path: string) => string };
+type Setup = { w: World; fork: string; head: string; comments: string[]; pushes: number; live: { head: string; state: string; ref: string; base: string; sha: string; mergedAt: string }; deps: RepinDeps; noBranch: string | null; branch: () => string; at: (path: string) => string };
 let current: World | null = null;
 afterEach(() => current?.close());
 
@@ -172,13 +172,14 @@ function setup(o: { lock?: boolean; off?: Parameters<World["repo"]>[0] } = {}): 
 
   const s: Setup = {
     w, fork, head, comments: [], pushes: 0, live: { head, state: "OPEN", ref: "MERGED", base: "main", sha: SHA, mergedAt: new Date().toISOString() },
-    deps: null as never,
+    deps: null as never, noBranch: null,
     branch: () => git(fork, "rev-parse", "refs/heads/fix"),
     at: (path) => git(fork, "show", `refs/heads/fix:${path}`),
   };
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
-    async query(q: string) {
+    async query(q: string, v: { ref?: string }) {
+      if (q.includes("qualifiedName")) return { repository: { ref: s.noBranch === v.ref?.replace("refs/heads/", "") ? null : { name: "next" } } };
       if (q.includes("mergeCommit")) return { repository: { defaultBranchRef: { name: "main" }, pullRequest: { state: s.live.ref, baseRefName: s.live.base, mergedAt: s.live.ref === "MERGED" ? s.live.mergedAt : null, mergeCommit: s.live.ref === "MERGED" ? { oid: s.live.sha } : null } } };
       return { repository: { pullRequest: { state: s.live.state, headRefOid: s.live.head, headRefName: "fix", maintainerCanModify: true, headRepository: { nameWithOwner: "contrib/app" }, headRef: null } } };
     },
@@ -371,7 +372,15 @@ describe("autorepin", () => {
     const t0 = Date.now();
     for (let i = 0; i < MAX_TRIES + 1; i++) await drainRepins(s.w.db, { ...s.deps, now: () => new Date(t0 + i * 20 * 60_000) });
     assert.deepEqual([row(s).state, row(s).tries, task(s), s.comments.length], ["waiting", 0, undefined, 0]);
-    const last = t0 + MAX_TRIES * 20 * 60_000;
+    // A failed fetch between waits is one try; the next wait clears it, so scattered failures never add up to MAX_TRIES.
+    const blip = t0 + (MAX_TRIES + 1) * 20 * 60_000;
+    git(LIBS_GIT, "update-ref", "-d", "refs/heads/next");
+    await drainRepins(s.w.db, { ...s.deps, now: () => new Date(blip) });
+    assert.equal(row(s).tries, 1);
+    nextAt(NEXT_OLD);
+    await drainRepins(s.w.db, { ...s.deps, now: () => new Date(blip + 20 * 60_000) });
+    assert.deepEqual([row(s).state, row(s).tries], ["waiting", 0]);
+    const last = blip + 20 * 60_000;
     assert.equal(anyRepinDue(s.w.db, new Date(last + 60_000)), false, "not looked for again within minutes");
     assert.equal(anyRepinDue(s.w.db, new Date(last + 20 * 60_000)), true);
 
@@ -385,6 +394,13 @@ describe("autorepin", () => {
     assert.equal(row(s).state, "pushed");
     assert.equal(s.at("Cargo.toml"), MANIFEST.replace(OLD, SYNC).trim());
     assert.match(s.comments[0]!, /the first next commit that contains storytold\/libs#12/);
+  });
+
+  test("via a branch that does not exist is refused and nothing is stored", async () => {
+    const s = setup();
+    s.noBranch = "nope";
+    await assert.rejects(requestRepin(s.w.db, { login: OPERATOR, githubId: 101, role: "operator", canWrite: true, repo: "app", number: 1, pr: true, ref: { owner: "storytold", name: "libs", number: 12 }, branch: "nope", querier: s.deps.querier }), /storytold\/libs has no branch nope/);
+    assert.equal(s.w.db.prepare("SELECT count(*) AS n FROM autorepins").get()!.n, 0);
   });
 
   test("via a branch the merge never reaches fails once the wait runs out", async () => {
