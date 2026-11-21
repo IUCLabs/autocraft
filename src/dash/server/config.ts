@@ -134,6 +134,14 @@ export function appSecretsOf(raw: Record<string, unknown>): AppSecrets | null {
   return { id, slug, privateKey, clientId, clientSecret, webhookSecret: opt("github_app_webhook_secret"), owner };
 }
 
+/** The optional reviewer app that posts PR reviews: its JWT is signed with the app id as issuer. Null unless id, slug and key are present. */
+export type ReviewerAppSecrets = { id: string; slug: string; privateKey: string; clientId: string };
+export function reviewerAppSecretsOf(raw: Record<string, unknown>): ReviewerAppSecrets | null {
+  const opt = (k: string): string | null => (typeof raw?.[k] === "string" && (raw[k] as string).length > 0 ? (raw[k] as string) : null);
+  const id = opt("github_reviewer_app_id"), slug = opt("github_reviewer_app_slug"), privateKey = opt("github_reviewer_app_private_key");
+  return id && slug && privateKey ? { id, slug, privateKey, clientId: id } : null;
+}
+
 function readRawSecrets(path: string): Record<string, unknown> {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;

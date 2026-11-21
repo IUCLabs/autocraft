@@ -5,7 +5,7 @@
 // children get only the 1 h installation token, through their environment.
 import { readFileSync } from "node:fs";
 import type { AppSecrets } from "../dash/server/config.ts";
-import { appSecretsOf, checkSecretsFileMode } from "../dash/server/config.ts";
+import { appSecretsOf, checkSecretsFileMode, reviewerAppSecretsOf, type ReviewerAppSecrets } from "../dash/server/config.ts";
 import { envVar } from "../env.ts";
 import { AppError, appJwt, call, GITHUB_API, type AppDeps } from "./app.ts";
 
@@ -35,7 +35,7 @@ type Cached = { token: string; expiresAt: number };
 export type TokenScope = { also?: string[]; wide?: boolean };
 
 export class InstallTokenMinter {
-  private app: () => AppSecrets;
+  private app: () => Pick<AppSecrets, "clientId" | "privateKey">;
   private base: string;
   private now: () => number;
   private installs: { at: number; byOwner: Map<string, { id: number; selection: "all" | "selected" }> } | null = null;
@@ -45,7 +45,7 @@ export class InstallTokenMinter {
   private minting = new Map<string, Promise<Cached>>();
   private repos = new Map<number, { token: string; names: Set<string> }>();
 
-  constructor(app: AppSecrets | (() => AppSecrets), deps: MinterDeps = {}) {
+  constructor(app: Pick<AppSecrets, "clientId" | "privateKey"> | (() => Pick<AppSecrets, "clientId" | "privateKey">), deps: MinterDeps = {}) {
     this.app = typeof app === "function" ? app : () => app;
     this.base = deps.apiBase ?? GITHUB_API;
     this.now = deps.now ?? Date.now;
@@ -161,6 +161,22 @@ export function installationToken(owner: string, repo?: string, scope?: TokenSco
   if (!app) { shared = null; throw new AppError("no GitHub App is registered"); }
   if (shared?.appId !== app.id) shared = { appId: app.id, minter: new InstallTokenMinter(() => readAppSecrets() ?? app) };
   return shared.minter.token(owner, repo, scope);
+}
+
+/** The reviewer app's keys from the secrets file; null when none is configured. */
+export function readReviewerSecrets(path = envVar("SECRETS_FILE")): ReviewerAppSecrets | null {
+  if (!path) return null;
+  checkSecretsFileMode(path);
+  return reviewerAppSecretsOf(JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>);
+}
+
+let reviewer: { appId: string; minter: InstallTokenMinter } | null = null;
+/** An installation token of the reviewer app; throws when none is configured. */
+export function reviewerInstallationToken(owner: string, repo?: string, scope?: TokenScope): Promise<string> {
+  const app = readReviewerSecrets();
+  if (!app) { reviewer = null; throw new AppError("no reviewer GitHub App is configured"); }
+  if (reviewer?.appId !== app.id) reviewer = { appId: app.id, minter: new InstallTokenMinter(() => readReviewerSecrets() ?? app) };
+  return reviewer.minter.token(owner, repo, scope);
 }
 
 // ---- handing a token to a child process ---------------------------------------

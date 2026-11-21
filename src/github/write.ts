@@ -16,7 +16,7 @@ export type AskKind = "fixup" | "conflict" | "cifix" | "lint";
 export type CommentGrant = Guarded<AskKind> | GuardedItem | GuardedRepo;
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import { Client, type Querier } from "../mirror.ts";
-import { appChildEnv, AppNotInstalledError, installationToken, RepoNotInInstallationError, type TokenScope } from "./install-token.ts";
+import { appChildEnv, AppNotInstalledError, installationToken, readReviewerSecrets, RepoNotInInstallationError, reviewerInstallationToken, type TokenScope } from "./install-token.ts";
 import { type Note, withNote } from "./note.ts";
 import { scrub } from "../runner/scrub.ts";
 import { ownerOf, slugOf, splitSlug } from "../owners.ts";
@@ -28,7 +28,7 @@ export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
 
 /** Who writes (the audit login: the stage name, or the operator for manual actions) and where the row goes. */
-export type Writer = { db: DatabaseSync; login: string; /** Replaces the clock (tests). */ now?: () => number; /** Replaces the pacing sleep (tests). */ sleep?: (ms: number) => Promise<void>; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string, scope?: TokenScope) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
+export type Writer = { db: DatabaseSync; login: string; /** Replaces the clock (tests). */ now?: () => number; /** Replaces the pacing sleep (tests). */ sleep?: (ms: number) => Promise<void>; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string, scope?: TokenScope) => Promise<string>; /** Replaces the reviewer app's minter (tests). */ reviewerMint?: (owner: string, repo: string, scope?: TokenScope) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
 type Details = Record<string, unknown>;
 type Retry = <T>(f: () => Promise<T>) => Promise<T>;
 
@@ -106,6 +106,12 @@ function laneGit(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">, scope?: T
       return git.git(args, { ...opts, app: { env } });
     },
   };
+}
+
+/** Review posts and edits mint with the reviewer app when one is configured, else they are the main app's. */
+function reviewLane(w: Writer): Writer {
+  if (w.reviewerMint) return { ...w, mint: w.reviewerMint };
+  try { return readReviewerSecrets() ? { ...w, mint: reviewerInstallationToken } : w; } catch { return w; }
 }
 
 function laneQuery(w: Writer, g: Guarded | Grant, q: Querier, kind: WriteKind = "other", scope?: TokenScope): Querier {
@@ -378,7 +384,7 @@ export async function requestReviewers(w: Writer, g: Grant, q: Querier, item: It
 
 /** Posts a review as a plain comment review on the commit; returns the review id (null when GitHub returned none). */
 export async function postReview(w: Writer, q: Querier, g: Guarded<"post-review">, nodeId: string, note: Note, text: string, details: Details = {}): Promise<string | null> {
-  q = laneQuery(w, g, q);
+  q = laneQuery(reviewLane(w), g, q);
   const body = posted(note, text);
   const r = await recorded(w, idOf(w, g), "review-post", refOf(g.repo, g.number), { ...details, head: g.head },
     () => q.query(ADD_REVIEW, { pr: nodeId, oid: g.head, body }) as Promise<{ addPullRequestReview?: { pullRequestReview?: { id?: string } | null } | null }>,
@@ -388,7 +394,7 @@ export async function postReview(w: Writer, q: Querier, g: Guarded<"post-review"
 }
 
 export async function editReview(w: Writer, q: Querier, g: Guarded<"post-review">, reviewId: string, note: Note, text: string, details: Details = {}): Promise<void> {
-  q = laneQuery(w, g, q);
+  q = laneQuery(reviewLane(w), g, q);
   const body = posted(note, text);
   await recorded(w, idOf(w, g), "review-edit", refOf(g.repo, g.number), { ...details, head: g.head, review: reviewId }, () => q.query(EDIT_REVIEW, { id: reviewId, body }));
 }
