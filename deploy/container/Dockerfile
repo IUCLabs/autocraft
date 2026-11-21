@@ -6,13 +6,12 @@
 #
 # Build from the repository root:  docker build -f deploy/container/Dockerfile -t autocraft .
 #
-# Bases are Docker Hardened Images for Node 26 on Debian 13. The dev variant is
-# the toolchain (bash, apt, npm) and only ever appears in the build stages; the
-# production stage is the runtime variant, which ships nothing but Node and has no
-# shell to install anything with. That is why everything the process needs is
+# Bases are the official Node 26 images on Debian 13. The full variant is the
+# toolchain (bash, apt, npm) and only ever appears in the build stages; the
+# production stage is the slim variant, and everything the process needs is
 # assembled in a rootfs by the `tools` stage and copied in as files.
-ARG NODE_DEV_IMAGE=dhi.io/node:26-debian-dev@sha256:5101bfdf585a219118dbd5c3ed6554d778e95ff1b9d83aad6da1ebb87f26e3fc
-ARG NODE_RUNTIME_IMAGE=dhi.io/node:26@sha256:de8059011a5c409edeb514882b1f7093b8f0610bb3ca582c5470cec9106f6056
+ARG NODE_DEV_IMAGE=docker.io/library/node:26-trixie@sha256:e18c3ccdf7d71619990b0e85639f506e2028a95410999cab24cc373cbd10e0ac
+ARG NODE_RUNTIME_IMAGE=docker.io/library/node:26-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
 
 ################################################################################
 # The dashboard bundle the server serves from web/dist.
@@ -29,8 +28,7 @@ COPY web ./
 RUN pnpm exec vite build --outDir dist --emptyOutDir
 
 ################################################################################
-# Runtime tools for the production image. The runtime base has neither a shell nor
-# a package manager, so the packages are unpacked here into a rootfs instead:
+# Runtime tools for the production image, unpacked here so the runtime stage installs nothing:
 # every package in the dependency closure is downloaded and extracted, and the
 # runtime stage copies the tree as files.
 FROM ${NODE_DEV_IMAGE} AS tools
@@ -42,9 +40,9 @@ ARG TARGETARCH
 
 RUN set -eux; \
     apt-get update; \
-    # curl and gzip fetch and unpack the GitHub CLI below (a dev base may lack them);
+    # curl and gzip fetch and unpack the GitHub CLI below;
     apt-get install -y --no-install-recommends curl gzip; \
-    # Besides the tools themselves, the shell-less base lacks the basics scripts and
+    # Besides the tools themselves, the slim base may lack the basics scripts and
     # spawned programs rely on, so they are listed too: dash (/bin/sh, which git runs
     # `!` credential helpers with), coreutils (entrypoint.sh, backup.sh and the periodic
     # loop: mkdir rm ls date stat sleep head tail mktemp dirname cp), findutils (xargs
@@ -64,9 +62,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/* /tmp/debs /tmp/packages; \
     # `dpkg -x` runs no postinst, so make sure /bin/sh exists whatever the packages shipped.
     [ -e /rootfs/usr/bin/sh ] || ln -s dash /rootfs/usr/bin/sh; \
-    # Prove the unpacked tree runs on its own libraries before it is copied into
-    # the runtime base, which has no shell to debug it with later. A plain file
-    # stands in for /dev/null so git can open it inside the chroot.
+    # Prove the unpacked tree runs on its own libraries before it is copied over the
+    # runtime base. A plain file stands in for /dev/null so git can open it in the chroot.
     mkdir -p /rootfs/dev; : > /rootfs/dev/null; \
     chroot /rootfs /bin/bash -c 'set -e; export PATH=/usr/local/bin:/usr/bin:/bin LC_ALL=C; \
       git --version; \
@@ -131,8 +128,8 @@ RUN set -eux; \
     chmod 0755 deploy/entrypoint.sh deploy/backup.sh
 
 ################################################################################
-# Production. Nothing is installed here: the shell-less runtime base receives the
-# prepared tree as files, so no build tool survives into the image.
+# Production. Nothing is installed here: the runtime stage only receives the
+# prepared tree as files.
 FROM ${NODE_RUNTIME_IMAGE}
 
 COPY --from=tools /rootfs/ /
