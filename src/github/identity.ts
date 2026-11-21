@@ -13,6 +13,7 @@ import { knownSlugs, rememberSlug } from "./slugs.ts";
 import { AppError, call, GITHUB_API } from "./app.ts";
 import { AppNotInstalledError, installationToken, readAppSecrets, readReviewerSecrets, RepoNotInInstallationError } from "./install-token.ts";
 import { setting } from "../settings-read.ts";
+import { envVar } from "../env.ts";
 
 export type Identity = "app" | `user:${string}`;
 export type GithubIdentity = "box" | "app";
@@ -188,13 +189,14 @@ export function ownBotLogins(db: DatabaseSync, extra: string | null = null): str
 }
 
 /** Slugs of the registered GitHub App and the reviewer app, read from the secrets file at most once a minute; null when absent or the file is unreadable. */
-let slugMemo: { at: number; slug: string | null; reviewer: string | null } | null = null;
+let slugMemo: { at: number; file: string | undefined; slug: string | null; reviewer: string | null } | null = null;
 function slugsNow(): { slug: string | null; reviewer: string | null } {
-  if (slugMemo && Date.now() - slugMemo.at < 60_000) return slugMemo;
+  const file = envVar("SECRETS_FILE");
+  if (slugMemo && slugMemo.file === file && Date.now() - slugMemo.at < 60_000) return slugMemo;
   let slug: string | null = null, reviewer: string | null = null;
   try { slug = readAppSecrets()?.slug ?? null; } catch { slug = null; }
   try { reviewer = readReviewerSecrets()?.slug ?? null; } catch { reviewer = null; }
-  slugMemo = { at: Date.now(), slug, reviewer };
+  slugMemo = { at: Date.now(), file, slug, reviewer };
   return slugMemo;
 }
 export const appSlug = (): string | null => slugsNow().slug;

@@ -139,8 +139,14 @@ export type ReviewerAppSecrets = { id: string; slug: string; privateKey: string;
 export function reviewerAppSecretsOf(raw: Record<string, unknown>): ReviewerAppSecrets | null {
   const opt = (k: string): string | null => (typeof raw?.[k] === "string" && (raw[k] as string).length > 0 ? (raw[k] as string) : null);
   const id = opt("github_reviewer_app_id"), slug = opt("github_reviewer_app_slug"), privateKey = opt("github_reviewer_app_private_key");
-  return id && slug && privateKey ? { id, slug, privateKey, clientId: id } : null;
+  if (id && slug && privateKey) return { id, slug, privateKey, clientId: id };
+  if ((id || slug || privateKey) && !partialReviewerWarned) {
+    partialReviewerWarned = true;
+    console.warn("reviewer GitHub App ignored: github_reviewer_app_id, github_reviewer_app_slug and github_reviewer_app_private_key must all be set");
+  }
+  return null;
 }
+let partialReviewerWarned = false;
 
 function readRawSecrets(path: string): Record<string, unknown> {
   try {

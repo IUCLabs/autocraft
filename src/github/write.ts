@@ -28,7 +28,7 @@ export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
 
 /** Who writes (the audit login: the stage name, or the operator for manual actions) and where the row goes. */
-export type Writer = { db: DatabaseSync; login: string; /** Replaces the clock (tests). */ now?: () => number; /** Replaces the pacing sleep (tests). */ sleep?: (ms: number) => Promise<void>; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string, scope?: TokenScope) => Promise<string>; /** Replaces the reviewer app's minter (tests). */ reviewerMint?: (owner: string, repo: string, scope?: TokenScope) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
+export type Writer = { db: DatabaseSync; login: string; /** Replaces the clock (tests). */ now?: () => number; /** Replaces the pacing sleep (tests). */ sleep?: (ms: number) => Promise<void>; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string, scope?: TokenScope) => Promise<string>; /** Replaces the reviewer app's minter (tests); null once `reviewWriter` has picked the lane. */ reviewerMint?: ((owner: string, repo: string, scope?: TokenScope) => Promise<string>) | null; /** Set by `reviewWriter`: the lane is the reviewer app's. */ reviewing?: boolean; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
 type Details = Record<string, unknown>;
 type Retry = <T>(f: () => Promise<T>) => Promise<T>;
 
@@ -108,10 +108,24 @@ function laneGit(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">, scope?: T
   };
 }
 
-/** Review posts and edits mint with the reviewer app when one is configured, else they are the main app's. */
-function reviewLane(w: Writer): Writer {
-  if (w.reviewerMint) return { ...w, mint: w.reviewerMint };
-  try { return readReviewerSecrets() ? { ...w, mint: reviewerInstallationToken } : w; } catch { return w; }
+/**
+ * Review posts and edits mint with the reviewer app when one is configured, else they are the main app's. A reviewer token
+ * that cannot be minted falls back to the main app. `reviewer` says which app the write goes out as.
+ */
+export async function reviewWriter(w: Writer, g: Guarded | Grant): Promise<{ w: Writer; reviewer: boolean }> {
+  if (w.reviewerMint === null) return { w, reviewer: w.reviewing === true };
+  const main = { ...w, reviewerMint: null, reviewing: false };
+  if (!inAppLane(w, g)) return { w: main, reviewer: false };
+  let mint = w.reviewerMint;
+  if (!mint) { try { if (readReviewerSecrets()) mint = reviewerInstallationToken; } catch { /* unreadable: the main app */ } }
+  if (!mint) return { w: main, reviewer: false };
+  try {
+    const token = await mint(ownerOf(g.repo), g.repo);
+    return { w: { ...w, mint: async () => token, reviewerMint: null, reviewing: true }, reviewer: true };
+  } catch (e) {
+    console.error(`reviewer app: no installation token for ${g.repo}, using the main app: ${oneLine(String((e as Error).message ?? e))}`);
+    return { w: main, reviewer: false };
+  }
 }
 
 function laneQuery(w: Writer, g: Guarded | Grant, q: Querier, kind: WriteKind = "other", scope?: TokenScope): Querier {
@@ -384,7 +398,7 @@ export async function requestReviewers(w: Writer, g: Grant, q: Querier, item: It
 
 /** Posts a review as a plain comment review on the commit; returns the review id (null when GitHub returned none). */
 export async function postReview(w: Writer, q: Querier, g: Guarded<"post-review">, nodeId: string, note: Note, text: string, details: Details = {}): Promise<string | null> {
-  q = laneQuery(reviewLane(w), g, q);
+  q = laneQuery((await reviewWriter(w, g)).w, g, q);
   const body = posted(note, text);
   const r = await recorded(w, idOf(w, g), "review-post", refOf(g.repo, g.number), { ...details, head: g.head },
     () => q.query(ADD_REVIEW, { pr: nodeId, oid: g.head, body }) as Promise<{ addPullRequestReview?: { pullRequestReview?: { id?: string } | null } | null }>,
@@ -394,7 +408,7 @@ export async function postReview(w: Writer, q: Querier, g: Guarded<"post-review"
 }
 
 export async function editReview(w: Writer, q: Querier, g: Guarded<"post-review">, reviewId: string, note: Note, text: string, details: Details = {}): Promise<void> {
-  q = laneQuery(reviewLane(w), g, q);
+  q = laneQuery((await reviewWriter(w, g)).w, g, q);
   const body = posted(note, text);
   await recorded(w, idOf(w, g), "review-edit", refOf(g.repo, g.number), { ...details, head: g.head, review: reviewId }, () => q.query(EDIT_REVIEW, { id: reviewId, body }));
 }
