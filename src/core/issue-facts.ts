@@ -12,7 +12,7 @@ import { latestRun, needsDecisionOf, refereeClosed, securityOf, settle, topOf, S
 import { JEV_FLAG_NO, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "../classify/parse.ts";
 import { answersToApply, groupsToAsk } from "../dupes/decide.ts";
 import { uncheckedPairs } from "../dupes/check.ts";
-import { dueSets } from "../dupes/plan.ts";
+import { dueSets, ruleOutcome } from "../dupes/plan.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { classifyHash, embedHash as hashOfText, SCHEME_ID } from "../itemhash.ts";
 import { actionable } from "../decisions.ts";
@@ -142,7 +142,11 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   for (const a of answersToApply(db)) for (const r of a.refs) (dupeAnswers.get(r) ?? dupeAnswers.set(r, []).get(r)!).push(a.id);
   // Group-level work (which groups to ask about, which sets to compare) is planned per group by dupes/decide.ts and dupes/plan.ts; the items carry its result.
   const inGroup = new Set(groupsToAsk(db, opts.repo).flatMap((g) => g.group.members.map((n) => `${g.repo}#${n}`)));
-  const inCompare = new Set(dueSets(db, opts.repo, now).flatMap((s) => s.members.map((m) => `${s.repo}#${m.number}`)));
+  const inCompare = new Map<string, "rule" | "model">();
+  for (const s of dueSets(db, opts.repo, now)) {
+    const how = ruleOutcome(s) === null ? "model" : "rule";
+    for (const m of s.members) { const ref = `${s.repo}#${m.number}`; if (inCompare.get(ref) !== "model") inCompare.set(ref, how); }
+  }
   const approved = new Map<string, boolean>();
   const labelsApproved = (repo: string) => approved.get(repo) ?? (approved.set(repo, labelsApprovalOf(db, repo) !== null), approved.get(repo)!);
   // Act: answers an operator gave that close an item (decisions.ts actionable, as act/index.ts targetsOf reads them).
@@ -253,7 +257,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
         referee: settled.referee ? { sure: settled.referee.sure, final: refereeClosed(settled.referee), failedAt: settled.referee.failedAt ?? null } : null, jev, haiku,
       },
       embedHash, embeddedHash: r.e_hash, priorityHash: r.pr_hash, scannedHash: r.scan_hash,
-      pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref), dupeAnswers: dupeAnswers.get(ref) ?? [],
+      pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.get(ref) ?? false, dupeAnswers: dupeAnswers.get(ref) ?? [],
       scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), recommend: recommend.get(ref) ?? null },
       labels: { quietFix: own.quiet.has(ref), existing: json<unknown[]>(r.labels, []).map(String), pluginAnswer: operatorAnswers.get(ref) === "plugin", labeledNote: note },
       answeredClose: answeredClose.get(ref) ?? [],
