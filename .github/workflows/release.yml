@@ -12,6 +12,7 @@ jobs:
   release:
     # GitHub-hosted: the iuclabs runners have no docker
     runs-on: ubuntu-24.04
+    concurrency: {group: release, cancel-in-progress: false}
     timeout-minutes: 20
     env:
       IMAGE: ghcr.io/iuclabs/autocraft

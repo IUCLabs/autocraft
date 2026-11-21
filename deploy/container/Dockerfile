@@ -40,7 +40,7 @@ ARG TARGETARCH
 
 RUN set -eux; \
     apt-get update; \
-    # curl and gzip fetch and unpack the GitHub CLI below (the full base may lack them);
+    # curl and gzip fetch and unpack the GitHub CLI below;
     apt-get install -y --no-install-recommends curl gzip; \
     # Besides the tools themselves, the slim base may lack the basics scripts and
     # spawned programs rely on, so they are listed too: dash (/bin/sh, which git runs
@@ -128,8 +128,8 @@ RUN set -eux; \
     chmod 0755 deploy/entrypoint.sh deploy/backup.sh
 
 ################################################################################
-# Production. Nothing is installed here: the runtime base receives the prepared
-# tree as files, so no build tool survives into the image.
+# Production. Nothing is installed here: the runtime stage only receives the
+# prepared tree as files.
 FROM ${NODE_RUNTIME_IMAGE}
 
 COPY --from=tools /rootfs/ /
