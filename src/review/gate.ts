@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi, effectiveCiWith, optionalChecksOf } from "../optional-checks.ts";
 import { BLOCKS_REVIEW, activeBlockers, hasOpenQuestion, storedBlockedBy } from "./blockers.ts";
-import { MAX_RERUNS_PER_DAY, discussionState, markedStaleSince, maintainerSince, reviewRequestedSince, type DiscussionState } from "./discussion.ts";
+import { MAX_RERUNS_PER_DAY, discussionState, maintainerSince, staleMarksSince, type DiscussionState } from "./discussion.ts";
 import { ourCommitsSince } from "./ours.ts";
 
 /** Opus review calls of one PR per UTC day, new heads, re-runs and failed calls together (a reply-fix turn is part of its review). */
@@ -93,6 +93,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now(), refs?:
   const checks = once(() => new Map((db.prepare(`SELECT c.repo || '#' || c.number AS k, c.head_oid, c.overall, c.checks FROM main.pr_checks c WHERE 1${narrow("c")}`).all(bind()) as
     { k: string; head_oid: string; overall: string; checks: string | null }[]).map((r) => [r.k, r])));
   const optional = once(() => optionalChecksOf(db));
+  const staleSince = once(() => staleMarksSince(db));
   // CI at the head as headCi() reads it.
   const ciAt = (repo: string, number: number, head: string): "ok" | "pending" | "failure" | "unknown" => {
     const c = checks().get(`${repo}#${number}`);
@@ -114,7 +115,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now(), refs?:
       if (delay === undefined) {
         // Final. A request newer than the last failure grants one more try; a failure then stamps a newer time and makes it final again.
         const since = failed.split("|")[1] ?? "";
-        const asked = markedStaleSince(db, repo, number, since) || maintainerSince(discussionState(db, repo).get(`${repo}#${number}`), since, null);
+        const asked = staleSince()(repo, number, since) || maintainerSince(discussionState(db, repo).get(`${repo}#${number}`), since, null);
         if (!asked) return { kind: "failed", wait: `its review failed ${n} times at this commit; a new commit, a Review again press or a maintainer's comment gives it one more try` };
       } else if (at + delay > nowMs) return { kind: "failed", wait: `the review after ${n} failed ${n === 1 ? "try" : "tries"} at this commit, from ${new Date(at + delay).toISOString().slice(11, 16)}`, until: at + delay };
     }
@@ -123,7 +124,8 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now(), refs?:
     if (last) {
       let state = states.get(repo);
       if (!state) states.set(repo, (state = discussionState(db, repo)));
-      if (reviewRequestedSince(db, repo, number, last.at, last.seen_at, last.disc_hash, state)) return null;
+      // reviewRequestedSince() with the stale marks read once.
+      if (staleSince()(repo, number, last.at) || maintainerSince(state.get(ref), last.seen_at ?? last.at, last.disc_hash)) return null;
     }
     let settled = false;
     if (last?.verdict === "hold" && storedBlockedBy(last.blocked_by).length) {

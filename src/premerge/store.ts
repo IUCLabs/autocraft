@@ -64,10 +64,23 @@ export function savePremerge(db: DatabaseSync, s: PremergeSave): void {
 
 /** The pre-merge review of a head, when it read the diff against the base branch the head's Opus review read (a row or review that recorded none counts as matching). */
 export function premergeAt(db: DatabaseSync, repo: string, number: number, head: string): PremergeRow | null {
-  return (db.prepare(`SELECT p.* FROM premerge_reviews p
+  return (db.prepare(`${premergeSql("")} AND p.repo = ? AND p.number = ? AND p.head_oid = ?`).get(repo, number, head) as PremergeRow | undefined) ?? null;
+}
+
+/** The pre-merge reviews that read the diff against the base branch their head's Opus review read (see premergeAt). */
+const premergeSql = (extra: string): string => `SELECT p.*${extra} FROM premerge_reviews p
     LEFT JOIN opus_reviews o ON o.repo = p.repo AND o.number = p.number AND o.head_oid = p.head_oid LEFT JOIN repos r ON r.name = p.repo
-    WHERE p.repo = ? AND p.number = ? AND p.head_oid = ?
-      AND (p.base_ref IS NULL OR COALESCE(o.base_ref, r.default_branch) IS NULL OR p.base_ref = COALESCE(o.base_ref, r.default_branch))`).get(repo, number, head) as PremergeRow | undefined) ?? null;
+    WHERE (p.base_ref IS NULL OR COALESCE(o.base_ref, r.default_branch) IS NULL OR p.base_ref = COALESCE(o.base_ref, r.default_branch))`;
+
+/** premergeAt() of every head, keyed by `repo#number@head`; `narrow` adds a condition on `p` with its named parameters. */
+export function premergeRows(db: DatabaseSync, narrow: { sql: string; p: Record<string, string> } = { sql: "", p: {} }): Map<string, PremergeRow> {
+  const out = new Map<string, PremergeRow>();
+  for (const row of db.prepare(`${premergeSql(", p.repo || '#' || p.number || '@' || p.head_oid AS k")}${narrow.sql}`).all(narrow.p) as (PremergeRow & { k?: string })[]) {
+    const k = row.k!;
+    delete row.k;
+    out.set(k, row);
+  }
+  return out;
 }
 
 /** The PR already had a pre-merge fix round (any fixups row with source premerge, pushed or not). */

@@ -34,9 +34,9 @@ import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
 import { verifyOverride } from "../merge/verify-override.ts";
 import { unknownOf } from "../merge/mergeable.ts";
-import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, OPEN_QUESTION_SQL, UNSURE_AT_SQL, mergeDecisionId, holdDecisionId } from "./rules.ts";
+import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, UNSURE_AT_SQL, mergeDecisionId, holdDecisionId } from "./rules.ts";
 import { getRule, STATS_SQL, tierOf, tierKey, tiersOf, type AuthorRef, type Tier } from "../whitelist.ts";
-import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
+import { findingsOf, premergeFixUsed, premergeRows } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
 import { cachedDiffExtras, diffRereads, extrasPending, rereadPaceAt, diffCacheDir, splitDiff } from "../review/diff.ts";
@@ -160,7 +160,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   };
   const keyed = <T extends { k: string }>(sql: string, a: string): Map<string, Omit<T, "k">[]> => {
     const n = narrow(a), out = new Map<string, Omit<T, "k">[]>();
-    for (const row of db.prepare(sql.replace("/*narrow*/", n.sql)).all(n.p) as T[]) {
+    for (const row of db.prepare(sql.replaceAll("/*narrow*/", n.sql)).all(n.p) as T[]) {
       const k = row.k;
       delete (row as Partial<T>).k;
       (out.get(k) ?? out.set(k, []).get(k)!).push(row);
@@ -184,7 +184,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const ourFixupHead = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' AND source IS NULL LIMIT 1");
   const ourSameDiffMerge = db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' AND own_diff = 'same' LIMIT 1");
   // A head we pushed, or the head our push moved off (the mirror may still show it, and our own comment makes its review stale).
-  const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ?1 AND number = ?2 AND (to_oid = ?3 OR from_oid = ?3)");
+  const pushedHere = keyed<{ k: string }>(`SELECT p.repo || '#' || p.number || '@' || p.to_oid AS k FROM push_outcomes p WHERE 1 /*narrow*/
+    UNION SELECT p.repo || '#' || p.number || '@' || p.from_oid FROM push_outcomes p WHERE p.from_oid IS NOT NULL /*narrow*/`, "p");
   const pushedOffAt = keyed<{ k: string; at: string }>("SELECT p.repo || '#' || p.number || '@' || p.from_oid AS k, p.at FROM push_outcomes p WHERE p.to_oid <> p.from_oid /*narrow*/", "p");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
@@ -199,7 +200,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const pmReviews = new Map((db.prepare("SELECT repo || '#' || number AS ref, at, error FROM postmerge_reviews").all() as { ref: string; at: string; error: string | null }[]).map((x) => [x.ref, x]));
   const since = (db.prepare("SELECT value FROM settings WHERE key = ?").get(SINCE_KEY) as { value: string } | undefined)?.value ?? "9999";
   const operator = operatorWork(db, opts.repo);
-  const carries = db.prepare(`SELECT k.decision_id, k.attempts FROM dupe_carries k WHERE k.repo = ? AND k.number = ? AND k.state = 'queued' ORDER BY k.number`);
+  const carries = keyed<{ k: string; decision_id: string; attempts: number }>("SELECT c.repo || '#' || c.number AS k, c.decision_id, c.attempts FROM dupe_carries c WHERE c.state = 'queued' /*narrow*/ ORDER BY c.rowid", "c");
   const carryUnsent = db.prepare("SELECT created_at FROM fixups WHERE repo = ? AND number = ? AND source = 'carry' AND carry_decision = ? AND state = 'comment-unsent'");
   const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
   const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'comment-failed', 'push-denied', 'linting')");
@@ -232,9 +233,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   };
 
   const stackedOnQ = db.prepare("SELECT number FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND head_ref = ? AND lower(head_repo) = ? AND number != ? ORDER BY number LIMIT 1");
-  const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at, (SELECT COUNT(*) FROM merges m2 WHERE m2.repo = merges.repo AND m2.number = merges.number AND m2.head_oid = merges.head_oid AND m2.outcome = 'refused') AS refusals FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
+  // The latest merge attempt at each head (first in the order) and the refusals there.
+  const merges = keyed<{ k: string; outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string; refusals: number }>(`SELECT m.repo || '#' || m.number || '@' || m.head_oid AS k, m.outcome, m.reason, m.ci, m.mergeable, m.at,
+    (SELECT COUNT(*) FROM merges m2 WHERE m2.repo = m.repo AND m2.number = m.number AND m2.head_oid = m.head_oid AND m2.outcome = 'refused') AS refusals FROM merges m WHERE 1 /*narrow*/ ORDER BY m.at DESC, m.rowid DESC`, "m");
   const retriedAfter = db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'retry' AND at > ? LIMIT 1");
-  const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
+  const waiting = keyed<{ k: string } & Wait>("SELECT a.repo || '#' || a.number || '@' || a.head_oid AS k, a.runs, a.approved, a.reread, a.failed, a.cross_repo, a.approved_at FROM ci_run_approvals a WHERE 1 /*narrow*/", "a");
   const verifRows = keyed<{ k: string; state: string; kind: string; summary: string | null; note: string | null }>("SELECT v.repo || '#' || v.number || '@' || v.head_sha AS k, v.state, v.kind, v.summary, v.note FROM verifications v WHERE 1 /*narrow*/", "v");
   const verifAt = (ref: string, head: string) => verifRows.get(`${ref}@${head}`)?.[0];
   // The answer of every decision, by id (null: not answered yet).
@@ -246,11 +249,17 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     return { asked, open: asked && answer === null, answer, otherOpen: otherOpen.has(ref) };
   };
   const statement = db.prepare("SELECT id, repo, number, text FROM owner_statements WHERE id = ?");
-  const openQuestion = db.prepare(OPEN_QUESTION_SQL);
-  const answeredAfter = db.prepare(`SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND ${settledBySql("decisions")}`);
+  // OPEN_QUESTION_SQL for every PR.
+  const openQuestion = keyed<{ k: string }>("SELECT DISTINCT d.repo || '#' || d.number AS k FROM decisions d WHERE d.kind = 'merge' AND d.answer IS NULL AND d.id NOT LIKE '%~replaced-%' /*narrow*/", "d");
+  // The settled Merge answers, by decision id: when they were given.
+  const mergeAnsweredAt = new Map((db.prepare(`SELECT id, answered_at FROM decisions WHERE kind = 'merge' AND answer = 'merge' AND answered_at IS NOT NULL AND ${settledBySql("decisions")}`).all() as { id: string; answered_at: string }[]).map((d) => [d.id, d.answered_at]));
+  const answeredAfter = (id: string, at: string): boolean => { const a = mergeAnsweredAt.get(id); return a !== undefined && a > at; };
   const pushChain = pushChainOf(db);
   const ownHead = ownHeadOf(db);
-  const unsureAt = db.prepare(UNSURE_AT_SQL);
+  // UNSURE_AT_SQL for every head: a take or take-fix review there with sure = 0.
+  const unsureAt = keyed<{ k: string }>(`SELECT o.repo || '#' || o.number || '@' || o.head_oid AS k FROM opus_review_history o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/
+    UNION SELECT o.repo || '#' || o.number || '@' || o.head_oid FROM opus_reviews o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/`, "o");
+  const premerge = premergeRows(db, narrow("p"));
   const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");
   const batchTip = db.prepare(`SELECT a.runs, a.approved, a.reread, a.failed, a.cross_repo FROM merge_batches b
     JOIN ci_run_approvals a ON a.repo = b.repo AND a.number = b.pr_number AND a.head_oid = b.commit_sha
@@ -338,7 +347,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       if (base.lint.length) base.inFlight = true;
     }
     if (r.state === "OPEN" && !base.heldBacklog) {
-      for (const k of carries.all(r.repo, r.number) as { decision_id: string; attempts: number }[]) {
+      for (const k of carries.get(ref) ?? []) {
         const hasPoints = (carryPoints.all(k.decision_id) as { detail: string | null }[]).some((x) => {
           try { const c = (JSON.parse(x.detail ?? "null") as { carry?: unknown } | null)?.carry; return Array.isArray(c) && c.some((p) => typeof p === "string"); } catch { return false; }
         });
@@ -351,7 +360,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
 
     const take = r.r_verdict === "take" || r.r_verdict === "take-fix";
     const chain = take ? pushChain(r.repo, r.number, r.r_head) : [r.r_head];
-    const unsure = take && (r.r_sure === 0 || chain.some((h) => unsureAt.get(r.repo, r.number, h)));
+    const unsure = take && (r.r_sure === 0 || chain.some((h) => unsureAt.has(`${ref}@${h}`)));
     base.review = {
       head: r.r_head, at: r.r_at, verdict: r.r_verdict, unsure, mode: r.r_mode, reason: r.r_reason ?? "", fixes: parseList(r.r_fixes).length,
       stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
@@ -359,13 +368,13 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.pushChain = chain;
     base.decision.hold = holdQuestionOf(ref, holdDecisionId(r.repo, r.number, r.r_head));
     if (r.state === "OPEN" && head && head !== r.r_head && (ourFixupHead.get(r.repo, r.number, head) || ourSameDiffMerge.get(r.repo, r.number, head)) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
-    if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
+    if (r.state === "OPEN" && (chain.length > 1 || (!!head && pushedHere.has(`${ref}@${head}`)))) base.inFlight = true;
     const diffFacts = diffFactsAt(r.repo, r.number, r.r_head);
     // While the extras are pending the reasons are the conservative ones, and the wait itself keeps the PR off the rule.
     base.sensitive = diffFacts ? (diffFacts.pending ? [...diffFacts.reasons, EXTRAS_PENDING_REASON] : diffFacts.reasons) : null;
     if (diffFacts?.pending) base.diffPending = { lastRead: diffFacts.lastRead, paceAt: paceAt ??= rereadPaceAt(now) };
     if (diffFacts) { base.lines = diffFacts.lines; base.size = sizeOf(diffFacts.lines); }
-    base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
+    base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premerge.get(`${ref}@${r.r_head}`)?.conflicts ?? null)]);
     const p = posts.get(ref);
     // A carried review has no text of its own: the post uses the text of the review it was carried from.
     const src = r.r_mode === CARRIED ? postSource(db, r.repo, r.number, r.r_head) : null;
@@ -400,7 +409,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     }
     if (!take) { out.push(base); continue; }
 
-    const wait = waiting.get(r.repo, r.number, r.r_head) as Wait | undefined;
+    const wait: Wait | undefined = waiting.get(`${ref}@${r.r_head}`)?.[0];
     const checksHere = r.c_head === r.r_head;
     base.checksHere = checksHere;
     base.checksOpen = checksHere && r.c_state === "OPEN" && !r.c_draft;
@@ -424,10 +433,10 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const ownHere = !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref) && !!head && ownHead(r.repo, r.number, head);
     if (base.tier === "not" && ownHere) base.tier = "whitelisted";
 
-    const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string; refusals: number } | undefined;
+    const last = merges.get(`${ref}@${r.r_head}`)?.[0];
     // An operator's Retry after a refusal asks for another try now, without waiting for CI or the mergeable state to change.
     // A fresh Merge answer after a refusal asks for another try, as a Retry does.
-    if (last && !(last.outcome === "refused" && (retriedAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at) || answeredAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at)))) {
+    if (last && !(last.outcome === "refused" && (retriedAfter.get(mergeDecisionId(r.repo, r.number, r.r_head), last.at) || answeredAfter(mergeDecisionId(r.repo, r.number, r.r_head), last.at)))) {
       base.lastMerge = { outcome: last.outcome, reason: last.reason, ci: last.ci, mergeable: last.mergeable, refusals: last.refusals };
       base.runsApprovedAfterMerge = !!wait?.approved_at && wait.approved_at > last.at;
     }
@@ -440,13 +449,13 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const id = mergeDecisionId(r.repo, r.number, r.r_head);
     const given = answers.get(id) ?? null;
     base.decision = {
-      asked: decisionAnswers.has(id), openQuestion: r.state === "OPEN" && !!openQuestion.get(r.repo, r.number), answer: given,
-      mergeAnswerAfterReview: given === "merge" && !!answeredAfter.get(id, r.r_at), inOpenGroup: grouped.has(ref),
+      asked: decisionAnswers.has(id), openQuestion: r.state === "OPEN" && openQuestion.has(ref), answer: given,
+      mergeAnswerAfterReview: given === "merge" && answeredAfter(id, r.r_at), inOpenGroup: grouped.has(ref),
       hold: base.decision.hold,
     };
     if (r.state !== "OPEN") { out.push(base); continue; }
 
-    const row = premergeAt(db, r.repo, r.number, r.r_head);
+    const row = premerge.get(`${ref}@${r.r_head}`) ?? null;
     if (row) {
       const all = findingsOf(row);
       const defects = all.filter((f) => f.severity === "defect");

@@ -326,6 +326,12 @@ export function markedStaleSince(db: DatabaseSync, repo: string, number: number,
   return !!v && v > since;
 }
 
+/** markedStaleSince() for every PR, with the marks read in one query. */
+export function staleMarksSince(db: DatabaseSync): (repo: string, number: number, since: string) => boolean {
+  const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key, m.value]));
+  return (repo, number, since) => { const v = marks.get(staleKey(repo, number)); return !!v && v > since; };
+}
+
 /** Counts a same-head re-review against the PR's daily cap and forgets earlier days. */
 export function countRerun(db: DatabaseSync, repo: string, number: number): void {
   db.prepare("DELETE FROM main.settings WHERE key LIKE ? AND key <> ?").run(`${RERUN_KEY}${repo}#${number}:%`, rerunKey(repo, number));

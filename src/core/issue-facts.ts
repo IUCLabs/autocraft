@@ -101,7 +101,9 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const operatorAnswers = scopeAnswers(db, true);
   const unsettled = unsettledScope(db);
   const latestScope = new Map<string, { answer: string | null; byOperator: boolean }>(), securityIds = new Set<string>();
-  const head = db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?");
+  // Kind and head of every item an open decision is about.
+  const heads = new Map((db.prepare(`SELECT DISTINCT i.repo || '#' || i.number AS k, i.kind, i.head_oid FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
+    WHERE d.answer IS NULL`).all() as { k: string; kind: string; head_oid: string | null }[]).map((r) => [r.k, r]));
   const openScope = new Set<string>(), covered = new Set<string>(), recommend = new Map<string, { failures: number; failedAt: string | null }>();
   for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, prepared_at, prepared_head, prepare_failed_head, recommend_failures, recommend_failed_at, prepared_discussion, prepare_requested_at, ${prepareStateSql("decisions")}, ${lockLiveSql("decisions")} AS locked FROM decisions ORDER BY asked_at, id`).all(utcDayStart(now)) as
     (PrepareColumns & { locked: number; id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null })[]) {
@@ -114,7 +116,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     // Any open decision of one item that the prepare step has not covered at the item's current head (the item's fewest failed tries win).
     if (d.answer === null && d.number !== null) {
       const k = `${d.repo}#${d.number}`;
-      const it = head.get(d.repo, d.number) as { kind: string; head_oid: string | null } | undefined;
+      const it = heads.get(k);
       const h = it?.kind === "pr" ? it.head_oid : null;
       // A decision whose press is running or queued is locked and not prepared.
       if (isPreparing(d, h) && !d.locked) {
