@@ -205,12 +205,12 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
   const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'comment-failed', 'push-denied', 'linting')");
   const fixupUnsent = db.prepare("SELECT created_at FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state = 'comment-unsent'");
-  const lintFixup = db.prepare("SELECT source, lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' AND COALESCE(source, '') != 'operator' ORDER BY rowid");
+  const lintFixup = keyed<{ k: string; source: string | null; lint_task: number | null }>("SELECT f.repo || '#' || f.number || '@' || f.from_head AS k, f.source, f.lint_task FROM fixups f WHERE f.state = 'linting' AND COALESCE(f.source, '') != 'operator' /*narrow*/ ORDER BY f.rowid", "f");
   // An operator's fix-up works the current head, with or without a review there, so its stored patch is read at the head before the review is.
   const lintOperator = db.prepare("SELECT lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' AND source = 'operator' ORDER BY rowid");
   const taskEnded = (id: number | null): boolean => { const t = id != null ? getTask(db, id) : null; return !t || TERMINAL.includes(t.state); };
-  const lintCifix = db.prepare("SELECT lint_task FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'linting' ORDER BY rowid");
-  const lintConflict = db.prepare("SELECT lint_task FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' ORDER BY rowid");
+  const lintCifix = keyed<{ k: string; lint_task: number | null }>("SELECT c.repo || '#' || c.number || '@' || c.head AS k, c.lint_task FROM ci_fixes c WHERE c.state = 'linting' /*narrow*/ ORDER BY c.rowid", "c");
+  const lintConflict = keyed<{ k: string; lint_task: number | null }>("SELECT c.repo || '#' || c.number || '@' || c.from_head AS k, c.lint_task FROM conflict_merges c WHERE c.state = 'linting' /*narrow*/ ORDER BY c.rowid", "c");
   const cifixRows = db.prepare("SELECT state, created_at, task_id, runs, reason FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? ORDER BY created_at, rowid");
   const cifixTotals = db.prepare(`SELECT COALESCE(SUM(state IN (${CIFIX_PUSH_STATES.map(() => "?").join(",")})), 0) AS pushes, COALESCE(SUM(state IN (${CIFIX_TRY_STATES.map(() => "?").join(",")})), 0) AS tries FROM ci_fixes WHERE repo = ? AND number = ?`);
   const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
@@ -232,7 +232,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     return m;
   };
 
-  const stackedOnQ = db.prepare("SELECT number FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND head_ref = ? AND lower(head_repo) = ? AND number != ? ORDER BY number LIMIT 1");
+  // Open PRs by repo, head branch and head repo (lower case), lowest number first: the PR another one is stacked on.
+  const openByHead = new Map<string, number[]>();
+  for (const o of db.prepare(`SELECT i.repo || ' ' || i.head_ref || ' ' || lower(i.head_repo) AS k, i.number FROM items i
+    WHERE i.kind = 'pr' AND i.state = 'OPEN' AND i.head_ref IS NOT NULL AND i.head_repo IS NOT NULL AND i.repo IN (SELECT value FROM json_each(?)) ORDER BY i.number`)
+    .all(JSON.stringify([...new Set(rows.map((r) => r.repo))])) as { k: string; number: number }[]) (openByHead.get(o.k) ?? openByHead.set(o.k, []).get(o.k)!).push(o.number);
   // The latest merge attempt at each head (first in the order) and the refusals there.
   const merges = keyed<{ k: string; outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string; refusals: number }>(`SELECT m.repo || '#' || m.number || '@' || m.head_oid AS k, m.outcome, m.reason, m.ci, m.mergeable, m.at,
     (SELECT COUNT(*) FROM merges m2 WHERE m2.repo = m.repo AND m2.number = m.number AND m2.head_oid = m.head_oid AND m2.outcome = 'refused') AS refusals FROM merges m WHERE 1 /*narrow*/ ORDER BY m.at DESC, m.rowid DESC`, "m");
@@ -260,7 +264,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const unsureAt = keyed<{ k: string }>(`SELECT o.repo || '#' || o.number || '@' || o.head_oid AS k FROM opus_review_history o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/
     UNION SELECT o.repo || '#' || o.number || '@' || o.head_oid FROM opus_reviews o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/`, "o");
   const premerge = premergeRows(db, narrow("p"));
-  const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");
+  const reviewRows = keyed<{ k: string } & ReviewFact>("SELECT c.repo || '#' || c.number AS k, c.author, c.author_association AS association, c.review_state AS state, c.created_at AS at FROM comments c JOIN items i ON i.repo = c.repo AND i.number = c.number AND i.kind = 'pr' AND i.state = 'OPEN' WHERE c.kind = 'review' /*narrow*/ ORDER BY c.rowid", "c");
   const batchTip = db.prepare(`SELECT a.runs, a.approved, a.reread, a.failed, a.cross_repo FROM merge_batches b
     JOIN ci_run_approvals a ON a.repo = b.repo AND a.number = b.pr_number AND a.head_oid = b.commit_sha
     WHERE b.repo = ? AND b.pr_number = ? AND b.state = 'open'
@@ -475,11 +479,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     }
     {
       const ended = taskEnded;
-      for (const x of lintFixup.all(r.repo, r.number, r.r_head) as { source: string | null; lint_task: number | null }[]) {
+      for (const x of lintFixup.get(`${ref}@${r.r_head}`) ?? []) {
         base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" || x.source === "operator" ? x.source : "review", ended: ended(x.lint_task) });
       }
-      for (const x of lintCifix.all(r.repo, r.number, base.brokeByUs || base.gateRed ? head : r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
-      for (const x of lintConflict.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "conflict", source: "review", ended: ended(x.lint_task) });
+      for (const x of lintCifix.get(`${ref}@${base.brokeByUs || base.gateRed ? head : r.r_head}`) ?? []) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
+      for (const x of lintConflict.get(`${ref}@${r.r_head}`) ?? []) base.lint.push({ step: "conflict", source: "review", ended: ended(x.lint_task) });
       if (base.lint.length && r.state === "OPEN") base.inFlight = true;
     }
     if (base.ci === "failure" || base.brokeByUs || base.gateRed) {
@@ -487,11 +491,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       base.cifix = cifixAt(cfHead ?? r.r_head!);
     }
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
-    if (r.base_ref && r.state === "OPEN") base.stackedOn = (stackedOnQ.get(r.repo, r.base_ref, `${slugOf(r.repo)}`.toLowerCase(), r.number) as { number: number } | undefined)?.number ?? null;
+    if (r.base_ref && r.state === "OPEN") base.stackedOn = (openByHead.get(`${r.repo} ${r.base_ref} ${`${slugOf(r.repo)}`.toLowerCase()}`) ?? []).find((n) => n !== r.number) ?? null;
     base.baseOffDefault = !!r.base_ref && !!rf.defaultBranch && r.base_ref !== rf.defaultBranch;
     base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && ownHere;
     const gate = gates.get(ref);
-    const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
+    const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.get(ref) ?? [], r.review_decision);
     if (gate && gate.failures >= GATE_FAILURES) base.gateFailureNote = failureNote(gate.failures);
     if (why) base.changesRequested = { why, live };
     out.push(base);
@@ -509,13 +513,17 @@ export type { PrTier };
 
 /** Returns a function that gives the head and the earlier heads AutoCraft itself pushed it from (a `pushing` row is a push that started and may have landed) (conflict merges of the base, fix-up pushes, carry-over pushes), newest first. */
 export function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: string) => string[] {
-  const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('merged', 'pushing')
-    UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')
-    UNION SELECT from_head FROM dupe_carries WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND from_head IS NOT NULL
-    UNION SELECT head FROM ci_fixes WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')`);
+  // Every push edge, read once: the heads each head was pushed from, distinct and in order (as the UNION gives them per head).
+  const from = new Map<string, string[]>();
+  for (const r of db.prepare(`SELECT k, from_head FROM (
+      SELECT repo || '#' || number || '@' || to_head AS k, from_head FROM conflict_merges WHERE state IN ('merged', 'pushing')
+      UNION SELECT repo || '#' || number || '@' || to_head, from_head FROM fixups WHERE state IN ('pushed', 'pushing')
+      UNION SELECT repo || '#' || number || '@' || to_head, from_head FROM dupe_carries WHERE from_head IS NOT NULL
+      UNION SELECT repo || '#' || number || '@' || to_head, head FROM ci_fixes WHERE state IN ('pushed', 'pushing'))
+    WHERE k IS NOT NULL ORDER BY k, from_head`).all() as { k: string; from_head: string }[]) (from.get(r.k) ?? from.set(r.k, []).get(r.k)!).push(r.from_head);
   return (repo, number, head) => {
     const chain = [head];
-    for (let k = 0; k < chain.length; k++) for (const f of from.all(repo, number, chain[k]!) as { from_head: string }[]) if (!chain.includes(f.from_head)) chain.push(f.from_head);
+    for (let k = 0; k < chain.length; k++) for (const f of from.get(`${repo}#${number}@${chain[k]}`) ?? []) if (!chain.includes(f)) chain.push(f);
     return chain;
   };
 }
