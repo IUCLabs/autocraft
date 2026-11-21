@@ -533,7 +533,7 @@ export function fingerprint(c: Ctx, qkey: string): string {
   const ids = decisionIds(c);
   const byId = new Map(rows<{ id: string; v: string }>(db, `SELECT d.id, json_array(d.id, d.answer, d.answered_at, d.applied_at, d.asked_at, (SELECT COUNT(*) FROM decision_comments x WHERE x.decision_id = d.id)) AS v
     FROM decisions d WHERE d.id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids)).map((r) => [r.id, JSON.parse(r.v) as unknown[]]));
-  for (const id of ids) parts.push(Object.values(byId.get(id) as object));
+  for (const id of ids) parts.push(byId.get(id) ?? []);
   return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
 }
 
