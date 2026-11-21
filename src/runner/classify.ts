@@ -63,7 +63,7 @@ async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<
 
 /** The items the Plans send to Haiku for a second opinion in `run`: Jev is unsure of the type or of a flag and Haiku has no verdict as new as Jev's. */
 function haikuItems(db: DatabaseSync, run: string, limit: number): Item[] {
-  return takersFirst(db, plannedItems(db, "classify", { run, bucket: "haiku" }), (p) => [p.facts.repo]).slice(0, limit).map((p) => itemOf(db, p.facts.repo, p.facts.number));
+  return takersFirst(db, plannedItems(db, "classify", { run, bucket: "haiku" }), (p) => [p.facts.repo], (p) => [p.facts]).slice(0, limit).map((p) => itemOf(db, p.facts.repo, p.facts.number));
 }
 
 async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: number) => void): Promise<number> {
@@ -125,7 +125,7 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   ctx.usageRun(run);
   ctx.progress("Finding items to classify");
   const { open, due, hashes } = jevItems(ctx.db, run, mode);
-  const todo = takersFirst(ctx.db, due, (x) => [x.repo]).slice(0, limit);
+  const todo = takersFirst(ctx.db, due, (x) => [x.repo], (x) => [x]).slice(0, limit);
   ctx.log(`run ${run}: ${open} open items, ${due.length} due for Jev, taking ${todo.length}`);
   const sent = sentCounter(ctx);
   const jevDone = await jevPass(ctx, run, todo, hashes, sent);

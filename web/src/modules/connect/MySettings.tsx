@@ -6,6 +6,8 @@ import { Input } from "../../ui/atoms/Input";
 import { Switch } from "../../ui/atoms/Switch";
 import { Block } from "../../ui/molecules/Block";
 import { CheckRow } from "../../ui/molecules/CheckRow";
+import { Segmented } from "../../ui/molecules/Segmented";
+import type { TaskItems } from "../../api/types";
 import { TipLines, Tooltip } from "../../ui/atoms/Tooltip";
 import { useWrite } from "../../lib/hooks";
 import { Fold } from "./Fold";
@@ -14,12 +16,15 @@ import { SectionTitle } from "./SectionTitle";
 /** A model id as people say it: opus → Opus. */
 const modelName = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
 
+/** The item choices of My tasks: fast-tracked items are those added with Queue items, the queue command or the fast-track list. */
+const ITEMS_LABEL: Record<TaskItems, string> = { all: "All items", fast: "Fast-tracked", mine: "Fast-tracked by me" };
+
 /**
- * Saves of one list run one after another, so the server ends with the latest selection. `confirmed` is the server's last
- * answer; only the latest save sets the list, from its answer or, when it fails, back to `confirmed`.
+ * Saves of one setting run one after another, so the server ends with the latest selection. `confirmed` is the server's last
+ * answer; only the latest save sets the control, from its answer or, when it fails, back to `confirmed`.
  */
-type ListSaves = { chain: Promise<unknown>; n: number; confirmed: string[] };
-const listSaves = (): ListSaves => ({ chain: Promise.resolve(), n: 0, confirmed: [] });
+type ListSaves<T = string[]> = { chain: Promise<unknown>; n: number; confirmed: T };
+const listSaves = <T = string[],>(confirmed: T): ListSaves<T> => ({ chain: Promise.resolve(), n: 0, confirmed });
 
 export function MySettings() {
   const api = useApi();
@@ -31,14 +36,16 @@ export function MySettings() {
   const [tasks, setTasks] = useState<string[]>([]);
   const [maxCalls, setMaxCalls] = useState("");
   const [manual, setManual] = useState(false);
+  const [taskItems, setTaskItems] = useState<TaskItems>("all");
   // When the last change was saved: the header says "Saved" for a few seconds after each save.
   const [savedAt, setSavedAt] = useState<number | null>(null);
   // Saves still running (the header says Saving… until all are done), and the number of the latest change: only the
   // save of the latest change may say Saved, so one that ends after a newer edit or save does not.
   const [saving, setSaving] = useState(0);
   const latest = useRef(0);
-  const repoSaves = useRef(listSaves());
-  const taskSaves = useRef(listSaves());
+  const repoSaves = useRef(listSaves<string[]>([]));
+  const taskSaves = useRef(listSaves<string[]>([]));
+  const itemSaves = useRef(listSaves<TaskItems>("all"));
   const edited = () => {
     latest.current++;
     setSavedAt(null);
@@ -51,6 +58,8 @@ export function MySettings() {
   useEffect(() => {
     if (!data) return;
     setManual(data.manualOnly);
+    setTaskItems(data.taskItems);
+    itemSaves.current.confirmed = data.taskItems;
     setVals({ fiveHour: String(data.reserve.fiveHour), weekly: String(data.reserve.weekly) });
     setPicks(data.repos);
     repoSaves.current.confirmed = data.repos;
@@ -69,7 +78,7 @@ export function MySettings() {
       if (ok && n === latest.current) setSavedAt(Date.now());
     });
   };
-  const saveList = (key: string, s: ListSaves, next: string[], set: (v: string[]) => void, put: () => Promise<string[]>) => {
+  const saveList = <T,>(key: string, s: ListSaves<T>, next: T, set: (v: T) => void, put: () => Promise<T>) => {
     const n = ++s.n;
     set(next);
     saveRun(key, () => {
@@ -123,6 +132,7 @@ export function MySettings() {
       }
     });
   };
+  const saveTaskItems = (v: TaskItems) => saveList("task-items", itemSaves.current, v, setTaskItems, async () => (await api.me.settings.put({ taskItems: v })).taskItems);
   const field = (key: "fiveHour" | "weekly", short: string, label: string) => (
     <label className="flex items-center gap-1.5">
       <span className="whitespace-nowrap text-ink/60">{short}</span>
@@ -227,7 +237,11 @@ export function MySettings() {
           </div>
         </div>
       </Fold>
-      <Fold className="mt-1" title="My tasks" summary={tasks.length === allTasks.length ? "All tasks" : `${tasks.length} of ${allTasks.length} tasks`}>
+      <Fold className="mt-1" title="My tasks" summary={`${tasks.length === allTasks.length ? "All tasks" : `${tasks.length} of ${allTasks.length} tasks`}${taskItems === "all" ? "" : `, ${ITEMS_LABEL[taskItems].toLowerCase()}`}`}>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+          <span className="text-ink/80">Items</span>
+          <Segmented label="Items" value={taskItems} onChange={saveTaskItems} options={(["all", "fast", "mine"] as const).map((v) => ({ value: v, label: ITEMS_LABEL[v] }))} />
+        </div>
         <div role="group" aria-label="My tasks" className="mt-1 rounded-md border border-line p-1 sm:max-w-3xl">
           <CheckRow checked={tasks.length === allTasks.length} onChange={(on) => saveTasks(on ? allTasks : [])} title="All tasks" />
           <div className="sm:columns-2 sm:gap-x-1 lg:columns-3">

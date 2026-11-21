@@ -30,7 +30,7 @@ test("a pool skips a unit nobody may take and runs the later ones", async () => 
 
   const repos = ["photocraft", "deckcraft", "deckcraft"];
   const started: number[] = [];
-  await pool(repos.map((_, i) => async () => { started.push(i); }), poolRoom(db, (i) => [repos[i]!]), { first: true, pollMs: 5 });
+  await pool(repos.map((_, i) => async () => { started.push(i); }), poolRoom(db, (i) => [repos[i]!], (i) => [{ repo: repos[i]!, number: i + 1 }]), { first: true, pollMs: 5 });
   assert.deepEqual(started, [1, 2], "the deckcraft units ran; the photocraft unit never started and the pool ended");
 
   // Work no Task Runner may take is neither counted as sent nor stored as answered.
@@ -45,7 +45,7 @@ test("a pool skips a unit nobody may take and runs the later ones", async () => 
 test("user-local batches hold one repo's items in the order of their first item; server-account batches mix repos", () => {
   const db = connect(join(mkdtempSync(join(SCRATCH, "pool-skip-")), "t.db"));
   const items = ["deck:1", "photo:1", "deck:2", "deck:3", "photo:2", "deck:4", "design:1"].map((x) => ({ repo: x.split(":")[0]!, id: x }));
-  const ids = () => repoBatches(db, items, 2, (x) => x.repo).map((b) => b.map((x) => x.id));
+  const ids = () => repoBatches(db, items, 2, (x) => x.repo, (x) => [{ repo: x.repo, number: Number(x.id.split(":")[1]) }]).map((b) => b.map((x) => x.id));
   assert.deepEqual(ids(), [["deck:1", "photo:1"], ["deck:2", "deck:3"], ["photo:2", "deck:4"], ["design:1"]]);
   setInferenceMode(db, "user-local", "test");
   assert.deepEqual(ids(), [["deck:1", "deck:2"], ["photo:1", "photo:2"], ["deck:3", "deck:4"], ["design:1"]]);
@@ -60,7 +60,7 @@ test("a limited selection takes the items with a taker before the ones nobody ma
   db.prepare("UPDATE mcp_tokens SET idle_claim_at = ? WHERE id = ?").run(Date.now(), id);
   setUserRepos(db, "olga", ["deckcraft"]);
   const items = [{ repo: "photocraft", n: 1 }, { repo: "deckcraft", n: 2 }, { repo: "photocraft", n: 3 }, { repo: "deckcraft", n: 4 }];
-  const picked = takersFirst(db, items, (x) => [x.repo]).slice(0, 1);
+  const picked = takersFirst(db, items, (x) => [x.repo], (x) => [{ repo: x.repo, number: x.n }]).slice(0, 1);
   assert.deepEqual(picked, [{ repo: "deckcraft", n: 2 }]);
-  assert.deepEqual(takersFirst(db, items, (x) => [x.repo]).map((x) => x.n), [2, 4, 1, 3], "stable within each group, none dropped");
+  assert.deepEqual(takersFirst(db, items, (x) => [x.repo], (x) => [{ repo: x.repo, number: x.n }]).map((x) => x.n), [2, 4, 1, 3], "stable within each group, none dropped");
 });

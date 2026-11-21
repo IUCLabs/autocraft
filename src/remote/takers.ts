@@ -16,6 +16,8 @@ import { inferenceMode } from "./mode.ts";
 import { claimRepos } from "./my-repos.ts";
 import { SKIP_TASKS_KEY, TASK_CHOICES, taskOfStep, userSkips } from "./my-tasks.ts";
 import { CALLER_STALE_MS, roomCanWrite } from "./room.ts";
+import { itemFilter, itemsFit, TASK_ITEMS, TASK_ITEMS_KEY, TASK_ITEMS_TITLE, userTaskItems, type ItemFilter, type TaskItems } from "./task-items.ts";
+import type { ItemRef } from "../../web/src/api/types.ts";
 import { scaled } from "./time-scale.ts";
 
 /** How long a queued call may have no taker before it is withdrawn, and a pipeline-on repo before the health check warns. */
@@ -26,7 +28,7 @@ export const NO_TAKER_MS = scaled(10 * 60_000);
  * `step`: the call's step, for the takers' tasks (my-tasks.ts); left out, the question is about repos alone. `someTask`: with no
  * step, only a runner whose user takes at least one task counts (with none ticked a user takes only picks).
  */
-export type TakerCall = { prompt_id: string; repos: readonly string[]; step?: string; someTask?: boolean };
+export type TakerCall = { prompt_id: string; repos: readonly string[]; step?: string; someTask?: boolean; /** The call's items; left out, a question asked before they are known (task-items.ts). */ refs?: readonly ItemRef[]; /** Only runners whose user takes some items count. */ filtered?: boolean };
 
 /**
  * Whether some taker may take a call now, for many questions at one moment (a pool's round, the runner's pass over queued
@@ -58,27 +60,80 @@ export function takerSignature(db: DatabaseSync, nowMs: number = Date.now()): st
   const denied = prep(db, `SELECT MIN(p.checked_at) AS at FROM main.repo_permissions p WHERE p.permission NOT IN (SELECT value FROM json_each(?)) AND p.checked_at > ?
       AND p.login IN (SELECT t.login FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id WHERE ${TAKER_SQL})`)
     .get(JSON.stringify([...WRITE_PERMISSIONS]), new Date(nowMs - PERM_READ_TTL).toISOString(), ...takerArgs(nowMs)) as { at: string | null };
-  return denied.at ? `${r.s}|${denied.at}` : r.s;
+  // A runner that takes only some items is a taker on the repos of those items, which change as items are fast-tracked.
+  const filtered = (prep(db, `SELECT DISTINCT t.login FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
+      JOIN main.user_settings ti ON ti.login = t.login AND ti.key = '${TASK_ITEMS_KEY}' WHERE ${TAKER_SQL} ORDER BY lower(t.login)`).all(...takerArgs(nowMs)) as { login: string }[])
+    .map(({ login }) => `${login.toLowerCase()}=${[...itemFilter(db, login)?.repos ?? []].sort().join(",")}`);
+  const s = filtered.length ? `${r.s}|items:${filtered.join(";")}` : r.s;
+  return denied.at ? `${s}|${denied.at}` : s;
 }
 
-function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
+type Runner = { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string>; items: ItemFilter };
+
+/** The takers as the taker rule reads them. */
+function readRunners(db: DatabaseSync, nowMs: number): { runners: Runner[]; canWrite: (login: string, repo: string) => boolean } {
   const rows = prep(db, `SELECT t.login, a.role, t.idle_repos FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id JOIN main.access a ON a.login = t.login
     WHERE ${TAKER_SQL}`).all(...takerArgs(nowMs)) as { login: string; role: string; idle_repos: string | null }[];
-  if (!rows.length) return () => false;
   const canWrite = roomCanWrite(db, rows.map((r) => r.login), nowMs);
   const runners = rows.map((h) => {
     let own: string[] | undefined;
     try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
-    return { login: h.login, role: h.role, repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login) };
+    return { login: h.login, role: h.role, repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login), items: itemFilter(db, h.login) };
   });
-  return (c) => runners.some((r) => !(c.someTask && r.skip.size >= TASK_CHOICES.length) && runnerTakes(r, c, canWrite));
+  return { runners, canWrite };
 }
 
-/** The error of a call withdrawn for lack of a taker: its caller skips the work (NoTakerError). `step`: a taker may take calls on its repos, but none takes its task. */
-export const noTakerReason = (repos: readonly string[], step?: string): string => {
+function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
+  const { runners, canWrite } = readRunners(db, nowMs);
+  if (!runners.length) return () => false;
+  return (c) => runners.some((r) => !(c.someTask && r.skip.size >= TASK_CHOICES.length) && !(c.filtered && !r.items) && runnerTakes(r, c, canWrite));
+}
+
+/** A key equal for two units exactly when the same users of `logins` take them under their item choices (task-items.ts); "" when none does. */
+function filterKey(db: DatabaseSync, logins: readonly string[]): (refs: readonly { repo: string; number: number }[]) => string {
+  const filters = logins.map((login) => ({ login: login.toLowerCase(), f: itemFilter(db, login) })).filter((x) => x.f !== null);
+  if (!filters.length) return () => "";
+  return (refs) => filters.filter(({ f }) => itemsFit(f, { repos: [], refs })).map((x) => x.login).join(",");
+}
+
+/**
+ * For batching: a key equal for two units exactly when the same filtered users take them, so a batch of one key matches a
+ * filtered user when every unit in it does and a unit some takers take is never held with units only others take. Every user
+ * with a stored item choice counts, connected or not, so a runner that connects after the batches are made is not handed items
+ * its user does not take.
+ */
+export function batchKey(db: DatabaseSync): (refs: readonly { repo: string; number: number }[]) => string {
+  return filterKey(db, (prep(db, `SELECT login FROM main.user_settings WHERE key = '${TASK_ITEMS_KEY}' ORDER BY lower(login)`).all() as { login: string }[]).map((r) => r.login));
+}
+
+/**
+ * For caching room and taker answers by unit: as batchKey, over the users of the fresh, ready runners with an item choice (a
+ * superset of the takers and the room's helpers at `nowMs`), so units of one repo share answers when no connected runner filters.
+ */
+export function roomKey(db: DatabaseSync, nowMs: number = Date.now()): (refs: readonly { repo: string; number: number }[]) => string {
+  return filterKey(db, (prep(db, `SELECT DISTINCT t.login FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
+      JOIN main.user_settings ti ON ti.login = t.login AND ti.key = '${TASK_ITEMS_KEY}'
+      WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? ORDER BY lower(t.login)`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { login: string }[]).map((r) => r.login));
+}
+
+/**
+ * The error of a call withdrawn for lack of a taker: its caller skips the work (NoTakerError). `step`: a taker may take calls on
+ * its repos, but none takes its task. `items`: the item choices of the takers that take its repos and task but not its items
+ * (task-items.ts).
+ */
+export const noTakerReason = (repos: readonly string[], step?: string, items?: readonly Exclude<TaskItems, "all">[]): string => {
   const task = step === undefined ? undefined : taskOfStep(step);
-  return `${NO_TAKER_PREFIX} ${task !== undefined ? `of the ${TASK_CHOICES.find((t) => t.id === task)?.title ?? task} task (My tasks)` : repos.length ? `on ${repos.join(", ")}` : "that name no repo"}`;
+  return `${NO_TAKER_PREFIX} ${items?.length ? `on its items (My tasks: ${items.map((x) => TASK_ITEMS_TITLE[x]).join(" or ")})` : task !== undefined ? `of the ${TASK_CHOICES.find((t) => t.id === task)?.title ?? task} task (My tasks)` : repos.length ? `on ${repos.join(", ")}` : "that name no repo"}`;
 };
+
+/** Why no taker takes a call `takes` says no to: its repos, else its task, else the item choices of the runners that take the rest. */
+function whyNoTaker(db: DatabaseSync, nowMs: number, takes: (c: TakerCall) => boolean, c: { prompt_id: string; repos: readonly string[]; step: string }): string {
+  if (!takes({ prompt_id: c.prompt_id, repos: c.repos })) return noTakerReason(c.repos);
+  if (!takes({ prompt_id: c.prompt_id, repos: c.repos, step: c.step })) return noTakerReason(c.repos, c.step);
+  const { runners, canWrite } = readRunners(db, nowMs);
+  const choices = new Set(runners.filter((r) => r.items && runnerTakes({ ...r, items: null }, { prompt_id: c.prompt_id, repos: c.repos, step: c.step }, canWrite)).map((r) => userTaskItems(db, r.login)));
+  return noTakerReason(c.repos, c.step, TASK_ITEMS.filter((x): x is Exclude<TaskItems, "all"> => x !== "all" && choices.has(x)));
+}
 
 /**
  * One maintenance pass at `nowMs`. Each pipeline-on repo with no taker whose user takes some task keeps the time it was first seen so
@@ -109,7 +164,7 @@ export function sweepTakers(db: DatabaseSync, nowMs: number = Date.now()): numbe
     if (own || takes(c)) {
       if (since !== undefined) set.run(null, c.id);
     } else if (since === undefined) set.run(nowMs, c.id);
-    else if (since <= nowMs - NO_TAKER_MS && withdrawCall(db, c.id, takes({ prompt_id: c.prompt_id, repos: c.repos }) ? noTakerReason(c.repos, c.step) : noTakerReason(c.repos), ["queued"], nowMs)) withdrawn++;
+    else if (since <= nowMs - NO_TAKER_MS && withdrawCall(db, c.id, whyNoTaker(db, nowMs, takes, c), ["queued"], nowMs)) withdrawn++;
   }
   return withdrawn;
 }

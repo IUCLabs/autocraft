@@ -64,7 +64,8 @@ export const noRunnerForTask = (repo: string, step: string): string => {
  * Why a job waits for a Task Runner, or null: in the user-local mode, a job of a step that calls Claude, for a repo no Task
  * Runner may take now or whose step's task none of those takes (src/remote/takers.ts, the rule the runner's job starts and the
  * pools use). The runners are read once, on the first such job, so one test serves a whole pass. Never in the server-account
- * mode, nor for a job with no repo.
+ * mode, nor for a job with no repo. A job names no item (a `number` param is a security finding), so a runner that takes only some
+ * items counts on the repos with such an item (src/remote/task-items.ts); the job's pools then ask about each unit's items.
  */
 export function untakenTest(db: DatabaseSync, steps?: Map<string, StepDef>, nowMs: number = Date.now()): UntakenTest {
   if (inferenceMode(db) !== "user-local") return () => null;

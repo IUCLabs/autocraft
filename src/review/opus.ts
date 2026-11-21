@@ -3,7 +3,7 @@
 // the delta since the head it reviewed before. Reads GitHub (diffs); never writes to it.
 import type { DatabaseSync } from "node:sqlite";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { currentJobId, poolRoom } from "../agents/call.ts";
+import { currentJobId, poolRoom, takersCut } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { REVIEW_OPUS } from "../agents/steps.ts";
@@ -241,7 +241,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
   const capped = [...allStale].filter((k) => !uncapped.has(k));
   if (capped.length) log(`opus-review ${repo}: ${capped.join(", ")} not reviewed again: already ${MAX_RERUNS_PER_DAY} re-reviews today after new discussion`);
   const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, dropped: 0, verdicts: {}, missing: [], skipped: [] };
-  if (params.limit !== undefined) cands = cands.slice(0, params.limit);
+  cands = takersCut(db, cands, params.limit, repo, (c) => c.number);
   if (params.dryRun || !cands.length) {
     log(`opus-review ${repo}: ${summary.candidates} candidates${params.dryRun ? "; dry run, nothing fetched or asked" : ""}`);
     return summary;
@@ -326,7 +326,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       summary.missing.push(refOf(c));
     }
     params.onHandled?.(++handled);
-  }), poolRoom(db, (i) => [cands[i]!.repo]));
+  }), poolRoom(db, (i) => [cands[i]!.repo], (i) => [cands[i]!]));
   log(`opus-review ${repo}: ${summary.reviewed} reviewed (${Object.entries(summary.verdicts).map(([v, k]) => `${k} ${v}`).join(", ")}); ${summary.skipped.length} without a diff, ${summary.missing.length} without an answer`);
   return summary;
 }

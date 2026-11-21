@@ -175,6 +175,12 @@ async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: U
   return r.ok ? r.value : null;
 }
 
+/**
+ * The items a set's calls name, for the runners that take only some items: every member when one call compares them all; none for
+ * a set compared in rounds, whose later calls name only some members, so only runners that take every item count for it.
+ */
+const setRefs = (s: KindSet): { repo: string; number: number }[] => (s.members.length <= GROUP_MAX ? s.members.map((m) => ({ repo: s.repo, number: m.number })) : []);
+
 /** Compares the whole set, in rounds when it is larger than GROUP_MAX. */
 async function compareSet(x: Ctx, s: KindSet): Promise<StoredComparison> {
   const at = NOW_ISO(x.deps);
@@ -262,7 +268,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
     });
     s.dropped = asked - calls.length;
   }
-  if (params.limit !== undefined) calls = takersFirst(db, calls, (c) => [c.repo], ISSUE_PROMPT.id).slice(0, params.limit);
+  if (params.limit !== undefined) calls = takersFirst(db, calls, (c) => [c.repo], setRefs, ISSUE_PROMPT.id).slice(0, params.limit);
   let handled = 0;
   await pool(calls.map((set) => async () => {
     const r = await compareSet(x, set);
@@ -277,7 +283,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
     } else s.compared++;
     for (const m of set.members) jobItem(db, set.repo, m.number, `compared in duplicate set ${set.key}, keep #${r.kept}${r.source === "rule" ? " (by rule)" : ""}`, () => {});
     params.onHandled?.(++handled);
-  }), poolRoom(db, (i) => [calls[i]!.repo], { promptId: ISSUE_PROMPT.id }));
+  }), poolRoom(db, (i) => [calls[i]!.repo], (i) => setRefs(calls[i]!), { promptId: ISSUE_PROMPT.id }));
   s.asked = askGroupDecisions(db, params.repo, NOW_ISO(d));
   log(`dupe-compare: ${s.compared} compared by a model, ${s.byRule} by rule, ${s.closedWins} won by a closed member, ${s.single} single, ${s.dropped} dropped; ${s.asked.length} decisions asked`);
   return s;

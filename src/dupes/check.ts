@@ -12,6 +12,9 @@ import { pickCanonical } from "./canonical.ts";
 import { pairRef, settlePair, type DupePair, type PairVerdict } from "./pair.ts";
 import { pilotSqlFor } from "../pilot.ts";
 
+/** The two items of a pair, as its call names them. */
+const pairRefs = (p: DupePair): { repo: string; number: number }[] => [{ repo: p.repo, number: p.a.number }, { repo: p.repo, number: p.b.number }];
+
 const HAIKU = CLAUDE_PROMPTS["dupes.haiku"];
 
 export type PairKey = { repo: string; a: number; b: number; a_hash: string; b_hash: string; similarity: number };
@@ -98,7 +101,7 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     if (v) done(ref, null, v);
     else second.push(ref);
   }
-  const batches = repoBatches(db, second, HAIKU.limits.perCall, (r) => pairs.get(r)!.pair.repo);
+  const batches = repoBatches(db, second, HAIKU.limits.perCall, (r) => pairs.get(r)!.pair.repo, (r) => pairRefs(pairs.get(r)!.pair));
   await pool(batches.map((batch) => async () => {
     // One entry per batch pair; a pair without a valid answer stays in `rest` and is asked again.
     const input = batch.map((r) => pairs.get(r)!.pair);
@@ -115,7 +118,7 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
     }
     const todo = r.ok ? (r.rest ?? []) : input;
     c.unanswered += todo.length;
-  }), poolRoom(db, (i) => [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))], { promptId: HAIKU.id }), { first: true, skipped: (i) => {
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map((r) => pairs.get(r)!.pair.repo))], (i) => batches[i]!.flatMap((r) => pairRefs(pairs.get(r)!.pair)), { promptId: HAIKU.id }), { first: true, skipped: (i) => {
     c.unanswered += batches[i]!.length;
     skipped += batches[i]!.length;
   } });

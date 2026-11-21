@@ -52,7 +52,7 @@ function scanItems(db: DatabaseSync, model: string, max: number): ScanItem[] {
 function pairsToCheck(db: DatabaseSync, model: string, limit: number): PairKey[] {
   const refs = new Set(plannedItems(db, "dupes", { model }).filter((p) => (p.action.params?.pairs as number) > 0).map((p) => `${p.facts.repo}#${p.facts.number}`));
   const taker = queueRoomPass(db).taker;
-  return uncheckedPairs(db, -1).filter((k) => (refs.has(`${k.repo}#${k.a}`) || refs.has(`${k.repo}#${k.b}`)) && taker([k.repo])).slice(0, limit);
+  return uncheckedPairs(db, -1).filter((k) => (refs.has(`${k.repo}#${k.a}`) || refs.has(`${k.repo}#${k.b}`)) && taker([k.repo], undefined, [{ repo: k.repo, number: k.a }, { repo: k.repo, number: k.b }])).slice(0, limit);
 }
 
 export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: (line: string) => void = console.log, deps?: DupesDeps): Promise<DupesSummary> {

@@ -10,7 +10,7 @@
 // verification, sets the state, summary and finished_at, writes the failure summary and cancels the
 // queued tasks of a verification whose PR head moved on (state `stale`).
 import { leaseItem } from "../runner/leases.ts";
-import { poolRoom } from "../agents/call.ts";
+import { poolRoom, takersCut } from "../agents/call.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { BuildError } from "../build/envs.ts";
@@ -115,7 +115,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
     log(`verify ${repo}: no checks read yet; nothing recorded`);
     return summary;
   }
-  if (params.limit !== undefined) cands = cands.slice(0, params.limit);
+  cands = takersCut(db, cands, params.limit, repo, (c) => c.number);
   // Nothing to build for these: recorded at once so the PR goes on to the Merge? decision.
   for (const u of unavailableCandidates(db, repo)) {
     saveVerification(db, u.c, unavailableRow(u.reason));
@@ -208,7 +208,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
         summary.errors++;
       }
     } finally { release(); }
-  }), poolRoom(db, () => [repo]), { max: POOL_MAX.verify });
+  }), poolRoom(db, () => [repo], (i) => [{ repo, number: cands[i]!.number }]), { max: POOL_MAX.verify });
 
   if (queued) {
     const main = await deps.mainHead(repo, branch);

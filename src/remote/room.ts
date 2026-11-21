@@ -18,6 +18,7 @@ import { manualSql } from "./manual-only.ts";
 import { userMaxCalls } from "./max-calls.ts";
 import { claimRepos } from "./my-repos.ts";
 import { TASK_CHOICES, taskOfStep, userSkips } from "./my-tasks.ts";
+import { itemFilter, type ItemFilter } from "./task-items.ts";
 import { scaled } from "./time-scale.ts";
 import { HEARTBEAT_S } from "./protocol.ts";
 
@@ -60,11 +61,11 @@ export function roomCanWrite(db: DatabaseSync, logins: readonly string[], nowMs:
 }
 
 type Helper = { login: string; role: string | null; idle_claim_at: number | null; idle_repos: string | null; slots: number; leased: number; beat: number | null };
-type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string> } };
+type Taker = { h: Helper; active: boolean; r: { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string>; items: ItemFilter } };
 /**
  * What the room reads of the helpers, once for any number of room questions at one moment: the fresh, ready helpers that are
- * not Manual only and whose users take some task (`ready`; with no task ticked a user takes only picks, as Manual only), those
- * of them that are active, and on first use their permissions, repos and users' caps.
+ * not Manual only and whose users take some task and some item (`ready`; with no task ticked, or only fast-tracked items and none
+ * open, a user takes only picks, as Manual only), those of them that are active, and on first use their permissions, repos and users' caps.
  */
 export type RoomState = { ready: Helper[]; active: Helper[]; takers?: { list: Taker[]; canWrite: (login: string, repo: string) => boolean }; left: Map<string, number> };
 
@@ -74,7 +75,7 @@ export function roomState(db: DatabaseSync, nowMs: number = Date.now()): RoomSta
       (SELECT MAX(c.heartbeat_at) FROM main.remote_calls c WHERE c.state = 'leased' AND c.token_id = t.id) AS beat
     FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id LEFT JOIN main.access a ON a.login = t.login
     WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? AND NOT ${manualSql("t.login")}`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as Helper[])
-    .filter((h) => userSkips(db, h.login).size < TASK_CHOICES.length);
+    .filter((h) => userSkips(db, h.login).size < TASK_CHOICES.length && (itemFilter(db, h.login)?.refs.size ?? 1) > 0);
   return { ready: rows, active: rows.filter((h) => isActive(h, nowMs)), left: new Map() };
 }
 
@@ -87,39 +88,57 @@ function takersOf(db: DatabaseSync, st: RoomState, nowMs: number): NonNullable<R
     list: st.ready.map((h) => {
       let own: string[] | undefined;
       try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
-      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login) } };
+      return { h, active: isActive(h, nowMs), r: { login: h.login, role: h.role ?? "", repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login), items: itemFilter(db, h.login) } };
     }),
   };
 }
 
-/** Room for class `cls`, `repos` and `step` (see remoteRoom) from a state read at `nowMs`. `step` left out: every task counts. */
-export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: number, repos?: readonly string[], step?: string): number {
-  let takers = st.active;
-  let takes: (c: { prompt_id: string; repos: readonly string[]; step?: string }) => boolean = () => true;
-  if ((repos !== undefined || step !== undefined) && st.active.length) {
+/**
+ * Room for class `cls`, `repos`, `step` and `refs` (see remoteRoom) from a state read at `nowMs`. `step` left out: every task
+ * counts. `refs`: the call's items (with `repos` their repos), so a runner whose user takes only some items (task-items.ts) counts
+ * only for a call on them; left out, it counts on the repos that have such an item.
+ *
+ * The calls ahead that only runners taking every item may take use up those runners' slots alone, so a call on a chosen item
+ * finds the filtered runners' slots free while the others are busy with calls they alone take.
+ */
+export function roomOf(db: DatabaseSync, st: RoomState, cls: number, nowMs: number, repos?: readonly string[], step?: string, refs?: readonly { repo: string; number: number }[]): number {
+  let takers: { h: Helper; filtered: boolean }[] = st.active.map((h) => ({ h, filtered: false }));
+  let takes: (c: { prompt_id: string; repos: readonly string[]; step?: string; refs?: readonly { repo: string; number: number }[] }) => boolean = () => true;
+  let filteredTake: typeof takes = () => false;
+  if ((repos !== undefined || step !== undefined || refs !== undefined) && st.active.length) {
     const t = takersOf(db, st, nowMs);
     const task = step === undefined ? undefined : taskOfStep(step);
-    const fit = t.list.filter(({ active, r }) => active && (repos === undefined ? !(task !== undefined && r.skip.has(task)) : runnerTakes(r, { prompt_id: "", repos, step }, t.canWrite)));
-    takers = fit.map((x) => x.h);
+    const on = repos ?? (refs ? [...new Set(refs.map((x) => x.repo))] : undefined);
+    const fit = t.list.filter(({ active, r }) => active && (on === undefined ? !(task !== undefined && r.skip.has(task)) && (r.items === null || [...r.items.repos].some((x) => runnerTakes(r, { prompt_id: "", repos: [x], step }, t.canWrite))) : runnerTakes(r, { prompt_id: "", repos: on, step, refs }, t.canWrite)));
+    takers = fit.map((x) => ({ h: x.h, filtered: x.r.items !== null }));
     takes = (c) => fit.some(({ r }) => runnerTakes(r, c, t.canWrite));
+    filteredTake = (c) => fit.some(({ r }) => r.items !== null && runnerTakes(r, c, t.canWrite));
   }
-  const free = new Map<string, number>();
-  for (const h of takers) {
+  // Free slots by login, within the user's cap, split into users who take every item (`all`) and filtered users (`some`).
+  const free = new Map<string, { n: number; filtered: boolean }>();
+  for (const { h, filtered } of takers) {
     const key = h.login.toLowerCase();
     const slots = Number(h.slots) - (Number(h.slots) >= 2 ? 1 : 0);
-    free.set(key, (free.get(key) ?? 0) + Math.max(0, slots - Number(h.leased)));
+    free.set(key, { n: (free.get(key)?.n ?? 0) + Math.max(0, slots - Number(h.leased)), filtered });
   }
-  let room = 0;
-  for (const [login, n] of free) {
+  let all = 0, some = 0;
+  for (const [login, { n, filtered }] of free) {
     let left = st.left.get(login);
     if (left === undefined) {
       const max = userMaxCalls(db, login);
       left = max === null ? Infinity : Math.max(0, max - Number((prep(db, "SELECT COUNT(*) AS n FROM main.remote_calls INDEXED BY remote_calls_leased WHERE state = 'leased' AND user_login = ? COLLATE NOCASE").get(login) as { n: number }).n));
       st.left.set(login, left);
     }
-    room += Math.min(n, left);
+    if (filtered) some += Math.min(n, left);
+    else all += Math.min(n, left);
   }
-  if (room === 0) return 0;
-  const ahead = queueSnapshot(db, nowMs).filter((r) => r.seen_at >= nowMs - CALLER_STALE_MS && claimClass(r, nowMs) >= cls && takes(r)).length;
-  return Math.max(0, room - ahead);
+  if (all + some === 0) return 0;
+  let aheadAll = 0, aheadSome = 0;
+  for (const r of queueSnapshot(db, nowMs)) {
+    if (r.seen_at < nowMs - CALLER_STALE_MS || claimClass(r, nowMs) < cls || !takes(r)) continue;
+    if (some > 0 && filteredTake(r)) aheadSome++;
+    else aheadAll++;
+  }
+  // Calls the filtered runners may take go to them first; what they cannot hold falls to the others.
+  return Math.max(0, all - aheadAll - Math.max(0, aheadSome - some)) + Math.max(0, some - aheadSome);
 }

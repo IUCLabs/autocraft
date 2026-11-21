@@ -191,6 +191,8 @@ export type TieredStep<It, JV, HV, C = void, B = It[]> = {
   ref: (item: It) => string;
   /** The item's repo: the model queue's room is asked for the repos of the next batch. */
   repo: (item: It) => string;
+  /** The item itself, for the runners that take only some items (src/remote/task-items.ts). */
+  item: (item: It) => { repo: string; number: number };
   /** Jev's answer settles the item: it is not sent to Haiku. */
   sure: (jev: JV) => boolean;
   /** An item Jev gave no valid answer for goes to Haiku: always, or only when Jev is unavailable (a failure with Jev up leaves the item for the next pass). */
@@ -242,13 +244,13 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
   }
   if (!ask.length || opts.cancelled?.()) return out;
   const per = opts.perCall ?? CLAUDE_PROMPTS[tier.haiku.id].limits.perCall;
-  const batches = repoBatches(db, ask, per, tier.repo);
+  const batches = repoBatches(db, ask, per, tier.repo, (x) => [tier.item(x)]);
   await pool(batches.map((batch, n) => async () => {
     for (const x of batch) out.asked.add(tier.ref(x));
     const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {
       ctx: opts.ctx, usage: opts.haikuUsage?.(batch, n), cancelled: opts.cancelled });
     if (r.ok) for (const v of r.values) for (const [ref, a] of v) out.haiku.set(ref, a);
-  }), poolRoom(db, (i) => [...new Set(batches[i]!.map(tier.repo))], { promptId: tier.haiku.id }), { first: opts.first, skipped: (i) => {
+  }), poolRoom(db, (i) => [...new Set(batches[i]!.map(tier.repo))], (i) => batches[i]!.map(tier.item), { promptId: tier.haiku.id }), { first: opts.first, skipped: (i) => {
     for (const x of batches[i]!) { out.skipped.add(tier.ref(x)); out.alone.delete(tier.ref(x)); }
   } });
   return out;
