@@ -11,16 +11,33 @@ function carriedNote(db: DatabaseSync, repo: string, decision: string | null): s
   return rows.length ? `parts carried from the closed duplicate PRs ${rows.map((x) => `#${x.number}${x.author ? ` by ${x.author}` : ""}`).join(", ")}: code written by those authors, not by the pipeline` : "parts carried from closed duplicate PRs: code written by their authors, not by the pipeline";
 }
 
+type Pushes = {
+  a?: { f: string; reason: string | null; source: string | null; carry_decision: string | null };
+  b?: { f: string; reason: string | null; kind: string };
+  c?: { f: string; reason: string | null };
+  d?: { f: string };
+};
+
 /** The commit of ours that made `head`, or null when no push of ours ended there (a contributor's commit). */
 function madeBy(db: DatabaseSync, repo: string, number: number, head: string): Row | null {
-  const a = db.prepare("SELECT from_head AS f, reason, source, carry_decision FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' ORDER BY rowid DESC").get(repo, number, head) as { f: string; reason: string | null; source: string | null; carry_decision: string | null } | undefined;
+  return madeFrom(db, repo, {
+    a: db.prepare("SELECT from_head AS f, reason, source, carry_decision FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' ORDER BY rowid DESC").get(repo, number, head) as Pushes["a"],
+    get b() { return db.prepare("SELECT head AS f, reason, kind FROM ci_fixes WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' ORDER BY rowid DESC").get(repo, number, head) as Pushes["b"]; },
+    get c() { return db.prepare("SELECT from_head AS f, reason FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' ORDER BY rowid DESC").get(repo, number, head) as Pushes["c"]; },
+    get d() { return db.prepare("SELECT from_head AS f FROM dupe_carries WHERE repo = ? AND number = ? AND to_head = ? AND outcome LIKE 'pushed%' AND from_head IS NOT NULL").get(repo, number, head) as Pushes["d"]; },
+  });
+}
+
+/** madeBy() from the pushes that ended at the head: a fix-up, else a CI fix, else a base merge, else a carry-over. */
+function madeFrom(db: DatabaseSync, repo: string, p: Pushes): Row | null {
+  const a = p.a;
   if (a?.source === "carry") return { from: a.f, kind: "carry", note: carriedNote(db, repo, a.carry_decision), source: a.source };
   if (a) return { from: a.f, kind: a.source === "premerge" ? "pre-merge fix" : a.source === "operator" ? "operator fix-up" : "fix-up", note: a.reason, source: a.source };
-  const b = db.prepare("SELECT head AS f, reason, kind FROM ci_fixes WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' ORDER BY rowid DESC").get(repo, number, head) as { f: string; reason: string | null; kind: string } | undefined;
+  const b = p.b;
   if (b) return { from: b.f, kind: "CI fix", note: b.reason ?? `fix for the failing ${b.kind} check` };
-  const c = db.prepare("SELECT from_head AS f, reason FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged' ORDER BY rowid DESC").get(repo, number, head) as { f: string; reason: string | null } | undefined;
+  const c = p.c;
   if (c) return { from: c.f, kind: "base merge", note: c.reason ?? "merged the base branch into the PR" };
-  const d = db.prepare("SELECT from_head AS f FROM dupe_carries WHERE repo = ? AND number = ? AND to_head = ? AND outcome LIKE 'pushed%' AND from_head IS NOT NULL").get(repo, number, head) as { f: string } | undefined;
+  const d = p.d;
   if (d) return { from: d.f, kind: "carry", note: "carried parts of closed duplicates onto the PR" };
   return null;
 }
@@ -38,11 +55,38 @@ function fixesAsked(db: DatabaseSync, repo: string, number: number, head: string
  * Our commits that lead from `earlier` to `head`, oldest first. `complete` is false when the way back from `head` meets a commit that
  * is not ours before it reaches `earlier` (a contributor pushed in between), so the list then holds only the newest part.
  */
-export function ourCommitsSince(db: DatabaseSync, repo: string, number: number, earlier: string, head: string): { commits: OurCommit[]; complete: boolean; sources: (string | null | undefined)[] } {
+export function ourCommitsSince(db: DatabaseSync, repo: string, number: number, earlier: string, head: string): OurPath {
+  return walk(db, (h) => madeBy(db, repo, number, h), repo, number, earlier, head);
+}
+
+type OurPath = { commits: OurCommit[]; complete: boolean; sources: (string | null | undefined)[] };
+
+/** ourCommitsSince() for many PRs: the pushes of every PR are read once, on first use. */
+export function ourCommitsLoader(db: DatabaseSync): (repo: string, number: number, earlier: string, head: string) => OurPath {
+  let maps: { a: Map<string, Pushes["a"]>; b: Map<string, Pushes["b"]>; c: Map<string, Pushes["c"]>; d: Map<string, Pushes["d"]> } | undefined;
+  // The row each per-head read would give first: the newest for a, b and c, the first stored for d.
+  const firstBy = <T>(sql: string): Map<string, T> => {
+    const m = new Map<string, T>();
+    for (const r of db.prepare(sql).all() as (T & { k: string })[]) if (!m.has(r.k)) { const { k, ...rest } = r; m.set(k, rest as T); }
+    return m;
+  };
+  const load = () => (maps ??= {
+    a: firstBy("SELECT repo || '#' || number || '@' || to_head AS k, from_head AS f, reason, source, carry_decision FROM fixups WHERE state = 'pushed' AND to_head IS NOT NULL ORDER BY rowid DESC"),
+    b: firstBy("SELECT repo || '#' || number || '@' || to_head AS k, head AS f, reason, kind FROM ci_fixes WHERE state = 'pushed' AND to_head IS NOT NULL ORDER BY rowid DESC"),
+    c: firstBy("SELECT repo || '#' || number || '@' || to_head AS k, from_head AS f, reason FROM conflict_merges WHERE state = 'merged' AND to_head IS NOT NULL ORDER BY rowid DESC"),
+    d: firstBy("SELECT repo || '#' || number || '@' || to_head AS k, from_head AS f FROM dupe_carries WHERE outcome LIKE 'pushed%' AND from_head IS NOT NULL AND to_head IS NOT NULL ORDER BY rowid"),
+  });
+  return (repo, number, earlier, head) => walk(db, (h) => {
+    const m = load(), k = `${repo}#${number}@${h}`;
+    return madeFrom(db, repo, { a: m.a.get(k), b: m.b.get(k), c: m.c.get(k), d: m.d.get(k) });
+  }, repo, number, earlier, head);
+}
+
+function walk(db: DatabaseSync, madeBy: (head: string) => Row | null, repo: string, number: number, earlier: string, head: string): OurPath {
   const commits: OurCommit[] = [], sources: (string | null | undefined)[] = [];
   let h = head, complete = false;
   for (let i = 0; i < 20 && h !== earlier; i++) {
-    const row = madeBy(db, repo, number, h);
+    const row = madeBy(h);
     if (!row) break;
     commits.unshift({ kind: row.kind, sha: h, from: row.from, note: row.note ?? "", fixes_meant: row.kind === "fix-up" ? fixesAsked(db, repo, number, row.from) : [] });
     sources.unshift(row.source);

@@ -44,14 +44,14 @@ export type ItemLoadOptions = {
 };
 
 type Row = {
-  repo: string; number: number; kind: "pr" | "issue"; state: string; title: string | null; assignees: string | null; is_draft: number | null; updated_at: string | null; labels: string | null;
+  repo: string; number: number; kind: "pr" | "issue"; state: string; title: string | null; author: string | null; assignees: string | null; is_draft: number | null; updated_at: string | null; labels: string | null;
   embed_hash: string | null; class_hash: string | null; class_scheme: string | null; score: number | null;
   in_pilot: number; not_integration: number; held_backlog: number; held_dup: number;
   pr_hash: string | null; e_hash: string | null; scan_hash: string | null; stage: string | null; impact: string | null;
   a_state: string | null; a_pr: string | null; a_hash: string | null; a_head: string | null; a_base: string | null; h_state: string | null; b_state: string | null;
 };
 
-const SELECT = `SELECT i.repo, i.number, i.kind, i.state, i.title, i.assignees, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
+const SELECT = `SELECT i.repo, i.number, i.kind, i.state, i.title, i.author, i.assignees, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
     ${fastScoreSql("i.repo", "i.number", "r.score")} AS score,
     ${pilotSql("i")} AS in_pilot, ${notOwnIntegrationSql("i")} AS not_integration, ${backlogHeldSql("i")} AS held_backlog,
     (EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
@@ -203,7 +203,6 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const m = state === "pr-opened" ? /\/([^/]+)\/pull\/(\d+)$/.exec(url ?? "") : null;
     return m && !mirrored.get(m[1]!, Number(m[2])) ? { number: Number(m[2]), closes: true } : null;
   };
-  const authorOf = db.prepare("SELECT author FROM items WHERE repo = ? AND number = ?");
 
   return rows.map((r): ItemFacts => {
     const ref = `${r.repo}#${r.number}`;
@@ -241,7 +240,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const embedHash = r.embed_hash ?? (() => { const b = texts.get(ref)!; return hashOfText(b.title, b.body); })();
     const note = labeled.get(ref) ?? null;
     return {
-      repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, inFlight: r.state === "OPEN" && (["retry", "testing", "passed"].includes(r.a_state ?? "") || (r.kind === "pr" && own.prs.has(ref) && own.isOwn(r.repo, (authorOf.get(r.repo, r.number) as { author: string | null } | undefined)?.author ?? null))), draft: !!r.is_draft,
+      repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, inFlight: r.state === "OPEN" && (["retry", "testing", "passed"].includes(r.a_state ?? "") || (r.kind === "pr" && own.prs.has(ref) && own.isOwn(r.repo, r.author))), draft: !!r.is_draft,
       inScope: !!r.in_pilot, ...(outsideHolds.has(ref) ? { outsideHold: outsideHolds.get(ref)! } : {}), integration: !r.not_integration,
       held: r.held_backlog ? "backlog" : r.held_dup ? "duplicate" : null,
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo), commentApproved: repoOf(r.repo).comment, fixIssueApproved: repoOf(r.repo).fix },

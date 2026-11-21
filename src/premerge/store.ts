@@ -88,6 +88,10 @@ export function premergeFixUsed(db: DatabaseSync, repo: string, number: number):
   return !!db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND source = 'premerge' AND state NOT IN ('linting', 'superseded') LIMIT 1").get(repo, number);
 }
 
+/** premergeFixUsed() from the PR's fixups rows. */
+export const premergeFixUsedIn = (rows: readonly { source: string | null; state: string }[]): boolean =>
+  rows.some((r) => r.source === "premerge" && r.state !== "linting" && r.state !== "superseded");
+
 /** Claims of a stored row; empty when none or unreadable. */
 export function claimsOf(row: PremergeRow | null): Claim[] {
   try { const v = row?.claims ? (JSON.parse(row.claims) as unknown) : []; return Array.isArray(v) ? (v as Claim[]) : []; } catch { return []; }

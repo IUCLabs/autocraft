@@ -14,21 +14,20 @@ import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/hel
 import { conflictAskRetryAtOf, conflictBucketOf, type ConflictRow } from "../fixup/conflict-state.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { authorWritesOf } from "../fixup/author-permission.ts";
-import { longLivedOf, pushable, sameRepo, type LongLived } from "../fixup/pushable.ts";
+import { longLivedAll, pushable, sameRepo, type LongLived } from "../fixup/pushable.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
 import { latestRun, refereeClosed, settledSet } from "../classify/settled.ts";
 import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import { batchStates, membersOf } from "../merge/batch-store.ts";
 import { changesRequestedWhy, gatesOf, GATE_FAILURES, failureNote, type ReviewFact } from "../merge/changes-requested.ts";
 import { ciApprovalOf } from "../merge/ci-approval.ts";
-import { defaultBranchOf } from "../merge/base.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { mergeHolds } from "../merge/holds.ts";
-import { repoHasNoCi } from "../merge/no-ci.ts";
+import { reposWithNoCi } from "../merge/no-ci.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { inPilot, pilotSql, pipelineRepos } from "../pilot.ts";
 import { holdMap } from "../outside.ts";
-import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
+import { attemptsIn, parseFixes } from "../fixup/candidates.ts";
 import { operatorTries, operatorTriesLeft, operatorWork, queuedOperatorFix } from "../preapproval/state.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
@@ -36,14 +35,14 @@ import { verifyOverride } from "../merge/verify-override.ts";
 import { unknownOf } from "../merge/mergeable.ts";
 import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, UNSURE_AT_SQL, mergeDecisionId, holdDecisionId } from "./rules.ts";
 import { getRule, STATS_SQL, tierOf, tierKey, tiersOf, type AuthorRef, type Tier } from "../whitelist.ts";
-import { findingsOf, premergeFixUsed, premergeRows } from "../premerge/store.ts";
+import { findingsOf, premergeFixUsedIn, premergeRows } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
 import { cachedDiffExtras, diffRereads, extrasPending, rereadPaceAt, diffCacheDir, splitDiff } from "../review/diff.ts";
 import { ownerOf, slugOf } from "../owners.ts";
 import { EXTRAS_PENDING_REASON, sensitiveReasons } from "./sensitive.ts";
 import { CARRIED, carriedReview } from "../review/carry.ts";
-import { postSource } from "../review/post-source.ts";
+import { postSourcesOf } from "../review/post-source.ts";
 import { staleReviews } from "../review/discussion.ts";
 import { nextUtcMidnight, reviewHolds } from "../review/gate.ts";
 import { scopeAnswers, unsettledScope } from "../review/candidates.ts";
@@ -204,6 +203,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const carries = keyed<{ k: string; decision_id: string; attempts: number }>("SELECT c.repo || '#' || c.number AS k, c.decision_id, c.attempts FROM dupe_carries c WHERE c.state = 'queued' /*narrow*/ ORDER BY c.rowid", "c");
   const carryUnsent = db.prepare("SELECT created_at FROM fixups WHERE repo = ? AND number = ? AND source = 'carry' AND carry_decision = ? AND state = 'comment-unsent'");
   const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
+  const fixupsOf = keyed<{ k: string; source: string | null; state: string; reason: string | null }>("SELECT f.repo || '#' || f.number AS k, f.source, f.state, f.reason FROM fixups f WHERE 1 /*narrow*/", "f");
   // A review's own fix-up rows at a head, in the order of the per-PR index (created_at).
   const fixupAt = keyed<{ k: string; state: string; created_at: string }>(`SELECT f.repo || '#' || f.number || '@' || f.from_head AS k, f.state, f.created_at FROM fixups f
     WHERE f.source IS NULL AND f.state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'comment-failed', 'push-denied', 'linting', 'comment-unsent') /*narrow*/ ORDER BY f.created_at, f.rowid`, "f");
@@ -221,19 +221,27 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   type CifixRow = { head: string; state: string; created_at: string; task_id: number | null; runs: string | null; reason: string | null };
   const cifixOf = keyed<{ k: string } & CifixRow>("SELECT c.repo || '#' || c.number AS k, c.head, c.state, c.created_at, c.task_id, c.runs, c.reason FROM ci_fixes c WHERE 1 /*narrow*/ ORDER BY c.created_at, c.rowid", "c");
   const authorWrites = authorWritesOf(db);
+  const postSource = postSourcesOf(db, rows.filter((r) => r.r_mode === CARRIED && r.r_head).map((r) => `${r.repo}#${r.number}`));
   const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
   const tiers = tiersOf(db, queued.map((r) => ({ login: r.author!, id: r.author_id })));
 
   const repoMemo = new Map<string, { f: PrFacts["repoFacts"]; pub: boolean; longLived: LongLived; defaultBranch: string | null }>();
+  // Repo rows, CI presence and long-lived branches, read once for every repo on first use.
+  let tables: { repos: Map<string, { name: string; visibility: string | null; default_branch: string | null }>; noCi: Set<string>; longLived: (repo: string) => LongLived } | undefined;
+  const repoTables = () => (tables ??= ({
+    repos: new Map((db.prepare("SELECT name, visibility, default_branch FROM repos").all() as { name: string; visibility: string | null; default_branch: string | null }[]).map((x) => [x.name, x])),
+    noCi: reposWithNoCi(db), longLived: longLivedAll(db),
+  }));
   const repoOf = (repo: string) => {
     let m = repoMemo.get(repo);
     if (!m) {
+      const t = repoTables(), row = t.repos.get(repo);
       m = {
         f: { mergeApproved: !!mergeApprovalOf(db, repo), pushApproved: pushApprovalOf(db, repo) !== null, commentApproved: commentApprovalOf(db, repo) !== null, ciApproved: ciApprovalOf(db, repo) !== null,
-          noCi: repoHasNoCi(db, repo), mainRed: mainRed.has(repo) },
-        pub: !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo),
-        longLived: longLivedOf(db, repo),
-        defaultBranch: defaultBranchOf(db, repo),
+          noCi: t.noCi.has(repo), mainRed: mainRed.has(repo) },
+        pub: row?.visibility === "public",
+        longLived: t.longLived(repo),
+        defaultBranch: row?.default_branch ?? null,
       };
       repoMemo.set(repo, m);
     }
@@ -389,7 +397,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premerge.get(`${ref}@${r.r_head}`)?.conflicts ?? null)]);
     const p = posts.get(ref);
     // A carried review has no text of its own: the post uses the text of the review it was carried from.
-    const src = r.r_mode === CARRIED ? postSource(db, r.repo, r.number, r.r_head) : null;
+    const src = r.r_mode === CARRIED ? postSource(r.repo, r.number, r.r_head) : null;
     const hasPublic = src ? src.hasPublic : r.r_public !== null;
     const pub = src ? src.public : !hasPublic ? { ok: true } : parsePublic(safeJson(r.r_public!));
     base.post = {
@@ -473,7 +481,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       const all = findingsOf(row);
       const defects = all.filter((f) => f.severity === "defect");
       base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, unsure: row.unsure !== 0, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), fixesSafe: parseFixes(JSON.stringify(defects.map((f) => f.fix))).length === defects.length, minor: all.length - defects.length, error: row.error ?? null };
-      if (defects.length) base.premergeFixUsed = premergeFixUsed(db, r.repo, r.number);
+      if (defects.length) base.premergeFixUsed = premergeFixUsedIn(fixupsOf.get(ref) ?? []);
     }
     if (base.mergeable === "CONFLICTING" && r.base_ref) {
       const rows = conflictRowsOf.get(ref) ?? [];
@@ -483,7 +491,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     }
     if (r.r_verdict === "take-fix") {
       base.fixup = {
-        fixes: parseFixes(r.r_fixes).length, attempts: attemptsOf(db, r.repo, r.number), recorded: (fixupAt.get(`${ref}@${r.r_head}`) ?? []).filter((x) => x.state !== "comment-unsent").map((x) => x.state),
+        fixes: parseFixes(r.r_fixes).length, attempts: attemptsIn(fixupsOf.get(ref) ?? []), recorded: (fixupAt.get(`${ref}@${r.r_head}`) ?? []).filter((x) => x.state !== "comment-unsent").map((x) => x.state),
         ...unsentOf((fixupAt.get(`${ref}@${r.r_head}`) ?? []).filter((x) => x.state === "comment-unsent").map((x) => x.created_at)),
       };
     }

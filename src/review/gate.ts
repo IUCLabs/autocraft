@@ -5,7 +5,7 @@ import { audit } from "../dash/audit.ts";
 import { effectiveCi, effectiveCiWith, optionalChecksOf } from "../optional-checks.ts";
 import { BLOCKS_REVIEW, blockersLoader, storedBlockedBy } from "./blockers.ts";
 import { MAX_RERUNS_PER_DAY, discussionState, maintainerSince, staleMarksSince, type DiscussionState } from "./discussion.ts";
-import { ourCommitsSince } from "./ours.ts";
+import { ourCommitsLoader } from "./ours.ts";
 import { setting } from "../settings-read.ts";
 
 /** Opus review calls of one PR per UTC day, new heads, re-runs and failed calls together (a reply-fix turn is part of its review). */
@@ -96,6 +96,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now(), refs?:
   const optional = once(() => optionalChecksOf(db));
   const staleSince = once(() => staleMarksSince(db));
   const blockers = once(() => blockersLoader(db));
+  const ourPath = once(() => ourCommitsLoader(db));
   // CI at the head as headCi() reads it.
   const ciAt = (repo: string, number: number, head: string): "ok" | "pending" | "failure" | "unknown" => {
     const c = checks().get(`${repo}#${number}`);
@@ -138,7 +139,7 @@ export function reviewHolds(db: DatabaseSync, nowMs: number = Date.now(), refs?:
     const ci = ciAt(repo, number, head);
     if (ci === "pending") return { kind: "ci", wait: "CI on the latest commit to finish" };
     if (ci === "failure" && last && !settled) return { kind: "ci", wait: "CI on the latest commit to pass", red: true };
-    const ours = last && last.head_oid !== head ? ourCommitsSince(db, repo, number, last.head_oid, head) : null;
+    const ours = last && last.head_oid !== head ? ourPath()(repo, number, last.head_oid, head) : null;
     if (ours?.complete && ours.commits.length) return null;
     const h = history().get(ref) ?? { n: 0, last: null };
     const r = runs().get(ref) ?? { n: 0, last: null };

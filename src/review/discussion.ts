@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { isBotCommand, isBotLogin } from "./bots.ts";
-import { activeBlockers, storedBlockedBy } from "./blockers.ts";
+import { blockersLoader, storedBlockedBy } from "./blockers.ts";
 import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
@@ -360,13 +360,15 @@ export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false
     if (!todays.has(k)) todays.set(k, reruns(db, r.repo, r.number));
     return todays.get(k)! >= MAX_RERUNS_PER_DAY;
   };
+  let loaded: ReturnType<typeof blockersLoader> | undefined;
+  const blockers = () => (loaded ??= blockersLoader(db));
   for (const r of rows) {
     const ref = `${r.repo}#${r.number}`;
     const marked = (marks.get(ref) ?? "") > r.at;
     // On a head that has a review, only a maintainer's words (or an operator's request) make it stale: the PR author's comments feed the next review but do not start one.
     const talked = maintainerSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
     // A hold that waited for other items is reviewed once when none is open any more.
-    const unblocked = !!r.blocked_by && storedBlockedBy(r.blocked_by).length > 0 && activeBlockers(db, ref, r.blocked_by, r.at).length === 0;
+    const unblocked = !!r.blocked_by && storedBlockedBy(r.blocked_by).length > 0 && blockers().active(ref, r.blocked_by, r.at).length === 0;
     if (!marked && !unblocked && !((talked || r.rebased === 1) && !(respectCap && capped(r)))) continue;
     out.add(`${ref}@${r.head_oid}`);
   }

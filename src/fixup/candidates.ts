@@ -55,3 +55,9 @@ export function attemptsOf(db: DatabaseSync, repo: string, number: number): numb
       AND NOT (state = 'refused' AND (${FORMAT_REASONS.map(() => "COALESCE(reason, '') LIKE ?").join(" OR ")}))`)
     .get(repo, number, ...ATTEMPT_STATES, ...FORMAT_REASONS.map((r) => `${r}%`)) as { n: number }).n;
 }
+
+/** attemptsOf() from the PR's fixups rows. `LIKE 'reason%'` ignores ASCII case. */
+export function attemptsIn(rows: readonly { source: string | null; state: string; reason: string | null }[]): number {
+  return rows.filter((r) => r.source === null && (ATTEMPT_STATES as string[]).includes(r.state)
+    && !(r.state === "refused" && FORMAT_REASONS.some((f) => (r.reason ?? "").toLowerCase().startsWith(f.toLowerCase())))).length;
+}
