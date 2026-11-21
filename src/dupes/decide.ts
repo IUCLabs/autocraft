@@ -12,7 +12,7 @@ import { audit } from "../dash/audit.ts";
 import { actionable, ask, factsOf, getDecision, validateAsk } from "../decisions.ts";
 import { compareCanonical, canonInfo } from "./canonical.ts";
 import { backlogHeldSql, DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
-import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
+import { duplicateGroups, kindSetsLoader, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
 import { oneSentence } from "../review/summary.ts";
 import { storeOptionTexts } from "./texts.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
@@ -54,8 +54,9 @@ function answeredKeeps(db: DatabaseSync, repo: string, members: number[]): { set
 /** Plans for the groups whose comparisons are all current. `closing` is false for a group with nothing to close. */
 export function groupPlans(db: DatabaseSync, repo?: string): GroupPlan[] {
   const out: GroupPlan[] = [];
-  for (const g of duplicateGroups(db, repo)) {
-    const sets = kindSetsOf(db, g).filter((s) => s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number)));
+  const groups = duplicateGroups(db, repo), setsOf = kindSetsLoader(db, groups);
+  for (const g of groups) {
+    const sets = setsOf(g).filter((s) => s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number)));
     if (!sets.length) continue;
     // A member held by a Backlog answer is not asked about again.
     if (g.members.some((n) => db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND ${backlogHeldSql("i")}`).get(g.repo, n))) continue;

@@ -6,7 +6,7 @@
 // make it stale, but a decision binds each PR member to the head the comparison read.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { pickCanonical } from "./canonical.ts";
+import { canonInfoAll, pickCanonical } from "./canonical.ts";
 import { inPilot } from "../pilot.ts";
 
 type Edge = { repo: string; a: number; b: number; similarity: number; jev_p: number | null; haiku: string | null };
@@ -36,9 +36,10 @@ export function duplicateGroups(db: DatabaseSync, repo?: string): Group[] {
   }
   const by = new Map<string, Edge[]>();
   for (const e of edges) by.set(find(`${e.repo}#${e.a}`), [...(by.get(find(`${e.repo}#${e.a}`)) ?? []), e]);
-  return [...by.values()].map((es) => {
-    const members = [...new Set(es.flatMap((e) => [e.a, e.b]))].sort((x, y) => x - y);
-    const c = pickCanonical(db, es[0]!.repo, members);
+  const groups = [...by.values()].map((es) => ({ es, members: [...new Set(es.flatMap((e) => [e.a, e.b]))].sort((x, y) => x - y) }));
+  const known = canonInfoAll(db, groups.flatMap((g) => g.members.map((number) => ({ repo: g.es[0]!.repo, number }))));
+  return groups.map(({ es, members }) => {
+    const c = pickCanonical(db, es[0]!.repo, members, known);
     return { repo: es[0]!.repo, canonical: c.number, why: c.why, members, edges: es };
   });
 }
@@ -67,22 +68,36 @@ export const DIFF_SIZE_CHANGE = 0.2;
 const sizeOf = (m: { additions: number | null; deletions: number | null }): number | null => (m.additions === null || m.deletions === null ? null : m.additions + m.deletions);
 
 export function kindSetsOf(db: DatabaseSync, g: Group): KindSet[] {
-  const get = db.prepare("SELECT number, kind, state, title, head_oid, embed_hash, comments_count, additions, deletions, closing_issues FROM items WHERE repo = ? AND number = ?");
+  return kindSetsLoader(db, [g])(g);
+}
+
+/** kindSetsOf() for the given groups, with their members' rows read once. */
+export function kindSetsLoader(db: DatabaseSync, groups: Group[]): (g: Group) => KindSet[] {
+  const rows = new Map<string, { m: Member; reason: string | null }>();
+  for (const r of db.prepare(`SELECT i.number, i.kind, i.state, i.title, i.head_oid, i.embed_hash, i.comments_count, i.additions, i.deletions, i.closing_issues,
+      i.repo || '#' || i.number AS k, i.state_reason FROM json_each(?) j JOIN items i ON i.repo = j.value ->> 0 AND i.number = j.value ->> 1`)
+    .all(JSON.stringify(groups.flatMap((g) => g.members.map((n) => [g.repo, n])))) as (Member & { k?: string; state_reason?: string | null })[]) {
+    const k = r.k!, reason = r.state_reason ?? null;
+    delete r.k;
+    delete r.state_reason;
+    rows.set(k, { m: r, reason });
+  }
   // Left out: a rejected (closed, unmerged) PR; an item already closed as a duplicate, or whose pair decision is answered close (the act step closes it).
-  const gone = db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND id LIKE '%:duplicate@%' AND answer = 'close'`);
+  const gone = new Set((db.prepare(`SELECT repo || '#' || number AS k FROM decisions WHERE kind = 'duplicate' AND id LIKE '%:duplicate@%' AND answer = 'close'`).all() as { k: string }[]).map((r) => r.k));
   // A member our own group Act closed can never become a kept item later.
-  const closedByUs = db.prepare("SELECT 1 FROM dupe_group_posts p JOIN dupe_groups g ON g.decision_id = p.decision_id WHERE g.repo = ? AND p.number = ? AND p.step = 'close' AND p.url IS NOT NULL");
-  const reason = db.prepare("SELECT state_reason FROM items WHERE repo = ? AND number = ?");
-  const members = g.members.map((n) => get.get(g.repo, n) as Member | undefined).filter((m): m is Member => {
-    if (!m) return false;
-    if (m.kind === "pr" && m.state === "CLOSED") return false;
-    if (gone.get(g.repo, m.number) || closedByUs.get(g.repo, m.number)) return false;
-    return (reason.get(g.repo, m.number) as { state_reason: string | null }).state_reason !== "DUPLICATE";
-  });
-  return (["pr", "issue"] as const).flatMap((kind) => {
-    const ms = members.filter((m) => m.kind === kind);
-    return ms.length ? [{ repo: g.repo, kind, key: setKey(kind, ms.map((m) => m.number)), members: ms, hash: setHash(ms) }] : [];
-  });
+  const closedByUs = new Set((db.prepare("SELECT g.repo || '#' || p.number AS k FROM dupe_group_posts p JOIN dupe_groups g ON g.decision_id = p.decision_id WHERE p.step = 'close' AND p.url IS NOT NULL").all() as { k: string }[]).map((r) => r.k));
+  return (g) => {
+    const members = g.members.flatMap((n): Member[] => {
+      const ref = `${g.repo}#${n}`, r = rows.get(ref);
+      if (!r) return [];
+      if (r.m.kind === "pr" && r.m.state === "CLOSED") return [];
+      return gone.has(ref) || closedByUs.has(ref) || r.reason === "DUPLICATE" ? [] : [r.m];
+    });
+    return (["pr", "issue"] as const).flatMap((kind) => {
+      const ms = members.filter((m) => m.kind === kind);
+      return ms.length ? [{ repo: g.repo, kind, key: setKey(kind, ms.map((m) => m.number)), members: ms, hash: setHash(ms) }] : [];
+    });
+  };
 }
 
 export type StoredComparison = {
@@ -184,8 +199,9 @@ function retryable(db: DatabaseSync, c: StoredComparison, nowMs: number): boolea
 /** Sets that need a comparison: an open member is in the pilot and no current result is stored (or a rule result may be retried), and the set did not just change on GitHub. */
 export function dueSets(db: DatabaseSync, repo?: string, nowMs: number = Date.now()): KindSet[] {
   const out: KindSet[] = [];
-  for (const g of duplicateGroups(db, repo))
-    for (const s of kindSetsOf(db, g)) {
+  const groups = duplicateGroups(db, repo), setsOf = kindSetsLoader(db, groups);
+  for (const g of groups)
+    for (const s of setsOf(g)) {
       if (!s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number))) continue;
       const c = currentComparison(db, s);
       if ((!c || retryable(db, c, nowMs)) && !recentlyDropped(db, s, nowMs)) out.push(s);
