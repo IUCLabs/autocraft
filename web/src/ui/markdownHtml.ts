@@ -18,7 +18,7 @@ const PROXIED: [string, { test(path: string): boolean }][] = [
   ["github.com", /^\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
   ["private-user-images.githubusercontent.com", /^\/./],
   ["user-images.githubusercontent.com", /^\/./],
-  ["raw.githubusercontent.com", { test: (p) => p.startsWith(`/${GITHUB_ORG}/`) && p.length > GITHUB_ORG.length + 2 }],
+  ["raw.githubusercontent.com", { test: (p) => p.toLowerCase().startsWith(`/${GITHUB_ORG.toLowerCase()}/`) && p.length > GITHUB_ORG.length + 2 }],
   ["avatars.githubusercontent.com", /^\/./],
 ];
 

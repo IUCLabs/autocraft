@@ -23,6 +23,13 @@ test("bare repo names belong to the configured owner", () => {
   assert.equal(listAll(db).find((r) => r.name === "autocraft")?.owner, "IUCLabs");
 });
 
+test("an owner typed in another case is stored as the configured owner", () => {
+  resetOwners();
+  const db = connect(join(mkdtempSync(join(SCRATCH, "default-owner-")), "o.db"));
+  trackRepo(db, "t", "iuclabs/foo");
+  assert.equal(ownerOf("foo"), "IUCLabs");
+});
+
 test("sync searches and lists the configured owner", async () => {
   resetOwners();
   const db = connect(join(mkdtempSync(join(SCRATCH, "default-owner-")), "o.db"));
@@ -53,6 +60,7 @@ test("sync searches and lists the configured owner", async () => {
 
 test("the image proxy serves raw files of the configured owner only", () => {
   assert.ok(allowedImage("https://raw.githubusercontent.com/IUCLabs/autocraft/main/a.png"));
+  assert.ok(allowedImage("https://raw.githubusercontent.com/iucLabs/autocraft/main/a.png"));
   assert.equal(allowedImage("https://raw.githubusercontent.com/storytold/autocraft/main/a.png"), null);
 });
 

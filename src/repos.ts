@@ -30,7 +30,7 @@ export function trackRepo(db: DatabaseSync, by: string, input: string): boolean 
   if (known && input.includes("/") && known.owner.toLowerCase() !== owner.toLowerCase()) {
     throw new RepoError(`${name} is already known under ${known.owner}; repo names are unique across owners.`);
   }
-  if (!known) db.prepare("INSERT INTO main.repos (name, owner) VALUES (?, ?)").run(name, owner);
+  if (!known) db.prepare("INSERT INTO main.repos (name, owner) VALUES (?, ?)").run(name, owner.toLowerCase() === DEFAULT_OWNER.toLowerCase() ? DEFAULT_OWNER : owner);
   loadOwners(db);
   const r = db.prepare("INSERT OR IGNORE INTO main.tracked_repos (name, added_by, added_at) VALUES (?, ?, ?)")
     .run(name, by, new Date().toISOString());

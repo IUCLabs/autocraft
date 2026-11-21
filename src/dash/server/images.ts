@@ -32,7 +32,7 @@ const SOURCES: { host: string; path: RegExp; token?: boolean }[] = [
   { host: "github.com", path: /^\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, token: true },
   { host: "private-user-images.githubusercontent.com", path: /^\/./ },
   { host: "user-images.githubusercontent.com", path: /^\/./ },
-  { host: "raw.githubusercontent.com", path: new RegExp(`^/${DEFAULT_OWNER}/.`) },
+  { host: "raw.githubusercontent.com", path: new RegExp(`^/${DEFAULT_OWNER}/.`, "i") },
   { host: "avatars.githubusercontent.com", path: /^\/./ },
 ];
 // GitHub redirects public attachments to this bucket; it is never requested directly.
