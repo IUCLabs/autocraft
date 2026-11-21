@@ -146,7 +146,8 @@ function cancelRow(db: DatabaseSync, id: number, by: string, reason: string, lin
 // ---- starting a step ----------------------------------------------------------------------------------------------------
 
 /** Queues a card's pipeline step for the PR; `label` is the done line the card shows. Throws when the step cannot start. */
-export async function runPipelineStep(db: DatabaseSync, o: { repo: string; number: number; step: PipelineStep; by: string }): Promise<{ label: string }> {
+/** `preapproval`: the id of the pre-approved merge a fix-up that merges started. */
+export async function runPipelineStep(db: DatabaseSync, o: { repo: string; number: number; step: PipelineStep; by: string }): Promise<{ label: string; preapproval?: number }> {
   const { repo, number, step, by } = o;
   const ref = `${repo}#${number}`;
   const it = prRow(db, repo, number);
@@ -183,12 +184,12 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
     activeCheck();
   }
   const at = iso();
+  let id: number | null = null;
   db.exec("BEGIN IMMEDIATE");
   try {
     // Checked again under the write lock: another writer may have started one since the first check.
     if (merge) activeCheck();
     const fix = Number(db.prepare("INSERT INTO operator_fixups (repo, number, from_head, instructions, by, at) VALUES (?, ?, ?, ?, ?, ?)").run(repo, number, head, instructions, by, at).lastInsertRowid);
-    let id: number | null = null;
     if (merge) {
       id = Number(db.prepare("INSERT INTO preapprovals (repo, number, by, at, instructions, state, from_head, updated_at, fix_id) VALUES (?, ?, ?, ?, ?, 'fixup', ?, ?, ?)").run(repo, number, by, at, instructions, head, at, fix).lastInsertRowid);
       db.prepare("UPDATE operator_fixups SET preapproval_id = ? WHERE id = ?").run(id, fix);
@@ -202,7 +203,7 @@ export async function runPipelineStep(db: DatabaseSync, o: { repo: string; numbe
   say(db, repo, number, merge
     ? `${by} approved a merge after a fix-up: a fix-up of ${short(head)} is queued; if its review says take and CI is green, the PR goes to the merge queue.`
     : `${by} queued a fix-up of ${short(head)}.`);
-  return { label: merge ? "Queued the fix-up; the PR merges if its review says take and CI is green" : "Queued the fix-up" };
+  return { label: merge ? "Queued the fix-up; the PR merges if its review says take and CI is green" : "Queued the fix-up", ...(id !== null && { preapproval: id }) };
 }
 
 /** Why a PR in a NOT_REVIEWABLE plan state gets no code review, in words a commenter can act on. */

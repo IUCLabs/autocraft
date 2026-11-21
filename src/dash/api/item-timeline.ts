@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { HistoryCall, TimelineEntry, TimelineTone } from "../../../web/src/api/types.ts";
 import type { Preapproval } from "../../../web/src/api/types.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
+import { filingOutcome, heldOf, HELD_STUCK_MS } from "../../conversations/held.ts";
 import { arr, clip, stepTitle, type Ctx, type Ev } from "./trace.ts";
 
 const short = (s: string | null | undefined): string => (s ?? "").slice(0, 7);
@@ -207,6 +208,21 @@ export function timelineOf(c: Ctx, ev: Ev[], preapprovals: Preapproval[]): Timel
       o.major = true; o.tone = p.state === "failed" ? "bad" : "warn"; o.preapproval = info; out.push(o);
     } else if (["fixup", "review", "ci", "queued"].includes(p.state)) t.preapproval = info;
   });
+
+  // Issues a card held until the merge: the press, and what became of it. A filed one is the "Opened issue" write line.
+  for (const h of heldOf(db, repo, n)) {
+    const t = base(`held:${h.id}`, h.at, "person", h.by, "person", `After the merge: open an issue in ${h.issue_repo}`);
+    t.major = true;
+    if (staff && !c.veiled) { t.body = h.title; if (h.state === "held" && h.reason) t.lines = [`Waiting: ${h.reason}`]; }
+    out.push(t);
+    // A stopped create the Act step cannot settle from its audit row (filingOutcome) stays unknown.
+    const stuck = h.state === "filing" && Date.parse(h.updated_at) < Date.now() - HELD_STUCK_MS && filingOutcome(db, h) === null;
+    if (h.state !== "dropped" && h.state !== "failed" && !stuck) continue;
+    const end = base(`held:${h.id}:end`, h.updated_at, "harness", "AutoCraft", "github",
+      h.state === "dropped" ? `Held issue dropped: ${h.reason ?? "no reason recorded"}` : stuck ? "Held issue: the create's outcome is unknown, check GitHub" : `Held issue not opened${staff && h.reason ? `: ${clip(h.reason, 120)}` : ""}`);
+    end.major = true; end.tone = h.state === "dropped" ? "warn" : "bad";
+    out.push(end);
+  }
 
   out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
   return out;

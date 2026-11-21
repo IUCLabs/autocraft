@@ -1,5 +1,5 @@
 // Mock content for the redesign: the curated items, their status lines, reviews, results, history and GitHub sides, and findings.
-import type { FixRound, GithubEvent, ItemBar, ItemBarStep, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ScreenshotRun } from "../types";
+import type { FixRound, GithubEvent, ItemBar, ItemBarStep, GithubSide, HistoryEntry, ItemKind, ItemPageData, ItemPageHeader, ItemPhase, ItemStatus, ItemStatusRow, OpusReviewEntry, ScreenshotRun, TimelineEntry } from "../types";
 import { withTimeline, type MockPage, type ResultCard } from "./storyMock";
 import { NOW } from "./fixtures";
 
@@ -265,6 +265,16 @@ const HISTORY_9970: HistoryEntry[] = [
   hist("h3", 100, "Merged", "In batch #40, merge commit 4f8a21c", null, null, "write", [], "w1"),
   hist("h4", 95, "Post-merge review", "No issues found", "Opus", 0.6, "model"),
 ];
+const tl = (id: string, minAgo: number, kind: TimelineEntry["kind"], actor: string, icon: TimelineEntry["icon"], text: string, o: Partial<TimelineEntry> = {}): TimelineEntry => ({
+  id, at: at(minAgo), kind, actor, icon, text, tone: "neutral", costUsd: null, major: true, jobId: null, reviewId: null, githubId: null, commit: null, preapproval: null, calls: [], body: null, markdown: false, lines: [], feedback: null, ...o,
+});
+/** Two follow-up issues held until the merge: one dropped when its Merge answer was taken back, one opened after the merge. */
+const HELD_9970: TimelineEntry[] = [
+  tl("held:1", 2 * D - 30, "person", "aiongg", "person", "After the merge: open an issue in photocraft", { body: "Clamp the handles in the curve preview too" }),
+  tl("held:1:end", 2 * D - 50, "harness", "AutoCraft", "github", "Held issue dropped: the Merge answer was taken back", { tone: "warn" }),
+  tl("held:2", 3 * H - 10, "person", "aiongg", "person", "After the merge: open an issue in photocraft", { body: "Share the plot clamp with the levels editor" }),
+  tl("audit:held-2", 99, "harness", "AutoCraft", "github", "Opened issue: photocraft#9984 Share the plot clamp with the levels editor", { githubId: "audit:held-2", tone: "ok", major: false }),
+];
 const GITHUB_9970: GithubSide = {
   syncedAt: at(1),
   description: "Keeps the endpoint handles inside the plot area when the curve is steep.",
@@ -312,7 +322,7 @@ const FULL: Record<string, Omit<MockPage, "repo" | "number" | "kind" | "state" |
       { id: "c1", kind: "postmerge", title: "Post-merge review", outcome: "No issues found", tone: "ok", at: at(95), detail: null, earlier: [] },
       { id: "c2", kind: "verify", title: "Verify", outcome: "Passed", tone: "ok", at: at(3 * H), detail: null, earlier: [] },
     ],
-    history: HISTORY_9970, github: GITHUB_9970,
+    history: HISTORY_9970, github: GITHUB_9970, extra: HELD_9970,
   },
 };
 

@@ -306,6 +306,8 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
     </>
   );
 
+  // A core that merges holds its issue until the PR merged; the server files it then.
+  const afterMerge = core.writes.includes("merge");
   const extra = (x: ChoiceExtra) => {
     const e = editOf(x);
     const editable = x.kind === "comment" || x.kind === "open_issue";
@@ -324,8 +326,9 @@ function ChoiceForm({ d, user, choices, onAnswered }: { d: Decision; user: User;
             {x.on && core.key === choices.pick?.core && opusTag}
             {!(editing && checked && editable) && (
               <span className={cn("min-w-0 basis-full break-words md:basis-0 md:flex-1", x.kind === "comment" && "whitespace-pre-wrap font-normal text-ink/80")}>
+                {x.kind === "open_issue" && afterMerge && <span className="font-normal text-ink/60">After the merge: open an issue in {x.repo ?? d.repo}: </span>}
                 {x.kind === "open_issue" ? `"${shown}"` : shown}
-                {x.kind === "open_issue" && <span className="font-normal text-ink/60"> in {x.repo ?? d.repo}</span>}
+                {x.kind === "open_issue" && !afterMerge && <span className="font-normal text-ink/60"> in {x.repo ?? d.repo}</span>}
               </span>
             )}
           </span>
