@@ -57,7 +57,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
 import { leaseItem } from "../runner/leases.ts";
-import { isHalt, poolRoom, takersCut } from "../agents/call.ts";
+import { isHalt, poolRoom, takersCut, takersFirst } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
 
@@ -283,9 +283,9 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   const wanted = [...sel.lint, ...sel.fix];
   const budget = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length);
   // A PR found conflicting live is skipped without using the limit, so the candidates behind it still get their turn.
-  const picks = budget === 0 ? [] : wanted;
+  const picks = budget === 0 ? [] : budget < wanted.length ? takersFirst(db, wanted, () => [repo], (c) => [{ repo, number: c.number }]) : wanted;
   const left = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length - Math.min(budget, wanted.length));
-  const cAsks = sel.conflictAsk.slice(0, left);
+  const cAsks = takersCut(db, sel.conflictAsk, left === Infinity ? undefined : left, repo, (c) => c.number);
   const cMerges = sel.conflictMerge.slice(0, Math.max(0, left - cAsks.length));
   log(`fixup ${repo}: ${sel.conflictMerge.length} conflicted PRs to merge into, ${sel.conflictAsk.length} to ask`);
   log(`fixup ${repo}: ${sel.fix.length} PRs to fix up, ${sel.cannotPush.length + sel.ask.length} we can't push to${pushApprovalOf(db, repo) ? "" : " (pushing is not approved for this repo)"}`);

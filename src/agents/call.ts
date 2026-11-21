@@ -8,7 +8,7 @@ import { scrubError } from "./text.ts";
 import { levelBand } from "../rank/level.ts";
 import { inferenceMode } from "../remote/mode.ts";
 import { remoteRoom, roomOf, roomState, type RoomState } from "../remote/room.ts";
-import { batchKey, takerTest } from "../remote/takers.ts";
+import { batchKey, roomKey, takerTest } from "../remote/takers.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
 export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
@@ -116,7 +116,7 @@ function waiterOrder(db: DatabaseSync, nowMs: number): Waiter[] {
 /**
  * Splits `items` into batches of at most `size`. In the user-local mode each batch holds one repo's items, so any user who may
  * take that repo can take the call (a mixed batch waits for a user who may take every repo in it), and only items the same
- * filtered users take (`refsOf`: the items a unit's call names; src/remote/task-items.ts batchKey), so a runner that takes only
+ * filtered users take (`refsOf`: the items a unit's call names; src/remote/takers.ts batchKey), so a runner that takes only
  * some items is never handed others and a chosen item never waits in a batch nobody takes; items keep their order within a
  * batch and batches are in the order of their first item. In the server-account mode batches are plain runs of `size`.
  */
@@ -174,7 +174,7 @@ export type RoomPass = {
   taker(repos?: readonly string[], step?: string, refs?: readonly ItemRefLike[]): boolean;
   /** Whether a runner whose user takes only some items takes the call (never in the server-account mode). */
   filteredTaker(repos?: readonly string[], step?: string, refs?: readonly ItemRefLike[]): boolean;
-  /** batchKey of `refs` at this pass's moment ("" in the server-account mode). */
+  /** roomKey of `refs` at this pass's moment ("" in the server-account mode). */
   key(refs: readonly ItemRefLike[]): string;
 };
 
@@ -195,7 +195,7 @@ export function queueRoomPass(db: DatabaseSync, promptId?: string): RoomPass {
     room: (cls, repos, step = askStep(promptId), refs) => roomOf(db, state(), cls, nowMs, callRepos(repos), step, refs),
     taker: (repos, step = askStep(promptId), refs) => takes({ prompt_id: "", repos: callRepos(repos) ?? [], step, refs }),
     filteredTaker: (repos, step = askStep(promptId), refs) => takes({ prompt_id: "", repos: callRepos(repos) ?? [], step, refs, filtered: true }),
-    key: (refs) => (keyOf ??= batchKey(db, nowMs))(refs),
+    key: (refs) => (keyOf ??= roomKey(db, nowMs))(refs),
   };
 }
 

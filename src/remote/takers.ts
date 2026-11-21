@@ -89,19 +89,31 @@ function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean 
   return (c) => runners.some((r) => !(c.someTask && r.skip.size >= TASK_CHOICES.length) && !(c.filtered && !r.items) && runnerTakes(r, c, canWrite));
 }
 
-/**
- * A key that is equal for two units exactly when the same filtered users (task-items.ts) take them: for batching, so a batch of
- * one key matches a filtered user when every unit in it does and a unit some takers take is never held with units only others
- * take, and for caching room answers by unit. The users are those of the fresh, ready runners with an item choice (a superset of
- * the takers and the room's helpers); "" for units none of them takes, and for every unit when nobody filters.
- */
-export function batchKey(db: DatabaseSync, nowMs: number = Date.now()): (refs: readonly { repo: string; number: number }[]) => string {
-  const filters = (prep(db, `SELECT DISTINCT t.login FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
-      JOIN main.user_settings ti ON ti.login = t.login AND ti.key = '${TASK_ITEMS_KEY}'
-      WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? ORDER BY lower(t.login)`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { login: string }[])
-    .map(({ login }) => ({ login: login.toLowerCase(), f: itemFilter(db, login) })).filter((x) => x.f !== null);
+/** A key equal for two units exactly when the same users of `logins` take them under their item choices (task-items.ts); "" when none does. */
+function filterKey(db: DatabaseSync, logins: readonly string[]): (refs: readonly { repo: string; number: number }[]) => string {
+  const filters = logins.map((login) => ({ login: login.toLowerCase(), f: itemFilter(db, login) })).filter((x) => x.f !== null);
   if (!filters.length) return () => "";
   return (refs) => filters.filter(({ f }) => itemsFit(f, { repos: [], refs })).map((x) => x.login).join(",");
+}
+
+/**
+ * For batching: a key equal for two units exactly when the same filtered users take them, so a batch of one key matches a
+ * filtered user when every unit in it does and a unit some takers take is never held with units only others take. Every user
+ * with a stored item choice counts, connected or not, so a runner that connects after the batches are made is not handed items
+ * its user does not take.
+ */
+export function batchKey(db: DatabaseSync): (refs: readonly { repo: string; number: number }[]) => string {
+  return filterKey(db, (prep(db, `SELECT login FROM main.user_settings WHERE key = '${TASK_ITEMS_KEY}' ORDER BY lower(login)`).all() as { login: string }[]).map((r) => r.login));
+}
+
+/**
+ * For caching room and taker answers by unit: as batchKey, over the users of the fresh, ready runners with an item choice (a
+ * superset of the takers and the room's helpers at `nowMs`), so units of one repo share answers when no connected runner filters.
+ */
+export function roomKey(db: DatabaseSync, nowMs: number = Date.now()): (refs: readonly { repo: string; number: number }[]) => string {
+  return filterKey(db, (prep(db, `SELECT DISTINCT t.login FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id
+      JOIN main.user_settings ti ON ti.login = t.login AND ti.key = '${TASK_ITEMS_KEY}'
+      WHERE t.kind = 'runner' AND t.expires_at > ? AND h.readiness = 'ready' AND h.reported_at >= ? ORDER BY lower(t.login)`).all(new Date(nowMs).toISOString(), nowMs - STATUS_FRESH_MS) as { login: string }[]).map((r) => r.login));
 }
 
 /**
