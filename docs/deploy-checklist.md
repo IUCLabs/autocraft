@@ -12,7 +12,7 @@ deploy/container/build-push.sh --no-push     # build only; local name autocraft
 ```
 
 - The script refuses a working tree with uncommitted or untracked changes, tags the image with the 12-character commit id and `latest`, and pushes both tags. `DOCKER_HOST` is honoured. Extra build arguments go in `BUILD_ARGS`, for example `BUILD_ARGS="--build-arg CLAUDE_CODE_VERSION=2.1.309"`.
-- Contents: Docker Hardened Images for Node 26 on Debian 13 (the shell-less runtime variant; the build stages use the dev variant), `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `pnpm`, `gh` (pinned by checksum), the Claude CLI (pinned, auto-update off), the production dependencies and the built dashboard. It runs as uid 10001 and declares the volumes `/data` and `/config`.
+- Contents: the official Node 26 images on Debian 13 (the slim runtime variant; the build stages use the full variant), `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `pnpm`, `gh` (pinned by checksum), the Claude CLI (pinned, auto-update off), the production dependencies and the built dashboard. It runs as uid 10001 and declares the volumes `/data` and `/config`.
 - Not in the image: `jev` (set the three `AUTOCRAFT_JEV_CLOUDFLARE_*` variables to call Jev through Cloudflare Workers AI instead; without them Haiku does Jev's work) and the sandbox build workers.
 - One image serves every process. The first argument picks it: `dashboard` (default), `runner`, `sync`, `backup`, or any `autocraft` subcommand.
 
