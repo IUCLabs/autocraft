@@ -109,23 +109,23 @@ function laneGit(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">, scope?: T
 }
 
 /**
- * Review posts and edits mint with the reviewer app when one is configured, else they are the main app's. A reviewer token
- * that cannot be minted falls back to the main app. `reviewer` says which app the write goes out as.
+ * Review posts and edits mint with the reviewer app when one is configured, else they are the main app's. A configured reviewer
+ * whose token cannot be minted throws: the review waits for it rather than going out as the main app.
  */
 export async function reviewWriter(w: Writer, g: Guarded | Grant): Promise<{ w: Writer; reviewer: boolean }> {
   if (w.reviewerMint === null) return { w, reviewer: w.reviewing === true };
   const main = { ...w, reviewerMint: null, reviewing: false };
   if (!inAppLane(w, g)) return { w: main, reviewer: false };
   let mint = w.reviewerMint;
-  if (!mint) { try { if (readReviewerSecrets()) mint = reviewerInstallationToken; } catch { /* unreadable: the main app */ } }
-  if (!mint) return { w: main, reviewer: false };
-  try {
-    const token = await mint(ownerOf(g.repo), g.repo);
-    return { w: { ...w, mint: async () => token, reviewerMint: null, reviewing: true }, reviewer: true };
-  } catch (e) {
-    console.error(`reviewer app: no installation token for ${g.repo}, using the main app: ${oneLine(String((e as Error).message ?? e))}`);
-    return { w: main, reviewer: false };
+  if (!mint) {
+    try { if (readReviewerSecrets()) mint = reviewerInstallationToken; } catch (e) { console.error(`reviewer app: secrets file unreadable, reviews use the main app: ${oneLine(String((e as Error).message ?? e))}`); }
   }
+  if (!mint) return { w: main, reviewer: false };
+  let token: string;
+  try { token = await mint(ownerOf(g.repo), g.repo); } catch (e) {
+    throw new Error(`reviewer app: no installation token for ${g.repo}, review held: ${oneLine(String((e as Error).message ?? e))}`);
+  }
+  return { w: { ...w, mint: async () => token, reviewerMint: null, reviewing: true }, reviewer: true };
 }
 
 function laneQuery(w: Writer, g: Guarded | Grant, q: Querier, kind: WriteKind = "other", scope?: TokenScope): Querier {

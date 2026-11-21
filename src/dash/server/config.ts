@@ -135,6 +135,7 @@ export function appSecretsOf(raw: Record<string, unknown>): AppSecrets | null {
 }
 
 /** The optional reviewer app that posts PR reviews: its JWT is signed with the app id as issuer. Null unless id, slug and key are present. */
+let partialReviewerWarned = false;
 export type ReviewerAppSecrets = { id: string; slug: string; privateKey: string; clientId: string };
 export function reviewerAppSecretsOf(raw: Record<string, unknown>): ReviewerAppSecrets | null {
   const opt = (k: string): string | null => (typeof raw?.[k] === "string" && (raw[k] as string).length > 0 ? (raw[k] as string) : null);
@@ -146,8 +147,6 @@ export function reviewerAppSecretsOf(raw: Record<string, unknown>): ReviewerAppS
   }
   return null;
 }
-let partialReviewerWarned = false;
-
 function readRawSecrets(path: string): Record<string, unknown> {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
