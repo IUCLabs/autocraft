@@ -40,6 +40,7 @@ spec:
     metadata:
       labels: { app.kubernetes.io/name: autocraft }
     spec:
+      automountServiceAccountToken: false
       hostUsers: false # needed for the runner's procMount: Unmasked
       terminationGracePeriodSeconds: 30 # above AUTOCRAFT_STOP_TIMEOUT (25)
       securityContext:
@@ -49,7 +50,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: dashboard
-          image: autocraft:latest # replace with your registry image
+          image: ghcr.io/storytold/autocraft@sha256:070416efcd1d986541c3fc395b949b85d93ba00145fbc85f54bb8909b30080d8 # replace with your registry image
           args: ["dashboard"]
           env:
             - { name: AUTOCRAFT_BASE_URL, value: "https://autocraft.example.com" }
@@ -73,7 +74,7 @@ spec:
             - { name: data, mountPath: /data }
             - { name: config, mountPath: /config }
         - name: runner
-          image: autocraft:latest
+          image: ghcr.io/storytold/autocraft@sha256:070416efcd1d986541c3fc395b949b85d93ba00145fbc85f54bb8909b30080d8
           args: ["runner"]
           env:
             - { name: AUTOCRAFT_BASE_URL, value: "https://autocraft.example.com" }
@@ -91,6 +92,7 @@ spec:
             periodSeconds: 5
           # bubblewrap (the sandbox of tool-using Claude calls) needs both settings below.
           securityContext:
+            allowPrivilegeEscalation: false
             procMount: Unmasked
             seccompProfile: { type: Unconfined }
             capabilities: { drop: ["ALL"] }
@@ -100,7 +102,7 @@ spec:
         # Runs the work of the systemd sync timer (every minute after the previous run ends) and the
         # daily backup timer (keeping 7), as one-shot commands of the same image.
         - name: periodic
-          image: autocraft:latest
+          image: ghcr.io/storytold/autocraft@sha256:070416efcd1d986541c3fc395b949b85d93ba00145fbc85f54bb8909b30080d8
           command:
             - /usr/bin/tini
             - --

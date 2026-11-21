@@ -19,8 +19,10 @@ concurrency:
 
 jobs:
   publish:
-    uses: storytold/craft-common-actions/.github/workflows/docker-build.yml@main
-    secrets: inherit
+    uses: storytold/craft-common-actions/.github/workflows/docker-build.yml@0bef64f155fcea81edbd9542381777358bfbdcf4
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     with:
       images: |
         ghcr.io/storytold/autocraft
