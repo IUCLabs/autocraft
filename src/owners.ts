@@ -8,6 +8,9 @@ export const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 export const DEFAULT_OWNER = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.AUTOCRAFT_DEFAULT_OWNER || "storytold";
 if (!OWNER.test(DEFAULT_OWNER)) throw new Error(`AUTOCRAFT_DEFAULT_OWNER is not a GitHub owner: ${DEFAULT_OWNER}`);
 
+/** GitHub owners are case-insensitive. */
+export const isDefaultOwner = (o: string): boolean => o.toLowerCase() === DEFAULT_OWNER.toLowerCase();
+
 const REFRESH_MS = 30_000;
 let cache = new Map<string, string>();
 let source: DatabaseSync | null = null;

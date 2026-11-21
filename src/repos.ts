@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
 import { execFile } from "node:child_process";
-import { DEFAULT_OWNER, loadOwners, OWNER, splitSlug } from "./owners.ts";
+import { DEFAULT_OWNER, isDefaultOwner, loadOwners, OWNER, splitSlug } from "./owners.ts";
 import { appCoverage, githubIdentity, setGithubIdentityChecked } from "./github/identity.ts";
 import { readAppSecrets } from "./github/install-token.ts";
 import { PilotError, setRepoPipeline } from "./pilot.ts";
@@ -30,7 +30,7 @@ export function trackRepo(db: DatabaseSync, by: string, input: string): boolean 
   if (known && input.includes("/") && known.owner.toLowerCase() !== owner.toLowerCase()) {
     throw new RepoError(`${name} is already known under ${known.owner}; repo names are unique across owners.`);
   }
-  if (!known) db.prepare("INSERT INTO main.repos (name, owner) VALUES (?, ?)").run(name, owner.toLowerCase() === DEFAULT_OWNER.toLowerCase() ? DEFAULT_OWNER : owner);
+  if (!known) db.prepare("INSERT INTO main.repos (name, owner) VALUES (?, ?)").run(name, isDefaultOwner(owner) ? DEFAULT_OWNER : owner);
   loadOwners(db);
   const r = db.prepare("INSERT OR IGNORE INTO main.tracked_repos (name, added_by, added_at) VALUES (?, ?, ?)")
     .run(name, by, new Date().toISOString());
@@ -58,7 +58,7 @@ export const ghRepoExists: RepoExists = async (owner, name) => {
 export async function trackRepoChecked(db: DatabaseSync, by: string, input: string, exists: RepoExists = ghRepoExists, mint?: (owner: string, repo: string) => Promise<string>): Promise<boolean> {
   const { owner, name } = splitSlug(input);
   const known = NAME.test(name) && db.prepare("SELECT 1 FROM main.repos WHERE name = ?").get(name) !== undefined;
-  if (input.includes("/") && owner.toLowerCase() !== DEFAULT_OWNER.toLowerCase() && OWNER.test(owner) && NAME.test(name) && !known) {
+  if (input.includes("/") && !isDefaultOwner(owner) && OWNER.test(owner) && NAME.test(name) && !known) {
     if (await exists(DEFAULT_OWNER, name)) throw new RepoError(`${DEFAULT_OWNER}/${name} exists; repo names are unique across owners.`);
     if (!(await exists(owner, name))) throw new RepoError(`${owner}/${name} was not found or is not readable.`);
   }

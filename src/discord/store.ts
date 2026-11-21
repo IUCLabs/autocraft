@@ -12,7 +12,7 @@ export type DiscordMessage = {
 };
 
 export const trackedRepos = (db: DatabaseSync): TrackedRepo[] =>
-  db.prepare(`SELECT t.name AS name, COALESCE(r.owner, '${DEFAULT_OWNER}') AS owner FROM main.tracked_repos t LEFT JOIN main.repos r ON r.name = t.name`).all() as TrackedRepo[];
+  db.prepare(`SELECT t.name AS name, COALESCE(r.owner, ?) AS owner FROM main.tracked_repos t LEFT JOIN main.repos r ON r.name = t.name`).all(DEFAULT_OWNER) as TrackedRepo[];
 
 /** A channel is watched when the operators chose it, or it is a thread or forum post of a watched channel. */
 export const isWatched = (db: DatabaseSync, channelId: string): boolean =>

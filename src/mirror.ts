@@ -17,7 +17,7 @@ import { mentionNames, rememberSlug } from "./github/slugs.ts";
 import { appSlug } from "./github/identity.ts";
 import { envVar } from "./env.ts";
 import { AppReadError, ownerOfVariables, readEnv, resolveOwner } from "./github/read.ts";
-import { DEFAULT_OWNER, loadOwners, ownerOf, slugOf } from "./owners.ts";
+import { DEFAULT_OWNER, isDefaultOwner, loadOwners, ownerOf, slugOf } from "./owners.ts";
 import { classifyFailure, clearRepoFailure, recordRepoFailure } from "./sync-errors.ts";
 
 const OVERLAP_MS = 10 * 60 * 1000;
@@ -607,7 +607,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
 
   const from = new Date(since);
   await window(from, new Date(Math.max(from.getTime(), new Date(until).getTime())));
-  for (const name of tracked.filter((n) => ownerOf(n) !== DEFAULT_OWNER)) {
+  for (const name of tracked.filter((n) => !isDefaultOwner(ownerOf(n)))) {
     try {
       // A repo that failed for a while has its own high water behind the window: read from there.
       const hw = (db.prepare("SELECT high_water FROM repos WHERE name = ?").get(name) as { high_water: string | null } | undefined)?.high_water;
@@ -725,7 +725,7 @@ query($owner: String!, $name: String!) {
 async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<string[]> {
   const repos: (Node & { owner: string })[] = [];
   for (const r of await listRepos(client, DEFAULT_OWNER)) repos.push({ ...r, owner: DEFAULT_OWNER });
-  for (const name of trackedNames(db).filter((n) => ownerOf(n) !== DEFAULT_OWNER)) {
+  for (const name of trackedNames(db).filter((n) => !isDefaultOwner(ownerOf(n)))) {
     const owner = ownerOf(name);
     try {
       const r = (await client.query(REPO_QUERY, { owner, name })).repository;
@@ -737,10 +737,10 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
   }
   // A tracked repo of the default org missing from the listing is archived, or moved or deleted: only the last two are errors.
   const listedNames = new Set(repos.map((r) => r.name as string));
-  for (const name of trackedNames(db).filter((n) => ownerOf(n) === DEFAULT_OWNER && !listedNames.has(n))) {
+  for (const name of trackedNames(db).filter((n) => isDefaultOwner(ownerOf(n)) && !listedNames.has(n))) {
     try {
       const r = (await client.query(REPO_QUERY, { owner: DEFAULT_OWNER, name })).repository;
-      if (!r || r.owner?.login?.toLowerCase() !== DEFAULT_OWNER.toLowerCase()) throw new GithubError("graphql error: repository not found under this owner", 0, "NOT_FOUND");
+      if (!r || !isDefaultOwner(r.owner?.login ?? "")) throw new GithubError("graphql error: repository not found under this owner", 0, "NOT_FOUND");
     } catch (e) {
       if (e instanceof GithubError && e.type === "NOT_FOUND") await failRepo(db, client, name, e);
       else console.warn(`  ${slugOf(name)}: ${(e as Error).message}`);
@@ -749,7 +749,7 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
   // Names are unique across owners: a repo already known under another owner is left alone.
   const upsert = db.prepare(`INSERT INTO main.repos (name, owner, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?,?)
     ON CONFLICT(name) DO UPDATE SET visibility=excluded.visibility, default_branch=excluded.default_branch,
-    open_prs=excluded.open_prs, open_issues=excluded.open_issues WHERE repos.owner = excluded.owner`);
+    open_prs=excluded.open_prs, open_issues=excluded.open_issues WHERE lower(repos.owner) = lower(excluded.owner)`);
   for (const r of repos) {
     const res = upsert.run(r.name, r.owner, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
     if (!res.changes) {
@@ -921,7 +921,7 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       }
       // One org-wide search covers every tracked repo, so each counts as synced now.
       // The search read every default-org repo, so errors of earlier runs other than not-found are stale; a failure of this run (at >= started) stays.
-      for (const n of tracked.filter((x) => ownerOf(x) === DEFAULT_OWNER)) db.prepare("DELETE FROM sync_repo_errors WHERE repo = ? AND kind IN ('transient', 'error') AND at < ?").run(n, started);
+      for (const n of tracked.filter((x) => isDefaultOwner(ownerOf(x)))) db.prepare("DELETE FROM sync_repo_errors WHERE repo = ? AND kind IN ('transient', 'error') AND at < ?").run(n, started);
       // Not the repos that were never read in full (no high water) or that cannot be read.
       const mark = db.prepare("UPDATE main.repos SET synced_at = ? WHERE name = ? AND high_water IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sync_repo_errors e WHERE e.repo = repos.name)");
       for (const n of tracked) mark.run(started, n);

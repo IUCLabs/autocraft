@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { SCRATCH } from "./scratch.ts";
 
 process.env.AUTOCRAFT_DEFAULT_OWNER = "IUCLabs";
-const { DEFAULT_OWNER, ownerOf, resetOwners, splitSlug } = await import("../src/owners.ts");
+const { DEFAULT_OWNER, loadOwners, ownerOf, resetOwners, splitSlug } = await import("../src/owners.ts");
 const { connect } = await import("../src/db.ts");
 const { listAll, trackRepo } = await import("../src/repos.ts");
 const { runSync } = await import("../src/mirror.ts");
@@ -30,18 +30,22 @@ test("an owner typed in another case is stored as the configured owner", () => {
   assert.equal(ownerOf("foo"), "IUCLabs");
 });
 
-test("sync searches and lists the configured owner", async () => {
+test("sync searches and lists the configured owner, in any stored case", async () => {
   resetOwners();
   const db = connect(join(mkdtempSync(join(SCRATCH, "default-owner-")), "o.db"));
   db.exec("DELETE FROM tracked_repos");
-  db.exec("INSERT INTO tracked_repos VALUES ('autocraft','t','x',1)");
-  db.exec("INSERT INTO repos (name, synced_at, high_water, reconciled_at) VALUES ('autocraft','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");
+  db.exec("INSERT INTO tracked_repos VALUES ('autocraft','t','x',1),('lower','t','x',2)");
+  db.exec("INSERT INTO repos (name, owner, synced_at, high_water, reconciled_at) VALUES ('autocraft','IUCLabs','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");
+  db.exec("INSERT INTO repos (name, owner, synced_at, high_water, reconciled_at) VALUES ('lower','iuclabs','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");
   db.exec("INSERT INTO settings VALUES ('org_high_water','2026-11-02T09:30:00Z'),('search_catchup_at','2999-01-01T00:00:00Z')");
+  loadOwners(db);
   const searches: string[] = [];
   const listed: unknown[] = [];
+  const owners = new Set<unknown>();
   const client = {
     spent: 0, remaining: 4000 as number | null,
     async query(q: string, v: Record<string, unknown>) {
+      if ("owner" in v) owners.add(v.owner);
       if (q.includes("search(")) {
         searches.push(String(v.q));
         return { search: { issueCount: 0, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } };
@@ -56,6 +60,7 @@ test("sync searches and lists the configured owner", async () => {
   await runSync(db, client, { only: [], all: false, full: false, perRepo: false }, new Date("2026-11-02T10:05:00Z"));
   assert.ok(searches.length && searches.every((q) => q.includes("org:IUCLabs")));
   assert.deepEqual(listed, ["IUCLabs"]);
+  assert.deepEqual([...owners], ["IUCLabs"]);
 });
 
 test("the image proxy serves raw files of the configured owner only", () => {
