@@ -173,13 +173,13 @@ const plansOf = (db: DatabaseSync, ctx: PlanCtx): PlanSet => (ctx.plans ??= load
  * The planned items of `kind` that a job of `step`, which serves every repo, gets to work now. In the user-local mode a job
  * leaves out the Claude calls no Task Runner takes (the pools' poolRoom, the pair check's taker test), so an item that only
  * such a call would serve is not work: a job for it would handle nothing and be queued again on every change of its input.
- * `free`: the item's action needs no Claude call now (no model, or Jev while Jev may be called).
+ * `free`: the item needs no Claude call now (no model, or Jev while Jev may be called).
  */
-function servable(db: DatabaseSync, ctx: PlanCtx, kind: ActionKind, step: string, free: (a: Action) => boolean = () => false): PlannedItem[] {
+function servable(db: DatabaseSync, ctx: PlanCtx, kind: ActionKind, step: string, free: (p: PlannedItem) => boolean = () => false): PlannedItem[] {
   const untaken = (ctx.untaken ??= untakenTest(db)), byRepo = new Map<string, string | null>();
   let why: string | null = null;
   const out = plannedItems(db, kind, { plans: plansOf(db, ctx) }).filter((p) => {
-    if (free(p.action)) return true;
+    if (free(p)) return true;
     const repo = p.facts.repo;
     if (!byRepo.has(repo)) byRepo.set(repo, untaken({ step, repo }));
     const w = byRepo.get(repo)!;
@@ -323,7 +323,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Jev classifies the items Jev is due for without a Task Runner; Haiku's calls need one.
     detect: (db, ctx) => {
       const jev = !!ctx.run && jevUsable(db);
-      return ctx.run && servable(db, ctx, "classify", "classify-new", (a) => jev && a.params?.source === "jev").length ? [{ step: "classify-new", params: {} }] : [];
+      return ctx.run && servable(db, ctx, "classify", "classify-new", (p) => jev && p.action.params?.source === "jev").length ? [{ step: "classify-new", params: {} }] : [];
     },
   },
   {
@@ -353,13 +353,14 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => {
       const plans = plansOf(db, ctx);
       // Scans (local vectors), group questions and answers need no model; a pair check needs a Task Runner, also for its Jev half.
-      return servable(db, ctx, "dupes", "dupes", (a) => !!a.params?.scan || !!a.params?.group).length || plannedItems(db, "dupe-answer", { plans }).length ? [{ step: "dupes", params: {} }] : [];
+      return servable(db, ctx, "dupes", "dupes", (p) => !!p.action.params?.scan || !!p.action.params?.group).length || plannedItems(db, "dupe-answer", { plans }).length ? [{ step: "dupes", params: {} }] : [];
     },
   },
   {
     // Each duplicate group is compared once its pairs are checked; the comparison asks the group decision.
     name: "dupes-compare",
-    detect: (db, ctx) => (plannedItems(db, "dupes-compare", { plans: plansOf(db, ctx) }).length ? [{ step: "dupes-compare", params: {} }] : []),
+    // A set settled by rule (a closed member, a lone member) needs no model; the others need a Task Runner.
+    detect: (db, ctx) => (servable(db, ctx, "dupes-compare", "dupes-compare", (p) => p.facts.inCompareSet === "rule").length ? [{ step: "dupes-compare", params: {} }] : []),
   },
   {
     name: "decide",
@@ -368,7 +369,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       // A recommendation that failed is tried again once its backoff ends.
       for (const r of db.prepare("SELECT recommend_failed_at AS at FROM decisions WHERE answer IS NULL AND recommend_failed_at > ?").all(new Date(Date.now() - RECOMMEND_RETRY_MS).toISOString()) as { at: string }[]) ctx.wake?.push(Date.parse(r.at) + RECOMMEND_RETRY_MS);
       // A new scope decision is asked without a model; the prepare calls Opus.
-      return servable(db, ctx, "decide", "decide", (a) => a.params?.source === "new").length ? [{ step: "decide", params: {} }] : [];
+      return servable(db, ctx, "decide", "decide", (p) => p.action.params?.source === "new").length ? [{ step: "decide", params: {} }] : [];
     },
   },
   {
