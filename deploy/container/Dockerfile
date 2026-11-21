@@ -11,8 +11,8 @@
 # production stage is the runtime variant, which ships nothing but Node and has no
 # shell to install anything with. That is why everything the process needs is
 # assembled in a rootfs by the `tools` stage and copied in as files.
-ARG NODE_DEV_IMAGE=dhi.io/node:26-debian-dev
-ARG NODE_RUNTIME_IMAGE=dhi.io/node:26
+ARG NODE_DEV_IMAGE=dhi.io/node:26-debian-dev@sha256:5101bfdf585a219118dbd5c3ed6554d778e95ff1b9d83aad6da1ebb87f26e3fc
+ARG NODE_RUNTIME_IMAGE=dhi.io/node:26@sha256:de8059011a5c409edeb514882b1f7093b8f0610bb3ca582c5470cec9106f6056
 
 ################################################################################
 # The dashboard bundle the server serves from web/dist.
