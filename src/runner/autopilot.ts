@@ -23,6 +23,7 @@ import { writePlanCache } from "../core/plan-cache.ts";
 import { refreshLiveness } from "../liveness.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { jevUsable } from "../agents/jev.ts";
+import { PACE_MAX_WAIT_MS, pipelineWriteWait } from "../github/write.ts";
 import { embedDue } from "../embed/store.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { selectFixups } from "../fixup/select.ts";
@@ -426,7 +427,16 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => {
       if (!ctx.run) return [];
       const repos = new Set(allowed(plannedItems(db, "label", { plans: plansOf(db, ctx) })).map((p) => p.facts.repo));
-      return ctx.tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "labels-apply", params: { repo } }));
+      // A repo whose GitHub write budget is used up would label nothing (the writes are refused as paced): it waits for the window to move.
+      const now = Date.now();
+      return ctx.tracked.filter((repo) => {
+        if (!repos.has(repo)) return false;
+        const wait = pipelineWriteWait(db, "labels-apply", repo, now);
+        if (wait <= PACE_MAX_WAIT_MS) return true;
+        ctx.wake?.push(now + wait);
+        if (ctx.notes) ctx.notes["labels-apply"] ??= `The GitHub write budget for ${repo} is used up until ${hhmm(now + wait)}`;
+        return false;
+      }).map((repo) => ({ step: "labels-apply", params: { repo } }));
     },
   },
   {
