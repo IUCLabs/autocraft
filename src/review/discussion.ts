@@ -365,6 +365,27 @@ export function countRerun(db: DatabaseSync, repo: string, number: number): void
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").run(rerunKey(repo, number), "1");
 }
 
+type ReviewedRow = { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null; blocked_by: string | null; rebased: number | null };
+
+// A pass calls staleReviews() several times; the rows change only with the `items`, `reviews` and `repos` topics.
+const reviewedMemo = new WeakMap<DatabaseSync, Map<string, { sig: string; rows: ReviewedRow[] }>>();
+
+function reviewedRows(db: DatabaseSync, repo?: string): ReviewedRow[] {
+  const seqs = db.prepare("SELECT topic, seq FROM change_seq WHERE topic IN ('items', 'reviews', 'repos') ORDER BY topic").all() as { topic: string; seq: number }[];
+  const sig = JSON.stringify(seqs);
+  const memo = reviewedMemo.get(db) ?? new Map<string, { sig: string; rows: ReviewedRow[] }>();
+  reviewedMemo.set(db, memo);
+  const hit = memo.get(repo ?? "");
+  if (hit && hit.sig === sig && seqs.length === 3) return hit.rows;
+  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash, r.blocked_by,
+      i.base_ref IS NOT NULL AND COALESCE(r.base_ref, p.default_branch) IS NOT NULL AND i.base_ref <> COALESCE(r.base_ref, p.default_branch) AS rebased
+    FROM opus_reviews r LEFT JOIN items i ON i.repo = r.repo AND i.number = r.number LEFT JOIN repos p ON p.name = r.repo
+    WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
+    .all({ repo: repo ?? null }) as ReviewedRow[];
+  memo.set(repo ?? "", { sig, rows });
+  return rows;
+}
+
 /**
  * PRs, as "repo#n@head", whose Opus review read the discussion before a counted comment or review that it
  * did not read, that an operator marked stale, or whose diff was read against another base branch than the PR has now
@@ -372,11 +393,7 @@ export function countRerun(db: DatabaseSync, repo: string, number: number): void
  * MAX_RERUNS_PER_DAY discussion- or base-triggered re-reviews today are left out (an operator mark is never capped).
  */
 export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false): Set<string> {
-  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash, r.blocked_by,
-      i.base_ref IS NOT NULL AND COALESCE(r.base_ref, p.default_branch) IS NOT NULL AND i.base_ref <> COALESCE(r.base_ref, p.default_branch) AS rebased
-    FROM opus_reviews r LEFT JOIN items i ON i.repo = r.repo AND i.number = r.number LEFT JOIN repos p ON p.name = r.repo
-    WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
-    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null; blocked_by: string | null; rebased: number | null }[];
+  const rows = reviewedRows(db, repo);
   const state = discussionState(db, repo);
   primeHashes(state, rows.filter((r) => maintNewer(state.get(`${r.repo}#${r.number}`), r.seen_at ?? r.at)).map((r) => `${r.repo}#${r.number}`));
   const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key.slice(STALE_KEY.length), m.value]));

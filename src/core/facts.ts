@@ -253,10 +253,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     return m;
   };
 
-  // Open PRs by repo, head branch and head repo (lower case), lowest number first: the PR another one is stacked on.
+  // Open PRs by repo, head branch and head repo (lower case), lowest number first: the PR another one is stacked on. Only heads that are an open PR's base.
   const openByHead = new Map<string, number[]>();
   for (const o of db.prepare(`SELECT i.repo || ' ' || i.head_ref || ' ' || lower(i.head_repo) AS k, i.number FROM items i
-    WHERE i.kind = 'pr' AND i.state = 'OPEN' AND i.head_ref IS NOT NULL AND i.head_repo IS NOT NULL AND i.repo IN (SELECT value FROM json_each(?)) ORDER BY i.number`)
+    WHERE i.kind = 'pr' AND i.state = 'OPEN' AND i.head_ref IS NOT NULL AND i.head_repo IS NOT NULL AND i.repo IN (SELECT value FROM json_each(?))
+      AND (i.repo, i.head_ref) IN (SELECT b.repo, b.base_ref FROM items b WHERE b.kind = 'pr' AND b.state = 'OPEN' AND b.base_ref IS NOT NULL) ORDER BY i.number`)
     .all(JSON.stringify([...new Set(rows.map((r) => r.repo))])) as { k: string; number: number }[]) (openByHead.get(o.k) ?? openByHead.set(o.k, []).get(o.k)!).push(o.number);
   // The latest merge attempt at each head (first in the order) and the refusals there.
   const merges = keyed<{ k: string; outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string; refusals: number }>(`SELECT m.repo || '#' || m.number || '@' || m.head_oid AS k, m.outcome, m.reason, m.ci, m.mergeable, m.at,
@@ -285,7 +286,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   // UNSURE_AT_SQL for every head: a take or take-fix review there with sure = 0.
   const unsureAt = keyed<{ k: string }>(`SELECT o.repo || '#' || o.number || '@' || o.head_oid AS k FROM opus_review_history o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/
     UNION SELECT o.repo || '#' || o.number || '@' || o.head_oid FROM opus_reviews o WHERE o.verdict IN ('take', 'take-fix') AND o.sure = 0 /*narrow*/`, "o");
-  const premerge = premergeRows(db, narrow("p"));
+  // Pre-merge reviews at the head of each PR's latest review (r_head), the only ones the loop reads.
+  const premergeNarrow = narrow("p");
+  const premerge = premergeRows(db, { sql: `${premergeNarrow.sql} AND p.head_oid = (SELECT r2.head_oid FROM opus_reviews r2 WHERE r2.repo = p.repo AND r2.number = p.number AND r2.verdict IS NOT NULL ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)`, p: premergeNarrow.p });
   // Only formal reviews with an author: changesRequestedBy() reads no others.
   const reviewRows = keyed<{ k: string } & ReviewFact>(`SELECT c.repo || '#' || c.number AS k, c.author, c.author_association AS association, c.review_state AS state, c.created_at AS at FROM comments c JOIN items i ON i.repo = c.repo AND i.number = c.number AND i.kind = 'pr' AND i.state = 'OPEN' WHERE c.kind = 'review' AND c.author IS NOT NULL AND c.review_state IN (${FORMAL_STATES.map((x) => `'${x}'`).join(", ")}) /*narrow*/ ORDER BY c.rowid`, "c");
   const batchTip = db.prepare(`SELECT a.runs, a.approved, a.reread, a.failed, a.cross_repo FROM merge_batches b
