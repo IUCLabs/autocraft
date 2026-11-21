@@ -326,7 +326,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       summary.missing.push(refOf(c));
     }
     params.onHandled?.(++handled);
-  }), poolRoom(db, (i) => [cands[i]!.repo]));
+  }), poolRoom(db, (i) => [cands[i]!.repo], (i) => [cands[i]!]));
   log(`opus-review ${repo}: ${summary.reviewed} reviewed (${Object.entries(summary.verdicts).map(([v, k]) => `${k} ${v}`).join(", ")}); ${summary.skipped.length} without a diff, ${summary.missing.length} without an answer`);
   return summary;
 }

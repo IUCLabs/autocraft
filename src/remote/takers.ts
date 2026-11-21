@@ -16,7 +16,7 @@ import { inferenceMode } from "./mode.ts";
 import { claimRepos } from "./my-repos.ts";
 import { SKIP_TASKS_KEY, TASK_CHOICES, taskOfStep, userSkips } from "./my-tasks.ts";
 import { CALLER_STALE_MS, roomCanWrite } from "./room.ts";
-import { itemFilter, TASK_ITEMS_KEY } from "./task-items.ts";
+import { itemFilter, TASK_ITEMS, TASK_ITEMS_KEY, TASK_ITEMS_TITLE, userTaskItems, type ItemFilter, type TaskItems } from "./task-items.ts";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { scaled } from "./time-scale.ts";
 
@@ -68,31 +68,45 @@ export function takerSignature(db: DatabaseSync, nowMs: number = Date.now()): st
   return denied.at ? `${s}|${denied.at}` : s;
 }
 
-function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
+type Runner = { login: string; role: string; repos: ReadonlySet<string> | null; skip: ReadonlySet<string>; items: ItemFilter };
+
+/** The takers as the taker rule reads them. */
+function readRunners(db: DatabaseSync, nowMs: number): { runners: Runner[]; canWrite: (login: string, repo: string) => boolean } {
   const rows = prep(db, `SELECT t.login, a.role, t.idle_repos FROM main.mcp_tokens t JOIN main.remote_helpers h ON h.token_id = t.id JOIN main.access a ON a.login = t.login
     WHERE ${TAKER_SQL}`).all(...takerArgs(nowMs)) as { login: string; role: string; idle_repos: string | null }[];
-  if (!rows.length) return () => false;
   const canWrite = roomCanWrite(db, rows.map((r) => r.login), nowMs);
   const runners = rows.map((h) => {
     let own: string[] | undefined;
     try { own = h.idle_repos ? JSON.parse(h.idle_repos) as string[] : undefined; } catch { /* every repo */ }
     return { login: h.login, role: h.role, repos: claimRepos(db, h.login, own), skip: userSkips(db, h.login), items: itemFilter(db, h.login) };
   });
+  return { runners, canWrite };
+}
+
+function readTakers(db: DatabaseSync, nowMs: number): (c: TakerCall) => boolean {
+  const { runners, canWrite } = readRunners(db, nowMs);
+  if (!runners.length) return () => false;
   return (c) => runners.some((r) => !(c.someTask && r.skip.size >= TASK_CHOICES.length) && runnerTakes(r, c, canWrite));
 }
 
 /**
  * The error of a call withdrawn for lack of a taker: its caller skips the work (NoTakerError). `step`: a taker may take calls on
- * its repos, but none takes its task. `items`: a taker takes its repos and task, but not its items (task-items.ts).
+ * its repos, but none takes its task. `items`: the item choices of the takers that take its repos and task but not its items
+ * (task-items.ts).
  */
-export const noTakerReason = (repos: readonly string[], step?: string, items = false): string => {
+export const noTakerReason = (repos: readonly string[], step?: string, items?: readonly Exclude<TaskItems, "all">[]): string => {
   const task = step === undefined ? undefined : taskOfStep(step);
-  return `${NO_TAKER_PREFIX} ${items ? "on its items (My tasks: fast-tracked items only)" : task !== undefined ? `of the ${TASK_CHOICES.find((t) => t.id === task)?.title ?? task} task (My tasks)` : repos.length ? `on ${repos.join(", ")}` : "that name no repo"}`;
+  return `${NO_TAKER_PREFIX} ${items?.length ? `on its items (My tasks: ${items.map((x) => TASK_ITEMS_TITLE[x]).join(" or ")})` : task !== undefined ? `of the ${TASK_CHOICES.find((t) => t.id === task)?.title ?? task} task (My tasks)` : repos.length ? `on ${repos.join(", ")}` : "that name no repo"}`;
 };
 
-/** Why no taker takes a call `takes` says no to: its repos, else its task, else its items. */
-const whyNoTaker = (takes: (c: TakerCall) => boolean, c: { prompt_id: string; repos: readonly string[]; step: string }): string =>
-  !takes({ prompt_id: c.prompt_id, repos: c.repos }) ? noTakerReason(c.repos) : !takes({ prompt_id: c.prompt_id, repos: c.repos, step: c.step }) ? noTakerReason(c.repos, c.step) : noTakerReason(c.repos, c.step, true);
+/** Why no taker takes a call `takes` says no to: its repos, else its task, else the item choices of the runners that take the rest. */
+function whyNoTaker(db: DatabaseSync, nowMs: number, takes: (c: TakerCall) => boolean, c: { prompt_id: string; repos: readonly string[]; step: string }): string {
+  if (!takes({ prompt_id: c.prompt_id, repos: c.repos })) return noTakerReason(c.repos);
+  if (!takes({ prompt_id: c.prompt_id, repos: c.repos, step: c.step })) return noTakerReason(c.repos, c.step);
+  const { runners, canWrite } = readRunners(db, nowMs);
+  const choices = new Set(runners.filter((r) => r.items && runnerTakes({ ...r, items: null }, { prompt_id: c.prompt_id, repos: c.repos, step: c.step }, canWrite)).map((r) => userTaskItems(db, r.login)));
+  return noTakerReason(c.repos, c.step, TASK_ITEMS.filter((x): x is Exclude<TaskItems, "all"> => x !== "all" && choices.has(x)));
+}
 
 /**
  * One maintenance pass at `nowMs`. Each pipeline-on repo with no taker whose user takes some task keeps the time it was first seen so
@@ -123,7 +137,7 @@ export function sweepTakers(db: DatabaseSync, nowMs: number = Date.now()): numbe
     if (own || takes(c)) {
       if (since !== undefined) set.run(null, c.id);
     } else if (since === undefined) set.run(nowMs, c.id);
-    else if (since <= nowMs - NO_TAKER_MS && withdrawCall(db, c.id, whyNoTaker(takes, c), ["queued"], nowMs)) withdrawn++;
+    else if (since <= nowMs - NO_TAKER_MS && withdrawCall(db, c.id, whyNoTaker(db, nowMs, takes, c), ["queued"], nowMs)) withdrawn++;
   }
   return withdrawn;
 }

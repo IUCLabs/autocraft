@@ -363,8 +363,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     if (!release) return;
     try { await fn(); } finally { release(); }
   };
-  const room = poolRoom(db, () => [repo]);
-  await pool(asks.map((c) => () => leased(c, () => askOne(c))), room);
+  await pool(asks.map((c) => () => leased(c, () => askOne(c))), poolRoom(db, () => [repo], (i) => [{ repo, number: asks[i]!.number }]));
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
   let identP: Promise<CommitIdentity> | undefined;
@@ -382,7 +381,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
     who: ident, onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
   };
-  await pool(cAsks.map((c) => () => leased(c, () => askConflict(db, conflictRun, c))), room);
+  await pool(cAsks.map((c) => () => leased(c, () => askConflict(db, conflictRun, c))), poolRoom(db, () => [repo], (i) => [{ repo, number: cAsks[i]!.number }]));
   if (!picks.length && !cMerges.length) return summary;
 
   const who = await ident();
@@ -606,8 +605,9 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   };
   // Items of one PR run one after the other inside one pool item; PRs run side by side.
   const byPr = <T extends { number: number }>(items: T[]): T[][] => [...Map.groupBy(items, (c) => c.number).values()];
-  await pool(byPr(picks).map((group) => async () => { for (const c of group) await fixOne(c); }), poolRoom(db, () => [repo]), { max: POOL_MAX.fixup });
-  await pool(byPr(cMerges).map((group) => async () => { for (const c of group) await leased(c, () => mergeConflict(db, conflictRun, c)); }), poolRoom(db, () => [repo], { mayNotCall: true }), { max: POOL_MAX.fixup });
+  const pickGroups = byPr(picks), mergeGroups = byPr(cMerges);
+  await pool(pickGroups.map((group) => async () => { for (const c of group) await fixOne(c); }), poolRoom(db, () => [repo], (i) => [{ repo, number: pickGroups[i]![0]!.number }]), { max: POOL_MAX.fixup });
+  await pool(mergeGroups.map((group) => async () => { for (const c of group) await leased(c, () => mergeConflict(db, conflictRun, c)); }), poolRoom(db, () => [repo], (i) => [{ repo, number: mergeGroups[i]![0]!.number }], { mayNotCall: true }), { max: POOL_MAX.fixup });
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }

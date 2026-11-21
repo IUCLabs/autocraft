@@ -23,6 +23,8 @@ import { remoteRoom } from "../src/remote/room.ts";
 import { setUserRepos } from "../src/remote/my-repos.ts";
 import { takerTest } from "../src/remote/takers.ts";
 import { addFastTrack } from "../src/fasttrack.ts";
+import { poolRoom, repoBatches } from "../src/agents/call.ts";
+import { pool } from "../src/classify/run.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -269,6 +271,33 @@ describe("picks and Manual only", () => {
     assert.equal(whyWaiting({ ...c, refs: at(10) }, [{ ...r, items: { refs: new Set(), repos: new Set() } }], 0, () => true).code, "items-off", "no fast-tracked item on the repo is still about items, not repo access");
     await put("all");
     assert.equal(db.prepare("SELECT 1 FROM user_settings WHERE login = 'alice' AND key = 'task_items'").get(), undefined, "every item again stores nothing");
+    clear();
+  });
+
+  test("My tasks items in a pool: a fast-only runner gets the fast item's unit at once and no unit on other items, even with the other runners busy", async () => {
+    const ins = db.prepare("INSERT OR IGNORE INTO items (repo, number, kind, state, title, author, created_at) VALUES ('photocraft', ?, 'issue', 'OPEN', 'x', 'dev', '2026-01-01T00:00:00Z')");
+    const units = [21, 22, 23, 20];
+    for (const n of units) ins.run(n);
+    addFastTrack(db, "bob", "photocraft#20");
+    await userSettings.setSettings(db, req("alice", "maintainer", { json: { taskItems: "fast" } }));
+    db.prepare("UPDATE remote_helpers SET reported_at = ? WHERE login <> 'alice'").run(Date.now() - STATUS_FRESH_MS - 1000);
+    assert.equal(await leased("alice"), null, "an idle claim: alice's runner is active");
+    const refs = (i: number) => [{ repo: "photocraft", number: units[i]! }];
+    const started: number[] = [];
+    await pool(units.map((_, i) => async () => { started.push(i); }), poolRoom(db, () => ["photocraft"], refs, { promptId: "review.opus" }), { pollMs: 5 });
+    assert.deepEqual(started, [3], "only the fast-tracked item's unit started, though it came last");
+    assert.deepEqual(repoBatches(db, units, 3, () => "photocraft", (n) => [{ repo: "photocraft", number: n }]), [[21, 22, 23], [20]], "the fast item is batched apart");
+
+    // Bob takes every item, and the calls ahead fill his slots: they take none of alice's.
+    ready("bob");
+    assert.equal(await leased("bob"), null);
+    for (let k = 0; k < 4; k++) q({ items: refs(0) });
+    dropQueueCache(db);
+    const room = poolRoom(db, () => ["photocraft"], refs, { promptId: "review.opus" });
+    assert.equal(room.room(0), 0, "no room for an unfast unit: bob is full");
+    assert.ok(room.room(3) > 0, "room for the fast unit on alice's runner");
+    await userSettings.setSettings(db, req("alice", "maintainer", { json: { taskItems: "all" } }));
+    for (const login of ["alice", "bob", "olga"]) ready(login);
     clear();
   });
 

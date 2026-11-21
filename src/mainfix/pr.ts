@@ -319,7 +319,7 @@ export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ open
         const o = await attempt(c, stored.length ? stored : now, () => onHandled?.(), ledger);
         if (o !== "waiting") out[o]++;
       } finally { release(); }
-    }), poolRoom(c.db, () => [c.repo]), { max: POOL_MAX.mainfix });
+    }), poolRoom(c.db, () => [c.repo], () => []), { max: POOL_MAX.mainfix });
   } finally {
     ledger.release();
   }

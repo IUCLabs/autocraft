@@ -96,6 +96,9 @@ type DueRow = PrepareColumns & { id: string; repo: string; asked_at: string; num
 const headOf = (r: { item_kind: string | null; head_oid: string | null }): string | null => (r.item_kind === "pr" ? r.head_oid : null);
 
 /** A decision gains one level band for each day it has been open (at most all 4), so P2 decisions are not starved by a steady flow of P0 ones. Aging orders the prepares; nothing waits on a timer. */
+/** The item a decision's prepare call names (none for a batch). */
+export const decisionRefs = (d: { repo: string | null; number: number | null } | undefined): { repo: string; number: number }[] => (d?.repo && d.number !== null ? [{ repo: d.repo, number: d.number }] : []);
+
 export const PREPARE_AGING_MS = 24 * 3600_000;
 
 /**
@@ -197,7 +200,7 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
     prepared_at = ?, prepared_head = ?, prepared_discussion = ?, recommend_failures = NULL, recommend_failed_at = NULL, prepare_failed_head = NULL, prepare_requested_at = NULL
     WHERE id = ? AND answer IS NULL AND question = ? AND options = ?`);
   const res: PrepareResult = { stored: 0, failed: 0 };
-  const repoOf = new Map((db.prepare("SELECT id, repo FROM decisions WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as { id: string; repo: string | null }[]).map((r) => [r.id, r.repo]));
+  const rowOf = new Map((db.prepare("SELECT id, repo, number FROM decisions WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(ids)) as { id: string; repo: string | null; number: number | null }[]).map((r) => [r.id, r]));
   await pool(ids.map((id, k) => async () => {
     if (p.cancelled?.()) return;
     const d = select.get(id) as Row | undefined;
@@ -295,6 +298,6 @@ export async function prepare(db: DatabaseSync, ids: string[], p: PrepareParams)
       try { failed.run(head, now(), head, d.id); } catch { /* the next pass tries again */ }
       res.failed++;
     }
-  }), poolRoom(db, (i) => { const repo = repoOf.get(ids[i]!); return repo ? [repo] : undefined; }, { promptId: "decide.prepare" }), { first: true });
+  }), poolRoom(db, (i) => { const repo = rowOf.get(ids[i]!)?.repo; return repo ? [repo] : undefined; }, (i) => decisionRefs(rowOf.get(ids[i]!)), { promptId: "decide.prepare" }), { first: true });
   return res;
 }

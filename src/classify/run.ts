@@ -806,7 +806,7 @@ export const add = (a: Usage, b: Usage): Usage => {
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
 /** The Haiku batches of `items` (repoBatches: one repo's items each in the user-local mode). */
-export const haikuBatches = (db: DatabaseSync, items: readonly Item[], batchSize: number = HAIKU.limits.perCall): Item[][] => repoBatches(db, items, batchSize, (i) => i.repo);
+export const haikuBatches = (db: DatabaseSync, items: readonly Item[], batchSize: number = HAIKU.limits.perCall): Item[][] => repoBatches(db, items, batchSize, (i) => i.repo, (i) => [i]);
 
 /** Classifies the items in Haiku batches; returns how many items were in batches that ran (a batch no Task Runner may take does not). */
 export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<number> {
@@ -817,7 +817,7 @@ export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], b
     if (r.ok) for (const verdicts of r.values) for (const v of verdicts) saveVerdict(db, "haiku", runId, v);
     const left = r.ok ? r.rest ?? [] : batch;
     if (left.length) console.error(`haiku batch ${n}: no valid answer for ${left.map(refOf).join(", ")}`);
-  }), poolRoom(db, (i) => itemRepos(batches[i]!), { promptId: CLASSIFY_HAIKU.id }), { first: opts.cold, skipped: (i) => void (skipped += batches[i]!.length) });
+  }), poolRoom(db, (i) => itemRepos(batches[i]!), (i) => batches[i]!, { promptId: CLASSIFY_HAIKU.id }), { first: opts.cold, skipped: (i) => void (skipped += batches[i]!.length) });
   return items.length - skipped;
 }
 

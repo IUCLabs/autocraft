@@ -144,7 +144,7 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
       } else fail("retry: no valid reply from the model");
     }
     params.onHandled?.(++handled);
-  }), poolRoom(db, () => [repo]));
+  }), poolRoom(db, () => [repo], (i) => [{ repo, number: cands[i]!.number }]));
   log(`premerge ${repo}: ${s.reviewed} reviewed, ${s.findings} findings (${s.defects} defects), ${s.failed.length} without an answer, ${s.moved.length} moved`);
   return s;
 }

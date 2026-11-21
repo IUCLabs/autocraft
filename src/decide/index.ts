@@ -13,7 +13,7 @@ import { trackedNames } from "../repos.ts";
 import { buildDecision } from "./decision.ts";
 import { ask } from "../decisions.ts";
 import { takersFirst } from "../agents/call.ts";
-import { prepare, prepareIds } from "./prepare.ts";
+import { decisionRefs, prepare, prepareIds } from "./prepare.ts";
 import { type Candidate, type Reason } from "./select.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { scopeReason } from "../core/decide-item.ts";
@@ -112,8 +112,8 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
     jobItem(db, c.repo, c.number, "asked a scope decision", log, q.id);
   }
   const due = prepareIds(db, params.repos);
-  const repoOf = due.length > total ? new Map((db.prepare("SELECT id, repo FROM decisions").all() as { id: string; repo: string | null }[]).map((r) => [r.id, r.repo])) : new Map<string, string | null>();
-  const ids = (due.length > total ? takersFirst(db, due, (id) => { const r = repoOf.get(id); return r ? [r] : undefined; }, "decide.prepare") : due).slice(0, total);
+  const rowOf = due.length > total ? new Map((db.prepare("SELECT id, repo, number FROM decisions").all() as { id: string; repo: string | null; number: number | null }[]).map((r) => [r.id, r])) : new Map<string, { repo: string | null; number: number | null }>();
+  const ids = (due.length > total ? takersFirst(db, due, (id) => { const r = rowOf.get(id)?.repo; return r ? [r] : undefined; }, (id) => decisionRefs(rowOf.get(id)), "decide.prepare") : due).slice(0, total);
   if (ids.length) {
     result.usageRun = usageRun;
     const r = await prepare(db, ids, {

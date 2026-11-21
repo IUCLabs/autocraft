@@ -208,7 +208,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
         summary.errors++;
       }
     } finally { release(); }
-  }), poolRoom(db, () => [repo]), { max: POOL_MAX.verify });
+  }), poolRoom(db, () => [repo], (i) => [{ repo, number: cands[i]!.number }]), { max: POOL_MAX.verify });
 
   if (queued) {
     const main = await deps.mainHead(repo, branch);
