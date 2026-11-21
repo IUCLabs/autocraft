@@ -15,7 +15,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { absolute } from "../build/artifacts.ts";
 import { createTask, getTask, TERMINAL, warmKeyOf } from "../build/tasks.ts";
 import { askClaude, POOL_MAX, pool } from "../classify/run.ts";
-import { isHalt, poolRoom } from "../agents/call.ts";
+import { isHalt, poolRoom, takersCut } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
@@ -392,7 +392,7 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
   const summary: CifixSummary = { runId, repo, dryRun, pushed: [], asked: [], queued: [], infra: [], skipped: [], failed: [], held: [] };
   const sel = selectCifix(db, repo);
   const collect = params.limit === undefined ? sel.collect : sel.collect.slice(0, params.limit);
-  const work = params.limit === undefined ? sel.work : sel.work.slice(0, Math.max(0, params.limit - collect.length));
+  const work = takersCut(db, sel.work, params.limit === undefined ? undefined : params.limit - collect.length, repo, (c) => c.number);
   log(`cifix ${repo}: ${sel.work.length} PRs with a failing check to read, ${sel.collect.length} formatter results to apply, ${sel.rerun.length} reruns due`);
   if (dryRun) {
     for (const x of collect) log(`  would apply the formatter result for ${refOf(x.c)} at ${short(x.c.head)}`);

@@ -2,7 +2,7 @@
 // lists defects and minor findings. One review per merged PR. Reads GitHub (the merged diff); writes only to the local
 // database. Filing the defects is src/postmerge/file.ts.
 import type { DatabaseSync } from "node:sqlite";
-import { poolRoom } from "../agents/call.ts";
+import { poolRoom, takersCut } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { POSTMERGE_OPUS } from "../agents/steps.ts";
@@ -121,7 +121,7 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
   const runId = `postmerge-${repo}-${now().replace(/[-:]/g, "").slice(0, 15)}`;
   let cands: MergedPr[] = params.only ? params.only.flatMap((n) => { const m = mergedPr(db, repo, n); return m ? [m] : []; }) : selectPostmerge(db, repo);
   const s: PostmergeSummary = { runId, repo, candidates: cands.length, reviewed: 0, findings: 0, defects: 0, failed: [] };
-  if (params.limit !== undefined) cands = cands.slice(0, params.limit);
+  cands = takersCut(db, cands, params.limit, repo, (c) => c.number);
   if (!cands.length) { log(`postmerge ${repo}: nothing to review`); return s; }
   let handled = 0;
   await pool(cands.map((c) => async () => {

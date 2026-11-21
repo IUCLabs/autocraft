@@ -22,7 +22,7 @@ import { leaseItem } from "../runner/leases.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
 import { POOL_MAX, pool, type Usage } from "../classify/run.ts";
-import { poolRoom } from "../agents/call.ts";
+import { poolRoom, takersCut } from "../agents/call.ts";
 import { runModelStep } from "../agents/step.ts";
 import { textStep } from "../agents/steps.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
@@ -459,7 +459,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
   const s: FixIssueSummary = { runId, repo, dryRun, started: [], queued: [], skipped: [], failed: [] };
   const retries = plannedItems(db, "fixissue", { repo, bucket: "retry" }).map((p) => attemptOf(db, repo, p.facts.number)!).sort(byUpdated);
   const cands = fixIssueApprovalOf(db, repo) ? plannedItems(db, "fixissue", { repo, bucket: "new" }).map((p) => candidateOf(db, p.facts.repo, p.facts.number, p.facts.score)) : [];
-  const picks = params.limit === undefined ? cands : cands.slice(0, params.limit);
+  const picks = takersCut(db, cands, params.limit, repo, (c) => c.number);
   log(`fixissue ${repo}: ${cands.length} candidate issues, ${retries.length} rounds due${fixIssueApprovalOf(db, repo) ? "" : " (fixing issues is not approved for this repo)"}`);
   if (dryRun) {
     for (const r of retries) log(`  would write round ${r.round + 1} for ${refOf(r)}`);

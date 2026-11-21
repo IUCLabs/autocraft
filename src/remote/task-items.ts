@@ -6,7 +6,7 @@
 //
 // A call matches when any item it names matches: a call about a chosen item (a duplicate check against an older item, say) is
 // work on that item. Batches (repoBatches in src/agents/call.ts) never mix items that different filtered users take
-// (batchKey), so a batch matches a filtered user only when every item in it does. A question asked before the items are known
+// (batchKey in takers.ts), so a batch matches a filtered user only when every item in it does. A question asked before the items are known
 // (a job about to start, a repo's takers) counts a filtered runner only for the repos that have an open matching item.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
@@ -67,13 +67,3 @@ export function itemsFit(f: ItemFilter, c: { repos: readonly string[]; refs?: re
 /** The choice a filtered user made, as the no-taker reason names it. */
 export const TASK_ITEMS_TITLE: Record<Exclude<TaskItems, "all">, string> = { fast: "fast-tracked items only", mine: "only the items they fast-tracked" };
 
-/**
- * For batching: a key that is equal for two units exactly when the same filtered users take them, so a batch of one key matches a
- * filtered user when every unit in it does and a unit only some takers take is never held by others no one takes. Every user with an
- * item choice counts, ready or not; "" for units no filtered user takes.
- */
-export function batchKey(db: DatabaseSync): (refs: readonly { repo: string; number: number }[]) => string {
-  const filters = (prep(db, "SELECT login FROM main.user_settings WHERE key = ? ORDER BY lower(login)").all(TASK_ITEMS_KEY) as { login: string }[])
-    .map(({ login }) => ({ login: login.toLowerCase(), f: itemFilter(db, login) })).filter((x) => x.f !== null);
-  return (refs) => filters.filter(({ f }) => itemsFit(f, { repos: [], refs })).map((x) => x.login).join(",");
-}

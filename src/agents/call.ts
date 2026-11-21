@@ -8,8 +8,7 @@ import { scrubError } from "./text.ts";
 import { levelBand } from "../rank/level.ts";
 import { inferenceMode } from "../remote/mode.ts";
 import { remoteRoom, roomOf, roomState, type RoomState } from "../remote/room.ts";
-import { takerTest } from "../remote/takers.ts";
-import { batchKey } from "../remote/task-items.ts";
+import { batchKey, takerTest } from "../remote/takers.ts";
 
 /** Set by the job process: which job and step the calls belong to, and whether a cancel was asked. */
 export type CallContext = { jobId: number; step: string; stage: number; /** Queue class of the step (StepDef.priority). */ class?: 0 | 1 | 2; /** The job's repo param. */ repo?: string; cancelled(): boolean; /** True once the job is cancelled or the pipeline is switched off: no new model call starts. */ stopping?(): boolean };
@@ -173,6 +172,10 @@ export type RoomPass = {
   room(cls: 0 | 1 | 2, repos?: readonly string[], step?: string, refs?: readonly ItemRefLike[]): number;
   /** Whether a call naming `repos` (and `refs`, as for room) has a taker (src/remote/takers.ts; always in the server-account mode). A call naming no repo (none given and no job repo) has one only in an operator's Task Runner, as the sweep reads it. */
   taker(repos?: readonly string[], step?: string, refs?: readonly ItemRefLike[]): boolean;
+  /** Whether a runner whose user takes only some items takes the call (never in the server-account mode). */
+  filteredTaker(repos?: readonly string[], step?: string, refs?: readonly ItemRefLike[]): boolean;
+  /** batchKey of `refs` at this pass's moment ("" in the server-account mode). */
+  key(refs: readonly ItemRefLike[]): string;
 };
 
 /**
@@ -181,15 +184,18 @@ export type RoomPass = {
  * outside a job.
  */
 export function queueRoomPass(db: DatabaseSync, promptId?: string): RoomPass {
-  if (inferenceMode(db) !== "user-local") return { room: (cls, repos) => queueRoom(db, cls, repos), taker: () => true };
+  if (inferenceMode(db) !== "user-local") return { room: (cls, repos) => queueRoom(db, cls, repos), taker: () => true, filteredTaker: () => false, key: () => "" };
   const nowMs = Date.now();
   let st: RoomState | undefined;
   const state = (): RoomState => (st ??= roomState(db, nowMs));
   // The taker rule of src/remote/takers.ts, read once per pass.
   const takes = takerTest(db, nowMs);
+  let keyOf: ((refs: readonly ItemRefLike[]) => string) | undefined;
   return {
     room: (cls, repos, step = askStep(promptId), refs) => roomOf(db, state(), cls, nowMs, callRepos(repos), step, refs),
     taker: (repos, step = askStep(promptId), refs) => takes({ prompt_id: "", repos: callRepos(repos) ?? [], step, refs }),
+    filteredTaker: (repos, step = askStep(promptId), refs) => takes({ prompt_id: "", repos: callRepos(repos) ?? [], step, refs, filtered: true }),
+    key: (refs) => (keyOf ??= batchKey(db, nowMs))(refs),
   };
 }
 
@@ -201,9 +207,17 @@ export function queueRoomPass(db: DatabaseSync, promptId?: string): RoomPass {
  */
 export function takersFirst<T>(db: DatabaseSync, items: readonly T[], reposOf: (t: T) => readonly string[] | undefined, refsOf: (t: T) => readonly ItemRefLike[], promptId?: string): T[] {
   const pass = queueRoomPass(db, promptId);
-  const keyOf = inferenceMode(db) === "user-local" ? batchKey(db) : () => "";
-  const rank = items.map((t) => (pass.taker(reposOf(t), undefined, refsOf(t)) ? (keyOf(refsOf(t)) ? 2 : 1) : 0));
+  const rank = items.map((t) => (pass.filteredTaker(reposOf(t), undefined, refsOf(t)) ? 2 : pass.taker(reposOf(t), undefined, refsOf(t)) ? 1 : 0));
   return [...items.keys()].sort((a, b) => rank[b]! - rank[a]! || a - b).map((i) => items[i]!);
+}
+
+/**
+ * The first `limit` items of a one-repo job's selection (all of them without a limit), taken in takersFirst order when the limit
+ * cuts, so the cut keeps the items a Task Runner takes. `numberOf`: the item a unit's call names.
+ */
+export function takersCut<T>(db: DatabaseSync, items: readonly T[], limit: number | undefined, repo: string, numberOf: (t: T) => number): T[] {
+  if (limit === undefined || items.length <= limit) return [...items];
+  return takersFirst(db, items, () => [repo], (t) => [{ repo, number: numberOf(t) }]).slice(0, Math.max(0, limit));
 }
 
 /** The model queue's room for a pool's units by index (classify/run.ts pool): answers are kept for one round of the pool's scheduling. */
@@ -221,9 +235,10 @@ export function poolRoom(db: DatabaseSync, reposOf: (i: number) => readonly stri
   const cls = currentClass(opts.promptId);
   let pass: RoomPass | null = null;
   const rooms = new Map<string, number>(), takers = new Map<string, boolean>();
+  // The answers depend on the items only through which filtered users take them, so units of one repo share them when nobody filters.
   const keyOf = (i: number): string => {
     const r = reposOf(i);
-    return `${r === undefined ? "\0" : [...r].sort().join("\n")}\t${refsOf(i).map((x) => `${x.repo}#${x.number}`).sort().join("\n")}`;
+    return `${r === undefined ? "\0" : [...r].sort().join("\n")}\t${(pass ??= queueRoomPass(db, opts.promptId)).key(refsOf(i))}`;
   };
   return {
     round: () => { pass = null; rooms.clear(); takers.clear(); },

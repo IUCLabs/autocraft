@@ -57,7 +57,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
 import { leaseItem } from "../runner/leases.ts";
-import { isHalt, poolRoom } from "../agents/call.ts";
+import { isHalt, poolRoom, takersCut } from "../agents/call.ts";
 import { pushesUnsettled } from "../push-outcomes.ts";
 import { POOL_MAX, pool } from "../classify/run.ts";
 
@@ -278,7 +278,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   const gw: Writer = { db, login: ACTOR };
   const summary: FixupSummary = { runId, repo, dryRun, pushed: [], asked: [], failed: [], held: [] };
   const sel = selectFixups(db, repo);
-  const asks = params.limit === undefined ? sel.ask : sel.ask.slice(0, params.limit);
+  const asks = takersCut(db, sel.ask, params.limit, repo, (c) => c.number);
   // Stored patches whose lint task ended come first: they hold a model patch that is already paid for.
   const wanted = [...sel.lint, ...sel.fix];
   const budget = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length);
