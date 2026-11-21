@@ -14,6 +14,7 @@ import { ownerOf } from "../owners.ts";
 import type { Exec } from "../fixup/git.ts";
 import { pipelineMe, setPipelineLogin } from "../github/pipeline-account.ts";
 import { allOwnLogins, ownLogins } from "../github/identity.ts";
+import { setting } from "../settings-read.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
 const LOGIN_KEY = "pipeline_login";
@@ -46,7 +47,7 @@ const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}
 const sec = (t: string): string => t.slice(0, 19);
 
 export function pipelineLogin(db: DatabaseSync): string {
-  return (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(LOGIN_KEY) as { value: string } | undefined)?.value ?? "";
+  return setting(db, LOGIN_KEY) ?? "";
 }
 
 /** Authors whose words trigger a new review: the PR's author and people tied to the repository. Bot accounts never do. */
@@ -318,11 +319,11 @@ export function changedSince(state: { newest: string; hash: string } | undefined
 const day = () => new Date().toISOString().slice(0, 10);
 const rerunKey = (repo: string, number: number) => `${RERUN_KEY}${repo}#${number}:${day()}`;
 const reruns = (db: DatabaseSync, repo: string, number: number): number =>
-  Number((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(rerunKey(repo, number)) as { value: string } | undefined)?.value ?? 0);
+  Number(setting(db, rerunKey(repo, number)) ?? 0);
 
 /** Whether an operator request or the merge-time discussion check marked the PR stale after `since` (such re-reviews are not counted). */
 export function markedStaleSince(db: DatabaseSync, repo: string, number: number, since: string): boolean {
-  const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(staleKey(repo, number)) as { value: string } | undefined)?.value;
+  const v = setting(db, staleKey(repo, number));
   return !!v && v > since;
 }
 

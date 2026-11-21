@@ -5,6 +5,7 @@ import { PIPELINE_LOGIN_KEY } from "../core/rules.ts";
 import { slugOf } from "../owners.ts";
 import { gh } from "../review/diff.ts";
 import { sameRepo } from "./pushable.ts";
+import { setting } from "../settings-read.ts";
 
 export const AUTHOR_PERMISSION_TTL_MS = 24 * 3600_000;
 const WRITE = new Set(["write", "maintain", "admin"]);
@@ -18,18 +19,17 @@ const authorOf = (db: DatabaseSync, repo: string, number: number): Row | undefin
   db.prepare("SELECT author, author_type, author_id FROM items WHERE repo = ? AND number = ?").get(repo, number) as Row | undefined;
 
 /** The pipeline's own account and bots write to the repository by construction. */
-function writesByRole(db: DatabaseSync, r: Row): boolean {
+function writesByRole(me: string | undefined, r: Row): boolean {
   if (r.author_type === "Bot") return true;
-  const me = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value;
   return !!me && !!r.author && me.toLowerCase() === r.author.toLowerCase();
 }
 
 type Cached = { permission: string | null; checked_at: string | null; failures: number; first_failure_at: string | null; author_id: number | null };
-/** The cached entry of the PR's author; a permission read for another account under the login counts as never read. */
-const cached = (db: DatabaseSync, repo: string, r: Row & { author: string }): Cached | undefined => {
-  const c = db.prepare("SELECT permission, checked_at, failures, first_failure_at, author_id FROM main.author_permissions WHERE login = ? AND repo = ?").get(r.author, repo) as Cached | undefined;
-  return c && c.permission && c.author_id !== null && r.author_id !== null && c.author_id !== r.author_id ? { ...c, permission: null, checked_at: null } : c;
-};
+/** The cached entry of the PR's author as stored; a permission read for another account under the login counts as never read. */
+const ownEntry = (c: Cached | undefined, r: Row): Cached | undefined =>
+  c && c.permission && c.author_id !== null && r.author_id !== null && c.author_id !== r.author_id ? { ...c, permission: null, checked_at: null } : c;
+const cached = (db: DatabaseSync, repo: string, r: Row & { author: string }): Cached | undefined =>
+  ownEntry(db.prepare("SELECT permission, checked_at, failures, first_failure_at, author_id FROM main.author_permissions WHERE login = ? AND repo = ?").get(r.author, repo) as Cached | undefined, r);
 const old = (at: string | null): boolean => !at || Date.now() - Date.parse(at) > AUTHOR_PERMISSION_TTL_MS;
 /** The reads have failed too often or for too long. */
 const gaveUp = (c: Cached): boolean => c.failures >= AUTHOR_READ_FAILURES || (!!c.first_failure_at && old(c.first_failure_at));
@@ -44,8 +44,23 @@ export const AUTHOR_READ_FAILURES = 3;
 export function authorWrites(db: DatabaseSync, repo: string, number: number): AuthorWrite {
   const r = authorOf(db, repo, number);
   if (!r?.author) return "no";
-  if (writesByRole(db, r)) return "yes";
-  const c = cached(db, repo, { ...r, author: r.author });
+  if (writesByRole(setting(db, PIPELINE_LOGIN_KEY), r)) return "yes";
+  return writesFrom(cached(db, repo, { ...r, author: r.author }));
+}
+
+/** authorWrites() for many PRs, from their items rows: the pipeline login and the cache are read once. */
+export function authorWritesOf(db: DatabaseSync): (repo: string, r: Row) => AuthorWrite {
+  const me = setting(db, PIPELINE_LOGIN_KEY);
+  const entries = new Map((db.prepare("SELECT login, repo, permission, checked_at, failures, first_failure_at, author_id FROM main.author_permissions").all() as (Cached & { login: string; repo: string })[])
+    .map(({ login, repo, ...c }) => [`${repo}\n${login}`, c]));
+  return (repo, r) => {
+    if (!r.author) return "no";
+    if (writesByRole(me, r)) return "yes";
+    return writesFrom(ownEntry(entries.get(`${repo}\n${r.author}`), r));
+  };
+}
+
+function writesFrom(c: Cached | undefined): AuthorWrite {
   if (c?.permission) return old(c.checked_at) && gaveUp(c) ? "no" : WRITE.has(c.permission) ? "yes" : "no";
   // Never read: waiting, until the reads have failed too often or for too long; then the PR gets the normal cannot-push hold.
   return c && gaveUp(c) ? "no" : "unknown";
@@ -71,7 +86,7 @@ export async function ensureAuthorWrites(db: DatabaseSync, repo: string, number:
   if (!sameRepo(headRepo, repo)) return "yes";
   const r = authorOf(db, repo, number);
   if (!r?.author) return "no";
-  if (!writesByRole(db, r)) {
+  if (!writesByRole(setting(db, PIPELINE_LOGIN_KEY), r)) {
     const c = cached(db, repo, { ...r, author: r.author });
     if (!c?.permission || old(c.checked_at)) {
       const now = new Date().toISOString();

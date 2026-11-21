@@ -2,15 +2,16 @@
 // when an operator answered a decision that asks for it. Set only from the dashboard by an operator (src/dash/api/admin.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { setting } from "../settings-read.ts";
 
 export type MainFixApproval = { by: string; at: string };
 const key = (repo: string) => `mainfix_approved:${repo}`;
 
 export function mainFixApprovalOf(db: DatabaseSync, repo: string): MainFixApproval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+  const value = setting(db, key(repo));
+  if (value === undefined) return null;
   try {
-    return JSON.parse(row.value) as MainFixApproval;
+    return JSON.parse(value) as MainFixApproval;
   } catch {
     return null;
   }

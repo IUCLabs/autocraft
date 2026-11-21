@@ -7,6 +7,7 @@ import { inferenceMode } from "../remote/mode.ts";
 import { taskOfStep, TASK_CHOICES } from "../remote/my-tasks.ts";
 import { takerTest } from "../remote/takers.ts";
 import { knownStep, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
+import { setting } from "../settings-read.ts";
 
 export const STEP_PARALLEL_KEY = "step_parallel";
 export const STEP_PARALLEL_DEFAULT = 1;
@@ -18,7 +19,7 @@ export class ParallelError extends Error {
 
 /** The setting as shown and stored: a positive integer or "none". */
 export function stepParallelSetting(db: DatabaseSync): string {
-  const v = (db.prepare("SELECT value FROM settings WHERE key = ?").get(STEP_PARALLEL_KEY) as { value: string } | undefined)?.value;
+  const v = setting(db, STEP_PARALLEL_KEY);
   if (v === "none") return v;
   const n = Number(v);
   return Number.isInteger(n) && n >= 1 && n <= STEP_PARALLEL_MAX ? String(n) : String(STEP_PARALLEL_DEFAULT);

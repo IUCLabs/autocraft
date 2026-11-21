@@ -6,6 +6,7 @@ import { CURRENT_HEAD_SQL } from "../verify/results.ts";
 import { baseScopeRepos } from "../pilot.ts";
 import { isFastTracked } from "../fasttrack.ts";
 import { cachedRust, type RustCheck } from "../verify/candidates.ts";
+import { setting as settingValue } from "../settings-read.ts";
 
 export type PrBuildScope = "outside" | "all";
 export const DEFAULT_PER_DAY = 10;
@@ -14,7 +15,7 @@ const SCOPE_KEY = (repo: string): string => `pr_builds_scope:${repo}`;
 const PER_DAY_KEY = "pr_builds_per_day";
 
 const setting = (db: DatabaseSync, key: string): string | null =>
-  (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
+  settingValue(db, key) ?? null;
 
 export function scopeOf(db: DatabaseSync, repo: string): PrBuildScope {
   return setting(db, SCOPE_KEY(repo)) === "all" ? "all" : "outside";

@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { filtered, hiddenJsonTest, type HiddenRepos } from "../hidden-sql.ts";
 import { mergeApprovalOf as mergeApprovalOfSafe } from "./approval.ts";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
+import { setting } from "../settings-read.ts";
 
 export const BATCH_STATES = ["checking", "open", "merged", "failed", "split", "superseded"] as const;
 export type BatchState = (typeof BATCH_STATES)[number];
@@ -54,7 +55,7 @@ const sizeKey = (repo: string) => `batch_size:${repo}`;
 
 /** Most PRs the repo's next batch takes: grows by one after a passing batch, halves after a failed one. */
 export function batchSizeOf(db: DatabaseSync, repo: string): number {
-  const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(sizeKey(repo)) as { value: string } | undefined)?.value;
+  const v = setting(db, sizeKey(repo));
   const n = Number(v);
   return Number.isInteger(n) && n >= 1 && n <= MAX_BATCH ? n : START_BATCH;
 }

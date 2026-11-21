@@ -12,6 +12,7 @@ import { autocraftText } from "../mainfix/status.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
 import { ownerOf } from "../owners.ts";
 import { isHiddenRepo, type HiddenRepos } from "../hidden-sql.ts";
+import { setting } from "../settings-read.ts";
 
 /** Branch prefix of the PRs AutoCraft opens to fix a red main; the merge queue does not hold them while main is red. */
 export const MAIN_FIX_BRANCH_PREFIX = "autocraft/main-ci-";
@@ -110,7 +111,7 @@ export async function pollMainCi(db: DatabaseSync, client: Querier, only?: strin
 
 /** Polls when the last full poll is older than POLL_EVERY_MS; the sync run calls it, so it runs with the pipeline on or off. */
 export async function pollMainCiIfDue(db: DatabaseSync, client: Querier, now = Date.now()): Promise<boolean> {
-  const at = (db.prepare("SELECT value FROM settings WHERE key = ?").get(KEY_POLLED_AT) as { value: string } | undefined)?.value;
+  const at = setting(db, KEY_POLLED_AT);
   if (at && now - Date.parse(at) < POLL_EVERY_MS - 5_000) return false;
   await pollMainCi(db, client);
   return true;

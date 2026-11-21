@@ -62,6 +62,7 @@ import { pilotItems, scopeRepos } from "../pilot.ts";
 import { refreshOutsideHolds } from "../outside.ts";
 import { JUDGEMENT_MODELS, judgementModel } from "../decide/judgement.ts";
 import { FAST_FLOOR, fastFirst, fastScores } from "../fasttrack.ts";
+import { deleteSetting, setting, withSettingsSnapshot, writeSetting } from "../settings-read.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
 export const PLAN_EVERY_MS = 5 * 60_000;
@@ -82,10 +83,8 @@ const KEY_VERIFY_CURSOR = "pipeline_verify_cursor";
 const KEY_RESET = "limit_reset_at:";
 
 const getSetting = (db: DatabaseSync, key: string): string | null =>
-  (db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
-const setSetting = (db: DatabaseSync, key: string, value: string): void => {
-  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, value);
-};
+  setting(db, key) ?? null;
+const setSetting = writeSetting;
 
 // ---- lanes ---------------------------------------------------------------------
 
@@ -608,7 +607,10 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // The defects of those reviews become issues in repos approved for comments.
     name: "postmerge-file",
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => commentApprovalOf(db, repo) && pendingDefects(db, repo).length).sort().map((repo) => ({ step: "postmerge-file", params: { repo } })),
+    detect: (db, { tracked }) => {
+      const pending = new Set(pendingDefects(db).map((d) => d.repo));
+      return tracked.filter((repo) => commentApprovalOf(db, repo) && pending.has(repo)).sort().map((repo) => ({ step: "postmerge-file", params: { repo } }));
+    },
   },
   {
     // A red default branch in a repo approved for it: flaky failures are rerun once, infrastructure failures become a decision, code failures are recorded.
@@ -777,7 +779,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string, mode:
     }
   }
   // Turning on plans at once; the sync that already happened is not new.
-  if (enabled) db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_PLANNED_AT);
+  if (enabled) deleteSetting(db, KEY_PLANNED_AT);
 }
 
 /** How many of the newest jobs deadlineStops looks at. */
@@ -896,10 +898,15 @@ const nextUtcMidnight = (ms: number): number => Date.parse(dayStart(ms)) + 86_40
  * unchanged input, minimum gap.
  */
 export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}): Promise<Detected> {
+  const steps = await loadSteps();
+  // The rest of the pass is synchronous, so its settings come from one reading of the table.
+  return withSettingsSnapshot(db, () => detectPass(db, opts, steps));
+}
+
+function detectPass(db: DatabaseSync, opts: PlanOptions, steps: Map<string, StepDef>): Detected {
   const lanes = opts.lanes ?? LANES, ms = opts.nowMs ?? Date.now();
   const logs: string[] = [];
   const log = (l: string) => { logs.push(l); opts.log?.(l); };
-  const steps = await loadSteps();
   const proposals: Proposal[] = [];
   const t0 = performance.now();
   const ctx = planCtx(db);
@@ -1045,7 +1052,7 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
   try { applyUsedAnswers(db); } catch (e) { log(`autopilot: answers: ${(e as Error).message}`); }
   // Marks the next planner pass wants: when a wait ends, and why stages are not starting.
   if (opts.wakeAt) setSetting(db, KEY_WAKE_AT, new Date(opts.wakeAt).toISOString());
-  else db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_WAKE_AT);
+  else deleteSetting(db, KEY_WAKE_AT);
   if (opts.status) setSetting(db, KEY_STATUS, JSON.stringify(opts.status));
   for (const p of proposals) {
     const slot = `${p.lane}\0${typeof p.params.repo === "string" ? p.params.repo : ""}`;
@@ -1111,7 +1118,7 @@ export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
   setSetting(db, KEY_PLANNED_AT, new Date(t).toISOString());
   // The pass about to run sets the next wake time when it is applied. With the switch off nothing is applied, so a
   // wake time that has passed would stay and make every tick plan again.
-  if (woken) db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_WAKE_AT);
+  if (woken) deleteSetting(db, KEY_WAKE_AT);
   return true;
 }
 

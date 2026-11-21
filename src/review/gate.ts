@@ -6,6 +6,7 @@ import { effectiveCi, effectiveCiWith, optionalChecksOf } from "../optional-chec
 import { BLOCKS_REVIEW, activeBlockers, hasOpenQuestion, storedBlockedBy } from "./blockers.ts";
 import { MAX_RERUNS_PER_DAY, discussionState, maintainerSince, staleMarksSince, type DiscussionState } from "./discussion.ts";
 import { ourCommitsSince } from "./ours.ts";
+import { setting } from "../settings-read.ts";
 
 /** Opus review calls of one PR per UTC day, new heads, re-runs and failed calls together (a reply-fix turn is part of its review). */
 export const MAX_REVIEWS_PER_DAY = MAX_RERUNS_PER_DAY;
@@ -20,7 +21,7 @@ export const FAILURE_BACKOFF_MS = [10 * 60_000, 30 * 60_000, 2 * 3600_000];
 const FAIL_KEY = "review_fail:";
 
 export function reviewMinInterval(db: DatabaseSync): number {
-  const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(MIN_INTERVAL_KEY) as { value: string } | undefined)?.value;
+  const v = setting(db, MIN_INTERVAL_KEY);
   const n = Number(v);
   return v !== undefined && Number.isInteger(n) && n >= 0 && n <= MIN_INTERVAL_MAX ? n : MIN_INTERVAL_DEFAULT;
 }
@@ -39,7 +40,7 @@ const failKey = (repo: string, number: number, head: string) => `${FAIL_KEY}${re
 /** Counts a review call at this head that gave no valid review; the earlier heads' counts are forgotten. */
 export function recordReviewFailure(db: DatabaseSync, repo: string, number: number, head: string, nowMs: number = Date.now()): void {
   const key = failKey(repo, number, head);
-  const cur = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+  const cur = setting(db, key);
   const n = (Number(cur?.split("|")[0]) || 0) + 1;
   db.prepare("DELETE FROM main.settings WHERE key LIKE ? AND key <> ?").run(`${FAIL_KEY}${repo}#${number}@%`, key);
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, `${n}|${new Date(nowMs).toISOString()}`);

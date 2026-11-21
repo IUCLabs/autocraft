@@ -21,6 +21,7 @@ import { findingKey, advance, rawFinding, type FindingRow } from "./store.ts";
 import { rememberQuietPr } from "./quiet.ts";
 import { giveaway, landBody, nameGiveaway } from "./rules.ts";
 import type { ExecResult } from "../fixup/git.ts";
+import { setting } from "../settings-read.ts";
 
 const ACTOR = "security";
 const oneLine = (s: string, max = 300): string => s.replace(/\s+/g, " ").trim().slice(0, max);
@@ -370,7 +371,7 @@ export async function pollLanding(db: DatabaseSync, d: Pick<LandDeps, "exec" | "
 export async function pollLandingIfDue(db: DatabaseSync, d: Pick<LandDeps, "exec" | "root" | "log">, now = Date.now()): Promise<number> {
   const open = db.prepare("SELECT 1 FROM security_findings WHERE (state = 'landing' AND fix_pr IS NOT NULL) OR state = 'awaiting-admin' LIMIT 1").get();
   if (!open) return 0;
-  const at = (db.prepare("SELECT value FROM settings WHERE key = 'security_poll_at'").get() as { value: string } | undefined)?.value;
+  const at = setting(db, "security_poll_at");
   if (at && now - Date.parse(at) < 115_000) return 0;
   db.prepare("INSERT INTO settings (key, value) VALUES ('security_poll_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(new Date(now).toISOString());
   return pollLanding(db, d);

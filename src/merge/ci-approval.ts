@@ -20,15 +20,16 @@ import { mergeHeld } from "./holds.ts";
 import { trackedNames } from "../repos.ts";
 import { ghExec, type Gh } from "./safe-merge.ts";
 import { slugOf } from "../owners.ts";
+import { setting } from "../settings-read.ts";
 
 export type CiApproval = { by: string; at: string };
 const key = (repo: string) => `ci_approved:${repo}`;
 
 export function ciApprovalOf(db: DatabaseSync, repo: string): CiApproval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+  const value = setting(db, key(repo));
+  if (value === undefined) return null;
   try {
-    return JSON.parse(row.value) as CiApproval;
+    return JSON.parse(value) as CiApproval;
   } catch {
     return null;
   }

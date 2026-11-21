@@ -2,6 +2,7 @@
 // or count as a failure to fix. Exact check names. Every other check must still be green.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
+import { setting } from "./settings-read.ts";
 
 const key = (repo: string) => `optional_checks:${repo}`;
 
@@ -16,7 +17,7 @@ const parseList = (value: string | undefined): string[] => {
 };
 
 export function optionalChecks(db: DatabaseSync, repo: string): string[] {
-  return parseList((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined)?.value);
+  return parseList(setting(db, key(repo)));
 }
 
 /** optionalChecks() of every repo, read in one query. */

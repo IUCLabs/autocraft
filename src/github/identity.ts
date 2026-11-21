@@ -12,6 +12,7 @@ import { ownerOf } from "../owners.ts";
 import { knownSlugs, rememberSlug } from "./slugs.ts";
 import { AppError, call, GITHUB_API } from "./app.ts";
 import { AppNotInstalledError, installationToken, readAppSecrets, RepoNotInInstallationError } from "./install-token.ts";
+import { setting } from "../settings-read.ts";
 
 export type Identity = "app" | `user:${string}`;
 export type GithubIdentity = "box" | "app";
@@ -21,8 +22,8 @@ const KEY = "github_identity";
 
 /** The one instance-wide switch: whose account GitHub writes and dashboard sign-in use. Read at every use, never cached. */
 export function githubIdentity(db: DatabaseSync): GithubIdentity {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(KEY) as { value: string } | undefined;
-  return row?.value === "app" ? "app" : "box";
+  const value = setting(db, KEY);
+  return value === "app" ? "app" : "box";
 }
 
 /** Returns false when nothing changed. A change ends every dashboard session, so everyone signs in again under the new mode. */
@@ -203,7 +204,7 @@ export function appSlug(): string | null {
  */
 export function ownLogins(db: DatabaseSync, _repo: string, slug: string | null = null): Set<string> {
   const out = new Set<string>();
-  const box = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value;
+  const box = setting(db, "pipeline_login");
   if (box) out.add(box);
   for (const l of ownBotLogins(db, slug)) out.add(l);
   return out;

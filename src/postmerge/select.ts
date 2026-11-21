@@ -79,8 +79,12 @@ export function fixesFollowup(db: DatabaseSync, repo: string, number: number): b
  * with `postmerge file`.
  */
 export function heldReason(db: DatabaseSync, repo: string, number: number, reviewAt: string): "earlier" | "fix" | null {
-  if (followupsOf(db, repo, number).some((x) => (x.state === "filed" || x.state === "filing") && x.review_at !== reviewAt)) return "earlier";
-  return fixesFollowup(db, repo, number) ? "fix" : null;
+  return heldBy(followupsOf(db, repo, number), () => fixesFollowup(db, repo, number), reviewAt);
+}
+
+function heldBy(followups: Followup[], fixes: () => boolean, reviewAt: string): "earlier" | "fix" | null {
+  if (followups.some((x) => (x.state === "filed" || x.state === "filing") && x.review_at !== reviewAt)) return "earlier";
+  return fixes() ? "fix" : null;
 }
 
 export type PendingDefect = { repo: string; number: number; review_at: string; finding: number; f: Finding; model: string | null; attempts: number };
@@ -89,16 +93,26 @@ export type PendingDefect = { repo: string; number: number; review_at: string; f
  * Defects of the latest review of each PR that the filing step may still try, oldest review first: no row yet, a
  * skipped-limit row, or a failed row whose backoff has passed. A review held by `heldReason`, and the review of a quiet pull request, has none.
  */
-export function pendingDefects(db: DatabaseSync, repo: string, now = Date.now()): PendingDefect[] {
+export function pendingDefects(db: DatabaseSync, repo?: string, now = Date.now()): PendingDefect[] {
+  const only = repo !== undefined ? [repo] : [];
   const rows = db.prepare(`SELECT r.repo, r.number, r.at, r.model, r.findings FROM postmerge_reviews r
-    WHERE r.repo = ? AND r.error IS NULL AND ${pilotSqlFor("r.repo", "r.number")} ORDER BY r.at, r.number`).all(repo) as { repo: string; number: number; at: string; model: string | null; findings: string | null }[];
+    WHERE ${repo !== undefined ? "r.repo = ? AND " : ""}r.error IS NULL AND ${pilotSqlFor("r.repo", "r.number")} ORDER BY r.at, r.number`).all(...only) as { repo: string; number: number; at: string; model: string | null; findings: string | null }[];
   const out: PendingDefect[] = [];
   const quiet = quietFixPrs(db, repo);
+  // The follow-ups of each PR and the Fix PR links of follow-up issues, read once (followupsOf and fixesFollowup per PR).
+  const followups = new Map<string, Followup[]>();
+  for (const f of db.prepare(`SELECT repo, number, review_at, finding, title, issue_number, url, state, at, duplicate_of, attempts, note FROM postmerge_followups
+    ${repo !== undefined ? "WHERE repo = ? " : ""}ORDER BY review_at, finding`).all(...only) as Followup[]) (followups.get(`${f.repo}#${f.number}`) ?? followups.set(`${f.repo}#${f.number}`, []).get(`${f.repo}#${f.number}`)!).push(f);
+  const fixUrls = db.prepare(`SELECT fa.repo, fa.pr_url FROM fix_attempts fa JOIN postmerge_followups pf ON pf.repo = fa.repo AND pf.issue_number = fa.number
+    WHERE ${repo !== undefined ? "fa.repo = ? AND " : ""}fa.pr_url IS NOT NULL`).all(...only) as { repo: string; pr_url: string }[];
+  // As `pr_url LIKE '%/pull/<number>'`: LIKE ignores ASCII case.
+  const fixes = (r: string, n: number): boolean => fixUrls.some((u) => u.repo === r && u.pr_url.toLowerCase().endsWith(`/pull/${n}`));
   for (const r of rows) {
     // A security fix gets no public text until its advisory is published: its findings stay on the dashboard.
     if (quiet.has(`${r.repo}#${r.number}`)) continue;
-    if (heldReason(db, r.repo, r.number, r.at)) continue;
-    const have = followupsOf(db, r.repo, r.number).filter((x) => x.review_at === r.at);
+    const prFollowups = followups.get(`${r.repo}#${r.number}`) ?? [];
+    if (heldBy(prFollowups, () => fixes(r.repo, r.number), r.at)) continue;
+    const have = prFollowups.filter((x) => x.review_at === r.at);
     parseStored(r.findings).forEach((f, i) => {
       if (f.severity !== "defect" || f.duplicate_of !== null) return;
       const row = have.find((x) => x.finding === i);

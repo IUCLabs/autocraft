@@ -2,15 +2,16 @@
 // Set only from the dashboard by an operator (src/dash/api/admin.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { setting } from "../settings-read.ts";
 
 export type CommentApproval = { by: string; at: string };
 const key = (repo: string) => `comment_approved:${repo}`;
 
 export function commentApprovalOf(db: DatabaseSync, repo: string): CommentApproval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+  const value = setting(db, key(repo));
+  if (value === undefined) return null;
   try {
-    return JSON.parse(row.value) as CommentApproval;
+    return JSON.parse(value) as CommentApproval;
   } catch {
     return null;
   }
