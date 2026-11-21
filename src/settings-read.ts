@@ -23,6 +23,14 @@ export function setting(db: DatabaseSync, key: string): string | undefined {
   return (prep(db, "SELECT value FROM main.settings WHERE key = ?").get(key) as { value: string } | undefined)?.value;
 }
 
+/** The stored values of `keys` in one read; keys without a row are left out. */
+export function settings(db: DatabaseSync, keys: string[]): Map<string, string> {
+  const snap = snapshots.get(db);
+  if (snap) return new Map(keys.flatMap((k) => { const v = snap.get(k); return v === undefined ? [] : [[k, v] as const]; }));
+  const rows = prep(db, "SELECT key, value FROM main.settings WHERE key IN (SELECT value FROM json_each(?))").all(JSON.stringify(keys)) as { key: string; value: string }[];
+  return new Map(rows.map((r) => [r.key, r.value]));
+}
+
 /** True when the key has a row. */
 export function hasSetting(db: DatabaseSync, key: string): boolean {
   const snap = snapshots.get(db);

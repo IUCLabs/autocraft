@@ -76,7 +76,8 @@ export const WAITING_CI_RECHECK_MS = 60_000;
 export const AUTOPILOT_USER = "pipeline";
 
 export const KEY_ENABLED = "pipeline_enabled";
-const KEY_BY = "pipeline_changed_by", KEY_AT = "pipeline_changed_at";
+/** Who changed the pipeline switch last, and when. */
+export const KEY_BY = "pipeline_changed_by", KEY_AT = "pipeline_changed_at";
 const KEY_PLANNED_AT = "pipeline_planned_at", KEY_SEQS_SEEN = "pipeline_seqs_seen", KEY_WAKE_AT = "pipeline_wake_at", KEY_STATUS = "pipeline_status";
 const KEY_CURSOR = "pipeline_review_cursor";
 const KEY_VERIFY_CURSOR = "pipeline_verify_cursor";

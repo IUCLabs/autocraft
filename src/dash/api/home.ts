@@ -2,19 +2,20 @@
 // Viewers get counts and short texts; the lists of needs name items only for staff.
 import { isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
 import type { DatabaseSync } from "node:sqlite";
-import type { Progress } from "../../../web/src/api/types.ts";
+import type { NeedsPage, NeedsStoppedRow, Progress } from "../../../web/src/api/types.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
 import { optionsOf, type DecisionRow } from "../../decisions.ts";
 import type { Req } from "../types.ts";
 import { needingSql, withoutHidden } from "./decisions.ts";
 import { healthOf } from "./now.ts";
-import { needs as needsPage, stopped } from "./needs.ts";
+import { needs as needsPage } from "./needs.ts";
 import { canSeeInternals } from "./staff.ts";
 import { excludeHidden, hiddenRepos } from "./visible.ts";
 import { ITEM_PHASES, PHASE_SQL, type Home, type HomeDone, type HomeNeed, type HomeProblem, type ItemPhase, type NeedKind } from "./home-types.ts";
 
 const OLDEST = 5;
 const DONE = 10;
+const DONE_CHUNK = 40;
 
 type Deps = { progress: (hidden: string[]) => Progress };
 
@@ -35,21 +36,23 @@ function phases(db: DatabaseSync, hidden: string[]): Record<ItemPhase, number> {
 }
 
 /** `total` is the nav badge's number: decisions, unanswered feedback and stopped items. `oldest` lists decisions and, for staff, high or critical findings still new (not in the total). */
-async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, staff: boolean): Promise<Home["needs"]> {
+async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, staff: boolean, page: NeedsPage): Promise<Home["needs"]> {
   const params: Record<string, string> = {};
   const hide = withoutHidden(hidden, params);
   const where = `${needingSql(req)}${hide ? ` AND ${hide}` : ""}`;
   const byKind: Partial<Record<NeedKind, number>> = {};
   for (const r of db.prepare(`SELECT kind, COUNT(*) AS n FROM decisions WHERE ${where} GROUP BY kind`).all(params) as { kind: NeedKind; n: number }[]) byKind[r.kind] = r.n;
   // The Needs page's own counts, so the total is the nav badge's number for this user.
-  const { counts } = await needsPage(db, req);
+  const { counts } = page;
   const total = counts.decisions + counts.feedback + counts.stopped;
   if (counts.feedback) byKind.feedback = counts.feedback;
   if (counts.stopped) byKind.stopped = counts.stopped;
   if (!staff) return { total, byKind, oldest: [] };
 
-  const asked: HomeNeed[] = (db.prepare(`SELECT * FROM decisions WHERE ${where} ORDER BY asked_at, id LIMIT ${OLDEST}`).all(params) as DecisionRow[]).map((d) => {
-    const it = d.number !== null && d.repo ? (db.prepare("SELECT kind, title FROM items WHERE repo = ? AND number = ?").get(d.repo, d.number) as { kind: string; title: string | null } | undefined) : undefined;
+  const oldest = db.prepare(`SELECT * FROM decisions WHERE ${where} ORDER BY asked_at, id LIMIT ${OLDEST}`).all(params) as DecisionRow[];
+  const items = itemsByRef(db, oldest.flatMap((d) => (d.number !== null && d.repo ? [[d.repo, d.number] as [string, number]] : [])));
+  const asked: HomeNeed[] = oldest.map((d) => {
+    const it = d.number !== null && d.repo ? items.get(`${d.repo}#${d.number}`) : undefined;
     return {
       id: d.id, kind: d.kind as NeedKind, repo: d.repo ?? "", number: d.number, title: d.number === null ? d.question : (it?.title ?? `${d.repo}#${d.number}`),
       recommendation: optionsOf(d).find((o) => o.key === d.recommended)?.label ?? null, askedAt: d.asked_at, itemKind: itemKindOf(it?.kind),
@@ -67,9 +70,8 @@ async function needs(db: DatabaseSync, req: Req, hidden: HiddenRepos, staff: boo
   return { total, byKind, oldest: [...asked, ...found].sort((a, b) => a.askedAt.localeCompare(b.askedAt)).slice(0, OLDEST) };
 }
 
-async function problems(db: DatabaseSync, hidden: string[], staff: boolean): Promise<HomeProblem[]> {
+async function problems(db: DatabaseSync, hidden: string[], staff: boolean, stops: NeedsStoppedRow[]): Promise<HomeProblem[]> {
   const out: HomeProblem[] = [];
-  const stops = await stopped(db, hidden);
   for (const s of stops) out.push({ kind: "stopped", title: s.title, detail: staff ? s.reason : "", to: "/needs/stopped" });
   const seen = new Set(stops.map((s) => s.id));
   // The health list repeats breakers, limits and paused accounts; those are the stopped rows above.
@@ -89,19 +91,37 @@ async function problems(db: DatabaseSync, hidden: string[], staff: boolean): Pro
   return out;
 }
 
+/** Title and kind of items by `repo#number`, in one read. */
+function itemsByRef(db: DatabaseSync, refs: [string, number][]): Map<string, { title: string | null; kind: string }> {
+  if (!refs.length) return new Map();
+  const rows = db.prepare("SELECT repo, number, title, kind FROM items WHERE (repo, number) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?))").all(JSON.stringify(refs)) as { repo: string; number: number; title: string | null; kind: string }[];
+  return new Map(rows.map((r) => [`${r.repo}#${r.number}`, r]));
+}
+
 function done(db: DatabaseSync, hidden: string[]): HomeDone[] {
   const what = { merge: "merged", "act-close": "closed", "review-post": "review posted" } as const;
-  const item = db.prepare("SELECT title, kind FROM items WHERE repo = ? AND number = ?");
   const out: HomeDone[] = [];
-  // Newest first by time, so the scan stops at the tenth row that belongs to a visible item.
+  // Newest first by time, so the scan stops at the tenth row that belongs to a visible item; items are read for a chunk of rows at a time.
+  type Row = { at: string; action: keyof typeof what; repo: string; number: number };
+  let chunk: Row[] = [];
+  const flush = (): boolean => {
+    const items = itemsByRef(db, chunk.map((r) => [r.repo, r.number]));
+    for (const r of chunk) {
+      const it = items.get(`${r.repo}#${r.number}`);
+      if (!it) continue;
+      out.push({ at: r.at, what: what[r.action], repo: r.repo, number: r.number, title: it.title ?? "", kind: it.kind === "pr" ? "pr" : "issue" });
+      if (out.length === DONE) return true;
+    }
+    chunk = [];
+    return false;
+  };
   for (const a of db.prepare(`SELECT at, action, target FROM audit WHERE action IN ('merge', 'act-close', 'review-post') AND json_extract(details, '$.state') = 'done' ORDER BY at DESC`).iterate() as Iterable<{ at: string; action: keyof typeof what; target: string | null }>) {
     const m = /^(.+)#(\d+)$/.exec(a.target ?? "");
     if (!m || isHiddenRepo(hidden, m[1]!)) continue;
-    const it = item.get(m[1]!, Number(m[2])) as { title: string | null; kind: string } | undefined;
-    if (!it) continue;
-    out.push({ at: a.at, what: what[a.action], repo: m[1]!, number: Number(m[2]), title: it.title ?? "", kind: it.kind === "pr" ? "pr" : "issue" });
-    if (out.length === DONE) break;
+    chunk.push({ at: a.at, action: a.action, repo: m[1]!, number: Number(m[2]) });
+    if (chunk.length === DONE_CHUNK && flush()) return out;
   }
+  flush();
   return out;
 }
 
@@ -137,9 +157,11 @@ export async function home(db: DatabaseSync, req: Req, deps: Deps): Promise<Home
   const staff = canSeeInternals(req);
   const pg = deps.progress(hidden);
   const start = pg.repos.reduce((s, r) => s + (r.openTrend[0] ?? 0), 0);
+  // The Needs page's stopped rows are the problems list's first rows.
+  const page = await needsPage(db, req);
   return {
-    needs: await needs(db, req, hidden, staff),
-    problems: await problems(db, hidden, staff),
+    needs: await needs(db, req, hidden, staff, page),
+    problems: await problems(db, hidden, staff, page.stopped),
     phases: phases(db, hidden),
     running: running(db, hidden),
     progress: { openNow: pg.funnel.open, openAtStart: start, done24h: pg.perHour.reduce((a, b) => a + b, 0), byAutoCraftPct: byAutoCraftPct(db, hidden, pg.trackingSince), perHour: pg.perHour, spendTodayUsd: spendToday(db, hidden) },
