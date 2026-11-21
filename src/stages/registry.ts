@@ -436,7 +436,7 @@ export const STAGES: StageDef[] = [
     models: [],
     promptIds: [], promptStage: "Act",
     waits: [
-
+      { name: "Stopped held follow-up create", why: "A process stopped while it opened a follow-up issue held until the merge; its audit row tells whether the issue was opened or never sent only once no create can still be running", howLong: "10 minutes after the create started; no timer runs, the planner wakes then", showsAs: "Item page: the held issue, then \"the create's outcome is unknown, check GitHub\" when the audit row cannot tell", kind: "backoff" },
     ],
     writes: [{ what: "Comment, then close", approval: "comment" }],
     person: "Per-repo approval",

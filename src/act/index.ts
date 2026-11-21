@@ -76,6 +76,8 @@ export type ActSummary = {
   cards?: number;
   /** Follow-up issues held until the merge that this run filed or dropped (src/conversations/held.ts). */
   held?: number;
+  /** The write pacing's message when it held back a held follow-up issue. */
+  paced?: string;
   note: string | null;
 };
 
@@ -299,6 +301,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     cardWrites += held.writes;
     summary.held = held.filed + held.dropped;
     summary.failed.push(...held.failed);
+    if (held.paced) summary.paced = held.paced;
     if (held.filed || held.dropped) log(`act: ${held.filed} held follow-up issue${held.filed === 1 ? "" : "s"} filed, ${held.dropped} dropped`);
     if (held.unknown) log(`act: a held follow-up issue was being created when the answer was lost; it may exist, check GitHub`);
   }

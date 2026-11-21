@@ -122,6 +122,12 @@ export function heldDue(db: DatabaseSync, ms: number = Date.now()): { repos: Map
   return { repos, sig: repos.size ? `held:${[...repos].map(([r, f]) => `${r}=${f ? 1 : 0}`).join(",")}` : "" };
 }
 
+/** When rows in `filing` become old enough for filingOutcome to settle them: the planner wakes then. */
+export function filingWakes(db: DatabaseSync, ms: number = Date.now()): number[] {
+  return (db.prepare("SELECT updated_at FROM main.held_followups WHERE state = 'filing'").all() as { updated_at: string }[])
+    .map((r) => Date.parse(r.updated_at) + HELD_STUCK_MS).filter((t) => t > ms);
+}
+
 /** The PR's thread line (when it has a conversation): what became of the held issue. */
 function say(db: DatabaseSync, h: HeldRow, text: string): void {
   if (conversationOf(db, h.repo, h.number)) insertTurn(db, h.repo, h.number, { kind: "system", login: "system", body: text, block: systemBlock(text) });
@@ -135,7 +141,8 @@ function drop(db: DatabaseSync, h: HeldRow, reason: string, at: string): boolean
 }
 
 export type HeldDeps = { exec?: Exec; now?: () => Date };
-export type HeldSummary = { filed: number; dropped: number; failed: { ref: string; reason: string }[]; unknown: number; writes: number };
+/** `paced`: the write pacing's message when it held a create back (the job fails with it, as other paced jobs do). */
+export type HeldSummary = { filed: number; dropped: number; failed: { ref: string; reason: string }[]; unknown: number; writes: number; paced?: string };
 
 /**
  * Files or drops the due held follow-ups of the PRs of `repo`, oldest first. Each issue is one GitHub write of the Act step's shared daily
@@ -178,10 +185,10 @@ export async function fileHeldFollowups(db: DatabaseSync, repo: string, deps: He
       const reason = oneLine(e);
       // The network or GitHub is likely failing: the rest waits for the next run.
       if (!(e instanceof IssueError) || !e.clear) { s.unknown++; break; }
-      // The write pacing sent nothing: no try is counted, and the job's failure backoff brings the next run.
+      // The write pacing sent nothing: no try is counted; the job fails with the pacing message, which the failure backoff ignores, so the next pass runs it again.
       if (e.paced) {
         db.prepare("UPDATE main.held_followups SET state = 'held', attempts = ? WHERE id = ? AND state = 'filing'").run(h.attempts, h.id);
-        s.failed.push({ ref: ref(h.repo, h.number), reason });
+        s.paced = reason;
         break;
       }
       const end = attempts >= HELD_MAX_ATTEMPTS;

@@ -38,7 +38,7 @@ import { nightlyRepos } from "../nightly/index.ts";
 import { prBuildDue, reposWithQueuedBuilds } from "../prbuild/index.ts";
 import { actLimit, actUsedToday } from "../conversations/usage.ts";
 import { queueHead } from "../conversations/queue.ts";
-import { heldDue } from "../conversations/held.ts";
+import { filingWakes, heldDue } from "../conversations/held.ts";
 import { compareKeys, targetKeys } from "../act/order.ts";
 import { openedToday, perDay } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
@@ -439,6 +439,8 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       if (head && !head.fits) ctx.wake?.push(nextUtcMidnight(Date.now()));
       else if (head && ctx.tracked.includes(head.repo) && commentApprovalOf(db, head.repo)) best.set(head.repo, { band: 5, at: "" });
       // Follow-up issues held until a PR merged: filed by the job of the PR's repo once it merged, dropped once it closed or its merge path ended.
+      // A row a stopped create left in `filing` is settled from its audit row once it is old enough: wake then.
+      ctx.wake?.push(...filingWakes(db));
       for (const [repo, fits] of heldDue(db).repos) {
         if (!fits) ctx.wake?.push(nextUtcMidnight(Date.now()));
         else if (ctx.tracked.includes(repo) && commentApprovalOf(db, repo)) best.set(repo, { band: 5, at: "" });

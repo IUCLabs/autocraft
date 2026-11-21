@@ -369,6 +369,8 @@ export const STEPS: StepDef[] = [
       const line = `${r.repo}: ${r.done.length} closed, ${r.skipped.length} skipped, ${r.failed.length} failed, ${r.asked.length} decisions asked${r.cards ? `, ${r.cards} queued presses carried out` : ""}${r.held ? `, ${r.held} held follow-up issues filed or dropped` : ""}`;
       // A failed target ends the job as failed, so the registered failure backoff spaces its next tries (a target stops after ACT_MAX_ATTEMPTS).
       if (r.failed.length) throw new Error(`${line}; ${r.failed[0]!.ref}: ${r.failed[0]!.reason}`);
+      // Starts with the pacing message, so the failure backoff skips it like any paced job and the next pass runs it again.
+      if (r.paced) throw new Error(`${r.paced}; ${line}`);
       return line;
     },
   },
