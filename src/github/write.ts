@@ -155,11 +155,6 @@ function paceOwner(identity: string, target: string, owner?: string): string {
   return owner ?? (ownerOf(name) || name);
 }
 
-/**
- * Tries to insert the row inside one BEGIN IMMEDIATE: counts the key's rows of the last hour (json_extract over the
- * window's rows via the audit_at index: fine at this volume) and inserts when under budget. Returns the row id, or
- * how long to wait before the window frees.
- */
 /** How long a write of `action` by `identity` on `owner`'s key waits for the budget now (0: it may start). Reads only. */
 function keyWait(db: DatabaseSync, action: string, identity: string, owner: string, now: number): number {
   const rows = db.prepare(
@@ -188,6 +183,11 @@ export function pipelineWriteWait(db: DatabaseSync, action: string, repo: string
   return keyWait(db, action, identity, paceOwner(identity, repo), now);
 }
 
+/**
+ * Tries to insert the row inside one BEGIN IMMEDIATE: counts the key's rows of the last hour (json_extract over the
+ * window's rows via the audit_at index: fine at this volume) and inserts when under budget. Returns the row id, or
+ * how long to wait before the window frees.
+ */
 function tryBegin(w: Writer, action: string, target: string, details: Details, now: number, ownerArg?: string): { id: number } | { wait: number } {
   const identity = String(details.identity ?? "");
   const owner = paceOwner(identity, target, ownerArg);
