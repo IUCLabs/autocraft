@@ -1,11 +1,12 @@
 // Owner (GitHub org or user) of each repo. Repo names are unique across owners, so items keep
-// the bare name as key; the owner is a property of the `repos` row. Repos without a row are storytold's.
+// the bare name as key; the owner is a property of the `repos` row. Repos without a row are the default owner's.
 
 // A structural type: the web build imports this module through the templates and has no node types.
 type DatabaseSync = { prepare(sql: string): { all(...params: never[]): unknown[] } };
 
-export const DEFAULT_OWNER = "storytold";
 export const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+export const DEFAULT_OWNER = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.AUTOCRAFT_DEFAULT_OWNER || "storytold";
+if (!OWNER.test(DEFAULT_OWNER)) throw new Error(`AUTOCRAFT_DEFAULT_OWNER is not a GitHub owner: ${DEFAULT_OWNER}`);
 
 const REFRESH_MS = 30_000;
 let cache = new Map<string, string>();

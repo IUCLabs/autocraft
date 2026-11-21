@@ -58,7 +58,7 @@ export const ghRepoExists: RepoExists = async (owner, name) => {
 export async function trackRepoChecked(db: DatabaseSync, by: string, input: string, exists: RepoExists = ghRepoExists, mint?: (owner: string, repo: string) => Promise<string>): Promise<boolean> {
   const { owner, name } = splitSlug(input);
   const known = NAME.test(name) && db.prepare("SELECT 1 FROM main.repos WHERE name = ?").get(name) !== undefined;
-  if (input.includes("/") && owner.toLowerCase() !== DEFAULT_OWNER && OWNER.test(owner) && NAME.test(name) && !known) {
+  if (input.includes("/") && owner.toLowerCase() !== DEFAULT_OWNER.toLowerCase() && OWNER.test(owner) && NAME.test(name) && !known) {
     if (await exists(DEFAULT_OWNER, name)) throw new RepoError(`${DEFAULT_OWNER}/${name} exists; repo names are unique across owners.`);
     if (!(await exists(owner, name))) throw new RepoError(`${owner}/${name} was not found or is not readable.`);
   }
@@ -109,9 +109,9 @@ export function listAll(db: DatabaseSync): RepoRow[] {
            (SELECT COUNT(*) FROM main.items i WHERE i.repo = r.name) AS rows
     FROM main.repos r
     UNION ALL
-    SELECT t.name, 'storytold', 1, t.pipeline, NULL, NULL, NULL, (SELECT COUNT(*) FROM main.items i WHERE i.repo = t.name)
+    SELECT t.name, ?, 1, t.pipeline, NULL, NULL, NULL, (SELECT COUNT(*) FROM main.items i WHERE i.repo = t.name)
     FROM main.tracked_repos t WHERE t.name NOT IN (SELECT name FROM main.repos)
-    ORDER BY 3 DESC, 1`).all() as RepoRow[];
+    ORDER BY 3 DESC, 1`).all(DEFAULT_OWNER) as RepoRow[];
 }
 
 // Temp views that shadow the mirror and work tables on this connection, so every
