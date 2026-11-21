@@ -6,8 +6,10 @@ import { prep } from "./sql-cache.ts";
 const snapshots = new WeakMap<DatabaseSync, Map<string, string>>();
 
 /**
- * Runs `fn` with the settings reads on `db` served from one reading of the table. Synchronous only, so no other
- * writer runs while the snapshot lives; writes made during `fn` go through writeSetting/deleteSetting, which keep it current.
+ * Runs `fn` with the settings reads on `db` served from one reading of the table. Synchronous only, so nothing on this
+ * connection writes between reads except `fn` itself, through writeSetting/deleteSetting, which keep the snapshot current.
+ * Other connections (the runner thread, the dashboard) keep writing: the pass sees settings as they were at its start, and
+ * applyProposals re-checks limits and blocks with fresh reads.
  */
 export function withSettingsSnapshot<T>(db: DatabaseSync, fn: () => T): T {
   if (snapshots.has(db)) return fn();

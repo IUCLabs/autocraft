@@ -199,7 +199,7 @@ const repoOf = (c: Candidate): string | null => (typeof c.params.repo === "strin
 
 type JobEnd = { id: number; endedAt: string; state: string; items: number | null; acted: number | null; lease_skips: number | null; lease_skip_keys: string | null };
 
-/** Job and limit reads of one planner pass, loaded on first use: no job starts, ends or is queued while detectPass runs. */
+/** Job and limit reads of one planner pass, loaded on first use. Other connections may start or end jobs meanwhile; applyProposals re-checks blocks and limits with fresh reads. */
 type PassReads = { db: DatabaseSync; limits?: Map<string, LimitRow>; started?: { day: string; rows: { step: string; started_at: string; items: number | null }[] }; ends?: (JobEnd & { step: string; repo: string | null; requested_by: string | null })[] };
 let passReads: PassReads | null = null;
 const passOf = (db: DatabaseSync): PassReads | null => (passReads?.db === db ? passReads : null);
