@@ -10,3 +10,11 @@ export function repoHasNoCi(db: DatabaseSync, repo: string): boolean {
   const rows = db.prepare("SELECT overall FROM pr_checks WHERE repo = ? ORDER BY fetched_at DESC LIMIT ?").all(repo, NO_CI_SAMPLE) as { overall: string | null }[];
   return rows.length > 0 && rows.every((r) => !r.overall || r.overall === "none");
 }
+
+/** repoHasNoCi() for every repo, from one reading of each repo's latest NO_CI_SAMPLE checks. */
+export function reposWithNoCi(db: DatabaseSync): Set<string> {
+  const seen = new Map<string, boolean>();
+  for (const r of db.prepare(`SELECT repo, overall FROM (SELECT repo, overall, ROW_NUMBER() OVER (PARTITION BY repo ORDER BY fetched_at DESC) AS n FROM pr_checks) WHERE n <= ?`).all(NO_CI_SAMPLE) as { repo: string; overall: string | null }[])
+    seen.set(r.repo, (seen.get(r.repo) ?? true) && (!r.overall || r.overall === "none"));
+  return new Set([...seen].filter(([, none]) => none).map(([repo]) => repo));
+}

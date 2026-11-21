@@ -7,6 +7,7 @@ import { readEnv } from "../github/read.ts";
 import { trackedNames } from "../repos.ts";
 import { ownerOf } from "../owners.ts";
 import { appNameOf, classifyAsset } from "./classify.ts";
+import { setting } from "../settings-read.ts";
 
 const run = promisify(execFile);
 
@@ -121,7 +122,7 @@ export function foldDeltas(db: DatabaseSync, now: number): void {
  */
 export async function pollReleases(db: DatabaseSync, fetcher: Fetcher = ghFetcher(db), now = Date.now(), log: (line: string) => void = () => {}, budgetMs = BUDGET_MS): Promise<number> {
   const repos = trackedNames(db);
-  const offset = repos.length ? Number((db.prepare("SELECT value FROM settings WHERE key = ?").get(KEY_OFFSET) as { value: string } | undefined)?.value ?? 0) % repos.length : 0;
+  const offset = repos.length ? Number(setting(db, KEY_OFFSET) ?? 0) % repos.length : 0;
   const order = [...repos.slice(offset), ...repos.slice(0, offset)];
   const deadline = Date.now() + budgetMs;
   let next = 0;
@@ -152,7 +153,7 @@ export async function pollReleases(db: DatabaseSync, fetcher: Fetcher = ghFetche
 
 /** Polls when the last poll is older than POLL_EVERY_MS; the sync run calls it. */
 export async function pollReleasesIfDue(db: DatabaseSync, fetcher: Fetcher = ghFetcher(db), now = Date.now(), log: (line: string) => void = () => {}): Promise<boolean> {
-  const at = (db.prepare("SELECT value FROM settings WHERE key = ?").get(KEY_POLLED_AT) as { value: string } | undefined)?.value;
+  const at = setting(db, KEY_POLLED_AT);
   if (at && now - Date.parse(at) < POLL_EVERY_MS - 5_000) return false;
   await pollReleases(db, fetcher, now, log);
   return true;

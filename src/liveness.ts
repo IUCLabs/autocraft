@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { fixStoppedWait, TRIAGE_WAIT } from "./core/decide-item.ts";
 import type { WaitKind } from "./core/plan.ts";
 import { blockersOfWait } from "./review/blockers.ts";
+import { setting, writeSetting } from "./settings-read.ts";
 
 export type LivenessVerdict = "stuck" | "long";
 /** Why an item is live (`live` causes) or stuck (`stuck` causes). */
@@ -93,8 +94,8 @@ export function flagSets(db: DatabaseSync): { question: Set<string>; answered: S
 }
 
 export function computeLiveness(db: DatabaseSync, nowMs: number = Date.now()): Liveness {
-  const setting = Number((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(LONG_DAYS_KEY) as { value: string } | undefined)?.value);
-  const longMs = (Number.isFinite(setting) && setting > 0 ? setting : LONG_DAYS_DEFAULT) * DAY_MS;
+  const days = Number(setting(db, LONG_DAYS_KEY));
+  const longMs = (Number.isFinite(days) && days > 0 ? days : LONG_DAYS_DEFAULT) * DAY_MS;
   const flags = flagSets(db);
   const rows = db.prepare(`SELECT p.repo, p.number, p.kind, p.state, p.item_state, p.actions, p.wait, p.view, p.planned_at
     FROM main.item_plans p JOIN main.items i ON i.repo = p.repo AND i.number = p.number WHERE i.state = 'OPEN'`).all() as Row[];
@@ -129,7 +130,7 @@ export function computeLiveness(db: DatabaseSync, nowMs: number = Date.now()): L
 
 /** Recomputes and stores the result unless one is newer than REFRESH_MS. Returns true when it ran. */
 export function refreshLiveness(db: DatabaseSync, nowMs: number = Date.now(), force = false): boolean {
-  const last = Date.parse((db.prepare("SELECT value FROM main.settings WHERE key = 'liveness_at'").get() as { value: string } | undefined)?.value ?? "");
+  const last = Date.parse(setting(db, "liveness_at") ?? "");
   if (!force && Number.isFinite(last) && nowMs - last < REFRESH_MS) return false;
   const res = computeLiveness(db, nowMs);
   db.exec("BEGIN IMMEDIATE");
@@ -137,9 +138,8 @@ export function refreshLiveness(db: DatabaseSync, nowMs: number = Date.now(), fo
     db.exec("DELETE FROM main.liveness_items");
     const put = db.prepare("INSERT INTO main.liveness_items (repo, number, kind, verdict, cause, state, wait, phase, since, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     for (const i of res.items) put.run(i.repo, i.number, i.kind, i.verdict, i.cause, i.state, i.wait, i.phase, i.since, res.checkedAt);
-    const set = db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-    set.run("liveness_at", res.checkedAt);
-    set.run("liveness_open", String(res.open));
+    writeSetting(db, "liveness_at", res.checkedAt);
+    writeSetting(db, "liveness_open", String(res.open));
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -150,12 +150,12 @@ export function refreshLiveness(db: DatabaseSync, nowMs: number = Date.now(), fo
 
 /** The stored result; null before the first refresh. */
 export function storedLiveness(db: DatabaseSync): Liveness | null {
-  const at = (db.prepare("SELECT value FROM main.settings WHERE key = 'liveness_at'").get() as { value: string } | undefined)?.value;
+  const at = setting(db, "liveness_at");
   if (!at) return null;
   const items = (db.prepare("SELECT repo, number, kind, verdict, cause, state, wait, phase, since FROM main.liveness_items ORDER BY verdict DESC, since, repo, number").all() as LivenessItem[]);
   const causes: Record<string, number> = {};
   for (const i of items) if (i.verdict === "stuck") causes[i.cause] = (causes[i.cause] ?? 0) + 1;
-  const open = Number((db.prepare("SELECT value FROM main.settings WHERE key = 'liveness_open'").get() as { value: string } | undefined)?.value ?? 0);
+  const open = Number(setting(db, "liveness_open") ?? 0);
   return { checkedAt: at, stuck: items.filter((i) => i.verdict === "stuck").length, long: items.filter((i) => i.verdict === "long").length, open, causes, items };
 }
 

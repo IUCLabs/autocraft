@@ -12,7 +12,7 @@ import { audit } from "../dash/audit.ts";
 import { actionable, ask, factsOf, getDecision, validateAsk } from "../decisions.ts";
 import { compareCanonical, canonInfo } from "./canonical.ts";
 import { backlogHeldSql, DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
-import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
+import { duplicateGroups, kindSetsLoader, currentComparison, storedComparisons, type Group, type KindSet, type StoredComparison } from "./plan.ts";
 import { oneSentence } from "../review/summary.ts";
 import { storeOptionTexts } from "./texts.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
@@ -36,33 +36,54 @@ export type GroupPlan = {
 
 const list = (ns: number[]) => ns.map((n) => `#${n}`).join(", ");
 
-/** An earlier answered group decision of the members: its members are settled and its keep stays kept. */
-function answeredKeeps(db: DatabaseSync, repo: string, members: number[]): { settled: Set<number>; keep: Map<string, number> } {
-  const ph = members.map(() => "?").join(",");
-  const ids = db.prepare(`SELECT DISTINCT d.id FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id
-    WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct', 'backlog') AND gi.repo = ? AND gi.number IN (${ph}) ORDER BY d.asked_at, d.id`).all(repo, ...members) as { id: string }[];
-  const settled = new Set<number>(), keep = new Map<string, number>();
-  for (const { id } of ids)
-    for (const r of db.prepare(`SELECT gi.number, gi.kind, gi.role FROM dupe_group_items gi WHERE gi.decision_id = ?
-      AND NOT EXISTS (SELECT 1 FROM dupe_group_posts p WHERE p.decision_id = gi.decision_id AND p.number = gi.number AND p.step = 'released')`).all(id) as { number: number; kind: string; role: string }[]) {
-      settled.add(r.number);
-      if (r.role === "keep") keep.set(r.kind, r.number);
-    }
-  return { settled, keep };
+const ANSWERED_GROUP_SQL = "d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct', 'backlog')";
+type Answered = { settled: Set<number>; keep: Map<string, number> };
+
+/**
+ * For each group: the earlier answered group decisions of its members (oldest asked first) settle the members they list and
+ * their keep stays kept. The decisions and their members, without the released ones, are read once for all groups.
+ */
+function answeredKeepsLoader(db: DatabaseSync, repo?: string): (repo: string, members: number[]) => Answered {
+  const only = repo !== undefined ? [repo] : [];
+  const byMember = new Map<string, { id: string; asked_at: string | null }[]>();
+  for (const r of db.prepare(`SELECT DISTINCT d.id, d.asked_at, gi.repo, gi.number FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id
+    WHERE ${ANSWERED_GROUP_SQL}${repo !== undefined ? " AND gi.repo = ?" : ""}`).all(...only) as { id: string; asked_at: string | null; repo: string; number: number }[]) {
+    const k = `${r.repo}#${r.number}`;
+    (byMember.get(k) ?? byMember.set(k, []).get(k)!).push({ id: r.id, asked_at: r.asked_at });
+  }
+  // Each decision's members in its primary key order (number), as a read by decision id gives them.
+  const members = new Map<string, { number: number; kind: string; role: string }[]>();
+  for (const r of db.prepare(`SELECT gi.decision_id, gi.number, gi.kind, gi.role FROM dupe_group_items gi JOIN decisions d ON d.id = gi.decision_id WHERE ${ANSWERED_GROUP_SQL}
+    AND NOT EXISTS (SELECT 1 FROM dupe_group_posts p WHERE p.decision_id = gi.decision_id AND p.number = gi.number AND p.step = 'released') ORDER BY gi.decision_id, gi.number`).all() as { decision_id: string; number: number; kind: string; role: string }[])
+    (members.get(r.decision_id) ?? members.set(r.decision_id, []).get(r.decision_id)!).push(r);
+  // ORDER BY asked_at, id: NULL first, then byte order.
+  const before = (a: string | null, b: string | null): number => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a < b ? -1 : 1);
+  return (r, ns) => {
+    const ids = new Map<string, string | null>();
+    for (const n of ns) for (const d of byMember.get(`${r}#${n}`) ?? []) ids.set(d.id, d.asked_at);
+    const settled = new Set<number>(), keep = new Map<string, number>();
+    for (const [id] of [...ids].sort((a, b) => before(a[1], b[1]) || before(a[0], b[0])))
+      for (const m of members.get(id) ?? []) {
+        settled.add(m.number);
+        if (m.role === "keep") keep.set(m.kind, m.number);
+      }
+    return { settled, keep };
+  };
 }
 
 /** Plans for the groups whose comparisons are all current. `closing` is false for a group with nothing to close. */
 export function groupPlans(db: DatabaseSync, repo?: string): GroupPlan[] {
   const out: GroupPlan[] = [];
-  for (const g of duplicateGroups(db, repo)) {
-    const sets = kindSetsOf(db, g).filter((s) => s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number)));
+  const groups = duplicateGroups(db, repo), setsOf = kindSetsLoader(db, groups), stored = storedComparisons(db, repo), answeredKeeps = answeredKeepsLoader(db, repo);
+  for (const g of groups) {
+    const sets = setsOf(g).filter((s) => s.members.some((m) => m.state === "OPEN" && setsOf.inPilot(s.repo, m.number)));
     if (!sets.length) continue;
     // A member held by a Backlog answer is not asked about again.
-    if (g.members.some((n) => db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND ${backlogHeldSql("i")}`).get(g.repo, n))) continue;
-    const ready = sets.map((set) => ({ set, cmp: currentComparison(db, set) }));
+    if (g.members.some((n) => setsOf.backlogHeld(g.repo, n))) continue;
+    const ready = sets.map((set) => ({ set, cmp: currentComparison(db, set, stored) }));
     if (ready.some((r) => !r.cmp)) continue;
     const full = ready as { set: KindSet; cmp: StoredComparison }[];
-    const { settled, keep: fixedKeep } = answeredKeeps(db, g.repo, g.members);
+    const { settled, keep: fixedKeep } = answeredKeeps(g.repo, g.members);
     const items: PlanItem[] = [];
     for (const { set, cmp } of full) {
       const numbers = set.members.map((m) => m.number);
@@ -74,7 +95,7 @@ export function groupPlans(db: DatabaseSync, repo?: string): GroupPlan[] {
         if (settled.has(m.number)) continue;
         const other = cmp.result?.others.find((o) => o.number === m.number);
         const dup = set.kind === "issue" || other?.duplicate !== false;
-        const role: Role = m.state === "OPEN" && dup && inPilot(db, set.repo, m.number) ? "close" : "stay";
+        const role: Role = m.state === "OPEN" && dup && setsOf.inPilot(set.repo, m.number) ? "close" : "stay";
         items.push({ number: m.number, kind: set.kind, role, target: role === "close" ? kept : null, detail: other ? { ...other } : null });
       }
     }
@@ -246,7 +267,10 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
 
 /** Groups whose plan has no decision yet. Reads only, for the autopilot. */
 export function groupsToAsk(db: DatabaseSync, repo?: string): GroupPlan[] {
-  return groupPlans(db, repo).filter((p) => p.closing && !getDecision(db, idFor(db, p)));
+  // A plan is asked under a new id unless an open group decision already lists one of its members (idFor), read once for all plans.
+  const open = new Set((db.prepare(`SELECT gi.repo || '#' || gi.number AS k FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id
+    WHERE d.kind = 'duplicate' AND d.answer IS NULL AND d.id LIKE '%:dupegroup:%'`).all() as { k: string }[]).map((r) => r.k));
+  return groupPlans(db, repo).filter((p) => p.closing && !p.group.members.some((n) => open.has(`${p.repo}#${n}`)));
 }
 
 /**

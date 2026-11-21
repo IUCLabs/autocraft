@@ -6,6 +6,7 @@
 import { quietSqlFor } from "./security/quiet.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
+import { setting } from "./settings-read.ts";
 
 export const PILOT_KEY = "pilot_items";
 
@@ -18,10 +19,10 @@ const NAME = /^[A-Za-z0-9._-]+$/;
 
 /** The stored list; an unreadable value counts as no pilot. */
 export function pilotItems(db: DatabaseSync): string[] {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PILOT_KEY) as { value: string } | undefined;
-  if (!row) return [];
+  const value = setting(db, PILOT_KEY);
+  if (value === undefined) return [];
   try {
-    const v = JSON.parse(row.value) as unknown;
+    const v = JSON.parse(value) as unknown;
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
   } catch {
     return [];

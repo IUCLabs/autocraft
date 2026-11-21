@@ -2,11 +2,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { STEP_STAGE } from "../../core/push-outcome.ts";
 import { PIPELINE_DRAIN } from "../../core/rules.ts";
-import { DEFAULT_PER_DAY, KEY_ENABLED, LIMIT_STEPS } from "../../runner/autopilot.ts";
+import { DEFAULT_PER_DAY, KEY_AT, KEY_BY, KEY_ENABLED, LIMIT_STEPS } from "../../runner/autopilot.ts";
 import { loadSteps } from "../../runner/steps.ts";
-
-/** The settings src/runner/autopilot.ts keeps the switch's last change in. */
-const KEY_BY = "pipeline_changed_by", KEY_AT = "pipeline_changed_at";
 
 export type PipelineSwitch = { enabled: boolean; draining: boolean; changedBy: string | null; changedAt: string | null };
 

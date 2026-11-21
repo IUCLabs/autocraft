@@ -17,6 +17,7 @@ import { acceptedModels, familyOf, inferenceMode, isTier } from "./mode.ts";
 import type { Tier } from "./protocol.ts";
 import { CALLER_STALE_MS } from "./room.ts";
 import { scaled } from "./time-scale.ts";
+import { setting } from "../settings-read.ts";
 
 /** Setting: minutes a pick counts; 0 means until it ends otherwise. */
 export const PICK_MINUTES_KEY = "remote_pick_minutes";
@@ -26,7 +27,7 @@ const PICK_MINUTES_MAX = 24 * 60;
 export const PICKS_MAX = 8;
 
 export function pickMinutes(db: DatabaseSync): number {
-  const v = (prep(db, "SELECT value FROM main.settings WHERE key = ?").get(PICK_MINUTES_KEY) as { value: string } | undefined)?.value;
+  const v = setting(db, PICK_MINUTES_KEY);
   const n = Number(v);
   return v !== undefined && Number.isInteger(n) && n >= 0 && n <= PICK_MINUTES_MAX ? n : PICK_MINUTES_DEFAULT;
 }

@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { TERMINAL, cancelTask } from "./tasks.ts";
+import { setting } from "../settings-read.ts";
 
 export const BUILD_FEATURES = ["screenshots", "push-tests", "batch-build", "scan-tests", "nightly", "pr-builds"] as const;
 export type BuildFeature = (typeof BUILD_FEATURES)[number];
@@ -17,7 +18,7 @@ export const isFeature = (s: unknown): s is BuildFeature => typeof s === "string
 const keyOf = (f: BuildFeature, repo?: string): string => (repo ? `build_feature:${f}:${repo}` : `build_feature:${f}`);
 
 const read = (db: DatabaseSync, key: string): boolean =>
-  (db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value === "on";
+  setting(db, key) === "on";
 
 /** Without `repo` a repo-scoped feature reports its global switch; callers that loop repos must pass the repo. */
 export function featureOn(db: DatabaseSync, f: BuildFeature, repo?: string): boolean {

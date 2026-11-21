@@ -10,6 +10,7 @@ import { JEV_PARALLEL_DEFAULT } from "../prompts/index.ts";
 import { loginInfo } from "./login.ts";
 import { credentialsNearExpiry, tokenView } from "./token.ts";
 import { boxAccounts, iso, readUsage, type BoxAccount, type Reading } from "./box.ts";
+import { setting } from "../settings-read.ts";
 
 export const USAGE_PAUSE_KEY = "usage_pause";
 export type UsagePause = { fiveHour: number; weekly: number };
@@ -217,7 +218,7 @@ export const JEV_PARALLEL_MAX = 100;
 
 /** Jev calls at once (Jev has no accounts, so no slots limit it). */
 export function jevParallel(db: DatabaseSync): number {
-  const v = Number((db.prepare("SELECT value FROM settings WHERE key = ?").get(JEV_PARALLEL_KEY) as { value: string } | undefined)?.value);
+  const v = Number(setting(db, JEV_PARALLEL_KEY));
   return Number.isInteger(v) && v >= 1 && v <= JEV_PARALLEL_MAX ? v : JEV_PARALLEL_DEFAULT;
 }
 

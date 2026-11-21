@@ -33,6 +33,21 @@ const str = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
 const score: Cmp = (a, b) => (a.facts.score === null ? 1 : 0) - (b.facts.score === null ? 1 : 0) || (b.facts.score ?? 0) - (a.facts.score ?? 0);
 const prFirst: Cmp = (a, b) => (b.facts.kind === "pr" ? 1 : 0) - (a.facts.kind === "pr" ? 1 : 0);
 
+/** The sort keys of the items, keyed by `repo#number`: one query. */
+function sortKeysOf(db: DatabaseSync, items: { repo: string; number: number }[]): Map<string, Keys> {
+  const rows = db.prepare(`SELECT i.repo || '#' || i.number AS ref, COALESCE(i.created_at, '') AS created, COALESCE(i.updated_at, '') AS updated
+    FROM json_each(?) j JOIN items i ON i.repo = j.value ->> 0 AND i.number = j.value ->> 1`).all(JSON.stringify(items.map((x) => [x.repo, x.number]))) as (Keys & { ref: string })[];
+  return new Map(rows.map((r) => [r.ref, { created: r.created, updated: r.updated }]));
+}
+
+/** The sort keys of every item of a PlanSet, read once per set. */
+const planKeys = new WeakMap<PlanSet, Map<string, Keys>>();
+function planSortKeys(db: DatabaseSync, plans: PlanSet): Map<string, Keys> {
+  let m = planKeys.get(plans);
+  if (!m) planKeys.set(plans, (m = sortKeysOf(db, plans.items.map((p) => p.facts))));
+  return m;
+}
+
 /** Items the Plans say are due for `kind`, one entry per due action. */
 export function plannedItems(db: DatabaseSync, kind: ActionKind, opts: PlannedOptions = {}): PlannedItem[] {
   const out: PlannedItem[] = [];
@@ -45,8 +60,8 @@ export function plannedItems(db: DatabaseSync, kind: ActionKind, opts: PlannedOp
     for (const action of plan.actions) if (action.kind === kind && (opts.bucket === undefined || bucketOf(action) === opts.bucket)) out.push({ facts, plan, action });
   }
   if (out.length < 2) return out;
-  const key = db.prepare("SELECT COALESCE(created_at, '') AS created, COALESCE(updated_at, '') AS updated FROM items WHERE repo = ? AND number = ?");
-  const keys = new Map<PlannedItem, Keys>(out.map((p) => [p, key.get(p.facts.repo, p.facts.number) as Keys]));
+  const stored = opts.plans ? planSortKeys(db, opts.plans) : sortKeysOf(db, out.map((p) => p.facts));
+  const keys = new Map<PlannedItem, Keys>(out.map((p) => [p, stored.get(`${p.facts.repo}#${p.facts.number}`)!]));
   const created: Cmp = (a, b) => str(keys.get(a)!.created, keys.get(b)!.created);
   const updatedDesc: Cmp = (a, b) => str(keys.get(b)!.updated, keys.get(a)!.updated);
   let cmp: Cmp;

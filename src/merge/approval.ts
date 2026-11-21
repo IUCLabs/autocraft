@@ -3,15 +3,16 @@
 // include ones we do not maintain, so merging is opt-in per repo.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { setting } from "../settings-read.ts";
 
 export type MergeApproval = { by: string; at: string };
 const key = (repo: string) => `merge_approved:${repo}`;
 
 export function mergeApprovalOf(db: DatabaseSync, repo: string): MergeApproval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+  const value = setting(db, key(repo));
+  if (value === undefined) return null;
   try {
-    return JSON.parse(row.value) as MergeApproval;
+    return JSON.parse(value) as MergeApproval;
   } catch {
     return null;
   }

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { isBotCommand, isBotLogin } from "./bots.ts";
-import { activeBlockers, storedBlockedBy } from "./blockers.ts";
+import { blockersLoader, storedBlockedBy } from "./blockers.ts";
 import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
@@ -14,6 +14,7 @@ import { ownerOf } from "../owners.ts";
 import type { Exec } from "../fixup/git.ts";
 import { pipelineMe, setPipelineLogin } from "../github/pipeline-account.ts";
 import { allOwnLogins, ownLogins } from "../github/identity.ts";
+import { setting } from "../settings-read.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
 const LOGIN_KEY = "pipeline_login";
@@ -46,7 +47,7 @@ const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}
 const sec = (t: string): string => t.slice(0, 19);
 
 export function pipelineLogin(db: DatabaseSync): string {
-  return (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(LOGIN_KEY) as { value: string } | undefined)?.value ?? "";
+  return setting(db, LOGIN_KEY) ?? "";
 }
 
 /** Authors whose words trigger a new review: the PR's author and people tied to the repository. Bot accounts never do. */
@@ -318,12 +319,18 @@ export function changedSince(state: { newest: string; hash: string } | undefined
 const day = () => new Date().toISOString().slice(0, 10);
 const rerunKey = (repo: string, number: number) => `${RERUN_KEY}${repo}#${number}:${day()}`;
 const reruns = (db: DatabaseSync, repo: string, number: number): number =>
-  Number((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(rerunKey(repo, number)) as { value: string } | undefined)?.value ?? 0);
+  Number(setting(db, rerunKey(repo, number)) ?? 0);
 
 /** Whether an operator request or the merge-time discussion check marked the PR stale after `since` (such re-reviews are not counted). */
 export function markedStaleSince(db: DatabaseSync, repo: string, number: number, since: string): boolean {
-  const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(staleKey(repo, number)) as { value: string } | undefined)?.value;
+  const v = setting(db, staleKey(repo, number));
   return !!v && v > since;
+}
+
+/** markedStaleSince() for every PR, with the marks read in one query. */
+export function staleMarksSince(db: DatabaseSync): (repo: string, number: number, since: string) => boolean {
+  const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key, m.value]));
+  return (repo, number, since) => { const v = marks.get(staleKey(repo, number)); return !!v && v > since; };
 }
 
 /** Counts a same-head re-review against the PR's daily cap and forgets earlier days. */
@@ -353,13 +360,15 @@ export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false
     if (!todays.has(k)) todays.set(k, reruns(db, r.repo, r.number));
     return todays.get(k)! >= MAX_RERUNS_PER_DAY;
   };
+  let loaded: ReturnType<typeof blockersLoader> | undefined;
+  const blockers = () => (loaded ??= blockersLoader(db));
   for (const r of rows) {
     const ref = `${r.repo}#${r.number}`;
     const marked = (marks.get(ref) ?? "") > r.at;
     // On a head that has a review, only a maintainer's words (or an operator's request) make it stale: the PR author's comments feed the next review but do not start one.
     const talked = maintainerSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
     // A hold that waited for other items is reviewed once when none is open any more.
-    const unblocked = !!r.blocked_by && storedBlockedBy(r.blocked_by).length > 0 && activeBlockers(db, ref, r.blocked_by, r.at).length === 0;
+    const unblocked = !!r.blocked_by && storedBlockedBy(r.blocked_by).length > 0 && blockers().active(ref, r.blocked_by, r.at).length === 0;
     if (!marked && !unblocked && !((talked || r.rebased === 1) && !(respectCap && capped(r)))) continue;
     out.add(`${ref}@${r.head_oid}`);
   }

@@ -26,7 +26,20 @@ export type OpenPr = { number: number; closes: boolean };
  * (a bot's PR, such as a dependency update, is not asked about its mentions). A PR that closes an issue wins over one that mentions it.
  */
 export function issuesWithOpenPr(db: DatabaseSync, repo: string): Map<number, OpenPr> {
-  const prs = db.prepare("SELECT number, author, body, title, closing_issues FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' ORDER BY number DESC").all(repo) as { number: number; author: string | null; body: string | null; title: string | null; closing_issues: string | null }[];
+  return openPrMap(db.prepare("SELECT number, author, body, title, closing_issues FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' ORDER BY number DESC").all(repo) as OpenPrRow[]);
+}
+
+/** issuesWithOpenPr() for every repo, from one reading of the open PRs. */
+export function issuesWithOpenPrAll(db: DatabaseSync): (repo: string) => Map<number, OpenPr> {
+  const by = new Map<string, OpenPrRow[]>();
+  for (const p of db.prepare("SELECT repo, number, author, body, title, closing_issues FROM items WHERE kind = 'pr' AND state = 'OPEN' ORDER BY repo, number DESC").all() as (OpenPrRow & { repo: string })[])
+    (by.get(p.repo) ?? by.set(p.repo, []).get(p.repo)!).push(p);
+  return (repo) => openPrMap(by.get(repo) ?? []);
+}
+
+type OpenPrRow = { number: number; author: string | null; body: string | null; title: string | null; closing_issues: string | null };
+
+function openPrMap(prs: OpenPrRow[]): Map<number, OpenPr> {
   const out = new Map<number, OpenPr>();
   for (const p of prs) {
     const text = withoutLinks(`${p.title ?? ""}\n${p.body ?? ""}`);

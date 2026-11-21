@@ -13,6 +13,7 @@ import { SHARED_NAME } from "./command.ts";
 import { checkoutHeld, touchCheckout } from "./checkout.ts";
 import { checkoutForCommit, sandboxAvailable } from "./index.ts";
 import { envVar } from "../env.ts";
+import { setting } from "../settings-read.ts";
 
 export const EXCLUDE_KEY = "workspace_exclude";
 export const EXCLUDE_MAX = 100;
@@ -21,10 +22,10 @@ const clean = (names: unknown[]): string[] => [...new Set(names.map((n) => Strin
 
 /** Repositories left out of the workspace (sorted); none until the setting is saved. */
 export function workspaceExcluded(db: DatabaseSync): string[] {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(EXCLUDE_KEY) as { value: string } | undefined;
-  if (!row) return [];
+  const value = setting(db, EXCLUDE_KEY);
+  if (value === undefined) return [];
   try {
-    const v = JSON.parse(row.value) as unknown;
+    const v = JSON.parse(value) as unknown;
     if (Array.isArray(v) && v.every((x) => typeof x === "string" && SHARED_NAME.test(x))) return clean(v);
   } catch { /* unreadable: nothing is excluded */ }
   return [];

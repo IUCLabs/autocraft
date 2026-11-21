@@ -3,15 +3,16 @@
 // (src/dash/api/admin.ts); pushing is opt-in per repo like merging.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { setting } from "../settings-read.ts";
 
 export type PushApproval = { by: string; at: string };
 const key = (repo: string) => `push_approved:${repo}`;
 
 export function pushApprovalOf(db: DatabaseSync, repo: string): PushApproval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+  const value = setting(db, key(repo));
+  if (value === undefined) return null;
   try {
-    return JSON.parse(row.value) as PushApproval;
+    return JSON.parse(value) as PushApproval;
   } catch {
     return null;
   }

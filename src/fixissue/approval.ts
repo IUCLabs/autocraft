@@ -2,15 +2,16 @@
 // comment on the issue). Set only from the dashboard by an operator (src/dash/api/admin.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { setting } from "../settings-read.ts";
 
 export type FixIssueApproval = { by: string; at: string };
 const key = (repo: string) => `fixissue_approved:${repo}`;
 
 export function fixIssueApprovalOf(db: DatabaseSync, repo: string): FixIssueApproval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+  const value = setting(db, key(repo));
+  if (value === undefined) return null;
   try {
-    return JSON.parse(row.value) as FixIssueApproval;
+    return JSON.parse(value) as FixIssueApproval;
   } catch {
     return null;
   }

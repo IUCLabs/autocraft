@@ -20,6 +20,7 @@ import { loadItemFact } from "./issue-facts.ts";
 import type { ActionKind, PrFacts } from "./plan.ts";
 import { identityOfDecision, type Identity } from "../github/identity.ts";
 import { disputeOn } from "../answers/hold.ts";
+import { setting } from "../settings-read.ts";
 
 declare const guarded: unique symbol;
 
@@ -142,7 +143,7 @@ export async function guardItem(db: DatabaseSync, ref: Ref, action: ItemWant, by
 
 /** The approvals of a repo and the global switch, read now. */
 export function repoApprovals(db: DatabaseSync, repo: string): Parameters<typeof gateRepo>[0] {
-  const on = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
+  const on = pipelineWrites(setting(db, "pipeline_enabled"));
   return {
     merge: !!mergeApprovalOf(db, repo), push: pushApprovalOf(db, repo) !== null, comment: commentApprovalOf(db, repo) !== null, ci: ciApprovalOf(db, repo) !== null,
     labels: labelsApprovalOf(db, repo) !== null, "fix-issue": fixIssueApprovalOf(db, repo) !== null, "main-fix": mainFixApprovalOf(db, repo) !== null, pipelineOn: on,

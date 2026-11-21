@@ -2,15 +2,16 @@
 // operator (src/dash/api/admin.ts); the CLI reads it and has no way to set it.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { setting } from "../settings-read.ts";
 
 export type Approval = { by: string; at: string };
 const key = (repo: string) => `labels_approved:${repo}`;
 
 export function approvalOf(db: DatabaseSync, repo: string): Approval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+  const value = setting(db, key(repo));
+  if (value === undefined) return null;
   try {
-    return JSON.parse(row.value) as Approval;
+    return JSON.parse(value) as Approval;
   } catch {
     return null;
   }

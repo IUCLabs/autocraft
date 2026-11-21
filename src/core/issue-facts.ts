@@ -19,7 +19,7 @@ import { actionable } from "../decisions.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { TERMINAL } from "../build/tasks.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
-import { issuesWithOpenPr, type OpenPr, notRustKey, textHash } from "../fixissue/candidates.ts";
+import { issuesWithOpenPrAll, type OpenPr, notRustKey, textHash } from "../fixissue/candidates.ts";
 import { headOf, scopeAnswers, unsettledScope } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql } from "../pilot.ts";
@@ -27,6 +27,7 @@ import { holdMap } from "../outside.ts";
 import { lockLiveSql } from "../answers/hold.ts";
 import { isPreparing, prepareStateSql, utcDayStart, type PrepareColumns } from "../decide/prepared.ts";
 import type { ItemFacts } from "./plan.ts";
+import { setting, hasSetting } from "../settings-read.ts";
 
 export type { ItemFacts } from "./plan.ts";
 
@@ -43,14 +44,14 @@ export type ItemLoadOptions = {
 };
 
 type Row = {
-  repo: string; number: number; kind: "pr" | "issue"; state: string; title: string | null; assignees: string | null; is_draft: number | null; updated_at: string | null; labels: string | null;
+  repo: string; number: number; kind: "pr" | "issue"; state: string; title: string | null; author: string | null; assignees: string | null; is_draft: number | null; updated_at: string | null; labels: string | null;
   embed_hash: string | null; class_hash: string | null; class_scheme: string | null; score: number | null;
   in_pilot: number; not_integration: number; held_backlog: number; held_dup: number;
   pr_hash: string | null; e_hash: string | null; scan_hash: string | null; stage: string | null; impact: string | null;
   a_state: string | null; a_pr: string | null; a_hash: string | null; a_head: string | null; a_base: string | null; h_state: string | null; b_state: string | null;
 };
 
-const SELECT = `SELECT i.repo, i.number, i.kind, i.state, i.title, i.assignees, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
+const SELECT = `SELECT i.repo, i.number, i.kind, i.state, i.title, i.author, i.assignees, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
     ${fastScoreSql("i.repo", "i.number", "r.score")} AS score,
     ${pilotSql("i")} AS in_pilot, ${notOwnIntegrationSql("i")} AS not_integration, ${backlogHeldSql("i")} AS held_backlog,
     (EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
@@ -83,9 +84,10 @@ type Cls = { classifier: string; at: string; type_label: string; flags: string |
 export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): ItemFacts[] {
   const now = opts.now ?? Date.now();
   const model = opts.model ?? embedderId(modelName());
-  const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
+  const pipelineOn = pipelineWrites(setting(db, "pipeline_enabled"));
 
   // Values read once for all items.
+  const tripped = activeTrips(db);
   const run = opts.run !== undefined ? opts.run : latestRun(db);
   const byItem = new Map<string, Cls[]>();
   if (run) {
@@ -100,7 +102,9 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const operatorAnswers = scopeAnswers(db, true);
   const unsettled = unsettledScope(db);
   const latestScope = new Map<string, { answer: string | null; byOperator: boolean }>(), securityIds = new Set<string>();
-  const head = db.prepare("SELECT kind, head_oid FROM items WHERE repo = ? AND number = ?");
+  // Kind and head of every item an open decision is about.
+  const heads = new Map((db.prepare(`SELECT DISTINCT i.repo || '#' || i.number AS k, i.kind, i.head_oid FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
+    WHERE d.answer IS NULL`).all() as { k: string; kind: string; head_oid: string | null }[]).map((r) => [r.k, r]));
   const openScope = new Set<string>(), covered = new Set<string>(), recommend = new Map<string, { failures: number; failedAt: string | null }>();
   for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, prepared_at, prepared_head, prepare_failed_head, recommend_failures, recommend_failed_at, prepared_discussion, prepare_requested_at, ${prepareStateSql("decisions")}, ${lockLiveSql("decisions")} AS locked FROM decisions ORDER BY asked_at, id`).all(utcDayStart(now)) as
     (PrepareColumns & { locked: number; id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null })[]) {
@@ -113,7 +117,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     // Any open decision of one item that the prepare step has not covered at the item's current head (the item's fewest failed tries win).
     if (d.answer === null && d.number !== null) {
       const k = `${d.repo}#${d.number}`;
-      const it = head.get(d.repo, d.number) as { kind: string; head_oid: string | null } | undefined;
+      const it = heads.get(k);
       const h = it?.kind === "pr" ? it.head_oid : null;
       // A decision whose press is running or queued is locked and not prepared.
       if (isPreparing(d, h) && !d.locked) {
@@ -178,24 +182,30 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     { repo: string; number: number; head_oid: string; i_head: string | null; updated_at: string | null; c_head: string | null; c_at: string | null; asked: number }[])
     closeReview.set(`${r.repo}#${r.number}`, { head: r.head_oid, atHead: headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid, asked: !!r.asked });
   const repoMemo = new Map<string, { comment: boolean; fix: boolean; pub: boolean; notRust: boolean; openPrs: Map<number, OpenPr> }>();
+  // Public repos and open PRs, read once for every repo on first use.
+  let tables: { pub: Set<string>; openPrs: (repo: string) => Map<number, OpenPr> } | undefined;
   const repoOf = (repo: string) => {
     let m = repoMemo.get(repo);
     if (!m) {
-      m = { comment: commentApprovalOf(db, repo) !== null, fix: fixIssueApprovalOf(db, repo) !== null, pub: !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo),
-        notRust: !!db.prepare("SELECT 1 FROM settings WHERE key = ?").get(notRustKey(repo)), openPrs: issuesWithOpenPr(db, repo) };
+      const t = (tables ??= { pub: new Set((db.prepare("SELECT name FROM repos WHERE visibility = 'public'").all() as { name: string }[]).map((x) => x.name)), openPrs: issuesWithOpenPrAll(db) });
+      m = { comment: commentApprovalOf(db, repo) !== null, fix: fixIssueApprovalOf(db, repo) !== null, pub: t.pub.has(repo),
+        notRust: hasSetting(db, notRustKey(repo)), openPrs: t.openPrs(repo) };
       repoMemo.set(repo, m);
     }
     return m;
   };
-  const textOf = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?");
+  // Item text, read only for the rows that need it (a skipped Fix attempt, a missing text hash, a classifier hash to recompute), in one query.
+  type Text = { repo: string; number: number; kind: string; title: string | null; body: string | null; additions: number | null; deletions: number | null; changed_files: number | null; author_association: string | null };
+  const classed = (ref: string): boolean => (byItem.get(ref) ?? []).some((c) => c.classifier === "jev" || (c.classifier === "haiku" && c.input_hash !== null));
+  const needText = rows.filter((r) => r.a_state === "skipped" || r.embed_hash === null || ((r.class_scheme === SCHEME_ID ? r.class_hash : null) === null && classed(`${r.repo}#${r.number}`)));
+  const texts = new Map(needText.length ? (db.prepare(`SELECT i.repo, i.number, i.kind, i.title, i.body, i.additions, i.deletions, i.changed_files, i.author_association
+    FROM json_each(?) j JOIN items i ON i.repo = j.value ->> 0 AND i.number = j.value ->> 1`).all(JSON.stringify(needText.map((r) => [r.repo, r.number]))) as Text[]).map((t) => [`${t.repo}#${t.number}`, t]) : []);
   const mirrored = db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ? AND kind = 'pr'");
   // The fix PR we just opened counts as open until a sync mirrors it: the mirror's open-PR list doesn't have it yet.
   const ownPrUnmirrored = (state: string | null, url: string | null): OpenPr | null => {
     const m = state === "pr-opened" ? /\/([^/]+)\/pull\/(\d+)$/.exec(url ?? "") : null;
     return m && !mirrored.get(m[1]!, Number(m[2])) ? { number: Number(m[2]), closes: true } : null;
   };
-  const authorOf = db.prepare("SELECT author FROM items WHERE repo = ? AND number = ?");
-  const body = db.prepare("SELECT repo, number, kind, title, body, additions, deletions, changed_files, author_association FROM items WHERE repo = ? AND number = ?");
 
   return rows.map((r): ItemFacts => {
     const ref = `${r.repo}#${r.number}`;
@@ -217,8 +227,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     // The classifier's input hash: stored on the row, recomputed when it was made under another scheme.
     let classHash = r.class_scheme === SCHEME_ID ? r.class_hash : null;
     if (classHash === null && (j || h)) {
-      const b = body.get(r.repo, r.number) as { repo: string; number: number; kind: string; title: string | null; body: string | null; additions: number | null; deletions: number | null; changed_files: number | null; author_association: string | null };
-      classHash = classifyHash(b);
+      classHash = classifyHash(texts.get(ref)!);
     }
     const unsureFlag = (key: string, yes: number): boolean => {
       const p = (json<Record<string, unknown> | null>(j?.probs ?? null, null) ?? {})[key];
@@ -231,10 +240,10 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     } : null;
     const haiku = h ? { at: h.at, aloneCurrent: h.input_hash !== null && h.input_hash === classHash && (!j || h.at > j.at) } : null;
     // Sync and Embed write the text hash; one not written yet is computed here.
-    const embedHash = r.embed_hash ?? (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return hashOfText(b.title, b.body); })();
+    const embedHash = r.embed_hash ?? (() => { const b = texts.get(ref)!; return hashOfText(b.title, b.body); })();
     const note = labeled.get(ref) ?? null;
     return {
-      repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", assignment: assigned(ref, r.assignees), now, pipelineOn, tripped: activeTrips(db), inFlight: r.state === "OPEN" && (["retry", "testing", "passed"].includes(r.a_state ?? "") || (r.kind === "pr" && own.prs.has(ref) && own.isOwn(r.repo, (authorOf.get(r.repo, r.number) as { author: string | null } | undefined)?.author ?? null))), draft: !!r.is_draft,
+      repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, inFlight: r.state === "OPEN" && (["retry", "testing", "passed"].includes(r.a_state ?? "") || (r.kind === "pr" && own.prs.has(ref) && own.isOwn(r.repo, r.author))), draft: !!r.is_draft,
       inScope: !!r.in_pilot, ...(outsideHolds.has(ref) ? { outsideHold: outsideHolds.get(ref)! } : {}), integration: !r.not_integration,
       held: r.held_backlog ? "backlog" : r.held_dup ? "duplicate" : null,
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo), commentApproved: repoOf(r.repo).comment, fixIssueApproved: repoOf(r.repo).fix },
@@ -252,7 +261,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       fix: {
         attempt: r.a_state === null ? null : {
           state: r.a_state,
-          textChanged: r.a_state === "skipped" && (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return textHash(b.title ?? "", b.body ?? "") !== r.a_hash; })(),
+          textChanged: r.a_state === "skipped" && (() => { const b = texts.get(ref)!; return textHash(b.title ?? "", b.body ?? "") !== r.a_hash; })(),
           headDone: r.h_state !== null && (TERMINAL as string[]).includes(r.h_state),
           baseDone: r.a_base === null || (r.b_state !== null && (TERMINAL as string[]).includes(r.b_state)),
         },

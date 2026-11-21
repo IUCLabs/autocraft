@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { prep } from "../sql-cache.ts";
 import { audit } from "../dash/audit.ts";
 import { EFFORTS, type Effort, type HarnessId, type Tier } from "./protocol.ts";
+import { setting } from "../settings-read.ts";
 
 export const INFERENCE_MODES = ["server", "user-local"] as const;
 export type InferenceMode = (typeof INFERENCE_MODES)[number];
@@ -13,7 +14,7 @@ export const INFERENCE_KEY = "inference";
 export const isInferenceMode = (v: unknown): v is InferenceMode => typeof v === "string" && (INFERENCE_MODES as readonly string[]).includes(v);
 
 export const inferenceMode = (db: DatabaseSync): InferenceMode =>
-  (prep(db, "SELECT value FROM main.settings WHERE key = ?").get(INFERENCE_KEY) as { value: string } | undefined)?.value === "user-local" ? "user-local" : "server";
+  setting(db, INFERENCE_KEY) === "user-local" ? "user-local" : "server";
 
 /** Sets the mode and audits the change as `by`; false when it already was `mode`. */
 export function setInferenceMode(db: DatabaseSync, mode: InferenceMode, by: string): boolean {
@@ -43,7 +44,7 @@ export const DEFAULT_REMOTE_MODELS: Record<Tier, string[]> = { top: ["opus", COD
 const FAMILY = /^[a-z0-9][a-z0-9.-]{0,39}$/;
 
 const rawModels = (db: DatabaseSync): Record<string, unknown> => {
-  const raw = (prep(db, "SELECT value FROM main.settings WHERE key = ?").get(REMOTE_MODELS_KEY) as { value: string } | undefined)?.value;
+  const raw = setting(db, REMOTE_MODELS_KEY);
   if (!raw) return {};
   try {
     const v = JSON.parse(raw) as unknown;

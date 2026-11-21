@@ -28,6 +28,18 @@ export function longLivedOf(db: DatabaseSync, repo: string): LongLived {
   return (branch) => names.has(branch) || LONG_LIVED.test(branch);
 }
 
+/** longLivedOf() for every repo, from one reading of the default branches and PR branches. */
+export function longLivedAll(db: DatabaseSync): (repo: string) => LongLived {
+  const names = new Map<string, Set<string>>();
+  const add = (repo: string, branch: string): void => { (names.get(repo) ?? names.set(repo, new Set()).get(repo)!).add(branch); };
+  for (const r of db.prepare("SELECT name, default_branch FROM repos WHERE default_branch IS NOT NULL").all() as { name: string; default_branch: string }[]) if (r.default_branch) add(r.name, r.default_branch);
+  for (const r of db.prepare("SELECT DISTINCT repo, base_ref FROM items WHERE kind = 'pr' AND base_ref IS NOT NULL").all() as { repo: string; base_ref: string }[]) add(r.repo, r.base_ref);
+  for (const r of db.prepare(`SELECT repo, lower(head_repo) AS head_repo, head_ref FROM items WHERE kind = 'pr' AND state = 'OPEN' AND head_ref IS NOT NULL AND author_association IN ${TRUSTED}
+    GROUP BY repo, lower(head_repo), head_ref HAVING COUNT(*) > 1`).all() as { repo: string; head_repo: string | null; head_ref: string }[])
+    if (r.head_repo === `${slugOf(r.repo)}`.toLowerCase()) add(r.repo, r.head_ref);
+  return (repo) => (branch) => !!names.get(repo)?.has(branch) || LONG_LIVED.test(branch);
+}
+
 /**
  * A PR is pushable when its head is in the base repository (on a branch that isn't long-lived) or maintainers may
  * modify it. `branch` is the head branch name; a same-repo head without one is not pushable, nor is one whose author cannot write to the repository.

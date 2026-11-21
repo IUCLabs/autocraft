@@ -8,6 +8,7 @@ import { activeBatches } from "./batch-store.ts";
 import type { By } from "../core/gates.ts";
 import { runMerge, type MergeDeps, type MergeSummary } from "./index.ts";
 import { planned } from "../core/select.ts";
+import { setting } from "../settings-read.ts";
 
 export const SINGLE_MERGE_KEY = "single_merge_max";
 export const SINGLE_MERGE_DEFAULT = 3;
@@ -15,8 +16,8 @@ export const SINGLE_MERGE_LIMIT = 100;
 
 /** Most ready PRs of a repo that merge one at a time; above it, or at 0, they go through a batch. */
 export function singleMergeMax(db: DatabaseSync): number {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(SINGLE_MERGE_KEY) as { value: string } | undefined;
-  const n = row === undefined ? NaN : Number(row.value);
+  const value = setting(db, SINGLE_MERGE_KEY);
+  const n = value === undefined ? NaN : Number(value);
   return Number.isInteger(n) && n >= 0 && n <= SINGLE_MERGE_LIMIT ? n : SINGLE_MERGE_DEFAULT;
 }
 
