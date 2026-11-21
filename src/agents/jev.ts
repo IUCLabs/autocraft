@@ -8,6 +8,7 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { jevCloudflareConfig } from "./jev-cloudflare.ts";
 import { audit } from "../dash/audit.ts";
 
 export const JEV_ENABLED_KEY = "jev_enabled";
@@ -31,8 +32,9 @@ export function jevOutage(db: DatabaseSync): JevOutage | null {
 
 const clear = (db: DatabaseSync): void => void db.prepare("DELETE FROM settings WHERE key = ?").run(JEV_UNAVAILABLE_KEY);
 
-/** True when an executable `jev` is on PATH. */
+/** True when Jev can be reached: Cloudflare Workers AI is configured, or an executable `jev` is on PATH. */
 export function jevInstalled(): boolean {
+  if (jevCloudflareConfig()) return true;
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
     try { accessSync(join(dir, "jev"), constants.X_OK); return true; } catch { /* next directory */ }

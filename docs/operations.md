@@ -526,7 +526,7 @@ It reads the same variables as the CLI (`AUTOCRAFT_DB` and the rest), plus:
 | `AUTOCRAFT_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/autocraft-logs`. |
 | `AUTOCRAFT_EXTRA_STEPS` | A module exporting `steps: StepDef[]` that is added to the step list, for tests and development (`test/runner-steps.ts` has fake steps). Set it for the dashboard and the runner alike, or not at all. |
 
-The classify steps call `jev` and `claude`, so the runner's `PATH` must reach them.
+The classify steps call `jev` and `claude`, so the runner's `PATH` must reach them. Where `jev` is not installed (containers), set `AUTOCRAFT_JEV_CLOUDFLARE_ACCOUNT` and `AUTOCRAFT_JEV_CLOUDFLARE_TOKEN_FILE` (a mode 0600 file holding a Cloudflare API token) to send every Jev call to Cloudflare Workers AI instead; `AUTOCRAFT_JEV_CLOUDFLARE_MODEL` overrides the model (default `typesafe/jev-1.14.0`). A 401 or 403 from Cloudflare, or an unreadable token file, records the same account outage as a rejected key; 429, 5xx and network errors fail only that call.
 
 To run it as a systemd user service, fill in the placeholders of `deploy/craft-runner.service`, copy it to `~/.config/systemd/user/`, and run `systemctl --user daemon-reload && systemctl --user enable --now craft-runner`. Stopping the service stops running jobs; they show as failed and can be started again.
 
@@ -778,7 +778,7 @@ docker build -f deploy/container/Dockerfile -t autocraft .
 docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://autocraft.example.com autocraft-server dashboard
 ```
 
-The image is built on Docker Hardened Images for Node 26 on Debian 13: the shell-less runtime variant receives a prepared file tree with `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It contains `gh` (pinned by checksum; authenticate with the `GH_TOKEN` environment variable) but not `jev`; while it is missing, Haiku does Jev's work (the runner records the outage "not installed" and checks the `PATH` on every pass), and a derived image that adds `jev` restores it. `--build-arg SOURCE_COMMIT=<sha>` records the commit the dashboard shows (the image has no `.git`). `tini` is PID 1 and reaps the jobs' child processes.
+The image is built on Docker Hardened Images for Node 26 on Debian 13: the shell-less runtime variant receives a prepared file tree with `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It contains `gh` (pinned by checksum; authenticate with the `GH_TOKEN` environment variable) but not `jev`; Jev is reached through Cloudflare Workers AI when `AUTOCRAFT_JEV_CLOUDFLARE_*` is set, and while it is neither, Haiku does Jev's work (the runner records the outage "not installed" and checks the `PATH` on every pass), and a derived image that adds `jev` restores it. `--build-arg SOURCE_COMMIT=<sha>` records the commit the dashboard shows (the image has no `.git`). `tini` is PID 1 and reaps the jobs' child processes.
 
 The first argument picks the process, exactly as the systemd units start them:
 

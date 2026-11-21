@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
+import { askJevCloudflare, jevCloudflareConfig } from "../agents/jev-cloudflare.ts";
 import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
 import { accountConfigDir, itemRepos, NoTakerError, poolRoom, repoBatches, startClaudeRun, type PoolRoom, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
 import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
@@ -777,7 +778,9 @@ export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: str
   const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
   const start = now();
   try {
-    const r = await runner("jev", JEV_ARGS, body, undefined, JEV_PROMPTS[id].limits.timeoutSeconds * 1000, jevEnv(), undefined, true);
+    const cf = jevCloudflareConfig();
+    const timeoutMs = JEV_PROMPTS[id].limits.timeoutSeconds * 1000;
+    const r = cf ? await askJevCloudflare(cf, body, timeoutMs) : await runner("jev", JEV_ARGS, body, undefined, timeoutMs, jevEnv(), undefined, true);
     let tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
     try {
       const j = JSON.parse(r.stdout) as { usage?: { input_tokens?: number; output_tokens?: number } };
