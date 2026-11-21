@@ -9,12 +9,12 @@ import type { CiState, TimelineEntry, DiscordInfo, ItemBar, ItemKind, ItemPrBuil
 import { statusFromItem, type ItemStatus } from "../../core/item-status.ts";
 import { triggerWhy } from "../../review/trigger.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
-import { fingerprint, context, gather, obj, arr, type Ctx, type Ev, hiddenSql, hiddenArgs } from "./trace.ts";
+import { fingerprint, rowValues, context, gather, obj, arr, type Ctx, type Ev, hiddenSql, hiddenArgs } from "./trace.ts";
 import { timelineOf } from "./item-timeline.ts";
 import { barOf } from "./item-bar.ts";
 import { discordOf } from "./discord.ts";
 import { itemCore } from "./index.ts";
-import { pushedByAutoCraft, writesOf, MATCH_WINDOW_MS, type WriteRow } from "./github-writes.ts";
+import { pushedCommits, writesOf, MATCH_WINDOW_MS, type WriteRow } from "./github-writes.ts";
 import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { preapprovalOf, preapprovalsOf } from "../../preapproval/index.ts";
 import { queueSlots } from "../../rank/position.ts";
@@ -103,7 +103,7 @@ const prBuildOf = (c: Ctx): ItemPrBuild | null => {
 async function stampOf(c: Ctx, req: Req): Promise<string> {
   const { db, repo, n, ref } = c;
   const parts: unknown[] = [fingerprint(c, "page"), c.veiled];
-  for (const sql of EXTRA) parts.push(Object.values((db.prepare(sql).get(repo, n) ?? {}) as object));
+  parts.push(...rowValues(db, EXTRA, repo, n));
   parts.push(queueSlots(db, await visibleRepos(db, req)).get(ref) ?? null, discordOf(db, repo, n), releasesOf(db, repo, n), prBuildOf(c), backlogOf(c, req));
   return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
 }
@@ -229,9 +229,10 @@ function githubOf(c: Ctx, it: Item, ev: Ev[], url: string, syncedAt: string | nu
     events.push({ id: `audit:${w.rowid}`, type: writeType(w.action), at: w.at, actor: "autocraft", body: summaryOf.get(`audit:${w.rowid}`) ?? GITHUB_ACTIONS[w.action] ?? w.action, autocraft: { as: asOf(w), historyId: `audit:${w.rowid}` } });
   }
   events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
+  const pushed = pushedCommits(db, repo, n);
   const commits = q<{ oid: string; message: string | null; author: string | null; at: string }>(db,
     "SELECT oid, message, author, MIN(committed_at, COALESCE(first_seen_at, committed_at)) AS at FROM pr_commits WHERE repo = ? AND number = ? ORDER BY at, oid", repo, n)
-    .map((m) => ({ sha: short(m.oid), message: clean(m.message ?? "", 500), author: m.author ?? "unknown", at: m.at, byAutoCraft: (!!m.author && own.has(m.author)) || pushedByAutoCraft(db, repo, n, m.oid) }));
+    .map((m) => ({ sha: short(m.oid), message: clean(m.message ?? "", 500), author: m.author ?? "unknown", at: m.at, byAutoCraft: (!!m.author && own.has(m.author)) || pushed.has(m.oid) }));
   return {
     description: clean(it.body, 6000), events, checks: it.ciChecks.filter((x) => x.state !== "none").map((x) => ({ name: x.name, state: x.state })), commits,
     files: it.files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions })), url, syncedAt,

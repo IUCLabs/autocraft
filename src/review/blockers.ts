@@ -55,6 +55,38 @@ export function activeBlockers(db: DatabaseSync, self: string, stored: string | 
   });
 }
 
+type BlockerReads = { item: Map<string, { kind: string; state: string }>; pending: Set<string>; latest: Map<string, { verdict: string; blocked_by: string | null }> };
+
+/** What openBlockers and activeBlockers read per ref, read once for many refs (keys `repo#number`). */
+function blockerReads(db: DatabaseSync, refs: string[]): BlockerReads {
+  const keys = new Map<string, [string, number]>();
+  for (const ref of refs) { const m = REF.exec(ref); if (m) keys.set(`${m[1]}#${Number(m[2])}`, [m[1]!, Number(m[2])]); }
+  const out: BlockerReads = { item: new Map(), pending: new Set(), latest: new Map() };
+  if (!keys.size) return out;
+  const arg = JSON.stringify([...keys.values()]);
+  const inRefs = "(repo, number) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?))";
+  for (const r of db.prepare(`SELECT repo, number, kind, state FROM main.items WHERE ${inRefs}`).all(arg) as { repo: string; number: number; kind: string; state: string }[]) out.item.set(`${r.repo}#${r.number}`, r);
+  for (const r of db.prepare(`SELECT DISTINCT repo, number FROM main.decisions WHERE ${inRefs} AND answer IS NULL`).all(arg) as { repo: string; number: number }[]) out.pending.add(`${r.repo}#${r.number}`);
+  for (const r of db.prepare(`SELECT repo, number, verdict, blocked_by FROM (SELECT repo, number, verdict, blocked_by, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, rowid DESC) AS k
+    FROM main.opus_reviews WHERE ${inRefs} AND verdict IS NOT NULL) WHERE k = 1`).all(arg) as { repo: string; number: number; verdict: string; blocked_by: string | null }[]) out.latest.set(`${r.repo}#${r.number}`, r);
+  return out;
+}
+
+/** activeBlockers from reads made for many reviews at once. */
+function activeFrom(reads: BlockerReads, self: string, stored: string | null | undefined, at: string, nowMs: number): string[] {
+  const refs = storedBlockedBy(stored);
+  if (!refs.length || nowMs - Date.parse(at) > BLOCKED_EXPIRES_MS) return [];
+  return refs.filter((ref) => {
+    const m = REF.exec(ref);
+    if (!m) return false;
+    const k = `${m[1]}#${Number(m[2])}`;
+    const i = reads.item.get(k);
+    if (!i || i.state !== "OPEN" || (i.kind !== "pr" && !reads.pending.has(k))) return false;
+    const l = reads.latest.get(k);
+    return !(l?.verdict === "hold" && storedBlockedBy(l.blocked_by).includes(self));
+  });
+}
+
 /** Whether any of the refs has an open decision: the wait is then on a person. */
 export function hasOpenQuestion(db: DatabaseSync, refs: readonly string[]): boolean {
   const pending = db.prepare("SELECT 1 FROM main.decisions WHERE repo = ? AND number = ? AND answer IS NULL LIMIT 1");
@@ -79,10 +111,12 @@ export function blocksIndex(db: DatabaseSync, hidden: HiddenRepos): Map<string, 
       AND o.rowid = (SELECT l.rowid FROM main.opus_reviews l WHERE l.repo = o.repo AND l.number = o.number AND l.verdict IS NOT NULL ORDER BY l.at DESC, l.rowid DESC LIMIT 1)
     ORDER BY o.repo, o.number`).all() as { repo: string; number: number; at: string; blocked_by: string }[];
   const out = new Map<string, string[]>();
-  for (const r of rows) {
-    if (isHiddenRepo(hidden, r.repo)) continue;
+  const nowMs = Date.now();
+  const shown = rows.filter((r) => !isHiddenRepo(hidden, r.repo));
+  const reads = blockerReads(db, shown.flatMap((r) => (nowMs - Date.parse(r.at) > BLOCKED_EXPIRES_MS ? [] : storedBlockedBy(r.blocked_by))));
+  for (const r of shown) {
     const self = `${r.repo}#${r.number}`;
-    for (const ref of activeBlockers(db, self, r.blocked_by, r.at)) {
+    for (const ref of activeFrom(reads, self, r.blocked_by, r.at, nowMs)) {
       const facts = out.get(ref) ?? [];
       if (facts.length < 5) facts.push(`Blocks the review of ${self}`);
       out.set(ref, facts);

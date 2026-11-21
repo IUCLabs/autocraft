@@ -75,3 +75,11 @@ export function writesOf(db: DatabaseSync, repo: string, number: number): WriteR
 export function pushedByAutoCraft(db: DatabaseSync, repo: string, number: number, oid: string): boolean {
   return db.prepare("SELECT 1 FROM audit WHERE target = ?2 AND action LIKE '%-push' AND json_extract(details, '$.state') = 'done' AND (json_extract(details, '$.commit') = ?1 OR json_extract(details, '$.sha') = ?1) LIMIT 1").get(oid, `${repo}#${number}`) !== undefined;
 }
+
+/** The commits AutoCraft pushed to the item, as `pushedByAutoCraft` finds them: the `commit` or `sha` its done audit push rows recorded. */
+export function pushedCommits(db: DatabaseSync, repo: string, number: number): Set<string> {
+  const out = new Set<string>();
+  for (const r of db.prepare("SELECT json_extract(details, '$.commit') AS c, json_extract(details, '$.sha') AS s FROM audit WHERE target = ? AND action LIKE '%-push' AND json_extract(details, '$.state') = 'done'").all(`${repo}#${number}`) as { c: unknown; s: unknown }[])
+    for (const v of [r.c, r.s]) if (typeof v === "string") out.add(v);
+  return out;
+}

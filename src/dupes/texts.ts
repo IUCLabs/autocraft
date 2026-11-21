@@ -66,6 +66,17 @@ export function textsFor(db: DatabaseSync, id: string, option: string): StoredTe
 
 export const textsHash = (texts: StoredText[]): string => createHash("sha256").update(JSON.stringify(texts)).digest("hex").slice(0, 16);
 
+/** `optionTextsOf` of many decisions in one read, by decision id; decisions without texts are left out. */
+export function optionTextsMany(db: DatabaseSync, ids: string[]): Map<string, { option: string; hash: string; texts: StoredText[] }[]> {
+  const by = new Map<string, Map<string, StoredText[]>>();
+  for (const r of db.prepare(`SELECT decision_id, option, number, step, text FROM dupe_group_texts WHERE decision_id IN (SELECT value FROM json_each(?))
+    ORDER BY decision_id, option, step = 'suggestion', number, step`).all(JSON.stringify(ids)) as ({ decision_id: string; option: string } & StoredText)[]) {
+    const opts = by.get(r.decision_id) ?? by.set(r.decision_id, new Map()).get(r.decision_id)!;
+    (opts.get(r.option) ?? opts.set(r.option, []).get(r.option)!).push({ number: r.number, step: r.step, text: r.text });
+  }
+  return new Map([...by].map(([id, opts]) => [id, [...opts].map(([option, texts]) => ({ option, hash: textsHash(texts), texts }))]));
+}
+
 /** What the decision page shows: per option, its hash and every text with the item it goes on. Empty for other decisions. */
 export function optionTextsOf(db: DatabaseSync, id: string): { option: string; hash: string; texts: StoredText[] }[] {
   const opts = (db.prepare("SELECT DISTINCT option FROM dupe_group_texts WHERE decision_id = ?").all(id) as { option: string }[]).map((r) => r.option);

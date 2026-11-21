@@ -6,14 +6,27 @@ import { audit } from "../dash/audit.ts";
 export type MainFixApproval = { by: string; at: string };
 const key = (repo: string) => `mainfix_approved:${repo}`;
 
-export function mainFixApprovalOf(db: DatabaseSync, repo: string): MainFixApproval | null {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return null;
+const parse = (value: string): MainFixApproval | null => {
   try {
-    return JSON.parse(row.value) as MainFixApproval;
+    return JSON.parse(value) as MainFixApproval;
   } catch {
     return null;
   }
+};
+
+export function mainFixApprovalOf(db: DatabaseSync, repo: string): MainFixApproval | null {
+  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
+  return row ? parse(row.value) : null;
+}
+
+/** The approvals of many repos in one read; repos without one are left out. */
+export function mainFixApprovals(db: DatabaseSync, repos: string[]): Map<string, MainFixApproval | null> {
+  const out = new Map<string, MainFixApproval | null>();
+  if (!repos.length) return out;
+  const byKey = new Map(repos.map((r) => [key(r), r]));
+  for (const row of db.prepare("SELECT key, value FROM main.settings WHERE key IN (SELECT value FROM json_each(?))").all(JSON.stringify([...byKey.keys()])) as { key: string; value: string }[])
+    out.set(byKey.get(row.key)!, parse(row.value));
+  return out;
 }
 
 // Returns false when nothing changed.

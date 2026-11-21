@@ -5,7 +5,7 @@ import type { NeedsFeedbackPage, NeedsFeedbackRow, NeedsFixPage, NeedsPage, Need
 import { listAccounts } from "../../agents/accounts.ts";
 import { getDecision, reposOf } from "../../decisions.ts";
 import { needingSql, touchesQuiet, withoutHidden } from "./decisions.ts";
-import { stageLimits } from "../../runner/autopilot.ts";
+import { zeroLimits } from "./limits.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
 import { reviewBots } from "../../review/bots.ts";
 import { HttpError } from "../server/util.ts";
@@ -130,8 +130,8 @@ export async function stopped(db: DatabaseSync, hidden: HiddenRepos): Promise<Ne
   for (const t of db.prepare("SELECT stage, reason, tripped_at FROM stage_trips WHERE active = 1 ORDER BY tripped_at").all() as { stage: string; reason: string; tripped_at: string }[])
     out.push({ id: `breaker:${t.stage}`, kind: "breaker", title: humanize(t.stage), reason: blankIfHidden(t.reason, hidden), since: t.tripped_at, resume: { type: "trip", stage: t.stage } });
   const updated = new Map((db.prepare("SELECT step, updated_at FROM stage_limits").all() as { step: string; updated_at: string | null }[]).map((r) => [r.step, r.updated_at]));
-  for (const l of await stageLimits(db))
-    if (l.perDay === 0 && !l.tripped) out.push({ id: `limit:${l.step}`, kind: "limit", title: l.title, reason: "The daily limit is 0", since: updated.get(l.step) ?? null, resume: { type: "link", to: "/pipeline" } });
+  for (const l of await zeroLimits(db))
+    out.push({ id: `limit:${l.step}`, kind: "limit", title: l.title, reason: "The daily limit is 0", since: updated.get(l.step) ?? null, resume: { type: "link", to: "/pipeline" } });
   for (const a of listAccounts(db))
     if (a.enabled && a.pausedReason) out.push({ id: `account:${a.id}`, kind: "account", title: a.label, reason: blankIfHidden(a.pausedReason, hidden), since: null, resume: { type: "link", to: "/accounts" } });
   // Targets Act stopped after repeated failures, while the answer still stands: an operator retries them from here.

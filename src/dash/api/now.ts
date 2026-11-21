@@ -8,12 +8,12 @@ import { jevEnabled, jevOutage } from "../../agents/jev.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { mainCiRepos } from "../../mainci/index.ts";
 import { pipelineRepos } from "../../pilot.ts";
-import { isQuiet } from "../../security/quiet.ts";
-import { pipelineState } from "../../runner/autopilot.ts";
+import { quietFixPrs } from "../../security/quiet.ts";
+import { pipelineSwitch, zeroLimits } from "./limits.ts";
 import { computeChecks } from "../../health-checks.ts";
 import type { Req } from "../types.ts";
-import { batchIdOf, clip, stepTitle, writeEvent } from "./trace.ts";
-import { shownLookup } from "./shown.ts";
+import { clip, stepTitle, writeEvent } from "./trace.ts";
+import { shownLater } from "./shown.ts";
 import { canSeeInternals } from "./staff.ts";
 import { blankIfHidden, hiddenRepos } from "./visible.ts";
 import { filtered, hiddenTest, isHiddenRepo, type HiddenRepos } from "../../hidden-sql.ts";
@@ -47,6 +47,27 @@ const notHidden = (col: string, hidden: HiddenRepos, nullOk = false): string =>
   filtered(hidden) ? ` AND (${nullOk ? `${col} IS NULL OR ` : ""}NOT (${hiddenTest(col, hidden).sql}))` : "";
 const hideArgs = (hidden: HiddenRepos): string[] => (filtered(hidden) ? hiddenTest("x", hidden).args : []);
 
+const groupBy = <T, K>(rows: T[], key: (r: T) => K): Map<K, T[]> => {
+  const out = new Map<K, T[]>();
+  for (const r of rows) (out.get(key(r)) ?? out.set(key(r), []).get(key(r))!).push(r);
+  return out;
+};
+/** The first `per` items of each run, by repo and number. */
+const runItems = (db: DatabaseSync, ids: number[], per: number): Map<number, { repo: string; number: number }[]> =>
+  groupBy(ids.length ? all<{ run_id: number; repo: string; number: number }>(db, `SELECT run_id, repo, number FROM (SELECT run_id, repo, number, ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY repo, number) AS k
+    FROM agent_run_items WHERE run_id IN (SELECT value FROM json_each(?))) WHERE k <= ? ORDER BY run_id, repo, number`, JSON.stringify(ids), per) : [], (r) => r.run_id);
+/** The PR numbers of each merge batch, in batch order. */
+const batchPrs = (db: DatabaseSync, ids: number[]): Map<number, { number: number }[]> =>
+  groupBy(ids.length ? all<{ batch_id: number; number: number }>(db, "SELECT batch_id, number FROM merge_batch_prs WHERE batch_id IN (SELECT value FROM json_each(?)) ORDER BY batch_id, position", JSON.stringify([...new Set(ids)])) : [], (r) => r.batch_id);
+/** Merge batch ids by repo and branch, joined by a NUL. */
+function batchIdsOf(db: DatabaseSync, keys: [string, string][]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!keys.length) return out;
+  for (const r of all<{ id: number; repo: string; branch: string }>(db, "SELECT id, repo, branch FROM main.merge_batches WHERE (repo, branch) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?)) ORDER BY id", JSON.stringify(keys)))
+    if (!out.has(`${r.repo}\0${r.branch}`)) out.set(`${r.repo}\0${r.branch}`, r.id);
+  return out;
+}
+
 // ---- health ------------------------------------------------------------------
 
 /** The health checks that are not ok, as the warnings list shows them; viewers get the short text and no checks of repos they cannot see. */
@@ -59,7 +80,7 @@ export function checkProblems(db: DatabaseSync, hidden: HiddenRepos, internals: 
 }
 
 export async function healthOf(db: DatabaseSync, hidden: HiddenRepos, internals: boolean, nowMs: number): Promise<NowHealth> {
-  const state = await pipelineState(db);
+  const state = pipelineSwitch(db);
   const out: NowProblem[] = [];
   // Repos with the pipeline off are off by design; their red mains stay on the Main CI page.
   const on = pipelineRepos(db);
@@ -72,9 +93,7 @@ export async function healthOf(db: DatabaseSync, hidden: HiddenRepos, internals:
     const why = blankIfHidden(t.reason, hidden);
     add({ id: `breaker:${t.stage}`, area: "breaker", tone: "bad", text: `${stepTitle(t.stage)} is stopped by its breaker${why ? `: ${clip(why, 120)}` : ""}`, to: "/pipeline", since: t.tripped_at });
   }
-  for (const l of state.limits) {
-    if (l.perDay === 0 && !l.tripped) add({ id: `limit:${l.step}`, area: "limit", tone: "warn", text: `${l.title} is paused (limit 0 a day)`, to: "/pipeline", since: null });
-  }
+  for (const l of await zeroLimits(db)) add({ id: `limit:${l.step}`, area: "limit", tone: "warn", text: `${l.title} is paused (limit 0 a day)`, to: "/pipeline", since: null });
 
   for (const a of listAccounts(db).filter((x) => x.enabled)) {
     if (a.auth.loggedIn === false) add({ id: `account:${a.id}`, area: "account", tone: "bad", text: `Account ${a.label} is signed out`, to: "/accounts", since: null });
@@ -129,8 +148,9 @@ const lines = (ws: Write[]): { summary: string; items: Item[]; more: number }[] 
 };
 
 function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: boolean, before: string | null, nowMs: number): Feed {
-  const shown = shownLookup(db);
-  const item = (repo: string, number: number): Item => ({ repo, number, ...shown(repo, number) });
+  // Item references get their kind, state and title in one read at the end.
+  const shown = shownLater(db);
+  const item = shown.item;
   const cut = (col: string): string => (before ? ` AND ${col} < ?` : "");
   const when: string[] = before ? [before] : [];
   let completeFrom = "";
@@ -155,14 +175,18 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
   const audit = all<{ rowid: number; at: string; login: string; action: string; target: string | null; details: string | null }>(db,
     `SELECT rowid, at, login, action, target, details FROM audit WHERE action IN (${marks(actions)})${cut("at")} ORDER BY at DESC LIMIT ?`, ...actions, ...when, SCAN);
   bound(audit);
-  for (const a of audit) {
+  const parsed = audit.map((a) => {
     let branch: string | null = null;
     try { const b = (JSON.parse(a.details ?? "{}") as { batch?: unknown }).batch; if (typeof b === "string") branch = b; } catch { /* no batch */ }
     const t = /^(.+):([^#:]+)$/.exec(a.target ?? "");
     const ref = refOf(a.target);
     const repo = ref?.repo ?? t?.[1] ?? null;
     if (t && !ref) branch = t[2]!;
-    const bid = repo && branch ? batchIdOf(db, repo, branch) : undefined;
+    return { a, ref, repo, branch };
+  });
+  const batchIds = batchIdsOf(db, parsed.flatMap((p) => (p.repo && p.branch ? [[p.repo, p.branch] as [string, string]] : [])));
+  for (const { a, ref, repo, branch } of parsed) {
+    const bid = repo && branch ? batchIds.get(`${repo}\0${branch}`) : undefined;
     if (repo && isHiddenRepo(hidden, repo)) continue;
     if (bid !== undefined && repo) {
       const k = `${bid}:${a.action}`;
@@ -191,13 +215,16 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
   const finished = all<JobRow>(db, `SELECT ${jobCols} FROM jobs WHERE state IN ('done', 'failed') AND started_at IS NOT NULL${notHidden("repo", hidden, true)}${cut("started_at")} ORDER BY started_at DESC LIMIT ?`, ...hideArgs(hidden), ...when, SCAN);
   bound(finished);
   const jobEntries = new Map<number, { entry: NowEntry; its: Set<string>; from: number; to: number }>();
+  const listed = [...running, ...finished].filter((j) => !(QUIET_STEPS.has(j.step) && j.state !== "failed"));
+  const itemsOfJob = groupBy(listed.length ? all<{ job_id: number; id: number; repo: string; number: number }>(db,
+    `SELECT job_id, id, repo, number FROM job_items WHERE job_id IN (SELECT value FROM json_each(?))${notHidden("repo", hidden)} ORDER BY id`, JSON.stringify(listed.map((j) => j.id)), ...hideArgs(hidden)) : [], (r) => r.job_id);
   for (const j of [...running, ...finished]) {
     const live = j.state === "running";
     if (QUIET_STEPS.has(j.step) && j.state !== "failed") {
       if (live && !also.includes(stepTitle(j.step))) also.push(stepTitle(j.step));
       continue;
     }
-    const its = all<{ id: number; repo: string; number: number }>(db, `SELECT id, repo, number FROM job_items WHERE job_id = ?${notHidden("repo", hidden)} ORDER BY id`, j.id, ...hideArgs(hidden));
+    const its = itemsOfJob.get(j.id) ?? [];
     const idle = !its.length && !j.items && !j.acted;
     const e = base({
       key: `job:${j.id}`, kind: "job", state: live ? "running" : j.state === "failed" ? "failed" : "done", at: j.at, endedAt: j.ended_at, title: stepTitle(j.step),
@@ -220,10 +247,12 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
   };
   // Calls and build tasks nest under a running job; those without a job stand alone.
   if (!before) {
-    for (const r of all<{ id: number; job_id: number | null; step: string; model: string; provider: string; label: string | null; started_at: string; progress: string | null; item_count: number; user_login: string | null; harness: string | null; reported_model: string | null }>(db,
+    const liveRuns = all<{ id: number; job_id: number | null; step: string; model: string; provider: string; label: string | null; started_at: string; progress: string | null; item_count: number; user_login: string | null; harness: string | null; reported_model: string | null }>(db,
       `SELECT r.id, r.job_id, r.step, r.model, r.provider, COALESCE(a.label, r.account_id) AS label, r.started_at, r.progress, r.item_count, r.user_login, r.harness, r.reported_model
-       FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE r.state = 'running'${hiddenRuns} ORDER BY r.id`, ...hideArgs(hidden))) {
-      const its = all<{ repo: string; number: number }>(db, "SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT ?", r.id, PER_KIND);
+       FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE r.state = 'running'${hiddenRuns} ORDER BY r.id`, ...hideArgs(hidden));
+    const itemsOfRun = runItems(db, liveRuns.map((r) => r.id), PER_KIND);
+    for (const r of liveRuns) {
+      const its = itemsOfRun.get(r.id) ?? [];
       placeChild(r.job_id, base({
         key: `run:${r.id}`, kind: "call", state: "running", at: r.started_at, title: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : r.user_login ? r.model : operator ? `${r.model} on ${r.label ?? "an unknown account"}` : r.model, progress: blankIfHidden(r.progress, hidden) || null,
         item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.map((i) => item(i.repo, i.number)), itemCount: Math.max(r.item_count, its.length), event: its[0] ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
@@ -239,9 +268,11 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
         item: one, items: one ? [one] : [], itemCount: one ? 1 : 0, event: one ? `task:${t.id}` : null, detail: `/envs/${t.id}`,
       }));
     }
-    for (const b of all<{ id: number; repo: string; branch: string; state: string; created_at: string; summary: string | null }>(db,
-      `SELECT id, repo, branch, state, created_at, summary FROM merge_batches WHERE state IN ('checking', 'open')${notHidden("repo", hidden)} ORDER BY id DESC`, ...hideArgs(hidden))) {
-      const prs = all<{ number: number }>(db, "SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", b.id);
+    const openBatches = all<{ id: number; repo: string; branch: string; state: string; created_at: string; summary: string | null }>(db,
+      `SELECT id, repo, branch, state, created_at, summary FROM merge_batches WHERE state IN ('checking', 'open')${notHidden("repo", hidden)} ORDER BY id DESC`, ...hideArgs(hidden));
+    const prsOfOpen = batchPrs(db, openBatches.map((b) => b.id));
+    for (const b of openBatches) {
+      const prs = prsOfOpen.get(b.id) ?? [];
       out.push(base({
         key: `batch:${b.id}`, kind: "batch", state: b.state === "checking" ? "running" : "queued", at: b.created_at, title: "Integration batch", what: b.branch, progress: b.summary,
         item: prs[0] ? item(b.repo, prs[0].number) : null, items: prs.slice(0, ITEM_CAP).map((p) => item(b.repo, p.number)), itemCount: prs.length, repo: b.repo, batchId: b.id, detail: "/queue/merge",
@@ -280,8 +311,9 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
     out.push(e);
   }
 
+  const prsOfEvent = batchPrs(db, [...batchEvents.values()].map((ev) => ev.id));
   for (const ev of batchEvents.values()) {
-    const prs = all<{ number: number }>(db, "SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", ev.id);
+    const prs = prsOfEvent.get(ev.id) ?? [];
     const e = base({
       key: ev.key, kind: "batch", state: "done", at: ev.at, repo: ev.repo, batchId: ev.id, actor: "AutoCraft",
       title: `Merge batch #${ev.id}: ${prs.length} PR${prs.length === 1 ? "" : "s"}, ${BATCH_LABELS[ev.action] ?? ev.action}`,
@@ -294,17 +326,19 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
   const decisions = all<{ id: string; repo: string | null; number: number | null; items: string | null; question: string; answer: string | null; at: string; answered_by: string | null }>(db,
     `SELECT id, repo, number, items, question, answer, answered_at AS at, answered_by FROM decisions WHERE answered_at IS NOT NULL${cut("answered_at")} ORDER BY answered_at DESC LIMIT ?`, ...when, SCAN);
   bound(decisions);
+  const quietPrs = decisions.length ? quietFixPrs(db) : new Set<string>();
+  const isQuiet = (repo: string, number: number): boolean => quietPrs.has(`${repo}#${number}`);
   for (const d of decisions) {
     let ref: { repo: string; number: number } | null = d.repo && d.number !== null ? { repo: d.repo, number: d.number } : null;
     let repos = d.repo ? [d.repo] : [];
     // The question of a quiet pull request's decision is model-written text about an unpublished fix.
-    let quiet = !!ref && isQuiet(db, ref.repo, ref.number);
+    let quiet = !!ref && isQuiet(ref.repo, ref.number);
     if (!ref) {
       try {
         const list = (JSON.parse(d.items ?? "[]") as { repo?: unknown; number?: unknown }[]).filter((i): i is { repo: string; number: number } => typeof i.repo === "string" && typeof i.number === "number");
         repos = [...repos, ...list.map((i) => i.repo)];
         ref = list[0] ?? null;
-        quiet = list.some((i) => isQuiet(db, i.repo, i.number));
+        quiet = list.some((i) => isQuiet(i.repo, i.number));
       } catch { /* malformed: no item */ }
     }
     if (repos.some((r) => isHiddenRepo(hidden, r))) continue;
@@ -318,8 +352,9 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
   const runs = all<{ id: number; step: string; model: string; at: string; error: string | null }>(db,
     `SELECT r.id, r.step, r.model, COALESCE(r.ended_at, r.started_at) AS at, r.error FROM agent_runs r WHERE r.state = 'failed' AND r.job_id IS NULL${hiddenRuns}${cut("COALESCE(r.ended_at, r.started_at)")} ORDER BY at DESC LIMIT ?`, ...hideArgs(hidden), ...when, SCAN);
   bound(runs);
+  const firstOfRun = runItems(db, runs.map((r) => r.id), 1);
   for (const r of runs) {
-    const i = db.prepare("SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT 1").get(r.id) as { repo: string; number: number } | undefined;
+    const i = firstOfRun.get(r.id)?.[0];
     out.push(base({ key: `failed-run:${r.id}`, kind: "failure", state: "failed", at: r.at, actor: r.model, item: i ? item(i.repo, i.number) : null, event: i ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
       title: `${stepTitle(r.step)}: model call failed${r.error && staff ? `, ${clip(r.error, 100)}` : ""}` }));
   }
@@ -339,6 +374,7 @@ function feed(db: DatabaseSync, hidden: HiddenRepos, staff: boolean, operator: b
   // The next page starts before the oldest entry shown (all members of a group count), or before the bound when nothing is complete yet.
   const last = rest[rest.length - 1];
   const more = rest.length === RECENT || completeFrom !== "";
+  shown.fill();
   return { entries: page, also, nextCursor: more ? (last ? (oldestOf.get(last) ?? last.at) : completeFrom) : null };
 }
 
