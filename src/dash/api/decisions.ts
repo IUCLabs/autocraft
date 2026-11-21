@@ -7,7 +7,7 @@ import { prep } from "../../sql-cache.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  Claim, Classification, Decision, ExecState, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, OpenDecisionCounts, Opinion, QueueSlot, RelatedItem, Relation,
+  Claim, Classification, Decision, ExecState, ItemShown, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, OpenDecisionCounts, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
@@ -15,7 +15,7 @@ import { conversationOf, insertTurn, systemBlock } from "../../conversations/sto
 import { blocksFacts, blocksIndex } from "../../review/blockers.ts";
 import { BACKLOG, BACKLOG_KIND, BACKLOG_QUESTION, backlogDecisionId, HANDLED, isBacklog, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
-import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
+import { optionTextsMany, optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
 import { heldLookup, type Held } from "../../runner/autopilot.ts";
 import { queuePlace, queueReason } from "../../conversations/queue.ts";
@@ -34,7 +34,7 @@ import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
 import { canSettleCached, canSettleSql, requireSettle, settledBy, settleMemo, type SettleMemo } from "../../settlers.ts";
 import { DEFAULT_BAND } from "../../rank/level.ts";
-import { isQuiet } from "../../security/quiet.ts";
+import { isQuiet, quietFixPrs } from "../../security/quiet.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
 const COMMENT_MAX = 4000;
@@ -45,7 +45,7 @@ export const isOperator = (req: Req): boolean => req.user.role === "operator";
 
 export { itemState, shownLookup, withShown } from "./shown.ts";
 import { HEAD_FACT } from "../../merge/queue.ts";
-import { itemState, withShown } from "./shown.ts";
+import { itemState, shownMap, withShown } from "./shown.ts";
 import { slugOf } from "../../owners.ts";
 
 const json = <T>(s: string | null | undefined, d: T): T => {
@@ -118,8 +118,11 @@ type ClassRow = {
 
 export function classificationsOf(db: DatabaseSync, repo: string, n: number): Classification[] {
   // Latest verdict per classifier, picked here: a correlated MAX(at) subquery makes SQLite walk the (classifier, at) index.
-  const all = prep(db, `SELECT classifier, at, type_label, want, reference, reason, dup_of FROM classifications
-    WHERE repo = ? AND number = ? ORDER BY classifier`).all(repo, n) as ClassRow[];
+  return latestClassifications(prep(db, `SELECT classifier, at, type_label, want, reference, reason, dup_of FROM classifications
+    WHERE repo = ? AND number = ? ORDER BY classifier`).all(repo, n) as ClassRow[]);
+}
+
+function latestClassifications(all: ClassRow[]): Classification[] {
   const latest = new Map<string, string>();
   for (const r of all) if (!latest.has(r.classifier) || r.at > latest.get(r.classifier)!) latest.set(r.classifier, r.at);
   const rows = all.filter((r) => r.at === latest.get(r.classifier));
@@ -148,16 +151,27 @@ export function relatedIndex(db: DatabaseSync): RelatedIndex {
 }
 
 // Duplicates from the classifiers, issues a PR closes, and PRs that close this issue. `idx` answers the two unindexed lookups from a page-wide read.
-export function relatedOf(db: DatabaseSync, repo: string, n: number, idx?: RelatedIndex): RelatedItem[] {
+export function relatedOf(db: DatabaseSync, repo: string, n: number, idx?: RelatedIndex, page?: DecisionPage): RelatedItem[] {
+  const look = prep(db, "SELECT title, state, kind FROM items WHERE repo = ? AND number = ?");
+  const res: RelatedItem[] = [];
+  for (const { number, relation } of relatedNumbers(db, repo, n, idx, page)) {
+    const row = page ? page.items.get(`${repo}#${number}`) : (look.get(repo, number) as { title: string | null; state: string; kind: string } | undefined);
+    if (row) res.push({ repo, number, relation, title: row.title ?? "", state: itemState(row.state), kind: row.kind === "pr" ? "pr" : "issue" });
+  }
+  return res;
+}
+
+/** The numbers relatedOf shows, before their items are read; `page` answers the per-item reads from a page-wide one. */
+function relatedNumbers(db: DatabaseSync, repo: string, n: number, idx?: RelatedIndex, page?: DecisionPage): { number: number; relation: Relation }[] {
   const out = new Map<string, { number: number; relation: Relation }>();
   const add = (number: number, relation: Relation) => {
     if (number !== n && Number.isInteger(number) && !out.has(String(number))) out.set(String(number), { number, relation });
   };
-  for (const r of prep(db, "SELECT DISTINCT dup_of FROM classifications WHERE repo = ? AND number = ? AND dup_of IS NOT NULL").all(repo, n) as { dup_of: number }[])
-    add(r.dup_of, "duplicate-of");
+  for (const d of page ? (page.dupOf.get(`${repo}#${n}`) ?? []) : (prep(db, "SELECT DISTINCT dup_of FROM classifications WHERE repo = ? AND number = ? AND dup_of IS NOT NULL").all(repo, n) as { dup_of: number }[]).map((r) => r.dup_of))
+    add(d, "duplicate-of");
   for (const x of idx ? (idx.duplicatedBy.get(`${repo}#${n}`) ?? []).slice(0, 10) : (prep(db, "SELECT DISTINCT number FROM classifications WHERE repo = ? AND dup_of = ? LIMIT 10").all(repo, n) as { number: number }[]).map((r) => r.number))
     add(x, "duplicated-by");
-  const it = prep(db, "SELECT kind, closing_issues FROM items WHERE repo = ? AND number = ?").get(repo, n) as { kind: string; closing_issues: string | null } | undefined;
+  const it = page ? page.items.get(`${repo}#${n}`) : (prep(db, "SELECT kind, closing_issues FROM items WHERE repo = ? AND number = ?").get(repo, n) as { kind: string; closing_issues: string | null } | undefined);
   for (const x of json<unknown[]>(it?.closing_issues, [])) if (typeof x === "number") add(x, "fixes");
   if (it?.kind === "issue") {
     if (idx) for (const p of (idx.linkedBy.get(`${repo}#${n}`) ?? []).slice(0, 50)) add(p, "links");
@@ -167,13 +181,7 @@ export function relatedOf(db: DatabaseSync, repo: string, n: number, idx?: Relat
       for (const p of prs) if (json<unknown[]>(p.closing_issues, []).includes(n)) add(p.number, "links");
     }
   }
-  const look = prep(db, "SELECT title, state, kind FROM items WHERE repo = ? AND number = ?");
-  const res: RelatedItem[] = [];
-  for (const { number, relation } of [...out.values()].slice(0, 10)) {
-    const row = look.get(repo, number) as { title: string | null; state: string; kind: string } | undefined;
-    if (row) res.push({ repo, number, relation, title: row.title ?? "", state: itemState(row.state), kind: row.kind === "pr" ? "pr" : "issue" });
-  }
-  return res;
+  return [...out.values()].slice(0, 10);
 }
 
 // "One sentence. Another." or a JSON array of sentences, as the pipeline wrote it.
@@ -186,7 +194,7 @@ function contextOf(c: string | null): string[] {
 
 export type Viewer = { login: string; role: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot>; held?: (repo: string, number: number, decisionId?: string) => Held | null; memo?: SettleMemo;
   /** Per-page lookups a list fills once so toDecision does not query per row. */
-  prep?: Map<string, PrepareState>; blocks?: Map<string, string[]>; related?: RelatedIndex;
+  prep?: Map<string, PrepareState>; blocks?: Map<string, string[]>; related?: RelatedIndex; page?: DecisionPage;
   /** Repos the viewer may not see; facts naming their items are left out (without it, a non-operator gets none of those facts). */
   hidden?: HiddenRepos };
 /** The reason a write waits or failed: the stored text (it may carry GitHub's error text) only for operators and maintainers, one fixed sentence per state for everyone else. */
@@ -246,10 +254,14 @@ const directHandled = (db: DatabaseSync, d: DecisionRow): boolean =>
 const ROLE_ORDER: Record<DuplicateMember["role"], number> = { keep: 0, close: 1, stay: 2 };
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
 
-function groupOf(db: DatabaseSync, d: DecisionRow): DuplicateMember[] {
-  if (d.kind !== "duplicate" || !d.id.includes(":dupegroup:")) return [];
-  const rows = prep(db, `SELECT gi.number, gi.kind, gi.role, gi.detail, i.title, i.state FROM dupe_group_items gi
-    LEFT JOIN items i ON i.repo = gi.repo AND i.number = gi.number WHERE gi.decision_id = ?`).all(d.id) as { number: number; kind: string; role: string; detail: string | null; title: string | null; state: string | null }[];
+const isGroup = (d: DecisionRow): boolean => d.kind === "duplicate" && d.id.includes(":dupegroup:");
+type GroupRow = { number: number; kind: string; role: string; detail: string | null; title: string | null; state: string | null };
+const GROUP_SQL = `SELECT gi.decision_id, gi.number, gi.kind, gi.role, gi.detail, i.title, i.state FROM dupe_group_items gi
+    LEFT JOIN items i ON i.repo = gi.repo AND i.number = gi.number`;
+
+function groupOf(db: DatabaseSync, d: DecisionRow, page?: DecisionPage): DuplicateMember[] {
+  if (!isGroup(d)) return [];
+  const rows = page ? (page.groups.get(d.id) ?? []) : (prep(db, `${GROUP_SQL} WHERE gi.decision_id = ?`).all(d.id) as GroupRow[]);
   return rows.map((r) => {
     let detail: Record<string, unknown> = {};
     try { detail = (JSON.parse(r.detail ?? "{}") as Record<string, unknown>) ?? {}; } catch { /* no detail */ }
@@ -259,11 +271,16 @@ function groupOf(db: DatabaseSync, d: DecisionRow): DuplicateMember[] {
 }
 
 /** The review's risks for the PR at the head the Merge? or Close? decision was asked at. */
-function risksOf(db: DatabaseSync, d: DecisionRow): string[] {
-  if ((d.kind !== "merge" && d.kind !== "close") || !d.repo || d.number === null) return [];
-  const head = factsOf(d).find((f) => f.startsWith(HEAD_FACT))?.slice(HEAD_FACT.length).trim();
+/** The head a Merge? or Close? decision was asked at, or null. */
+function riskHead(d: DecisionRow): string | null {
+  if ((d.kind !== "merge" && d.kind !== "close") || !d.repo || d.number === null) return null;
+  return factsOf(d).find((f) => f.startsWith(HEAD_FACT))?.slice(HEAD_FACT.length).trim() || null;
+}
+
+function risksOf(db: DatabaseSync, d: DecisionRow, page?: DecisionPage): string[] {
+  const head = riskHead(d);
   if (!head) return [];
-  const o = prep(db, "SELECT risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(d.repo, d.number, head) as { risks: string | null } | undefined;
+  const o = page ? page.risks.get(`${d.repo}#${d.number}@${head}`) : (prep(db, "SELECT risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(d.repo, d.number, head) as { risks: string | null } | undefined);
   try { return strings(JSON.parse(o?.risks ?? "[]")); } catch { return []; }
 }
 
@@ -274,34 +291,118 @@ function snoozedOf(db: DatabaseSync, d: DecisionRow): { by: string; at: string }
 }
 
 /** True when any item the decision concerns (its own, a batch member or a duplicate-group member) is a quiet pull request. */
-export function touchesQuiet(db: DatabaseSync, d: DecisionRow): boolean {
-  if (d.repo !== null && d.number !== null && isQuiet(db, d.repo, d.number)) return true;
-  if (itemsOf(d).some((r) => isQuiet(db, r.repo, r.number))) return true;
-  const members = prep(db, "SELECT repo, number FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { repo: string; number: number }[];
-  return members.some((m) => isQuiet(db, m.repo, m.number));
+export function touchesQuiet(db: DatabaseSync, d: DecisionRow, page?: DecisionPage): boolean {
+  const quiet = page ? (repo: string, number: number) => page.quiet!.has(`${repo}#${number}`) : (repo: string, number: number) => isQuiet(db, repo, number);
+  if (d.repo !== null && d.number !== null && quiet(d.repo, d.number)) return true;
+  if (itemsOf(d).some((r) => quiet(r.repo, r.number))) return true;
+  const members = page ? (page.members.get(d.id) ?? []) : (prep(db, "SELECT repo, number FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { repo: string; number: number }[]);
+  return members.some((m) => quiet(m.repo, m.number));
+}
+
+type PageItem = { title: string | null; body: string | null; kind: string; state: string; closing_issues: string | null };
+/**
+ * What toDecision reads per decision, read once for a page of them: one query per table, keyed by decision id or `repo#number`.
+ * `items` holds the decisions' own items and the items their related lists name. `quiet` and `members` are read only for viewers who are not staff.
+ */
+export type DecisionPage = {
+  items: Map<string, PageItem>; shown: Map<string, ItemShown>; opinions: Map<string, OpinionRow[]>; adopted: Map<string, OpinionRow>;
+  claims: Map<string, Claim>; comments: Map<string, number>; classes: Map<string, ClassRow[]>; dupOf: Map<string, number[]>;
+  areas: Map<string, string | null>; priority: Map<string, NonNullable<ReturnType<typeof priorityOf>>>;
+  risks: Map<string, { risks: string | null }>; groups: Map<string, GroupRow[]>; texts: Map<string, ReturnType<typeof optionTextsOf>>;
+  quiet?: Set<string>; members: Map<string, { repo: string; number: number }[]>;
+};
+
+const pushTo = <K, V>(m: Map<K, V[]>, k: K, v: V): void => void (m.get(k) ?? m.set(k, []).get(k)!).push(v);
+const keyOf = (r: { repo: string; number: number }): string => `${r.repo}#${r.number}`;
+
+export function decisionPage(db: DatabaseSync, ds: DecisionRow[], viewer: Viewer): DecisionPage {
+  const ids = JSON.stringify(ds.map((d) => d.id));
+  const singles = ds.filter((d) => !isBatch(d)).map((d) => ({ repo: d.repo!, number: d.number! }));
+  const refs = JSON.stringify(singles.map((r) => [r.repo, r.number]));
+  const inRefs = (repo: string, number: string) => `(${repo}, ${number}) IN (SELECT value ->> 0, value ->> 1 FROM json_each(:refs))`;
+  const rows = <T>(sql: string, args: Record<string, string>): T[] => db.prepare(sql).all(args) as T[];
+  const itemSql = "SELECT repo, number, title, body, kind, state, closing_issues FROM items WHERE ";
+  const items = new Map<string, PageItem>();
+  for (const r of rows<PageItem & { repo: string; number: number }>(`${itemSql}${inRefs("repo", "number")}`, { refs })) items.set(keyOf(r), r);
+  const dupOf = new Map<string, number[]>();
+  // In dup_of order, as the (repo, dup_of) index gives them to the one-item read.
+  for (const r of rows<{ repo: string; number: number; dup_of: number }>(`SELECT DISTINCT repo, number, dup_of FROM classifications WHERE ${inRefs("repo", "number")} AND dup_of IS NOT NULL ORDER BY repo, number, dup_of`, { refs }))
+    pushTo(dupOf, keyOf(r), r.dup_of);
+  const page: DecisionPage = {
+    items, shown: new Map(), opinions: new Map(), adopted: new Map(), claims: new Map(), comments: new Map(), classes: new Map(), dupOf,
+    areas: new Map(), priority: new Map(), risks: new Map(), groups: new Map(), texts: new Map(), members: new Map(),
+  };
+  // The related lists' items, read once for every decision of the page.
+  const related = new Map<string, [string, number]>();
+  for (const r of singles) for (const x of relatedNumbers(db, r.repo, r.number, viewer.related, page)) if (!items.has(`${r.repo}#${x.number}`)) related.set(`${r.repo}#${x.number}`, [r.repo, x.number]);
+  if (related.size) for (const r of rows<PageItem & { repo: string; number: number }>(`${itemSql}${inRefs("repo", "number")}`, { refs: JSON.stringify([...related.values()]) })) items.set(keyOf(r), r);
+
+  const batchRefs = ds.filter(isBatch).flatMap((d) => itemsOf(d));
+  if (batchRefs.length) page.shown = shownMap(db, batchRefs);
+  for (const o of rows<OpinionRow & { decision_id: string }>(`SELECT decision_id, id, login, option, note, at, permission, via FROM decision_opinions
+    WHERE decision_id IN (SELECT value FROM json_each(:ids)) AND retracted_at IS NULL ORDER BY decision_id, at DESC`, { ids })) {
+    const { decision_id, ...op } = o;
+    pushTo(page.opinions, decision_id, op);
+  }
+  const adopted = ds.flatMap((d) => (d.adopted_opinion ? [d.adopted_opinion] : []));
+  if (adopted.length) for (const o of rows<OpinionRow>("SELECT id, login, option, note, at, permission, via FROM decision_opinions WHERE id IN (SELECT value FROM json_each(:ids))", { ids: JSON.stringify(adopted) })) page.adopted.set(o.id, o);
+  for (const c of rows<Claim & { decision_id: string }>(`SELECT decision_id, login, since FROM decision_claims WHERE decision_id IN (SELECT value FROM json_each(:ids)) AND at > :fresh AND login <> :me ORDER BY decision_id, at DESC`,
+    { ids, fresh: new Date(Date.now() - CLAIM_TTL).toISOString(), me: viewer.login }))
+    if (!page.claims.has(c.decision_id)) page.claims.set(c.decision_id, { login: c.login, since: c.since });
+  for (const c of rows<{ decision_id: string; n: number }>("SELECT decision_id, COUNT(*) AS n FROM decision_comments WHERE decision_id IN (SELECT value FROM json_each(:ids)) GROUP BY decision_id", { ids })) page.comments.set(c.decision_id, c.n);
+  if (singles.length) {
+    // In the primary key's order within an item, as the one-item read walks it.
+    for (const c of rows<ClassRow & { repo: string; number: number }>(`SELECT repo, number, classifier, at, type_label, want, reference, reason, dup_of FROM classifications
+      WHERE ${inRefs("repo", "number")} ORDER BY repo, number, classifier, run_id`, { refs })) {
+      const { repo, number, ...row } = c;
+      pushTo(page.classes, `${repo}#${number}`, row);
+    }
+    for (const a of rows<{ repo: string; number: number; area: string | null }>(`SELECT repo, number, area FROM item_areas WHERE ${inRefs("repo", "number")}`, { refs })) page.areas.set(keyOf(a), a.area);
+    for (const p of rows<{ repo: string; number: number; impact: NonNullable<ReturnType<typeof priorityOf>>["level"]; model: string; reason: string | null }>(`SELECT repo, number, impact, model, reason FROM item_priority WHERE ${inRefs("repo", "number")}`, { refs }))
+      page.priority.set(keyOf(p), { level: p.impact, model: p.model, reason: p.reason });
+  }
+  const heads = ds.flatMap((d) => { const h = riskHead(d); return h ? [[d.repo!, d.number!, h]] : []; });
+  if (heads.length) for (const o of rows<{ repo: string; number: number; head_oid: string; risks: string | null }>(`SELECT repo, number, head_oid, risks FROM opus_reviews
+    WHERE (repo, number, head_oid) IN (SELECT value ->> 0, value ->> 1, value ->> 2 FROM json_each(:heads)) AND verdict IS NOT NULL`, { heads: JSON.stringify(heads) }))
+    page.risks.set(`${o.repo}#${o.number}@${o.head_oid}`, { risks: o.risks });
+  const groups = ds.filter(isGroup).map((d) => d.id);
+  if (groups.length) {
+    for (const g of rows<GroupRow & { decision_id: string }>(`${GROUP_SQL} WHERE gi.decision_id IN (SELECT value FROM json_each(:ids))`, { ids: JSON.stringify(groups) })) {
+      const { decision_id, ...row } = g;
+      pushTo(page.groups, decision_id, row);
+    }
+    page.texts = optionTextsMany(db, groups);
+  }
+  if (!viewer.staff) {
+    page.quiet = quietFixPrs(db);
+    for (const m of rows<{ decision_id: string; repo: string; number: number }>("SELECT decision_id, repo, number FROM dupe_group_items WHERE decision_id IN (SELECT value FROM json_each(:ids))", { ids }))
+      pushTo(page.members, m.decision_id, { repo: m.repo, number: m.number });
+  }
+  return page;
 }
 
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
   const batch = isBatch(d);
   const refs = itemsOf(d);
+  const page = viewer.page;
   const look = prep(db, "SELECT title, body, kind, state FROM items WHERE repo = ? AND number = ?");
-  const item = batch ? undefined : (look.get(d.repo, d.number) as { title: string | null; body: string | null; kind: string; state: string } | undefined);
-  const opinions = (prep(db, `SELECT id, login, option, note, at, permission, via FROM decision_opinions
-    WHERE decision_id = ? AND retracted_at IS NULL ORDER BY at DESC`).all(d.id) as OpinionRow[]).map(toOpinion);
+  const item = batch ? undefined : page ? page.items.get(`${d.repo}#${d.number}`) : (look.get(d.repo, d.number) as { title: string | null; body: string | null; kind: string; state: string } | undefined);
+  const opinions = (page ? (page.opinions.get(d.id) ?? []) : (prep(db, `SELECT id, login, option, note, at, permission, via FROM decision_opinions
+    WHERE decision_id = ? AND retracted_at IS NULL ORDER BY at DESC`).all(d.id) as OpinionRow[])).map(toOpinion);
   const adopted = d.adopted_opinion
-    ? (prep(db, "SELECT id, login, option, note, at, permission, via FROM decision_opinions WHERE id = ?").get(d.adopted_opinion) as OpinionRow | undefined)
+    ? (page ? page.adopted.get(d.adopted_opinion) : (prep(db, "SELECT id, login, option, note, at, permission, via FROM decision_opinions WHERE id = ?").get(d.adopted_opinion) as OpinionRow | undefined))
     : undefined;
-  const claimRow = prep(db, `SELECT login, since FROM decision_claims WHERE decision_id = ? AND at > ? AND login <> ? ORDER BY at DESC LIMIT 1`)
-    .get(d.id, new Date(Date.now() - CLAIM_TTL).toISOString(), viewer.login) as Claim | undefined;
+  const claimRow = page ? page.claims.get(d.id) : (prep(db, `SELECT login, since FROM decision_claims WHERE decision_id = ? AND at > ? AND login <> ? ORDER BY at DESC LIMIT 1`)
+    .get(d.id, new Date(Date.now() - CLAIM_TTL).toISOString(), viewer.login) as Claim | undefined);
   const pstate = viewer.prep?.get(d.id) ?? (viewer.prep && (d.answer !== null || d.number === null) ? { preparing: false, preparedEarlier: false } : undefined);
-  const commentCount = (prep(db, "SELECT COUNT(*) AS n FROM decision_comments WHERE decision_id = ?").get(d.id) as { n: number }).n;
+  const commentCount = page ? (page.comments.get(d.id) ?? 0) : (prep(db, "SELECT COUNT(*) AS n FROM decision_comments WHERE decision_id = ?").get(d.id) as { n: number }).n;
   // Viewers get none of the model text of a decision about a quiet pull request.
-  const veil = !viewer.staff && touchesQuiet(db, d);
+  const veil = !viewer.staff && touchesQuiet(db, d, page?.quiet ? page : undefined);
   const out: Decision = {
     id: d.id, kind: d.kind as DecisionKind,
     repo: d.repo ?? refs[0]?.repo ?? "",
     number: d.number,
-    items: batch ? withShown(db, refs) : [],
+    items: batch ? withShown(db, refs, page?.shown) : [],
     shown: batch ? null : { kind: item ? (item.kind === "pr" ? "pr" : "issue") : null, state: item ? itemState(item.state) : null, title: item?.title ?? null },
     title: batch ? d.question : (item?.title ?? `${d.repo}#${d.number}`),
     question: d.question,
@@ -313,10 +414,10 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     options: [...optionsOf(d), ...[HANDLED, WITHDRAWN_OPTION].filter((o) => o.key === d.answer)].map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
     recommendedReason: d.recommended ? (d.recommended_reason ?? "") : "",
-    group: groupOf(db, d), risks: risksOf(db, d), undoable: canUndo(db, d),
+    group: groupOf(db, d, page), risks: risksOf(db, d, page), undoable: canUndo(db, d),
     canSettle: canSettleCached(db, viewer.login, viewer.role, reposOf(d), viewer.memo),
     publicText: commentPreview(d),
-    optionTexts: d.kind === "duplicate" && d.id.includes(":dupegroup:") ? optionTextsOf(db, d.id) : [],
+    optionTexts: isGroup(d) ? (page ? (page.texts.get(d.id) ?? []) : optionTextsOf(db, d.id)) : [],
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
     docket: d.docket,
     answer: d.answer,
@@ -335,10 +436,10 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     preparedEarlier: pstate ? pstate.preparedEarlier : preparedEarlier(db, d),
     claim: d.answer ? null : (claimRow ? { login: claimRow.login, since: claimRow.since } : null),
     commentCount,
-    related: batch ? [] : relatedOf(db, d.repo!, d.number!, viewer.related),
-    classifications: batch ? [] : classificationsOf(db, d.repo!, d.number!),
-    area: batch ? null : areaNameOf(db, d.repo!, d.number!),
-    priority: batch ? null : priorityOf(db, d.repo!, d.number!),
+    related: batch ? [] : relatedOf(db, d.repo!, d.number!, viewer.related, page),
+    classifications: batch ? [] : page ? latestClassifications(page.classes.get(`${d.repo}#${d.number}`) ?? []) : classificationsOf(db, d.repo!, d.number!),
+    area: batch ? null : page ? (page.areas.get(`${d.repo}#${d.number}`) ?? null) : areaNameOf(db, d.repo!, d.number!),
+    priority: batch ? null : page ? (page.priority.get(`${d.repo}#${d.number}`) ?? null) : priorityOf(db, d.repo!, d.number!),
     queue: batch ? null : (viewer.slots?.get(`${d.repo}#${d.number}`) ?? null),
   };
   if (!veil) return out;
@@ -493,6 +594,7 @@ export async function listDecisions(db: DatabaseSync, req: Req): Promise<Decisio
   viewer.prep = prepareStates(db, shown);
   if (shown.some((d) => d.answer === null)) viewer.blocks = blocksIndex(db, viewer.hidden ?? (viewer.operator ? [] : ALL_HIDDEN));
   if (shown.some((d) => d.number !== null)) viewer.related = relatedIndex(db);
+  if (shown.length) viewer.page = decisionPage(db, shown, viewer);
   return {
     decisions: shown.map((d) => toDecision(db, d, viewer)), total, byKind, oldestAskedAt,
     next: more ? shownIds[shownIds.length - 1]!.cursor : null,

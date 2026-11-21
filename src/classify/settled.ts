@@ -215,12 +215,18 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
   db.exec(`CREATE TEMP TABLE IF NOT EXISTS item_settled (repo TEXT NOT NULL, number INTEGER NOT NULL, status TEXT NOT NULL, label TEXT,
     source TEXT, top REAL, jev_label TEXT, haiku_label TEXT, flags TEXT NOT NULL, security INTEGER NOT NULL, needs_decision INTEGER NOT NULL,
     referee_label TEXT, referee_sure INTEGER, referee_reason TEXT, referee_final INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, number))`);
-  const ins = db.prepare("INSERT OR REPLACE INTO temp.item_settled VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const rows: unknown[][] = [];
   const put = (r: VerdictRow) => {
     const ref = r.sl !== null && r.ss !== null ? { label: r.sl, sure: !!r.ss, reason: r.sr ?? "", ...(r.sf ? { final: true } : {}), ...(r.sx ? { failures: r.sx } : {}) } : null;
     const s = settle(r.jl === null ? null : { label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs), nd: needsDecisionOf(r.probs), sec: securityOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
-    ins.run(r.repo, r.number, s.status, s.label, s.source, s.confidence, s.jevLabel, s.haikuLabel, JSON.stringify(s.flags),
-      s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null, refereeClosed(s.referee) ? 1 : 0);
+    rows.push([r.repo, r.number, s.status, s.label, s.source, s.confidence, s.jevLabel, s.haikuLabel, JSON.stringify(s.flags),
+      s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null, refereeClosed(s.referee) ? 1 : 0]);
+  };
+  // All rows in one statement: the table is rebuilt in full on a connection's first use.
+  const insertAll = () => {
+    if (!rows.length) return;
+    const cols = Array.from({ length: 15 }, (_, i) => `value ->> ${i}`).join(", ");
+    db.prepare(`INSERT OR REPLACE INTO temp.item_settled SELECT ${cols} FROM json_each(?)`).run(JSON.stringify(rows));
   };
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -230,16 +236,19 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
     const added = prev ? (db.prepare("SELECT COUNT(*) AS n FROM main.classifications WHERE rowid > ?").get(prev.maxRowid) as { n: number }).n : 0;
     // INSERT OR REPLACE removes one row for each it adds, so the count only falls when something was deleted.
     if (fresh && run && now.count >= prev!.count && now.count <= prev!.count + added) {
-      const one = db.prepare(`${VERDICTS} AND k.repo = :repo AND k.number = :number`);
-      for (const k of fresh) {
-        const r = one.get({ run, repo: k.repo, number: k.number }) as VerdictRow | undefined;
-        if (r) put(r);
-        else db.prepare("DELETE FROM temp.item_settled WHERE repo = ? AND number = ?").run(k.repo, k.number);
+      if (fresh.length) {
+        const keys = JSON.stringify(fresh.map((k) => [k.repo, k.number]));
+        const found = db.prepare(`${VERDICTS} AND (k.repo, k.number) IN (SELECT value ->> 0, value ->> 1 FROM json_each(:keys))`).all({ run, keys }) as VerdictRow[];
+        const have = new Set(found.map((r) => `${r.repo}#${r.number}`));
+        const gone = fresh.filter((k) => !have.has(`${k.repo}#${k.number}`)).map((k) => [k.repo, k.number]);
+        if (gone.length) db.prepare("DELETE FROM temp.item_settled WHERE (repo, number) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?))").run(JSON.stringify(gone));
+        for (const r of found) put(r);
       }
     } else {
       db.exec("DELETE FROM temp.item_settled");
       if (run) for (const r of db.prepare(VERDICTS).all({ run }) as VerdictRow[]) put(r);
     }
+    insertAll();
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

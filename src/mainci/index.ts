@@ -8,7 +8,7 @@ import { contextState, type CheckState } from "../review/checks.ts";
 import { trackedNames } from "../repos.ts";
 import { optionalChecks } from "../optional-checks.ts";
 import { mainRedAfterMerge } from "../push-outcomes.ts";
-import { autocraftText } from "../mainfix/status.ts";
+import { autocraftTexts } from "../mainfix/status.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
 import { ownerOf } from "../owners.ts";
 import { isHiddenRepo, type HiddenRepos } from "../hidden-sql.ts";
@@ -142,8 +142,10 @@ export function mainCiRepos(db: DatabaseSync, hidden: HiddenRepos = []): MainCiR
     const cur = rows.find((r) => r.head_sha === d.current.sha)!;
     let failing: { name: string; url: string | null }[] = [];
     try { failing = JSON.parse(cur.failing) as typeof failing; } catch { /* malformed: none shown */ }
-    out.push({ repo, state: cur.state, branch: cur.branch, headSha: cur.head_sha, headline: cur.headline, committedAt: cur.committed_at, failing, redSince: d.redSince, lastGreenSha: d.lastGreenSha, culprit: d.culprit, updatedAt: cur.updated_at, autocraft: autocraftText(db, repo, cur.head_sha, cur.state) });
+    out.push({ repo, state: cur.state, branch: cur.branch, headSha: cur.head_sha, headline: cur.headline, committedAt: cur.committed_at, failing, redSince: d.redSince, lastGreenSha: d.lastGreenSha, culprit: d.culprit, updatedAt: cur.updated_at, autocraft: null });
   }
+  const texts = autocraftTexts(db, out.map((r) => ({ repo: r.repo, headSha: r.headSha, state: r.state })));
+  for (const r of out) r.autocraft = texts.get(`${r.repo}\0${r.headSha}`) ?? null;
   const weight: Record<MainCiState, number> = { red: 0, optional: 1, running: 2, none: 3, green: 4 };
   return out.sort((a, b) => weight[a.state] - weight[b.state] || a.repo.localeCompare(b.repo));
 }

@@ -13,7 +13,40 @@ export function shownLookup(db: DatabaseSync): (repo: string, number: number) =>
   };
 }
 
-export const withShown = (db: DatabaseSync, refs: ItemRef[]): (ItemRef & ItemShown)[] => {
-  const shown = shownLookup(db);
-  return refs.map((r) => ({ ...r, ...shown(r.repo, r.number) }));
+const NONE: ItemShown = { kind: null, state: null, title: null };
+
+/** Kind, state and title of many items in one read, by `repo#number`; items not mirrored are left out. */
+export function shownMap(db: DatabaseSync, refs: Iterable<{ repo: string; number: number }>): Map<string, ItemShown> {
+  const keys = new Map<string, [string, number]>();
+  for (const r of refs) keys.set(`${r.repo}#${r.number}`, [r.repo, r.number]);
+  const out = new Map<string, ItemShown>();
+  if (!keys.size) return out;
+  const rows = db.prepare(`SELECT repo, number, kind, state, title FROM items WHERE (repo, number) IN (SELECT value ->> 0, value ->> 1 FROM json_each(?))`)
+    .all(JSON.stringify([...keys.values()])) as { repo: string; number: number; kind: string; state: string; title: string | null }[];
+  for (const r of rows) out.set(`${r.repo}#${r.number}`, { kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state), title: r.title });
+  return out;
+}
+
+/**
+ * Item references whose kind, state and title are read in one query: `item` returns the reference at once with empty fields,
+ * and `fill` sets them on every reference handed out so far. Call `fill` before the references are read.
+ */
+export function shownLater(db: DatabaseSync): { item: (repo: string, number: number) => ItemRef & ItemShown; fill: () => void } {
+  const made: (ItemRef & ItemShown)[] = [];
+  return {
+    item: (repo, number) => {
+      const r = { repo, number, ...NONE };
+      made.push(r);
+      return r;
+    },
+    fill: () => {
+      const got = shownMap(db, made);
+      for (const r of made) Object.assign(r, got.get(`${r.repo}#${r.number}`) ?? NONE);
+    },
+  };
+}
+
+export const withShown = (db: DatabaseSync, refs: ItemRef[], known?: Map<string, ItemShown>): (ItemRef & ItemShown)[] => {
+  const got = known ?? shownMap(db, refs);
+  return refs.map((r) => ({ ...r, ...(got.get(`${r.repo}#${r.number}`) ?? NONE) }));
 };
