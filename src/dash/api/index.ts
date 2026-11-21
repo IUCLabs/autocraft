@@ -13,6 +13,7 @@ import type {
   CiState, DecisionKind, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemPremerge, ItemReviews, ItemState, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
+import { DEFAULT_OWNER } from "../../owners.ts";
 import { excludeHidden, hiddenRepos, allVisibleRepos, needVisible, repoOwners, visibleRepos } from "./visible.ts";
 import { withoutHidden } from "./decisions.ts";
 import { contributors } from "../../whitelist.ts";
@@ -111,6 +112,7 @@ async function me(db: DatabaseSync, req: Req): Promise<User> {
     maintainerWrites: mw?.value === "1",
     maintainerSettles: maintainersSettle(db),
     inference: inferenceMode(db),
+    defaultOwner: DEFAULT_OWNER,
   };
 }
 

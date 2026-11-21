@@ -3,7 +3,8 @@
 import type { Decision, ItemKind } from "../api/types.ts";
 
 /** The owner of repos the API does not list as owned by someone else. */
-export const GITHUB_ORG = "storytold";
+export let GITHUB_ORG = "storytold";
+export const setGithubOrg = (org: string): void => { GITHUB_ORG = org; };
 
 // Owners of the repos that are not storytold's, from `/api/repos/owners`, set before the app renders and after a repo is tracked. Repo names are unique across owners.
 let owners: Record<string, string> = {};

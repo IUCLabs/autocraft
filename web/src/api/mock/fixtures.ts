@@ -93,6 +93,7 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "settler" | "viewer"
     maintainerWrites: false,
     maintainerSettles: false,
     inference: "user-local",
+    defaultOwner: "storytold",
   },
   maintainer: {
     login: "kiri-n",
@@ -101,6 +102,7 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "settler" | "viewer"
     maintainerWrites: false,
     maintainerSettles: false,
     inference: "user-local",
+    defaultOwner: "storytold",
   },
   // A maintainer under `maintainer_writes`: settles decisions where they have write access.
   settler: {
@@ -110,8 +112,9 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "settler" | "viewer"
     maintainerWrites: true,
     maintainerSettles: true,
     inference: "user-local",
+    defaultOwner: "storytold",
   },
-  viewer: { login: "glasswing", role: "viewer", writeRepos: [], maintainerWrites: false, maintainerSettles: false, inference: "user-local" },
+  viewer: { login: "glasswing", role: "viewer", writeRepos: [], maintainerWrites: false, maintainerSettles: false, inference: "user-local", defaultOwner: "storytold" },
 };
 export type MockRole = keyof typeof MOCK_USERS;
 

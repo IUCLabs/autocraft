@@ -115,7 +115,7 @@ export class Search {
     if (!vec) return [];
     await index.ready(db);
     const get = db.prepare(`SELECT i.title, i.body, i.state, i.state_reason, i.closed_at, i.updated_at, i.comments_count, i.reactions_count,
-        COALESCE(i.url, 'https://github.com/' || COALESCE(r.owner, '${DEFAULT_OWNER}') || '/' || i.repo || '/issues/' || i.number) AS url
+        COALESCE(i.url, 'https://github.com/' || COALESCE(r.owner, ?) || '/' || i.repo || '/issues/' || i.number) AS url
       FROM main.items i JOIN main.repos r ON r.name = i.repo WHERE i.repo = ? AND i.number = ? AND i.kind = 'issue' AND NOT ${hiddenSql("i.repo", "i.number", "i.labels")}`);
     const isPublic = new Map<string, boolean>();
     const now = (this.#d.now ?? Date.now)();
@@ -123,7 +123,7 @@ export class Search {
     for (const h of index.nearest(db, vec, SCAN, undefined, only)) {
       if (!isPublic.has(h.repo)) isPublic.set(h.repo, isPublicRepo(db, h.repo));
       if (!isPublic.get(h.repo)) continue;
-      const r = get.get(h.repo, h.number) as { title: string | null; body: string | null; state: string; state_reason: string | null; closed_at: string | null; updated_at: string | null; comments_count: number | null; reactions_count: number | null; url: string } | undefined;
+      const r = get.get(DEFAULT_OWNER, h.repo, h.number) as { title: string | null; body: string | null; state: string; state_reason: string | null; closed_at: string | null; updated_at: string | null; comments_count: number | null; reactions_count: number | null; url: string } | undefined;
       if (!r) continue;
       const open = r.state === "OPEN";
       if (!open && !(r.state === "CLOSED" && r.state_reason === "COMPLETED" && now - Date.parse(r.closed_at ?? "") <= CLOSED_WINDOW_MS)) continue;

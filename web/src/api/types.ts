@@ -730,6 +730,8 @@ export interface User {
   maintainerSettles: boolean;
   /** Who runs the model calls: the registered accounts (`server`) or the users' own helpers (`user-local`). */
   inference: InferenceMode;
+  /** Owner of repos without a recorded owner (`AUTOCRAFT_DEFAULT_OWNER`). */
+  defaultOwner: string;
 }
 export type InferenceMode = "server" | "user-local";
 export type InferenceTier = "top" | "mid" | "small";
