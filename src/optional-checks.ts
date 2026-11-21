@@ -5,15 +5,24 @@ import { audit } from "./dash/audit.ts";
 
 const key = (repo: string) => `optional_checks:${repo}`;
 
-export function optionalChecks(db: DatabaseSync, repo: string): string[] {
-  const row = db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined;
-  if (!row) return [];
+const parseList = (value: string | undefined): string[] => {
+  if (value === undefined) return [];
   try {
-    const v = JSON.parse(row.value) as unknown;
+    const v = JSON.parse(value) as unknown;
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x !== "") : [];
   } catch {
     return [];
   }
+};
+
+export function optionalChecks(db: DatabaseSync, repo: string): string[] {
+  return parseList((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(key(repo)) as { value: string } | undefined)?.value);
+}
+
+/** optionalChecks() of every repo, read in one query. */
+export function optionalChecksOf(db: DatabaseSync): (repo: string) => string[] {
+  const rows = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE 'optional!_checks:%' ESCAPE '!'").all() as { key: string; value: string }[]).map((r) => [r.key, r.value]));
+  return (repo) => parseList(rows.get(key(repo)));
 }
 
 function save(db: DatabaseSync, repo: string, names: string[]): void {
@@ -52,9 +61,15 @@ export function effectiveOverall(overall: string, checks: CheckLike[], optional:
 /** effectiveOverall with the repo's list and the PR's stored checks (JSON text or parsed). */
 export function effectiveCi(db: DatabaseSync, repo: string, overall: string, checks: string | CheckLike[] | null | undefined): string {
   if (overall !== "failure") return overall;
+  return effectiveCiWith(optionalChecks(db, repo), overall, checks);
+}
+
+/** effectiveCi with the repo's optional list given (optionalChecksOf). */
+export function effectiveCiWith(optional: string[], overall: string, checks: string | CheckLike[] | null | undefined): string {
+  if (overall !== "failure") return overall;
   let list: CheckLike[] = [];
   try { list = typeof checks === "string" ? (JSON.parse(checks) as CheckLike[]) : checks ?? []; } catch { /* unreadable: stays failure */ }
-  return effectiveOverall(overall, list, optionalChecks(db, repo));
+  return effectiveOverall(overall, list, optional);
 }
 
 /** Check names seen on the repo's recent PRs and default-branch heads, for the add control. */
