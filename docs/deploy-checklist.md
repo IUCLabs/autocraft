@@ -13,7 +13,7 @@ deploy/container/build-push.sh --no-push     # build only; local name autocraft
 
 - The script refuses a working tree with uncommitted or untracked changes, tags the image with the 12-character commit id and `latest`, and pushes both tags. `DOCKER_HOST` is honoured. Extra build arguments go in `BUILD_ARGS`, for example `BUILD_ARGS="--build-arg CLAUDE_CODE_VERSION=2.1.309"`.
 - Contents: Docker Hardened Images for Node 26 on Debian 13 (the shell-less runtime variant; the build stages use the dev variant), `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, `bash`, `dash` (`/bin/sh`), coreutils, grep, sed, tar, gzip, findutils, `script`, `pnpm`, `gh` (pinned by checksum), the Claude CLI (pinned, auto-update off), the production dependencies and the built dashboard. It runs as uid 10001 and declares the volumes `/data` and `/config`.
-- Not in the image: `jev` (Haiku does Jev's work while it is missing; a derived image restores it) and the sandbox build workers.
+- Not in the image: `jev` (set the three `AUTOCRAFT_JEV_CLOUDFLARE_*` variables to call Jev through Cloudflare Workers AI instead; without them Haiku does Jev's work) and the sandbox build workers.
 - One image serves every process. The first argument picks it: `dashboard` (default), `runner`, `sync`, `backup`, or any `autocraft` subcommand.
 
 ## VPS with Docker Compose
@@ -23,7 +23,7 @@ On one VPS, `deploy/compose/compose.yaml` runs the same three processes (dashboa
 - **Proxy.** Any TLS reverse proxy on the VPS forwards the origin to `127.0.0.1:3005`, the only published port. It must pass `Host`, set `X-Forwarded-For` and not buffer `GET /api/live`.
 - **DNS.** Point the origin's record at the VPS. If the origin stays the same, the GitHub App's callback, setup and webhook URLs and the OAuth callback URL stay as they are.
 - **Build workers.** None on the VPS. A separate build box reaches the worker API (8981) through a TLS proxy on its own hostname that accepts only its address, never through the dashboard's site. Register it with `autocraft-server envs add <id> --label TEXT --kind remote --slots N --print` (the full command with the key handling is under "Build workers" in the migration runbook). Disable the old install's `local-sandbox` environments (`envs set <id> --enabled no`), or their health checks fail.
-- **`jev`.** Not in the image. Haiku does the classify, priority, duplicate and signal work through the Claude accounts until a derived image adds it.
+- **`jev`.** Not in the image. Set the `AUTOCRAFT_JEV_CLOUDFLARE_*` variables to use Cloudflare Workers AI; until then Haiku does the classify, priority, duplicate and signal work through the Claude accounts.
 - **Backups.** The daily snapshot sits on the VPS disk. Copy it, and `/config`, off the VPS on a schedule.
 
 ## Processes
@@ -44,6 +44,9 @@ The image sets every path (`/data/...`, `/config/...`). A deployment sets only t
 |---|---|---|---|
 | `AUTOCRAFT_BASE_URL` | dashboard: yes | none | Public origin, `https://autocraft.example.com`, no path. Used for sign-in callbacks and links. |
 | `AUTOCRAFT_TRUST_PROXY` | behind a proxy | `0` | The number of proxies that append to `X-Forwarded-For`; the client address for rate limits is that many entries from the end (`1`: the last entry). A proxy that replaces the header with a CDN's client header counts as one. |
+| `AUTOCRAFT_JEV_CLOUDFLARE_ACCOUNT` | no | none | Cloudflare account id. With the token file, every Jev call goes to Cloudflare Workers AI instead of the `jev` command. |
+| `AUTOCRAFT_JEV_CLOUDFLARE_TOKEN_FILE` | with the account | none | File holding a Cloudflare API token that may run Workers AI. Mode 0600 (a file group or others can access is refused). Mount it from a Secret. |
+| `AUTOCRAFT_JEV_CLOUDFLARE_MODEL` | no | `typesafe/jev-1.14.0` | Workers AI model name. |
 | `GH_TOKEN` | yes, on dashboard, runner and periodic | none | GitHub token for `gh` (the dashboard's image proxy and repository adds, sync, pipeline calls): a classic token with `repo`, `read:org` and `workflow` scopes. Keep it in a Secret. |
 | `AUTOCRAFT_STOP_TIMEOUT` | no | `25` | Seconds the runner may take to stop. Keep the pod's `terminationGracePeriodSeconds` above it (30). |
 | `AUTOCRAFT_HEALTH_LISTEN` | no | off | `host:port` of a runner listener that serves only `/healthz` and `/readyz`. |
@@ -144,4 +147,4 @@ Check after the move: sign in, open the GitHub App page, and confirm the item pa
 - Secret management. Today `secrets.json` is copied to the config volume by hand and `GH_TOKEN` comes from a Kubernetes Secret. Whether a secret manager replaces either is not decided.
 - Runner settings on the real cluster (see above): untested.
 - Off-volume backup copy: mechanism not chosen (on a VPS, see the migration runbook for an example).
-- `jev` is not in the image; Haiku does its work (see "Not in the image").
+- `jev` is not in the image; Cloudflare Workers AI serves it when configured, otherwise Haiku does its work (see "Not in the image").
