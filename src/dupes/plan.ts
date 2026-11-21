@@ -7,7 +7,8 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { canonInfoAll, pickCanonical } from "./canonical.ts";
-import { inPilot } from "../pilot.ts";
+import { inPilot, pilotSql } from "../pilot.ts";
+import { backlogHeldSql } from "./held.ts";
 
 type Edge = { repo: string; a: number; b: number; similarity: number; jev_p: number | null; haiku: string | null };
 
@@ -71,22 +72,26 @@ export function kindSetsOf(db: DatabaseSync, g: Group): KindSet[] {
   return kindSetsLoader(db, [g])(g);
 }
 
-/** kindSetsOf() for the given groups, with their members' rows read once. */
-export function kindSetsLoader(db: DatabaseSync, groups: Group[]): (g: Group) => KindSet[] {
-  const rows = new Map<string, { m: Member; reason: string | null }>();
+type MemberRow = Member & { k?: string; state_reason?: string | null; in_pilot?: number; held_backlog?: number };
+/** kindSetsOf() for the given groups, with their members' rows read once; `inPilot` and `backlogHeld` answer for the members the same way. */
+export function kindSetsLoader(db: DatabaseSync, groups: Group[]): ((g: Group) => KindSet[]) & { inPilot: (repo: string, number: number) => boolean; backlogHeld: (repo: string, number: number) => boolean } {
+  const rows = new Map<string, { m: Member; reason: string | null; pilot: boolean; backlog: boolean }>();
   for (const r of db.prepare(`SELECT i.number, i.kind, i.state, i.title, i.head_oid, i.embed_hash, i.comments_count, i.additions, i.deletions, i.closing_issues,
-      i.repo || '#' || i.number AS k, i.state_reason FROM json_each(?) j JOIN items i ON i.repo = j.value ->> 0 AND i.number = j.value ->> 1`)
-    .all(JSON.stringify(groups.flatMap((g) => g.members.map((n) => [g.repo, n])))) as (Member & { k?: string; state_reason?: string | null })[]) {
-    const k = r.k!, reason = r.state_reason ?? null;
+      i.repo || '#' || i.number AS k, i.state_reason, ${pilotSql("i")} AS in_pilot, ${backlogHeldSql("i")} AS held_backlog
+    FROM json_each(?) j JOIN items i ON i.repo = j.value ->> 0 AND i.number = j.value ->> 1`)
+    .all(JSON.stringify(groups.flatMap((g) => g.members.map((n) => [g.repo, n])))) as MemberRow[]) {
+    const k = r.k!, reason = r.state_reason ?? null, pilot = !!r.in_pilot, backlog = !!r.held_backlog;
     delete r.k;
     delete r.state_reason;
-    rows.set(k, { m: r, reason });
+    delete r.in_pilot;
+    delete r.held_backlog;
+    rows.set(k, { m: r, reason, pilot, backlog });
   }
   // Left out: a rejected (closed, unmerged) PR; an item already closed as a duplicate, or whose pair decision is answered close (the act step closes it).
   const gone = new Set((db.prepare(`SELECT repo || '#' || number AS k FROM decisions WHERE kind = 'duplicate' AND id LIKE '%:duplicate@%' AND answer = 'close'`).all() as { k: string }[]).map((r) => r.k));
   // A member our own group Act closed can never become a kept item later.
   const closedByUs = new Set((db.prepare("SELECT g.repo || '#' || p.number AS k FROM dupe_group_posts p JOIN dupe_groups g ON g.decision_id = p.decision_id WHERE p.step = 'close' AND p.url IS NOT NULL").all() as { k: string }[]).map((r) => r.k));
-  return (g) => {
+  const setsOf = (g: Group): KindSet[] => {
     const members = g.members.flatMap((n): Member[] => {
       const ref = `${g.repo}#${n}`, r = rows.get(ref);
       if (!r) return [];
@@ -98,6 +103,11 @@ export function kindSetsLoader(db: DatabaseSync, groups: Group[]): (g: Group) =>
       return ms.length ? [{ repo: g.repo, kind, key: setKey(kind, ms.map((m) => m.number)), members: ms, hash: setHash(ms) }] : [];
     });
   };
+  return Object.assign(setsOf, {
+    inPilot: (repo: string, number: number): boolean => rows.get(`${repo}#${number}`)?.pilot ?? inPilot(db, repo, number),
+    // An item not in the mirror is not held (backlogHeld reads the items row).
+    backlogHeld: (repo: string, number: number): boolean => rows.get(`${repo}#${number}`)?.backlog ?? false,
+  });
 }
 
 export type StoredComparison = {
@@ -202,7 +212,7 @@ export function dueSets(db: DatabaseSync, repo?: string, nowMs: number = Date.no
   const groups = duplicateGroups(db, repo), setsOf = kindSetsLoader(db, groups);
   for (const g of groups)
     for (const s of setsOf(g)) {
-      if (!s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number))) continue;
+      if (!s.members.some((m) => m.state === "OPEN" && setsOf.inPilot(s.repo, m.number))) continue;
       const c = currentComparison(db, s);
       if ((!c || retryable(db, c, nowMs)) && !recentlyDropped(db, s, nowMs)) out.push(s);
     }

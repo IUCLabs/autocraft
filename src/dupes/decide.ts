@@ -56,10 +56,10 @@ export function groupPlans(db: DatabaseSync, repo?: string): GroupPlan[] {
   const out: GroupPlan[] = [];
   const groups = duplicateGroups(db, repo), setsOf = kindSetsLoader(db, groups);
   for (const g of groups) {
-    const sets = setsOf(g).filter((s) => s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number)));
+    const sets = setsOf(g).filter((s) => s.members.some((m) => m.state === "OPEN" && setsOf.inPilot(s.repo, m.number)));
     if (!sets.length) continue;
     // A member held by a Backlog answer is not asked about again.
-    if (g.members.some((n) => db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND ${backlogHeldSql("i")}`).get(g.repo, n))) continue;
+    if (g.members.some((n) => setsOf.backlogHeld(g.repo, n))) continue;
     const ready = sets.map((set) => ({ set, cmp: currentComparison(db, set) }));
     if (ready.some((r) => !r.cmp)) continue;
     const full = ready as { set: KindSet; cmp: StoredComparison }[];
@@ -75,7 +75,7 @@ export function groupPlans(db: DatabaseSync, repo?: string): GroupPlan[] {
         if (settled.has(m.number)) continue;
         const other = cmp.result?.others.find((o) => o.number === m.number);
         const dup = set.kind === "issue" || other?.duplicate !== false;
-        const role: Role = m.state === "OPEN" && dup && inPilot(db, set.repo, m.number) ? "close" : "stay";
+        const role: Role = m.state === "OPEN" && dup && setsOf.inPilot(set.repo, m.number) ? "close" : "stay";
         items.push({ number: m.number, kind: set.kind, role, target: role === "close" ? kept : null, detail: other ? { ...other } : null });
       }
     }
