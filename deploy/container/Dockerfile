@@ -28,8 +28,7 @@ COPY web ./
 RUN pnpm exec vite build --outDir dist --emptyOutDir
 
 ################################################################################
-# Runtime tools for the production image. The runtime base has neither a shell nor
-# a package manager, so the packages are unpacked here into a rootfs instead:
+# Runtime tools for the production image, unpacked here so the runtime stage installs nothing:
 # every package in the dependency closure is downloaded and extracted, and the
 # runtime stage copies the tree as files.
 FROM ${NODE_DEV_IMAGE} AS tools
@@ -41,7 +40,7 @@ ARG TARGETARCH
 
 RUN set -eux; \
     apt-get update; \
-    # curl and gzip fetch and unpack the GitHub CLI below (a dev base may lack them);
+    # curl and gzip fetch and unpack the GitHub CLI below (the full base may lack them);
     apt-get install -y --no-install-recommends curl gzip; \
     # Besides the tools themselves, the slim base may lack the basics scripts and
     # spawned programs rely on, so they are listed too: dash (/bin/sh, which git runs
@@ -63,9 +62,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/* /tmp/debs /tmp/packages; \
     # `dpkg -x` runs no postinst, so make sure /bin/sh exists whatever the packages shipped.
     [ -e /rootfs/usr/bin/sh ] || ln -s dash /rootfs/usr/bin/sh; \
-    # Prove the unpacked tree runs on its own libraries before it is copied into
-    # the runtime base, which has no shell to debug it with later. A plain file
-    # stands in for /dev/null so git can open it inside the chroot.
+    # Prove the unpacked tree runs on its own libraries before it is copied over the
+    # runtime base. A plain file stands in for /dev/null so git can open it in the chroot.
     mkdir -p /rootfs/dev; : > /rootfs/dev/null; \
     chroot /rootfs /bin/bash -c 'set -e; export PATH=/usr/local/bin:/usr/bin:/bin LC_ALL=C; \
       git --version; \
