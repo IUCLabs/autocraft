@@ -270,7 +270,7 @@ const MAINTAINER_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
 // bump `reviews`, and the pipeline login is part of the key, so an unchanged signature means unchanged input.
 const stateMemo = new WeakMap<DatabaseSync, Map<string, { sig: string; state: DiscussionState }>>();
 
-/** Newest counted comment or review by someone else, and the hash of those, per "repo#n" from the mirror. Callers must not modify the result. */
+/** Newest counted comment or review by someone else, and the hash of those, per PR "repo#n" from the mirror (issues are left out). Callers must not modify the result. */
 export function discussionState(db: DatabaseSync, repo?: string): DiscussionState {
   const seqs = db.prepare("SELECT topic, seq FROM change_seq WHERE topic IN ('items', 'reviews') ORDER BY topic").all() as { topic: string; seq: number }[];
   const sig = JSON.stringify([seqs, [...allOwnLogins(db)]]);
@@ -289,7 +289,8 @@ function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionStat
   const rows = db.prepare(`SELECT c.repo, c.number, COALESCE(MAX(c.created_at), '') AS newest,
       COALESCE(MAX(CASE WHEN c.author_association IN (${MAINTAINER_ASSOCIATIONS.map((a) => `'${a}'`).join(", ")})
         OR EXISTS (SELECT 1 FROM main.access a WHERE a.login = c.author AND a.role IN ('operator', 'maintainer')) THEN c.created_at END), '') AS maint
-    FROM comments c WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS} GROUP BY c.repo, c.number`).all({ repo: repo ?? null, own }) as { repo: string; number: number; newest: string; maint: string }[];
+    FROM comments c WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}
+      AND NOT EXISTS (SELECT 1 FROM main.items i WHERE i.repo = c.repo AND i.number = c.number AND i.kind = 'issue') GROUP BY c.repo, c.number`).all({ repo: repo ?? null, own }) as { repo: string; number: number; newest: string; maint: string }[];
   // The hash needs the comment text; callers ask for it only after a newer entry than a review's snapshot, so it is read on first use (primeHashes reads many in one query).
   const known = new Map<string, string>();
   const texts = (keys: { repo: string; number: number }[]): Map<string, { id: string; body: string | null }[]> => {
