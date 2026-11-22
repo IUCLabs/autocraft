@@ -11,8 +11,9 @@ import type { Grant, Guarded } from "../core/guard.ts";
 import { ownerOf } from "../owners.ts";
 import { knownSlugs, rememberSlug } from "./slugs.ts";
 import { AppError, call, GITHUB_API } from "./app.ts";
-import { AppNotInstalledError, installationToken, readAppSecrets, RepoNotInInstallationError } from "./install-token.ts";
+import { AppNotInstalledError, installationToken, readAppSecrets, readReviewerSecrets, RepoNotInInstallationError } from "./install-token.ts";
 import { setting } from "../settings-read.ts";
+import { envVar } from "../env.ts";
 
 export type Identity = "app" | `user:${string}`;
 export type GithubIdentity = "box" | "app";
@@ -181,21 +182,26 @@ export async function commitIdentity(
 
 /** The bot logins (bare slug and `<slug>[bot]`) of every known slug plus `extra`; the registered app's slug is recorded when `db` is given. */
 export function ownBotLogins(db: DatabaseSync, extra: string | null = null): string[] {
-  const live = appSlug();
-  if (live) { try { rememberSlug(db, live); } catch { /* a read-only connection: the live slug is still used below */ } }
-  const slugs = new Set([...knownSlugs(db), ...(live ? [live] : []), ...(extra ? [extra] : [])]);
+  const live = liveSlugs();
+  for (const l of live) { try { rememberSlug(db, l); } catch { /* a read-only connection: the live slugs are still used below */ } }
+  const slugs = new Set([...knownSlugs(db), ...live, ...(extra ? [extra] : [])]);
   return [...slugs].flatMap((s) => [s, `${s}[bot]`]);
 }
 
-/** Slug of the registered GitHub App, read from the secrets file at most once a minute; null when none is registered or the file is unreadable. */
-let slugMemo: { at: number; slug: string | null } | null = null;
-export function appSlug(): string | null {
-  if (slugMemo && Date.now() - slugMemo.at < 60_000) return slugMemo.slug;
-  let slug: string | null = null;
+/** Slugs of the registered GitHub App and the reviewer app, read from the secrets file at most once a minute; null when absent or the file is unreadable. */
+let slugMemo: { at: number; file: string | undefined; slug: string | null; reviewer: string | null } | null = null;
+function slugsNow(): { slug: string | null; reviewer: string | null } {
+  const file = envVar("SECRETS_FILE");
+  if (slugMemo && slugMemo.file === file && Date.now() - slugMemo.at < 60_000) return slugMemo;
+  let slug: string | null = null, reviewer: string | null = null;
   try { slug = readAppSecrets()?.slug ?? null; } catch { slug = null; }
-  slugMemo = { at: Date.now(), slug };
-  return slug;
+  try { reviewer = readReviewerSecrets()?.slug ?? null; } catch { reviewer = null; }
+  slugMemo = { at: Date.now(), file, slug, reviewer };
+  return slugMemo;
 }
+export const appSlug = (): string | null => slugsNow().slug;
+/** Every live slug whose bot is ours: the registered app's and the reviewer app's. */
+export const liveSlugs = (): string[] => { const s = slugsNow(); return [s.slug, s.reviewer].filter((x): x is string => x !== null); };
 
 /**
  * Logins whose items and comments are ours: the box account (when recorded) and the bot of every app slug ever seen (a bare slug in the

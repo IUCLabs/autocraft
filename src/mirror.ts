@@ -14,7 +14,7 @@ import { hashColumns } from "./itemhash.ts";
 import { textRefs } from "./fixissue/candidates.ts";
 import { syncActivity } from "./activity.ts";
 import { mentionNames, rememberSlug } from "./github/slugs.ts";
-import { appSlug } from "./github/identity.ts";
+import { liveSlugs } from "./github/identity.ts";
 import { envVar } from "./env.ts";
 import { AppReadError, ownerOfVariables, readEnv, resolveOwner } from "./github/read.ts";
 import { DEFAULT_OWNER, isDefaultOwner, loadOwners, ownerOf, slugOf } from "./owners.ts";
@@ -350,9 +350,9 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const insComment = db.prepare(`INSERT INTO main.comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline, url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
     body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association, mentions_pipeline=excluded.mentions_pipeline, url=excluded.url`);
-  const live = appSlug();
-  if (live) { try { rememberSlug(db, live); } catch { /* read-only connection */ } }
-  const own = mentionNames(db, live);
+  const live = liveSlugs();
+  for (const l of live) { try { rememberSlug(db, l); } catch { /* read-only connection */ } }
+  const own = [...new Set([...mentionNames(db), ...live])];
   const lastRead = db.prepare("SELECT synced_at FROM main.item_reads WHERE repo = ? AND number = ?");
   db.exec("BEGIN IMMEDIATE");
   try {

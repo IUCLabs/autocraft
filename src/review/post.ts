@@ -7,7 +7,7 @@
 // Without --apply it is a dry run: it reads the local tables only and lists what would be posted.
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
-import { type Note, editReview, postReview, type Writer } from "../github/write.ts";
+import { type Note, editReview, postReview, reviewWriter, type Writer } from "../github/write.ts";
 import { guard } from "../core/guard.ts";
 import { auditIdentity, githubIdentity } from "../github/identity.ts";
 import { ownerOf } from "../owners.ts";
@@ -21,6 +21,11 @@ import { reviewBody, recommendation } from "./post-template.ts";
 import { jobItem } from "../runner/job-items.ts";
 
 const ACTOR = "review-post";
+/** `posted_as` of a review the reviewer app posted; older readers take any value but `legacy` for the main app. */
+export const REVIEWER_AS = "app:reviewer";
+export type Lane = "legacy" | "app" | "reviewer";
+// A review is edited only by the lane that posted it: a NULL `posted_as` is a row from before it was recorded, written by the box account.
+const lane = (as: string | null | undefined): Lane => (as === REVIEWER_AS ? "reviewer" : as && as !== "legacy" ? "app" : "legacy");
 const REVIEW_NOTE = (c: { model: string | null }): Note => ({ by: "model", kind: "review", model: c.model });
 
 export type PostCandidate = {
@@ -29,12 +34,14 @@ export type PostCandidate = {
   model: string | null;
   /** The id of our earlier review of this PR (at another head), to edit; null for a first post. */
   editId: string | null;
+  /** The lane that posted `editId`: only that lane edits it. */
+  editLane: Lane | null;
   /** The `at` of the Opus review the body describes. */
   opusAt: string;
 };
 export type PostSummary = { repo: string; dryRun: boolean; candidates: number; posted: string[]; edited: string[]; skipped: { ref: string; reason: string }[]; failed: { ref: string; reason: string }[]; note: string | null };
 export type PostParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void; by?: By };
-export type PostDeps = { querier: Querier; now: () => Date };
+export type PostDeps = { querier: Querier; now: () => Date; /** Replaces the writer's minters and app client (tests). */ writer?: Pick<Writer, "mint" | "reviewerMint" | "appClient"> };
 
 export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now: () => new Date() });
 
@@ -45,8 +52,6 @@ export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
   const posted = db.prepare("SELECT review_id, posted_as FROM review_posts WHERE repo = ? AND number = ?");
-  // A review is edited only by the lane that posted it: a NULL `posted_as` is a row from before it was recorded, written by the box account.
-  const lane = (as: string | null | undefined): "legacy" | "app" => (as && as !== "legacy" ? "app" : "legacy");
   const nowLane = githubIdentity(db) === "app" ? "app" : "legacy";
   const out: PostCandidate[] = [];
   for (const { facts: f, plan, action } of planned(db, "post-review", { repo })) {
@@ -57,9 +62,11 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     const pub = o.public;
     if (!pub) continue;
     const prev = posted.get(repo, f.number) as { review_id: string | null; posted_as: string | null } | undefined;
-    const editId = prev && lane(prev.posted_as) === nowLane ? prev.review_id ?? null : null;
+    const editLane = prev ? lane(prev.posted_as) : null;
+    // Box and app posts never edit each other; which app edits is settled when the token is minted.
+    const editId = editLane && (editLane === "legacy") === (nowLane === "legacy") ? prev!.review_id ?? null : null;
     out.push({
-      repo, number: f.number, head_oid: head, editId, opusAt: o.at, model: o.model,
+      repo, number: f.number, head_oid: head, editId, editLane, opusAt: o.at, model: o.model,
       body: reviewBody({
         verdict: o.sourceVerdict, sure: o.sure, summary: pub.summary, points: pub.points, claims: o.claims, head: o.reviewedAt, owner: ownerOf(repo), fixedIn: o.fixedIn,
         recommendation: recommendation({ verdict: o.verdict, queue: o.verdict === "take" && isQueueState(plan.state) ? { path: plan.path, state: plan.state } : null, mergeApproved: f.repoFacts.mergeApproved, canPush: f.repoFacts.pushApproved && f.pushable }),
@@ -96,7 +103,7 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
     return s;
   }
   const d = deps ?? defaultPostDeps();
-  const w: Writer = { db, login: ACTOR };
+  const w: Writer = { db, login: ACTOR, ...d.writer };
   let handled = 0;
   for (const c of todo) {
     const skip = (reason: string) => { s.skipped.push({ ref: refOf(c), reason }); jobItem(db, c.repo, c.number, `skipped: ${reason}`, log); };
@@ -108,11 +115,12 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
       const g = await guard(db, { repo, number: c.number }, { kind: "post-review", head: c.head_oid }, params.by ?? CLI_BY);
       if ("refused" in g) { skip(g.refused); continue; }
       const at = d.now().toISOString();
-      const as = auditIdentity(db, g);
+      const rw = await reviewWriter(w, g);
+      const as = rw.reviewer ? REVIEWER_AS : auditIdentity(db, g);
       let edited = false;
-      if (c.editId) {
+      if (c.editId && c.editLane === lane(as)) {
         try {
-          await editReview(w, d.querier, g, c.editId, REVIEW_NOTE(c), c.body);
+          await editReview(rw.w, d.querier, g, c.editId, REVIEW_NOTE(c), c.body);
           db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ?, opus_at = ?, posted_as = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, c.opusAt, as, repo, c.number);
           s.edited.push(refOf(c));
           edited = true;
@@ -122,7 +130,7 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
         }
       }
       if (!edited) {
-        const id = await postReview(w, d.querier, g, live.id, REVIEW_NOTE(c), c.body);
+        const id = await postReview(rw.w, d.querier, g, live.id, REVIEW_NOTE(c), c.body);
         if (!id) throw new Error("GitHub returned no review");
         db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at, opus_at, posted_as) VALUES (?, ?, ?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at, c.opusAt, as);
         s.posted.push(refOf(c));

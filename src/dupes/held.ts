@@ -4,7 +4,7 @@
 // or "keep both" releases them. No Node imports besides the type and the app-slug lookup.
 import type { DatabaseSync } from "node:sqlite";
 import { pilotSql } from "../pilot.ts";
-import { appSlug } from "../github/identity.ts";
+import { liveSlugs } from "../github/identity.ts";
 
 /** The fact line that names the original; the act step reads it. */
 export const DUP_FACT = "duplicate of ";
@@ -37,7 +37,7 @@ export const backlogHeldSql = (alias: string): string =>
     OR EXISTS (SELECT 1 FROM dupe_group_items bg WHERE bg.decision_id = db.id AND bg.repo = ${alias}.repo AND bg.number = ${alias}.number)))`;
 
 /** Live app slug as a JSON list; the persisted `app_slugs` setting covers slugs that are unreadable now or were replaced. */
-const liveSlugJson = (): string => JSON.stringify([appSlug()].filter(Boolean)).replaceAll("'", "''");
+const liveSlugJson = (): string => JSON.stringify(liveSlugs()).replaceAll("'", "''");
 
 /** SQL condition, true when the item `alias` (a row of items) is not an integration batch PR the pipeline opened itself (see src/merge/batch.ts). Such PRs only carry reviewed PRs and never enter the pipeline as contributor PRs. */
 export const notOwnIntegrationSql = (alias: string): string =>
