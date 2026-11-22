@@ -14,6 +14,16 @@ concurrency:
 
 # GitHub-hosted: the iuclabs runners have no docker, zstd or libatomic (Node 26)
 jobs:
+  ci:
+    uses: IUCLabs/workflows/.github/workflows/pre-commit.yml@v0.1.0
+    permissions:
+      contents: read
+
+  actions:
+    uses: IUCLabs/workflows/.github/workflows/actions.yml@v0.1.0
+    permissions:
+      contents: read
+
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -24,7 +34,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
-      - run: npm install -g pnpm@11.28.10
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
 
@@ -38,7 +48,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
-      - run: npm install -g pnpm@11.28.10
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
@@ -55,7 +65,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
-      - run: npm install -g pnpm@11.28.10
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
